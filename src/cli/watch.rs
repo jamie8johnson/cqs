@@ -619,6 +619,14 @@ struct WatchConfig<'a> {
     /// `CQS_WATCH_INCREMENTAL_SPLADE=0`. `Mutex` serializes GPU access
     /// since the encoder holds a CUDA context.
     splade_encoder: Option<&'a std::sync::Mutex<cqs::splade::SpladeEncoder>>,
+    /// #1129: project-scoped global embedding cache (per-project, shared
+    /// across slots). `Some` when the cache opened cleanly at daemon
+    /// startup; `None` when `CQS_CACHE_ENABLED=0` is set or the open
+    /// failed. `reindex_files` consults this cache before the store's
+    /// per-slot `chunks.embedding` lookup so a chunk hashed in one slot
+    /// (or under a previous model) doesn't pay GPU cost on every save.
+    /// Mirrors the bulk pipeline's `prepare_for_embedding` shape.
+    global_cache: Option<&'a cqs::cache::EmbeddingCache>,
 }
 
 /// Mutable session state that evolves across watch cycles.
@@ -2276,6 +2284,46 @@ pub fn cmd_watch(
     let splade_encoder_ref: Option<&std::sync::Mutex<cqs::splade::SpladeEncoder>> =
         splade_encoder_storage.as_ref();
 
+    // #1129: open the project-scoped global embedding cache once at daemon
+    // startup so reindex cycles can hit it without paying open() per cycle.
+    // Mirrors the bulk pipeline's gating on `CQS_CACHE_ENABLED=0`. Open
+    // failure is best-effort: log and continue with `None`, identical to
+    // the bulk path's degradation.
+    //
+    // Reuse `shared_rt` so this Cache piggybacks on the same worker pool
+    // as the outer Store, daemon Store/Cache, etc. (#968).
+    let global_cache_storage: Option<cqs::cache::EmbeddingCache> = {
+        if std::env::var("CQS_CACHE_ENABLED").as_deref() == Ok("0") {
+            tracing::info!(
+                "CQS_CACHE_ENABLED=0 — global embedding cache disabled for watch reindex"
+            );
+            None
+        } else {
+            let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+            match cqs::cache::EmbeddingCache::open_with_runtime(
+                &cache_path,
+                Some(Arc::clone(&shared_rt)),
+            ) {
+                Ok(c) => {
+                    tracing::info!(
+                        path = %cache_path.display(),
+                        "Watch reindex global embedding cache opened"
+                    );
+                    Some(c)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %cache_path.display(),
+                        "Watch reindex global cache unavailable; proceeding without it"
+                    );
+                    None
+                }
+            }
+        }
+    };
+    let global_cache_ref: Option<&cqs::cache::EmbeddingCache> = global_cache_storage.as_ref();
+
     let watch_cfg = WatchConfig {
         root: &root,
         cqs_dir: &cqs_dir,
@@ -2287,6 +2335,7 @@ pub fn cmd_watch(
         model_config,
         gitignore: &gitignore,
         splade_encoder: splade_encoder_ref,
+        global_cache: global_cache_ref,
     };
 
     let mut state = WatchState {
@@ -2766,7 +2815,15 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
         tracing::warn!(error = %e, "Cannot set base HNSW dirty flag — skipping reindex to prevent stale index on crash");
         return;
     }
-    match reindex_files(cfg.root, store, &files, cfg.parser, emb, cfg.quiet) {
+    match reindex_files(
+        cfg.root,
+        store,
+        &files,
+        cfg.parser,
+        emb,
+        cfg.global_cache,
+        cfg.quiet,
+    ) {
         Ok((count, content_hashes)) => {
             // Record mtimes to skip duplicate events
             for (file, mtime) in pre_mtimes {
@@ -3019,15 +3076,27 @@ fn process_note_changes(root: &Path, store: &Store, quiet: bool) {
 /// Returns `(chunk_count, content_hashes)` — the content hashes can be used for
 /// incremental HNSW insertion (looking up embeddings by hash instead of
 /// rebuilding the full index).
+///
+/// `global_cache` (#1129) is the project-scoped cross-slot embedding cache;
+/// when present, the cache is consulted before the per-slot store fallback,
+/// matching the bulk pipeline's `prepare_for_embedding` shape. `None` mirrors
+/// the pre-#1129 behaviour (store cache only) for tests and the
+/// `CQS_CACHE_ENABLED=0` operator override.
 fn reindex_files(
     root: &Path,
     store: &Store,
     files: &[PathBuf],
     parser: &CqParser,
     embedder: &Embedder,
+    global_cache: Option<&cqs::cache::EmbeddingCache>,
     quiet: bool,
 ) -> Result<(usize, Vec<String>)> {
-    let _span = info_span!("reindex_files", file_count = files.len()).entered();
+    let _span = info_span!(
+        "reindex_files",
+        file_count = files.len(),
+        global_cache = global_cache.is_some()
+    )
+    .entered();
     info!(file_count = files.len(), "Reindexing files");
 
     // Parse changed files once — extract chunks, calls, AND type refs in a single pass.
@@ -3123,19 +3192,62 @@ fn reindex_files(
         return Ok((0, Vec::new()));
     }
 
-    // P2.68 (scope=structural): the watch reindex path only consults
-    // `store.get_embeddings_by_hashes` — it never sees the per-project
-    // `EmbeddingCache` introduced in #1105. File saves in watch mode pay
-    // GPU cost for every chunk not already in the *current slot's*
-    // `chunks.embedding`, even when the same hash exists in the
-    // cross-slot `EmbeddingCache::project_default_path` cache. The bulk
-    // pipeline already routes through `prepare_for_embedding` which
-    // checks both layers; the watch path needs the global_cache plumbed
-    // through `cmd_watch` → `WatchConfig` → `reindex_files`. Filed as
-    // follow-on issue — this comment is the breadcrumb so the next
-    // sweep doesn't re-discover the cache miss the hard way.
+    // #1129: cache-check chain mirrors `prepare_for_embedding`'s
+    // global-cache → store-cache → embed fallback. Pre-#1129 the watch path
+    // only consulted `store.get_embeddings_by_hashes` so a chunk hashed in
+    // another slot (or under a previous model) paid GPU cost on every save
+    // even though `EmbeddingCache::project_default_path` had the vector.
+    //
+    // The dim guard matches `prepare_for_embedding`: skip the per-slot
+    // store cache when `embedder.embedding_dim() != store.dim()` (a model
+    // swap is in progress); the global cache is dim-checked inside
+    // `read_batch` so dimension drift there is silently filtered.
+    let dim = embedder.embedding_dim();
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-    let mut existing = store.get_embeddings_by_hashes(&hashes)?;
+
+    // Step 1: global (project-scoped, cross-slot) cache.
+    let mut global_hits: HashMap<String, Embedding> = HashMap::new();
+    if let Some(cache) = global_cache {
+        let model_fp = embedder.model_fingerprint();
+        match cache.read_batch(&hashes, model_fp, cqs::cache::CachePurpose::Embedding, dim) {
+            Ok(hits) => {
+                if !hits.is_empty() {
+                    tracing::debug!(hits = hits.len(), "Watch global cache hits");
+                }
+                for (hash, emb_vec) in hits {
+                    if let Ok(emb) = Embedding::try_new(emb_vec) {
+                        global_hits.insert(hash, emb);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Global cache read failed (best-effort)");
+            }
+        }
+    }
+
+    // Step 2: per-slot store cache. Only query for hashes the global cache
+    // didn't satisfy (P3.42 mirror) and only when the embedder's dim matches
+    // store dim — a model swap mid-watch means the stored vectors are stale.
+    let mut store_hits: HashMap<String, Embedding> = if dim == store.dim() {
+        let missed: Vec<&str> = hashes
+            .iter()
+            .copied()
+            .filter(|h| !global_hits.contains_key(*h))
+            .collect();
+        if missed.is_empty() {
+            HashMap::new()
+        } else {
+            store.get_embeddings_by_hashes(&missed)?
+        }
+    } else {
+        tracing::info!(
+            store_dim = store.dim(),
+            embedder_dim = dim,
+            "Skipping store embedding cache in watch (dimension mismatch — model switch)"
+        );
+        HashMap::new()
+    };
 
     let mut cached: Vec<(usize, Embedding)> = Vec::new();
     let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
@@ -3145,17 +3257,23 @@ fn reindex_files(
     // chunks with the same content_hash within one reindex (rare — implies
     // duplicate content across files) fall through to `to_embed` on the
     // second hit, which is correct: one cached embedding satisfies one slot.
+    let global_hits_total = global_hits.len();
     for (i, chunk) in chunks.iter().enumerate() {
-        if let Some(emb) = existing.remove(&chunk.content_hash) {
+        if let Some(emb) = global_hits.remove(&chunk.content_hash) {
+            cached.push((i, emb));
+        } else if let Some(emb) = store_hits.remove(&chunk.content_hash) {
             cached.push((i, emb));
         } else {
             to_embed.push((i, chunk));
         }
     }
 
-    // OB-11: Log cache hit/miss stats for observability
+    // OB-11: Log cache hit/miss stats for observability. #1129 expands the
+    // breakdown to surface global vs. store cache hits independently.
     tracing::info!(
         cached = cached.len(),
+        global_hits = global_hits_total,
+        store_hits = cached.len().saturating_sub(global_hits_total),
         to_embed = to_embed.len(),
         "Embedding cache stats"
     );
@@ -3179,6 +3297,26 @@ fn reindex_files(
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         embedder.embed_documents(&text_refs)?.into_iter().collect()
     };
+
+    // #1129: write fresh embeddings back to the global cache so the next
+    // file save (or another slot) hits cache instead of going through the
+    // embedder. Best-effort — mirrors the bulk pipeline's write-back shape
+    // with borrowed slices to skip per-entry allocations (P3 #127).
+    if let (Some(cache), false) = (global_cache, to_embed.is_empty()) {
+        let entries: Vec<(&str, &[f32])> = to_embed
+            .iter()
+            .zip(new_embeddings.iter())
+            .map(|((_, chunk), emb)| (chunk.content_hash.as_str(), emb.as_slice()))
+            .collect();
+        if let Err(e) = cache.write_batch(
+            &entries,
+            embedder.model_fingerprint(),
+            cqs::cache::CachePurpose::Embedding,
+            dim,
+        ) {
+            tracing::warn!(error = %e, "Watch global cache write failed (best-effort)");
+        }
+    }
 
     // Merge cached and new embeddings in original chunk order.
     //
@@ -3373,6 +3511,7 @@ mod tests {
             model_config: &TEST_MODEL_CONFIG,
             gitignore: &TEST_GITIGNORE_NONE,
             splade_encoder: None,
+            global_cache: None,
         }
     }
 
@@ -3399,6 +3538,7 @@ mod tests {
             model_config: &TEST_MODEL_CONFIG,
             gitignore,
             splade_encoder: None,
+            global_cache: None,
         }
     }
 
@@ -4670,6 +4810,147 @@ mod tests {
             state.pending_rebuild.is_some(),
             "pending should remain in flight when channel has no message"
         );
+    }
+
+    // ── #1129: reindex_files consults the global EmbeddingCache ─────────────
+
+    /// `reindex_files` must read from `global_cache` before calling the
+    /// embedder. We prime the cache with a known embedding for the chunk's
+    /// content_hash, then ensure the chunk written to the store has THAT
+    /// vector — proof the embedder was bypassed entirely.
+    ///
+    /// `#[ignore]` because building a real `Embedder` (CPU) loads ONNX
+    /// weights and is too heavy for the default test pass. The test still
+    /// exercises the cache wiring; running it gated catches the regression
+    /// when the watch path drops the cache check.
+    #[test]
+    #[ignore = "Requires loading the BGE-large model (heavy)"]
+    fn test_reindex_files_hits_global_cache_skipping_embedder() {
+        use cqs::cache::{CachePurpose, EmbeddingCache};
+        use cqs::embedder::ModelConfig;
+        use std::io::Write;
+
+        // 1) Tempdir with a tiny rust file we can parse.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let cqs_dir = root.join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let rs_file = root.join("hit.rs");
+        let source = "pub fn hits_cache() { let _ = 42; }";
+        let mut f = std::fs::File::create(&rs_file).unwrap();
+        f.write_all(source.as_bytes()).unwrap();
+        drop(f);
+
+        // 2) Build a Store and an Embedder. Both required by reindex_files.
+        let model_cfg = ModelConfig::resolve(None, None);
+        let embedder = Embedder::new_cpu(model_cfg).expect("init CPU embedder");
+        let dim = embedder.embedding_dim();
+        let store_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut store = Store::open(&store_path).unwrap();
+        store
+            .init(&cqs::store::ModelInfo::new(
+                &embedder.model_config().repo,
+                dim,
+            ))
+            .unwrap();
+        store.set_dim(dim);
+
+        // 3) Parse the file once to learn the chunk's content_hash. Only
+        //    deterministic way to know what to prime — the parser's hash
+        //    is computed from chunk metadata + bytes.
+        let parser = CqParser::new().unwrap();
+        let chunks = parser
+            .parse_file_all_with_chunk_calls(&rs_file)
+            .map(|(c, _, _, _)| c)
+            .expect("parse hit.rs");
+        assert!(!chunks.is_empty(), "parser must yield at least one chunk");
+        let target_hash = chunks[0].content_hash.clone();
+
+        // 4) Prime the global cache with a SENTINEL embedding for the
+        //    chunk's content_hash. Sentinel = first lane large, others zero,
+        //    then unit-normalized — distinguishes it from anything the
+        //    embedder would produce on this content.
+        let cache_path = EmbeddingCache::project_default_path(&cqs_dir);
+        let cache = EmbeddingCache::open(&cache_path).expect("open cache");
+        let mut sentinel = vec![0.0_f32; dim];
+        sentinel[0] = 7.7;
+        let norm: f32 = sentinel.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut sentinel {
+            *x /= norm;
+        }
+        let sentinel_clone = sentinel.clone();
+        cache
+            .write_batch_owned(
+                &[(target_hash.clone(), sentinel_clone)],
+                embedder.model_fingerprint(),
+                CachePurpose::Embedding,
+                dim,
+            )
+            .unwrap();
+
+        // 5) Run reindex_files with the cache wired in.
+        let files = vec![PathBuf::from("hit.rs")];
+        let (count, _) =
+            reindex_files(root, &store, &files, &parser, &embedder, Some(&cache), true)
+                .expect("reindex_files");
+        assert!(count >= 1, "at least one chunk indexed");
+
+        // 6) The chunk in the store must hold the SENTINEL — proof that
+        //    the global cache served the read instead of the embedder.
+        let stored = store
+            .get_embeddings_by_hashes(&[target_hash.as_str()])
+            .expect("store lookup");
+        let stored_emb = stored
+            .get(&target_hash)
+            .expect("chunk written under the same content_hash");
+        let stored_slice = stored_emb.as_slice();
+        assert_eq!(stored_slice.len(), dim);
+        for (i, (&got, &want)) in stored_slice.iter().zip(sentinel.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-5,
+                "lane {i}: got {got} want {want} — embedder was called instead of cache hit"
+            );
+        }
+    }
+
+    /// `reindex_files` with `global_cache: None` falls back to the prior
+    /// store-only path. Lighter assertion: just confirm the function runs
+    /// to completion and writes chunks. Pins the legacy degrade path so
+    /// `CQS_CACHE_ENABLED=0` doesn't break watch.
+    #[test]
+    #[ignore = "Requires loading the BGE-large model (heavy)"]
+    fn test_reindex_files_no_global_cache_still_works() {
+        use cqs::embedder::ModelConfig;
+        use std::io::Write;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let cqs_dir = root.join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let rs_file = root.join("nocache.rs");
+        let mut f = std::fs::File::create(&rs_file).unwrap();
+        f.write_all(b"pub fn no_cache_path() { let _ = 0; }")
+            .unwrap();
+        drop(f);
+
+        let model_cfg = ModelConfig::resolve(None, None);
+        let embedder = Embedder::new_cpu(model_cfg).expect("init CPU embedder");
+        let dim = embedder.embedding_dim();
+        let store_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut store = Store::open(&store_path).unwrap();
+        store
+            .init(&cqs::store::ModelInfo::new(
+                &embedder.model_config().repo,
+                dim,
+            ))
+            .unwrap();
+        store.set_dim(dim);
+
+        let parser = CqParser::new().unwrap();
+        let files = vec![PathBuf::from("nocache.rs")];
+        let (count, _) = reindex_files(root, &store, &files, &parser, &embedder, None, true)
+            .expect("reindex_files without global_cache");
+        assert!(count >= 1, "no-cache path must still index");
     }
 }
 

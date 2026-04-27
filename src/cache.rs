@@ -69,6 +69,41 @@ pub struct PerModelStats {
 /// previously been seen for that model_id.
 pub const PROJECT_EMBEDDINGS_CACHE_FILENAME: &str = "embeddings_cache.db";
 
+/// Discriminator for which dual-index column an embedding was generated for.
+///
+/// #1128: the cache used to key on `(content_hash, model_fingerprint)`, but v18
+/// added a parallel `embedding_base` column (raw NL embedding, before #1040
+/// enrichment overwrites `embedding`). Same content + same model can now
+/// produce two different vectors — one for each column. Without a `purpose`
+/// discriminator in the cache PK, the second writer silently overwrites the
+/// first, and reads return whichever was last written.
+///
+/// `Embedding` is the default (matches the only producer until enrichment
+/// caching lands), so existing rows migrate to `purpose = 'embedding'` via
+/// the schema's `DEFAULT 'embedding'`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CachePurpose {
+    /// The post-enrichment embedding (or, today, the only one) — what
+    /// `chunks.embedding` holds and what HNSW serves search against.
+    #[default]
+    Embedding,
+    /// The raw NL embedding (pre-enrichment) — what `chunks.embedding_base`
+    /// holds and what the dual-index "base" graph serves.
+    EmbeddingBase,
+}
+
+impl CachePurpose {
+    /// Stable string form persisted in the `purpose` column. Do NOT change
+    /// without a schema migration — existing caches store `'embedding'` as
+    /// the default for pre-#1128 rows.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CachePurpose::Embedding => "embedding",
+            CachePurpose::EmbeddingBase => "embedding_base",
+        }
+    }
+}
+
 /// P2.3 (scope=structural): both [`EmbeddingCache::open_with_runtime`] and
 /// [`QueryCache::open_with_runtime`] share ~90 lines of parent-dir prep,
 /// runtime fallback, pool open, schema create, and 0o600 chmod loop with
@@ -225,35 +260,85 @@ impl EmbeddingCache {
                 .connect_with(connect_opts)
                 .await?;
 
-            // Create table if not exists.
-            //
-            // P2.65 (scope=structural): the PRIMARY KEY is (content_hash,
-            // model_fingerprint) with no `purpose` discriminator. Today the
-            // only producer is `embed_documents` (purpose = "embedding"), but
-            // #1040 enrichment will eventually add a parallel `embedding_base`
-            // shape — same hash, same model, different vector. Without a
-            // `purpose` column the second writer overwrites the first and
-            // lookups silently return the wrong vector.
-            //
-            // The fix requires (1) adding `purpose TEXT NOT NULL DEFAULT
-            // 'embedding'` to the PK, (2) idempotent `ALTER TABLE ADD COLUMN`
-            // for existing caches, (3) updating `read_batch`, `write_batch`,
-            // `evict()` and every embed-cache caller (`prepare_for_embedding`)
-            // to bind `purpose`. Out of scope for this batch — filed as
-            // follow-on. Until then, the audit confirms only one purpose is
-            // ever written, so existing caches are correct by accident.
+            // #1128: PRIMARY KEY now includes `purpose` so the same
+            // (content_hash, model_fingerprint) can hold both the post-
+            // enrichment `embedding` and the raw `embedding_base` vectors
+            // without one overwriting the other. New caches get the column
+            // up-front in CREATE TABLE; existing caches get it via the
+            // idempotent ALTER below.
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS embedding_cache (
                     content_hash TEXT NOT NULL,
                     model_fingerprint TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT 'embedding',
                     embedding BLOB NOT NULL,
                     dim INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
-                    PRIMARY KEY (content_hash, model_fingerprint)
+                    PRIMARY KEY (content_hash, model_fingerprint, purpose)
                 )",
             )
             .execute(&pool)
             .await?;
+
+            // #1128: idempotent migration for caches built before the
+            // `purpose` column existed. We detect the legacy schema via
+            // `pragma_table_info`; if present we rebuild the table so the
+            // PRIMARY KEY actually includes `purpose`.
+            //
+            // SQLite has no `DROP / ADD PRIMARY KEY` — adding the column
+            // alone leaves the legacy PK (content_hash, model_fingerprint)
+            // in force, which would silently REJECT future EmbeddingBase
+            // writes that share a hash with an existing Embedding row.
+            // The 12-step `ALTER TABLE` recipe (rename → CREATE → INSERT
+            // SELECT → DROP) is the SQLite-blessed way to relax the PK on
+            // an existing table. All in one transaction so a crash mid-
+            // migration leaves either the old shape or the new one,
+            // never a half-applied state.
+            //
+            // Existing rows get `purpose = 'embedding'` because the legacy
+            // producer only ever wrote that purpose.
+            let has_purpose: bool = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('embedding_cache') WHERE name = 'purpose'",
+            )
+            .fetch_one(&pool)
+            .await?
+                > 0;
+            if !has_purpose {
+                let mut tx = pool.begin().await?;
+                sqlx::query("ALTER TABLE embedding_cache RENAME TO embedding_cache_legacy_v1128")
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query(
+                    "CREATE TABLE embedding_cache (
+                        content_hash TEXT NOT NULL,
+                        model_fingerprint TEXT NOT NULL,
+                        purpose TEXT NOT NULL DEFAULT 'embedding',
+                        embedding BLOB NOT NULL,
+                        dim INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (content_hash, model_fingerprint, purpose)
+                    )",
+                )
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO embedding_cache \
+                     (content_hash, model_fingerprint, purpose, embedding, dim, created_at) \
+                     SELECT content_hash, model_fingerprint, 'embedding', \
+                            embedding, dim, created_at \
+                     FROM embedding_cache_legacy_v1128",
+                )
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query("DROP TABLE embedding_cache_legacy_v1128")
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                tracing::info!(
+                    "Migrated embedding_cache schema: added `purpose` column to PRIMARY KEY \
+                     (existing rows default to 'embedding')"
+                );
+            }
 
             sqlx::query(
                 "CREATE INDEX IF NOT EXISTS idx_cache_created ON embedding_cache (created_at)",
@@ -291,16 +376,23 @@ impl EmbeddingCache {
     /// Read cached embeddings for a batch of content hashes.
     /// Returns a map of content_hash → embedding (as Vec<f32>).
     /// Cache misses are simply absent from the map.
+    ///
+    /// `purpose` discriminates between the post-enrichment `embedding` and the
+    /// raw `embedding_base` (#1128) — same hash + same model can have one row
+    /// per purpose. The default purpose is `Embedding`, matching the only
+    /// producer until enrichment-purpose caching lands.
     pub fn read_batch(
         &self,
         content_hashes: &[&str],
         model_fingerprint: &str,
+        purpose: CachePurpose,
         expected_dim: usize,
     ) -> Result<HashMap<String, Vec<f32>>, CacheError> {
         let _span = tracing::debug_span!(
             "cache_read_batch",
             count = content_hashes.len(),
-            fingerprint = &model_fingerprint[..8.min(model_fingerprint.len())]
+            fingerprint = &model_fingerprint[..8.min(model_fingerprint.len())],
+            purpose = purpose.as_str()
         )
         .entered();
 
@@ -312,20 +404,23 @@ impl EmbeddingCache {
             let mut result = HashMap::new();
 
             // SHL-V1.25-4: Batch size matches modern SQLite variable limit
-            // (32766). Two vars per row accounts for the shared model_fingerprint
-            // bind plus the content_hash bind, with headroom for either being
-            // added to in the future. Cache hit lookups for a 50k-chunk index
-            // now fire 2-3 SELECTs instead of 500.
-            for batch in content_hashes.chunks(max_rows_per_statement(2)) {
-                // P3 #130: cached helper. `?1` is `model_fingerprint`, the IN
-                // clause starts at `?2`.
-                let placeholders = make_placeholders_offset(batch.len(), 2);
+            // (32766). Three vars per row accounts for the shared
+            // model_fingerprint + purpose binds plus the content_hash bind,
+            // with headroom. Cache hit lookups for a 50k-chunk index now
+            // fire 2-3 SELECTs instead of 500.
+            for batch in content_hashes.chunks(max_rows_per_statement(3)) {
+                // P3 #130: cached helper. `?1` is `model_fingerprint`, `?2`
+                // is `purpose`, the IN clause starts at `?3`.
+                let placeholders = make_placeholders_offset(batch.len(), 3);
                 let sql = format!(
                     "SELECT content_hash, embedding, dim FROM embedding_cache \
-                     WHERE model_fingerprint = ?1 AND content_hash IN ({placeholders})"
+                     WHERE model_fingerprint = ?1 AND purpose = ?2 \
+                     AND content_hash IN ({placeholders})"
                 );
 
-                let mut query = sqlx::query(&sql).bind(model_fingerprint);
+                let mut query = sqlx::query(&sql)
+                    .bind(model_fingerprint)
+                    .bind(purpose.as_str());
                 for hash in batch {
                     query = query.bind(*hash);
                 }
@@ -384,13 +479,14 @@ impl EmbeddingCache {
         &self,
         entries: &[(String, Vec<f32>)],
         model_fingerprint: &str,
+        purpose: CachePurpose,
         dim: usize,
     ) -> Result<usize, CacheError> {
         let borrowed: Vec<(&str, &[f32])> = entries
             .iter()
             .map(|(h, e)| (h.as_str(), e.as_slice()))
             .collect();
-        self.write_batch(&borrowed, model_fingerprint, dim)
+        self.write_batch(&borrowed, model_fingerprint, purpose, dim)
     }
 
     /// Write a batch of embeddings to the cache.
@@ -399,16 +495,23 @@ impl EmbeddingCache {
     /// P3 #127: signature accepts borrows (`&str`, `&[f32]`) so the GPU/CPU
     /// embed paths don't need to clone every `content_hash` and embedding
     /// vector into an intermediate `Vec<(String, Vec<f32>)>` per batch.
+    ///
+    /// `purpose` (#1128) selects which dual-index column the cached vector
+    /// belongs to — `Embedding` (default, post-enrichment) or `EmbeddingBase`
+    /// (raw NL, pre-enrichment). Same hash + model can have one row per
+    /// purpose; INSERT OR IGNORE on collision.
     pub fn write_batch(
         &self,
         entries: &[(&str, &[f32])],
         model_fingerprint: &str,
+        purpose: CachePurpose,
         dim: usize,
     ) -> Result<usize, CacheError> {
         let _span = tracing::debug_span!(
             "cache_write_batch",
             count = entries.len(),
-            fingerprint = &model_fingerprint[..8.min(model_fingerprint.len())]
+            fingerprint = &model_fingerprint[..8.min(model_fingerprint.len())],
+            purpose = purpose.as_str()
         )
         .entered();
 
@@ -469,11 +572,12 @@ impl EmbeddingCache {
 
                 let result = sqlx::query(
                     "INSERT OR IGNORE INTO embedding_cache \
-                     (content_hash, model_fingerprint, embedding, dim, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                     (content_hash, model_fingerprint, purpose, embedding, dim, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )
                 .bind(content_hash)
                 .bind(model_fingerprint)
+                .bind(purpose.as_str())
                 .bind(&blob)
                 .bind(dim as i64)
                 .bind(now)
@@ -733,7 +837,7 @@ impl EmbeddingCache {
     }
 
     /// Partition `items` into (cached, missed) by checking which content
-    /// hashes already have an embedding stored for `model_id`.
+    /// hashes already have an embedding stored for `model_id` and `purpose`.
     ///
     /// Spec §Cache: pre-filter before the embed batch so only misses go
     /// through the GPU. `hash_fn` extracts the content hash bytes (matching
@@ -748,18 +852,24 @@ impl EmbeddingCache {
     ///
     /// Preserves input order for both arrays so the caller can interleave
     /// fresh embeddings back in their original positions.
+    ///
+    /// `purpose` (#1128) discriminates between the post-enrichment `embedding`
+    /// and the raw `embedding_base` columns — same hash + model can have one
+    /// row per purpose.
     #[allow(clippy::type_complexity)]
     pub fn partition<'a, T>(
         &self,
         items: &'a [T],
         model_id: &str,
+        purpose: CachePurpose,
         expected_dim: usize,
         hash_fn: impl Fn(&T) -> &str,
     ) -> Result<(Vec<(&'a T, Vec<f32>)>, Vec<&'a T>), CacheError> {
         let _span = tracing::debug_span!(
             "cache_partition",
             count = items.len(),
-            model_id_prefix = &model_id[..8.min(model_id.len())]
+            model_id_prefix = &model_id[..8.min(model_id.len())],
+            purpose = purpose.as_str()
         )
         .entered();
 
@@ -768,7 +878,7 @@ impl EmbeddingCache {
         }
 
         let hashes: Vec<&str> = items.iter().map(&hash_fn).collect();
-        let hits = self.read_batch(&hashes, model_id, expected_dim)?;
+        let hits = self.read_batch(&hashes, model_id, purpose, expected_dim)?;
         let mut cached = Vec::with_capacity(hits.len());
         let mut missed = Vec::with_capacity(items.len() - hits.len());
         for item in items {
@@ -788,12 +898,22 @@ impl EmbeddingCache {
     ///
     /// Mixed `model_id` values across `entries` are handled by grouping
     /// entries per model and issuing one `write_batch` per group.
+    ///
+    /// All entries are written under the supplied `purpose` (#1128). Callers
+    /// that need to write both `Embedding` and `EmbeddingBase` rows must call
+    /// `insert_many` once per purpose.
     pub fn insert_many(
         &self,
         entries: &[(Vec<u8>, String, Vec<f32>)],
+        purpose: CachePurpose,
         expected_dim: usize,
     ) -> Result<usize, CacheError> {
-        let _span = tracing::debug_span!("cache_insert_many", count = entries.len()).entered();
+        let _span = tracing::debug_span!(
+            "cache_insert_many",
+            count = entries.len(),
+            purpose = purpose.as_str()
+        )
+        .entered();
         if entries.is_empty() {
             return Ok(0);
         }
@@ -814,7 +934,7 @@ impl EmbeddingCache {
             // — owned String for the hash, borrowed slice for the embedding.
             let borrowed: Vec<(&str, &[f32])> =
                 group.iter().map(|(h, e)| (h.as_str(), *e)).collect();
-            total += self.write_batch(&borrowed, model_id, expected_dim)?;
+            total += self.write_batch(&borrowed, model_id, purpose, expected_dim)?;
         }
         Ok(total)
     }
@@ -945,9 +1065,13 @@ mod tests {
         let (cache, _dir) = test_cache();
         let emb = make_embedding(1024, 1.0);
         let entries = vec![("hash_a".to_string(), emb.clone())];
-        cache.write_batch_owned(&entries, "fp_1", 1024).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 1024)
+            .unwrap();
 
-        let result = cache.read_batch(&["hash_a"], "fp_1", 1024).unwrap();
+        let result = cache
+            .read_batch(&["hash_a"], "fp_1", CachePurpose::Embedding, 1024)
+            .unwrap();
         assert_eq!(result.len(), 1);
         let cached = &result["hash_a"];
         assert_eq!(cached.len(), 1024);
@@ -957,7 +1081,9 @@ mod tests {
     #[test]
     fn test_miss() {
         let (cache, _dir) = test_cache();
-        let result = cache.read_batch(&["nonexistent"], "fp_1", 1024).unwrap();
+        let result = cache
+            .read_batch(&["nonexistent"], "fp_1", CachePurpose::Embedding, 1024)
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -967,11 +1093,15 @@ mod tests {
         let entries: Vec<_> = (0..100)
             .map(|i| (format!("hash_{i}"), make_embedding(768, i as f32)))
             .collect();
-        let written = cache.write_batch_owned(&entries, "fp_1", 768).unwrap();
+        let written = cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 768)
+            .unwrap();
         assert_eq!(written, 100);
 
         let hashes: Vec<&str> = entries.iter().map(|(h, _)| h.as_str()).collect();
-        let result = cache.read_batch(&hashes, "fp_1", 768).unwrap();
+        let result = cache
+            .read_batch(&hashes, "fp_1", CachePurpose::Embedding, 768)
+            .unwrap();
         assert_eq!(result.len(), 100);
     }
 
@@ -982,14 +1112,28 @@ mod tests {
         let emb_b = make_embedding(1024, 2.0);
 
         cache
-            .write_batch_owned(&[("hash_x".to_string(), emb_a.clone())], "fp_a", 1024)
+            .write_batch_owned(
+                &[("hash_x".to_string(), emb_a.clone())],
+                "fp_a",
+                CachePurpose::Embedding,
+                1024,
+            )
             .unwrap();
         cache
-            .write_batch_owned(&[("hash_x".to_string(), emb_b.clone())], "fp_b", 1024)
+            .write_batch_owned(
+                &[("hash_x".to_string(), emb_b.clone())],
+                "fp_b",
+                CachePurpose::Embedding,
+                1024,
+            )
             .unwrap();
 
-        let a = cache.read_batch(&["hash_x"], "fp_a", 1024).unwrap();
-        let b = cache.read_batch(&["hash_x"], "fp_b", 1024).unwrap();
+        let a = cache
+            .read_batch(&["hash_x"], "fp_a", CachePurpose::Embedding, 1024)
+            .unwrap();
+        let b = cache
+            .read_batch(&["hash_x"], "fp_b", CachePurpose::Embedding, 1024)
+            .unwrap();
 
         assert!((a["hash_x"][0] - emb_a[0]).abs() < 1e-6);
         assert!((b["hash_x"][0] - emb_b[0]).abs() < 1e-6);
@@ -1000,11 +1144,18 @@ mod tests {
         let (cache, _dir) = test_cache();
         let emb = make_embedding(768, 1.0);
         cache
-            .write_batch_owned(&[("hash_a".to_string(), emb)], "fp_1", 768)
+            .write_batch_owned(
+                &[("hash_a".to_string(), emb)],
+                "fp_1",
+                CachePurpose::Embedding,
+                768,
+            )
             .unwrap();
 
         // Read with wrong expected dim — should miss
-        let result = cache.read_batch(&["hash_a"], "fp_1", 1024).unwrap();
+        let result = cache
+            .read_batch(&["hash_a"], "fp_1", CachePurpose::Embedding, 1024)
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -1012,7 +1163,9 @@ mod tests {
     fn test_zero_length_embedding() {
         let (cache, _dir) = test_cache();
         let entries = vec![("hash_a".to_string(), vec![])];
-        let written = cache.write_batch_owned(&entries, "fp_1", 0).unwrap();
+        let written = cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 0)
+            .unwrap();
         assert_eq!(written, 0); // empty embeddings skipped
     }
 
@@ -1044,7 +1197,9 @@ mod tests {
         let entries: Vec<_> = (0..10)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
+            .unwrap();
 
         let deleted = cache.clear(None).unwrap();
         assert_eq!(deleted, 10);
@@ -1057,16 +1212,30 @@ mod tests {
     fn test_clear_by_model() {
         let (cache, _dir) = test_cache();
         cache
-            .write_batch_owned(&[("h1".to_string(), make_embedding(128, 1.0))], "fp_a", 128)
+            .write_batch_owned(
+                &[("h1".to_string(), make_embedding(128, 1.0))],
+                "fp_a",
+                CachePurpose::Embedding,
+                128,
+            )
             .unwrap();
         cache
-            .write_batch_owned(&[("h2".to_string(), make_embedding(128, 2.0))], "fp_b", 128)
+            .write_batch_owned(
+                &[("h2".to_string(), make_embedding(128, 2.0))],
+                "fp_b",
+                CachePurpose::Embedding,
+                128,
+            )
             .unwrap();
 
         cache.clear(Some("fp_a")).unwrap();
 
-        let a = cache.read_batch(&["h1"], "fp_a", 128).unwrap();
-        let b = cache.read_batch(&["h2"], "fp_b", 128).unwrap();
+        let a = cache
+            .read_batch(&["h1"], "fp_a", CachePurpose::Embedding, 128)
+            .unwrap();
+        let b = cache
+            .read_batch(&["h2"], "fp_b", CachePurpose::Embedding, 128)
+            .unwrap();
         assert!(a.is_empty()); // cleared
         assert_eq!(b.len(), 1); // survived
     }
@@ -1077,7 +1246,9 @@ mod tests {
         let entries: Vec<_> = (0..5)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
+            .unwrap();
 
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_entries, 5);
@@ -1112,10 +1283,11 @@ mod tests {
                 "CREATE TABLE IF NOT EXISTS embedding_cache (
                     content_hash TEXT NOT NULL,
                     model_fingerprint TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT 'embedding',
                     embedding BLOB NOT NULL,
                     dim INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
-                    PRIMARY KEY (content_hash, model_fingerprint)
+                    PRIMARY KEY (content_hash, model_fingerprint, purpose)
                 )",
             )
             .execute(&pool)
@@ -1140,7 +1312,9 @@ mod tests {
         let entries: Vec<_> = (0..10)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
+            .unwrap();
 
         let evicted = cache.evict().unwrap();
         assert!(evicted > 0, "Should have evicted entries");
@@ -1177,12 +1351,16 @@ mod tests {
         let entries: Vec<_> = (0..150)
             .map(|i| (format!("hash_{i:04}"), make_embedding(768, i as f32)))
             .collect();
-        let written = cache.write_batch_owned(&entries, "fp_cross", 768).unwrap();
+        let written = cache
+            .write_batch_owned(&entries, "fp_cross", CachePurpose::Embedding, 768)
+            .unwrap();
         assert_eq!(written, 150);
 
         // Read all 150 back in one call
         let hashes: Vec<&str> = entries.iter().map(|(h, _)| h.as_str()).collect();
-        let result = cache.read_batch(&hashes, "fp_cross", 768).unwrap();
+        let result = cache
+            .read_batch(&hashes, "fp_cross", CachePurpose::Embedding, 768)
+            .unwrap();
         assert_eq!(
             result.len(),
             150,
@@ -1213,13 +1391,17 @@ mod tests {
         nan_emb[64] = f32::NAN;
 
         let entries = vec![("hash_nan".to_string(), nan_emb)];
-        let written = cache.write_batch_owned(&entries, "fp_nan", 128).unwrap();
+        let written = cache
+            .write_batch_owned(&entries, "fp_nan", CachePurpose::Embedding, 128)
+            .unwrap();
         assert_eq!(
             written, 0,
             "NaN entry should be filtered before persistence"
         );
 
-        let result = cache.read_batch(&["hash_nan"], "fp_nan", 128).unwrap();
+        let result = cache
+            .read_batch(&["hash_nan"], "fp_nan", CachePurpose::Embedding, 128)
+            .unwrap();
         assert!(
             !result.contains_key("hash_nan"),
             "rejected NaN entry must not be readable"
@@ -1227,7 +1409,9 @@ mod tests {
 
         // Sanity: same cache still accepts a clean entry.
         let clean = vec![("hash_clean".to_string(), make_embedding(128, 0.5))];
-        let written_clean = cache.write_batch_owned(&clean, "fp_nan", 128).unwrap();
+        let written_clean = cache
+            .write_batch_owned(&clean, "fp_nan", CachePurpose::Embedding, 128)
+            .unwrap();
         assert_eq!(written_clean, 1);
     }
 
@@ -1241,7 +1425,9 @@ mod tests {
         let entries: Vec<_> = (0..5)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
+            .unwrap();
 
         // Prune with 0 days — cutoff is "now - 0 seconds" = now.
         // Entries written in the same second should survive (created_at >= cutoff).
@@ -1265,7 +1451,9 @@ mod tests {
         let entries: Vec<_> = (0..3)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
+            .unwrap();
 
         // Prune with u32::MAX days — should not panic (overflow-safe).
         // cutoff = now - (u32::MAX as i64 * 86400) will go deeply negative,
@@ -1296,7 +1484,9 @@ mod tests {
         ];
 
         // write_batch uses INSERT OR IGNORE — the second insert is silently dropped.
-        let written = cache.write_batch_owned(&entries, "fp_dup", 128).unwrap();
+        let written = cache
+            .write_batch_owned(&entries, "fp_dup", CachePurpose::Embedding, 128)
+            .unwrap();
         // Only 1 row should be written (second is ignored due to PK conflict)
         assert_eq!(
             written, 1,
@@ -1304,7 +1494,9 @@ mod tests {
         );
 
         // Read back — the first embedding (emb_a) should win
-        let result = cache.read_batch(&["dup_hash"], "fp_dup", 128).unwrap();
+        let result = cache
+            .read_batch(&["dup_hash"], "fp_dup", CachePurpose::Embedding, 128)
+            .unwrap();
         assert_eq!(result.len(), 1);
         let cached = &result["dup_hash"];
         assert!(
@@ -1325,10 +1517,11 @@ mod tests {
             for i in 0..5 {
                 let blob: Vec<u8> = vec![0u8; 512]; // 128-dim * 4 bytes
                 sqlx::query(
-                    "INSERT INTO embedding_cache (content_hash, model_fingerprint, embedding, dim, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)")
+                    "INSERT INTO embedding_cache (content_hash, model_fingerprint, purpose, embedding, dim, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
                     .bind(format!("old_{i}"))
                     .bind("fp_1")
+                    .bind("embedding")
                     .bind(&blob)
                     .bind(128i64)
                     .bind(old_time)
@@ -1342,7 +1535,9 @@ mod tests {
         let entries: Vec<_> = (0..3)
             .map(|i| (format!("new_{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
+            .unwrap();
 
         // Prune entries older than 1 day — should remove the 5 old ones
         let pruned = cache.prune_older_than(1).unwrap();
@@ -1363,11 +1558,19 @@ mod tests {
             ("hash_a".to_string(), make_embedding(64, 1.0)),
             ("hash_c".to_string(), make_embedding(64, 3.0)),
         ];
-        cache.write_batch_owned(&entries, "model_x", 64).unwrap();
+        cache
+            .write_batch_owned(&entries, "model_x", CachePurpose::Embedding, 64)
+            .unwrap();
 
         let items: Vec<&str> = vec!["hash_a", "hash_b", "hash_c", "hash_d"];
         let (cached, missed) = cache
-            .partition(&items, "model_x", 64, |s: &&str| *s)
+            .partition(
+                &items,
+                "model_x",
+                CachePurpose::Embedding,
+                64,
+                |s: &&str| *s,
+            )
             .unwrap();
         assert_eq!(cached.len(), 2);
         assert_eq!(missed.len(), 2);
@@ -1383,7 +1586,13 @@ mod tests {
         let (cache, _dir) = test_cache();
         let items: Vec<&str> = Vec::new();
         let (cached, missed) = cache
-            .partition(&items, "model_x", 64, |s: &&str| *s)
+            .partition(
+                &items,
+                "model_x",
+                CachePurpose::Embedding,
+                64,
+                |s: &&str| *s,
+            )
             .unwrap();
         assert!(cached.is_empty());
         assert!(missed.is_empty());
@@ -1396,16 +1605,20 @@ mod tests {
         let entries: Vec<_> = (0..3)
             .map(|i| (format!("h{i}"), make_embedding(64, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "model_a", 64).unwrap();
-        cache.write_batch_owned(&entries, "model_b", 64).unwrap();
+        cache
+            .write_batch_owned(&entries, "model_a", CachePurpose::Embedding, 64)
+            .unwrap();
+        cache
+            .write_batch_owned(&entries, "model_b", CachePurpose::Embedding, 64)
+            .unwrap();
         let removed = cache.prune_by_model("model_a").unwrap();
         assert_eq!(removed, 3);
         let stats_a = cache
-            .read_batch(&["h0", "h1", "h2"], "model_a", 64)
+            .read_batch(&["h0", "h1", "h2"], "model_a", CachePurpose::Embedding, 64)
             .unwrap();
         assert!(stats_a.is_empty());
         let stats_b = cache
-            .read_batch(&["h0", "h1", "h2"], "model_b", 64)
+            .read_batch(&["h0", "h1", "h2"], "model_b", CachePurpose::Embedding, 64)
             .unwrap();
         assert_eq!(stats_b.len(), 3);
     }
@@ -1417,7 +1630,9 @@ mod tests {
         let entries: Vec<_> = (0..200)
             .map(|i| (format!("hh{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch_owned(&entries, "model_y", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "model_y", CachePurpose::Embedding, 128)
+            .unwrap();
         let before = cache.stats().unwrap().total_size_bytes;
 
         // Delete everything.
@@ -1437,8 +1652,12 @@ mod tests {
                 .map(|i| (format!("h{i}"), make_embedding(dim, i as f32)))
                 .collect()
         };
-        cache.write_batch_owned(&mk(5, 64), "alpha", 64).unwrap();
-        cache.write_batch_owned(&mk(2, 64), "beta", 64).unwrap();
+        cache
+            .write_batch_owned(&mk(5, 64), "alpha", CachePurpose::Embedding, 64)
+            .unwrap();
+        cache
+            .write_batch_owned(&mk(2, 64), "beta", CachePurpose::Embedding, 64)
+            .unwrap();
         let per = cache.stats_per_model().unwrap();
         assert_eq!(per.len(), 2);
         // Order: COUNT(*) DESC — alpha first.
@@ -1469,7 +1688,9 @@ mod tests {
                 make_embedding(32, 3.0),
             ),
         ];
-        let n = cache.insert_many(&entries, 32).unwrap();
+        let n = cache
+            .insert_many(&entries, CachePurpose::Embedding, 32)
+            .unwrap();
         assert_eq!(n, 3);
         let per = cache.stats_per_model().unwrap();
         let total: u64 = per.iter().map(|p| p.entries).sum();
@@ -1483,11 +1704,19 @@ mod tests {
         let (cache, _dir) = test_cache();
         // Cache a 128-dim entry under model_z.
         let entries = vec![("hd".to_string(), make_embedding(128, 0.5))];
-        cache.write_batch_owned(&entries, "model_z", 128).unwrap();
+        cache
+            .write_batch_owned(&entries, "model_z", CachePurpose::Embedding, 128)
+            .unwrap();
         // Query for the same hash + model but expect dim=64 — should miss.
         let items = vec!["hd"];
         let (cached, missed) = cache
-            .partition(&items, "model_z", 64, |s: &&str| *s)
+            .partition(
+                &items,
+                "model_z",
+                CachePurpose::Embedding,
+                64,
+                |s: &&str| *s,
+            )
             .unwrap();
         assert!(cached.is_empty());
         assert_eq!(missed.len(), 1);
@@ -1506,13 +1735,300 @@ mod tests {
         let (cache, _dir) = test_cache();
         let model_id = "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09";
         let entries = vec![("hh".to_string(), make_embedding(64, 0.0))];
-        cache.write_batch_owned(&entries, model_id, 64).unwrap();
-        let result = cache.read_batch(&["hh"], model_id, 64).unwrap();
+        cache
+            .write_batch_owned(&entries, model_id, CachePurpose::Embedding, 64)
+            .unwrap();
+        let result = cache
+            .read_batch(&["hh"], model_id, CachePurpose::Embedding, 64)
+            .unwrap();
         assert_eq!(result.len(), 1);
         // Sanity: a different revision suffix MUST miss.
         let other = "BAAI/bge-large-en-v1.5@aaaa1111";
-        let result2 = cache.read_batch(&["hh"], other, 64).unwrap();
+        let result2 = cache
+            .read_batch(&["hh"], other, CachePurpose::Embedding, 64)
+            .unwrap();
         assert!(result2.is_empty());
+    }
+
+    // ─── #1128: purpose discriminator tests ──────────────────────────────
+
+    /// Round-trip with each purpose independently — Embedding writes don't
+    /// shadow EmbeddingBase reads and vice versa.
+    #[test]
+    fn test_purpose_round_trip_embedding_and_base_isolated() {
+        let (cache, _dir) = test_cache();
+        let emb_post = make_embedding(64, 1.0);
+        let emb_base = make_embedding(64, 7.0);
+
+        cache
+            .write_batch_owned(
+                &[("h_pp".to_string(), emb_post.clone())],
+                "fp_dual",
+                CachePurpose::Embedding,
+                64,
+            )
+            .unwrap();
+        cache
+            .write_batch_owned(
+                &[("h_pp".to_string(), emb_base.clone())],
+                "fp_dual",
+                CachePurpose::EmbeddingBase,
+                64,
+            )
+            .unwrap();
+
+        // Read back per-purpose; each must return its own vector.
+        let r_post = cache
+            .read_batch(&["h_pp"], "fp_dual", CachePurpose::Embedding, 64)
+            .unwrap();
+        let r_base = cache
+            .read_batch(&["h_pp"], "fp_dual", CachePurpose::EmbeddingBase, 64)
+            .unwrap();
+        assert_eq!(r_post.len(), 1);
+        assert_eq!(r_base.len(), 1);
+        assert!(
+            (r_post["h_pp"][0] - emb_post[0]).abs() < 1e-6,
+            "Embedding read returned wrong vector (got {} want {})",
+            r_post["h_pp"][0],
+            emb_post[0]
+        );
+        assert!(
+            (r_base["h_pp"][0] - emb_base[0]).abs() < 1e-6,
+            "EmbeddingBase read returned wrong vector (got {} want {})",
+            r_base["h_pp"][0],
+            emb_base[0]
+        );
+
+        // Two distinct rows under the same (hash, model_fingerprint) — total
+        // entry count must be 2.
+        let stats = cache.stats().unwrap();
+        assert_eq!(
+            stats.total_entries, 2,
+            "PK collision: same hash+model+different purpose must yield two rows"
+        );
+    }
+
+    /// Writes for one purpose must not be read out under the other purpose
+    /// — silent overwrite was the pre-#1128 bug.
+    #[test]
+    fn test_purpose_isolation_no_cross_purpose_leak() {
+        let (cache, _dir) = test_cache();
+        let emb = make_embedding(64, 0.5);
+        cache
+            .write_batch_owned(
+                &[("h_iso".to_string(), emb)],
+                "fp_iso",
+                CachePurpose::EmbeddingBase,
+                64,
+            )
+            .unwrap();
+        // Read with the other purpose — must miss.
+        let result = cache
+            .read_batch(&["h_iso"], "fp_iso", CachePurpose::Embedding, 64)
+            .unwrap();
+        assert!(
+            result.is_empty(),
+            "EmbeddingBase row leaked into Embedding read (cache silently returns wrong vector)"
+        );
+    }
+
+    /// Migration: opening a cache created under the legacy schema (no
+    /// `purpose` column) must keep existing rows readable. Pre-#1128 caches
+    /// hold only `purpose='embedding'` rows by construction (the only
+    /// producer was the post-enrichment vector).
+    #[test]
+    fn test_migration_legacy_schema_rows_readable_as_embedding() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("legacy_cache.db");
+
+        // Create a legacy cache (pre-#1128 schema, no `purpose` column).
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        rt.block_on(async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE embedding_cache (
+                    content_hash TEXT NOT NULL,
+                    model_fingerprint TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    dim INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (content_hash, model_fingerprint)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            // Insert a legacy row directly.
+            let blob: Vec<u8> = (0..64u32)
+                .flat_map(|i| (i as f32).to_le_bytes())
+                .collect::<Vec<u8>>();
+            sqlx::query(
+                "INSERT INTO embedding_cache \
+                 (content_hash, model_fingerprint, embedding, dim, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind("legacy_hash")
+            .bind("legacy_fp")
+            .bind(&blob)
+            .bind(64i64)
+            .bind(0i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        });
+
+        // Open it through the modern path — migration adds the column and
+        // existing rows default to `purpose = 'embedding'`.
+        let cache = EmbeddingCache::open(&path).unwrap();
+        let result = cache
+            .read_batch(&["legacy_hash"], "legacy_fp", CachePurpose::Embedding, 64)
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            1,
+            "legacy row should be readable as Embedding after migration"
+        );
+        // Reading as the other purpose must miss — the legacy row is
+        // unambiguously 'embedding', not 'embedding_base'.
+        let result_base = cache
+            .read_batch(
+                &["legacy_hash"],
+                "legacy_fp",
+                CachePurpose::EmbeddingBase,
+                64,
+            )
+            .unwrap();
+        assert!(
+            result_base.is_empty(),
+            "legacy row must not satisfy EmbeddingBase reads"
+        );
+    }
+
+    /// `CachePurpose::as_str` is the wire format for the `purpose` column —
+    /// pin the strings so a future enum variant rename doesn't silently
+    /// invalidate every existing cache row.
+    #[test]
+    fn test_cache_purpose_as_str_stable() {
+        assert_eq!(CachePurpose::Embedding.as_str(), "embedding");
+        assert_eq!(CachePurpose::EmbeddingBase.as_str(), "embedding_base");
+        assert_eq!(CachePurpose::default(), CachePurpose::Embedding);
+    }
+
+    /// After migration, an EmbeddingBase write with a hash that already
+    /// exists as Embedding must succeed. Pre-#1128's "ADD COLUMN only" half-
+    /// migration leaves the legacy `(content_hash, model_fingerprint)` PK in
+    /// force and INSERT OR IGNORE would silently drop the EmbeddingBase row.
+    /// The 12-step rebuild migration (rename → CREATE → INSERT SELECT → DROP)
+    /// applies the new 3-column PK so both purposes coexist.
+    #[test]
+    fn test_migration_legacy_schema_accepts_embedding_base_after_rebuild() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("legacy_pk_check.db");
+
+        // Build the legacy schema directly so we exercise the migration
+        // path even on a fresh tempdir.
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        rt.block_on(async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE embedding_cache (
+                    content_hash TEXT NOT NULL,
+                    model_fingerprint TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    dim INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (content_hash, model_fingerprint)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            // Seed with a single 'embedding'-purpose row.
+            let blob: Vec<u8> = (0..8u32)
+                .flat_map(|i| (i as f32).to_le_bytes())
+                .collect::<Vec<u8>>();
+            sqlx::query(
+                "INSERT INTO embedding_cache \
+                 (content_hash, model_fingerprint, embedding, dim, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind("colliding_hash")
+            .bind("legacy_fp")
+            .bind(&blob)
+            .bind(8i64)
+            .bind(0i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        });
+
+        let cache = EmbeddingCache::open(&path).unwrap();
+
+        // Sanity: legacy row migrated and is readable as Embedding.
+        let r1 = cache
+            .read_batch(&["colliding_hash"], "legacy_fp", CachePurpose::Embedding, 8)
+            .unwrap();
+        assert_eq!(r1.len(), 1, "migrated legacy row must survive");
+
+        // Now write the SAME (hash, model_fingerprint) under EmbeddingBase
+        // — this is the case the half-migration would silently reject. With
+        // the rebuilt PK, this row gets accepted as a separate entry.
+        let base_emb = vec![0.5_f32; 8];
+        let written = cache
+            .write_batch_owned(
+                &[("colliding_hash".to_string(), base_emb.clone())],
+                "legacy_fp",
+                CachePurpose::EmbeddingBase,
+                8,
+            )
+            .unwrap();
+        assert_eq!(
+            written, 1,
+            "EmbeddingBase write must succeed under post-migration PK"
+        );
+
+        // Both rows present.
+        let r2 = cache
+            .read_batch(
+                &["colliding_hash"],
+                "legacy_fp",
+                CachePurpose::EmbeddingBase,
+                8,
+            )
+            .unwrap();
+        assert_eq!(r2.len(), 1);
+        assert!((r2["colliding_hash"][0] - base_emb[0]).abs() < 1e-6);
+        assert_eq!(cache.stats().unwrap().total_entries, 2);
     }
 }
 
@@ -1932,8 +2448,15 @@ mod shared_runtime_tests {
             EmbeddingCache::open_with_runtime(&emb_path, Some(Arc::clone(&shared_rt))).unwrap();
         // Round-trip one entry so the cache actually uses the runtime.
         let entries = vec![("h1".to_string(), vec![0.1_f32; 8])];
-        assert_eq!(emb_cache.write_batch_owned(&entries, "fp", 8).unwrap(), 1);
-        let got = emb_cache.read_batch(&["h1"], "fp", 8).unwrap();
+        assert_eq!(
+            emb_cache
+                .write_batch_owned(&entries, "fp", CachePurpose::Embedding, 8)
+                .unwrap(),
+            1
+        );
+        let got = emb_cache
+            .read_batch(&["h1"], "fp", CachePurpose::Embedding, 8)
+            .unwrap();
         assert_eq!(got.len(), 1);
 
         // --- QueryCache ---

@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::Path;
 
-use cqs::cache::EmbeddingCache;
+use cqs::cache::{CachePurpose, EmbeddingCache};
 use cqs::slot::{
     active_slot_path, list_slots, migrate_legacy_index_to_default_slot, read_active_slot,
     resolve_slot_name, slot_dir, write_active_slot, DEFAULT_SLOT,
@@ -77,14 +77,18 @@ fn cache_shared_across_slots_for_same_model_id() {
     let entries: Vec<(String, Vec<f32>)> = (0..5)
         .map(|i| (format!("h{i}"), vec![i as f32, 0.0, 0.0]))
         .collect();
-    cache.write_batch_owned(&entries, "bge", 3).unwrap();
+    cache
+        .write_batch_owned(&entries, "bge", CachePurpose::Embedding, 3)
+        .unwrap();
 
     // Slot "b" with the same model_id queries the same hashes; partition
     // returns hits for ALL of them — no re-embed needed.
     let items: Vec<&str> = (0..5)
         .map(|i| Box::leak(format!("h{i}").into_boxed_str()) as &str)
         .collect();
-    let (cached, missed) = cache.partition(&items, "bge", 3, |s: &&str| *s).unwrap();
+    let (cached, missed) = cache
+        .partition(&items, "bge", CachePurpose::Embedding, 3, |s: &&str| *s)
+        .unwrap();
     assert_eq!(cached.len(), 5);
     assert!(missed.is_empty());
 }
@@ -98,8 +102,12 @@ fn cache_prune_by_model_isolated() {
     let entries: Vec<(String, Vec<f32>)> = (0..3)
         .map(|i| (format!("hh{i}"), vec![i as f32; 4]))
         .collect();
-    cache.write_batch_owned(&entries, "alpha", 4).unwrap();
-    cache.write_batch_owned(&entries, "beta", 4).unwrap();
+    cache
+        .write_batch_owned(&entries, "alpha", CachePurpose::Embedding, 4)
+        .unwrap();
+    cache
+        .write_batch_owned(&entries, "beta", CachePurpose::Embedding, 4)
+        .unwrap();
 
     let removed = cache.prune_by_model("alpha").unwrap();
     assert_eq!(removed, 3);
@@ -119,7 +127,9 @@ fn cache_stats_reflect_inserted_entries() {
     let entries: Vec<(String, Vec<f32>)> = (0..7)
         .map(|i| (format!("z{i}"), vec![i as f32; 8]))
         .collect();
-    cache.write_batch_owned(&entries, "model_q", 8).unwrap();
+    cache
+        .write_batch_owned(&entries, "model_q", CachePurpose::Embedding, 8)
+        .unwrap();
     let s = cache.stats().unwrap();
     assert_eq!(s.total_entries, 7);
     assert_eq!(s.unique_models, 1);
@@ -137,13 +147,15 @@ fn cache_partition_full_hit_on_identical_rerun() {
     let entries: Vec<(String, Vec<f32>)> = (0..50)
         .map(|i| (format!("c{i}"), vec![i as f32; 16]))
         .collect();
-    cache.write_batch_owned(&entries, "m1", 16).unwrap();
+    cache
+        .write_batch_owned(&entries, "m1", CachePurpose::Embedding, 16)
+        .unwrap();
 
     // Second run: same hashes, same model — partition reports 100% hits.
     let items: Vec<String> = (0..50).map(|i| format!("c{i}")).collect();
     let item_refs: Vec<&str> = items.iter().map(|s| s.as_str()).collect();
     let (cached, missed) = cache
-        .partition(&item_refs, "m1", 16, |s: &&str| *s)
+        .partition(&item_refs, "m1", CachePurpose::Embedding, 16, |s: &&str| *s)
         .unwrap();
     assert_eq!(cached.len(), 50);
     assert!(missed.is_empty());
@@ -261,11 +273,22 @@ fn cache_partition_empty_input_does_not_touch_db() {
     let cache_path = EmbeddingCache::project_default_path(dir.path());
     let cache = EmbeddingCache::open(&cache_path).unwrap();
     cache
-        .write_batch_owned(&[("h".to_string(), vec![1.0; 4])], "anything", 4)
+        .write_batch_owned(
+            &[("h".to_string(), vec![1.0; 4])],
+            "anything",
+            CachePurpose::Embedding,
+            4,
+        )
         .unwrap();
     let items: Vec<&str> = Vec::new();
     let (c, m) = cache
-        .partition(&items, "anything", 4, |s: &&str| *s)
+        .partition(
+            &items,
+            "anything",
+            CachePurpose::Embedding,
+            4,
+            |s: &&str| *s,
+        )
         .unwrap();
     assert!(c.is_empty());
     assert!(m.is_empty());
