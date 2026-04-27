@@ -2,26 +2,38 @@
 
 ## Right Now
 
-**v1.30.0 released 2026-04-25.** Post-release polish has continued landing on main; today's session (2026-04-27) cleared an 8-PR cleanup batch.
+**v1.30.0 released 2026-04-25.** Post-release polish has continued landing on main. Today's session (2026-04-27) cleared an 8-PR dependabot batch, completed P2 task #1132 (#1165), then pivoted to security threat modeling — filed 5 tracking issues for indirect prompt injection (#1166-#1170) and updated SECURITY.md (#1171, in flight).
 
 **Landed since v1.30.0 release:**
 - **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.
 - **#1147** — `refactor(watch): split watch.rs into watch/ module`. 5,711-line `cli/watch.rs` carved into 10 submodules: `mod.rs` (1,206 lines) + `socket` / `runtime` / `rebuild` / `gc` / `events` / `reindex` / `daemon` / `tests` / `adversarial_socket_tests`. Agent-readable file sizes; CONTRIBUTING.md Architecture Overview updated.
 - **#1148** + **#1154** — roadmap docs: queue USearch + SIMD brute-force as IndexBackend candidates; queue 5 watch-mode improvements (adaptive debounce / `cqs status --watch` / whitespace-canonical hash / parallel reindex across slots / kill periodic rebuild).
-- **#1149-#1153** — 5 dependabot bumps merged today: `lru` 0.17→0.18, `blake3` 1.8.4→1.8.5, `rayon` 1.11→1.12, `tokenizers` 0.22.2→0.23.1, `assert_cmd` 2.2.0→2.2.1.
-- **#1155** — raise `open-pull-requests-limit` from 5 to 10 in `.github/dependabot.yml`. Today's batch hit the cap exactly; raising gives 2× headroom while preserving per-dep granularity (preference: no grouping).
+- **#1149-#1153** — 5 dependabot bumps merged: `lru` 0.17→0.18, `blake3` 1.8.4→1.8.5, `rayon` 1.11→1.12, `tokenizers` 0.22.2→0.23.1, `assert_cmd` 2.2.0→2.2.1.
+- **#1155** — raise `open-pull-requests-limit` from 5 to 10 in `.github/dependabot.yml`. Per-dep granularity preserved (no grouping).
+- **#1157-#1164** — 8 more dependabot bumps after the cap raise: misc minor/patch upgrades. **#1156** (tree-sitter-dart 0.2.0) closed: 0.2.0 grammar removed `function_signature` node; cqs Dart query references it. Migration deferred — staying on 0.1.0.
+- **#1165** — `refactor(scoring): #1132 shared `ScoringKnob` resolver`. Replaced 9-named-field `ScoringOverrides` with `HashMap<String,f32>` + `#[serde(flatten)]`; added `SCORING_KNOBS` static array (11 rows: name, env_var, default, min, max, cache flag) + `resolve_knob(name)` lookup. Single resolver path: config override → env var (finite + in-range) → default. `ScoringConfig::current()` reads via the resolver. Eval-neutral. Closes P2 task #1132.
 
-**Up next — v1.30.0 audit P2 scoring cluster.** Three eval-relevant enhancement issues from the v1.30.0 audit:
+**This session's surface-broadening — indirect prompt injection threat model.** cqs faithfully relays indexed content (code comments, summaries, notes, reference content) into AI agent context. The relay carries injection payloads through any of those surfaces. Filed 5 tracking issues:
 
-- **#1132** (P2.90: `ScoringOverrides` knob touches 4 sites; needs shared resolver) — eval-neutral. Do first.
-- **#1131** (P2.89: Vector index backend selection is hand-coded; needs `IndexBackend` trait) — eval-neutral. Lands the trait scaffolding for USearch + SIMD brute-force later.
-- **#1130** (P2.88: Adding third score signal requires touching two fusion paths) — eval-required A/B; blocked by #1132 + #1131.
+- **#1166** — `--improve-docs` review gate (highest-impact: persists into git on `--improve-docs --apply`)
+- **#1167** — `trust_level` field + optional content delimiters in chunk-returning JSON output
+- **#1168** — first-encounter prompt when indexing a repo with committed `docs/notes.toml`
+- **#1169** — surface reference origin (`trust_level` + `reference_name`) in `cqs ref` chunk results
+- **#1170** — validate LLM summary output before caching (length cap, injection-pattern detection)
 
-Plan order: #1132 → #1131 → #1130. The first two cleanly factor without changing retrieval behavior; the third becomes a localized RRF/scoring change once the foundation lands.
+**#1171** documents the threat model — adds top-level `## Indirect Prompt Injection / Supply-Chain Risks from Indexed Content` section to SECURITY.md with surface table, mitigations, and tracked-improvements list. CI in flight.
 
-After P2: #1133 (P2.91 NoteEntry taxonomy), four P3 ergonomics issues (#1137-#1140), three P4 auth/serve bugs (#1134-#1136), or the queued roadmap items (USearch / SIMD brute-force / watch-mode improvements).
+**Up next — v1.30.0 audit P2 scoring cluster (#1132 done):** 
 
-**Local state:** working tree clean post-#1155 merge. Binary at `cqs 1.30.0` with all 5 dep bumps installed (`~/.cargo/bin/cqs`). Index refreshed to 18,760 chunks. `cqs-watch` daemon running on the new binary.
+- ~~**#1132** (eval-neutral) — done in #1165~~
+- **#1131** (P2.89: Vector index backend selection is hand-coded; needs `IndexBackend` trait) — eval-neutral. Next. Lands the trait scaffolding for USearch + SIMD brute-force later.
+- **#1130** (P2.88: Adding third score signal requires touching two fusion paths) — eval-required A/B; blocked by #1131.
+
+Plan order: **#1131 → #1130**. The first cleanly factors without changing retrieval behavior; the second becomes a localized RRF/scoring change once the foundation lands.
+
+After P2: #1133 (P2.91 NoteEntry taxonomy), four P3 ergonomics issues (#1137-#1140), three P4 auth/serve bugs (#1134-#1136), or the new indirect-injection cluster (#1166-#1170), or the queued roadmap items (USearch / SIMD brute-force / watch-mode improvements).
+
+**Local state:** working tree clean post-#1165 merge; release binary rebuild in flight (need `cargo build --release --features cuda-index` then stop watch / cp / start watch). Index at 18,760 chunks. `cqs-watch` daemon still running v1.30.0 + dep-bumps binary; will refresh once #1171 merges (no schema change → no reindex needed).
 
 ### v1.30.0 release session (2026-04-25) — what landed
 
@@ -186,7 +198,17 @@ None. Working tree clean post-release.
 
 3.7-5.5pp gap between canonical and refreshed-current is real corpus-drift attrition (5,413 new chunks since 2026-04-20, ~30% of corpus). Not a search regression. The v3.v2 fixture is the canonical eval slate; v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors. Long-term inoculation against fixture drift would be relaxing eval gold-match to `(file, name, chunk_type)` only — out of scope for this round.
 
-## Open issues (16 open)
+## Open issues (20 open)
+
+**Indirect prompt injection cluster (filed 2026-04-27, all enhancement):**
+
+| # | Title | Persistence |
+|---|---|---|
+| 1170 | feat(llm-summaries): validate summary output before caching (length cap + injection patterns) | summary cache |
+| 1169 | feat(reference): explicit `trust_level` + `reference_name` in `cqs ref` chunk results | every query |
+| 1168 | feat(notes): warn on first index of a repo with committed `docs/notes.toml` | first encounter |
+| 1167 | feat(search): `trust_level` field + optional content delimiters in chunk-returning JSON | every query |
+| 1166 | feat(doc-writer): `--improve-docs` review gate (proposed-docs/ vs in-place) | **highest — commits LLM output to git** |
 
 **v1.30.0 audit cluster (P2/P3/P4 — filed post-release):**
 
@@ -200,9 +222,8 @@ None. Working tree clean post-release.
 | 1135 | P4.2: cookie Path=/ on 127.0.0.1 — multiple cqs serve stomp on same host | P4 auth bug |
 | 1134 | P4.1: AuthToken::from_string alphabet invariant relies on docstring | P4 auth bug |
 | 1133 | P2.91: NoteEntry has no kind/tag taxonomy — only sentiment | P2 enhancement |
-| **1132** | **P2.90: ScoringOverrides knob touches 4 sites; needs shared resolver** | **P2 — next up (eval-neutral)** |
 | **1131** | **P2.89: Vector index backend selection is hand-coded; needs IndexBackend trait** | **P2 — next up (eval-neutral)** |
-| **1130** | **P2.88: Adding third score signal requires touching two fusion paths** | **P2 — next up (eval A/B)** |
+| **1130** | **P2.88: Adding third score signal requires touching two fusion paths** | **P2 — blocked by #1131 (eval A/B)** |
 
 **Pre-v1.30.0 backlog (still open):**
 
@@ -215,4 +236,4 @@ None. Working tree clean post-release.
 | 255 | Pre-built reference packages (downloadable indexes) | tier-3, infra | needs signing/registry design |
 | 106 | ort dependency is pre-release RC | tier-3, dep | blocked upstream (pykeio) |
 
-**Closed in v1.29.x → v1.30.0 release window:** #1042, #1047, #1048, #1049, #1090, #1091, #1095 (umbrella, split + closed), #1096, #1097, #1102, #1104, #1107, #1108, #1115, #1116, #956 Phase A scaffolding (Phase B/C still open as the umbrella). #1127 closed by #1146 today.
+**Closed in v1.29.x → v1.30.0 release window:** #1042, #1047, #1048, #1049, #1090, #1091, #1095 (umbrella, split + closed), #1096, #1097, #1102, #1104, #1107, #1108, #1115, #1116, #956 Phase A scaffolding (Phase B/C still open as the umbrella). #1127 closed by #1146; #1132 closed by #1165 today.
