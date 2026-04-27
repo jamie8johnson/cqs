@@ -1944,7 +1944,7 @@ impl BatchView {
 }
 
 /// Build the best available vector index for the store.
-fn build_vector_index<Mode: crate::cli::store::ClearHnswDirty>(
+fn build_vector_index<Mode: cqs::store::ClearHnswDirty>(
     store: &Store<Mode>,
     cqs_dir: &std::path::Path,
     ef_search: Option<usize>,

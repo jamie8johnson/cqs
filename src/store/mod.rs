@@ -221,6 +221,35 @@ pub struct ReadOnly;
 #[derive(Debug, Clone, Copy)]
 pub struct ReadWrite;
 
+/// Typestate bridge for self-heal operations that conditionally clear the
+/// `hnsw_dirty` flag. [`ReadWrite`] performs the write; [`ReadOnly`] is a
+/// no-op that logs a debug trace. Lets backend-selection code stay
+/// generic over `Mode` without per-site feature flags or match arms.
+pub trait ClearHnswDirty: 'static {
+    /// Clear the dirty flag for `kind` if this typestate supports writes,
+    /// or no-op otherwise.
+    fn try_clear_hnsw_dirty(store: &Store<Self>, kind: crate::HnswKind)
+    where
+        Self: Sized;
+}
+
+impl ClearHnswDirty for ReadWrite {
+    fn try_clear_hnsw_dirty(store: &Store<Self>, kind: crate::HnswKind) {
+        if let Err(e) = store.set_hnsw_dirty(kind, false) {
+            tracing::warn!(error = %e, "Failed to clear dirty flag");
+        }
+    }
+}
+
+impl ClearHnswDirty for ReadOnly {
+    fn try_clear_hnsw_dirty(_store: &Store<Self>, kind: crate::HnswKind) {
+        tracing::debug!(
+            ?kind,
+            "HNSW self-heal skipped on read-only store; next writable open will clear the flag"
+        );
+    }
+}
+
 /// Thread-safe SQLite store for chunks and embeddings
 /// Uses sqlx connection pooling for concurrent reads and WAL mode
 /// for crash safety. All methods are synchronous but internally use

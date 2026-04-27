@@ -3,7 +3,12 @@
 //! Abstracts over different index implementations (HNSW, CAGRA, etc.)
 //! to enable runtime selection based on hardware availability.
 
+use std::path::Path;
+
+use anyhow::Result;
+
 use crate::embedder::Embedding;
+use crate::store::{ClearHnswDirty, Store};
 
 /// Result from a vector index search
 #[derive(Debug, Clone)]
@@ -83,6 +88,63 @@ pub trait VectorIndex: Send + Sync {
     fn is_poisoned(&self) -> bool {
         false
     }
+}
+
+/// Inputs every [`IndexBackend`] needs to decide whether it can serve, and
+/// to actually build / load its index when it can. Mode-generic so each
+/// backend can call the [`ClearHnswDirty`] dispatch on the store typestate
+/// without going through the binary's `cli/store.rs`.
+pub struct BackendContext<'a, Mode: ClearHnswDirty> {
+    /// The slot's `.cqs/slots/<name>/` directory — every persisted vector
+    /// file lives under here.
+    pub cqs_dir: &'a Path,
+    /// Open store handle (typestate-erased to `Mode`).
+    pub store: &'a Store<Mode>,
+    /// Optional HNSW search-time `ef` knob — passed to [`crate::HnswIndex::try_load_with_ef`].
+    /// Ignored by GPU backends that have their own runtime knobs.
+    pub ef_search: Option<usize>,
+}
+
+/// Pluggable vector-index backend. Each backend (HNSW, CAGRA, future
+/// USearch / SIMD brute-force / Metal / ROCm) declares its own priority
+/// and runs its own open path. The selector picks the highest-priority
+/// backend whose `try_open` returns `Some`; backends that aren't applicable
+/// for this store (GPU unavailable, chunk count below threshold, dirty
+/// flag with stale checksums, etc.) return `None` and the selector falls
+/// through to the next candidate.
+///
+/// HNSW is the always-priority-zero fallback; new backends register at
+/// higher priorities and only shadow HNSW when they pass their own gates.
+pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
+    /// Stable identifier for structured logging (`backend = "cagra"` etc.).
+    fn name(&self) -> &'static str;
+
+    /// Higher wins. The slice helper sorts by descending priority; this
+    /// only affects iteration order. Real eligibility (GPU available,
+    /// chunk count above threshold, dirty flag) is decided inside
+    /// `try_open`.
+    fn priority(&self) -> i32;
+
+    /// Try to provide a vector index for this store. Return `Ok(None)` to
+    /// signal "not applicable, try the next backend" (GPU unavailable,
+    /// below threshold, persisted file failed to load and rebuild also
+    /// failed, dirty flag with stale checksums). Return `Ok(Some(idx))` on
+    /// success. Return `Err(_)` only for true store-level errors that
+    /// should abort selection entirely.
+    fn try_open(&self, ctx: &BackendContext<'_, Mode>) -> Result<Option<Box<dyn VectorIndex>>>;
+}
+
+/// Build the ordered backend slice for this build (`cuda-index` feature on/off).
+/// Sorted highest-priority first. The selector iterates and takes the first
+/// backend whose `try_open` succeeds.
+pub fn backends<Mode: ClearHnswDirty>() -> Vec<&'static dyn IndexBackend<Mode>> {
+    #[cfg(feature = "cuda-index")]
+    let mut v: Vec<&'static dyn IndexBackend<Mode>> =
+        vec![&crate::cagra::CagraBackend, &crate::hnsw::HnswBackend];
+    #[cfg(not(feature = "cuda-index"))]
+    let mut v: Vec<&'static dyn IndexBackend<Mode>> = vec![&crate::hnsw::HnswBackend];
+    v.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+    v
 }
 
 #[cfg(test)]
@@ -203,5 +265,46 @@ mod tests {
         assert_eq!(index.len(), 42);
         assert!(!index.is_empty());
         assert_eq!(index.name(), "Mock");
+    }
+
+    /// HNSW always sits in the slice as the priority-0 fallback. With the
+    /// `cuda-index` feature, CAGRA precedes it at priority 100. The slice
+    /// is sorted highest-priority-first so callers iterate in the right
+    /// order.
+    #[test]
+    fn test_backends_slice_ordering_readwrite() {
+        use crate::store::ReadWrite;
+        let backends = backends::<ReadWrite>();
+        assert!(!backends.is_empty(), "backends slice must not be empty");
+        // Hnsw is always present, always last (priority 0).
+        let last = backends.last().unwrap();
+        assert_eq!(last.name(), "hnsw");
+        assert_eq!(last.priority(), 0);
+
+        #[cfg(feature = "cuda-index")]
+        {
+            assert_eq!(backends.len(), 2);
+            assert_eq!(backends[0].name(), "cagra");
+            assert_eq!(backends[0].priority(), 100);
+            // Sort puts higher priority first.
+            assert!(backends[0].priority() > backends[1].priority());
+        }
+
+        #[cfg(not(feature = "cuda-index"))]
+        {
+            assert_eq!(backends.len(), 1);
+        }
+    }
+
+    /// Read-only mode produces the same slice as read-write — the
+    /// `ClearHnswDirty` typestate is the only thing that varies, and it
+    /// only affects `try_open` behavior, not the slice composition.
+    #[test]
+    fn test_backends_slice_ordering_readonly() {
+        use crate::store::ReadOnly;
+        let backends = backends::<ReadOnly>();
+        assert_eq!(backends.last().unwrap().name(), "hnsw");
+        #[cfg(feature = "cuda-index")]
+        assert_eq!(backends[0].name(), "cagra");
     }
 }

@@ -402,6 +402,68 @@ impl VectorIndex for HnswIndex {
     }
 }
 
+/// Always-available CPU vector index. Priority 0 (lowest). The selector
+/// uses HNSW as the unconditional fallback when no GPU backend (CAGRA,
+/// future Metal/ROCm/USearch) is eligible.
+///
+/// Handles the per-kind `hnsw_dirty` self-heal: if the dirty flag is set
+/// but `verify_hnsw_checksums` passes the file is whole — the dirty flag
+/// is a false positive from a crash *after* the files landed but *before*
+/// the flag cleared, and we clear it on the writable typestate. If the
+/// checksum genuinely fails the index is stale and we return `None` so
+/// the caller falls back to brute-force search until `cqs index` rebuilds.
+pub struct HnswBackend;
+
+impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for HnswBackend {
+    fn name(&self) -> &'static str {
+        "hnsw"
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+
+    fn try_open(
+        &self,
+        ctx: &crate::index::BackendContext<'_, Mode>,
+    ) -> anyhow::Result<Option<Box<dyn VectorIndex>>> {
+        let dirty = match ctx.store.is_hnsw_dirty(crate::HnswKind::Enriched) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    hnsw_kind = "enriched",
+                    "Failed to read hnsw_dirty flag, treating as dirty"
+                );
+                true
+            }
+        };
+        if dirty {
+            match verify_hnsw_checksums(ctx.cqs_dir, "index") {
+                Ok(()) => {
+                    tracing::info!(
+                        "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
+                    );
+                    Mode::try_clear_hnsw_dirty(ctx.store, crate::HnswKind::Enriched);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "HNSW index stale (checksum mismatch). \
+                         Falling back to brute-force search. Run 'cqs index' to rebuild."
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(HnswIndex::try_load_with_ef(
+            ctx.cqs_dir,
+            ctx.ef_search,
+            ctx.store.dim(),
+        ))
+    }
+}
+
 /// Shared test helper: create a deterministic normalized embedding from a seed.
 /// Uses sin-based values for reproducible but varied vectors.
 #[cfg(test)]
