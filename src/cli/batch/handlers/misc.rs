@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use super::super::commands::BatchInput;
-use super::super::BatchContext;
+use super::super::BatchView;
 use crate::cli::args::GatherArgs;
 use crate::cli::validate_finite_f32;
 
@@ -13,7 +13,7 @@ use crate::cli::validate_finite_f32;
 /// of a batch-local `GatherParams`. Both paths deserialize into the same
 /// struct, so there is no per-field drift to reason about.
 pub(in crate::cli::batch) fn dispatch_gather(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     args: &GatherArgs,
 ) -> Result<serde_json::Value> {
     let query = args.query.as_str();
@@ -99,7 +99,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
 /// # Errors
 /// Returns an error if JSON serialization or the staleness check fails.
 pub(in crate::cli::batch) fn dispatch_notes(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     warnings: bool,
     patterns: bool,
     check: bool,
@@ -164,7 +164,7 @@ pub(in crate::cli::batch) fn dispatch_notes(
 /// # Errors
 /// Returns an error if the embedder, call graph, test chunks cannot be retrieved from the context, or if task execution fails.
 pub(in crate::cli::batch) fn dispatch_task(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     description: &str,
     limit: usize,
     tokens: Option<usize>,
@@ -206,7 +206,7 @@ pub(in crate::cli::batch) fn dispatch_task(
 /// # Errors
 /// Returns an error if embedder initialization fails or if the core scout search operation fails.
 pub(in crate::cli::batch) fn dispatch_scout(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     query: &str,
     limit: usize,
     tokens: Option<usize>,
@@ -246,7 +246,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
 /// # Errors
 /// Returns an error if the embedder cannot be initialized or if the placement suggestion operation fails.
 pub(in crate::cli::batch) fn dispatch_where(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     description: &str,
     limit: usize,
 ) -> Result<serde_json::Value> {
@@ -281,7 +281,7 @@ pub(in crate::cli::batch) fn dispatch_where(
 /// - The reference dataset cannot be loaded or accessed
 /// - Drift detection fails during comparison
 pub(in crate::cli::batch) fn dispatch_drift(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     reference: &str,
     threshold: f32,
     min_drift: f32,
@@ -339,7 +339,7 @@ pub(in crate::cli::batch) fn dispatch_drift(
 
 /// Runs semantic diff between a reference and the project (or another reference).
 pub(in crate::cli::batch) fn dispatch_diff(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     source: &str,
     target: Option<&str>,
     threshold: f32,
@@ -432,7 +432,7 @@ pub(in crate::cli::batch) fn dispatch_diff(
 
 /// Runs task planning with template classification and returns results as JSON.
 pub(in crate::cli::batch) fn dispatch_plan(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     description: &str,
     limit: usize,
     tokens: Option<usize>,
@@ -462,7 +462,7 @@ pub(in crate::cli::batch) fn dispatch_plan(
 /// `Commands::Gc` as `BatchSupport::Cli` so this branch is unreachable
 /// in practice, but the stub exists to keep the batch command surface
 /// complete and to document the invariant.
-pub(in crate::cli::batch) fn dispatch_gc(_ctx: &BatchContext) -> Result<serde_json::Value> {
+pub(in crate::cli::batch) fn dispatch_gc(_ctx: &BatchView) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_gc").entered();
     anyhow::bail!(
         "gc requires a writable store; run `cqs gc` outside the daemon. \
@@ -472,9 +472,16 @@ pub(in crate::cli::batch) fn dispatch_gc(_ctx: &BatchContext) -> Result<serde_js
 }
 
 /// Manually invalidates all mutable caches and re-opens the Store.
-pub(in crate::cli::batch) fn dispatch_refresh(ctx: &BatchContext) -> Result<serde_json::Value> {
+///
+/// #1127: the daemon path early-routes `Refresh` to `view.invalidate_via_outer()`
+/// inside `dispatch_via_view` (briefly re-locking the BatchContext) and the
+/// stdin batch path early-routes to `BatchContext::invalidate` directly. This
+/// handler is the fallback used when the dispatch reaches us via
+/// `commands::dispatch` (e.g. in tests). It still uses `invalidate_via_outer`
+/// so the daemon contract is enforceable from one place.
+pub(in crate::cli::batch) fn dispatch_refresh(ctx: &BatchView) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_refresh").entered();
-    ctx.invalidate()?;
+    ctx.invalidate_via_outer()?;
     Ok(serde_json::json!({"status": "ok", "message": "Caches invalidated, Store re-opened"}))
 }
 
@@ -499,7 +506,7 @@ pub(in crate::cli::batch) fn dispatch_help() -> Result<serde_json::Value> {
 /// CLI's `cqs ping` may be polled by orchestration scripts.
 ///
 /// [`PingResponse`]: cqs::daemon_translate::PingResponse
-pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchContext) -> Result<serde_json::Value> {
+pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchView) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_ping").entered();
     let snapshot = ctx.ping_snapshot();
     serde_json::to_value(&snapshot)
@@ -514,11 +521,16 @@ pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchContext) -> Result<serde_j
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::batch::create_test_context;
+    use crate::cli::batch::{checkout_view_from_arc, create_test_context, BatchContext, BatchView};
     use cqs::store::{ModelInfo, Store};
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    fn empty_ctx() -> (TempDir, crate::cli::batch::BatchContext) {
+    /// #1127: build a `BatchContext` wrapped in an `Arc<Mutex<...>>` plus a
+    /// `BatchView` carrying it as `outer_lock`. Mirrors the daemon path so
+    /// `dispatch_refresh` (which goes through `invalidate_via_outer`) can
+    /// reach a real BatchContext to invalidate.
+    fn empty_view() -> (TempDir, Arc<Mutex<BatchContext>>, BatchView) {
         let dir = TempDir::new().expect("tempdir");
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
@@ -528,13 +540,15 @@ mod tests {
             store.init(&ModelInfo::default()).expect("init");
         }
         let ctx = create_test_context(&cqs_dir).expect("ctx");
-        (dir, ctx)
+        let arc = Arc::new(Mutex::new(ctx));
+        let view = checkout_view_from_arc(&arc);
+        (dir, arc, view)
     }
 
     #[test]
     fn dispatch_ping_returns_serializable_snapshot() {
-        let (_dir, ctx) = empty_ctx();
-        let json = dispatch_ping(&ctx).expect("dispatch_ping");
+        let (_dir, _ctx, view) = empty_view();
+        let json = dispatch_ping(&view).expect("dispatch_ping");
         assert!(
             json.is_object(),
             "ping must serialize as a JSON object, got: {json}"
@@ -560,8 +574,8 @@ mod tests {
 
     #[test]
     fn dispatch_refresh_succeeds_on_empty_store() {
-        let (_dir, ctx) = empty_ctx();
-        let json = dispatch_refresh(&ctx).expect("dispatch_refresh");
+        let (_dir, _ctx, view) = empty_view();
+        let json = dispatch_refresh(&view).expect("dispatch_refresh");
         assert_eq!(
             json.get("status").and_then(|v| v.as_str()),
             Some("ok"),

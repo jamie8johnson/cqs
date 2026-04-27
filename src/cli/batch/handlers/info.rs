@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use super::super::BatchContext;
+use super::super::BatchView;
 use crate::cli::validate_finite_f32;
 use cqs::normalize_path;
 
@@ -18,7 +18,7 @@ use cqs::normalize_path;
 /// # Errors
 /// Returns an error if building the blame data fails, such as when the target cannot be found or accessed in the store.
 pub(in crate::cli::batch) fn dispatch_blame(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     target: &str,
     depth: usize,
     show_callers: bool,
@@ -44,7 +44,7 @@ pub(in crate::cli::batch) fn dispatch_blame(
 /// # Errors
 /// Returns an error if the vector index cannot be retrieved, the embedder fails to initialize (when tokens are specified), or if the explanation data cannot be built or converted to JSON.
 pub(in crate::cli::batch) fn dispatch_explain(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     target: &str,
     limit: usize,
     tokens: Option<usize>,
@@ -98,7 +98,7 @@ pub(in crate::cli::batch) fn dispatch_explain(
 /// * The chunk embedding cannot be loaded
 /// * The vector index is unavailable or search fails
 pub(in crate::cli::batch) fn dispatch_similar(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     limit: usize,
     threshold: f32,
@@ -160,7 +160,7 @@ pub(in crate::cli::batch) fn dispatch_similar(
 /// # Errors
 /// Returns an error if the file at `path` is not indexed or if data retrieval from the store fails.
 pub(in crate::cli::batch) fn dispatch_context(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     path: &str,
     summary: bool,
     compact: bool,
@@ -252,7 +252,7 @@ pub(in crate::cli::batch) fn dispatch_context(
 /// A JSON value containing aggregated statistics with the following top-level fields: `total_chunks`, `total_files`, `notes`, `errors`, `call_graph` (with `total_calls`, `unique_callers`, `unique_callees`), `type_graph` (with `total_edges`, `unique_types`), `by_language`, `by_type`, `model`, and `schema_version`.
 /// # Errors
 /// Returns an error if any of the store queries fail (stats, note_count, function_call_stats, or type_edge_stats).
-pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
+pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchView) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stats").entered();
     let errors = ctx.error_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output = crate::cli::commands::build_stats(&ctx.store(), &ctx.cqs_dir)?;
@@ -309,7 +309,7 @@ pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_
 /// # Errors
 /// Returns an error if embedder initialization fails, onboarding query fails, or serialization fails.
 pub(in crate::cli::batch) fn dispatch_onboard(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     query: &str,
     depth: usize,
     limit: usize,
@@ -355,7 +355,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
 /// # Errors
 /// Returns an error if file validation or reading fails.
 pub(in crate::cli::batch) fn dispatch_read(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     path: &str,
     focus: Option<&str>,
 ) -> Result<serde_json::Value> {
@@ -400,7 +400,7 @@ pub(in crate::cli::batch) fn dispatch_read(
 /// - `hints` (optional): an object with caller_count, test_count, no_callers, and no_tests fields
 /// # Errors
 /// Returns an error if building the focused output fails.
-fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::Value> {
+fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_read_focused", focus).entered();
 
     // P2 #69: ctx.audit_state() now returns owned AuditMode; borrow at the
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn dispatch_stats_returns_expected_envelope_shape() {
         let (_dir, ctx) = seed_minimal_ctx();
-        let json = dispatch_stats(&ctx).expect("dispatch_stats");
+        let json = dispatch_stats(&ctx.build_view(None)).expect("dispatch_stats");
         assert!(json.is_object(), "stats must be a JSON object, got: {json}");
         // Pin the canonical CLI/daemon-parity field set the production
         // `cmd_stats` emits — `total_chunks` is the smoke value.

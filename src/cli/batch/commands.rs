@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use super::BatchContext;
+use super::BatchView;
 
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
@@ -310,6 +310,16 @@ pub(crate) enum BatchCmd {
     Ping,
     /// Show help
     Help,
+    /// #1127 (test-only): sleep `--ms` milliseconds before returning. Used by
+    /// the daemon-parallelism regression tests to force two concurrent
+    /// handlers to overlap on wall-clock; the variant is `#[cfg(test)]`-gated
+    /// so it never reaches a release binary.
+    #[cfg(test)]
+    #[command(name = "test-sleep")]
+    TestSleep {
+        #[arg(long, default_value_t = 200)]
+        ms: u64,
+    },
 }
 
 impl BatchCmd {
@@ -360,6 +370,8 @@ impl BatchCmd {
             | BatchCmd::Refresh
             | BatchCmd::Ping
             | BatchCmd::Help => false,
+            #[cfg(test)]
+            BatchCmd::TestSleep { .. } => false,
         }
     }
 }
@@ -404,9 +416,14 @@ fn log_query(command: &str, query: &str) {
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
 /// Execute a batch command and return a JSON value.
-/// This is the seam for step 3 (REPL): import `BatchContext` + `dispatch`, wrap
+/// This is the seam for step 3 (REPL): import `BatchView` + `dispatch`, wrap
 /// with readline.
-pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::Value> {
+///
+/// #1127: takes a [`BatchView`] (snapshot of BatchContext caches built under a
+/// brief critical section) instead of `&BatchContext`. Handlers operate on the
+/// view's `Arc`-cloned data; the daemon's outer mutex is released before
+/// dispatch, so concurrent reads no longer serialize through one lock.
+pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Value> {
     let _span = tracing::debug_span!("batch_dispatch").entered();
     // Task #8: every variant now also carries `output` (TextJsonArgs or
     // OutputArgs) for CLI flag parity, but batch always emits JSON via the
@@ -540,6 +557,16 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
         BatchCmd::Ping => handlers::dispatch_ping(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
+        #[cfg(test)]
+        BatchCmd::TestSleep { ms } => {
+            // #1127 regression test fixture. Sleeps the dispatcher thread for
+            // `ms` milliseconds, then returns a tiny envelope. Two concurrent
+            // daemon connections both running `test-sleep --ms N` must finish
+            // in ~max(N, N) — *not* 2*N — when the lock is held only across
+            // checkout_view.
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            Ok(serde_json::json!({"slept_ms": ms}))
+        }
     }
 }
 

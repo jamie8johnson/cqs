@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use clap::Parser;
 
 use super::commands::{dispatch, BatchInput};
-use super::BatchContext;
+use super::BatchView;
 
 /// Maximum names extracted per pipeline stage to prevent fan-out explosion.
 /// A 3-stage pipeline dispatches at most 1 + 50 + 50 = 101 calls.
@@ -180,7 +180,7 @@ impl PipelineError {
 /// an `Err` that the call site emits as a standard envelope error. Per-row
 /// failures inside a successful pipeline live in the result's `errors` array.
 pub(crate) fn execute_pipeline(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     tokens: &[String],
     raw_line: &str,
 ) -> Result<serde_json::Value, PipelineError> {

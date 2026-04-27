@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use anyhow::Result;
@@ -216,21 +216,25 @@ struct CachedReload<T> {
 ///
 /// Manual invalidation is available via the `refresh` batch command.
 pub(crate) struct BatchContext {
-    // Wrapped in RefCell so we can re-open it when the index changes.
-    // Access via store() method which checks staleness first.
+    // #1127: previously `RefCell<Store<ReadOnly>>`. The store is now wrapped in
+    // `Mutex<Arc<...>>` so `checkout_view` can clone the Arc under a brief
+    // critical section and hand it to handlers without holding the outer
+    // BatchContext mutex across dispatch. Mutex (not RwLock) is correct: the
+    // store is *swapped* on `check_index_staleness` re-open, never read
+    // concurrently with the swap — a Mutex is the cheapest correctness shape.
     //
     // #946 typestate: BatchContext is the daemon's shared store, which only
     // ever dispatches read-only queries (daemon handlers never mutate). The
     // compiler refuses to call a write method on a `Store<ReadOnly>`, so
     // the class of runtime errors from PR #945 / #944 / dispatch_gc is
     // structurally impossible on this path.
-    store: RefCell<Store<ReadOnly>>,
+    store: Mutex<Arc<Store<ReadOnly>>>,
     /// #968: the tokio runtime driving `store`. Kept here as well so
     /// `invalidate()` and `check_index_staleness()` can re-open the
     /// store on the same runtime — without this they would rebuild a
     /// fresh current-thread runtime on every index swap and drift
     /// apart from the daemon's shared pool.
-    runtime: std::sync::Arc<tokio::runtime::Runtime>,
+    runtime: Arc<tokio::runtime::Runtime>,
     // Stable caches — keep OnceLock (not index-derived)
     //
     // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
@@ -240,13 +244,20 @@ pub(crate) struct BatchContext {
     // resident at the same time. `BatchContext::new_with_embedder`
     // accepts a pre-built Arc; `create_context` (CLI path) still
     // creates a fresh one lazily via `warm`.
-    embedder: OnceLock<std::sync::Arc<Embedder>>,
+    //
+    // #1127: wrapped in `Arc<...>` so `BatchView` can carry a clone of the
+    // same `OnceLock`; init through the view propagates to BatchContext
+    // and any other view sharing the Arc.
+    embedder: Arc<OnceLock<Arc<Embedder>>>,
     /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<Config>>>`
     /// so a `.cqs/config.toml` edit shows up after `CONFIG_RELOAD_INTERVAL`
     /// (default 5 min) instead of requiring a daemon restart. The reload is
     /// a sub-ms file read; cost is negligible per query.
     config: RefCell<Option<CachedReload<cqs::config::Config>>>,
-    reranker: OnceLock<cqs::Reranker>,
+    /// #1127: `Arc<OnceLock<...>>` so views share one slot with the
+    /// BatchContext. The `Reranker` itself does not need to be Arc-wrapped
+    /// inside the OnceLock because every accessor returns `&Reranker`.
+    reranker: Arc<OnceLock<cqs::Reranker>>,
     /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<AuditMode>>>`
     /// so the documented 30-min audit auto-expire actually fires while the
     /// daemon is up — previously the OnceLock cached the boot-time state
@@ -256,24 +267,36 @@ pub(crate) struct BatchContext {
     /// expiration.
     audit_state: RefCell<Option<CachedReload<cqs::audit::AuditMode>>>,
     // Mutable caches — RefCell<Option<T>> for invalidation on index change
-    hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
-    base_hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
-    call_graph: RefCell<Option<std::sync::Arc<cqs::store::CallGraph>>>,
-    test_chunks: RefCell<Option<std::sync::Arc<Vec<cqs::store::ChunkSummary>>>>,
+    hnsw: RefCell<Option<Arc<dyn VectorIndex>>>,
+    base_hnsw: RefCell<Option<Arc<dyn VectorIndex>>>,
+    call_graph: RefCell<Option<Arc<cqs::store::CallGraph>>>,
+    test_chunks: RefCell<Option<Arc<Vec<cqs::store::ChunkSummary>>>>,
     /// P3 #123: cache returns `Arc<HashSet<PathBuf>>` so callers don't clone
     /// the full set on every invocation. Mirrors `call_graph` / `test_chunks`.
-    file_set: RefCell<Option<std::sync::Arc<HashSet<PathBuf>>>>,
+    file_set: RefCell<Option<Arc<HashSet<PathBuf>>>>,
     /// PF-V1.29-6: cached notes returned as `Arc<Vec<Note>>` so callers
     /// don't clone the full Vec on every dispatch. Mirrors `call_graph` /
     /// `test_chunks` / `file_set`.
-    notes_cache: RefCell<Option<std::sync::Arc<Vec<cqs::note::Note>>>>,
-    // Single-threaded by design — RefCell is correct, no Mutex needed
+    notes_cache: RefCell<Option<Arc<Vec<cqs::note::Note>>>>,
     // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
     // RM-V1.29-1: values are `Arc` so `get_all_refs` can fan out refs to
     // parallel `--include-refs` searches without cloning the index bytes.
-    refs: RefCell<lru::LruCache<String, std::sync::Arc<ReferenceIndex>>>,
-    splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
-    splade_index: RefCell<Option<cqs::splade::index::SpladeIndex>>,
+    //
+    // #1127: was `RefCell<LruCache<...>>`. Now `Arc<Mutex<LruCache<...>>>` so
+    // BatchView can carry a clone of the same Arc and `get_all_refs` /
+    // `get_ref` work on the snapshot path without re-acquiring the outer
+    // BatchContext mutex.
+    refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
+    /// #1127: `Arc<OnceLock<...>>` mirrors the embedder pattern — see field
+    /// doc above.
+    splade_encoder: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
+    /// #1127: `Arc<Mutex<Option<Arc<SpladeIndex>>>>` so BatchView can carry an
+    /// Arc clone of the cell and `ensure_splade_index` can populate it from
+    /// either the BatchContext path or the view path. The SPLADE rebuild
+    /// path replaces the inner `Arc<SpladeIndex>`; existing readers that
+    /// already cloned the previous Arc keep their snapshot until the next
+    /// dispatch.
+    splade_index: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     pub model_config: cqs::embedder::ModelConfig,
@@ -289,7 +312,11 @@ pub(crate) struct BatchContext {
     /// When the staleness check last ran. Used to rate-limit `fs::metadata`
     /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`]. PF-V1.25-10.
     last_staleness_check: Cell<Option<Instant>>,
-    pub(crate) error_count: AtomicU64,
+    /// #1127: `Arc<AtomicU64>` so `BatchView` carries a cheap clone of the
+    /// counter handle and handlers can read/bump without re-locking the
+    /// outer BatchContext mutex. The atomicity is the load-bearing
+    /// invariant; the Arc just lets the view participate.
+    pub(crate) error_count: Arc<AtomicU64>,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
     last_command_time: Cell<Instant>,
@@ -302,10 +329,19 @@ pub(crate) struct BatchContext {
     /// Cumulative number of socket / stdin queries this `BatchContext` has
     /// dispatched. Bumped inside `dispatch_line` so both the daemon socket
     /// path and the `cqs batch` stdin path increment the same counter.
-    /// Read by the `ping` handler.
-    query_count: AtomicU64,
+    /// Read by the `ping` handler. #1127: `Arc<AtomicU64>` for the same
+    /// reason as `error_count`.
+    pub(crate) query_count: Arc<AtomicU64>,
 }
 
+/// #1127: a number of `BatchContext` accessors are unreachable from non-test
+/// production code now that all dispatch goes through `BatchView`. Keeping
+/// them around (instead of deleting) is the cheaper choice — they back
+/// `BatchContext::build_view`, the test fixtures, and the stdin-batch
+/// `BatchContext::invalidate` shortcut. The compiler's unused-method warning
+/// fires on each one regardless; suppress at the impl level rather than per
+/// method to avoid noise.
+#[allow(dead_code)]
 impl BatchContext {
     /// Check idle timeout and clear ONNX sessions if enough time has passed.
     ///
@@ -442,10 +478,7 @@ impl BatchContext {
             // Re-open the Store to reset its internal OnceLock caches.
             // #968: reuse the shared runtime so this re-open doesn't spin
             // up a transient current_thread runtime on every index swap.
-            match Store::open_readonly_pooled_with_runtime(
-                &index_path,
-                std::sync::Arc::clone(&self.runtime),
-            ) {
+            match Store::open_readonly_pooled_with_runtime(&index_path, Arc::clone(&self.runtime)) {
                 Ok(new_store) => {
                     // DS-43: Check if index dimension changed — OnceLock model_config
                     // can't be cleared, so warn the user to restart the batch session.
@@ -457,7 +490,11 @@ impl BatchContext {
                             "Index dimension changed — queries may return wrong results until batch restart"
                         );
                     }
-                    *self.store.borrow_mut() = new_store;
+                    // #1127: swap the Arc inside the Mutex. Existing readers
+                    // (BatchView snapshots already handed out) keep their
+                    // old Arc and remain valid; the next `checkout_view`
+                    // returns a snapshot pointing at the new store.
+                    *self.store.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_store);
                     tracing::info!("Store re-opened after index change");
                 }
                 Err(e) => {
@@ -505,12 +542,24 @@ impl BatchContext {
         try_clear_to_none!(self.test_chunks, "test_chunks");
         try_clear_to_none!(self.file_set, "file_set");
         try_clear_to_none!(self.notes_cache, "notes_cache");
-        try_clear_to_none!(self.splade_index, "splade_index");
-        match self.refs.try_borrow_mut() {
+        // #1127: splade_index moved to `Arc<Mutex<...>>`. Use try_lock to
+        // mirror the borrow-deferral semantics of the RefCell branches.
+        match self.splade_index.try_lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => {
+                all_clear = false;
+                tracing::debug!(slot = "splade_index", "lock held; deferring invalidation");
+            }
+        }
+        // #1127: refs LRU is `Arc<Mutex<...>>` (shared with BatchView).
+        // `try_lock` is the read-only equivalent of `try_borrow_mut`: if a
+        // handler thread holds the mutex (e.g. iterating refs in a parallel
+        // search), the eviction is deferred to the next sweep.
+        match self.refs.try_lock() {
             Ok(mut g) => g.clear(),
             Err(_) => {
                 all_clear = false;
-                tracing::debug!(slot = "refs", "borrow held; deferring invalidation");
+                tracing::debug!(slot = "refs", "lock held; deferring invalidation");
             }
         }
 
@@ -531,12 +580,11 @@ impl BatchContext {
         let index_path = self.cqs_dir.join(cqs::INDEX_DB_FILENAME);
         // #968: pass the shared runtime so manual refreshes keep using
         // the same worker pool as the session they're refreshing.
-        let new_store = Store::open_readonly_pooled_with_runtime(
-            &index_path,
-            std::sync::Arc::clone(&self.runtime),
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
-        *self.store.borrow_mut() = new_store;
+        let new_store =
+            Store::open_readonly_pooled_with_runtime(&index_path, Arc::clone(&self.runtime))
+                .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
+        // #1127: swap the Arc; existing BatchView snapshots keep the old.
+        *self.store.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_store);
 
         // Update identity to current so we don't immediately re-invalidate.
         if let Some(id) = DbFileIdentity::from_path(&index_path) {
@@ -616,6 +664,11 @@ impl BatchContext {
     /// `dispatch_tokens` (daemon socket surface). The only difference between
     /// the two callers is how they reached a non-empty `tokens` vec — NUL
     /// check, counter bumps, clap parse, and handler dispatch are identical.
+    ///
+    /// #1127: takes a snapshot via `build_view` and delegates to
+    /// [`dispatch_via_view`]. Stdin batch holds no shared `Arc<Mutex>` so
+    /// the view's `outer_lock` is `None`; refresh inside this path goes
+    /// through `BatchContext::invalidate` directly.
     fn dispatch_parsed_tokens(&self, tokens: &[String], out: &mut impl std::io::Write) {
         use crate::cli::json_envelope::error_codes;
         // D.2: NUL byte check parity with the daemon socket loop in cmd_batch.
@@ -636,23 +689,48 @@ impl BatchContext {
         // not a query). Counts both successes and errors — symmetric with
         // how `total_queries` is described in PingResponse.
         self.query_count.fetch_add(1, Ordering::Relaxed);
+        let view = self.build_view(None);
+        // Refresh special-case: stdin batch reaches Refresh through the same
+        // path as the daemon, but invalidate must run on `&self`. Detect
+        // upfront and call directly.
         match commands::BatchInput::try_parse_from(tokens) {
-            Ok(input) => match commands::dispatch(self, input.cmd) {
-                Ok(value) => {
-                    let _ = write_json_line(out, &value);
+            Ok(input) => {
+                if matches!(input.cmd, commands::BatchCmd::Refresh) {
+                    match self.invalidate() {
+                        Ok(()) => {
+                            let _ = write_json_line(
+                                out,
+                                &serde_json::json!({
+                                    "status": "ok",
+                                    "message": "Caches invalidated, Store re-opened",
+                                }),
+                            );
+                        }
+                        Err(e) => {
+                            self.error_count.fetch_add(1, Ordering::Relaxed);
+                            let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                            let _ = write_envelope_error(out, code.as_str(), &msg);
+                        }
+                    }
+                    return;
                 }
-                Err(e) => {
-                    self.error_count.fetch_add(1, Ordering::Relaxed);
-                    // P2 #33: redact_error walks the source chain and emits
-                    // a stable (code, message) pair instead of echoing the
-                    // raw anyhow chain (which can carry HTTP bodies, sqlite
-                    // query text, filesystem paths). The full unredacted
-                    // chain is logged via tracing::warn! inside redact_error
-                    // so an operator can correlate by chain-id.
-                    let (code, msg) = crate::cli::json_envelope::redact_error(&e);
-                    let _ = write_envelope_error(out, code.as_str(), &msg);
+                match commands::dispatch(&view, input.cmd) {
+                    Ok(value) => {
+                        let _ = write_json_line(out, &value);
+                    }
+                    Err(e) => {
+                        self.error_count.fetch_add(1, Ordering::Relaxed);
+                        // P2 #33: redact_error walks the source chain and emits
+                        // a stable (code, message) pair instead of echoing the
+                        // raw anyhow chain (which can carry HTTP bodies, sqlite
+                        // query text, filesystem paths). The full unredacted
+                        // chain is logged via tracing::warn! inside redact_error
+                        // so an operator can correlate by chain-id.
+                        let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                        let _ = write_envelope_error(out, code.as_str(), &msg);
+                    }
                 }
-            },
+            }
             Err(e) => {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
                 // Parse errors come from user-supplied tokens — they're
@@ -706,10 +784,19 @@ impl BatchContext {
         }
     }
 
-    /// Borrow the Store, checking for index staleness first.
-    pub fn store(&self) -> std::cell::Ref<'_, Store<ReadOnly>> {
+    /// Snapshot the Store as a refcounted `Arc`, checking for index staleness
+    /// first.
+    ///
+    /// #1127: previously returned `Ref<'_, Store<ReadOnly>>` which tied the
+    /// store-borrow lifetime to the BatchContext borrow. The store is now
+    /// held in `Mutex<Arc<Store<ReadOnly>>>`; this accessor takes the mutex
+    /// briefly, clones the Arc, and drops the lock — handlers hold a stable
+    /// snapshot for as long as they need it without keeping any
+    /// BatchContext lock acquired.
+    pub fn store(&self) -> Arc<Store<ReadOnly>> {
         self.check_index_staleness();
-        self.store.borrow()
+        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(&guard)
     }
 
     /// Pre-warm the embedder so the first query doesn't pay the ~500ms ONNX init.
@@ -822,7 +909,12 @@ impl BatchContext {
     /// self-perpetuating cache-poison loop.
     pub fn ensure_splade_index(&self) {
         self.check_index_staleness();
-        if self.splade_index.borrow().is_some() {
+        if self
+            .splade_index
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
             return;
         }
         let generation = match self.store().splade_generation() {
@@ -890,14 +982,21 @@ impl BatchContext {
                 "SPLADE index loaded from disk (batch)"
             );
         }
-        *self.splade_index.borrow_mut() = Some(idx);
+        *self.splade_index.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(idx));
     }
 
-    /// Borrow the SPLADE index (call ensure_splade_index first).
-    pub fn borrow_splade_index(
-        &self,
-    ) -> std::cell::Ref<'_, Option<cqs::splade::index::SpladeIndex>> {
-        self.splade_index.borrow()
+    /// Snapshot the cached SPLADE index as an `Option<Arc<SpladeIndex>>`.
+    ///
+    /// #1127: previously returned `Ref<'_, Option<SpladeIndex>>` which kept
+    /// the BatchContext borrow alive for the entire search call. Returning
+    /// an Arc clone frees the borrow immediately so search handlers can
+    /// run outside any BatchContext borrow scope.
+    pub fn borrow_splade_index(&self) -> Option<Arc<cqs::splade::index::SpladeIndex>> {
+        self.splade_index
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(Arc::clone)
     }
 
     /// Get or build the vector index (CAGRA/HNSW/brute-force, cached).
@@ -928,9 +1027,10 @@ impl BatchContext {
         // Clear any poisoned cache before rebuilding.
         *self.hnsw.borrow_mut() = None;
         let _span = tracing::info_span!("batch_vector_index_init").entered();
-        let store = self.store.borrow();
+        // #1127: pull a snapshot Arc and pass `&Store<...>` via auto-deref.
+        let store = self.store_arc_locked();
         let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
-        let result = idx.map(|boxed| -> std::sync::Arc<dyn VectorIndex> { boxed.into() });
+        let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
         let ret = result.clone();
         *self.hnsw.borrow_mut() = result;
         Ok(ret)
@@ -938,18 +1038,18 @@ impl BatchContext {
 
     /// Get or build the base (non-enriched) vector index, cached.
     /// Returns `None` if the base index files don't exist or `CQS_DISABLE_BASE_INDEX=1`.
-    pub fn base_vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
+    pub fn base_vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
         self.check_index_staleness();
         {
             let cached = self.base_hnsw.borrow();
             if let Some(arc) = cached.as_ref() {
-                return Ok(Some(std::sync::Arc::clone(arc)));
+                return Ok(Some(Arc::clone(arc)));
             }
         }
         let _span = tracing::info_span!("batch_base_vector_index_init").entered();
-        let store = self.store.borrow();
+        let store = self.store_arc_locked();
         let idx = crate::cli::build_base_vector_index(&store, &self.cqs_dir)?;
-        let result = idx.map(|boxed| -> std::sync::Arc<dyn VectorIndex> { boxed.into() });
+        let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
         let ret = result.clone();
         *self.base_hnsw.borrow_mut() = result;
         Ok(ret)
@@ -967,48 +1067,7 @@ impl BatchContext {
     /// serving results from a closed WAL snapshot / stale HNSW bytes for
     /// days.
     pub fn get_ref(&self, name: &str) -> Result<()> {
-        let _span = tracing::info_span!("batch_get_ref", %name).entered();
-        {
-            let mut refs = self.refs.borrow_mut();
-            if let Some(existing) = refs.peek(name) {
-                if existing.is_stale() {
-                    tracing::info!(
-                        reference = %name,
-                        "Cached reference stale (index.db mtime/size changed) — evicting for reload"
-                    );
-                    refs.pop(name);
-                } else {
-                    return Ok(());
-                }
-            }
-        }
-
-        let config = self.config();
-        // Filter to just the target reference instead of loading all (RM-16)
-        let single: Vec<_> = config
-            .references
-            .iter()
-            .filter(|r| r.name == name)
-            .cloned()
-            .collect();
-        if single.is_empty() {
-            anyhow::bail!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                name
-            );
-        }
-        let loaded = cqs::reference::load_references(&single);
-        let found = loaded.into_iter().next().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Failed to load reference '{}'. Run 'cqs ref update {}' first.",
-                name,
-                name
-            )
-        })?;
-        self.refs
-            .borrow_mut()
-            .put(name.to_string(), std::sync::Arc::new(found));
-        Ok(())
+        get_ref_via_refs_lru(&self.refs, &self.config(), name)
     }
 
     /// Return every configured reference as a shared `Arc`, populating the
@@ -1026,56 +1085,8 @@ impl BatchContext {
     /// exceed the cap, the oldest cached entries churn, but within a
     /// single call the returned `Vec` holds strong `Arc`s so eviction
     /// cannot race with in-flight searches.
-    pub fn get_all_refs(&self) -> Result<Vec<std::sync::Arc<ReferenceIndex>>> {
-        let _span = tracing::info_span!("batch_get_all_refs").entered();
-        let config = self.config();
-        if config.references.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Partition configured refs into cached-hits vs misses. Checking
-        // hit/miss first avoids calling `load_references` (which builds a
-        // rayon pool + reopens the store) on every entry — we only load
-        // those not present or stale.
-        let mut hits: Vec<std::sync::Arc<ReferenceIndex>> =
-            Vec::with_capacity(config.references.len());
-        let mut misses: Vec<cqs::config::ReferenceConfig> = Vec::new();
-        {
-            let mut cache = self.refs.borrow_mut();
-            for cfg in &config.references {
-                if let Some(existing) = cache.peek(&cfg.name) {
-                    if existing.is_stale() {
-                        tracing::info!(
-                            reference = %cfg.name,
-                            "Cached reference stale (index.db mtime/size changed) — evicting for reload"
-                        );
-                        cache.pop(&cfg.name);
-                        misses.push(cfg.clone());
-                    } else {
-                        // `get` to promote LRU order, then clone the Arc.
-                        let arc = cache
-                            .get(&cfg.name)
-                            .map(std::sync::Arc::clone)
-                            .expect("peek hit above");
-                        hits.push(arc);
-                    }
-                } else {
-                    misses.push(cfg.clone());
-                }
-            }
-        }
-
-        if !misses.is_empty() {
-            let loaded = cqs::reference::load_references(&misses);
-            let mut cache = self.refs.borrow_mut();
-            for ri in loaded {
-                let arc = std::sync::Arc::new(ri);
-                cache.put(arc.name.clone(), std::sync::Arc::clone(&arc));
-                hits.push(arc);
-            }
-        }
-
-        Ok(hits)
+    pub fn get_all_refs(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
+        get_all_refs_via_refs_lru(&self.refs, &self.config())
     }
 
     /// Get or build the file set for staleness checks (cached).
@@ -1191,44 +1202,45 @@ impl BatchContext {
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
     ///
     /// Returns `None` if the reference hasn't been loaded yet.
-    /// Uses `borrow_mut` because `LruCache::get()` promotes the entry (marks
-    /// as recently used), which requires `&mut self`.
-    pub fn borrow_ref(&self, name: &str) -> Option<std::sync::Arc<ReferenceIndex>> {
-        let mut cache = self.refs.borrow_mut();
-        cache.get(name).map(std::sync::Arc::clone)
+    /// `LruCache::get()` promotes the entry (marks as recently used), which
+    /// requires `&mut self`; the LRU is held under a Mutex so the lock guard
+    /// gives us the needed `&mut`.
+    pub fn borrow_ref(&self, name: &str) -> Option<Arc<ReferenceIndex>> {
+        let mut cache = self.refs.lock().unwrap_or_else(|p| p.into_inner());
+        cache.get(name).map(Arc::clone)
     }
 
     /// Get or load the call graph (cached, invalidated on index change). (PERF-22)
-    pub(super) fn call_graph(&self) -> Result<std::sync::Arc<cqs::store::CallGraph>> {
+    pub(super) fn call_graph(&self) -> Result<Arc<cqs::store::CallGraph>> {
         self.check_index_staleness();
         {
             let cached = self.call_graph.borrow();
             if let Some(g) = cached.as_ref() {
-                return Ok(std::sync::Arc::clone(g));
+                return Ok(Arc::clone(g));
             }
         }
         let _span = tracing::info_span!("batch_call_graph_init").entered();
-        let store = self.store.borrow();
+        let store = self.store_arc_locked();
         let g = store.get_call_graph()?;
-        let result = std::sync::Arc::clone(&g);
+        let result = Arc::clone(&g);
         *self.call_graph.borrow_mut() = Some(g);
         Ok(result)
     }
 
     /// Get or load test chunks (cached, invalidated on index change).
     /// PERF-1: Returns Arc<Vec<ChunkSummary>> — O(1) clone.
-    pub(super) fn test_chunks(&self) -> Result<std::sync::Arc<Vec<cqs::store::ChunkSummary>>> {
+    pub(super) fn test_chunks(&self) -> Result<Arc<Vec<cqs::store::ChunkSummary>>> {
         self.check_index_staleness();
         {
             let cached = self.test_chunks.borrow();
             if let Some(tc) = cached.as_ref() {
-                return Ok(std::sync::Arc::clone(tc));
+                return Ok(Arc::clone(tc));
             }
         }
         let _span = tracing::info_span!("batch_test_chunks_init").entered();
-        let store = self.store.borrow();
+        let store = self.store_arc_locked();
         let tc = store.find_test_chunks()?;
-        let result = std::sync::Arc::clone(&tc);
+        let result = Arc::clone(&tc);
         *self.test_chunks.borrow_mut() = Some(tc);
         Ok(result)
     }
@@ -1281,6 +1293,653 @@ impl BatchContext {
             .reranker
             .get()
             .expect("reranker OnceLock populated by set() above"))
+    }
+
+    /// #1127: take the BatchContext store mutex briefly, clone the inner Arc,
+    /// drop the lock. Lower-level than [`Self::store`] — does NOT run the
+    /// staleness check; callers that need staleness should call `store()`
+    /// instead. Used by the BatchContext-internal accessors that have
+    /// already passed through `check_index_staleness` upstream (e.g.
+    /// `vector_index`, `call_graph`, `test_chunks`).
+    fn store_arc_locked(&self) -> Arc<Store<ReadOnly>> {
+        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(&guard)
+    }
+
+    /// #1127: build a `BatchView` from a `&self` borrow. Used by stdin batch
+    /// (single-threaded) and by [`checkout_view`] after the outer Mutex is
+    /// taken. Stdin batch passes `outer_lock=None` because there is no
+    /// shared `Arc<Mutex<BatchContext>>` to back-channel through; the
+    /// `Refresh` handler in that path can call `BatchContext::invalidate`
+    /// directly through the BatchContext that owns the dispatch.
+    pub(crate) fn build_view(&self, outer_lock: Option<Arc<Mutex<BatchContext>>>) -> BatchView {
+        // Run staleness check once at snapshot time so the view sees the
+        // current store generation. Subsequent queries that need fresh
+        // data after a mid-flight reindex will pick it up on their next
+        // checkout_view (matches today's behavior).
+        self.check_index_staleness();
+        let store = {
+            let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            Arc::clone(&guard)
+        };
+        let vector_index = self.hnsw.borrow().as_ref().map(Arc::clone);
+        let base_vector_index = self.base_hnsw.borrow().as_ref().map(Arc::clone);
+        let call_graph = self.call_graph.borrow().as_ref().map(Arc::clone);
+        let test_chunks = self.test_chunks.borrow().as_ref().map(Arc::clone);
+        let notes_cache = self.notes_cache.borrow().as_ref().map(Arc::clone);
+        let file_set = self.file_set.borrow().as_ref().map(Arc::clone);
+        let splade_index_snapshot = self
+            .splade_index
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(Arc::clone);
+        let config = self.config();
+        let audit_state = self.audit_state();
+        BatchView {
+            store,
+            cached_vector_index: vector_index,
+            cached_base_vector_index: base_vector_index,
+            cached_call_graph: call_graph,
+            cached_test_chunks: test_chunks,
+            cached_notes: notes_cache,
+            cached_file_set: file_set,
+            cached_splade_index: splade_index_snapshot,
+            splade_index_cell: Arc::clone(&self.splade_index),
+            embedder_slot: Arc::clone(&self.embedder),
+            reranker_slot: Arc::clone(&self.reranker),
+            splade_encoder_slot: Arc::clone(&self.splade_encoder),
+            refs: Arc::clone(&self.refs),
+            config,
+            audit_state,
+            model_config: self.model_config.clone(),
+            root: self.root.clone(),
+            cqs_dir: self.cqs_dir.clone(),
+            error_count: Arc::clone(&self.error_count),
+            query_count: Arc::clone(&self.query_count),
+            started_at: self.started_at,
+            outer_lock,
+        }
+    }
+}
+
+/// #1127: produce a `BatchView` from an `Arc<Mutex<BatchContext>>`. Lock
+/// the mutex briefly, snapshot the Arcs, drop the guard. The view carries
+/// the `Arc<Mutex<BatchContext>>` as a back-channel for `Refresh`.
+///
+/// Free function (not an inherent method) because Rust does not yet allow
+/// `self: &Arc<Mutex<Self>>` in stable.
+pub(crate) fn checkout_view_from_arc(ctx: &Arc<Mutex<BatchContext>>) -> BatchView {
+    let guard = ctx.lock().unwrap_or_else(|p| p.into_inner());
+    // Counter bumps and idle-timeout sweep happen here under the brief lock
+    // because they're cheap (one atomic each, optional cache evictions) and
+    // every dispatch needs them. Note: query_count itself is bumped in
+    // `dispatch_via_view`, not here, because callers may early-return on
+    // empty tokens; we want the counter to reflect "dispatch reached".
+    guard.check_idle_timeout();
+    guard.build_view(Some(Arc::clone(ctx)))
+}
+
+/// #1127: handler-routing layer that operates on a [`BatchView`] snapshot.
+///
+/// This is the inner half of the dispatch split. The outer half
+/// ([`BatchContext::dispatch_parsed_tokens`] for stdin batch and the daemon
+/// caller in `cli::watch::handle_socket_client`) handles tokenization,
+/// idle-bookkeeping, and view construction. Once a view is in hand, this
+/// function:
+///
+///   1. Rejects NUL bytes with `invalid_input`.
+///   2. Parses the tokens via clap.
+///   3. Routes `Refresh` through the view's `outer_lock` back-channel
+///      (daemon path) or returns an error (stdin batch should not reach
+///      this function with `Refresh`; it goes through
+///      `BatchContext::invalidate` directly).
+///   4. Routes every other command through [`commands::dispatch`] which
+///      operates on `&BatchView`.
+///   5. Bumps `error_count` on parse / dispatch failure via the view's
+///      shared `Arc<AtomicU64>` (no re-lock needed).
+///
+/// Daemon callers MUST have already bumped `query_count` and run
+/// `check_idle_timeout` under the outer lock (in `checkout_view_from_arc`
+/// or equivalent); this function does not duplicate that work.
+pub(crate) fn dispatch_via_view(
+    view: &BatchView,
+    command: &str,
+    args: &[String],
+    out: &mut impl std::io::Write,
+) {
+    use crate::cli::json_envelope::error_codes;
+
+    // Tokens reconstructed for the clap parser: ["command", "args"...].
+    // Empty command is a no-op (parity with `BatchContext::dispatch_tokens`).
+    if command.is_empty() {
+        return;
+    }
+    let tokens: Vec<String> = std::iter::once(command.to_string())
+        .chain(args.iter().cloned())
+        .collect();
+
+    // D.2 / RT-INJ-2: NUL byte rejection — same contract as the stdin loop.
+    if let Err(msg) = reject_null_tokens(&tokens) {
+        view.error_count.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            code = error_codes::INVALID_INPUT,
+            error = msg,
+            "Daemon dispatch: NUL byte in tokens"
+        );
+        let _ = write_envelope_error(out, error_codes::INVALID_INPUT, msg);
+        return;
+    }
+    // query_count bumped here (after NUL check) so the contract matches
+    // the stdin path: NUL rejection does not count as a query.
+    view.query_count.fetch_add(1, Ordering::Relaxed);
+
+    match commands::BatchInput::try_parse_from(&tokens) {
+        Ok(input) => {
+            if matches!(input.cmd, commands::BatchCmd::Refresh) {
+                match view.invalidate_via_outer() {
+                    Ok(()) => {
+                        let _ = write_json_line(
+                            out,
+                            &serde_json::json!({
+                                "status": "ok",
+                                "message": "Caches invalidated, Store re-opened",
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        view.error_count.fetch_add(1, Ordering::Relaxed);
+                        let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                        let _ = write_envelope_error(out, code.as_str(), &msg);
+                    }
+                }
+                return;
+            }
+            match commands::dispatch(view, input.cmd) {
+                Ok(value) => {
+                    let _ = write_json_line(out, &value);
+                }
+                Err(e) => {
+                    view.error_count.fetch_add(1, Ordering::Relaxed);
+                    let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                    let _ = write_envelope_error(out, code.as_str(), &msg);
+                }
+            }
+        }
+        Err(e) => {
+            view.error_count.fetch_add(1, Ordering::Relaxed);
+            let msg = format!("{e:#}");
+            tracing::warn!(
+                code = error_codes::PARSE_ERROR,
+                error = %msg,
+                "Daemon dispatch: clap parse failed"
+            );
+            let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
+        }
+    }
+}
+
+/// #1127: shared helper for `BatchContext::get_ref` and `BatchView::get_ref`.
+/// Operates directly on the LRU mutex so both paths see the same cache.
+fn get_ref_via_refs_lru(
+    refs: &Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>,
+    config: &cqs::config::Config,
+    name: &str,
+) -> Result<()> {
+    let _span = tracing::info_span!("batch_get_ref", %name).entered();
+    {
+        let mut cache = refs.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(existing) = cache.peek(name) {
+            if existing.is_stale() {
+                tracing::info!(
+                    reference = %name,
+                    "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                );
+                cache.pop(name);
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    // Filter to just the target reference instead of loading all (RM-16)
+    let single: Vec<_> = config
+        .references
+        .iter()
+        .filter(|r| r.name == name)
+        .cloned()
+        .collect();
+    if single.is_empty() {
+        anyhow::bail!(
+            "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+            name
+        );
+    }
+    let loaded = cqs::reference::load_references(&single);
+    let found = loaded.into_iter().next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to load reference '{}'. Run 'cqs ref update {}' first.",
+            name,
+            name
+        )
+    })?;
+    refs.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .put(name.to_string(), Arc::new(found));
+    Ok(())
+}
+
+/// #1127: shared helper for `BatchContext::get_all_refs` and the equivalent
+/// on `BatchView`. Walks the configured references, partitions hits/misses
+/// against the LRU under one lock, then loads misses outside the lock and
+/// re-acquires briefly to stash them.
+fn get_all_refs_via_refs_lru(
+    refs: &Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>,
+    config: &cqs::config::Config,
+) -> Result<Vec<Arc<ReferenceIndex>>> {
+    let _span = tracing::info_span!("batch_get_all_refs").entered();
+    if config.references.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut hits: Vec<Arc<ReferenceIndex>> = Vec::with_capacity(config.references.len());
+    let mut misses: Vec<cqs::config::ReferenceConfig> = Vec::new();
+    {
+        let mut cache = refs.lock().unwrap_or_else(|p| p.into_inner());
+        for cfg in &config.references {
+            if let Some(existing) = cache.peek(&cfg.name) {
+                if existing.is_stale() {
+                    tracing::info!(
+                        reference = %cfg.name,
+                        "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                    );
+                    cache.pop(&cfg.name);
+                    misses.push(cfg.clone());
+                } else {
+                    let arc = cache
+                        .get(&cfg.name)
+                        .map(Arc::clone)
+                        .expect("peek hit above");
+                    hits.push(arc);
+                }
+            } else {
+                misses.push(cfg.clone());
+            }
+        }
+    }
+
+    if !misses.is_empty() {
+        let loaded = cqs::reference::load_references(&misses);
+        let mut cache = refs.lock().unwrap_or_else(|p| p.into_inner());
+        for ri in loaded {
+            let arc = Arc::new(ri);
+            cache.put(arc.name.clone(), Arc::clone(&arc));
+            hits.push(arc);
+        }
+    }
+
+    Ok(hits)
+}
+
+// ─── BatchView ──────────────────────────────────────────────────────────────
+//
+// #1127: snapshot of the BatchContext fields a daemon-dispatchable handler
+// needs. Built by `BatchContext::checkout_view` (or `build_view` for stdin
+// batch) under a brief critical section, then handed to handlers running
+// outside the BatchContext lock. The view owns Arc clones — no borrows
+// into BatchContext — so it is `Send` and survives lock release.
+//
+// Two reasons this is the right shape (vs `RwLock<BatchContext>`):
+//
+//   1. `BatchContext: !Sync` because of its `RefCell`/`Cell` interior; the
+//      single-threaded "stable cache" pattern is correct for everything
+//      except the store / refs LRU. Converting all 12+ cells to RwLock is
+//      a much bigger refactor than #1127 implies (see design brief
+//      `docs/design/1126-1127-lock-topology.md`).
+//   2. The brief mutex hold is essentially free even under contention, while
+//      RwLock readers still have to acquire reader-state atomically per
+//      query. The snapshot pattern collapses both concerns into one short
+//      critical section.
+//
+// The view exposes a read-only-handler API mirroring the BatchContext
+// surface: `store()`, `vector_index()`, `embedder()`, `reranker()`,
+// `notes()`, `audit_state()`, `config()`, `splade_encoder()`,
+// `ensure_splade_index()`, `borrow_splade_index()`, `get_all_refs()`,
+// `get_ref()`, `file_set()`, `call_graph()`, `test_chunks()`. The
+// `Refresh` handler back-channels through `outer_lock` — the only
+// daemon-dispatchable command that mutates BatchContext interior.
+pub(crate) struct BatchView {
+    store: Arc<Store<ReadOnly>>,
+    /// HNSW snapshot taken at checkout. Handlers that need a fresh build
+    /// fall back to `lazy_vector_index` which rebuilds via the store; the
+    /// rebuild path doesn't touch BatchContext (the Arc<dyn VectorIndex>
+    /// is constructed fresh each time the cached snapshot is None and
+    /// stays local to this view).
+    cached_vector_index: Option<Arc<dyn VectorIndex>>,
+    cached_base_vector_index: Option<Arc<dyn VectorIndex>>,
+    cached_call_graph: Option<Arc<cqs::store::CallGraph>>,
+    cached_test_chunks: Option<Arc<Vec<cqs::store::ChunkSummary>>>,
+    cached_notes: Option<Arc<Vec<cqs::note::Note>>>,
+    cached_file_set: Option<Arc<HashSet<PathBuf>>>,
+    cached_splade_index: Option<Arc<cqs::splade::index::SpladeIndex>>,
+    /// Shared `Arc<Mutex<...>>` to the BatchContext's splade_index cell.
+    /// `ensure_splade_index` populates it for handlers running through
+    /// the view; the BatchContext path picks up the same value on its
+    /// next `checkout_view`.
+    splade_index_cell: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
+    /// Shared `Arc<OnceLock<...>>` to the BatchContext embedder slot. Init
+    /// from the view propagates to the BatchContext (and any other view
+    /// holding the same Arc).
+    embedder_slot: Arc<OnceLock<Arc<Embedder>>>,
+    reranker_slot: Arc<OnceLock<cqs::Reranker>>,
+    splade_encoder_slot: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
+    /// Shared refs LRU.
+    refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
+    /// Cheap clones at checkout. A reload mid-flight returns stale data for
+    /// the in-flight query — matches today's daemon behavior.
+    config: cqs::config::Config,
+    audit_state: cqs::audit::AuditMode,
+    pub model_config: cqs::embedder::ModelConfig,
+    pub root: PathBuf,
+    pub cqs_dir: PathBuf,
+    /// Counter handles. `Arc<AtomicU64>` so handlers and the daemon both
+    /// see the same counter without re-locking the outer BatchContext.
+    pub(crate) error_count: Arc<AtomicU64>,
+    pub(crate) query_count: Arc<AtomicU64>,
+    started_at: Instant,
+    /// Back-channel to the BatchContext mutex for the `Refresh` handler.
+    /// `None` for stdin batch (single-threaded — `BatchContext::invalidate`
+    /// is reachable directly through the path that owns the dispatch).
+    /// `Some` for daemon connections, where `dispatch_refresh` re-acquires
+    /// the mutex briefly to call `invalidate`.
+    outer_lock: Option<Arc<Mutex<BatchContext>>>,
+}
+
+impl BatchView {
+    /// Cloned `Arc<Store>` — handlers hold this for the lifetime of the
+    /// dispatch.
+    pub fn store(&self) -> Arc<Store<ReadOnly>> {
+        Arc::clone(&self.store)
+    }
+
+    /// HNSW vector index for this snapshot. If the cache was empty at
+    /// checkout, build a fresh one from the snapshot store (no BatchContext
+    /// access needed).
+    pub fn vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
+        if let Some(arc) = &self.cached_vector_index {
+            if !arc.is_poisoned() {
+                return Ok(Some(Arc::clone(arc)));
+            }
+            tracing::warn!(
+                name = arc.name(),
+                "BatchView vector index is poisoned — rebuilding from snapshot store"
+            );
+        }
+        let _span = tracing::info_span!("batch_view_vector_index_init").entered();
+        let idx = build_vector_index(&self.store, &self.cqs_dir, self.config.ef_search)?;
+        Ok(idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() }))
+    }
+
+    pub fn base_vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
+        if let Some(arc) = &self.cached_base_vector_index {
+            return Ok(Some(Arc::clone(arc)));
+        }
+        let _span = tracing::info_span!("batch_view_base_vector_index_init").entered();
+        let idx = crate::cli::build_base_vector_index(&self.store, &self.cqs_dir)?;
+        Ok(idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() }))
+    }
+
+    pub fn embedder(&self) -> Result<&Embedder> {
+        if let Some(e) = self.embedder_slot.get() {
+            return Ok(e.as_ref());
+        }
+        let _span = tracing::info_span!("batch_view_embedder_init").entered();
+        let e = Embedder::new(self.model_config.clone())?;
+        let _ = self.embedder_slot.set(Arc::new(e));
+        Ok(self
+            .embedder_slot
+            .get()
+            .map(|arc| arc.as_ref())
+            .expect("embedder OnceLock populated by set() above"))
+    }
+
+    pub fn reranker(&self) -> Result<&cqs::Reranker> {
+        if let Some(r) = self.reranker_slot.get() {
+            return Ok(r);
+        }
+        let _span = tracing::info_span!("batch_view_reranker_init").entered();
+        let r = cqs::Reranker::with_section(self.config.reranker.clone())
+            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+        let _ = self.reranker_slot.set(r);
+        Ok(self
+            .reranker_slot
+            .get()
+            .expect("reranker OnceLock populated by set() above"))
+    }
+
+    pub fn splade_encoder(&self) -> Option<&cqs::splade::SpladeEncoder> {
+        let opt = self.splade_encoder_slot.get_or_init(|| {
+            let model_dir = cqs::splade::resolve_splade_model_dir()?;
+            match cqs::splade::SpladeEncoder::new(
+                &model_dir,
+                cqs::splade::SpladeEncoder::default_threshold(),
+            ) {
+                Ok(enc) => Some(enc),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %model_dir.display(),
+                        error = %e,
+                        "SPLADE encoder unavailable in batch mode"
+                    );
+                    None
+                }
+            }
+        });
+        opt.as_ref()
+    }
+
+    pub fn ensure_splade_index(&self) {
+        if self
+            .splade_index_cell
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
+            return;
+        }
+        let generation = match self.store.splade_generation() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to read splade_generation — skipping SPLADE for this view; \
+                     search will fall back to dense-only"
+                );
+                return;
+            }
+        };
+        let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
+        let build_start = Instant::now();
+        let (idx, rebuilt) =
+            cqs::splade::index::SpladeIndex::load_or_build(&splade_path, generation, || match self
+                .store
+                .load_all_sparse_vectors()
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to load sparse vectors, falling back to cosine-only"
+                    );
+                    Vec::new()
+                }
+            });
+        let build_ms = build_start.elapsed().as_millis() as u64;
+        if idx.is_empty() {
+            return;
+        }
+        if rebuilt {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                rebuild_ms = build_ms,
+                "SPLADE index rebuilt from SQLite (view)"
+            );
+            if build_ms > 30_000 {
+                tracing::warn!(
+                    rebuild_ms = build_ms,
+                    chunks = idx.len(),
+                    "SPLADE index rebuild exceeded 30s (view)"
+                );
+            }
+        } else {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                load_ms = build_ms,
+                "SPLADE index loaded from disk (view)"
+            );
+        }
+        *self
+            .splade_index_cell
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(idx));
+    }
+
+    pub fn borrow_splade_index(&self) -> Option<Arc<cqs::splade::index::SpladeIndex>> {
+        // Prefer the snapshot taken at checkout; fall back to the live
+        // cell so a freshly populated index (via `ensure_splade_index`
+        // during this dispatch) is observable without re-checkout.
+        if let Some(arc) = &self.cached_splade_index {
+            return Some(Arc::clone(arc));
+        }
+        self.splade_index_cell
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(Arc::clone)
+    }
+
+    /// Borrowed access keeps the snapshot Config in place; clone-on-access
+    /// in case a handler wants ownership.
+    #[allow(
+        dead_code,
+        reason = "pinned for handler-rename parity with BatchContext"
+    )]
+    pub fn config(&self) -> cqs::config::Config {
+        self.config.clone()
+    }
+
+    pub fn audit_state(&self) -> cqs::audit::AuditMode {
+        self.audit_state.clone()
+    }
+
+    pub fn notes(&self) -> Arc<Vec<cqs::note::Note>> {
+        if let Some(notes) = &self.cached_notes {
+            return Arc::clone(notes);
+        }
+        // Snapshot was empty at checkout — load once from disk into a fresh
+        // Arc; we don't write back into the BatchContext cache because
+        // the next `checkout_view` after a real reindex will re-stat
+        // notes.toml anyway.
+        let notes_path = self.root.join("docs/notes.toml");
+        let notes = if notes_path.exists() {
+            cqs::note::parse_notes(&notes_path).unwrap_or_else(|e| {
+                tracing::warn!(
+                    path = %notes_path.display(),
+                    error = %e,
+                    "Failed to parse notes.toml for view"
+                );
+                vec![]
+            })
+        } else {
+            vec![]
+        };
+        Arc::new(notes)
+    }
+
+    pub fn file_set(&self) -> Result<Arc<HashSet<PathBuf>>> {
+        if let Some(fs) = &self.cached_file_set {
+            return Ok(Arc::clone(fs));
+        }
+        let _span = tracing::info_span!("batch_view_file_set").entered();
+        let exts: Vec<&str> = cqs::language::REGISTRY.supported_extensions().collect();
+        let files = cqs::enumerate_files(&self.root, &exts, false)?;
+        let set: HashSet<PathBuf> = files.into_iter().collect();
+        Ok(Arc::new(set))
+    }
+
+    pub fn call_graph(&self) -> Result<Arc<cqs::store::CallGraph>> {
+        if let Some(g) = &self.cached_call_graph {
+            return Ok(Arc::clone(g));
+        }
+        let _span = tracing::info_span!("batch_view_call_graph").entered();
+        Ok(self.store.get_call_graph()?)
+    }
+
+    pub fn test_chunks(&self) -> Result<Arc<Vec<cqs::store::ChunkSummary>>> {
+        if let Some(tc) = &self.cached_test_chunks {
+            return Ok(Arc::clone(tc));
+        }
+        let _span = tracing::info_span!("batch_view_test_chunks").entered();
+        Ok(self.store.find_test_chunks()?)
+    }
+
+    pub fn get_ref(&self, name: &str) -> Result<()> {
+        get_ref_via_refs_lru(&self.refs, &self.config, name)
+    }
+
+    pub fn get_all_refs(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
+        get_all_refs_via_refs_lru(&self.refs, &self.config)
+    }
+
+    pub fn borrow_ref(&self, name: &str) -> Option<Arc<ReferenceIndex>> {
+        let mut cache = self.refs.lock().unwrap_or_else(|p| p.into_inner());
+        cache.get(name).map(Arc::clone)
+    }
+
+    /// Build a [`cqs::daemon_translate::PingResponse`] from the snapshot.
+    /// Mirrors `BatchContext::ping_snapshot` but reads through the shared
+    /// Arc handles in the view.
+    pub fn ping_snapshot(&self) -> cqs::daemon_translate::PingResponse {
+        let last_indexed_at = std::fs::metadata(self.cqs_dir.join(cqs::INDEX_DB_FILENAME))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+        let splade_loaded = self
+            .splade_encoder_slot
+            .get()
+            .map(|opt| opt.is_some())
+            .unwrap_or(false);
+        cqs::daemon_translate::PingResponse {
+            model: self.model_config.name.clone(),
+            dim: u32::try_from(self.model_config.dim).unwrap_or(u32::MAX),
+            uptime_secs: self.started_at.elapsed().as_secs(),
+            last_indexed_at,
+            error_count: self.error_count.load(Ordering::Relaxed),
+            total_queries: self.query_count.load(Ordering::Relaxed),
+            splade_loaded,
+            reranker_loaded: self.reranker_slot.get().is_some(),
+        }
+    }
+
+    /// Invalidate all caches and reopen the store. The Refresh handler
+    /// path. Daemon connections back-channel through `outer_lock`; stdin
+    /// batch falls through and returns an error if no back-channel is
+    /// available (refresh from stdin batch goes through BatchContext
+    /// directly, not via this method).
+    pub fn invalidate_via_outer(&self) -> Result<()> {
+        match &self.outer_lock {
+            Some(lock) => {
+                let ctx = lock.lock().unwrap_or_else(|p| p.into_inner());
+                ctx.invalidate()
+            }
+            None => Err(anyhow::anyhow!(
+                "BatchView::invalidate_via_outer called without outer_lock — \
+                 refresh from this surface should go through BatchContext directly"
+            )),
+        }
     }
 }
 
@@ -1554,12 +2213,14 @@ pub(crate) fn create_context_with_runtime(
     .apply_env_overrides();
 
     Ok(BatchContext {
-        store: RefCell::new(store),
+        // #1127: Mutex<Arc<Store>> instead of RefCell<Store> so `checkout_view`
+        // can clone the Arc out cheaply.
+        store: Mutex::new(Arc::new(store)),
         runtime,
-        embedder: OnceLock::new(),
+        embedder: Arc::new(OnceLock::new()),
         // P2 #69: was OnceLock — see field doc.
         config: RefCell::new(None),
-        reranker: OnceLock::new(),
+        reranker: Arc::new(OnceLock::new()),
         // P2 #69: was OnceLock — see field doc.
         audit_state: RefCell::new(None),
         hnsw: RefCell::new(None),
@@ -1568,9 +2229,9 @@ pub(crate) fn create_context_with_runtime(
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
         notes_cache: RefCell::new(None),
-        splade_encoder: OnceLock::new(),
-        splade_index: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
+        splade_encoder: Arc::new(OnceLock::new()),
+        splade_index: Arc::new(Mutex::new(None)),
+        refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
         root,
         cqs_dir,
         model_config,
@@ -1578,13 +2239,13 @@ pub(crate) fn create_context_with_runtime(
         // PF-V1.25-10: None means the first check runs unconditionally; the
         // 100ms rate-limit kicks in only after the first successful stat.
         last_staleness_check: Cell::new(None),
-        error_count: AtomicU64::new(0),
+        error_count: Arc::new(AtomicU64::new(0)),
         last_command_time: Cell::new(Instant::now()),
         // Task B2: `started_at` is captured here so `uptime_secs` in the
         // ping response measures from BatchContext creation — which is the
         // meaningful event for the daemon (the embedder load may be later).
         started_at: Instant::now(),
-        query_count: AtomicU64::new(0),
+        query_count: Arc::new(AtomicU64::new(0)),
     })
 }
 
@@ -1612,12 +2273,12 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
     let runtime = std::sync::Arc::clone(store.runtime());
 
     Ok(BatchContext {
-        store: RefCell::new(store),
+        store: Mutex::new(Arc::new(store)),
         runtime,
-        embedder: OnceLock::new(),
+        embedder: Arc::new(OnceLock::new()),
         // P2 #69: was OnceLock — see field doc.
         config: RefCell::new(None),
-        reranker: OnceLock::new(),
+        reranker: Arc::new(OnceLock::new()),
         // P2 #69: was OnceLock — see field doc.
         audit_state: RefCell::new(None),
         hnsw: RefCell::new(None),
@@ -1626,21 +2287,21 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
         notes_cache: RefCell::new(None),
-        splade_encoder: OnceLock::new(),
-        splade_index: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
+        splade_encoder: Arc::new(OnceLock::new()),
+        splade_index: Arc::new(Mutex::new(None)),
+        refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
         root,
         cqs_dir: cqs_dir.to_path_buf(),
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
         index_id: Cell::new(index_id),
         last_staleness_check: Cell::new(None),
-        error_count: AtomicU64::new(0),
+        error_count: Arc::new(AtomicU64::new(0)),
         last_command_time: Cell::new(Instant::now()),
         // Task B2: same fields as production constructor — keep parity so
         // ping-handler tests against `create_test_context` see realistic
         // counter / uptime values.
         started_at: Instant::now(),
-        query_count: AtomicU64::new(0),
+        query_count: Arc::new(AtomicU64::new(0)),
     })
 }
 
@@ -1650,6 +2311,15 @@ pub(crate) fn cmd_batch() -> Result<()> {
 
     let ctx = create_context()?;
     ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
+                // #1127: clone the error-count Arc out before wrapping ctx in
+                // `Arc<Mutex<...>>`. The pre-dispatch error paths (line-too-long,
+                // tokenize-fail, NUL-byte) bump it without holding the mutex.
+    let error_count = Arc::clone(&ctx.error_count);
+    // Wrap the BatchContext in Arc<Mutex> so the same view-based dispatch
+    // path used by the daemon also drives `cqs batch`. The shell is
+    // single-threaded so contention is zero; the wrapper is a couple of
+    // pointer indirections per command.
+    let ctx = Arc::new(Mutex::new(ctx));
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -1677,7 +2347,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
 
         // Reject lines exceeding the configured cap to prevent further processing.
         if line.len() > max_line_len {
-            ctx.error_count.fetch_add(1, Ordering::Relaxed);
+            error_count.fetch_add(1, Ordering::Relaxed);
             // Error is written as a JSON envelope so the agent can pick up the
             // (code, message) pair. Mentioning the env var lets operators bump
             // the cap without grepping source.
@@ -1711,7 +2381,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
         let tokens = match shell_words::split(trimmed) {
             Ok(t) => t,
             Err(e) => {
-                ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                error_count.fetch_add(1, Ordering::Relaxed);
                 let msg = format!("Parse error: {}", e);
                 tracing::warn!(
                     code = crate::cli::json_envelope::error_codes::PARSE_ERROR,
@@ -1741,7 +2411,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
         // the same downstream commands and must share the same input
         // validation. RT-INJ-2.
         if let Err(msg) = reject_null_tokens(&tokens) {
-            ctx.error_count.fetch_add(1, Ordering::Relaxed);
+            error_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 code = crate::cli::json_envelope::error_codes::INVALID_INPUT,
                 error = msg,
@@ -1759,19 +2429,48 @@ pub(crate) fn cmd_batch() -> Result<()> {
             continue;
         }
 
-        // Check idle timeout — clear ONNX sessions if idle too long
-        ctx.check_idle_timeout();
+        // #1127: build a snapshot view (briefly locks ctx, runs idle sweep
+        // and clones the snapshot Arcs). The shell loop is single-threaded
+        // so the lock is uncontended; we still go through the same path as
+        // the daemon to keep one dispatch shape across surfaces.
+        let view = checkout_view_from_arc(&ctx);
+
+        // Refresh shortcut — same shape as the daemon path. Need to do this
+        // here because pipelines can't carry Refresh and the dispatch path
+        // for Refresh re-locks the BatchContext mutex via outer_lock.
+        if let Ok(parsed) = commands::BatchInput::try_parse_from(&tokens) {
+            if matches!(parsed.cmd, commands::BatchCmd::Refresh) {
+                match ctx.lock().unwrap_or_else(|p| p.into_inner()).invalidate() {
+                    Ok(()) => {
+                        let _ = write_json_line(
+                            &mut stdout,
+                            &serde_json::json!({
+                                "status": "ok",
+                                "message": "Caches invalidated, Store re-opened",
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        error_count.fetch_add(1, Ordering::Relaxed);
+                        let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                        let _ = write_envelope_error(&mut stdout, code.as_str(), &msg);
+                    }
+                }
+                let _ = stdout.flush();
+                continue;
+            }
+        }
 
         // Pipeline detection: if tokens contain a standalone `|`, route to pipeline
         if pipeline::has_pipe_token(&tokens) {
-            match pipeline::execute_pipeline(&ctx, &tokens, trimmed) {
+            match pipeline::execute_pipeline(&view, &tokens, trimmed) {
                 Ok(value) => {
                     if write_json_line(&mut stdout, &value).is_err() {
                         break;
                     }
                 }
                 Err(pe) => {
-                    ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                    error_count.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(
                         code = pe.code,
                         error = %pe.message,
@@ -1785,14 +2484,14 @@ pub(crate) fn cmd_batch() -> Result<()> {
         } else {
             // Single command — existing path
             match commands::BatchInput::try_parse_from(&tokens) {
-                Ok(input) => match commands::dispatch(&ctx, input.cmd) {
+                Ok(input) => match commands::dispatch(&view, input.cmd) {
                     Ok(value) => {
                         if write_json_line(&mut stdout, &value).is_err() {
                             break;
                         }
                     }
                     Err(e) => {
-                        ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                        error_count.fetch_add(1, Ordering::Relaxed);
                         // P2 #33: redact_error walks the source chain and
                         // emits a stable (code, message) pair instead of
                         // echoing the raw anyhow chain. Full unredacted
@@ -1805,7 +2504,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
                     }
                 },
                 Err(e) => {
-                    ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                    error_count.fetch_add(1, Ordering::Relaxed);
                     let msg = format!("{e:#}");
                     tracing::warn!(
                         code = crate::cli::json_envelope::error_codes::PARSE_ERROR,

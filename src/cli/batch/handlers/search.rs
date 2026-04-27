@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use super::super::types::ChunkOutput;
-use super::super::BatchContext;
+use super::super::BatchView;
 use crate::cli::args::SearchArgs;
 
 /// Dispatches a search query and returns results as JSON.
@@ -25,7 +25,7 @@ use crate::cli::args::SearchArgs;
 /// * The language parameter is invalid
 /// * Store operations fail
 pub(in crate::cli::batch) fn dispatch_search(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     args: &SearchArgs,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %args.query).entered();
@@ -235,11 +235,13 @@ pub(in crate::cli::batch) fn dispatch_search(
     };
     let index = index.as_deref();
 
+    // #1127: borrow_splade_index now returns Option<Arc<SpladeIndex>>; deref
+    // through the Arc when handing the &SpladeIndex to search_hybrid.
     let splade_index_ref = ctx.borrow_splade_index();
 
     let splade_arg = splade_query
         .as_ref()
-        .and_then(|sq| splade_index_ref.as_ref().map(|si| (si, sq)));
+        .and_then(|sq| splade_index_ref.as_ref().map(|si| (si.as_ref(), sq)));
 
     let threshold = args.threshold;
     let results = if audit_mode.is_active() || splade_arg.is_some() {
@@ -556,7 +558,7 @@ mod tests {
         ]);
 
         let args = parse_search_args(&["process_data", "--name-only"]);
-        let json = dispatch_search(&ctx, &args).expect("dispatch_search failed");
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search failed");
 
         assert_eq!(json["query"], "process_data");
         assert_eq!(json["total"], 1, "Expected exactly 1 matching chunk");
@@ -609,7 +611,7 @@ mod tests {
         // "parse" is a prefix of parse_config (score 0.9) and a substring of
         // do_parse_config (score 0.7). The prefix-match must rank first.
         let args = parse_search_args(&["parse", "--name-only"]);
-        let json = dispatch_search(&ctx, &args).expect("dispatch_search failed");
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search failed");
 
         let results = json["results"].as_array().expect("results is array");
         assert!(
@@ -664,7 +666,8 @@ mod tests {
 
         // Default limit is 5 (per SearchArgs `#[arg(default_value = "5")]`).
         let default = parse_search_args(&["handler", "--name-only"]);
-        let json = dispatch_search(&ctx, &default).expect("dispatch_search failed");
+        let json =
+            dispatch_search(&ctx.build_view(None), &default).expect("dispatch_search failed");
         let results = json["results"].as_array().unwrap();
         assert_eq!(
             results.len(),
@@ -684,7 +687,7 @@ mod tests {
 
         // Explicit limit=3 narrows further.
         let three = parse_search_args(&["handler", "--name-only", "--limit", "3"]);
-        let json = dispatch_search(&ctx, &three).expect("dispatch_search failed");
+        let json = dispatch_search(&ctx.build_view(None), &three).expect("dispatch_search failed");
         assert_eq!(json["total"], 3);
         assert_eq!(json["results"].as_array().unwrap().len(), 3);
     }
@@ -708,7 +711,7 @@ mod tests {
         );
 
         let args = parse_search_args(&["zxyvwu_no_such_name", "--name-only"]);
-        let json = dispatch_search(&ctx, &args).expect("dispatch_search failed");
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search failed");
 
         assert_eq!(json["query"], "zxyvwu_no_such_name");
         assert_eq!(json["total"], 0, "No-match query must return total=0");
@@ -747,7 +750,7 @@ mod tests {
         ]);
 
         let args = parse_search_args(&["validate_input", "--name-only"]);
-        let json = dispatch_search(&ctx, &args).expect("dispatch_search failed");
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search failed");
 
         let results = json["results"].as_array().unwrap();
         assert_eq!(
@@ -793,7 +796,7 @@ mod tests {
     fn test_dispatch_search_invalid_include_type_errors_fast() {
         let (_dir, ctx) = empty_ctx();
         let args = parse_search_args(&["anything", "--include-type", "not_a_real_type"]);
-        let err = dispatch_search(&ctx, &args)
+        let err = dispatch_search(&ctx.build_view(None), &args)
             .expect_err("Invalid --include-type must error, not silently return all types");
         let msg = format!("{err:#}");
         assert!(
@@ -814,7 +817,7 @@ mod tests {
     fn test_dispatch_search_invalid_exclude_type_errors_fast() {
         let (_dir, ctx) = empty_ctx();
         let args = parse_search_args(&["anything", "--exclude-type", "bogusbogus"]);
-        let err = dispatch_search(&ctx, &args)
+        let err = dispatch_search(&ctx.build_view(None), &args)
             .expect_err("Invalid --exclude-type must error, not silently accept");
         let msg = format!("{err:#}");
         assert!(

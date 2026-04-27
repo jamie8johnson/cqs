@@ -180,14 +180,14 @@ fn install_sigterm_handler() {
 #[cfg(unix)]
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
 ///
-/// SEC-V1.25-1: `batch_ctx` is a shared `Mutex<BatchContext>`; reads and
+/// SEC-V1.25-1: `batch_ctx` is a shared `Arc<Mutex<BatchContext>>`; reads and
 /// writes happen without the lock so concurrent clients can parse their
 /// requests in parallel. Only the dispatch itself acquires the mutex, so a
 /// slow/malicious client's 5 s read window no longer wedges the accept loop
 /// or sibling handlers.
 fn handle_socket_client(
     mut stream: std::os::unix::net::UnixStream,
-    batch_ctx: &Mutex<super::batch::BatchContext>,
+    batch_ctx: &Arc<Mutex<super::batch::BatchContext>>,
 ) {
     let span = tracing::info_span!("daemon_query", command = tracing::field::Empty);
     let _enter = span.enter();
@@ -370,7 +370,7 @@ fn handle_socket_client(
     }
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // PF-V1.29-1: Pass pre-split tokens straight to `dispatch_tokens`
+        // PF-V1.29-1: Pass pre-split tokens straight to `dispatch_via_view`
         // instead of joining them back into a shell string for
         // `dispatch_line` to immediately re-split via `shell_words::split`.
         // The round-trip is pure waste on every daemon query and a latent
@@ -378,16 +378,18 @@ fn handle_socket_client(
         // `shell_words::join` quotes them, `shell_words::split` unquotes
         // them, but any asymmetry silently corrupts the token boundary.
         let mut output = Vec::new();
-        // SEC-V1.25-1: hold the BatchContext lock only across dispatch.
-        // Poisoned mutex → recover the inner ctx (dispatch_tokens itself
-        // catches panics via catch_unwind above, but some unrelated
-        // panic path could still leave the lock poisoned).
-        {
-            let ctx = batch_ctx
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            ctx.dispatch_tokens(command, &args, &mut output);
-        }
+        // #1127: hold the BatchContext mutex only long enough to snapshot
+        // a `BatchView` (microseconds — clones a few `Arc`s under one
+        // critical section). The handler then runs against the view
+        // outside any BatchContext lock, so two slow queries (gather,
+        // task) overlap on wall-clock. Refresh — the only daemon-
+        // dispatchable command that mutates BatchContext interior — is
+        // re-locked briefly inside `dispatch_via_view` via the view's
+        // `outer_lock` back-channel. Poisoned mutex → recover the inner
+        // ctx (the catch_unwind around this closure handles dispatch
+        // panics; an unrelated poisoning could still slip in).
+        let view = super::batch::checkout_view_from_arc(batch_ctx);
+        super::batch::dispatch_via_view(&view, command, &args, &mut output);
         // P2 #62 (post-v1.27.0 audit, partial): the audit's full fix routes
         // dispatch through a `dispatch_value` sibling in `batch/mod.rs` that
         // returns `Value` directly. That refactor is owned by another agent
@@ -1890,16 +1892,19 @@ pub fn cmd_watch(
                 // timeout (or a slow legitimate client) could wedge the
                 // accept loop for `5 * N` seconds and DoS the daemon.
                 //
-                // P2.64 (scope=structural — known issue): every dispatch path
-                // currently serializes through this single `Mutex<BatchContext>`,
-                // so a slow query (LLM batch fetch, large gather) blocks every
-                // other reader. Audit recommends pivoting to `RwLock` with
-                // read-heavy paths (search/callers/stats) taking `read()` and
-                // mutators (sweep_idle_sessions, set_pending_*) taking `write()`,
-                // OR splitting BatchContext into per-resource sub-locks.
-                // Either approach requires walking the dispatch table to
-                // classify every command — out of scope for this batch.
-                // Filed as a follow-on issue; this comment is the breadcrumb.
+                // #1127 (post-#1145 — closes P2.64): the BatchContext mutex
+                // is now held only across `checkout_view_from_arc` — a few
+                // microseconds to clone the snapshot Arcs and drop the
+                // guard. Handlers run outside the lock against a
+                // `BatchView`, so two slow queries (gather, task) overlap
+                // on wall-clock. The Refresh handler back-channels through
+                // the view's `outer_lock` to take the BatchContext mutex
+                // briefly for the invalidation.
+                //
+                // The accept loop's idle sweep (`sweep_idle_sessions`) and
+                // the new daemon-dispatch path are both safe under
+                // try_lock / brief lock semantics — they never block on a
+                // long handler.
                 let ctx = Arc::new(Mutex::new(ctx));
                 let in_flight = Arc::new(AtomicUsize::new(0));
                 // P3 #125: resolve cap once at startup so a `CQS_MAX_DAEMON_CLIENTS`
@@ -5506,5 +5511,201 @@ mod adversarial_socket_tests {
         );
 
         join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #1127 — daemon parallelism regression tests
+    //
+    // These tests pin the lock-topology contract introduced by #1127
+    // (post-#1145): the daemon's `handle_socket_client` path must hold the
+    // BatchContext mutex only across `checkout_view_from_arc` (a few
+    // microseconds), never across the handler body. Two slow handlers must
+    // run in parallel; a fast handler issued mid-flight must not block on
+    // a slow one.
+    //
+    // The handlers used here are `test-sleep` (a `#[cfg(test)]`-gated
+    // BatchCmd variant in `cli::batch::commands`) and `notes list`
+    // (production handler, read-only, no embedder load). Both are
+    // intentionally embedder-free so the tests stay fast in CI.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Issue two `test-sleep --ms 300` calls concurrently. The new lock
+    /// topology should let them overlap so wall-clock ≈ max(t1, t2) ≈ 300 ms.
+    /// Pre-fix (single mutex held across dispatch) they would serialize,
+    /// blowing past 600 ms.
+    ///
+    /// Threshold of 1.5× single-handler time gives generous headroom for
+    /// thread scheduling jitter on busy CI hosts; pre-fix behavior was
+    /// deterministically 2.0× and the gap is wide enough to be reliable.
+    #[test]
+    fn daemon_two_slow_handlers_run_in_parallel() {
+        let (_dir, ctx) = test_ctx();
+
+        // Each handler sleeps for SLEEP_MS. If they run sequentially the
+        // total wall-clock must be ≈ 2 * SLEEP_MS; in parallel it must be
+        // ≈ 1 * SLEEP_MS. The threshold (1.5×) gives wide headroom.
+        const SLEEP_MS: u64 = 300;
+        let payload =
+            format!("{{\"command\":\"test-sleep\",\"args\":[\"--ms\",\"{SLEEP_MS}\"]}}\n");
+
+        let start = std::time::Instant::now();
+        let (mut client_a, handle_a) = spawn_handler(Arc::clone(&ctx));
+        let (mut client_b, handle_b) = spawn_handler(Arc::clone(&ctx));
+
+        // Issue both requests as close to simultaneously as possible.
+        client_a.write_all(payload.as_bytes()).expect("write A");
+        client_b.write_all(payload.as_bytes()).expect("write B");
+
+        // Read both responses on this thread; the workers run independently.
+        let line_a = read_line(&mut client_a);
+        let line_b = read_line(&mut client_b);
+        let elapsed = start.elapsed();
+
+        // Both must succeed with the test envelope.
+        let resp_a = parse_response(&line_a);
+        let resp_b = parse_response(&line_b);
+        assert_eq!(
+            resp_a.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "A response: {line_a}"
+        );
+        assert_eq!(
+            resp_b.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "B response: {line_b}"
+        );
+
+        // The load-bearing assertion: two SLEEP_MS handlers must overlap.
+        // 1.5× headroom for scheduling; pre-fix behavior is deterministically
+        // 2× so the gap is wide enough to avoid flake.
+        let max_allowed_ms = (SLEEP_MS as f64 * 1.5) as u128;
+        assert!(
+            elapsed.as_millis() < max_allowed_ms,
+            "two slow handlers must run in parallel: elapsed {} ms, ceiling {} ms (single-handler {} ms × 1.5). \
+             Pre-#1127 behavior would be ≈{} ms — if you see that, the BatchContext mutex is being held across dispatch.",
+            elapsed.as_millis(),
+            max_allowed_ms,
+            SLEEP_MS,
+            SLEEP_MS * 2
+        );
+
+        join_worker(client_a, handle_a);
+        join_worker(client_b, handle_b);
+    }
+
+    /// While a slow `test-sleep` is in flight, an inbound `notes list` query
+    /// must complete promptly. Pre-fix the second connection's
+    /// `batch_ctx.lock()` would block on the first connection's
+    /// dispatch-spanning lock for the full sleep duration.
+    ///
+    /// Bounded at 200 ms which is generous: `notes list` against an empty
+    /// store does a single `notes_cache` build (~µs to ms) plus the
+    /// envelope write. The slow handler's 500 ms sleep gives a wide
+    /// observation window.
+    #[test]
+    fn daemon_notes_list_unblocked_by_inflight_gather() {
+        let (_dir, ctx) = test_ctx();
+
+        const SLOW_SLEEP_MS: u64 = 500;
+        let slow_payload =
+            format!("{{\"command\":\"test-sleep\",\"args\":[\"--ms\",\"{SLOW_SLEEP_MS}\"]}}\n");
+        let fast_payload = "{\"command\":\"notes\",\"args\":[]}\n";
+
+        let (mut slow_client, slow_handle) = spawn_handler(Arc::clone(&ctx));
+        slow_client
+            .write_all(slow_payload.as_bytes())
+            .expect("write slow");
+
+        // Give the slow handler a moment to arrive at its sleep. 30 ms is
+        // enough on every machine the daemon runs on; the slow sleep is
+        // 500 ms so this still leaves >450 ms of overlap.
+        thread::sleep(Duration::from_millis(30));
+
+        let fast_start = std::time::Instant::now();
+        let (mut fast_client, fast_handle) = spawn_handler(Arc::clone(&ctx));
+        fast_client
+            .write_all(fast_payload.as_bytes())
+            .expect("write fast");
+        let fast_line = read_line(&mut fast_client);
+        let fast_elapsed = fast_start.elapsed();
+
+        // The fast handler must have come back well before the slow one
+        // finishes. 200 ms ceiling is comfortably above any reasonable
+        // notes-list latency on an empty store.
+        const FAST_LATENCY_CEIL_MS: u128 = 200;
+        assert!(
+            fast_elapsed.as_millis() < FAST_LATENCY_CEIL_MS,
+            "fast handler must not block on the in-flight slow handler: \
+             fast latency {} ms, ceiling {} ms. Pre-#1127 the fast handler \
+             would queue behind the slow one for ≈{} ms.",
+            fast_elapsed.as_millis(),
+            FAST_LATENCY_CEIL_MS,
+            SLOW_SLEEP_MS
+        );
+
+        // Sanity: the fast response is a real success envelope.
+        let resp = parse_response(&fast_line);
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "fast response should be ok envelope: {fast_line}"
+        );
+
+        // Drain the slow handler before we drop the test fixture.
+        let slow_line = read_line(&mut slow_client);
+        let slow_resp = parse_response(&slow_line);
+        assert_eq!(slow_resp.get("status").and_then(|v| v.as_str()), Some("ok"));
+
+        join_worker(fast_client, fast_handle);
+        join_worker(slow_client, slow_handle);
+    }
+
+    /// `handle_socket_client` must round-trip `query_count` and
+    /// `error_count` correctly under the new short-lock contract — bumping
+    /// the counters happens via the view's `Arc<AtomicU64>` (no re-lock of
+    /// the BatchContext mutex). Issue three requests (one parse error, two
+    /// successful pings); the snapshot read after must show
+    /// `total_queries >= 3` and `error_count >= 1`.
+    ///
+    /// Maps to the test planned in `docs/audit-fix-prompts.md:5660`.
+    #[test]
+    fn handle_socket_client_round_trips_stats() {
+        let (_dir, ctx) = test_ctx();
+
+        // Issue (a) a parse error, (b) two pings. Each request goes through
+        // a fresh client/handler pair so the test exactly mirrors the
+        // production accept-loop behavior (one connection per request).
+        for payload in [
+            "{\"command\":\"bogus_command\",\"args\":[]}\n",
+            "{\"command\":\"ping\",\"args\":[]}\n",
+            "{\"command\":\"ping\",\"args\":[]}\n",
+        ] {
+            let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+            client.write_all(payload.as_bytes()).expect("write payload");
+            let _ = read_line(&mut client);
+            join_worker(client, handle);
+        }
+
+        // Snapshot the counters via the BatchContext directly (the test has
+        // privileged access; no socket query needed). The view path bumps
+        // the same Arc<AtomicU64>, so this read sees the same value the
+        // ping handler would surface.
+        let guard = ctx.lock().unwrap();
+        let total_queries = guard.query_count.load(std::sync::atomic::Ordering::Relaxed);
+        let error_count = guard.error_count.load(std::sync::atomic::Ordering::Relaxed);
+        drop(guard);
+
+        // Three requests reached the dispatch path (NUL/empty would short
+        // circuit before counter bumps; bogus_command parses but clap
+        // rejects, which still counts as a dispatched query).
+        assert!(
+            total_queries >= 3,
+            "query_count must reflect 3 dispatches under the new short-lock contract; got {total_queries}"
+        );
+        // Exactly one parse failure.
+        assert!(
+            error_count >= 1,
+            "error_count must reflect the parse failure; got {error_count}"
+        );
     }
 }

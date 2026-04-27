@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use super::super::BatchContext;
+use super::super::BatchView;
 use cqs::store::DeadConfidence;
 
 /// Identifies and reports dead code in a codebase.
@@ -21,7 +21,7 @@ use cqs::store::DeadConfidence;
 /// # Errors
 /// Returns an error if the code store query fails.
 pub(in crate::cli::batch) fn dispatch_dead(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     include_pub: bool,
     min_confidence: &DeadConfidence,
 ) -> Result<serde_json::Value> {
@@ -59,7 +59,7 @@ pub(in crate::cli::batch) fn dispatch_dead(
 /// # Errors
 /// Returns an error if the file set cannot be retrieved from the context or if the store query fails.
 pub(in crate::cli::batch) fn dispatch_stale(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     count_only: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stale", count_only).entered();
@@ -89,7 +89,7 @@ pub(in crate::cli::batch) fn dispatch_stale(
 /// A `Result` containing a `serde_json::Value` representing the health check report, or an error if the health check fails or serialization fails.
 /// # Errors
 /// Returns an error if retrieving the file set fails, if the health check itself fails, or if serializing the report to JSON fails.
-pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
+pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchView) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_health").entered();
 
     // P3 #123: `Arc<HashSet>` auto-derefs through `&file_set` for the
@@ -111,7 +111,7 @@ pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchContext) -> Result<serde
 /// `Store<ReadWrite>`. Bailing when `apply=true` documents that
 /// invariant instead of silently producing a stale (unapplied) result.
 pub(in crate::cli::batch) fn dispatch_suggest(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     apply: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_suggest", apply).entered();
@@ -149,7 +149,7 @@ pub(in crate::cli::batch) fn dispatch_suggest(
 /// Executes `git diff` against the given base ref (or HEAD) and runs the
 /// review pipeline: diff impact, risk scoring, note matching, staleness.
 pub(in crate::cli::batch) fn dispatch_review(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     base: Option<&str>,
     tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
@@ -183,7 +183,7 @@ pub(in crate::cli::batch) fn dispatch_review(
 /// Note: In batch mode, gate failure is reported in the JSON output rather than
 /// causing a process exit, since the batch session must continue.
 pub(in crate::cli::batch) fn dispatch_ci(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     base: Option<&str>,
     gate: &crate::cli::GateThreshold,
     tokens: Option<usize>,
