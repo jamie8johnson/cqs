@@ -1308,6 +1308,115 @@ fn write_meta_atomic(path: &Path, meta: &CagraMeta) -> Result<(), CagraError> {
     Ok(())
 }
 
+/// GPU vector index backend. Priority 100 — preferred over HNSW when:
+///   - chunk count ≥ `CQS_CAGRA_THRESHOLD` (default 5000), and
+///   - a CUDA-capable GPU is available.
+///
+/// Tries the persisted index first (`{cqs_dir}/index.cagra`), falls back
+/// to a fresh build from the store on load failure, and best-effort
+/// persists the result. Returns `Ok(None)` when the GPU/threshold gate
+/// fails or the build itself fails — the selector then falls through to
+/// HNSW.
+#[cfg(feature = "cuda-index")]
+pub struct CagraBackend;
+
+#[cfg(feature = "cuda-index")]
+impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for CagraBackend {
+    fn name(&self) -> &'static str {
+        "cagra"
+    }
+
+    fn priority(&self) -> i32 {
+        100
+    }
+
+    fn try_open(
+        &self,
+        ctx: &crate::index::BackendContext<'_, Mode>,
+    ) -> anyhow::Result<Option<Box<dyn VectorIndex>>> {
+        let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000);
+        let chunk_count = ctx.store.chunk_count().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
+            0
+        });
+        if chunk_count < cagra_threshold || !CagraIndex::gpu_available() {
+            tracing::debug!(
+                chunk_count,
+                cagra_threshold,
+                gpu_available = CagraIndex::gpu_available(),
+                "CAGRA backend ineligible — falling through"
+            );
+            return Ok(None);
+        }
+
+        // Issue #950: try the persisted index first. cuVS native
+        // deserialize is fast (~sub-second even for tens of thousands of
+        // vectors) compared to the ~30s rebuild on a mid-size repo, so
+        // the daemon cold-start cost drops dramatically across systemctl
+        // restarts / `cqs index` cycles. `load` validates magic, dim,
+        // chunk_count, and blake3 before handing the blob to cuVS, so a
+        // stale file falls through to rebuild rather than corrupting
+        // results.
+        let cagra_path = ctx.cqs_dir.join("index.cagra");
+        if cagra_persist_enabled() && cagra_path.exists() {
+            match CagraIndex::load(&cagra_path, ctx.store.dim(), chunk_count as usize) {
+                Ok(idx) => {
+                    tracing::info!(
+                        backend = "cagra",
+                        source = "persisted",
+                        vectors = idx.len(),
+                        chunk_count,
+                        cagra_threshold,
+                        "Vector index backend selected"
+                    );
+                    return Ok(Some(Box::new(idx) as Box<dyn VectorIndex>));
+                }
+                Err(e) => {
+                    // Sidecar mismatch / stale / corrupt — nuke both files
+                    // so the next run doesn't pay the same load-then-fail
+                    // cost and instead jumps straight to the rebuild path.
+                    tracing::warn!(
+                        error = %e,
+                        path = %cagra_path.display(),
+                        "CAGRA persisted load failed, rebuilding from store"
+                    );
+                    CagraIndex::delete_persisted(&cagra_path);
+                }
+            }
+        }
+
+        match CagraIndex::build_from_store(ctx.store, ctx.store.dim()) {
+            Ok(idx) => {
+                tracing::info!(
+                    backend = "cagra",
+                    source = "rebuilt",
+                    vectors = idx.len(),
+                    chunk_count,
+                    cagra_threshold,
+                    "Vector index backend selected"
+                );
+                if cagra_persist_enabled() {
+                    if let Err(e) = idx.save_with_store(&cagra_path, ctx.store) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %cagra_path.display(),
+                            "Failed to persist CAGRA index (will rebuild next restart)"
+                        );
+                    }
+                }
+                Ok(Some(Box::new(idx) as Box<dyn VectorIndex>))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to build CAGRA index, falling through to HNSW");
+                Ok(None)
+            }
+        }
+    }
+}
+
 #[cfg(all(test, feature = "cuda-index"))]
 mod tests {
     use super::*;

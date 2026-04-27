@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Result;
+use cqs::store::ClearHnswDirty;
 
 use super::config::find_project_root;
 use super::definitions;
@@ -419,193 +420,33 @@ pub(crate) fn build_vector_index<Mode: ClearHnswDirty>(
 ///
 /// Generic over the store's typestate. The self-heal write (clearing the
 /// `hnsw_dirty` flag after a successful checksum verify) is gated to
-/// `Store<ReadWrite>` via [`try_clear_hnsw_dirty`]; a daemon with a
-/// `Store<ReadOnly>` will still observe the verify result but cannot
-/// persist the cleared flag. That's intentional — the daemon never
-/// mutates the DB, and the next writable open (`cqs index`, `cqs gc`)
-/// re-runs this path and performs the clear.
+/// `Store<ReadWrite>` via [`cqs::store::ClearHnswDirty::try_clear_hnsw_dirty`];
+/// a daemon with a `Store<ReadOnly>` will still observe the verify result
+/// but cannot persist the cleared flag. That's intentional — the daemon
+/// never mutates the DB, and the next writable open (`cqs index`,
+/// `cqs gc`) re-runs this path and performs the clear.
+///
+/// Backend selection is delegated to [`cqs::index::backends`]: each
+/// backend declares its own priority and runs its own open path
+/// (CAGRA gates on GPU + threshold + persistence; HNSW handles dirty-flag
+/// self-heal). The first backend whose `try_open` returns `Some` wins.
 pub(crate) fn build_vector_index_with_config<Mode: ClearHnswDirty>(
     store: &cqs::Store<Mode>,
     cqs_dir: &Path,
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _span = tracing::info_span!("build_vector_index_with_config").entered();
-    let _ = store; // Used only with gpu-index feature
-    #[cfg(feature = "cuda-index")]
-    {
-        let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5000);
-        let chunk_count = store.chunk_count().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
-            0
-        });
-        if chunk_count >= cagra_threshold && cqs::cagra::CagraIndex::gpu_available() {
-            // Issue #950: try the persisted index first. cuVS native
-            // deserialize is fast (~sub-second even for tens of thousands of
-            // vectors) compared to the ~30s rebuild on a mid-size repo, so
-            // the daemon cold-start cost drops dramatically across
-            // systemctl restarts / `cqs index` cycles. `load` validates
-            // magic, dim, chunk_count, and blake3 before handing the blob
-            // to cuVS, so a stale file falls through to rebuild rather
-            // than corrupting results.
-            let cagra_path = cqs_dir.join("index.cagra");
-            if cqs::cagra::cagra_persist_enabled() && cagra_path.exists() {
-                match cqs::cagra::CagraIndex::load(&cagra_path, store.dim(), chunk_count as usize) {
-                    Ok(idx) => {
-                        tracing::info!(
-                            backend = "cagra",
-                            source = "persisted",
-                            vectors = idx.len(),
-                            chunk_count,
-                            cagra_threshold,
-                            "Vector index backend selected"
-                        );
-                        return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
-                    }
-                    Err(e) => {
-                        // Sidecar mismatch / stale / corrupt — nuke both files
-                        // so the next run doesn't pay the same load-then-fail
-                        // cost and instead jumps straight to the rebuild path.
-                        tracing::warn!(
-                            error = %e,
-                            path = %cagra_path.display(),
-                            "CAGRA persisted load failed, rebuilding from store"
-                        );
-                        cqs::cagra::CagraIndex::delete_persisted(&cagra_path);
-                    }
-                }
-            }
-
-            match cqs::cagra::CagraIndex::build_from_store(store, store.dim()) {
-                Ok(idx) => {
-                    // OB-NEW-7: single structured log per backend selection so
-                    // operators can grep a consistent `backend=` field instead
-                    // of string-matching three distinct format messages.
-                    tracing::info!(
-                        backend = "cagra",
-                        source = "rebuilt",
-                        vectors = idx.len(),
-                        chunk_count,
-                        cagra_threshold,
-                        "Vector index backend selected"
-                    );
-
-                    // Best-effort persist: a failed save is never fatal —
-                    // we just rebuild on next startup. Keeping the warn at
-                    // info level so operators can tell persistence is off
-                    // without having to dig through debug logs.
-                    if cqs::cagra::cagra_persist_enabled() {
-                        if let Err(e) = idx.save_with_store(&cagra_path, store) {
-                            tracing::warn!(
-                                error = %e,
-                                path = %cagra_path.display(),
-                                "Failed to persist CAGRA index (will rebuild next restart)"
-                            );
-                        }
-                    }
-
-                    return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to build CAGRA index, falling back to HNSW");
-                }
-            }
-        } else if chunk_count < cagra_threshold {
-            // OB-NEW-7: promoted debug! → info! with structured fields so the
-            // backend-selection decision is visible at the default log level.
-            tracing::info!(
-                backend = "hnsw",
-                reason = "index_below_cagra_threshold",
-                chunk_count,
-                cagra_threshold,
-                "Vector index backend selected"
-            );
-        } else {
-            tracing::info!(
-                backend = "hnsw",
-                reason = "gpu_unavailable",
-                chunk_count,
-                cagra_threshold,
-                "Vector index backend selected"
-            );
-        }
-    }
-    // Check for crash between SQLite commit and HNSW save (RT-DATA-6).
-    // When dirty flag is set, verify the HNSW files pass their checksum before
-    // falling back to brute-force. If checksum passes, the crash happened AFTER
-    // the files were written — the dirty flag is a false positive, clear it
-    // and proceed. If checksum fails, the files are genuinely stale.
-    //
-    // EH-16: surface metadata-read failures. Conservative fallback is still
-    // "treat as dirty" but we emit a breadcrumb so mid-migration / corrupt
-    // DB conditions don't get swallowed.
-    // AC-V1.25-8: per-kind dirty flag (Enriched vs Base) so clearing one
-    // does not silently mark the other clean.
-    let dirty = match store.is_hnsw_dirty(cqs::HnswKind::Enriched) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                hnsw_kind = "enriched",
-                "Failed to read hnsw_dirty flag, treating as dirty"
-            );
-            true
-        }
-    };
-    if dirty {
-        match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index") {
-            Ok(()) => {
-                tracing::info!(
-                    "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
-                );
-                Mode::try_clear_hnsw_dirty(store, cqs::HnswKind::Enriched);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "HNSW index stale (checksum mismatch). \
-                     Falling back to brute-force search. Run 'cqs index' to rebuild."
-                );
-                return Ok(None);
-            }
-        }
-    }
-    Ok(cqs::HnswIndex::try_load_with_ef(
+    let ctx = cqs::index::BackendContext {
         cqs_dir,
+        store,
         ef_search,
-        store.dim(),
-    ))
-}
-
-/// Typestate bridge for self-heal operations that conditionally clear the
-/// `hnsw_dirty` flag. `ReadWrite` performs the write; `ReadOnly` is a
-/// no-op that logs a debug trace. Keeps [`build_vector_index_with_config`]
-/// generic over `Mode` without per-site feature flags or match arms.
-pub(crate) trait ClearHnswDirty: 'static {
-    /// Clear the dirty flag for `kind` if this typestate supports writes,
-    /// or no-op otherwise.
-    fn try_clear_hnsw_dirty(store: &cqs::Store<Self>, kind: cqs::HnswKind)
-    where
-        Self: Sized;
-}
-
-impl ClearHnswDirty for cqs::store::ReadWrite {
-    fn try_clear_hnsw_dirty(store: &cqs::Store<Self>, kind: cqs::HnswKind) {
-        if let Err(e) = store.set_hnsw_dirty(kind, false) {
-            tracing::warn!(error = %e, "Failed to clear dirty flag");
+    };
+    for backend in cqs::index::backends::<Mode>() {
+        if let Some(idx) = backend.try_open(&ctx)? {
+            return Ok(Some(idx));
         }
     }
-}
-
-impl ClearHnswDirty for cqs::store::ReadOnly {
-    fn try_clear_hnsw_dirty(_store: &cqs::Store<Self>, kind: cqs::HnswKind) {
-        tracing::debug!(
-            ?kind,
-            "HNSW self-heal skipped on read-only store; next writable open will clear the flag"
-        );
-    }
+    Ok(None)
 }
 
 /// Phase 5: load the base (non-enriched) HNSW index for adaptive routing.
