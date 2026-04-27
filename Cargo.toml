@@ -293,7 +293,7 @@ predicates = "3"
 serial_test = "3"
 # Mock HTTP server for LocalProvider unit + integration tests (OpenAI-compat).
 # Used only under `cfg(test)` behind the `llm-summaries` feature.
-httpmock = "0.7"
+httpmock = "0.8"
 
 [patch.crates-io]
 cuvs = { git = "https://github.com/jamie8johnson/cuvs-patched.git", branch = "add-serialize-deserialize" }  # adds search_with_filter + CAGRA serialize/deserialize wrappers
