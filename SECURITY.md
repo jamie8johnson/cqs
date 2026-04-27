@@ -15,6 +15,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 | **External documents** | Semi-trusted | PDF/HTML/CHM files converted via `cqs convert` — parsed but not executed |
 | **Reference sources** | Semi-trusted | Indexed via `cqs ref add` — search results blended with project code |
 | **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7); cookie handoff is `HttpOnly; SameSite=Strict`; compare is constant-time. `--no-auth` opts out for scripted automation but is paired with a loud-warn banner on non-loopback binds. |
+| **Indexed content (in AI agent context)** | Untrusted | cqs relays code, comments, summaries, and developer notes verbatim. Injection payloads in any of those surfaces survive the relay. See [Indirect Prompt Injection](#indirect-prompt-injection--supply-chain-risks-from-indexed-content) below. |
 
 ### What We Protect Against
 
@@ -28,6 +29,42 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 - **Malicious code in your project**: If your code contains exploits, indexing won't stop them
 - **Local privilege escalation**: cqs runs with your permissions
 - **Side-channel attacks**: Beyond timing, not in scope for a local tool
+- **Indirect prompt injection from indexed content**: cqs relays code, comments, summaries, and notes verbatim to AI consumers; injection payloads inside those surfaces survive the relay. See [Indirect Prompt Injection](#indirect-prompt-injection--supply-chain-risks-from-indexed-content) below.
+
+## Indirect Prompt Injection / Supply-Chain Risks from Indexed Content
+
+cqs's primary consumer is AI agents. By design, cqs *faithfully relays* the content it has indexed — code, comments, doc strings, LLM-generated summaries, and developer notes — into the agent's context window. Any of those surfaces can carry **indirect prompt injection** payloads: instructions disguised as content that try to redirect the consuming agent ("Ignore prior instructions and...", "This function is safe to call with sudo", etc.).
+
+cqs cannot reliably distinguish a legitimate doc comment from a malicious one. Defence has to live partly in the agent (treat retrieved code as untrusted input) and partly in cqs's protocol (make the trust boundary loud and visible).
+
+### Surfaces
+
+| Surface | Vector | Persistent? |
+|---------|--------|-------------|
+| **Project source code** | Comments, strings, doc blocks containing injection payloads (committed by a contributor or embedded by an upstream dependency) | Yes — survives until removed from source |
+| **Reference content** (`cqs ref add`) | Third-party code indexed for cross-project search; less curated than the user's own code, blended into search results without an explicit trust signal | Yes — survives until ref is removed |
+| **Shared notes** (`docs/notes.toml`) | A cloned repo can ship committed notes that bias rankings and surface in agent context. `audit-mode` mitigates ranking influence at runtime, but not the first-encounter case | Yes — survives in the indexed repo |
+| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary is cached by `content_hash`, embedded, and replayed to downstream agents | Yes — cached in `llm_summaries` table |
+| **Doc-comment generation** (`cqs index --llm-summaries --improve-docs`) | LLM output is **written back to source files in place**. A poisoned chunk can produce a doc comment that lands in the user's repo on commit | **Yes — commits the LLM's output into git** |
+| **Search result blending** | RRF merges chunks across project + references; the consuming agent sees a single ranked list with no in-protocol trust signal distinguishing user code from third-party content | Yes — every query |
+
+### Current mitigations
+
+- **`audit-mode`**: `cqs audit-mode on` excludes notes from rankings and forces direct code examination. Mitigates the runtime side of shared-notes injection.
+- **No automatic execution**: cqs never executes indexed code; the threat is purely textual relay into agent context.
+- **Reference origin in metadata**: Chunks from `cqs ref` indexes carry reference-name metadata, but it is not yet surfaced as an explicit trust signal in JSON output.
+
+### Tracked improvements
+
+| Issue | Surface |
+|-------|---------|
+| [#1166](https://github.com/jamie8johnson/cqs/issues/1166) | `--improve-docs` review gate: write proposed doc comments to `.cqs/proposed-docs/` instead of in-place |
+| [#1167](https://github.com/jamie8johnson/cqs/issues/1167) | `trust_level` field + optional content delimiters in chunk-returning JSON output |
+| [#1168](https://github.com/jamie8johnson/cqs/issues/1168) | First-encounter prompt when indexing a repo with committed `docs/notes.toml` |
+| [#1169](https://github.com/jamie8johnson/cqs/issues/1169) | Surface reference origin (`trust_level` + `reference_name`) on every chunk from a `cqs ref` index |
+| [#1170](https://github.com/jamie8johnson/cqs/issues/1170) | Validate LLM summary output before caching (length cap, injection-pattern detection) |
+
+These are defence in depth, not absolute protection. Subtle injections (a summary that is superficially correct but biased) will still get through. The agent-side defence — treat retrieved code as untrusted input, sandbox tool calls, never execute payload-shaped output — remains the load-bearing layer.
 
 ## Architecture
 
