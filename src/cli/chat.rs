@@ -160,6 +160,10 @@ pub(crate) fn cmd_chat() -> Result<()> {
         .map(|v| v != "0")
         .unwrap_or(true);
     let history_path = ctx.cqs_dir.join("chat_history");
+    // #1127: wrap in Arc<Mutex> so the chat path uses the same view-based
+    // dispatch as the daemon and `cmd_batch`. Single-threaded loop, so
+    // contention is zero — wrapper is two pointer indirections per command.
+    let ctx = std::sync::Arc::new(std::sync::Mutex::new(ctx));
 
     let helper = ChatHelper {
         commands: command_names(),
@@ -236,12 +240,15 @@ pub(crate) fn cmd_chat() -> Result<()> {
                     continue;
                 }
 
-                // Check idle timeout
-                ctx.check_idle_timeout();
+                // #1127: snapshot a BatchView. Idle-timeout sweep runs inside
+                // `checkout_view_from_arc`. Refresh re-locks the BatchContext
+                // briefly via the view's outer_lock; everything else runs
+                // outside the lock.
+                let view = batch::checkout_view_from_arc(&ctx);
 
                 // Execute: pipeline or single command
                 let result = if batch::has_pipe_token(&tokens) {
-                    match batch::execute_pipeline(&ctx, &tokens, trimmed) {
+                    match batch::execute_pipeline(&view, &tokens, trimmed) {
                         Ok(value) => value,
                         Err(pe) => {
                             tracing::warn!(code = pe.code, message = %pe.message, command = trimmed, "Pipeline failed");
@@ -251,7 +258,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
                     }
                 } else {
                     match batch::BatchInput::try_parse_from(&tokens) {
-                        Ok(input) => match batch::dispatch(&ctx, input.cmd) {
+                        Ok(input) => match batch::dispatch(&view, input.cmd) {
                             Ok(value) => value,
                             Err(e) => {
                                 tracing::warn!(error = %e, command = trimmed, "Command failed");

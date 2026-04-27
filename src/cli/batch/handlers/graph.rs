@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use super::super::BatchContext;
+use super::super::BatchView;
 
 /// Dispatches a dependency query for a given name, returning either the types used by it or the code locations that use it.
 ///
@@ -22,7 +22,7 @@ use super::super::BatchContext;
 ///
 /// Returns an error if the store query fails.
 pub(in crate::cli::batch) fn dispatch_deps(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     reverse: bool,
     limit: usize,
@@ -61,7 +61,7 @@ pub(in crate::cli::batch) fn dispatch_deps(
 ///
 /// A `Result` containing a JSON array of caller objects, each with `name`, `file`, and `line` fields. Returns an error if the store query fails.
 pub(in crate::cli::batch) fn dispatch_callers(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     limit: usize,
     cross_project: bool,
@@ -101,7 +101,7 @@ pub(in crate::cli::batch) fn dispatch_callers(
 ///
 /// Returns an error if the store fails to retrieve the callees for the given function name.
 pub(in crate::cli::batch) fn dispatch_callees(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     limit: usize,
     cross_project: bool,
@@ -141,7 +141,7 @@ pub(in crate::cli::batch) fn dispatch_callees(
 ///
 /// Returns an error if the target cannot be resolved or if the impact analysis fails.
 pub(in crate::cli::batch) fn dispatch_impact(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     depth: usize,
     limit: usize,
@@ -231,7 +231,7 @@ fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
 ///
 /// Returns an error if the target chunk cannot be resolved, if the call graph cannot be built, or if test chunks cannot be retrieved from the store.
 pub(in crate::cli::batch) fn dispatch_test_map(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     max_depth: usize,
     limit: usize,
@@ -290,7 +290,7 @@ pub(in crate::cli::batch) fn dispatch_test_map(
 ///
 /// Returns an error if target resolution fails or if the call graph cannot be constructed.
 pub(in crate::cli::batch) fn dispatch_trace(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     source: &str,
     target: &str,
     max_depth: usize,
@@ -373,7 +373,7 @@ pub(in crate::cli::batch) fn dispatch_trace(
 ///
 /// Returns an error if the database query fails.
 pub(in crate::cli::batch) fn dispatch_related(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     name: &str,
     limit: usize,
 ) -> Result<serde_json::Value> {
@@ -390,7 +390,7 @@ pub(in crate::cli::batch) fn dispatch_related(
 
 /// Runs diff-aware impact analysis and returns results as JSON.
 pub(in crate::cli::batch) fn dispatch_impact_diff(
-    ctx: &BatchContext,
+    ctx: &BatchView,
     base: Option<&str>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_impact_diff", ?base).entered();
@@ -511,7 +511,8 @@ mod tests {
     #[test]
     fn dispatch_callers_returns_seeded_caller() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let json = dispatch_callers(&ctx, "callee_fn", 10, false).expect("dispatch_callers");
+        let json = dispatch_callers(&ctx.build_view(None), "callee_fn", 10, false)
+            .expect("dispatch_callers");
         // `build_callers` returns `Vec<CallerEntry>`, which serializes as a
         // bare JSON array (no enclosing key).
         let callers = json
@@ -526,7 +527,8 @@ mod tests {
     #[test]
     fn dispatch_callees_returns_seeded_callee() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let json = dispatch_callees(&ctx, "caller_fn", 10, false).expect("dispatch_callees");
+        let json = dispatch_callees(&ctx.build_view(None), "caller_fn", 10, false)
+            .expect("dispatch_callees");
         // `build_callees` emits `CalleesOutput { name, calls, count }` —
         // `name` field, not `function`.
         assert_eq!(json["name"], "caller_fn");
@@ -542,7 +544,8 @@ mod tests {
     #[test]
     fn dispatch_related_returns_envelope_for_seeded_chunk() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let json = dispatch_related(&ctx, "caller_fn", 10).expect("dispatch_related");
+        let json =
+            dispatch_related(&ctx.build_view(None), "caller_fn", 10).expect("dispatch_related");
         // build_related_output structure varies — pin envelope shape only:
         // it must be an object (not an array, not null) with at least one
         // top-level key.
@@ -562,6 +565,6 @@ mod tests {
         // either succeeds (returning empty) or errors. Either way the
         // handler returns Result, so this test simply asserts no-panic and
         // a Result outcome.
-        let _ = dispatch_impact_diff(&ctx, None);
+        let _ = dispatch_impact_diff(&ctx.build_view(None), None);
     }
 }
