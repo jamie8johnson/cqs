@@ -44,7 +44,15 @@ pub(super) fn prepare_for_embedding(
         .collect();
     let mut global_hits: HashMap<String, Embedding> = HashMap::new();
     if let Some(cache) = global_cache {
-        match cache.read_batch(&hashes, model_fingerprint, dim) {
+        // #1128: pre-enrichment helper writes/reads the post-enrichment
+        // `Embedding` purpose. EmbeddingBase has no producer here yet —
+        // when enrichment caching lands it will own its own purpose.
+        match cache.read_batch(
+            &hashes,
+            model_fingerprint,
+            cqs::cache::CachePurpose::Embedding,
+            dim,
+        ) {
             Ok(hits) => {
                 if !hits.is_empty() {
                     tracing::debug!(hits = hits.len(), "Global cache hits");
@@ -308,9 +316,12 @@ pub(super) fn gpu_embed_stage(
                         .zip(new_embeddings.iter())
                         .map(|(chunk, emb)| (chunk.content_hash.as_str(), emb.as_slice()))
                         .collect();
-                    if let Err(e) =
-                        cache.write_batch(&entries, &fingerprint, embedder.embedding_dim())
-                    {
+                    if let Err(e) = cache.write_batch(
+                        &entries,
+                        &fingerprint,
+                        cqs::cache::CachePurpose::Embedding,
+                        embedder.embedding_dim(),
+                    ) {
                         tracing::warn!(error = %e, "Global cache write failed (best-effort)");
                     }
                 }
@@ -439,7 +450,12 @@ pub(super) fn cpu_embed_stage(
                     .zip(embs.iter())
                     .map(|(chunk, emb)| (chunk.content_hash.as_str(), emb.as_slice()))
                     .collect();
-                if let Err(e) = cache.write_batch(&entries, fp, emb.embedding_dim()) {
+                if let Err(e) = cache.write_batch(
+                    &entries,
+                    fp,
+                    cqs::cache::CachePurpose::Embedding,
+                    emb.embedding_dim(),
+                ) {
                     tracing::warn!(error = %e, "Global cache write failed (best-effort)");
                 }
             }
