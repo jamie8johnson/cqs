@@ -57,6 +57,18 @@ pub static SCORING_KNOBS: &[ScoringKnob] = &[
         max: 1000.0,
         cache: true,
     },
+    // type_boost: `cache: false` is load-bearing — `evals/run_sweep.py`
+    // mutates `CQS_TYPE_BOOST` between queries within the same `cqs`
+    // process and expects every call to re-read the env. min just above
+    // 0.0 rejects `0` / negatives that would zero out scores.
+    ScoringKnob {
+        name: "type_boost",
+        env_var: Some("CQS_TYPE_BOOST"),
+        default: 1.2,
+        min: 0.0001,
+        max: 100.0,
+        cache: false,
+    },
 ];
 
 /// Config-override map, populated once via [`set_overrides_from_config`].

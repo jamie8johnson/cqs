@@ -29,58 +29,23 @@ use super::synonyms::expand_query_for_fts;
 
 /// Default multiplicative boost applied to chunks whose type matches the
 /// router-provided type hints. Phase 5 placeholder; never empirically swept.
+///
+/// Mirrors the `type_boost` row in
+/// [`crate::search::scoring::knob::SCORING_KNOBS`] — kept as a const so
+/// tests can reference the canonical default without re-resolving the
+/// table.
 pub(crate) const DEFAULT_TYPE_BOOST_FACTOR: f32 = 1.2;
 
 /// Resolve the type-boost factor used by `finalize_results` Step 4b.
 ///
-/// Reads `CQS_TYPE_BOOST` from the environment if set; otherwise falls back
-/// to [`DEFAULT_TYPE_BOOST_FACTOR`] (1.2x). Invalid values (non-numeric,
-/// non-finite, ≤ 0) log a warning and fall back to the default — we never
-/// want a typo'd env var to multiply scores by zero or NaN.
-///
-/// Re-reads the env var on every call (env::var is a single syscall and we
-/// hit this at most once per search). This is the contract that
-/// `evals/run_sweep.py` relies on: spawn a fresh `cqs` invocation per value
-/// of `CQS_TYPE_BOOST`, no process-level caching to defeat the sweep.
+/// Delegates to the shared scoring-knob resolver — see
+/// [`crate::search::scoring::knob`]. The `type_boost` row uses
+/// `cache: false`, so each call re-reads `CQS_TYPE_BOOST`. This is the
+/// contract that `evals/run_sweep.py` relies on: spawn one `cqs` per
+/// value of `CQS_TYPE_BOOST`, no process-level caching to defeat the
+/// sweep.
 pub(crate) fn type_boost_factor() -> f32 {
-    let raw = match std::env::var("CQS_TYPE_BOOST") {
-        Ok(v) => v,
-        Err(_) => {
-            tracing::debug!(
-                factor = DEFAULT_TYPE_BOOST_FACTOR,
-                "CQS_TYPE_BOOST unset, using default type boost"
-            );
-            return DEFAULT_TYPE_BOOST_FACTOR;
-        }
-    };
-    match raw.parse::<f32>() {
-        Ok(v) if v.is_finite() && v > 0.0 => {
-            tracing::debug!(
-                factor = v,
-                source = "CQS_TYPE_BOOST",
-                "Type boost factor set from env var"
-            );
-            v
-        }
-        Ok(v) => {
-            tracing::warn!(
-                raw = %raw,
-                parsed = v,
-                fallback = DEFAULT_TYPE_BOOST_FACTOR,
-                "CQS_TYPE_BOOST is non-finite or non-positive — using default"
-            );
-            DEFAULT_TYPE_BOOST_FACTOR
-        }
-        Err(e) => {
-            tracing::warn!(
-                raw = %raw,
-                error = %e,
-                fallback = DEFAULT_TYPE_BOOST_FACTOR,
-                "CQS_TYPE_BOOST not parseable as f32 — using default"
-            );
-            DEFAULT_TYPE_BOOST_FACTOR
-        }
-    }
+    crate::search::scoring::knob::resolve_knob("type_boost")
 }
 
 impl<Mode> Store<Mode> {
