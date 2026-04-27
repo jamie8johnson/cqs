@@ -110,6 +110,13 @@ Core finding: R@5 is alpha-insensitive on this corpus state across [0, 1]. The O
 **Daemon:**
 - [ ] **Daemon: full CLI parity** — subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification.
 
+**Watch mode:**
+- [ ] **Adaptive debounce — idle-flush instead of fixed window.** Today: 500ms (1500ms on WSL/poll) regardless of event burstiness. Replace with "flush after N ms of no events." A bulk `git checkout` (200 files in 50ms) gets one cycle; a slow typist on one file still gets snappy ~500ms. Pre-drain decision in `src/cli/watch/events.rs::collect_events` — `process_file_changes` already drains atomically.
+- [ ] **`cqs status --watch`.** Daemon already tracks queue depth, last-reindex latency, cache hit rate, HNSW dirty duration, in-flight clients, last error — operators currently grep `journalctl --user-unit cqs-watch` for them. Expose as a single status command via the existing daemon socket.
+- [ ] **Whitespace/comment-canonical hash for cache lookup.** `content_hash` covers the whole chunk text today, so reformatting or doc-comment churn re-embeds. Hash a normalized form (whitespace collapsed, comments stripped) for the cache lookup; keep the full hash for store identity. Comment-only edits become free; a `cargo fmt` run no longer re-embeds.
+- [ ] **Parallel reindex across slots.** A save event today reindexes only the active slot. Slots share `content_hash` and the global embedding cache (#1129), so parallel reindex of all slots is near-free with a warm cache — keeps inactive slots from rotting between A/Bs and removes the manual `cqs index --slot` step.
+- [ ] **Kill the periodic full HNSW rebuild.** Today, after `hnsw_rebuild_threshold` inserts the watch loop spawns a background thread to rebuild from scratch (`PendingRebuild` + delta replay in `src/cli/watch/rebuild.rs`). Implement true delete-and-update on the HNSW (mark stale entries, prune in-place) so the rebuild path goes away. Bigger refactor, but the entire content-hash-aware-drain (#1124) machinery exists *only* to bridge this gap.
+
 **Features (queued, no immediate work):**
 - [ ] **Temporal search — `cqs history`** — query by author + time range, ranks by how little a chunk's been touched since. Uses git log + file/line mapping.
 - [ ] **Author-weighted search** — `cqs search "..." --author X --boost 0.5`. Complements temporal search.
