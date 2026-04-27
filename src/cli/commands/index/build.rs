@@ -447,6 +447,16 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
+    // #1126 / P2.60: belt-and-braces final flush of the summary queue
+    // before the index lock is dropped. Each LLM pass also flushes on
+    // its own way out, but residue from a signal-interrupted pass would
+    // otherwise have to wait for the next `cqs index` run. Idempotent
+    // on an empty queue; cheap.
+    #[cfg(feature = "llm-summaries")]
+    if let Err(e) = store.flush_pending_summaries() {
+        tracing::warn!(error = %e, "cmd_index: final flush of summary queue failed; rows retained for next run");
+    }
+
     // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee context
     if !check_interrupted() && stats.total_calls > 0 {
         use crate::cli::enrichment_pass;

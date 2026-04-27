@@ -25,6 +25,7 @@ mod migrations;
 mod notes;
 mod search;
 mod sparse;
+mod summary_queue;
 mod types;
 
 /// Helper types and embedding conversion functions.
@@ -277,6 +278,15 @@ pub struct Store<Mode = ReadWrite> {
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
     chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
+    /// Write-coalescing queue for streamed `llm_summaries` inserts (#1126 / P2.60).
+    ///
+    /// Built unconditionally so the field is uniform across `Mode`s, but
+    /// only `Store<ReadWrite>` exposes the public `queue_summary_write`
+    /// + `flush_pending_summaries` API on top of it. On a `Store<ReadOnly>`
+    /// handle the queue is built and never used — a few hundred bytes of
+    /// dead weight, vs. plumbing a separate optional field through every
+    /// constructor.
+    pub(crate) summary_queue: Arc<summary_queue::PendingSummaryQueue>,
     /// Typestate marker — `ReadOnly` or `ReadWrite`. Zero-sized.
     _mode: PhantomData<Mode>,
 }
@@ -1026,6 +1036,11 @@ fn open_with_config_impl<Mode>(
         })?
         .unwrap_or(crate::EMBEDDING_DIM);
 
+    let summary_queue = Arc::new(summary_queue::PendingSummaryQueue::new(
+        pool.clone(),
+        Arc::clone(&rt),
+    ));
+
     let store: Store<Mode> = Store {
         pool,
         rt,
@@ -1036,6 +1051,7 @@ fn open_with_config_impl<Mode>(
         call_graph_cache: std::sync::OnceLock::new(),
         test_chunks_cache: std::sync::OnceLock::new(),
         chunk_type_map_cache: std::sync::OnceLock::new(),
+        summary_queue,
         _mode: PhantomData,
     };
 

@@ -127,14 +127,24 @@ pub fn llm_summary_pass(
         quiet,
         lock_dir,
     };
-    let api_results = phase2.submit_or_resume(
+    let result = phase2.submit_or_resume(
         client.as_ref(),
         store,
         &batch_items,
         &|s| s.get_pending_batch_id(),
         &|s, id| s.set_pending_batch_id(id),
         &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
-    )?;
+    );
+
+    // #1126 / P2.60: drain the per-Store summary queue regardless of
+    // success/failure. Streamed rows are buffered in-memory — without a
+    // flush they would only land on the next call, widening the
+    // re-fetch window via `fetch_batch_results`. The flush is idempotent.
+    if let Err(e) = store.flush_pending_summaries() {
+        tracing::warn!(error = %e, "final flush of summary queue failed; rows retained for next run");
+    }
+
+    let api_results = result?;
     let api_generated = api_results.len();
 
     tracing::info!(api_generated, cached, skipped, "LLM summary pass complete");
