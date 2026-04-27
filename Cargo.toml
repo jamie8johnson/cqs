@@ -64,7 +64,7 @@ tree-sitter-r = { version = "1.2", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }
 tree-sitter-toml = { version = "0.7", package = "tree-sitter-toml-ng", optional = true }
 tree-sitter-elixir = { version = "0.3", optional = true }
-tree-sitter-erlang = { version = "0.15", optional = true }
+tree-sitter-erlang = { version = "0.16", optional = true }
 tree-sitter-haskell = { version = "0.23", optional = true }
 # tree-sitter-clojure blocked: 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26
 tree-sitter-ocaml = { version = "0.24", optional = true }
