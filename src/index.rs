@@ -138,12 +138,11 @@ pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
 /// Sorted highest-priority first. The selector iterates and takes the first
 /// backend whose `try_open` succeeds.
 pub fn backends<Mode: ClearHnswDirty>() -> Vec<&'static dyn IndexBackend<Mode>> {
-    let mut v: Vec<&'static dyn IndexBackend<Mode>> = Vec::new();
     #[cfg(feature = "cuda-index")]
-    {
-        v.push(&crate::cagra::CagraBackend);
-    }
-    v.push(&crate::hnsw::HnswBackend);
+    let mut v: Vec<&'static dyn IndexBackend<Mode>> =
+        vec![&crate::cagra::CagraBackend, &crate::hnsw::HnswBackend];
+    #[cfg(not(feature = "cuda-index"))]
+    let mut v: Vec<&'static dyn IndexBackend<Mode>> = vec![&crate::hnsw::HnswBackend];
     v.sort_by_key(|b| std::cmp::Reverse(b.priority()));
     v
 }
