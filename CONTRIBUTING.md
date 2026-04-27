@@ -192,6 +192,9 @@ src/
       gc.rs     - Daemon startup/periodic GC sweeps + last_indexed_mtime prune
       events.rs - collect_events + process_file_changes + process_note_changes
       reindex.rs - reindex_files + reindex_notes + SPLADE encoder helpers
+      daemon.rs - spawn_daemon_thread (the --serve accept-loop closure body)
+      tests.rs  - watch unit-test bench (#[cfg(test)])
+      adversarial_socket_tests.rs - adversarial coverage for handle_socket_client (#[cfg(all(test, unix))])
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
     languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
