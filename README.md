@@ -697,6 +697,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
 | `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
+| `CQS_CAGRA_MAX_GPU_BYTES` | (unset) | Hard cap (bytes) on GPU memory the CAGRA index is allowed to allocate. When set, exceeding the cap aborts the build with a clear error rather than OOM-ing the GPU. P2.42. |
 | `CQS_CENTROID_THRESHOLD` | `0.01` | Minimum cosine margin (top1 − top2) for the centroid classifier to commit to a category. Below this, falls back to the rule-based classifier. |
 | `CQS_CONVERT_MAX_FILE_SIZE` | `104857600` (100 MiB) | Max bytes a single-file converter (HTML, Markdown passthrough) will read. Shared across `cqs convert <file.html>` and markdown passthrough. Bump for pathologically large single-file docs; the cap exists as a malicious-input guard, not a normal-case constraint. |
 | `CQS_CONVERT_MAX_PAGES` | `1000` | Max HTML pages processed from a single CHM archive or web-help directory by `cqs convert`. Excess pages are dropped with a warn. Bump for multi-thousand-page vendor docs. |
@@ -710,7 +711,9 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` | `1800` (30 min) | Idle-time periodic GC interval (seconds). A tick fires only once this many seconds have passed since the previous sweep; combined with `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`, keeps GC off the hot path. |
 | `CQS_DAEMON_STARTUP_GC` | `1` | Set to `0` to skip the daemon's startup GC pass (#1024). The startup pass drops chunks for files no longer on disk and chunks whose path is now matched by `.gitignore`. Synchronous, runs once when `cqs watch --serve` starts. |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
+| `CQS_DAEMON_WORKER_THREADS` | `min(num_cpus, 4)` | Worker threads for the daemon's shared tokio runtime (replaces three per-struct runtimes). Bump on large hosts where the default cap leaves cores idle under heavy concurrent client load. |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
+| `CQS_DIFF_EMBEDDING_BATCH_SIZE` | `64` | Batch size for embedding `cqs review --diff` / `cqs impact --diff` chunks. Default scales to ~12 MB at 1024-dim; override for larger models or tight memory budgets. |
 | `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to force queries through the enriched HNSW only, skipping the base (non-enriched) HNSW. Used to A/B the dual-index router during config testing. |
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
@@ -745,11 +748,13 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_LLM_ALLOW_INSECURE` | `0` | Set to `1` to permit `CQS_LLM_API_BASE` to use cleartext `http://`. Without it, any `http://` base is rejected so the API key isn't sent in the clear. Localhost-testing escape hatch only. |
 | `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL. Required when `CQS_LLM_PROVIDER=local`; set to e.g. `http://localhost:8080/v1`. |
 | `CQS_LLM_API_KEY` | (none) | Optional bearer token for `CQS_LLM_PROVIDER=local`. Sent as `Authorization: Bearer $CQS_LLM_API_KEY`. Ignored by the anthropic provider (which uses `ANTHROPIC_API_KEY`). |
+| `CQS_LLM_MAX_BATCH_SIZE` | `10000` | Max chunks per LLM batch (summary or doc-comment). Clamped to `[1, 100_000]`. When the cap is reached, remaining chunks are picked up on the next run. |
 | `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |
 | `CQS_LLM_MAX_TOKENS` | `100` | Max tokens for LLM summary generation |
 | `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries. Required when `CQS_LLM_PROVIDER=local`; must match a model your server exposes. |
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic` (Messages Batches API) or `local` (any OpenAI-compat `/v1/chat/completions` endpoint — llama.cpp, vLLM, Ollama, LMStudio). |
 | `CQS_LOCAL_LLM_CONCURRENCY` | `4` | Worker pool size for `CQS_LLM_PROVIDER=local`. Clamped to `[1, 64]`. |
+| `CQS_LOCAL_LLM_MAX_BODY_BYTES` | `4194304` (4 MiB) | Max response body bytes accepted from a `CQS_LLM_PROVIDER=local` server. Larger bodies are a sign of a misbehaving or hostile endpoint and abort with a clear error rather than OOMing the daemon. Must be > 0. |
 | `CQS_LOCAL_LLM_TIMEOUT_SECS` | `120` | Per-request timeout (seconds) for `CQS_LLM_PROVIDER=local`. Local inference can be slow, so the default is 2× the Anthropic 60s ceiling. |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_BATCH_MAX_LINE_LEN` | `52428800` (50 MiB) | Max bytes per batch-mode line (`cqs batch` stdin and the daemon socket request). Aligned with `CQS_MAX_DIFF_BYTES` so batch-routed diffs aren't capped 50× sooner than the CLI path. |
@@ -779,6 +784,13 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_RERANK_OVER_RETRIEVAL` | `4` | Multiplier on `--limit` for the reranker over-retrieval pool. At `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates so the cross-encoder has recall headroom. Bump for projects where the right answer routinely sits past rank-20 in stage-1. |
 | `CQS_RERANK_POOL_MAX` | `20` | Hard cap on the reranker pool regardless of multiplier. Caps ORT memory + per-batch latency, and avoids weak cross-encoders shuffling noise at deep ranks. Bump on workstations running a known-strong reranker. |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
+| `CQS_SERVE_BLOCKING_PERMITS` | `32` | Max concurrent blocking tasks the `cqs serve` HTTP layer will dispatch (heavy DB reads, embedding inference). Clamped to `[1, 1024]`. SEC-3. |
+| `CQS_SERVE_CHUNK_DETAIL_CALLEES` | `50` | Cap on callees returned by `/api/chunk/{id}` detail. Clamped to `[1, 1000]`. SEC-3. |
+| `CQS_SERVE_CHUNK_DETAIL_CALLERS` | `50` | Cap on callers returned by `/api/chunk/{id}` detail. Clamped to `[1, 1000]`. SEC-3. |
+| `CQS_SERVE_CHUNK_DETAIL_TESTS` | `20` | Cap on tests returned by `/api/chunk/{id}` detail. Clamped to `[1, 1000]`. SEC-3. |
+| `CQS_SERVE_CLUSTER_MAX_NODES` | `50000` | Cap on `/api/embed/2d` nodes (cluster view). Clamped to `[1, 1_000_000]`. SEC-3. |
+| `CQS_SERVE_GRAPH_MAX_EDGES` | `500000` | Cap on `/api/graph` edges. Clamped to `[1, 10_000_000]`. SEC-3. |
+| `CQS_SERVE_GRAPH_MAX_NODES` | `50000` | Cap on `/api/graph` nodes. Clamped to `[1, 1_000_000]`. SEC-3. |
 | `CQS_SLOT` | (unset) | Slot to use for this invocation. Overridden by `--slot` flag, overrides `.cqs/active_slot`. See `cqs slot --help`. |
 | `CQS_CACHE_ENABLED` | `1` | Set `0` to disable the project-scoped embeddings cache for this run (benchmark / debug). Cache lives at `<project>/.cqs/embeddings_cache.db`. |
 | `CQS_CACHE_MAX_BYTES` | (unset) | Soft cap; emits `tracing::warn!` when the embeddings cache DB exceeds this many bytes. Does NOT auto-prune — use `cqs cache prune` / `cqs cache compact`. |
@@ -798,6 +810,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. Disabled by default. |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
+| `CQS_TRAIN_GIT_SHOW_MAX_BYTES` | `52428800` (50 MiB) | Max bytes retrieved per file via `git show` during training-data extraction. Files above the cap are skipped; bump to capture larger generated files (schema dumps, vendored corpora). |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |
 | `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
