@@ -308,6 +308,13 @@ pub(crate) enum BatchCmd {
     /// from a fixed string, so we don't need any flags here. The handler
     /// returns the JSON payload of `cqs::daemon_translate::PingResponse`.
     Ping,
+    /// Watch-mode freshness snapshot — returns the latest `WatchSnapshot`.
+    ///
+    /// #1182: zero-arg command served by `cqs watch --serve`. The CLI
+    /// `cqs status --watch-fresh [--json]` is the user-facing surface;
+    /// the daemon returns the JSON payload of `cqs::watch_status::WatchSnapshot`.
+    /// `cqs batch` (no watch loop) returns the default `unknown` snapshot.
+    Status,
     /// Show help
     Help,
     /// #1127 (test-only): sleep `--ms` milliseconds before returning. Used by
@@ -380,6 +387,7 @@ macro_rules! for_each_batch_cmd_pipeability {
             unit_variants: {
                 (Refresh, false)
                 (Ping, false)
+                (Status, false)
                 (Help, false)
             }
         }
@@ -593,6 +601,7 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
         BatchCmd::Gc { .. } => handlers::dispatch_gc(ctx),
         BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
         BatchCmd::Ping => handlers::dispatch_ping(ctx),
+        BatchCmd::Status => handlers::dispatch_status(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
         #[cfg(test)]
         BatchCmd::TestSleep { ms } => {

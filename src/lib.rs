@@ -127,6 +127,13 @@ pub(crate) mod where_to_add;
 // reaching into the binary-only `cli` module tree.
 pub mod daemon_translate;
 
+// #1182: freshness snapshot exposed via the daemon socket so `cqs status
+// --watch-fresh` can answer "is the index fresh?". Watch loop publishes
+// every cycle; daemon socket handler reads. Lives in lib so the CLI's
+// `cqs status` command and the `daemon_status` socket helper share the
+// wire shape.
+pub mod watch_status;
+
 #[cfg(test)]
 pub mod test_helpers;
 

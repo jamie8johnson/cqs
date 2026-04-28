@@ -136,6 +136,51 @@ struct WatchState {
     pending_rebuild: Option<PendingRebuild>,
 }
 
+/// #1182: publish a fresh `WatchSnapshot` into the shared `Arc<RwLock<...>>`
+/// the daemon thread reads through. Called once per outer watch-loop tick.
+///
+/// Pure assemble-and-write: pulls the relevant counters off `state`, reads
+/// `index.db`'s mtime as a best-effort `last_synced_at`, computes the
+/// state-machine value, and replaces the snapshot under a brief write lock.
+/// The lock is held only for the move; readers never block on real work.
+fn publish_watch_snapshot(
+    handle: &cqs::watch_status::SharedWatchSnapshot,
+    state: &WatchState,
+    index_path: &std::path::Path,
+) {
+    // Best-effort: missing/unreadable index.db → None.
+    let last_synced_at = std::fs::metadata(index_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let delta_saturated = state
+        .pending_rebuild
+        .as_ref()
+        .map(|p| p.delta_saturated)
+        .unwrap_or(false);
+    let snap = cqs::watch_status::WatchSnapshot::compute(cqs::watch_status::WatchSnapshotInput {
+        pending_files_count: state.pending_files.len(),
+        pending_notes: state.pending_notes,
+        rebuild_in_flight: state.pending_rebuild.is_some(),
+        delta_saturated,
+        incremental_count: state.incremental_count,
+        dropped_this_cycle: state.dropped_this_cycle,
+        last_event: state.last_event,
+        last_synced_at,
+        _marker: std::marker::PhantomData,
+    });
+    // Poison-recovery: another writer panicking shouldn't silently stop
+    // freshness publishing. Recover and overwrite.
+    match handle.write() {
+        Ok(mut guard) => *guard = snap,
+        Err(poisoned) => {
+            tracing::warn!("watch_snapshot RwLock poisoned — recovering and continuing to publish");
+            *poisoned.into_inner() = snap;
+        }
+    }
+}
+
 /// PB-3: Check if a path is under a WSL DrvFS automount root.
 ///
 /// Default automount root is `/mnt/`, but users can customize it via `automount.root`
@@ -523,6 +568,14 @@ pub fn cmd_watch(
     let shared_rt = build_shared_runtime()
         .with_context(|| "Failed to build shared tokio runtime for daemon")?;
 
+    // #1182: shared `Arc<RwLock<WatchSnapshot>>` for cross-thread freshness
+    // publishing. Allocated *before* the daemon spawn so the Arc can be cloned
+    // into both the watch loop (writer) and the daemon thread's BatchContext
+    // (reader via `dispatch_status`). Initial value is the `unknown` snapshot;
+    // the watch loop overwrites it once per cycle below.
+    let watch_snapshot_handle: cqs::watch_status::SharedWatchSnapshot =
+        cqs::watch_status::shared_unknown();
+
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
     //
@@ -552,6 +605,8 @@ pub fn cmd_watch(
             // its BatchContext opens its Store/EmbeddingCache/QueryCache on
             // the same multi-thread pool as the outer watch loop.
             let daemon_runtime = Arc::clone(&shared_rt);
+            // #1182: clone the shared snapshot Arc into the daemon thread.
+            let daemon_watch_snapshot = Arc::clone(&watch_snapshot_handle);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = daemon::spawn_daemon_thread(
@@ -559,6 +614,7 @@ pub fn cmd_watch(
                 daemon_embedder,
                 daemon_model_config,
                 daemon_runtime,
+                daemon_watch_snapshot,
             );
             Some(thread)
         } else {
@@ -1104,6 +1160,15 @@ pub fn cmd_watch(
                 );
             }
         }
+
+        // #1182: publish freshness snapshot once per outer iteration.
+        // Cheap — counter reads, one optional `metadata()` on `index.db`,
+        // and a brief write-lock acquire. Runs every ~100 ms cycle so the
+        // daemon's `dispatch_status` always sees a snapshot less than one
+        // tick old. The `RwLock` on `watch_snapshot_handle` is acquired
+        // for the duration of a struct-move; readers (daemon clients)
+        // never wait more than that.
+        publish_watch_snapshot(&watch_snapshot_handle, &state, &index_path);
 
         if check_interrupted() {
             println!("\nStopping watch...");

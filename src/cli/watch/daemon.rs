@@ -23,16 +23,24 @@ use super::{
 
 /// Spawn the daemon's accept-loop thread. Returns the join handle so
 /// `cmd_watch`'s shutdown path can drain the loop on Ctrl+C / SIGTERM.
+///
+/// `daemon_watch_snapshot` (#1182): the `Arc<RwLock<WatchSnapshot>>` the
+/// outer `cmd_watch` scope shares with the watch loop. The daemon plugs
+/// this into the BatchContext via [`crate::cli::batch::BatchContext::adopt_watch_snapshot`]
+/// so `dispatch_status` reads the loop's most-recently-published snapshot
+/// instead of the default `unknown`.
 pub(super) fn spawn_daemon_thread(
     listener: UnixListener,
     daemon_embedder: Arc<OnceLock<Arc<Embedder>>>,
     daemon_model_config: ModelConfig,
     daemon_runtime: Arc<tokio::runtime::Runtime>,
+    daemon_watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         // BatchContext created inside the thread — RefCell is !Send
-        // but thread-local ownership is fine.
-        let ctx = match crate::cli::batch::create_context_with_runtime(Some(daemon_runtime)) {
+        // but thread-local ownership is fine. `mut` so we can adopt the
+        // shared watch-snapshot handle below before wrapping in Arc<Mutex<…>>.
+        let mut ctx = match crate::cli::batch::create_context_with_runtime(Some(daemon_runtime)) {
             Ok(ctx) => {
                 // RM-V1.25-28: seed the BatchContext's OnceLock if
                 // the shared slot is already populated; otherwise
@@ -65,6 +73,12 @@ pub(super) fn spawn_daemon_thread(
                 return;
             }
         };
+        // #1182: install the shared watch-snapshot handle before locking
+        // the ctx into the Arc<Mutex<...>>. After this swap, the daemon's
+        // `dispatch_status` handler reads through the same Arc the watch
+        // loop publishes into.
+        ctx.adopt_watch_snapshot(daemon_watch_snapshot);
+
         // SEC-V1.25-1: wrap the BatchContext in Arc<Mutex> so each
         // accepted connection gets its own handler thread. Without
         // this, a single malicious client sitting on the 5 s read
