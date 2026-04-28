@@ -14,11 +14,12 @@ use super::commands::cmd_convert;
 use super::commands::{
     cmd_affected, cmd_audit_mode, cmd_blame, cmd_brief, cmd_cache, cmd_callees, cmd_callers,
     cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_eval,
-    cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff,
-    cmd_index, cmd_init, cmd_model, cmd_neighbors, cmd_notes, cmd_onboard, cmd_ping, cmd_plan,
-    cmd_project, cmd_query, cmd_read, cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout,
-    cmd_similar, cmd_slot, cmd_stale, cmd_stats, cmd_status, cmd_suggest, cmd_task, cmd_telemetry,
-    cmd_telemetry_reset, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
+    cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_hook, cmd_impact,
+    cmd_impact_diff, cmd_index, cmd_init, cmd_model, cmd_neighbors, cmd_notes, cmd_onboard,
+    cmd_ping, cmd_plan, cmd_project, cmd_query, cmd_read, cmd_reconstruct, cmd_ref, cmd_related,
+    cmd_review, cmd_scout, cmd_similar, cmd_slot, cmd_stale, cmd_stats, cmd_status, cmd_suggest,
+    cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map, cmd_trace, cmd_train_data,
+    cmd_train_pairs, cmd_where,
 };
 
 // ── Dispatch macros (#1097) ──────────────────────────────────────────────

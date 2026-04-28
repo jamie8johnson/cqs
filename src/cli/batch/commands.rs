@@ -315,6 +315,30 @@ pub(crate) enum BatchCmd {
     /// the daemon returns the JSON payload of `cqs::watch_status::WatchSnapshot`.
     /// `cqs batch` (no watch loop) returns the default `unknown` snapshot.
     Status,
+    /// Request an out-of-band reconciliation pass. (#1182 — Layer 1.)
+    ///
+    /// Used by the git-hook scripts (`cqs hook fire post-checkout ...`)
+    /// to tell the watch loop the working tree just shifted. Flips the
+    /// shared `SharedReconcileSignal` AtomicBool to `true`; the watch
+    /// loop observes it on its next 100 ms tick and runs an immediate
+    /// `run_daemon_reconcile` pass (bypassing the periodic-tick idle
+    /// gating, since this call is itself the user signal).
+    ///
+    /// Optional positional fields are advisory only — they ride along
+    /// for tracing/logging and don't change the reconcile algorithm
+    /// (which always walks the full tree). Hooks pass:
+    ///   `cqs hook fire post-checkout <prev_HEAD> <new_HEAD> <branch_flag>`
+    /// `--hook` carries the hook name; everything else lands in `--arg`.
+    Reconcile {
+        /// Name of the hook that fired this reconcile (e.g. `post-checkout`).
+        /// Logged for operator diagnostics; not used for the walk itself.
+        #[arg(long)]
+        hook: Option<String>,
+        /// Free-form positional payload from the hook (e.g. previous and
+        /// current commit SHAs). Captured for tracing only.
+        #[arg(long = "arg", value_name = "ARG")]
+        args: Vec<String>,
+    },
     /// Show help
     Help,
     /// #1127 (test-only): sleep `--ms` milliseconds before returning. Used by
@@ -383,6 +407,7 @@ macro_rules! for_each_batch_cmd_pipeability {
                 (Plan, false)
                 (Suggest, false)
                 (Gc, false)
+                (Reconcile, false)
             }
             unit_variants: {
                 (Refresh, false)
@@ -602,6 +627,7 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
         BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
         BatchCmd::Ping => handlers::dispatch_ping(ctx),
         BatchCmd::Status => handlers::dispatch_status(ctx),
+        BatchCmd::Reconcile { hook, args } => handlers::dispatch_reconcile(ctx, hook, args),
         BatchCmd::Help => handlers::dispatch_help(),
         #[cfg(test)]
         BatchCmd::TestSleep { ms } => {
