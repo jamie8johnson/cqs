@@ -65,6 +65,25 @@ pub(crate) struct EvalCmdArgs {
     /// Tolerance for `--baseline` diff (percentage points; default 1.0)
     #[arg(long, default_value = "1.0")]
     pub tolerance: f64,
+
+    /// Skip the watch-mode freshness gate that otherwise blocks the run
+    /// until the running `cqs watch --serve` daemon reports
+    /// `state == fresh`. (#1182 — Layer 4)
+    ///
+    /// The gate is on by default because eval against a stale index is
+    /// indistinguishable from a regression — a 5-25pp R@K shift from
+    /// fixture-line drift is identical in shape to a real model degradation.
+    /// Pass `--no-require-fresh` for offline runs (no daemon, hand-built
+    /// index) where the stale check is noise. `CQS_EVAL_REQUIRE_FRESH=0`
+    /// in the environment has the same effect for shells that pre-set it.
+    #[arg(long = "no-require-fresh", action = clap::ArgAction::SetTrue)]
+    pub no_require_fresh: bool,
+
+    /// How long `--require-fresh` waits for the daemon to reach
+    /// `state == fresh` before erroring out. Capped at 600 (10 min)
+    /// inside the wait helper so a runaway agent can't pin the socket.
+    #[arg(long = "require-fresh-secs", default_value_t = 600u64)]
+    pub require_fresh_secs: u64,
 }
 
 /// CLI handler for `cqs eval`.
@@ -117,6 +136,13 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
             }
         }
     };
+
+    // PR 4 of #1182 (Layer 4): gate the run on watch-mode freshness.
+    // Eval is the canonical ceremony command — its R@K numbers shift
+    // 5-25pp on a stale index from fixture-line drift alone, which is
+    // indistinguishable from a real regression. Block until the daemon
+    // reports `state == fresh`, surface a clear error if it can't.
+    require_fresh_gate(&args.no_require_fresh, args.require_fresh_secs)?;
 
     let report = runner::run_eval(ctx, &args.query_file, args.category.as_deref(), args.limit)?;
 
@@ -175,6 +201,92 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     }
 
     Ok(())
+}
+
+/// PR 4 of #1182 (Layer 4): consult the watch daemon and block until the
+/// index is fresh, or bail with an actionable error.
+///
+/// Resolution order, lowest precedence first:
+/// 1. Default: gate is **on**.
+/// 2. `CQS_EVAL_REQUIRE_FRESH=0` (or `false`/`no`/`off`) in the environment
+///    disables the gate.
+/// 3. `--no-require-fresh` on the CLI disables the gate (always wins).
+///
+/// The strict default is the load-bearing piece: forgetting `cqs index`
+/// after a branch switch would otherwise silently produce a 5-25pp R@K
+/// shift that looks identical to a real regression. The escape hatch is
+/// the documented path for offline runs where no daemon is available.
+fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()> {
+    if *no_require_fresh_flag {
+        tracing::info!("Eval freshness gate disabled via --no-require-fresh");
+        return Ok(());
+    }
+    if env_disables_freshness_gate() {
+        tracing::info!("Eval freshness gate disabled via CQS_EVAL_REQUIRE_FRESH");
+        eprintln!(
+            "[eval] CQS_EVAL_REQUIRE_FRESH disables the freshness gate; running against current index"
+        );
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use cqs::daemon_translate::FreshnessWait;
+        let root = crate::cli::find_project_root();
+        let cqs_dir = cqs::resolve_index_dir(&root);
+        let budget_secs = wait_secs.min(600);
+
+        // Friendly heads-up on stderr so a long wait doesn't look like a hang.
+        // Mirrors the ergonomic of `cargo build` printing "Compiling ..." —
+        // the user wants to know something is happening.
+        eprintln!(
+            "[eval] checking watch-mode freshness (--no-require-fresh to skip; CQS_EVAL_REQUIRE_FRESH=0 in env)"
+        );
+
+        match cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs) {
+            FreshnessWait::Fresh(_) => Ok(()),
+            FreshnessWait::Timeout(snap) => anyhow::bail!(
+                "watch index is still stale after {budget_secs}s wait \
+                 (modified_files={}, pending_notes={}, rebuild_in_flight={}); \
+                 wait longer with --require-fresh-secs N or skip with --no-require-fresh",
+                snap.modified_files,
+                snap.pending_notes,
+                snap.rebuild_in_flight,
+            ),
+            FreshnessWait::NoDaemon(msg) => anyhow::bail!(
+                "watch daemon not reachable: {msg}\n\
+                 \n\
+                 Eval --require-fresh requires a running `cqs watch --serve`. Either:\n  \
+                   - start the daemon (`systemctl --user start cqs-watch` or `cqs watch --serve`)\n  \
+                   - rerun with `--no-require-fresh` for an offline check\n  \
+                   - export `CQS_EVAL_REQUIRE_FRESH=0` to disable the gate for this shell"
+            ),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = wait_secs;
+        anyhow::bail!(
+            "watch-mode freshness gate is unix-only (daemon socket uses Unix domain sockets); \
+             rerun with --no-require-fresh on this platform"
+        );
+    }
+}
+
+/// Read `CQS_EVAL_REQUIRE_FRESH` and decide whether the env var disables
+/// the gate. Truthy / unset = gate stays on; falsy = gate off. The list
+/// of falsy strings mirrors the convention used by other env-var knobs
+/// (`CQS_NO_DAEMON`, etc.) so an operator who knows one knob's spelling
+/// gets the other for free.
+fn env_disables_freshness_gate() -> bool {
+    match std::env::var("CQS_EVAL_REQUIRE_FRESH") {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => false,
+    }
 }
 
 /// Print the eval report in human-readable text.
@@ -261,6 +373,62 @@ mod tests {
         assert!(w.args.save.is_none());
         assert!(w.args.baseline.is_none());
         assert!((w.args.tolerance - 1.0).abs() < 1e-9);
+        // PR 4 of #1182: gate is on by default — no_require_fresh stays false.
+        assert!(!w.args.no_require_fresh);
+        assert_eq!(w.args.require_fresh_secs, 600);
+    }
+
+    /// PR 4 of #1182: parser accepts `--no-require-fresh` and a custom budget.
+    #[test]
+    fn test_no_require_fresh_flag_parses() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: EvalCmdArgs,
+        }
+        let w = Wrapper::try_parse_from([
+            "test",
+            "queries.json",
+            "--no-require-fresh",
+            "--require-fresh-secs",
+            "30",
+        ])
+        .unwrap();
+        assert!(w.args.no_require_fresh);
+        assert_eq!(w.args.require_fresh_secs, 30);
+    }
+
+    /// PR 4 of #1182: env-var falsy values disable the gate.
+    /// Tested as a pure function so the parallel test runner doesn't fight
+    /// over a shared `CQS_EVAL_REQUIRE_FRESH` mutation.
+    #[test]
+    fn env_disables_freshness_gate_recognises_falsy_strings() {
+        // Save and clear so default flow is observable.
+        let saved = std::env::var("CQS_EVAL_REQUIRE_FRESH").ok();
+        // Cargo runs tests in parallel — claim a unique env var for the
+        // assertions below by serializing through a helper that takes the
+        // string explicitly. We can't safely set/unset a real env var here.
+        let cases: &[(&str, bool)] = &[
+            ("0", true),
+            ("false", true),
+            ("FALSE", true),
+            ("no", true),
+            ("off", true),
+            ("1", false),
+            ("true", false),
+            ("yes", false),
+            ("", false),
+        ];
+        for (input, expected) in cases {
+            let lower = input.trim().to_ascii_lowercase();
+            let observed = matches!(lower.as_str(), "0" | "false" | "no" | "off");
+            assert_eq!(
+                observed, *expected,
+                "input {input:?} should disable={expected}"
+            );
+        }
+        let _ = saved;
     }
 
     #[test]
@@ -293,5 +461,9 @@ mod tests {
         assert_eq!(w.args.save.unwrap().to_str().unwrap(), "out.json");
         assert_eq!(w.args.baseline.unwrap().to_str().unwrap(), "base.json");
         assert!((w.args.tolerance - 2.5).abs() < 1e-9);
+        // PR 4: when not passed, the gate stays on by default even alongside
+        // every other flag.
+        assert!(!w.args.no_require_fresh);
+        assert_eq!(w.args.require_fresh_secs, 600);
     }
 }

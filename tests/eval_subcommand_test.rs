@@ -80,9 +80,15 @@ fn seed_store_in(dir: &TempDir, chunks: &[(Chunk, f32)]) {
 /// Force the binary to run in CLI mode (no daemon). The integration test
 /// dir has no daemon socket, but env-clear is belt-and-braces — different
 /// dev machines may have leftover sockets in $XDG_RUNTIME_DIR.
+///
+/// PR 4 of #1182: also force `CQS_EVAL_REQUIRE_FRESH=0` so the freshness
+/// gate doesn't trip when the test invokes `cqs eval`. Without a daemon
+/// the gate is a hard error by design — these tests pre-date the gate
+/// and exercise the eval matcher / report shape, not the gate itself.
 fn cqs_no_daemon() -> Command {
     let mut c = cqs();
     c.env("CQS_NO_DAEMON", "1");
+    c.env("CQS_EVAL_REQUIRE_FRESH", "0");
     c
 }
 

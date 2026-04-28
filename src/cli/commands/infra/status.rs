@@ -61,43 +61,35 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
         // Cap `--wait-secs` at 600 (10 min) so a runaway agent loop can't
         // pin the daemon socket forever.
         let budget_secs = wait_secs.min(600);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget_secs);
-        // 250 ms keeps the polling latency well under a typical user's
-        // patience for "is it done yet?" without hammering the daemon.
-        let poll_interval = std::time::Duration::from_millis(250);
 
-        loop {
-            match cqs::daemon_translate::daemon_status(&cqs_dir) {
+        // Without --wait, the user wants a single snapshot read — short-circuit
+        // around `wait_for_fresh` so we don't pay a Stale → poll → Stale loop.
+        if !wait {
+            return match cqs::daemon_translate::daemon_status(&cqs_dir) {
                 Ok(snap) => {
-                    if !wait || snap.is_fresh() {
-                        emit_snapshot(&snap, json)?;
-                        // Exit 1 if `--wait` ran out without reaching fresh.
-                        if wait && !snap.is_fresh() {
-                            std::process::exit(1);
-                        }
-                        return Ok(());
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        emit_snapshot(&snap, json)?;
-                        // Budget expired before fresh — surface as exit 1
-                        // so scripts can distinguish "fresh" from "timed
-                        // out still stale".
-                        std::process::exit(1);
-                    }
-                    std::thread::sleep(poll_interval);
+                    emit_snapshot(&snap, json)?;
+                    Ok(())
                 }
-                Err(msg) => {
-                    if json {
-                        crate::cli::json_envelope::emit_json_error(
-                            crate::cli::json_envelope::error_codes::IO_ERROR,
-                            &msg,
-                        )?;
-                    } else {
-                        eprintln!("cqs: {msg}");
-                    }
-                    std::process::exit(1);
-                }
+                Err(msg) => emit_no_daemon(&msg, json),
+            };
+        }
+
+        // PR 4 of #1182: share the polling helper with `cqs eval --require-fresh`.
+        // The status CLI translates outcomes to its `process::exit` paths;
+        // eval translates to anyhow errors.
+        match cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs) {
+            cqs::daemon_translate::FreshnessWait::Fresh(snap) => {
+                emit_snapshot(&snap, json)?;
+                Ok(())
             }
+            cqs::daemon_translate::FreshnessWait::Timeout(snap) => {
+                emit_snapshot(&snap, json)?;
+                // Budget expired before fresh — surface as exit 1
+                // so scripts can distinguish "fresh" from "timed
+                // out still stale".
+                std::process::exit(1);
+            }
+            cqs::daemon_translate::FreshnessWait::NoDaemon(msg) => emit_no_daemon(&msg, json),
         }
     }
 
@@ -118,6 +110,22 @@ fn emit_snapshot(snap: &cqs::watch_status::WatchSnapshot, json: bool) -> Result<
         print_text(snap);
     }
     Ok(())
+}
+
+/// Surface a "no daemon" result as an error envelope (JSON) or stderr line
+/// (text) and process-exit 1. Pulled out so the no-wait short-circuit and
+/// the wait path render the same shape on transport failure.
+#[cfg(unix)]
+fn emit_no_daemon(msg: &str, json: bool) -> ! {
+    if json {
+        let _ = crate::cli::json_envelope::emit_json_error(
+            crate::cli::json_envelope::error_codes::IO_ERROR,
+            msg,
+        );
+    } else {
+        eprintln!("cqs: {msg}");
+    }
+    std::process::exit(1);
 }
 
 #[cfg(unix)]

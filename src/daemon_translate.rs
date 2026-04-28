@@ -620,6 +620,64 @@ pub fn daemon_reconcile(
         .map_err(|e| format!("DaemonReconcileResponse deserialize failed: {e}"))
 }
 
+/// #1182 — Layer 4: outcome of [`wait_for_fresh`].
+///
+/// Three cases callers need to distinguish:
+/// - `Fresh` — daemon reported `state == fresh` within the budget; safe to
+///   proceed with the gated work.
+/// - `Timeout` — daemon was reachable but never became fresh in time. The
+///   final snapshot is attached so callers can surface counters
+///   (`modified_files`, `pending_notes`) in their error message.
+/// - `NoDaemon` — socket missing or transport error. The eval gate treats
+///   this as a hard fail by default; ceremony commands invoking this helper
+///   should advise the user to either start `cqs watch --serve` or pass
+///   `--no-require-fresh`.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub enum FreshnessWait {
+    Fresh(crate::watch_status::WatchSnapshot),
+    Timeout(crate::watch_status::WatchSnapshot),
+    NoDaemon(String),
+}
+
+/// #1182 — Layer 4: shared client-side polling for `state == fresh`.
+///
+/// Both `cqs status --watch-fresh --wait` and `cqs eval --require-fresh`
+/// route through this. Polls the daemon every 250 ms with a deadline of
+/// `wait_secs` (capped at 600 by the caller's clap default — caller is
+/// authoritative; we honour whatever they pass).
+///
+/// The first successful poll that reports `fresh` returns immediately —
+/// callers don't pay 250 ms latency on an already-fresh tree.
+///
+/// Transport errors collapse into [`FreshnessWait::NoDaemon`]. We do not
+/// retry across socket-missing errors because (a) the watch daemon's socket
+/// is created at startup and persists; if it's gone, restarting it is the
+/// fix, not waiting; and (b) silently waiting through an outage masks the
+/// "you forgot to run `cqs watch --serve`" case the eval gate exists to
+/// catch.
+#[cfg(unix)]
+pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWait {
+    let _span = tracing::info_span!("wait_for_fresh", wait_secs).entered();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+    let poll_interval = std::time::Duration::from_millis(250);
+
+    loop {
+        match daemon_status(cqs_dir) {
+            Ok(snap) => {
+                if snap.is_fresh() {
+                    return FreshnessWait::Fresh(snap);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return FreshnessWait::Timeout(snap);
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(msg) => return FreshnessWait::NoDaemon(msg),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,5 +1199,178 @@ mod tests {
             err.contains("no daemon running"),
             "expected friendly error, got: {err}"
         );
+    }
+
+    /// PR 4 of #1182: `wait_for_fresh` returns `Fresh` immediately when the
+    /// first poll already reports fresh. Pins the no-cost-when-fresh promise
+    /// — agents that never have a stale tree don't pay 250 ms latency.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn wait_for_fresh_returns_fresh_on_first_poll() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let snap = crate::watch_status::WatchSnapshot {
+            state: crate::watch_status::FreshnessState::Fresh,
+            modified_files: 0,
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 1234,
+            dropped_this_cycle: 0,
+            idle_secs: 30,
+            last_synced_at: Some(1_734_120_000),
+            snapshot_at: 1_734_120_500,
+        };
+        let inner_envelope = serde_json::json!({
+            "data": serde_json::to_value(&snap).unwrap(),
+            "error": null,
+            "version": 1,
+        });
+        let outer_envelope = serde_json::json!({"status": "ok", "output": inner_envelope});
+        let outer_str = outer_envelope.to_string();
+
+        let handle = std::thread::spawn(move || {
+            // Single accept — fresh on first poll terminates the loop.
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            writeln!(stream, "{outer_str}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = wait_for_fresh(&cqs_dir, 5);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        match result {
+            FreshnessWait::Fresh(snap) => {
+                assert_eq!(snap.state, crate::watch_status::FreshnessState::Fresh);
+                assert_eq!(snap.incremental_count, 1234);
+            }
+            other => panic!("expected Fresh, got: {other:?}"),
+        }
+    }
+
+    /// PR 4 of #1182: `wait_for_fresh` reports `Timeout` when the deadline
+    /// expires while the daemon still reports stale. With `wait_secs = 0`
+    /// the helper polls once and immediately checks the deadline — no
+    /// 250 ms sleep, fast test.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn wait_for_fresh_returns_timeout_when_budget_expires() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let snap = crate::watch_status::WatchSnapshot {
+            state: crate::watch_status::FreshnessState::Stale,
+            modified_files: 7,
+            pending_notes: true,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 17,
+            dropped_this_cycle: 0,
+            idle_secs: 12,
+            last_synced_at: Some(1_734_120_000),
+            snapshot_at: 1_734_120_500,
+        };
+        let inner_envelope = serde_json::json!({
+            "data": serde_json::to_value(&snap).unwrap(),
+            "error": null,
+            "version": 1,
+        });
+        let outer_envelope = serde_json::json!({"status": "ok", "output": inner_envelope});
+        let outer_str = outer_envelope.to_string();
+
+        let handle = std::thread::spawn(move || {
+            // wait_secs=0 → exactly one accept before the deadline trips.
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            writeln!(stream, "{outer_str}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = wait_for_fresh(&cqs_dir, 0);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        match result {
+            FreshnessWait::Timeout(snap) => {
+                assert_eq!(snap.state, crate::watch_status::FreshnessState::Stale);
+                assert_eq!(snap.modified_files, 7);
+            }
+            other => panic!("expected Timeout, got: {other:?}"),
+        }
+    }
+
+    /// PR 4 of #1182: `wait_for_fresh` returns `NoDaemon` without a socket.
+    /// No mock listener — the helper short-circuits on `daemon_status`'s
+    /// pre-flight existence check. No serial gate needed because we don't
+    /// touch `XDG_RUNTIME_DIR`.
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_fresh_returns_no_daemon_without_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let result = wait_for_fresh(&cqs_dir, 0);
+        match result {
+            FreshnessWait::NoDaemon(msg) => {
+                assert!(
+                    msg.contains("no daemon running"),
+                    "expected friendly error, got: {msg}"
+                );
+            }
+            other => panic!("expected NoDaemon, got: {other:?}"),
+        }
     }
 }
