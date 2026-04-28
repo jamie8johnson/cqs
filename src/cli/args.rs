@@ -583,6 +583,15 @@ pub(crate) struct IndexArgs {
     /// Index files ignored by .gitignore
     #[arg(long)]
     pub no_ignore: bool,
+    /// Skip the first-encounter prompt for committed `docs/notes.toml`.
+    ///
+    /// On the first index of a fresh repo containing `docs/notes.toml`, cqs
+    /// prompts to confirm — committed notes affect search rankings and surface
+    /// in agent context. Pass `--accept-shared-notes` to bypass the prompt for
+    /// non-interactive use (CI, scripts). Acceptance is persisted to
+    /// `.cqs/.accepted-shared-notes` so the prompt doesn't repeat. (#1168)
+    #[arg(long)]
+    pub accept_shared_notes: bool,
     /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]

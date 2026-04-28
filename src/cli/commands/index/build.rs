@@ -534,8 +534,16 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
-    // Index notes if notes.toml exists
-    if !check_interrupted() {
+    // Index notes if notes.toml exists.
+    //
+    // #1168: first-encounter prompt — if this is the project's first index
+    // (no `.accepted-shared-notes` marker yet) AND a committed notes file
+    // exists, confirm with the user before proceeding. Bypassable with
+    // `--accept-shared-notes` for CI / scripted use; non-TTY stdin
+    // auto-skips the index-notes step (loud warn, never hangs).
+    let proceed_with_notes =
+        first_encounter_notes_gate(&root, &project_cqs_dir, args.accept_shared_notes, cli.quiet)?;
+    if !check_interrupted() && proceed_with_notes {
         if !cli.quiet {
             println!("Indexing notes...");
         }
@@ -876,6 +884,137 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     Ok(())
 }
 
+/// First-encounter shared-notes gate. (#1168)
+///
+/// Returns `true` if notes indexing should proceed, `false` to skip the
+/// pass entirely (user declined OR non-TTY auto-skip).
+///
+/// Behaviour:
+/// - No committed `docs/notes.toml` → return `true` (nothing to gate on).
+/// - Marker file `.cqs/.accepted-shared-notes` already present → `true`.
+/// - `accept_flag = true` (i.e. `--accept-shared-notes`) → write marker, `true`.
+/// - Stdin not a TTY → loud warn + `false` (auto-skip; never hangs CI).
+/// - TTY available → prompt; on Y or empty (default), write marker + `true`.
+///   On any other reply → `false`.
+fn first_encounter_notes_gate(
+    root: &Path,
+    project_cqs_dir: &Path,
+    accept_flag: bool,
+    quiet: bool,
+) -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    let notes_path = root.join("docs/notes.toml");
+    if !notes_path.exists() {
+        return Ok(true);
+    }
+    let marker_path = project_cqs_dir.join(".accepted-shared-notes");
+    if marker_path.exists() {
+        return Ok(true);
+    }
+
+    // Count entries + sentiment buckets so the prompt is informative. A parse
+    // failure here is non-fatal — fall through to gating with N=?, the
+    // downstream `index_notes_from_file` will surface the parse error.
+    let (total, positive, negative) = match cqs::parse_notes(&notes_path) {
+        Ok(notes) => {
+            let total = notes.len();
+            let positive = notes.iter().filter(|n| n.sentiment > 0.0).count();
+            let negative = notes.iter().filter(|n| n.sentiment < 0.0).count();
+            (Some(total), Some(positive), Some(negative))
+        }
+        Err(_) => (None, None, None),
+    };
+
+    // Empty notes file → no payload to gate. Don't write the marker either;
+    // the next index run with non-empty notes will prompt as expected.
+    if matches!(total, Some(0)) {
+        return Ok(true);
+    }
+
+    let count_label = total
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let pos_label = positive
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let neg_label = negative
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+
+    if accept_flag {
+        write_notes_acceptance_marker(&marker_path)?;
+        if !quiet {
+            println!(
+                "Accepted committed shared notes ({} entries) — marker written to {}",
+                count_label,
+                marker_path.display()
+            );
+        }
+        return Ok(true);
+    }
+
+    // Non-TTY: never hang. Auto-skip with a warning so CI / scripted runs
+    // don't accidentally pull in untrusted shared notes; the user can
+    // re-run with `--accept-shared-notes` once they've reviewed them.
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "Warning: docs/notes.toml exists ({} entries) but stdin is not a TTY. \
+             Skipping notes indexing on this run. Pass --accept-shared-notes to opt in \
+             on subsequent runs.",
+            count_label
+        );
+        return Ok(false);
+    }
+
+    // Interactive prompt.
+    eprintln!();
+    eprintln!(
+        "Detected committed notes at {}: {} entries ({} positive, {} negative).",
+        notes_path.display(),
+        count_label,
+        pos_label,
+        neg_label
+    );
+    eprintln!(
+        "These will affect search rankings and be shown to AI agents using cqs against this repo."
+    );
+    eprint!(
+        "Index them? [Y/n] (or run with --accept-shared-notes to skip this prompt next time): "
+    );
+    std::io::stderr().flush().ok();
+
+    let mut reply = String::new();
+    std::io::stdin()
+        .read_line(&mut reply)
+        .context("Failed to read response from stdin")?;
+    let trimmed = reply.trim();
+    let accepted = trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("y")
+        || trimmed.eq_ignore_ascii_case("yes");
+    if accepted {
+        write_notes_acceptance_marker(&marker_path)?;
+        Ok(true)
+    } else {
+        eprintln!("Skipping notes indexing on this run.");
+        Ok(false)
+    }
+}
+
+/// Write the `.accepted-shared-notes` marker with a UTC timestamp body.
+fn write_notes_acceptance_marker(marker_path: &Path) -> Result<()> {
+    if let Some(parent) = marker_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    std::fs::write(marker_path, format!("accepted_at = {}\n", now))
+        .with_context(|| format!("Failed to write {}", marker_path.display()))?;
+    Ok(())
+}
+
 /// Index notes from notes.toml if it exists and needs reindexing
 ///
 /// Returns (indexed_count, was_skipped) where was_skipped is true if notes were up to date.
@@ -1178,6 +1317,82 @@ mod tests {
         assert!(
             result.is_none(),
             "empty store must yield None for base HNSW build"
+        );
+    }
+
+    // ===== #1168: first_encounter_notes_gate =====
+
+    #[test]
+    fn first_encounter_gate_proceeds_when_no_notes_file() {
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let proceed = first_encounter_notes_gate(tmp.path(), &cqs_dir, false, true).unwrap();
+        assert!(proceed, "no notes file → proceed");
+    }
+
+    #[test]
+    fn first_encounter_gate_proceeds_when_marker_present() {
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+        std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        std::fs::write(
+            tmp.path().join("docs/notes.toml"),
+            r#"
+[[note]]
+text = "Watch out for X"
+sentiment = -0.5
+mentions = []
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        std::fs::write(cqs_dir.join(".accepted-shared-notes"), "x").unwrap();
+        let proceed = first_encounter_notes_gate(tmp.path(), &cqs_dir, false, true).unwrap();
+        assert!(proceed, "marker present → proceed");
+    }
+
+    #[test]
+    fn first_encounter_gate_accept_flag_writes_marker() {
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+        std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        std::fs::write(
+            tmp.path().join("docs/notes.toml"),
+            r#"
+[[note]]
+text = "Suspicious instruction"
+sentiment = 0.0
+mentions = []
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let proceed = first_encounter_notes_gate(tmp.path(), &cqs_dir, true, true).unwrap();
+        assert!(proceed, "--accept-shared-notes → proceed");
+        let marker = cqs_dir.join(".accepted-shared-notes");
+        assert!(marker.exists(), "marker must be written when accept_flag set");
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert!(
+            body.contains("accepted_at"),
+            "marker body should contain timestamp marker, got: {body}"
+        );
+    }
+
+    #[test]
+    fn first_encounter_gate_proceeds_when_notes_file_empty() {
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+        std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        std::fs::write(tmp.path().join("docs/notes.toml"), "").unwrap();
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let proceed = first_encounter_notes_gate(tmp.path(), &cqs_dir, false, true).unwrap();
+        assert!(proceed, "empty notes → proceed (nothing to gate on)");
+        // No marker written for the zero-entry case — the next non-empty
+        // index run should still prompt.
+        assert!(
+            !cqs_dir.join(".accepted-shared-notes").exists(),
+            "no marker should be written for empty notes file"
         );
     }
 }

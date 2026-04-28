@@ -501,6 +501,7 @@ fn reindex_with_new_model(cli: &Cli, new_cfg: ModelConfig) -> Result<()> {
         force: true,
         dry_run: false,
         no_ignore: false,
+        accept_shared_notes: true,
         #[cfg(feature = "llm-summaries")]
         llm_summaries: false,
         #[cfg(feature = "llm-summaries")]
