@@ -2086,6 +2086,10 @@ fn write_json_line(
             // don't pay another to_writer call for an integer.
             let version = crate::cli::json_envelope::JSON_OUTPUT_VERSION;
             buf.extend_from_slice(version.to_string().as_bytes());
+            // #1181: every envelope carries `_meta.handling_advice`. The
+            // pre-serialized fragment starts with `,` so we splice it before
+            // the closing `}`.
+            buf.extend_from_slice(crate::cli::json_envelope::meta_json_fragment().as_bytes());
             buf.push(b'}');
             buf.push(b'\n');
             out.write_all(&buf)

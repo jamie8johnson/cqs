@@ -812,7 +812,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. Disabled by default. |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
-| `CQS_TRUST_DELIMITERS` | (none) | Set to `1` to wrap chunk `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers in chunk-returning JSON output. Off by default to avoid breaking existing JSON consumers. Helps prompt-injection guards downstream of cqs detect content boundaries when the agent inlines the rendered string into a larger prompt. (#1167) |
+| `CQS_TRUST_DELIMITERS` | `1` (on) | Wraps every chunk's `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers so prompt-injection guards downstream of cqs detect content boundaries when the agent inlines the rendered string into a larger prompt. Set to `0` to opt out (raw text). Default flipped on in v1.30.2. (#1167, #1181) |
 | `CQS_TRAIN_GIT_SHOW_MAX_BYTES` | `52428800` (50 MiB) | Max bytes retrieved per file via `git show` during training-data extraction. Files above the cap are skipped; bump to capture larger generated files (schema dumps, vendored corpora). |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |
