@@ -509,6 +509,117 @@ pub fn daemon_status(
     serde_json::from_value(payload).map_err(|e| format!("WatchSnapshot deserialize failed: {e}"))
 }
 
+/// #1182 — Layer 1: response shape for [`daemon_reconcile`]. Mirrors the
+/// JSON envelope `dispatch_reconcile` returns: a confirmation that the
+/// signal was accepted plus the advisory hook metadata.
+#[cfg(unix)]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DaemonReconcileResponse {
+    /// Always `true` — the daemon flipped the signal.
+    pub queued: bool,
+    /// `true` if a previous request was still pending when this call
+    /// arrived. Surfaces coalescing for hook-burst scenarios (rebase).
+    pub was_pending: bool,
+    /// Echoed advisory fields. Useful for tracing in the hook script's
+    /// stderr.
+    pub hook: Option<String>,
+    pub args: Vec<String>,
+}
+
+/// #1182 — Layer 1: post a `reconcile` socket message to the running
+/// daemon. Used by the `cqs hook fire` CLI surface.
+///
+/// Returns the parsed [`DaemonReconcileResponse`] on success, or a
+/// descriptive error on socket / deserialize failure. The CLI surface
+/// downgrades a missing-socket error to the `.cqs/.dirty` fallback;
+/// every other error is surfaced verbatim so hooks fail loudly.
+#[cfg(unix)]
+pub fn daemon_reconcile(
+    cqs_dir: &std::path::Path,
+    hook: Option<&str>,
+    args: &[String],
+) -> Result<DaemonReconcileResponse, String> {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let sock_path = daemon_socket_path(cqs_dir);
+    let _span = tracing::info_span!(
+        "daemon_reconcile",
+        path = %sock_path.display(),
+        hook = hook.unwrap_or("(unknown)")
+    )
+    .entered();
+    if !sock_path.exists() {
+        return Err(format!(
+            "no daemon running (socket {} does not exist)",
+            sock_path.display()
+        ));
+    }
+
+    let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
+        tracing::warn!(stage = "connect", error = %e, "daemon_reconcile failed");
+        format!("connect to {} failed: {e}", sock_path.display())
+    })?;
+
+    let timeout = Duration::from_secs(5);
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        return Err(format!("set_read_timeout failed: {e}"));
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        return Err(format!("set_write_timeout failed: {e}"));
+    }
+
+    // Build the batch-arg vector: ["--hook", "<name>", "--arg", "v1",
+    // "--arg", "v2", ...]. The batch parser accepts `--arg` repeated
+    // for `Vec<String>` fields.
+    let mut batch_args: Vec<String> = Vec::with_capacity(2 + 2 * args.len());
+    if let Some(name) = hook {
+        batch_args.push("--hook".to_string());
+        batch_args.push(name.to_string());
+    }
+    for a in args {
+        batch_args.push("--arg".to_string());
+        batch_args.push(a.clone());
+    }
+
+    let request = serde_json::json!({"command": "reconcile", "args": batch_args});
+    writeln!(stream, "{}", request).map_err(|e| {
+        tracing::warn!(stage = "write", error = %e, "daemon_reconcile failed");
+        format!("write request failed: {e}")
+    })?;
+    stream.flush().map_err(|e| format!("flush failed: {e}"))?;
+
+    use std::io::Read as _;
+    let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
+    let mut response_line = String::new();
+    reader
+        .read_line(&mut response_line)
+        .map_err(|e| format!("read response failed: {e}"))?;
+
+    let envelope: serde_json::Value = serde_json::from_str(response_line.trim())
+        .map_err(|e| format!("parse envelope failed: {e}"))?;
+
+    let status = envelope
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'status' field in daemon response".to_string())?;
+    if status != "ok" {
+        let msg = envelope
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("daemon error");
+        return Err(format!("daemon error: {msg}"));
+    }
+
+    let output = envelope
+        .get("output")
+        .ok_or_else(|| "missing 'output' field in daemon response".to_string())?;
+    let payload = unwrap_dispatch_payload(output, "DaemonReconcileResponse")?;
+    serde_json::from_value(payload)
+        .map_err(|e| format!("DaemonReconcileResponse deserialize failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,7 +936,8 @@ mod tests {
     /// Mirrors `daemon_ping_mock_round_trip` so a future drift in either
     /// the envelope shape or the WatchSnapshot fields surfaces here.
     ///
-    /// `#[serial]` — see `daemon_ping_mock_round_trip` for the XDG race.
+    /// `#[serial]` — see `daemon_ping_mock_round_trip` for the XDG race
+    /// (also pins `daemon_reconcile_mock_round_trip` from Layer 1).
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(daemon_socket_xdg)]
@@ -914,6 +1026,115 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
         let result = daemon_status(&cqs_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no daemon running"),
+            "expected friendly error, got: {err}"
+        );
+    }
+
+    /// #1182 — Layer 1: `daemon_reconcile` happy-path round-trip
+    /// against a mock listener. Asserts the wire shape of the request
+    /// (command name + flag-style args) and the response deserialization.
+    ///
+    /// `#[serial]` for the same XDG-race reason as
+    /// `daemon_status_mock_round_trip`.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn daemon_reconcile_mock_round_trip() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Server response: dispatch envelope mirroring what
+        // `dispatch_reconcile` would emit.
+        let inner_envelope = serde_json::json!({
+            "data": {
+                "queued": true,
+                "was_pending": false,
+                "hook": "post-checkout",
+                "args": ["abc123", "def456", "1"],
+            },
+            "error": null,
+            "version": 1,
+        });
+        let outer_envelope = serde_json::json!({
+            "status": "ok",
+            "output": inner_envelope,
+        });
+        let outer_str = outer_envelope.to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            assert!(
+                request_line.contains("\"command\":\"reconcile\""),
+                "expected reconcile request, got: {request_line}"
+            );
+            // The hook + args ride along as flag-style batch args.
+            assert!(
+                request_line.contains("\"--hook\""),
+                "expected --hook flag in args, got: {request_line}"
+            );
+            assert!(
+                request_line.contains("\"post-checkout\""),
+                "expected hook name in args, got: {request_line}"
+            );
+            writeln!(stream, "{outer_str}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let args: Vec<String> = ["abc123", "def456", "1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = daemon_reconcile(&cqs_dir, Some("post-checkout"), &args);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        let resp = result.expect("daemon_reconcile should succeed against mock");
+        assert!(resp.queued);
+        assert!(!resp.was_pending);
+        assert_eq!(resp.hook.as_deref(), Some("post-checkout"));
+        assert_eq!(resp.args, vec!["abc123", "def456", "1"]);
+    }
+
+    /// `daemon_reconcile` surfaces a friendly error when no daemon socket
+    /// exists. The CLI surface treats this as a `.cqs/.dirty` fallback
+    /// trigger — the error string must be matchable.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_reconcile_errors_without_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let args: Vec<String> = Vec::new();
+        let result = daemon_reconcile(&cqs_dir, Some("post-merge"), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(

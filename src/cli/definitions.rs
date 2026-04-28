@@ -812,6 +812,18 @@ pub(super) enum Commands {
         #[command(flatten)]
         args: super::commands::EvalCmdArgs,
     },
+    /// Manage cqs git hooks: install/uninstall/fire/status. (#1182 — Layer 1)
+    ///
+    /// Hooks live in `.git/hooks/post-{checkout,merge,rewrite}` and post a
+    /// `reconcile` socket message to the running `cqs watch --serve` daemon
+    /// after every git operation that moves the working tree. When the
+    /// daemon isn't running, the hook touches `.cqs/.dirty` as a fallback;
+    /// the daemon promotes that marker into a one-shot reconcile on next
+    /// start.
+    Hook {
+        #[command(subcommand)]
+        subcmd: HookCommand,
+    },
     /// Show / list / swap the embedding model recorded in the index
     Model {
         #[command(subcommand)]
@@ -857,7 +869,7 @@ pub(super) enum Commands {
 
 // Re-export the subcommand types used in Commands variants
 pub(super) use super::commands::{
-    CacheCommand, ModelCommand, NotesCommand, ProjectCommand, RefCommand, SlotCommand,
+    CacheCommand, HookCommand, ModelCommand, NotesCommand, ProjectCommand, RefCommand, SlotCommand,
 };
 
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can

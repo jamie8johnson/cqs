@@ -29,12 +29,19 @@ use super::{
 /// this into the BatchContext via [`crate::cli::batch::BatchContext::adopt_watch_snapshot`]
 /// so `dispatch_status` reads the loop's most-recently-published snapshot
 /// instead of the default `unknown`.
+///
+/// `daemon_reconcile_signal` (#1182 — Layer 1): the `Arc<AtomicBool>` the
+/// outer scope shares with the watch loop. Plugged into the BatchContext
+/// via [`crate::cli::batch::BatchContext::adopt_reconcile_signal`] so the
+/// daemon's `dispatch_reconcile` handler flips a flag the watch loop is
+/// actually reading.
 pub(super) fn spawn_daemon_thread(
     listener: UnixListener,
     daemon_embedder: Arc<OnceLock<Arc<Embedder>>>,
     daemon_model_config: ModelConfig,
     daemon_runtime: Arc<tokio::runtime::Runtime>,
     daemon_watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
+    daemon_reconcile_signal: cqs::watch_status::SharedReconcileSignal,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         // BatchContext created inside the thread — RefCell is !Send
@@ -78,6 +85,11 @@ pub(super) fn spawn_daemon_thread(
         // `dispatch_status` handler reads through the same Arc the watch
         // loop publishes into.
         ctx.adopt_watch_snapshot(daemon_watch_snapshot);
+        // #1182 — Layer 1: same shape for the cross-thread reconcile
+        // signal. After this swap, `dispatch_reconcile` (called when a
+        // git hook posts to the socket) flips a flag the watch loop is
+        // actually checking.
+        ctx.adopt_reconcile_signal(daemon_reconcile_signal);
 
         // SEC-V1.25-1: wrap the BatchContext in Arc<Mutex> so each
         // accepted connection gets its own handler thread. Without

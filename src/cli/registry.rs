@@ -103,6 +103,12 @@ macro_rules! for_each_command {
                  BatchSupport::Cli,
                  { cmd_status($cli.json || json, watch_fresh, wait, wait_secs) }),
 
+                (Commands::Hook { subcmd },
+                 Commands::Hook { .. },
+                 "hook",
+                 BatchSupport::Cli,
+                 { cmd_hook(subcmd) }),
+
                 // API-V1.29-6: `cqs refresh` is a daemon-only concept. By the
                 // time we reach this arm `try_daemon_query` already forwarded
                 // the request if a daemon was running, so we're guaranteed
