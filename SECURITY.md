@@ -44,7 +44,7 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 | **Project source code** | Comments, strings, doc blocks containing injection payloads (committed by a contributor or embedded by an upstream dependency) | Yes — survives until removed from source |
 | **Reference content** (`cqs ref add`) | Third-party code indexed for cross-project search; less curated than the user's own code, blended into search results without an explicit trust signal | Yes — survives until ref is removed |
 | **Shared notes** (`docs/notes.toml`) | A cloned repo can ship committed notes that bias rankings and surface in agent context. `audit-mode` mitigates ranking influence at runtime, but not the first-encounter case | Yes — survives in the indexed repo |
-| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary is cached by `content_hash`, embedded, and replayed to downstream agents | Yes — cached in `llm_summaries` table |
+| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary text is cached in the `llm_summaries` table keyed by `(content_hash, purpose)` per `src/schema.sql:180-187`; the post-summary embedding flows through the normal `embeddings_cache.db` (purpose `embedding`, the same purpose served to search) and is replayed to downstream agents | Yes — cached in `llm_summaries` table + `embeddings_cache.db` |
 | **Doc-comment generation** (`cqs index --llm-summaries --improve-docs`) | LLM output is **written back to source files in place**. A poisoned chunk can produce a doc comment that lands in the user's repo on commit | **Yes — commits the LLM's output into git** |
 | **Search result blending** | RRF merges chunks across project + references; the consuming agent sees a single ranked list with no in-protocol trust signal distinguishing user code from third-party content | Yes — every query |
 
@@ -202,17 +202,33 @@ This blocks:
 
 ## Symlink Behavior
 
-**Current behavior**: Symlinks are followed, then the resolved path is validated.
+cqs has **two** symlink-handling regimes, depending on the entry point.
+
+### Directory walks (`cqs index`, `cqs ref add`, `cqs watch` reconcile, `cqs convert`)
+
+Symlinks are **skipped** entirely — `enumerate_files` (`src/lib.rs:601`) sets `WalkBuilder::follow_links(false)` and `cqs convert`'s archive extraction skips them in extract paths. The walker never opens the link's target.
 
 | Scenario | Behavior |
 |----------|----------|
-| `project/link → project/src/file.rs` | ✅ Allowed (target inside project) |
-| `project/link → /etc/passwd` | ❌ Blocked (target outside project) |
-| `project/link → ../sibling/file` | ❌ Blocked (target outside project) |
+| `project/link → project/src/file.rs` | Skipped (symlink, regardless of target) |
+| `project/link → /etc/passwd` | Skipped |
+| `project/link → ../sibling/file` | Skipped |
 
-**TOCTOU consideration**: A symlink could theoretically be changed between validation and read. This is a standard filesystem race condition that affects all programs. Mitigation would require `O_NOFOLLOW` or similar, which would break legitimate symlink use cases.
+This is conservative: a monorepo workspace that uses in-tree symlinks to share common code will silently miss those files. Workaround: replace the symlinks with the actual files (or use a `[references]` config block to index the shared tree as a separate slot).
 
-**Recommendation**: If you don't trust symlinks in your project, remove them or use `--no-ignore` to skip gitignored paths where symlinks might hide.
+### Explicit-path canonicalization (`cqs read <path>`, `cqs ref add --source <path>`)
+
+When the user passes a path on the command line, cqs canonicalizes it (`dunce::canonicalize`), then validates the resolved path against the project root.
+
+| Scenario | Behavior |
+|----------|----------|
+| `cqs read link` where `link → project/src/file.rs` | Allowed (target inside project, canonicalised path reads `project/src/file.rs`) |
+| `cqs read link` where `link → /etc/passwd` | Blocked (target outside project) |
+| `cqs read link` where `link → ../sibling/file` | Blocked (target outside project) |
+
+**TOCTOU consideration**: A symlink could theoretically be changed between canonicalization and read. This is a standard filesystem race condition that affects all programs. Mitigation would require `O_NOFOLLOW` or similar, which would break legitimate symlink use cases on `cqs read`.
+
+**Recommendation**: If you don't trust symlinks in your project, remove them. The directory-walk path is already conservative.
 
 ## Index Storage
 
