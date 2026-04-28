@@ -2,7 +2,21 @@
 
 ## Right Now
 
-**v1.30.0 released 2026-04-25.** Post-release polish has continued landing on main. Today's session (2026-04-27) cleared an 8-PR dependabot batch, completed P2 task #1132 (#1165), then pivoted to security threat modeling — filed 5 tracking issues for indirect prompt injection (#1166-#1170) and updated SECURITY.md (#1171, in flight).
+**v1.30.0 released 2026-04-25.** Post-release polish continues. Sessions on 2026-04-27 / 28 **closed the indirect-injection cluster (#1166-#1170)**: all 5 mitigations landed across 4 PRs (#1177, #1178, #1179, #1180), all 5 issues closed with cluster summary, local binary rebuilt + reinstalled (cqs 1.30.0 + cluster), cqs-watch daemon restarted. Filed two follow-ups: **#1181** ("general mistrust" posture — default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice`, per-chunk `injection_flags`) and **#1182** (perfect watch mode — 3-layer reconciliation closing the missed-event classes; positioning lever for "freshness as differentiator"). Master plan snapshot at `docs/plans/2026-04-28-master-plan.md`.
+
+**Up next:** P3 ergonomics cluster (#1137-#1140) — eval-neutral refactors. Read each, plan, start the first.
+
+**Indirect-injection cluster status:**
+- **#1177 merged** — `--improve-docs` review gate (#1166): defaults to `.cqs/proposed-docs/<rel>.patch`, `--apply` opts back in. Highest-leverage: was the only vector that committed LLM output into git.
+- **#1180 merged** — first-encounter shared-notes gate (#1168): `.cqs/.accepted-shared-notes` marker + `--accept-shared-notes` flag + non-TTY auto-skip.
+- **#1178 merged** — `trust_level` + `reference_name` on chunk JSON (#1167, #1169): every chunk-returning command emits user-code/reference-code; `CQS_TRUST_DELIMITERS=1` opt-in wraps content in `<<<chunk:{id}>>>` markers.
+- **#1179 in flight** — LLM summary validation (#1170): `validate_summary` on every prose summary before cache (1500-char cap + leading-directive/code-fence/URL detection); `CQS_SUMMARY_VALIDATION=strict|loose|off`. Rebased onto post-#1178 main; CI re-running ~25 min.
+
+**SECURITY.md** now lists 6 mitigations under the indirect-injection threat model (audit-mode, no auto-execution, review gate, notes gate, trust_level/delimiters, summary validation). Tracked-improvements table empty except for #1181. README knob count 107 → 109 (`CQS_TRUST_DELIMITERS` + `CQS_SUMMARY_VALIDATION`).
+
+**After #1179 merges** (next loop iteration): rebuild + reinstall the binary (`cargo build --release --features cuda-index` → stop cqs-watch → cp → restart), close #1166-#1170 with merge-PR comments, then start P3 ergonomics cluster (#1137-#1140).
+
+**Local state:** working tree clean. Local binary still v1.30.0 + dep-bumps; refresh deferred until #1179 merges. Index at 18,760 chunks (no schema change, no reindex needed).
 
 **Landed since v1.30.0 release:**
 - **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.
@@ -130,10 +144,10 @@ Things clippy 1.95 caught when running with `-D warnings`:
 
 ### Architecture state
 
-- **Version:** v1.30.0 (crates.io published 2026-04-25; tag `v1.30.0` at commit `68bfaca5`)
-- **Local binary:** `~/.cargo/bin/cqs` at 1.30.0 with today's 5 dep bumps; `cqs-watch` daemon restarted post-install
-- **Index:** 18,760 chunks, **schema v22** (umap_x/umap_y columns, opt-in via `cqs index --umap`)
-- **Tests:** ~3001 pass + 51 ignored locally with `cuda-index` (post-#1105 + cache+slots additions). Full suite in CI in ~2 min added per PR
+- **Version:** v1.30.0 (crates.io published 2026-04-25; tag `v1.30.0` at commit `68bfaca5`). Unreleased on main: 4 indirect-injection mitigations (#1177, #1178, #1180; #1179 in flight). Next release tag will be v1.30.1.
+- **Local binary:** stale — pinned at v1.30.0 + dep-bumps. **Refresh deferred until #1179 merges**, then `cargo build --release --features cuda-index` → stop cqs-watch → cp → restart.
+- **Index:** 18,760 chunks, **schema v22** (umap_x/umap_y columns, opt-in via `cqs index --umap`). No schema change in cluster — no reindex required.
+- **Tests:** ~3015 pass + 51 ignored locally post-cluster on main (#1177 +3, #1178 +7, #1180 +4 new tests); ~3027 expected after #1179 merges (+12 validation tests). Full suite in CI ~2 min added per PR.
 - **Production R@5 on v3.v2 (refreshed 2026-04-25):** test 63.3% / dev 74.3% with default BGE-large; CodeRankEmbed opt-in preset gets test 67.0% / dev 69.7% (R@1 wins, R@20 loses)
 - **cqs-watch daemon:** running v1.30.0 release binary; daemon mutex now short-hold (post-#1146); BatchView snapshot dispatch lets concurrent slow queries overlap
 - **`cqs serve`:** 4 views — `2d` / `3d` / `hierarchy` / `cluster`. Run `cqs index --umap` first to populate the cluster view's coords.
@@ -155,6 +169,7 @@ None. Working tree clean post-release.
 
 ## What's parked
 
+- **#1182 — perfect watch mode (3-layer reconciliation).** Filed 2026-04-28. Closes the missed-event classes (bulk git ops, WSL 9P, external writes) via git hooks + periodic full-tree reconciliation + `cqs status --watch-fresh --wait` API. Promise: "the index is always either fresh or telling you it isn't." Supersedes the CLAUDE.md "always run `cqs index` after branch switches/merges" guidance once landed. **Positioning lever — biggest gap between cqs and similar tools is "easy to index, hard to keep indexed between turns"; closing it makes freshness a top-line property alongside semantic search + call graphs.** Prior-art survey 2026-04-28 (in #1182 comment): codeindex.cc has per-query stale flags; Cursor has Merkle-tree sync; CocoIndex has fast incremental updates. None has the blocking `--wait` API + git-hook integration + the "between turns" consumer-consistency-model framing. Honest pitch: "the only code search tool that lets your agent **wait** until it's fresh" (not "the only one that tells you when it's stale" — codeindex.cc does that too). README/marketing pass to follow.
 - **HyDE on v3 dev** — most promising untested representation lever. Per-category routing required. Killed at v1.28.3 attempt.
 - **Reranker V2 properly retrained** — Phase 3 attempt failed (-24pp R@5 full pool). Three fixes in post-mortem (TIE labels, domain-shifted hard negatives, pool cap), ~1-2 weeks work. Re-attempt only with 10x more queries OR bge-reranker-large.
 - **ColBERT integration with per-token index** — eval tool exists, default off; full integration multi-week.
@@ -200,30 +215,38 @@ None. Working tree clean post-release.
 
 ## Open issues (20 open)
 
-**Indirect prompt injection cluster (filed 2026-04-27, all enhancement):**
+**Indirect prompt injection cluster (filed 2026-04-27, mitigations landing 2026-04-28):**
 
-| # | Title | Persistence |
-|---|---|---|
-| 1170 | feat(llm-summaries): validate summary output before caching (length cap + injection patterns) | summary cache |
-| 1169 | feat(reference): explicit `trust_level` + `reference_name` in `cqs ref` chunk results | every query |
-| 1168 | feat(notes): warn on first index of a repo with committed `docs/notes.toml` | first encounter |
-| 1167 | feat(search): `trust_level` field + optional content delimiters in chunk-returning JSON | every query |
-| 1166 | feat(doc-writer): `--improve-docs` review gate (proposed-docs/ vs in-place) | **highest — commits LLM output to git** |
+| # | Title | PR | Status |
+|---|---|---|---|
+| 1166 | feat(doc-writer): `--improve-docs` review gate | #1177 | merged — close after binary refresh |
+| 1167 | feat(search): `trust_level` + delimiters in chunk JSON | #1178 | merged — close after binary refresh |
+| 1168 | feat(notes): first-encounter shared-notes prompt | #1180 | merged — close after binary refresh |
+| 1169 | feat(reference): `trust_level` + `reference_name` on `cqs ref` chunks | #1178 | merged — close after binary refresh |
+| 1170 | feat(llm-summaries): validate summary output before caching | #1179 | CI in flight — merge then close |
+| **1181** | **feat(security): general mistrust posture (default-on delimiters + `_meta.handling_advice` + per-chunk `injection_flags`)** | — | filed 2026-04-28; blocked on cluster merging |
 
 **v1.30.0 audit cluster (P2/P3/P4 — filed post-release):**
 
 | # | Title | Bucket |
 |---|---|---|
-| 1140 | EX-V1.30-4: Embedder preset extras map (deferred-friendly) | P3 ergonomics |
+| 1176 | feat(search): #1130 phase 2 — migrate SPLADE blend to rrf_fuse_n (eval-required) | P2 follow-on |
+| 1140 | EX-V1.30-4: Embedder preset extras map | P3 ergonomics |
 | 1139 | EX-V1.30-3: structural_matchers shared library | P3 ergonomics |
 | 1138 | EX-V1.30-2: LlmProvider resolver via registry slice | P3 ergonomics |
-| 1137 | EX-V1.30-1: Lift BatchCmd::is_pipeable into the registry | P3 ergonomics |
-| 1136 | P4.3: Auth state ignored by quiet=true — Option<AuthToken> permits silent no-auth | P4 auth bug |
-| 1135 | P4.2: cookie Path=/ on 127.0.0.1 — multiple cqs serve stomp on same host | P4 auth bug |
-| 1134 | P4.1: AuthToken::from_string alphabet invariant relies on docstring | P4 auth bug |
-| 1133 | P2.91: NoteEntry has no kind/tag taxonomy — only sentiment | P2 enhancement |
-| **1131** | **P2.89: Vector index backend selection is hand-coded; needs IndexBackend trait** | **P2 — next up (eval-neutral)** |
-| **1130** | **P2.88: Adding third score signal requires touching two fusion paths** | **P2 — blocked by #1131 (eval A/B)** |
+| 1137 | EX-V1.30-1: Lift BatchCmd::is_pipeable into the registry | P3 ergonomics — **next after cluster** |
+| 1136 | P4.3: Auth state ignored by quiet=true | P4 auth bug |
+| 1135 | P4.2: cookie Path=/ on 127.0.0.1 | P4 auth bug |
+| 1134 | P4.1: AuthToken::from_string alphabet invariant | P4 auth bug |
+| 1133 | P2.91: NoteEntry has no kind/tag taxonomy | P2 enhancement |
+
+**Watch-mode infrastructure (filed 2026-04-28):**
+
+| # | Title | Status |
+|---|---|---|
+| **1182** | **feat(watch): perfect watch mode — close missed-event classes (bulk git, WSL 9P, external writes) via 3-layer reconciliation** | filed today; positioning lever for "freshness as differentiator" |
+
+**Closed since last tears update:** #1130 (phase 1 only — phase 2 = #1176), #1131 (#1173), #1132 (#1165), #1166-#1169 (PRs merged today; comment-close pending).
 
 **Pre-v1.30.0 backlog (still open):**
 
