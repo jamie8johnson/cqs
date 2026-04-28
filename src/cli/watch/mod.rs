@@ -63,7 +63,6 @@ mod reconcile;
 use reconcile::{reconcile_enabled, run_daemon_reconcile};
 
 mod events;
-#[cfg(test)]
 use events::max_pending_files;
 use events::{collect_events, process_file_changes, process_note_changes};
 
@@ -1074,6 +1073,7 @@ pub fn cmd_watch(
                         &parser,
                         no_ignore,
                         &mut state.pending_files,
+                        max_pending_files(),
                     );
                     tracing::info!(
                         queued,
@@ -1287,6 +1287,7 @@ pub fn cmd_watch(
                             &parser,
                             no_ignore,
                             &mut state.pending_files,
+                            max_pending_files(),
                         );
                         if queued > 0 {
                             // Reset `last_event` so `process_file_changes`

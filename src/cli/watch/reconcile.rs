@@ -60,14 +60,21 @@ use cqs::store::Store;
 /// inserted it gets reindexed on the next idle tick like any other event-
 /// driven change. The watch loop's existing dedup (`HashSet`) means
 /// queueing a file already in `pending_files` is free.
+///
+/// `max_pending` caps the total queue size — DS-V1.30.1-D2: respect the
+/// same backpressure ceiling the inotify path enforces (events.rs:108)
+/// so a bulk `git checkout` of 50k files doesn't drown the next
+/// `process_file_changes` cycle. Files skipped at the cap are picked up
+/// by the next reconcile pass — the walk is idempotent.
 pub(super) fn run_daemon_reconcile(
     store: &Store,
     root: &Path,
     parser: &CqParser,
     no_ignore: bool,
     pending_files: &mut HashSet<PathBuf>,
+    max_pending: usize,
 ) -> usize {
-    let _span = tracing::info_span!("daemon_reconcile").entered();
+    let _span = tracing::info_span!("daemon_reconcile", max_pending).entered();
 
     // Walk disk → set of relative paths visible to indexing.
     let exts = parser.supported_extensions();
@@ -92,7 +99,16 @@ pub(super) fn run_daemon_reconcile(
     let mut added = 0usize;
     let mut modified = 0usize;
     let mut queued = 0usize;
+    let mut skipped_at_cap = 0usize;
     for rel in disk_files {
+        // DS-V1.30.1-D2: respect the same cap as the inotify path so a
+        // bulk branch switch (50k files) doesn't drown the next
+        // `process_file_changes` cycle. Files we skip here are picked
+        // up by the next reconcile pass — the walk is idempotent.
+        if pending_files.len() >= max_pending {
+            skipped_at_cap += 1;
+            continue;
+        }
         // Stored origins are typically relative; normalize to forward
         // slashes for cross-platform matching parity with the rest of the
         // store layer.
@@ -106,8 +122,9 @@ pub(super) fn run_daemon_reconcile(
                 }
             }
             Some(stored_mtime) => {
-                // MODIFIED: same path indexed, but mtime moved forward.
-                // `None` stored mtime → treat as stale (legacy schema).
+                // MODIFIED: same path indexed, but disk content may have
+                // diverged. `None` stored mtime → treat as stale (legacy
+                // schema).
                 let lookup_path: PathBuf = if rel.is_absolute() {
                     rel.clone()
                 } else {
@@ -120,8 +137,17 @@ pub(super) fn run_daemon_reconcile(
                         .map(cqs::duration_to_mtime_millis),
                     Err(_) => None,
                 };
+                // AC-V1.30.1-1: use `!=` not `>` because `git checkout`
+                // restores commit-time mtimes, which can be *older* than
+                // the indexed `source_mtime`. The inotify path's
+                // `mtime <= last` mtime-equality skip is correct for
+                // single-file edits (where mtime always advances), but
+                // reconcile exists *specifically* for bulk git ops where
+                // mtime is non-monotonic. Any disk/stored mismatch is
+                // a queue trigger; the reindex itself is content-hashed
+                // so a no-op rewrite costs only the parse + cache-hit.
                 let needs_reindex = match (stored_mtime, disk_mtime) {
-                    (Some(stored), Some(disk)) => disk > *stored,
+                    (Some(stored), Some(disk)) => disk != *stored,
                     (None, _) => true,        // legacy/null stored mtime
                     (Some(_), None) => false, // can't read disk mtime → leave to GC
                 };
@@ -133,7 +159,14 @@ pub(super) fn run_daemon_reconcile(
         }
     }
 
-    if queued > 0 {
+    if skipped_at_cap > 0 {
+        tracing::warn!(
+            queued,
+            skipped_at_cap,
+            cap = max_pending,
+            "Reconcile: hit pending-files cap; skipped files will be picked up on next reconcile pass"
+        );
+    } else if queued > 0 {
         tracing::info!(
             queued,
             added,
@@ -187,7 +220,14 @@ mod tests {
 
         let store = open_store(&cqs_dir);
         let mut pending = HashSet::new();
-        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
         assert_eq!(queued, 2);
         assert_eq!(pending.len(), 2);
     }
@@ -201,7 +241,14 @@ mod tests {
 
         let store = open_store(&cqs_dir);
         let mut pending = HashSet::new();
-        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
         assert_eq!(queued, 0);
         assert!(pending.is_empty());
     }
@@ -222,7 +269,14 @@ mod tests {
         // Pre-seed the queue as if inotify already saw the file.
         pending.insert(PathBuf::from("src/a.rs"));
 
-        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
         // The file was already pending — `insert` returned false, so
         // `queued` stays 0 even though the file was divergent.
         assert_eq!(queued, 0);
@@ -359,7 +413,14 @@ mod tests {
         // `stored_mtime_ms`. Reconcile must classify every file as
         // MODIFIED and queue it.
         let mut pending = HashSet::new();
-        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
         assert_eq!(
             queued, N,
             "all {N} bulk-modified files must be queued (got {queued})"
@@ -404,8 +465,9 @@ mod tests {
 
         // Write a single file, then store its current disk mtime as the
         // index's `source_mtime` so reconcile sees `disk_mtime ==
-        // stored_mtime`. The needs_reindex predicate uses strict
-        // `disk > stored`, so equality keeps the file out of the queue.
+        // stored_mtime`. After AC-V1.30.1-1 the predicate is `disk !=
+        // stored`, so equality (the unchanged-file case) keeps the file
+        // out of the queue.
         let rel = "src/quiet.rs";
         let abs = dir.path().join(rel);
         fs::write(&abs, b"fn quiet() {}").unwrap();
@@ -447,11 +509,135 @@ mod tests {
             .expect("seed chunk at disk mtime");
 
         let mut pending = HashSet::new();
-        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
         assert_eq!(
             queued, 0,
             "file with disk_mtime == stored_mtime must not requeue"
         );
         assert!(pending.is_empty());
+    }
+
+    /// DS-V1.30.1-D2: cap shared with the inotify path so a bulk
+    /// git-checkout doesn't drown the next process_file_changes
+    /// cycle. Tests the strict pre-queue clamp: files we'd otherwise
+    /// queue are skipped once `pending_files.len() >= max_pending`.
+    #[test]
+    fn run_daemon_reconcile_respects_max_pending_cap() {
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let store = open_store(&cqs_dir);
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        // Pre-fill 5 entries so `pending.len() >= cap=5` immediately.
+        for i in 0..5 {
+            pending.insert(PathBuf::from(format!("preexisting_{i}.rs")));
+        }
+        // Create 20 files on disk.
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        for i in 0..20 {
+            fs::write(src_dir.join(format!("file_{i}.rs")), "fn x(){}").unwrap();
+        }
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            5, // cap is already met
+        );
+        assert_eq!(queued, 0, "cap already met → no new entries queued");
+        assert_eq!(pending.len(), 5, "pending must not exceed cap");
+    }
+
+    /// AC-V1.30.1-1: `git checkout HEAD~5 -- foo.rs` restores the file
+    /// with its commit-time mtime, which is *older* than the indexed
+    /// `source_mtime`. The strict `disk > stored` predicate would skip
+    /// this file silently. Reconcile must use `disk != stored` so any
+    /// divergence — forward or backward in time — queues a reindex.
+    #[test]
+    fn run_daemon_reconcile_queues_older_disk_mtime() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use std::time::{Duration, SystemTime};
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // Write the file with new content (post-checkout state).
+        let rel = "src/foo.rs";
+        let abs = dir.path().join(rel);
+        fs::write(&abs, "fn rewound() {}").unwrap();
+
+        // Rewind the disk mtime to a week ago to simulate `git checkout`
+        // restoring a commit-time mtime older than what we'll seed as
+        // the stored mtime. `set_modified` is stable since Rust 1.75
+        // (cqs MSRV is 1.95) — same pattern used in
+        // `src/store/migrations.rs` and `src/cli/batch/mod.rs`.
+        let week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 60 * 60);
+        let f = std::fs::OpenOptions::new().write(true).open(&abs).unwrap();
+        f.set_modified(week_ago).unwrap();
+        drop(f);
+
+        // Seed the index with a HIGHER stored_mtime than the rewound
+        // disk mtime — simulates "indexed at HEAD (today), then file
+        // rewound by checkout to last week's commit". Use a "now" stored
+        // mtime in milliseconds; even if the test runs millis after the
+        // rewind, `now > week_ago` by a comfortable margin.
+        let stored_mtime_ms = cqs::duration_to_mtime_millis(
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let content = "fn original() {}".to_string(); // any content; only mtime drives the predicate
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "original".to_string(),
+            signature: "fn original()".to_string(),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(
+                &[(chunk, placeholder_embedding(0.0))],
+                Some(stored_mtime_ms),
+            )
+            .expect("seed chunk at stored mtime");
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+
+        assert_eq!(queued, 1, "older-mtime divergent file must be queued");
+        assert!(pending.contains(&PathBuf::from(rel)));
     }
 }

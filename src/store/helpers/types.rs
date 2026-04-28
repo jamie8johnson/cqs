@@ -880,6 +880,15 @@ mod tests {
 
     #[test]
     fn test_to_json_with_origin_none_matches_default() {
+        // Both `to_json` and `to_json_with_origin(None)` call
+        // `maybe_wrap_content`, which reads the process-global
+        // `CQS_TRUST_DELIMITERS`. Tests that mutate that env var (e.g.
+        // `test_to_json_field_values`) take `TRUST_DELIM_ENV_LOCK`; this
+        // test must hold it too, or it sees a flipped value mid-call and
+        // the assertion races.
+        let _guard = TRUST_DELIM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let result = SearchResult {
             chunk: make_chunk("foo", None),
             score: 0.7,

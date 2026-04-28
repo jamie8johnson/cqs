@@ -20,7 +20,12 @@ use cqs::{Embedder, Embedding, Store};
 /// 3. For each chunk with callers or callees, regenerates NL with call context
 /// 4. Re-embeds and updates the embedding in-place
 /// Returns the number of chunks re-embedded.
-pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -> Result<usize> {
+pub(crate) fn enrichment_pass(
+    store: &Store,
+    embedder: &Embedder,
+    model_config: &cqs::embedder::ModelConfig,
+    quiet: bool,
+) -> Result<usize> {
     let _span = tracing::info_span!("enrichment_pass").entered();
 
     // Step 1: Count chunks for IDF computation
@@ -70,8 +75,10 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
     // (chunk_id, enriched_nl, enrichment_hash)
     let mut embed_batch: Vec<(String, String, String)> = Vec::new();
-    // SHL-27: Use shared embed_batch_size() so CQS_EMBED_BATCH_SIZE env var is respected
-    let enrich_embed_batch: usize = super::pipeline::embed_batch_size();
+    // SHL-V1.30-1: model-aware batch size so nomic-coderank (768 dim,
+    // 2048 seq) doesn't OOM at batch=64 on an 8 GB GPU. CQS_EMBED_BATCH_SIZE
+    // override is still honoured inside `embed_batch_size_for`.
+    let enrich_embed_batch: usize = super::pipeline::embed_batch_size_for(model_config);
     let mut skipped_count = 0usize;
 
     // Pre-fetch all LLM summaries once before the page loop (PERF-18).
