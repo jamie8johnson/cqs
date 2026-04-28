@@ -14,7 +14,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 | **Project files** | Trusted | Your code, indexed by your choice |
 | **External documents** | Semi-trusted | PDF/HTML/CHM files converted via `cqs convert` — parsed but not executed |
 | **Reference sources** | Semi-trusted | Indexed via `cqs ref add` — search results blended with project code |
-| **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7); cookie handoff is `HttpOnly; SameSite=Strict`; compare is constant-time. `--no-auth` opts out for scripted automation but is paired with a loud-warn banner on non-loopback binds. |
+| **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7). Three credential channels: `Authorization: Bearer`, `cqs_token_<port>` cookie (port-scoped per RFC 6265, #1135 — concurrent instances don't collide in the browser jar), `?token=` query param. Cookie handoff is `HttpOnly; SameSite=Strict; Path=/`; compare is constant-time on every channel. Disabling auth requires `--no-auth` plus an internal `NoAuthAcknowledgement` proof token (#1136), so no internal caller can ship a fully-open server by accident; the disabled branch logs a structured `tracing::error!` regardless of `quiet`. Loud-warn banner on non-loopback binds with `--no-auth`. |
 | **Indexed content (in AI agent context)** | Untrusted | cqs relays code, comments, summaries, and developer notes verbatim. Injection payloads in any of those surfaces survive the relay. See [Indirect Prompt Injection](#indirect-prompt-injection--supply-chain-risks-from-indexed-content) below. |
 
 ### What We Protect Against

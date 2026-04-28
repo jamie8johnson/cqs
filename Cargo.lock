@@ -864,6 +864,7 @@ dependencies = [
  "notify",
  "once_cell",
  "ort",
+ "percent-encoding",
  "predicates",
  "proptest",
  "rand 0.10.1",

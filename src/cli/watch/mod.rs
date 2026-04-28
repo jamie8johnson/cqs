@@ -522,12 +522,28 @@ pub fn cmd_watch(
         if !cli.quiet {
             println!("Daemon listening on {}", sock_path.display());
         }
-        // OB-NEW-2: Self-maintaining env snapshot — iterate every CQS_*
-        // variable instead of a hardcoded whitelist that drifts as new
-        // knobs are added. Env vars set on client subprocesses do NOT
-        // affect daemon-served queries; only the daemon's own env applies.
+        // OB-NEW-2 / SEC-V1.30.1-8: Self-maintaining env snapshot —
+        // iterate every CQS_* variable instead of a hardcoded whitelist
+        // that drifts as new knobs are added. Env vars set on client
+        // subprocesses do NOT affect daemon-served queries; only the
+        // daemon's own env applies.
+        //
+        // Redact secrets — any var whose name suffix matches a known
+        // secret marker is logged with `<redacted len=N>` instead of
+        // the value. With OB-V1.30-1 surfacing info-level to journald,
+        // an unredacted log lands in a 30-day journal artifact.
+        const SECRET_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"];
         let cqs_vars: Vec<(String, String)> = std::env::vars()
             .filter(|(k, _)| k.starts_with("CQS_"))
+            .map(|(k, v)| {
+                let is_secret = SECRET_SUFFIXES.iter().any(|suffix| k.ends_with(suffix));
+                let value = if is_secret {
+                    format!("<redacted len={}>", v.len())
+                } else {
+                    v
+                };
+                (k, value)
+            })
             .collect();
         tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot");
         Some((listener, sock_path))
