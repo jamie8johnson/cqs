@@ -10,7 +10,9 @@ use axum::{
 };
 use tower::util::ServiceExt;
 
-use super::{allowed_host_set, build_router, AllowedHosts, AppState};
+use super::{
+    allowed_host_set, build_router, AllowedHosts, AppState, AuthMode, NoAuthAcknowledgement,
+};
 use crate::embedder::Embedding;
 use crate::parser::{Chunk, ChunkType, Language};
 use crate::store::helpers::ModelInfo;
@@ -33,13 +35,34 @@ fn test_allowed_hosts() -> AllowedHosts {
 /// pre-date the auth layer (#1096) and assume routes return 200; new
 /// auth-specific tests use [`test_router_with_auth`].
 fn test_router(state: AppState) -> axum::Router {
-    build_router(state, test_allowed_hosts(), None)
+    build_router(
+        state,
+        test_allowed_hosts(),
+        AuthMode::disabled(NoAuthAcknowledgement::for_test()),
+    )
 }
 
 /// Build a router with auth enabled. Used by auth-specific tests that
-/// pin 401 / cookie-handoff / cross-instance-rejection behavior.
+/// pin 401 / cookie-handoff / cross-instance-rejection behavior. The
+/// cookie port defaults to 8080 — the production default — so existing
+/// tests that pin "Set-Cookie: cqs_token_8080=..." don't have to know
+/// about #1135.
 fn test_router_with_auth(state: AppState, token: super::AuthToken) -> axum::Router {
-    build_router(state, test_allowed_hosts(), Some(token))
+    test_router_with_auth_on_port(state, token, 8080)
+}
+
+/// Build a router with auth enabled on a specific cookie port. Used by
+/// the multi-instance / port-collision tests added for #1135.
+fn test_router_with_auth_on_port(
+    state: AppState,
+    token: super::AuthToken,
+    cookie_port: u16,
+) -> axum::Router {
+    build_router(
+        state,
+        test_allowed_hosts(),
+        AuthMode::required(token, cookie_port),
+    )
 }
 
 /// Build a fixture by opening a fresh temp store, initializing it,
@@ -1276,7 +1299,11 @@ async fn host_allowlist_includes_explicit_lan_bind() {
     // must accept that exact host:port as well as loopback.
     let fixture = fixture_state();
     let lan_addr: SocketAddr = "192.168.1.50:8080".parse().unwrap();
-    let app = build_router(fixture.state(), allowed_host_set(&lan_addr), None);
+    let app = build_router(
+        fixture.state(),
+        allowed_host_set(&lan_addr),
+        AuthMode::disabled(NoAuthAcknowledgement::for_test()),
+    );
 
     let resp = app
         .oneshot(
@@ -1339,7 +1366,8 @@ mod auth_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_required_no_credentials_returns_401() {
         let fixture = fixture_state();
-        let token = super::super::AuthToken::from_string("test-token-fixed");
+        let token = super::super::AuthToken::try_from_string("test-token-fixed")
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1362,7 +1390,8 @@ mod auth_tests {
     async fn auth_required_html_root_returns_401() {
         // AC: 401 on HTML routes too, not just /api/*.
         let fixture = fixture_state();
-        let token = super::super::AuthToken::from_string("test-token-fixed");
+        let token = super::super::AuthToken::try_from_string("test-token-fixed")
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1383,7 +1412,8 @@ mod auth_tests {
     async fn auth_passes_with_bearer_header() {
         let fixture = fixture_state();
         let token_val = "test-token-fixed";
-        let token = super::super::AuthToken::from_string(token_val);
+        let token = super::super::AuthToken::try_from_string(token_val)
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1404,7 +1434,8 @@ mod auth_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_rejects_wrong_bearer_token() {
         let fixture = fixture_state();
-        let token = super::super::AuthToken::from_string("test-token-correct");
+        let token = super::super::AuthToken::try_from_string("test-token-correct")
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1426,14 +1457,15 @@ mod auth_tests {
     async fn auth_passes_with_cookie() {
         let fixture = fixture_state();
         let token_val = "test-cookie-token";
-        let token = super::super::AuthToken::from_string(token_val);
+        let token = super::super::AuthToken::try_from_string(token_val)
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/api/stats")
-                    .header(header::COOKIE, format!("cqs_token={token_val}"))
+                    .header(header::COOKIE, format!("cqs_token_8080={token_val}"))
                     .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
@@ -1450,7 +1482,8 @@ mod auth_tests {
         // The middleware splits on `;` and trims each pair.
         let fixture = fixture_state();
         let token_val = "test-cookie-token";
-        let token = super::super::AuthToken::from_string(token_val);
+        let token = super::super::AuthToken::try_from_string(token_val)
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1459,7 +1492,7 @@ mod auth_tests {
                     .uri("/api/stats")
                     .header(
                         header::COOKIE,
-                        format!("session=abc; cqs_token={token_val}; pref=dark"),
+                        format!("session=abc; cqs_token_8080={token_val}; pref=dark"),
                     )
                     .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
@@ -1475,7 +1508,8 @@ mod auth_tests {
     async fn auth_query_param_redirects_with_set_cookie() {
         let fixture = fixture_state();
         let token_val = "test-query-token";
-        let token = super::super::AuthToken::from_string(token_val);
+        let token = super::super::AuthToken::try_from_string(token_val)
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1514,7 +1548,7 @@ mod auth_tests {
             .to_str()
             .unwrap();
         assert!(
-            cookie.starts_with(&format!("cqs_token={token_val};")),
+            cookie.starts_with(&format!("cqs_token_8080={token_val};")),
             "Set-Cookie must include the token: {cookie}"
         );
         assert!(
@@ -1535,7 +1569,8 @@ mod auth_tests {
     async fn auth_query_param_strips_token_preserves_other_params() {
         let fixture = fixture_state();
         let token_val = "test-query-token";
-        let token = super::super::AuthToken::from_string(token_val);
+        let token = super::super::AuthToken::try_from_string(token_val)
+            .expect("test token must be valid alphabet");
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
@@ -1564,8 +1599,10 @@ mod auth_tests {
         // authenticate against B. AC for #1096.
         let fixture_a = fixture_state();
         let fixture_b = fixture_state();
-        let token_a = super::super::AuthToken::from_string("token-instance-a");
-        let token_b = super::super::AuthToken::from_string("token-instance-b");
+        let token_a = super::super::AuthToken::try_from_string("token-instance-a")
+            .expect("test token must be valid alphabet");
+        let token_b = super::super::AuthToken::try_from_string("token-instance-b")
+            .expect("test token must be valid alphabet");
         let app_a = test_router_with_auth(fixture_a.state(), token_a);
         let app_b = test_router_with_auth(fixture_b.state(), token_b);
 
@@ -1618,5 +1655,116 @@ mod auth_tests {
             .expect("oneshot");
 
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// #1135: instance A on `:8080` sets cookie `cqs_token_8080=A`. The
+    /// browser sends that cookie to instance B on `:8081`, but B's
+    /// middleware only reads `cqs_token_8081=…`, so the wrong-port
+    /// cookie is invisible to B and the request 401s. Without #1135 the
+    /// cookie would have name-collided in the browser jar and B would
+    /// have seen the (non-matching) value, yielding the same 401 — but
+    /// also clobbering A's session on the next redirect. The fix means
+    /// neither side sees the other's cookie and neither session is
+    /// affected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_cookie_is_scoped_per_port() {
+        let fixture = fixture_state();
+        let token_str = "test-cookie-token";
+        let token = super::super::AuthToken::try_from_string(token_str)
+            .expect("test token must be valid alphabet");
+
+        // Instance B runs on port 8081; its middleware only accepts
+        // `cqs_token_8081=…`. Sending a `cqs_token_8080=…` cookie
+        // (the one a different instance would have set) must 401.
+        let app_b = test_router_with_auth_on_port(fixture.state(), token, 8081);
+
+        let resp = app_b
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::COOKIE, format!("cqs_token_8080={token_str}"))
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "wrong-port cookie must not authenticate against this instance"
+        );
+    }
+
+    /// #1135: same instance, the *correct* per-port cookie still works.
+    /// Pin the positive case alongside the negative so a future
+    /// regression in the cookie-name function fails one of the pair
+    /// loudly.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_cookie_works_with_correct_port() {
+        let fixture = fixture_state();
+        let token_str = "test-cookie-token";
+        let token = super::super::AuthToken::try_from_string(token_str)
+            .expect("test token must be valid alphabet");
+
+        let app = test_router_with_auth_on_port(fixture.state(), token, 8081);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::COOKIE, format!("cqs_token_8081={token_str}"))
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// #1135: the redirect-handoff Set-Cookie carries the per-port
+    /// name. A future regression that drops the port suffix would
+    /// reintroduce the cross-instance collision; this test catches it
+    /// at the wire level.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_redirect_set_cookie_includes_port() {
+        let fixture = fixture_state();
+        let token_str = "test-redirect-token";
+        let token = super::super::AuthToken::try_from_string(token_str)
+            .expect("test token must be valid alphabet");
+
+        let app = test_router_with_auth_on_port(fixture.state(), token, 8081);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/?token={token_str}"))
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        // Should be a redirect (302/303) with Set-Cookie: cqs_token_8081=…
+        let status = resp.status();
+        assert!(
+            status == StatusCode::SEE_OTHER || status == StatusCode::FOUND,
+            "expected 302/303, got {status}"
+        );
+
+        let cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("Set-Cookie header on redirect")
+            .to_str()
+            .unwrap();
+        assert!(
+            cookie.starts_with(&format!("cqs_token_8081={token_str};")),
+            "Set-Cookie must use per-port name: {cookie}"
+        );
     }
 }

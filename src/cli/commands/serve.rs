@@ -55,22 +55,32 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
     // #1096: generate a per-launch token unless explicitly opted out.
-    // The token is shared with `run_server` (via `Some(token)`) and
-    // with the browser-open URL below — both branches need to agree
-    // on the same value, so we generate once here and clone.
+    // The token is shared with `run_server` (via `AuthMode::Required`)
+    // and with the browser-open URL below — both branches need to
+    // agree on the same value, so we build the AuthMode once and
+    // borrow the token out for the URL.
+    //
+    // #1135: cookie_port = bind_addr.port() so two `cqs serve`
+    // instances on the same host don't collide in the browser
+    // cookie jar.
+    //
+    // #1136: AuthMode::Disabled requires `NoAuthAcknowledgement`,
+    // which is constructed via `from_cli_no_auth_flag()` — the
+    // function name is the audit trail for "user explicitly opted
+    // into a no-auth server."
     let auth = if no_auth {
-        None
+        cqs::serve::AuthMode::disabled(cqs::serve::NoAuthAcknowledgement::from_cli_no_auth_flag())
     } else {
-        Some(cqs::serve::AuthToken::random())
+        cqs::serve::AuthMode::required(cqs::serve::AuthToken::random(), bind_addr.port())
     };
 
     if open {
         // The launched URL embeds the token as a query parameter; the
         // post-auth redirect strips it from the address bar and hands
-        // it off to a `cqs_token` cookie, so reload + bookmark stay
-        // working without leaving the token visible. With --no-auth
-        // the URL is the bare bind addr.
-        let url = match auth.as_ref() {
+        // it off to a `cqs_token_<port>` cookie, so reload + bookmark
+        // stay working without leaving the token visible. With
+        // --no-auth the URL is the bare bind addr.
+        let url = match auth.token() {
             Some(token) => format!("http://{bind_addr}/?token={}", token.as_str()),
             None => format!("http://{bind_addr}"),
         };
