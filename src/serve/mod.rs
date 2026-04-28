@@ -44,7 +44,7 @@ mod handlers;
 #[cfg(test)]
 mod tests;
 
-pub use auth::AuthToken;
+pub use auth::{AuthMode, AuthToken, InvalidTokenAlphabet, NoAuthAcknowledgement};
 pub use error::ServeError;
 
 /// Shared state passed to every axum handler. Wraps a read-only store
@@ -86,17 +86,19 @@ pub(crate) type AllowedHosts = Arc<HashSet<String>>;
 /// `quiet` suppresses the "listening on" stdout banner so test code
 /// can run the server without polluting test output.
 ///
-/// `auth` is the per-launch token (#1096). Pass `Some(token)` to require
-/// authentication on every route via [`auth::enforce_auth`]; pass `None`
-/// for the back-compat unauthenticated mode (the CLI calls this when
-/// `--no-auth` is set, after emitting a loud-warning banner). The
+/// `auth` is the per-launch token (#1096) wrapped in [`AuthMode`].
+/// Pass [`AuthMode::Required`] to enforce the token on every route via
+/// [`auth::enforce_auth`]; pass [`AuthMode::Disabled`] (which requires
+/// a [`NoAuthAcknowledgement`] proof token) for the back-compat
+/// unauthenticated mode. The CLI calls this with `Disabled` when
+/// `--no-auth` is set, after emitting a loud-warning banner. The
 /// caller is responsible for emitting the token in the "listening on"
 /// banner, since `quiet=true` callers (tests) construct their own URL.
 pub fn run_server(
     store: Store<ReadOnly>,
     bind_addr: SocketAddr,
     quiet: bool,
-    auth: Option<AuthToken>,
+    auth: AuthMode,
 ) -> Result<()> {
     let _span = tracing::info_span!("serve", addr = %bind_addr).entered();
 
@@ -139,7 +141,7 @@ pub fn run_server(
             // can redirect it (`2>/dev/null`) without losing structured
             // logs. For a stronger guarantee, add `--no-banner` (TODO).
             let stdout_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
-            match auth.as_ref() {
+            match auth.token() {
                 Some(token) => {
                     let line = format!(
                         "cqs serve listening on http://{actual}/?token={}",
@@ -165,7 +167,7 @@ pub fn run_server(
             }
             println!("press Ctrl-C to stop");
         }
-        tracing::info!(addr = %actual, auth_enabled = auth.is_some(), "cqs serve started");
+        tracing::info!(addr = %actual, auth_enabled = auth.token().is_some(), "cqs serve started");
 
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
@@ -186,16 +188,13 @@ pub fn run_server(
 /// The `allowed_hosts` allowlist is wired through a middleware that
 /// rejects DNS-rebinding attacks (see [`enforce_host_allowlist`]).
 ///
-/// `auth` is the per-launch token (#1096). When `Some(_)`, every route
-/// requires the token via header / cookie / query param (see
-/// [`auth::enforce_auth`]). When `None`, the auth layer is omitted —
-/// callers using this mode are responsible for emitting a back-compat
-/// warning to the operator.
-pub(crate) fn build_router(
-    state: AppState,
-    allowed_hosts: AllowedHosts,
-    auth: Option<AuthToken>,
-) -> Router {
+/// `auth` is the per-launch token (#1096) wrapped in [`AuthMode`].
+/// On [`AuthMode::Required`], every route requires the token via
+/// header / cookie / query param (see [`auth::enforce_auth`]). On
+/// [`AuthMode::Disabled`], the auth layer is omitted — the
+/// [`NoAuthAcknowledgement`] proof token inside that variant
+/// guarantees an explicit opt-in (#1136).
+pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: AuthMode) -> Router {
     let mut app = Router::new()
         .route("/health", get(handlers::health))
         .route("/api/stats", get(handlers::stats))
@@ -213,8 +212,19 @@ pub(crate) fn build_router(
     // compare on a request we'd reject anyway) and outside the
     // compression/trace layers (so 401 responses are still gzipped
     // and traced).
-    if let Some(token) = auth {
-        app = app.layer(from_fn_with_state(token, auth::enforce_auth));
+    match auth {
+        AuthMode::Required { token, cookie_port } => {
+            let middleware_state = auth::AuthMiddlewareState { token, cookie_port };
+            app = app.layer(from_fn_with_state(middleware_state, auth::enforce_auth));
+        }
+        AuthMode::Disabled(_ack) => {
+            // #1136: the proof token has been consumed; auth layer
+            // omitted by explicit construction. Surface a structured
+            // log line at error level so a misconfigured caller is
+            // visible regardless of `quiet` (the eprintln banner is
+            // gated on `quiet=false`).
+            tracing::error!("cqs serve: AuthMode::Disabled — no per-launch token enforced");
+        }
     }
 
     app
