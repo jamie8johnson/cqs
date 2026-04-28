@@ -1,7560 +1,7069 @@
-# v1.30.0 Audit — P1 Fix Prompts
+# v1.30.1 Audit Fix Prompts
 
-21 fix prompts for the P1 (easy + high-impact) findings. Verified against current source 2026-04-26.
+Generated: 2026-04-28T19:08:55Z
 
-Notes on drift:
-- P1.16 — `--name-boost` CLI parser is already `parse_unit_f32` (clap-bounded). The audit text was stale; only the **defense-in-depth** clamp at the consumer remains.
-- All other P1 line citations verified to current source.
+# v1.30.1 Audit — P1 Fix Prompts
 
----
+10 fix prompts covering the 14 P1 findings (after grouping). All line citations verified against current source 2026-04-28.
 
-## P1.1 + P1.2 — PRIVACY/SECURITY lie about query_log opt-in and query_cache TTL
+Group map (audit IDs → prompt #):
+- P1.1: CQ-V1.30.1-2 + DS-V1.30.1-D6 + TC-ADV-1.30.1-8 (single state-machine + test fix)
+- P1.2: CQ-V1.30.1-1 + AC-V1.30.1-4 + DS-V1.30.1-D8 (single reset-ordering fix)
+- P1.3: CQ-V1.30.1-4 + AC-V1.30.1-5 (auth ladder rewrite — strip ordering + case-fold)
+- P1.4: DOC-V1.30.1-1 (PRIVACY/SECURITY cache key)
+- P1.5: SEC-V1.30.1-2 (symlink-behaviour matrix)
+- P1.6: SEC-V1.30.1-1 (read --focus / context trust_level — depends on type extension)
+- P1.7: DOC-V1.30.1-7 (SECURITY auth surface backfill)
+- P1.8: DOC-V1.30.1-4 (ROADMAP #1182 closed)
+- P1.9: SHL-V1.30-1 (`embed_batch_size_for` wiring — 2 production sites)
+- P1.10: SEC-V1.30.1-8 (env snapshot redaction)
+- P1.11: DS-V1.30.1-D2 (reconcile cap)
+- P1.12: AC-V1.30.1-1 (reconcile non-monotonic mtime)
 
-**Finding:** P1.1 + P1.2 in audit-triage.md / Documentation in audit-findings.md (DOC-V1.30-1, DOC-V1.30-2)
-**Files:** `PRIVACY.md:21-22`, `SECURITY.md:101`, `src/cli/batch/commands.rs:371-399`
-**Why:** PRIVACY claims query_log is opt-in but `log_query` is unconditional. PRIVACY claims 7-day TTL on query_cache; only size cap exists. Both are P1 "docs lying" — fix the docs (defensible direction; gating the log requires touching every dispatch arm and changing user-visible behaviour).
-
-### Current docs (PRIVACY.md:21-22)
-
-```markdown
-- `~/.cache/cqs/query_cache.db` — recent query embeddings with a 7-day TTL. Speeds up repeated searches.
-- `~/.cache/cqs/query_log.jsonl` — opt-in query log, written only when `CQS_TELEMETRY=1` or the file already exists. Stays local.
-```
-
-### Replacement (PRIVACY.md:21-22)
-
-```markdown
-- `~/.cache/cqs/query_cache.db` — recent query embeddings, evicted oldest-first when the DB exceeds `CQS_QUERY_CACHE_MAX_SIZE` (100 MiB default). Prune older entries with `cqs cache prune <DAYS>`. Speeds up repeated searches.
-- `~/.cache/cqs/query_log.jsonl` — local query log written by every `cqs chat` / `cqs batch` invocation (search/gather/onboard/scout/where/task). Append-only JSONL. Delete the file to disable; `cqs cache clear` does not remove it. Stays local.
-```
-
-### Current docs (SECURITY.md:101)
-
-```markdown
-| `~/.cache/cqs/query_log.jsonl` | Opt-in local query log | `CQS_TELEMETRY=1` or file exists |
-```
-
-### Replacement (SECURITY.md:101)
-
-```markdown
-| `~/.cache/cqs/query_log.jsonl` | Local query log (append-only) | `cqs chat` / `cqs batch` (search, gather, onboard, scout, where, task) |
-```
-
-### Notes
-
-- The "fix the code" alternative (gate `log_query` on `CQS_TELEMETRY=1` plus existing-file check) is the *more defensible* contract but a behaviour change. Pick docs-fix here unless reviewer explicitly opts into a behaviour change. If the reviewer chooses code-fix, gate the body of `log_query` (`src/cli/batch/commands.rs:371`) on `std::env::var("CQS_TELEMETRY").as_deref() == Ok("1") || log_path.exists()` returning early otherwise.
+Total finding IDs covered: 14. Total distinct prompts: 12 (some grouped).
 
 ---
 
-## P1.3 — CHANGELOG names CQS_LLM_ENDPOINT — actual var is CQS_LLM_API_BASE
+## P1.1: CQ-V1.30.1-2 + DS-V1.30.1-D6 + TC-ADV-1.30.1-8 — `delta_saturated` ignored by `compute()`
 
-**Finding:** P1.3 in audit-triage.md / Documentation DOC-V1.30-3
-**Files:** `CHANGELOG.md:19`
-**Why:** CHANGELOG v1.30.0 entry references `CQS_LLM_ENDPOINT`, which does not exist in the codebase. Actual env var is `CQS_LLM_API_BASE` (plus `CQS_LLM_PROVIDER=local`). User copy-pasting fails at runtime.
+**Files:** `src/watch_status.rs:199-209`, `src/watch_status.rs:233-323` (test module)
+**Effort:** ~10 minutes
+**Why:** `WatchSnapshotInput` carries `delta_saturated`, and `publish_watch_snapshot` plumbs it through, but `compute()` never consults the field. After a saturated rebuild discards on swap, `pending_rebuild` becomes `None` and `compute()` reports `Fresh` — `cqs eval --require-fresh` accepts a doomed rebuild's stale on-disk index. Defeats #1182's day-1 freshness contract. Same root cause cross-listed in code-quality, data-safety, and adversarial test coverage.
 
-### Current
-
-```markdown
-- **Local LLM provider (OpenAI-compatible)** — `cqs index --llm-summaries` accepts a local OpenAI-compatible endpoint via `CQS_LLM_ENDPOINT`, in addition to the existing Anthropic Batches API path (#1101 — closes audit finding EX-V1.29-3). `LlmProvider` trait, `LocalProvider` implementation, end-to-end summary generation via local vLLM / Ollama / etc.
-```
-
-### Replacement
-
-```markdown
-- **Local LLM provider (OpenAI-compatible)** — `cqs index --llm-summaries` accepts a local OpenAI-compatible endpoint via `CQS_LLM_PROVIDER=local` + `CQS_LLM_API_BASE=<url>`, in addition to the existing Anthropic Batches API path (#1101 — closes audit finding EX-V1.29-3). `LlmProvider` trait, `LocalProvider` implementation, end-to-end summary generation via local vLLM / Ollama / etc.
-```
-
----
-
-## P1.4 — CONTRIBUTING tells contributors to edit dispatch.rs (registry.rs now)
-
-**Finding:** P1.4 in audit-triage.md / Documentation DOC-V1.30-4
-**Files:** `CONTRIBUTING.md:339-355` (checklist), `CONTRIBUTING.md:153-158` (Architecture Overview)
-**Why:** v1.30.0 #1097/#1114 collapsed five exhaustive matches in `dispatch.rs`/`definitions.rs` into one `for_each_command!` table in `src/cli/registry.rs`. The contributor checklist still says "match arm in `src/cli/dispatch.rs`" with no mention of `registry.rs`.
-
-### Current (CONTRIBUTING.md:339-355)
-
-```markdown
-## Adding a New CLI Command
-
-Checklist for every new command:
-
-1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/)
-2. **Category mod.rs** — add `mod <name>;` + `pub(crate) use <name>::*;` in `src/cli/commands/<category>/mod.rs`
-3. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
-4. **Dispatch** — match arm in `src/cli/dispatch.rs`
-5. **`--json` support** — serde serialization for programmatic output
-6. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
-7. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
-8. **Tests** — happy path + empty input + error path + edge cases
-9. **CLAUDE.md** — add to the command reference section
-10. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
-11. **CHANGELOG** — entry in the next release section
-```
-
-### Replacement (CONTRIBUTING.md:339-355)
-
-```markdown
-## Adding a New CLI Command
-
-Checklist for every new command:
-
-1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/)
-2. **Category mod.rs** — add `mod <name>;` + `pub(crate) use <name>::*;` in `src/cli/commands/<category>/mod.rs`
-3. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
-4. **Registry row** — add a `(bind, wild, name, batch_support, body)` row to `group_a` or `group_b` in `src/cli/registry.rs`. The `for_each_command!` macro generates dispatch + variant_name + batch_support from this single row; a missing row is a compile error.
-5. **`--json` support** — serde serialization for programmatic output
-6. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
-7. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
-8. **Tests** — happy path + empty input + error path + edge cases
-9. **CLAUDE.md** — add to the command reference section
-10. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
-11. **CHANGELOG** — entry in the next release section
-```
-
-### Current (Architecture Overview, CONTRIBUTING.md:153-158)
-
-```markdown
-  cli/          - Command-line interface (clap)
-    mod.rs      - Top-level CLI module, re-exports
-    definitions.rs - Clap argument definitions and command enum
-    dispatch.rs - Command dispatch (match on command, call handlers)
-    commands/   - Command implementations (organized by category)
-```
-
-### Replacement (Architecture Overview)
-
-```markdown
-  cli/          - Command-line interface (clap)
-    mod.rs      - Top-level CLI module, re-exports
-    definitions.rs - Clap argument definitions and command enum
-    registry.rs - `for_each_command!` table; single source of truth for dispatch + variant_name + batch_support
-    dispatch.rs - Command dispatch helpers (entry points; per-command arms generated from `registry.rs`)
-    commands/   - Command implementations (organized by category)
-```
-
----
-
-## P1.5 — ProjectRegistry doc lies about path on macOS/Windows
-
-**Finding:** P1.5 in audit-triage.md / Platform Behavior section
-**Files:** `src/project.rs:1-3, 176-179`
-**Why:** Module-level doc claims `~/.config/cqs/projects.toml` but `dirs::config_dir()` returns macOS-specific (`~/Library/Application Support/`) and Windows-specific (`%APPDATA%\`) paths. Path is constructed correctly; only the doc is wrong.
-
-### Current code (src/project.rs:1-4)
+### Current code
 
 ```rust
-//! Cross-project search via global project registry.
-//!
-//! Maintains a registry of indexed projects at `~/.config/cqs/projects.toml`.
-//! Enables searching across all registered projects from anywhere.
-```
-
-### Replacement
-
-```rust
-//! Cross-project search via global project registry.
-//!
-//! Maintains a registry of indexed projects in the platform config directory
-//! (via `dirs::config_dir()`):
-//! - Linux: `~/.config/cqs/projects.toml`
-//! - macOS: `~/Library/Application Support/cqs/projects.toml`
-//! - Windows: `%APPDATA%\cqs\projects.toml`
-//!
-//! Enables searching across all registered projects from anywhere.
-```
-
-### Current code (src/project.rs:175-179)
-
-```rust
-/// Get the registry file path
-fn registry_path() -> Result<PathBuf, ProjectError> {
-    let config_dir = dirs::config_dir().ok_or(ProjectError::ConfigDirNotFound)?;
-    Ok(config_dir.join("cqs").join("projects.toml"))
-}
-```
-
-### Replacement
-
-```rust
-/// Get the registry file path.
-///
-/// Resolves via `dirs::config_dir()`:
-/// - Linux: `~/.config/cqs/projects.toml`
-/// - macOS: `~/Library/Application Support/cqs/projects.toml`
-/// - Windows: `%APPDATA%\cqs\projects.toml`
-fn registry_path() -> Result<PathBuf, ProjectError> {
-    let config_dir = dirs::config_dir().ok_or(ProjectError::ConfigDirNotFound)?;
-    Ok(config_dir.join("cqs").join("projects.toml"))
-}
-```
-
----
-
-## P1.6 — gather warning hardcodes "200" — lies when CQS_GATHER_MAX_NODES set
-
-**Finding:** P1.6 in audit-triage.md / Code Quality
-**Files:** `src/cli/commands/search/gather.rs:200`, `src/gather.rs:153-172` (`gather_max_nodes`)
-**Why:** Text-mode warning says "capped at 200 nodes" but actual cap obeys `CQS_GATHER_MAX_NODES`. With `CQS_GATHER_MAX_NODES=500`, the user sees "capped at 200" while results were capped at 500.
-
-### Current code (src/cli/commands/search/gather.rs:199-201)
-
-```rust
-        if result.expansion_capped {
-            println!("{}", "Warning: expansion capped at 200 nodes".yellow());
-        }
-```
-
-### Replacement
-
-```rust
-        if result.expansion_capped {
-            let cap = cqs::gather::gather_max_nodes();
-            println!(
-                "{}",
-                format!("Warning: expansion capped at {cap} nodes").yellow()
-            );
-        }
-```
-
-### Notes
-
-- `gather_max_nodes` is already memoized via `OnceLock` (per `src/gather.rs:153-172`), so this is cheap.
-- Verify that `gather::gather_max_nodes` is `pub`; if not, expose it (`pub fn`) and re-export from `lib.rs` if needed.
-- Stretch goal flagged in audit: surface `expansion_cap_used: usize` on `GatherResult` so `--json` consumers also see the real cap. Out of scope for the easy fix here.
-
----
-
-## P1.7 — Reranker silently ignores [reranker] config section
-
-**Finding:** P1.7 in audit-triage.md / Code Quality
-**Files:** `src/reranker.rs:127-154` (`Reranker::new`), `src/reranker.rs:61-77` (`resolve_reranker`), `src/reranker.rs:442-446` (`model_paths` calls `resolve_reranker(None)`), production callers `src/cli/store.rs:276`, `src/cli/batch/mod.rs:1274`
-**Why:** `resolve_reranker` accepts `Option<&AuxModelSection>` to thread `Config::reranker` (`src/config.rs:228`) through, but `Reranker::model_paths` always passes `None`. A user `.cqs.toml` `[reranker] preset = "bge-reranker-base"` is silently dropped — user gets default ms-marco-MiniLM with no error or warn.
-
-### Current code (src/reranker.rs:106-154)
-
-```rust
-pub struct Reranker {
-    session: Mutex<Option<Session>>,
-    tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
-    model_paths: OnceCell<(PathBuf, PathBuf)>,
-    provider: ExecutionProvider,
-    max_length: usize,
-    expects_token_type_ids: Mutex<Option<bool>>,
-}
-
-impl Reranker {
-    /// Create a new reranker with lazy model loading
-    pub fn new() -> Result<Self, RerankerError> {
-        let provider = select_provider();
-        let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
-            // ... unchanged ...
+//   src/watch_status.rs:199-209
+    pub fn compute(input: WatchSnapshotInput<'_>) -> Self {
+        let state = if input.rebuild_in_flight {
+            FreshnessState::Rebuilding
+        } else if input.pending_files_count > 0
+            || input.pending_notes
+            || input.dropped_this_cycle > 0
+        {
+            FreshnessState::Stale
+        } else {
+            FreshnessState::Fresh
         };
-        Ok(Self {
-            session: Mutex::new(None),
-            tokenizer: Mutex::new(None),
-            model_paths: OnceCell::new(),
-            provider,
-            max_length,
-            expects_token_type_ids: Mutex::new(None),
-        })
-    }
 ```
 
-### Current code (src/reranker.rs:442-446)
+### Replacement
 
 ```rust
-    fn model_paths(&self) -> Result<&(PathBuf, PathBuf), RerankerError> {
-        self.model_paths.get_or_try_init(|| {
-            let _span = tracing::info_span!("reranker_model_resolve").entered();
-
-            let resolved = resolve_reranker(None)?;
-```
-
-### Replacement (struct + constructors, src/reranker.rs:106-154)
-
-```rust
-pub struct Reranker {
-    session: Mutex<Option<Session>>,
-    tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
-    model_paths: OnceCell<(PathBuf, PathBuf)>,
-    provider: ExecutionProvider,
-    max_length: usize,
-    expects_token_type_ids: Mutex<Option<bool>>,
-    /// Cached config-file `[reranker]` section so `resolve_reranker` honours
-    /// `preset` / `model_path` / `tokenizer_path` set in `.cqs.toml`.
-    section: Option<AuxModelSection>,
-}
-
-impl Reranker {
-    /// Create a new reranker with lazy model loading (config-less; CLI/env only).
-    pub fn new() -> Result<Self, RerankerError> {
-        Self::with_section(None)
-    }
-
-    /// Create a reranker, threading a `[reranker]` config section through to
-    /// `resolve_reranker` so `.cqs.toml` preset / model_path are honoured.
-    pub fn with_section(section: Option<AuxModelSection>) -> Result<Self, RerankerError> {
-        let provider = select_provider();
-        let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
-            // ... unchanged body ...
+    pub fn compute(input: WatchSnapshotInput<'_>) -> Self {
+        let state = if input.rebuild_in_flight {
+            FreshnessState::Rebuilding
+        } else if input.pending_files_count > 0
+            || input.pending_notes
+            || input.dropped_this_cycle > 0
+            || input.delta_saturated
+        {
+            // CQ-V1.30.1-2 / DS-V1.30.1-D6: a saturated delta means the
+            // rebuilt HNSW was discarded on swap (rebuild.rs:60-63); the
+            // on-disk index is whatever was there before the rebuild
+            // started. Treat as Stale until the next threshold rebuild
+            // lands cleanly, so `cqs eval --require-fresh` waits.
+            FreshnessState::Stale
+        } else {
+            FreshnessState::Fresh
         };
-        Ok(Self {
-            session: Mutex::new(None),
-            tokenizer: Mutex::new(None),
-            model_paths: OnceCell::new(),
-            provider,
-            max_length,
-            expects_token_type_ids: Mutex::new(None),
-            section,
-        })
+```
+
+Then add the missing test in the same file's `#[cfg(test)] mod tests` block, right after the `dropped_events_mark_stale` test (around line 295):
+
+```rust
+    /// CQ-V1.30.1-2 / TC-ADV-1.30.1-8: a saturated delta means the in-flight
+    /// rebuild's pending delta exceeded `MAX_PENDING_REBUILD_DELTA` and the
+    /// rebuilt HNSW will be discarded on swap. Until the next threshold
+    /// rebuild reads SQLite fresh, the on-disk index is stale. The flag
+    /// is published; `compute()` must treat it as a Stale signal so
+    /// `cqs eval --require-fresh` doesn't accept a doomed rebuild.
+    #[test]
+    fn delta_saturated_marks_stale_when_no_other_work() {
+        let snap = WatchSnapshot::compute(WatchSnapshotInput {
+            pending_files_count: 0,
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: true,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event: std::time::Instant::now(),
+            last_synced_at: None,
+            _marker: std::marker::PhantomData,
+        });
+        assert_eq!(snap.state, FreshnessState::Stale);
+        assert!(snap.delta_saturated);
+    }
+
+    /// `Rebuilding` still wins when the rebuild is in flight even with a
+    /// saturated delta — the saturation will be observed when the rebuild
+    /// drains and `rebuild_in_flight` flips to false.
+    #[test]
+    fn rebuild_in_flight_dominates_over_delta_saturated() {
+        let snap = WatchSnapshot::compute(WatchSnapshotInput {
+            pending_files_count: 0,
+            pending_notes: false,
+            rebuild_in_flight: true,
+            delta_saturated: true,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event: std::time::Instant::now(),
+            last_synced_at: None,
+            _marker: std::marker::PhantomData,
+        });
+        assert_eq!(snap.state, FreshnessState::Rebuilding);
     }
 ```
 
-### Replacement (model_paths, src/reranker.rs:442-446)
+### Verification
 
-```rust
-    fn model_paths(&self) -> Result<&(PathBuf, PathBuf), RerankerError> {
-        self.model_paths.get_or_try_init(|| {
-            let _span = tracing::info_span!("reranker_model_resolve").entered();
-
-            let resolved = resolve_reranker(self.section.as_ref())?;
-```
-
-### Replacement (callers)
-
-`src/cli/store.rs:276`:
-```rust
-        let r = cqs::Reranker::with_section(config.reranker.clone())
-            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
-```
-
-`src/cli/batch/mod.rs:1274`:
-```rust
-        let r = cqs::Reranker::with_section(config.reranker.clone())
-            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
-```
-
-### Notes
-
-- `AuxModelSection` is owned (`Clone`-able) per `src/config.rs:228`; cloning is cheap (small struct of `Option<String>`s).
-- Need `pub use` of `AuxModelSection` if not already exported from `cqs::` lib; check `src/lib.rs`.
-- Re-export verify: `cqs::Reranker::with_section` must compile from outside the crate root (`cli` is in-crate, fine).
-- Test sites in `src/reranker.rs:712, 718, 772, 823` continue using `Reranker::new()` (no section needed).
-- Add a regression test `with_section_preset_overrides_default` that constructs a `Reranker::with_section(Some(AuxModelSection { preset: Some("bge-reranker-base".into()), .. }))`, calls `model_paths()`, and asserts the resolved repo matches the bge preset (not ms-marco).
+- `cargo build --features cuda-index`
+- `cargo test --features cuda-index --lib watch_status::tests::delta_saturated_marks_stale_when_no_other_work`
+- `cargo test --features cuda-index --lib watch_status::tests::rebuild_in_flight_dominates_over_delta_saturated`
+- `cargo test --features cuda-index --lib watch_status::tests` (full suite — empty-state-fresh, dropped-marks-stale, rebuild-dominates must still pass)
 
 ---
 
-## P1.8 — Embedder fingerprint falls back to repo:timestamp — cache thrash
+## P1.2: CQ-V1.30.1-1 + AC-V1.30.1-4 + DS-V1.30.1-D8 — `dropped_this_cycle` reset before publish
 
-**Finding:** P1.8 in audit-triage.md / Error Handling + Data Safety
-**Files:** `src/embedder/mod.rs:435-466`
-**Why:** Three error arms fall back to `format!("{}:{}", self.model_config.repo, ts)` where `ts = SystemTime::now()`. Every restart with a transient hash failure (AV scanner, EBUSY, I/O hiccup) writes cache rows under a NEW timestamp, so subsequent reads miss the cache forever. Cross-slot copy by `content_hash` also breaks because the model fingerprint isn't stable.
+**Files:** `src/cli/watch/events.rs:131-157`
+**Effort:** ~15 minutes
+**Why:** `process_file_changes` clears `state.dropped_this_cycle = 0` at line 145 *before* (a) the embedder-init check that may early-`return` and (b) the snapshot publish that runs at the end of the outer loop iteration. Two failure modes share one fix:
 
-### Current code (src/embedder/mod.rs:432-466)
+1. (CQ-V1.30.1-1 / DS-V1.30.1-D8) The next `publish_watch_snapshot` always sees `dropped_this_cycle == 0` even when the cycle that just ran started with a non-zero count. `compute()` uses `dropped_this_cycle > 0` as a Stale signal — never observed.
+2. (AC-V1.30.1-4) When `try_init_embedder` returns `None` at line 156, the function early-returns with `pending_files` already drained AND `dropped_this_cycle` zeroed, having processed no chunks. Total signal loss when embedder init fails.
 
-```rust
-                                            hash
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(error = %e, "Failed to stream-hash model, using repo+timestamp fallback");
-                                            let ts = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs();
-                                            format!("{}:{}", self.model_config.repo, ts)
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(error = %e, "Failed to open model for fingerprint, using repo+timestamp fallback");
-                                    let ts = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs();
-                                    format!("{}:{}", self.model_config.repo, ts)
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to get model paths for fingerprint, using repo+timestamp fallback");
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    format!("{}:{}", self.model_config.repo, ts)
-                }
-            }
-        })
-    }
-```
+Fix: move the reset to *after* the embedder-init check, then keep the warn unconditional so operators see the count even if drain fails downstream.
 
-### Replacement
-
-Replace each `repo:timestamp` fallback with a stable `repo:fallback:size=<bytes>` (or `:size=unknown`) shape. The size+repo proxy is deterministic across restarts within the same model file.
+### Current code
 
 ```rust
-                                            hash
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "Failed to stream-hash model, using repo+size fallback (cache may miss until next successful hash)"
-                                            );
-                                            let size = std::fs::metadata(model_path)
-                                                .ok()
-                                                .map(|m| m.len())
-                                                .unwrap_or(0);
-                                            format!("{}:fallback:size={}", self.model_config.repo, size)
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Failed to open model for fingerprint, using repo+size fallback"
-                                    );
-                                    let size = std::fs::metadata(model_path)
-                                        .ok()
-                                        .map(|m| m.len())
-                                        .unwrap_or(0);
-                                    format!("{}:fallback:size={}", self.model_config.repo, size)
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to get model paths for fingerprint, using repo-only fallback"
-                    );
-                    format!("{}:fallback:no-path", self.model_config.repo)
-                }
-            }
-        })
-    }
-```
+//   src/cli/watch/events.rs:131-157
+pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+    let files: Vec<PathBuf> = state.pending_files.drain().collect();
+    let _span = info_span!("process_file_changes", file_count = files.len()).entered();
+    state.pending_files.shrink_to(64);
 
-### Notes
-
-- The "model path resolution failed" arm (line 457) cannot read file size (path unknown), so use `:fallback:no-path` as a stable sentinel — still not time-varying.
-- Audit suggests promoting the failure to a hard error. That's a behaviour change with downstream surface (every `Embedder::*` call now returns `Result<&str, EmbedderError>`). Out of scope here; the size-fallback closes the cache-thrash bug without breaking existing call signatures.
-- `cqs doctor` should warn when `model_fingerprint` starts with `:fallback:` — separate small follow-up; cite as `audit doctor warn fallback fingerprint`.
-
----
-
-## P1.9 — LocalProvider Mutex::into_inner().unwrap_or_default() loses all batch results on poison
-
-**Finding:** P1.9 in audit-triage.md / Error Handling
-**Files:** `src/llm/local.rs:271, 272, 278, 279, 305, 308`
-**Why:** On `Mutex::into_inner` returning `Err` (poison), `unwrap_or_default()` substitutes an empty `HashMap` and `submit_via_chat_completions` reports `succeeded` ≠ map size with no error signal. Downstream `fetch_batch_results` returns `{}` and the user persists nothing.
-
-### Current code (src/llm/local.rs:271-309)
-
-```rust
-        let ok = *succeeded.lock().unwrap();
-        let err = *failed.lock().unwrap();
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-
-        // Fatal-batch check: if every item that talked to the server saw
-        // 401/403 on its first request, the credentials are wrong — abort
-        // with a specific error instead of silently returning an empty stash.
-        let auth_fail = *auth_failures.lock().unwrap();
-        let auth_attempt = *auth_attempts.lock().unwrap();
-        if auth_attempt > 0 && auth_fail == auth_attempt {
-            tracing::error!(
-                url = %self.api_base,
-                "local batch aborted: all {} requests rejected with 401/403",
-                auth_attempt
-            );
-            return Err(LlmError::Api {
-                status: 401,
-                message: format!(
-                    "Authentication rejected at {}; check CQS_LLM_API_KEY",
-                    self.api_base
-                ),
-            });
-        }
-
-        tracing::info!(
-            batch_id = %batch_id,
-            submitted = items.len(),
-            succeeded = ok,
-            failed = err,
-            elapsed_ms,
-            "local batch complete"
+    // RM-V1.25-23: surface truncated cycles at warn level so operators
+    // notice the gap. The per-event drops are logged at debug to keep
+    // the journal clean on bulk edits.
+    if state.dropped_this_cycle > 0 {
+        tracing::warn!(
+            dropped = state.dropped_this_cycle,
+            cap = max_pending_files(),
+            "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
         );
-
-        // Move results into the stash under the batch id.
-        let results_map = results.into_inner().unwrap_or_default();
-        self.stash
-            .lock()
-            .unwrap()
-            .insert(batch_id.clone(), results_map);
-
-        Ok(batch_id)
+        state.dropped_this_cycle = 0;
     }
-```
-
-### Replacement
-
-```rust
-        // Recover counters even on poison — counts are advisory and dropping
-        // the count to 0 would mask real progress in the "complete" log.
-        let ok = *succeeded.lock().unwrap_or_else(|p| p.into_inner());
-        let err = *failed.lock().unwrap_or_else(|p| p.into_inner());
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-
-        // Fatal-batch check: if every item that talked to the server saw
-        // 401/403 on its first request, the credentials are wrong — abort
-        // with a specific error instead of silently returning an empty stash.
-        let auth_fail = *auth_failures.lock().unwrap_or_else(|p| p.into_inner());
-        let auth_attempt = *auth_attempts.lock().unwrap_or_else(|p| p.into_inner());
-        if auth_attempt > 0 && auth_fail == auth_attempt {
-            tracing::error!(
-                url = %self.api_base,
-                "local batch aborted: all {} requests rejected with 401/403",
-                auth_attempt
-            );
-            return Err(LlmError::Api {
-                status: 401,
-                message: format!(
-                    "Authentication rejected at {}; check CQS_LLM_API_KEY",
-                    self.api_base
-                ),
-            });
-        }
-
-        tracing::info!(
-            batch_id = %batch_id,
-            submitted = items.len(),
-            succeeded = ok,
-            failed = err,
-            elapsed_ms,
-            "local batch complete"
-        );
-
-        // Move results into the stash under the batch id. On poison we recover
-        // the partially-populated map rather than silently substituting an
-        // empty one — losing partial results is worse than the panic risk.
-        let results_map = match results.into_inner() {
-            Ok(m) => m,
-            Err(poisoned) => {
-                tracing::error!(
-                    succeeded = ok,
-                    "results mutex poisoned during local batch — recovering inner state"
-                );
-                poisoned.into_inner()
-            }
-        };
-
-        // Invariant: if results_map.len() != ok, accounting drifted. Surface
-        // it loudly rather than shipping a short stash silently.
-        if results_map.len() != ok {
-            tracing::error!(
-                map_len = results_map.len(),
-                succeeded = ok,
-                "local batch accounting drift: results map size != succeeded count"
-            );
-            return Err(LlmError::Internal(format!(
-                "local batch accounting drift: ok={ok} map_len={}",
-                results_map.len()
-            )));
-        }
-
-        self.stash
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(batch_id.clone(), results_map);
-
-        Ok(batch_id)
-    }
-```
-
-### Notes
-
-- `LlmError::Internal(String)` — verify this variant exists in `src/llm/mod.rs::LlmError`. If not, add it: `#[error("Internal error: {0}")] Internal(String)`.
-- The `if let Ok(mut map) = results_ref.lock()` at line 196 (worker) intentionally tolerates poison (drops the result) — leave it. The poison cascade fix is the *finalisation* path.
-- The same poison pattern exists at line 393-396 for `auth_attempts/auth_failures` increment inside the worker; that's tracked by P2.35 (RB-V1.30-7) as a separate sweep.
-
----
-
-## P1.10 — LocalProvider unbounded HTTP body read — OOM on hostile/buggy server
-
-**Finding:** P1.10 in audit-triage.md / Robustness RB-V1.30-1
-**Files:** `src/llm/local.rs:97-100` (Client builder), `src/llm/local.rs:474-487` (`parse_choices_content`), `src/llm/local.rs:490-500` (`body_preview`)
-**Why:** `reqwest::blocking::Client` builder sets timeout + redirect only — no body cap. `resp.json::<Value>()` and `resp.text()` buffer the entire response. A panicked / hostile / misconfigured OpenAI-compat server can return a multi-GB body and OOM the daemon. Up to `local_concurrency()` (≤64) workers compound the risk.
-
-### Current code (src/llm/local.rs:88-115)
-
-```rust
-    pub fn new(llm_config: LlmConfig) -> Result<Self, LlmError> {
-        let _span = tracing::info_span!("local_provider_new").entered();
-
-        let concurrency = local_concurrency();
-        let timeout = local_timeout();
-        let api_key = std::env::var("CQS_LLM_API_KEY")
-            .ok()
-            .filter(|s| !s.is_empty());
-
-        let http = Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-
-        tracing::info!(
-            api_base = %llm_config.api_base,
-            model = %llm_config.model,
-            concurrency,
-            timeout_secs = timeout.as_secs(),
-            auth = api_key.is_some(),
-            "LocalProvider ready"
-        );
-
-        Ok(Self {
-            http,
-            api_base: llm_config.api_base,
-            model: llm_config.model,
-```
-
-### Current code (src/llm/local.rs:474-500)
-
-```rust
-fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<String>, LlmError> {
-    let body: serde_json::Value = resp.json()?;
-    // ... unchanged ...
-}
-
-fn body_preview(resp: reqwest::blocking::Response) -> String {
-    let body = resp.text().unwrap_or_default();
-    let cut = body
-        .char_indices()
-        .nth(256)
-        .map(|(i, _)| i)
-        .unwrap_or(body.len());
-    body[..cut].to_string()
-}
-```
-
-### Replacement (Client builder, lines 97-100)
-
-No change here — keep timeout + redirect. Apply the cap at the read sites instead.
-
-### Replacement (parse_choices_content, lines 474-488)
-
-```rust
-/// Hard cap on response body size. Summary outputs are typically a few hundred
-/// bytes; 4 MiB is ~1000× headroom. Larger bodies are a sign of a misbehaving
-/// or hostile endpoint and we'd rather error than OOM the daemon.
-///
-/// Override via `CQS_LOCAL_LLM_MAX_BODY_BYTES`.
-fn local_max_body_bytes() -> usize {
-    static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| {
-        std::env::var("CQS_LOCAL_LLM_MAX_BODY_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&n: &usize| n > 0)
-            .unwrap_or(4 * 1024 * 1024)
-    })
-}
-
-fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<String>, LlmError> {
-    use std::io::Read;
-    let cap = local_max_body_bytes();
-    let mut buf = Vec::with_capacity(8 * 1024);
-    resp.take(cap as u64 + 1).read_to_end(&mut buf).map_err(|e| {
-        LlmError::Http(format!("response body read failed: {e}"))
-    })?;
-    if buf.len() > cap {
-        return Err(LlmError::Http(format!(
-            "response body exceeds cap ({} > {})",
-            buf.len(),
-            cap
-        )));
-    }
-    let body: serde_json::Value = serde_json::from_slice(&buf).map_err(|e| {
-        LlmError::Http(format!("response body not valid JSON: {e}"))
-    })?;
-    let content = body
-        .get("choices")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string());
-    match content {
-        Some(s) if !s.is_empty() => Ok(Some(s)),
-        _ => Ok(None),
-    }
-}
-```
-
-### Replacement (body_preview, lines 490-500)
-
-```rust
-/// Read up to 2 KiB from an HTTP error response body for log context.
-/// Returns the empty string if the body can't be read or is non-UTF-8.
-/// Hard-capped to bound log spam and prevent OOM on hostile error bodies.
-fn body_preview(resp: reqwest::blocking::Response) -> String {
-    use std::io::Read;
-    const PREVIEW_CAP: u64 = 2 * 1024;
-    let mut buf = Vec::with_capacity(PREVIEW_CAP as usize);
-    if resp.take(PREVIEW_CAP).read_to_end(&mut buf).is_err() {
-        return String::new();
-    }
-    let body = String::from_utf8_lossy(&buf);
-    let cut = body
-        .char_indices()
-        .nth(256)
-        .map(|(i, _)| i)
-        .unwrap_or(body.len());
-    body[..cut].to_string()
-}
-```
-
-### Notes
-
-- `reqwest::blocking::Response` implements `Read`, and the builder's `.take(n)` method on a Read returns a length-capped adapter. The wrapping `take(cap as u64 + 1)` is so we can detect "exceeded cap" by reading 1 byte beyond and bailing.
-- Confirm `LlmError::Http(String)` variant signature; if it requires a typed inner (e.g. `LlmError::Http(reqwest::Error)`), introduce a sibling `LlmError::BodyTooLarge { got: usize, cap: usize }` instead.
-- Add tests per the audit's TC-ADV-1.30-1 (P2.26): `test_oversized_response_body_capped_at_max` and `test_4xx_with_large_body_does_not_buffer_entire_body` in `src/llm/local.rs::tests`.
-
----
-
-## P1.11 — Auth token leaked into TraceLayer span URI logging
-
-**Finding:** P1.11 in audit-triage.md / Security
-**Files:** `src/serve/mod.rs:195` (`TraceLayer::new_for_http()`), interacts with `src/serve/auth.rs:194-232`
-**Why:** `TraceLayer::new_for_http()` records `http.uri` (full path + query string) on every span. The first browser navigation `GET /?token=<43 chars>` lands the token in the span at DEBUG. Anyone with `RUST_LOG=tower_http=debug` or running under journald sees the token persisted.
-
-### Current code (src/serve/mod.rs:189-196)
-
-```rust
-        // OB-V1.29-5: TraceLayer emits a span per request plus
-        // on-response events with latency + status. Handlers already
-        // log entry via `tracing::info!`; this layer closes the loop
-        // by logging completion, giving per-endpoint latency in the
-        // journal without hand-wrapping every handler body.
-        .layer(TraceLayer::new_for_http())
-}
-```
-
-### Replacement
-
-```rust
-        // OB-V1.29-5: TraceLayer emits a span per request plus
-        // on-response events with latency + status. Handlers already
-        // log entry via `tracing::info!`; this layer closes the loop
-        // by logging completion, giving per-endpoint latency in the
-        // journal without hand-wrapping every handler body.
-        //
-        // SEC: customise MakeSpan to record path only, NOT the full URI —
-        // the `?token=…` query param lands in span fields otherwise and
-        // bleeds the per-launch token into journald / RUST_LOG=debug.
-        .layer(
-            TraceLayer::new_for_http().make_span_with(|req: &axum::extract::Request| {
-                tracing::info_span!(
-                    "http_request",
-                    method = %req.method(),
-                    path = %req.uri().path(),
-                )
-            }),
-        )
-}
-```
-
-### Notes
-
-- The closure drops `query` and `version` fields; if downstream tooling depends on `http.version`, add `version = ?req.version()` (avoid `%` Display because some HTTP version reps may differ across deps).
-- `Request` import: `use axum::extract::Request;` — already imported at top of file (line 25).
-- Add a regression test in `src/serve/tests.rs::auth_tests` that asserts `?token=…` does not appear in any captured tracing event.
-
----
-
-## P1.12 — enforce_host_allowlist passes through missing Host header — DNS-rebinding bypass
-
-**Finding:** P1.12 in audit-triage.md / Security + Platform
-**Files:** `src/serve/mod.rs:234-251`
-**Why:** Doc-comment justifies missing-Host pass-through as "test ergonomic". HTTP/1.0 doesn't require Host; `nc 127.0.0.1 8080` with `GET /api/chunk/<id> HTTP/1.0\r\n\r\n` reaches the handler with zero allowlist check. Test ergonomics privileged over runtime safety.
-
-### Current code (src/serve/mod.rs:230-251)
-
-```rust
-/// A missing `Host:` header passes through — HTTP/1.1 requires one and
-/// hyper always provides one on real traffic, but unit tests built via
-/// `Request::builder()` without a `.uri()` that includes a host don't
-/// get one synthesized, and we'd rather not break that ergonomic.
-async fn enforce_host_allowlist(
-    State(allowed): State<AllowedHosts>,
-    req: Request,
-    next: Next,
-) -> Result<Response, (StatusCode, &'static str)> {
-    match req.headers().get(header::HOST) {
-        None => Ok(next.run(req).await),
-        Some(value) => {
-            let host = value.to_str().unwrap_or("");
-            if allowed.contains(host) {
-                Ok(next.run(req).await)
-            } else {
-                tracing::warn!(host = %host, "serve: rejected request with disallowed Host header");
-                Err((StatusCode::BAD_REQUEST, "disallowed Host header"))
-            }
+    if !cfg.quiet {
+        println!("\n{} file(s) changed, reindexing...", files.len());
+        for f in &files {
+            println!("  {}", f.display());
         }
     }
-}
-```
 
-### Replacement
-
-```rust
-/// Reject requests with no `Host:` header. HTTP/1.1 requires one; HTTP/1.0
-/// does not, but a no-Host request bypasses DNS-rebinding protection so
-/// we treat it as malformed. Tests must build requests with a Host header
-/// (see `src/serve/tests.rs` fixtures).
-async fn enforce_host_allowlist(
-    State(allowed): State<AllowedHosts>,
-    req: Request,
-    next: Next,
-) -> Result<Response, (StatusCode, &'static str)> {
-    match req.headers().get(header::HOST) {
-        None => {
-            tracing::warn!("serve: rejected request with missing Host header");
-            Err((StatusCode::BAD_REQUEST, "missing Host header"))
-        }
-        Some(value) => {
-            let host = value.to_str().unwrap_or("");
-            if allowed.contains(host) {
-                Ok(next.run(req).await)
-            } else {
-                tracing::warn!(host = %host, "serve: rejected request with disallowed Host header");
-                Err((StatusCode::BAD_REQUEST, "disallowed Host header"))
-            }
-        }
-    }
-}
-```
-
-### Notes
-
-- Existing tests in `src/serve/tests.rs` that use `Request::builder().uri("/foo")` must add `.header(header::HOST, "127.0.0.1:8080")` (or `localhost`) to the builder. Sweep needed:
-  - `grep -n 'Request::builder()' src/serve/tests.rs` and add Host headers to fixtures.
-- Add a positive test `test_missing_host_header_rejected` that builds a request without Host and asserts 400.
-
----
-
-## P1.13 — Auth token printed to stdout — captured by journald for 30-day retention
-
-**Finding:** P1.13 in audit-triage.md / Security
-**Files:** `src/serve/mod.rs:111-117`
-**Why:** Banner `println!("cqs serve listening on http://{actual}/?token={token}")` writes to stdout. Under systemd `StandardOutput=journal` (default) or container log drivers, the token persists into a 30-day-retention store the user doesn't think about. Token doesn't rotate during a long-lived launch.
-
-### Current code (src/serve/mod.rs:105-128)
-
-```rust
-        if !quiet {
-            // #1096: when auth is enabled, emit the paste-ready URL
-            // (token + bind addr) so a fresh launch is one click away
-            // from being usable. The token appears here once and is
-            // never logged via tracing — auditors can grep for serve
-            // banners separately from the structured log stream.
-            match auth.as_ref() {
-                Some(token) => {
-                    println!(
-                        "cqs serve listening on http://{actual}/?token={}",
-                        token.as_str()
-                    );
-                }
-                None => {
-                    println!("cqs serve listening on http://{actual}");
-                    eprintln!(
-                        "WARN: --no-auth in use — anyone with network access to {actual} \
-                         can read this index"
-                    );
-                }
-            }
-            println!("press Ctrl-C to stop");
-        }
-        tracing::info!(addr = %actual, auth_enabled = auth.is_some(), "cqs serve started");
-```
-
-### Replacement
-
-```rust
-        if !quiet {
-            // #1096: when auth is enabled, emit the paste-ready URL
-            // (token + bind addr) so a fresh launch is one click away
-            // from being usable. The token appears here once and is
-            // never logged via tracing — auditors can grep for serve
-            // banners separately from the structured log stream.
-            //
-            // SEC: route the token-bearing banner to STDERR when stdout
-            // is not a TTY. systemd `StandardOutput=journal` and container
-            // log drivers persist stdout into a 30-day retention store —
-            // stderr is similarly captured but is the conventional place
-            // for "informational interactive output" and operators can
-            // redirect it (`2>/dev/null`) without losing structured logs.
-            // For a stronger guarantee, set `--no-banner` (TODO).
-            let stdout_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
-            match auth.as_ref() {
-                Some(token) => {
-                    let line = format!(
-                        "cqs serve listening on http://{actual}/?token={}",
-                        token.as_str()
-                    );
-                    if stdout_is_tty {
-                        println!("{line}");
-                    } else {
-                        eprintln!("{line}");
-                        eprintln!(
-                            "(stdout is not a TTY; token-bearing banner routed to stderr to avoid \
-                             persisting into journald/container logs)"
-                        );
-                    }
-                }
-                None => {
-                    println!("cqs serve listening on http://{actual}");
-                    eprintln!(
-                        "WARN: --no-auth in use — anyone with network access to {actual} \
-                         can read this index"
-                    );
-                }
-            }
-            println!("press Ctrl-C to stop");
-        }
-        tracing::info!(addr = %actual, auth_enabled = auth.is_some(), "cqs serve started");
-```
-
-### Notes
-
-- `std::io::IsTerminal` stable since 1.70. MSRV is 1.95, fine.
-- Stretch (out of scope here): Jupyter-style `--no-banner` flag that writes the URL to a `0o600` file in `$XDG_RUNTIME_DIR` instead. Tracking-issue material.
-- Update CHANGELOG: "`cqs serve` no longer prints the auth-bearing URL to stdout when stdout is non-interactive (systemd / container) — banner routes to stderr instead. Set `--no-auth` if banner suppression is required."
-
----
-
-## P1.14 — cqs serve has no RequestBodyLimitLayer — authenticated client can OOM via large POST
-
-**Finding:** P1.14 in audit-triage.md / Security
-**Files:** `src/serve/mod.rs:154-196` (`build_router`)
-**Why:** All routes are `GET`, but axum buffers the request body before dispatching. No `RequestBodyLimitLayer` means an authenticated client can `POST /api/stats` with `Content-Length: 99999999999` and OOM the daemon before the 405.
-
-### Current code (src/serve/mod.rs:158-196)
-
-```rust
-    let mut app = Router::new()
-        .route("/health", get(handlers::health))
-        .route("/api/stats", get(handlers::stats))
-        // ... routes ...
-        .with_state(state);
-
-    if let Some(token) = auth {
-        app = app.layer(from_fn_with_state(token, auth::enforce_auth));
-    }
-
-    app
-        .layer(from_fn_with_state(allowed_hosts, enforce_host_allowlist))
-        .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
-}
-```
-
-### Replacement
-
-```rust
-    let mut app = Router::new()
-        .route("/health", get(handlers::health))
-        .route("/api/stats", get(handlers::stats))
-        // ... routes unchanged ...
-        .with_state(state);
-
-    if let Some(token) = auth {
-        app = app.layer(from_fn_with_state(token, auth::enforce_auth));
-    }
-
-    app
-        .layer(from_fn_with_state(allowed_hosts, enforce_host_allowlist))
-        // SEC: cap request bodies. Every route is GET; legitimate clients
-        // never send a body. 64 KiB is plenty for query strings and cookies
-        // (which travel in headers, not body); axum still rejects bodies
-        // larger than this with 413 Payload Too Large before allocating.
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
-        .layer(CompressionLayer::new())
-        // ... TraceLayer + MakeSpan customisation per P1.11 ...
-}
-```
-
-### Notes
-
-- `tower_http::limit::RequestBodyLimitLayer` is already in the dep tree (`tower_http` is imported at the top of `serve/mod.rs`); no Cargo.toml change. Verify with `cargo tree -p tower-http -e features 2>&1 | grep limit` — if not enabled, add `"limit"` to the `tower-http` feature list in `Cargo.toml`.
-- Layer order matters: this sits *outside* auth/host-allowlist (so the limit applies even to rejected requests, preventing OOM-then-401 attacks) but *inside* compression so the 413 response is still gzipped.
-
----
-
-## P1.15 — UMAP coords not invalidated on chunk content change — cluster view serves stale
-
-**Finding:** P1.15 in audit-triage.md / Data Safety
-**Files:** `src/store/chunks/async_helpers.rs:339-362` (UPSERT)
-**Why:** v22 added `umap_x`/`umap_y` columns; `cqs index --umap` writes them. The chunk UPSERT refreshes embedding/embedding_base/etc. on content_hash mismatch but does NOT touch UMAP coords. Cluster view then displays the chunk at a position computed from the old embedding.
-
-### Current code (src/store/chunks/async_helpers.rs:339-362)
-
-```rust
-        qb.push(
-            " ON CONFLICT(id) DO UPDATE SET \
-             origin=excluded.origin, \
-             source_type=excluded.source_type, \
-             language=excluded.language, \
-             chunk_type=excluded.chunk_type, \
-             name=excluded.name, \
-             signature=excluded.signature, \
-             content=excluded.content, \
-             content_hash=excluded.content_hash, \
-             doc=excluded.doc, \
-             line_start=excluded.line_start, \
-             line_end=excluded.line_end, \
-             embedding=excluded.embedding, \
-             embedding_base=excluded.embedding_base, \
-             source_mtime=excluded.source_mtime, \
-             updated_at=excluded.updated_at, \
-             parent_id=excluded.parent_id, \
-             window_idx=excluded.window_idx, \
-             parent_type_name=excluded.parent_type_name, \
-             parser_version=excluded.parser_version \
-             WHERE chunks.content_hash != excluded.content_hash \
-                OR chunks.parser_version != excluded.parser_version",
-        );
-```
-
-### Replacement
-
-Add `umap_x = NULL, umap_y = NULL` so the cluster view's `IS NOT NULL` filter correctly reports "needs reprojection". The CASE clause restricts the NULL-out to the content-changed branch — pure parser_version bumps don't invalidate UMAP because the embedding hasn't changed.
-
-```rust
-        qb.push(
-            " ON CONFLICT(id) DO UPDATE SET \
-             origin=excluded.origin, \
-             source_type=excluded.source_type, \
-             language=excluded.language, \
-             chunk_type=excluded.chunk_type, \
-             name=excluded.name, \
-             signature=excluded.signature, \
-             content=excluded.content, \
-             content_hash=excluded.content_hash, \
-             doc=excluded.doc, \
-             line_start=excluded.line_start, \
-             line_end=excluded.line_end, \
-             embedding=excluded.embedding, \
-             embedding_base=excluded.embedding_base, \
-             source_mtime=excluded.source_mtime, \
-             updated_at=excluded.updated_at, \
-             parent_id=excluded.parent_id, \
-             window_idx=excluded.window_idx, \
-             parent_type_name=excluded.parent_type_name, \
-             parser_version=excluded.parser_version, \
-             umap_x=CASE WHEN chunks.content_hash != excluded.content_hash \
-                         THEN NULL ELSE chunks.umap_x END, \
-             umap_y=CASE WHEN chunks.content_hash != excluded.content_hash \
-                         THEN NULL ELSE chunks.umap_y END \
-             WHERE chunks.content_hash != excluded.content_hash \
-                OR chunks.parser_version != excluded.parser_version",
-        );
-```
-
-### Notes
-
-- Add a regression test in `src/store/chunks/` (or wherever upsert tests live) that:
-  1. Inserts a chunk with `umap_x=Some(1.0), umap_y=Some(2.0)` (write via `update_umap_coords_batch`).
-  2. UPSERTs the same chunk with new content (different `content_hash`).
-  3. Asserts `umap_x IS NULL AND umap_y IS NULL`.
-- Stretch (out of scope): metadata `umap_generation` counter to surface "needs reprojection" warnings in `cqs serve`. Tracking-issue material.
-
----
-
-## P1.16 — --name-boost CLI: defensive clamp at consumer (CLI parser already fixed)
-
-**Finding:** P1.16 in audit-triage.md / Algorithm
-**Files:** `src/cli/args.rs:62` (already uses `parse_unit_f32`), `src/search/scoring/candidate.rs:283-289`
-**Why:** **LINE DRIFT:** the audit text claims CLI uses `parse_finite_f32`. Verified at `src/cli/args.rs:62`: `value_parser = parse_unit_f32` (clap-bounded `[0.0, 1.0]` per `src/cli/definitions.rs:137-143`). CLI side is already fixed. The remaining defense-in-depth concern: the consumer in `apply_scoring_pipeline` does not clamp, so if `name_boost` ever flows from a path that bypasses `parse_unit_f32` (programmatic library usage, future config-file path that skips `clamp_config_f32`, deserialization), the multiplication still sign-flips.
-
-### Current code (src/search/scoring/candidate.rs:277-289)
-
-```rust
-pub(crate) fn apply_scoring_pipeline(
-    embedding_score: f32,
-    name: Option<&str>,
-    file_part: &str,
-    ctx: &ScoringContext<'_>,
-) -> Option<f32> {
-    let base_score = if let Some(matcher) = ctx.name_matcher {
-        let n = name.unwrap_or("");
-        let name_score = matcher.score(n);
-        (1.0 - ctx.filter.name_boost) * embedding_score + ctx.filter.name_boost * name_score
-    } else {
-        embedding_score
+    let emb = match try_init_embedder(cfg.embedder, &mut state.embedder_backoff, cfg.model_config) {
+        Some(e) => e,
+        None => return,
     };
 ```
 
 ### Replacement
 
 ```rust
-pub(crate) fn apply_scoring_pipeline(
-    embedding_score: f32,
-    name: Option<&str>,
-    file_part: &str,
-    ctx: &ScoringContext<'_>,
-) -> Option<f32> {
-    // Defense-in-depth: clamp name_boost into [0.0, 1.0] regardless of where
-    // it originated. CLI uses parse_unit_f32 (clap-bounded) and config uses
-    // clamp_config_f32, but a future programmatic / deserialised path could
-    // bypass both, in which case `(1.0 - 5.0) * embedding` would sign-flip
-    // search results silently. Cheap insurance.
-    let name_boost = ctx.filter.name_boost.clamp(0.0, 1.0);
-    let base_score = if let Some(matcher) = ctx.name_matcher {
-        let n = name.unwrap_or("");
-        let name_score = matcher.score(n);
-        (1.0 - name_boost) * embedding_score + name_boost * name_score
-    } else {
-        embedding_score
+pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+    let files: Vec<PathBuf> = state.pending_files.drain().collect();
+    let _span = info_span!("process_file_changes", file_count = files.len()).entered();
+    state.pending_files.shrink_to(64);
+
+    // CQ-V1.30.1-1 / AC-V1.30.1-4 / DS-V1.30.1-D8: warn at the top so
+    // operators see the count, but DO NOT reset the counter here — the
+    // outer loop's `publish_watch_snapshot` runs after this function
+    // returns, and `WatchSnapshot::compute` uses `dropped_this_cycle > 0`
+    // as a Stale signal. If we zero it before the embedder check below
+    // (which may early-return on init failure), the snapshot reports
+    // `Fresh` even though events were dropped and never reindexed —
+    // defeating `cqs eval --require-fresh`. Reset only after a
+    // successful drain so the next cycle's snapshot reflects the
+    // truthful state.
+    if state.dropped_this_cycle > 0 {
+        tracing::warn!(
+            dropped = state.dropped_this_cycle,
+            cap = max_pending_files(),
+            "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
+        );
+    }
+    if !cfg.quiet {
+        println!("\n{} file(s) changed, reindexing...", files.len());
+        for f in &files {
+            println!("  {}", f.display());
+        }
+    }
+
+    let emb = match try_init_embedder(cfg.embedder, &mut state.embedder_backoff, cfg.model_config) {
+        Some(e) => e,
+        None => return,
     };
 ```
 
-### Notes
+Then, after the successful `reindex_files` `Ok(...)` arm completes (around line 195, inside the `Ok((count, content_hashes)) =>` block — see existing code at events.rs:195+), add the reset:
 
-- LINE DRIFT noted: searched for `parse_finite_f32` on `name_boost`, found `parse_unit_f32` at `src/cli/args.rs:62`. Audit text was stale; CLI parser fix already shipped (per audit `AC-V1.29-5`). Only the consumer-side defensive clamp remains.
-- Add a test `test_apply_scoring_pipeline_clamps_out_of_range_name_boost` in `src/search/scoring/candidate.rs::tests` that constructs a `ScoringContext` with `name_boost = 5.0` and asserts the embedding signal is not negated.
+```rust
+        Ok((count, content_hashes)) => {
+            // Record mtimes to skip duplicate events
+            for (file, mtime) in pre_mtimes {
+                state.last_indexed_mtime.insert(file, mtime);
+            }
+            // CQ-V1.30.1-1 / AC-V1.30.1-4: reset only after a successful
+            // drain. The dropped events surfaced in the warn above are
+            // also queued for reconcile (Layer 2) on the next idle pass,
+            // so the count stays meaningful exactly until the reconcile
+            // refills `pending_files` with the same paths.
+            state.dropped_this_cycle = 0;
+            // ... (existing body continues: prune_last_indexed_mtime, splade encoding, HNSW maintenance)
+```
+
+### Verification
+
+- `cargo build --features cuda-index`
+- `cargo test --features cuda-index --lib watch::events`
+- Add a regression test (in `src/cli/watch/tests.rs` or `events.rs` `#[cfg(test)]` block) that:
+  - Seeds `state.dropped_this_cycle = 5` and `state.pending_files` with one path
+  - Calls `process_file_changes` against a fixture with no embedder available (so the early-return path fires)
+  - Asserts `state.dropped_this_cycle == 5` after the call (NOT zeroed)
+- Manual: `cqs status --watch-fresh --json` after a 200-file save burst that exceeds `CQS_WATCH_MAX_PENDING=10` — must report `state: "stale"` until reconcile drains.
 
 ---
 
-## P1.17 — drain_pending_rebuild dedup drops fresh embeddings during rebuild window
+## P1.3: CQ-V1.30.1-4 + AC-V1.30.1-5 — auth ladder leaks `?token=` via cookie-wins-first + case-sensitive parser
 
-**Finding:** P1.17 in audit-triage.md / Algorithm
-**Files:** `src/cli/watch.rs:1077-1105`
-**Why:** Non-blocking HNSW rebuild (#1113) snapshots `(id, embedding)` from a read-only Store, while the watch loop captures fresh `(id, embedding)` pairs into `pending.delta`. On swap, dedup is by id — if a chunk was re-embedded mid-rebuild (file edit), its fresh embedding lands in delta but `known` already contains the id with the OLD embedding from the snapshot. The filter drops the fresh embedding; HNSW carries stale vector until next threshold rebuild.
+**Files:** `src/serve/auth.rs:243-321`, `src/serve/auth.rs:572-600` (tests to invert)
+**Effort:** ~25 minutes
+**Why:** Two cooperating bugs in the SEC-7 token-redirect path:
 
-### Current code (src/cli/watch.rs:1077-1105)
+1. (AC-V1.30.1-5) `check_request` checks Bearer → cookie → query in that order. A request with both a valid cookie *and* `?token=<…>` returns `AuthOutcome::Ok` (not `OkViaQueryParam`), so the redirect at line 360 never fires — the token sits in the URL bar permanently after a bookmarked-URL reload.
+2. (CQ-V1.30.1-4) `strip_token_param` and `check_request` do byte-literal `starts_with("token=")` matches; `?Token=<token>` (capital `T`) and `?%74oken=<token>` (percent-encoded) are not recognised, so the redirect path never strips them either. The current tests at line 572-600 *pin the bug* with comments calling out the SEC-7 leakage.
+
+Single fix: lowercase + percent-decode the parameter key once during the URI walk, AND treat presence of `?token=…` as redirect-eligible regardless of which channel matched (sniff after Ok). Then invert the two pinned tests.
+
+### Current code (the parsing helpers)
 
 ```rust
-    match outcome {
-        Ok(Some(mut new_index)) => {
-            // Replay captured delta — but skip ids the rebuild thread already
-            // saw via its store snapshot, so we don't double-insert. (hnsw_rs
-            // has no dedup; duplicate ids would create twin vectors that bloat
-            // the graph until the next threshold cleans them up.)
-            let known: std::collections::HashSet<&str> =
-                new_index.ids().iter().map(String::as_str).collect();
-            let to_replay: Vec<(String, Embedding)> = pending
-                .delta
-                .into_iter()
-                .filter(|(id, _)| !known.contains(id.as_str()))
-                .collect();
-            drop(known);
-            if !to_replay.is_empty() {
-                let items: Vec<(String, &[f32])> = to_replay
-                    .iter()
-                    .map(|(id, emb)| (id.clone(), emb.as_slice()))
-                    .collect();
-                match new_index.insert_batch(&items) {
-                    Ok(n) => {
-                        tracing::info!(replayed = n, "Replayed delta into rebuilt HNSW before swap")
-                    }
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        replayed_attempt = items.len(),
-                        "Failed to replay delta into rebuilt HNSW; new chunks will surface on next rebuild"
-                    ),
-                }
-            }
-```
-
-### Replacement
-
-The dedup must compare by content fidelity, not just by id. Options:
-1. **Cheapest, correct:** Replay every delta entry unconditionally; on duplicate id, *replace* the snapshot vector. `hnsw_rs` has no replace, so use a "remove then insert" path.
-2. **Cheapest, accept stale:** Always insert delta; tolerate duplicate twin vectors until next rebuild (the audit explicitly flags this as a graph-size regression).
-3. **Correct, more invasive:** Capture `content_hash` alongside the snapshot, replay only when the delta entry's hash differs.
-
-Pick option 3 for correctness. `pending.delta` becomes `Vec<(String, Embedding, ContentHash)>`, the rebuild thread returns `Vec<(String, ContentHash)>` alongside the index, and the dedup filter checks the hash.
-
-This is **>30 lines of change** spanning `pending` struct definition, the rebuild thread, and the drain — see Notes for the full API change.
-
-### Notes
-
-- **STRUCTURAL CHANGE — exceeds 30-line replacement budget.** API change required:
-  - `PendingRebuild::delta: Vec<(String, Embedding)>` → `Vec<(String, Embedding, [u8; 32])>` (or `Vec<(String, Embedding, blake3::Hash)>`).
-  - `spawn_hnsw_rebuild` closure (`src/cli/watch.rs:980-1030`) returns `RebuildOutcome` — extend with `snapshot_hashes: Vec<(String, [u8; 32])>` so the drain can dedup by `(id, hash)`.
-  - Capture-site: wherever `pending.delta.push(...)` is called (search `pending.delta.push` and the watch reindex path). Each push must include the chunk's `content_hash`.
-  - Drain-site replacement (lines 1077-1105):
-    ```rust
-    let known: std::collections::HashMap<&str, &[u8; 32]> =
-        snapshot_hashes.iter().map(|(id, h)| (id.as_str(), h)).collect();
-    let to_replay: Vec<(String, Embedding)> = pending
-        .delta
-        .into_iter()
-        .filter(|(id, _, hash)| {
-            // Replay if id is unknown OR if the snapshot's vector was built
-            // from an older content_hash — fresh embedding wins.
-            known.get(id.as_str()).is_none_or(|sh| sh != &hash)
-        })
-        .map(|(id, emb, _hash)| (id, emb))
+//   src/serve/auth.rs:243-321
+/// Strip the `token` parameter from the URI's query string for the
+/// post-auth redirect. Other query params are preserved in their
+/// original order.
+fn strip_token_param(uri: &Uri) -> String {
+    let path = uri.path();
+    let Some(query) = uri.query() else {
+        return path.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.starts_with("token=") && *pair != "token")
         .collect();
-    ```
-- Add a regression test `test_rebuild_window_re_embedding_replays_fresh_vector` in `src/cli/watch.rs::tests` that:
-  1. Spawns a rebuild with snapshot `[("a", emb_v1, hash_v1)]`.
-  2. Mid-rebuild, pushes `("a", emb_v2, hash_v2)` to `pending.delta`.
-  3. After drain, asserts the swapped HNSW contains `emb_v2`, not `emb_v1`.
-- This finding overlaps with P2.29 (TC-ADV: Non-blocking HNSW rebuild — no panic/dim-drift/store-fail tests). Coordinate the fix with the rebuild test suite.
-
----
-
-## P1.18 — token_pack break-on-first-oversized — drops smaller items that would fit
-
-**Finding:** P1.18 in audit-triage.md / Algorithm
-**Files:** `src/cli/commands/mod.rs:398-417`
-**Why:** Greedy knapsack: `if used + tokens > budget && kept_any { break; }`. Once one item fails to fit, every lower-scored item is dropped — even items that fit comfortably. Repro: budget=300, items `[A=250, B=100, C=40]`. After A packs (used=250), B fails (350>300) → break → C silently dropped though `used+40=290 ≤ 300`.
-
-### Current code (src/cli/commands/mod.rs:394-422)
-
-```rust
-    // Greedy pack in score order, tracking which indices to keep
-    let mut used: usize = 0;
-    let mut kept_any = false;
-    let mut keep: Vec<bool> = vec![false; items.len()];
-    for idx in order {
-        let tokens = token_counts[idx] + json_overhead_per_item;
-        if used + tokens > budget && kept_any {
-            break;
-        }
-        if !kept_any && tokens > budget {
-            // Always include at least one result, but cap at 10x budget to avoid
-            // pathological cases (e.g., 50K-token item with 300-token budget).
-            // When budget == 0, skip the 10x guard (0 * 10 == 0, which would reject
-            // every item) and include the first item unconditionally.
-            if budget > 0 && tokens > budget * 10 {
-                tracing::debug!(tokens, budget, "First item exceeds 10x budget, skipping");
-                continue;
-            }
-            tracing::debug!(
-                tokens,
-                budget,
-                "First item exceeds token budget, including anyway"
-            );
-        }
-        used += tokens;
-        keep[idx] = true;
-        kept_any = true;
-    }
-```
-
-### Replacement
-
-```rust
-    // Greedy pack in score order, tracking which indices to keep.
-    //
-    // Note: when an oversized item appears mid-stream we `continue` rather
-    // than `break` so subsequent (smaller, lower-scored) items can still
-    // fit into the remaining budget. Score-ordered packing already prefers
-    // higher-relevance items; the greedy fall-through is the right rounding
-    // when one mid-list item won't fit.
-    let mut used: usize = 0;
-    let mut kept_any = false;
-    let mut keep: Vec<bool> = vec![false; items.len()];
-    for idx in order {
-        let tokens = token_counts[idx] + json_overhead_per_item;
-        if used + tokens > budget && kept_any {
-            // Skip this oversized item but keep probing — smaller items
-            // later in score order may still fit.
-            continue;
-        }
-        if !kept_any && tokens > budget {
-            // Always include at least one result, but cap at 10x budget to avoid
-            // pathological cases (e.g., 50K-token item with 300-token budget).
-            // When budget == 0, skip the 10x guard (0 * 10 == 0, which would reject
-            // every item) and include the first item unconditionally.
-            if budget > 0 && tokens > budget * 10 {
-                tracing::debug!(tokens, budget, "First item exceeds 10x budget, skipping");
-                continue;
-            }
-            tracing::debug!(
-                tokens,
-                budget,
-                "First item exceeds token budget, including anyway"
-            );
-        }
-        used += tokens;
-        keep[idx] = true;
-        kept_any = true;
-    }
-```
-
-### Notes
-
-- Single-token change: `break` → `continue`.
-- Add a regression test in `src/cli/commands/mod.rs::tests`:
-  ```rust
-  #[test]
-  fn token_pack_continues_past_oversized_midstream_item() {
-      // items in score order: oversized, fits, fits
-      let items = vec![/* score=1.0 250-token, score=0.9 100-token, score=0.8 40-token */];
-      let token_counts = vec![250, 100, 40];
-      let (kept, used) = token_pack(&items, &token_counts, /* budget */ 300, /* json_overhead */ 0, /* score_fn */ ...);
-      assert_eq!(kept.len(), 2);  // A + C, B skipped
-      assert_eq!(used, 290);
-  }
-  ```
-
----
-
-## P1.19 — cqs serve shutdown handles only Ctrl-C — SIGTERM (systemctl) skips graceful drain
-
-**Finding:** P1.19 in audit-triage.md / Platform Behavior
-**Files:** `src/serve/mod.rs:253-260`
-**Why:** `shutdown_signal()` awaits only `tokio::signal::ctrl_c()`. Under systemd or any supervisor that issues `SIGTERM` (default for `systemctl stop`), axum never sees the signal and gets `SIGKILL`'d. macOS `launchd` also sends SIGTERM by default.
-
-### Current code (src/serve/mod.rs:253-260)
-
-```rust
-/// Listen for Ctrl-C to trigger axum's graceful shutdown.
-async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::warn!(error = %e, "failed to install ctrl-c handler; server will only stop on listener failure");
-        std::future::pending::<()>().await;
-    }
-    tracing::info!("ctrl-c received, beginning graceful shutdown");
-}
-```
-
-### Replacement
-
-```rust
-/// Listen for Ctrl-C, SIGTERM (Unix), or Ctrl-Break/Ctrl-Close (Windows) to
-/// trigger axum's graceful shutdown. Without SIGTERM handling, `systemctl stop`
-/// and `launchd` shutdowns escalate to SIGKILL with no graceful drain.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!(error = %e, "failed to install ctrl-c handler");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut s) => {
-                s.recv().await;
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to install SIGTERM handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("ctrl-c received, beginning graceful shutdown"),
-        _ = terminate => tracing::info!("SIGTERM received, beginning graceful shutdown"),
-    }
-}
-```
-
-### Notes
-
-- `tokio::signal::unix::signal` is available with the `signal` feature on tokio. Verify Cargo.toml has `tokio = { ..., features = [..., "signal"] }` — likely already enabled for ctrl_c.
-- Stretch: also handle `SignalKind::interrupt()` and Windows `ctrl_break()`/`ctrl_close()`. Skipping for the easy P1 fix; SIGTERM is the high-impact case.
-- Companion finding in `src/cli/watch.rs:132-148` already installs a SIGTERM handler via `libc::signal` for the daemon — this fix brings serve to parity.
-
----
-
-## P1.20 — Default subscriber drops every info_span — 150 spans invisible at default level
-
-**Finding:** P1.20 in audit-triage.md / Observability OB-V1.30-1
-**Files:** `src/main.rs:14-32`
-**Why:** Default `EnvFilter` is `"warn,ort=error"`, but every span across `scout`, `gather`, `serve`, `cache`, `slot`, parser, store, embedder is `info_span!` or `debug_span!`. Subscriber drops them all. The heavy investment in span instrumentation is invisible until the user discovers `--verbose`/`RUST_LOG=info`. Daemon under `cqs watch --serve` inherits empty `RUST_LOG` and is doubly hit.
-
-### Current code (src/main.rs:14-32)
-
-```rust
-fn main() -> Result<()> {
-    // Parse CLI first to check verbose flag
-    let cli = cli::Cli::parse();
-
-    // Log to stderr to keep stdout clean for structured output
-    // --verbose flag sets debug level, otherwise use RUST_LOG or default to warn
-    let filter = if cli.verbose {
-        EnvFilter::new("debug")
+    if kept.is_empty() {
+        path.to_string()
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,ort=error"))
-    };
-
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
-
-    cli::run_with(cli)
+        format!("{path}?{}", kept.join("&"))
+    }
 }
-```
 
-### Replacement
-
-```rust
-fn main() -> Result<()> {
-    // Parse CLI first to check verbose flag
-    let cli = cli::Cli::parse();
-
-    // Log to stderr to keep stdout clean for structured output.
-    // --verbose flag sets debug level for cqs (everything else stays at info),
-    // otherwise honour RUST_LOG, defaulting to "cqs=info,warn" so the
-    // ~150 span instrumentation sites in the codebase actually render
-    // without third-party noise. (OB-V1.30-1.)
-    let filter = if cli.verbose {
-        EnvFilter::new("cqs=debug,info")
-    } else {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("cqs=info,warn,ort=error"))
-    };
-
-    // FmtSpan::CLOSE emits a synthetic event on span close with elapsed time —
-    // turns every `info_span!("foo", ...).entered()` into a "foo" + latency
-    // line in the journal automatically. Without it, only events emitted
-    // *inside* a span produce log lines; entry/exit pairs disappear.
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .with_writer(std::io::stderr)
-        .init();
-
-    cli::run_with(cli)
-}
-```
-
-### Notes
-
-- Verify the codebase's actual crate name in Cargo.toml — `cqs` is what `lib.rs` declares per `MEMORY.md`.
-- Side effect: every `cqs <command>` now prints span boundaries to stderr at default level. May surprise existing users who pipe stdout but watch stderr. Mention in CHANGELOG: "default log level raised to `cqs=info,warn` so span instrumentation renders by default; set `RUST_LOG=warn` to silence."
-- Companion finding P1.21 (auth failures log nothing) and P2.25 (per-request span disconnected from spawn_blocking) become valuable only after this lands.
-- Stretch (out of scope): `--log-format=json` flag wired to `.json()` builder for daemon journals. Tracking-issue.
-
----
-
-## P1.21 — Auth failures log nothing — no journal trail for 401s
-
-**Finding:** P1.21 in audit-triage.md / Observability OB-V1.30-2
-**Files:** `src/serve/auth.rs:194-232` (specifically the `AuthOutcome::Unauthorized` arm at lines 224-230)
-**Why:** Auth middleware returns 401 silently. Brute-force scans, expired bookmarks, misconfigured clients leave no journal trail. Asymmetric with `enforce_host_allowlist` (`src/serve/mod.rs:246`) which DOES emit `tracing::warn!` on rejection.
-
-### Current code (src/serve/auth.rs:224-230)
-
-```rust
-        AuthOutcome::Unauthorized => {
-            // Body intentionally minimal: no debug data, no token-
-            // length leak. Tracing happens once per launch (banner)
-            // and never per-request — auditors can grep for the
-            // count of 401s in access logs without seeing tokens.
-            (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
-        }
-```
-
-### Replacement
-
-```rust
-        AuthOutcome::Unauthorized => {
-            // Body intentionally minimal: no debug data, no token-
-            // length leak. Tracing emits method + path (NOT query
-            // string — that may carry `?token=` candidates) so
-            // operators get a journal trail for 401s without
-            // logging token material.
-            tracing::warn!(
-                method = %req.method(),
-                path = %req.uri().path(),
-                "serve: rejected unauthenticated request",
-            );
-            (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
-        }
-```
-
-### Notes
-
-- Critical: log `path` only, NOT `uri()` — the URI carries `?token=…` for the OkViaQueryParam case but the same shape can appear on Unauthorized (bad token still has the param). `req.uri().path()` strips the query string.
-- Companion to P1.11 (TraceLayer also leaks query string). Both must be fixed together; otherwise the OB-V1.30-1 default-level fix (P1.20) makes the leak more visible, not less.
-- Add a regression test `test_unauthorized_logs_method_and_path_no_query` in `src/serve/auth.rs::tests` that wraps the test subscriber and asserts `?token=...` is absent from captured events.
-
----
-# P2 Fix Prompts — Part A (P2.1 through P2.46)
-
-Source: `docs/audit-triage.md` (P2 table) and `docs/audit-findings.md`. Each prompt
-is self-contained; line numbers verified against the working tree on 2026-04-26.
-
-> **Already-fixed callout:** P2.43 (`semantic_diff` tie-break), P2.44 (`is_structural_query` words check), P2.45 (`bfs_expand` seed sort), P2.46 (`contrastive_neighbors` tie-break) all already carry tie-break / words-loop fixes in the working tree. The prompts below for those four are **regression-pin tests only** — the implementation fix is already on disk.
-
----
-
-## P2.1 — `cmd_similar` JSON parity drop
-
-**Finding:** P2.1 in audit-triage.md
-**Files:** `src/cli/batch/handlers/info.rs:139-148`
-**Why:** Batch path emits 3 fields; CLI emits the canonical 9-field SearchResult shape via `r.to_json()`. Agents see a different schema for `cqs similar` depending on whether the daemon is up.
-
-### Current code
-
-```rust
-let json_results: Vec<serde_json::Value> = filtered
-    .iter()
-    .map(|r| {
-        serde_json::json!({
-            "name": r.chunk.name,
-            "file": normalize_path(&r.chunk.file),
-            "score": r.score,
-        })
-    })
-    .collect();
-```
-
-### Replacement
-
-```rust
-let json_results: Vec<serde_json::Value> =
-    filtered.iter().map(|r| r.to_json()).collect();
-```
-
-### Notes
-
-- `to_json()` is on `cqs::store::SearchResult` at `src/store/helpers/types.rs:143-156` and already normalizes the file path via the canonical helper.
-- Add a snapshot test asserting CLI and batch produce identical key sets for the same query.
-
----
-
-## P2.2 — `dispatch_diff` dead `target_store` placeholder
-
-**Finding:** P2.2 in audit-triage.md
-**Files:** `src/cli/batch/handlers/misc.rs:354-387`
-**Why:** Dead-variable initialization plus duplicate `if target_label == "project"` match. The `get_ref` cached store at line 360 is loaded then discarded; the else branch reopens via `resolve_reference_store` at 378.
-
-### Current code
-
-```rust
-let target_label = target.unwrap_or("project");
-let target_store = if target_label == "project" {
-    &ctx.store()
-} else {
-    ctx.get_ref(target_label)?;
-    &ctx.store() // placeholder -- replaced below
-};
-
-// For non-project targets, resolve properly
-let result = if target_label == "project" {
-    cqs::semantic_diff(&source_store, target_store, source, target_label, threshold, lang)?
-} else {
-    let target_ref_store =
-        crate::cli::commands::resolve::resolve_reference_store(&ctx.root, target_label)?;
-    cqs::semantic_diff(&source_store, &target_ref_store, source, target_label, threshold, lang)?
-};
-```
-
-### Replacement
-
-```rust
-let target_label = target.unwrap_or("project");
-let result = if target_label == "project" {
-    cqs::semantic_diff(
-        &source_store,
-        &ctx.store(),
-        source,
-        target_label,
-        threshold,
-        lang,
-    )?
-} else {
-    let target_ref_store =
-        crate::cli::commands::resolve::resolve_reference_store(&ctx.root, target_label)?;
-    cqs::semantic_diff(
-        &source_store,
-        &target_ref_store,
-        source,
-        target_label,
-        threshold,
-        lang,
-    )?
-};
-```
-
-### Notes
-
-- Drop the `ctx.get_ref(target_label)?` line entirely — it cached a store the code never reads. `resolve_reference_store` owns the lifetime here.
-- One `if target_label == "project"` block, no placeholder, no duplicate match.
-
----
-
-## P2.3 — Embedding/Query cache `open_with_runtime` 90+ line copy-paste
-
-**Finding:** P2.3 in audit-triage.md
-**Files:** `src/cache.rs:103-220` (`EmbeddingCache::open_with_runtime`), `src/cache.rs:1412-1522` (`QueryCache::open_with_runtime`)
-**Why:** Two methods do parent-dir prep, runtime fallback, pool open, schema create, and 0o600 chmod loop in identical order with only `busy_timeout` differing. ~90 duplicated lines.
-
-### Current code (sketch — both methods share this skeleton)
-
-```rust
-pub fn open_with_runtime(path: &Path, runtime: Option<Arc<Runtime>>) -> Result<Self, CacheError> {
-    let _span = tracing::info_span!("EmbeddingCache::open", path = %path.display()).entered();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)] {
-            // 16 lines: chmod 0o700 best-effort with warn block
+/// Extract the token from one of three channels — header, cookie,
+/// or query string — and constant-time-compare against the launched
+/// token. Returns `None` if none matched (caller emits 401).
+///
+/// `query_param_used` is set to true when the match came from
+/// `?token=<…>`; the caller then sets a cookie and 302-redirects to
+/// the clean URL.
+fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> AuthOutcome {
+    // 1. Authorization: Bearer …
+    if let Some(bearer) = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        if ct_eq(bearer, expected.as_str()) {
+            return AuthOutcome::Ok;
         }
     }
-    let rt = if let Some(rt) = runtime { rt } else {
-        // 9 lines: current_thread runtime fallback
-    };
-    let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true)
-        .busy_timeout(Duration::from_millis(5000))  // QueryCache: 2000
-        .journal_mode(SqliteJournalMode::Wal);
-    let pool = rt.block_on(SqlitePoolOptions::new().max_connections(1)
-        .idle_timeout(Duration::from_secs(30)).connect_with(opts))?;
-    rt.block_on(sqlx::query(SCHEMA_SQL).execute(&pool))?;
-    #[cfg(unix)] {
-        // 22 lines: 0o600 chmod loop on ["", "-wal", "-shm"]
-    }
-    // ... build Self
-}
-```
 
-### Replacement
-
-Extract three private helpers into a sibling module (e.g. `src/cache/open.rs` or inline at top of `cache.rs`):
-
-```rust
-#[cfg(unix)]
-pub(super) fn prepare_cache_dir_perms(parent: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = std::fs::metadata(parent) {
-        let mut perms = meta.permissions();
-        if perms.mode() & 0o777 != 0o700 {
-            perms.set_mode(0o700);
-            if let Err(e) = std::fs::set_permissions(parent, perms) {
-                tracing::warn!(parent = %parent.display(), error = %e, "best-effort chmod 0o700 on cache dir failed");
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-pub(super) fn apply_db_file_perms(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    for suffix in ["", "-wal", "-shm"] {
-        let p = path.with_extension(format!("{}{}", path.extension().and_then(|s| s.to_str()).unwrap_or(""), suffix));
-        if let Ok(meta) = std::fs::metadata(&p) {
-            let mut perms = meta.permissions();
-            if perms.mode() & 0o777 != 0o600 {
-                perms.set_mode(0o600);
-                let _ = std::fs::set_permissions(&p, perms);
-            }
-        }
-    }
-}
-
-pub(super) fn connect_cache_pool(
-    path: &Path,
-    busy_ms: u64,
-    runtime: Option<Arc<Runtime>>,
-    schema_sql: &str,
-) -> Result<(SqlitePool, Arc<Runtime>), CacheError> {
-    let rt = runtime.unwrap_or_else(|| {
-        Arc::new(Builder::new_current_thread().enable_all().build()
-            .expect("cache: failed to build current_thread runtime"))
-    });
-    let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true)
-        .busy_timeout(Duration::from_millis(busy_ms))
-        .journal_mode(SqliteJournalMode::Wal);
-    let pool = rt.block_on(async {
-        let p = SqlitePoolOptions::new().max_connections(1)
-            .idle_timeout(Duration::from_secs(30)).connect_with(opts).await?;
-        sqlx::query(schema_sql).execute(&p).await?;
-        Ok::<_, sqlx::Error>(p)
-    })?;
-    Ok((pool, rt))
-}
-```
-
-Both `open_with_runtime` methods collapse to ~30 lines each, calling these three helpers.
-
-### Notes
-
-- Keep `Drop` impl panic-extraction unified via P2.4's helper too.
-- Watch for the WAL/SHM filename quirk: SQLite tags them as `<basename>-wal`, not via `with_extension`. The existing code uses string concat (`path.to_string_lossy() + "-wal"`); preserve that semantic in `apply_db_file_perms`.
-
----
-
-## P2.4 — `env::var(...).parse()` pattern at 25+ sites
-
-**Finding:** P2.4 in audit-triage.md
-**Files:** `src/limits.rs:230-260` (private helpers); duplicated at `src/cli/watch.rs:65,74,100,498,510,766,942,1430`, `src/llm/mod.rs:176,315,406,434`, `src/cli/pipeline/types.rs:80,98,117,144`, `src/hnsw/persist.rs:19,41,63`, `src/embedder/models.rs:565,571`, `src/embedder/mod.rs:330`, `src/cache.rs:206,1509`, `src/gather.rs:156`, `src/cli/commands/graph/trace.rs:357`, `src/impact/bfs.rs:16`, `src/reranker.rs:129`
-**Why:** `parse_env_f32 / parse_env_usize / parse_env_u64` exist in `limits.rs` but are `pub(crate)`-private to `cqs::limits`. Every other module re-rolls the pattern with slightly different zero-handling and warn behavior. P2.5 (cache zero-divergence) is a direct consequence.
-
-### Replacement plan
-
-1. Promote the three helpers in `src/limits.rs` to `pub`, and add a `parse_env_duration_secs` variant. Keep the existing `pub(crate)` re-exports so internal callers don't break.
-2. Replace the 25+ open-coded sites with calls. Example for `src/cli/pipeline/types.rs:143`:
-
-```rust
-// Before
-match std::env::var("CQS_EMBED_BATCH_SIZE") {
-    Ok(val) => match val.parse::<usize>() { Ok(s) if s > 0 => s, _ => 64 },
-    Err(_) => 64,
-}
-// After
-cqs::limits::parse_env_usize("CQS_EMBED_BATCH_SIZE", 64).max(1)
-```
-
-### Notes
-
-- Decide zero-handling **once** in the helper signature (e.g. `parse_env_usize_nonzero`); P2.5 is a known divergence to fold into the same PR.
-- Don't change observable behavior in this PR — match the existing default at every call site even where the new helper would be cleaner. Behavior changes ride on a follow-up.
-
----
-
-## P2.5 — `EmbeddingCache` accepts `CQS_CACHE_MAX_SIZE=0`; `QueryCache` rejects
-
-**Finding:** P2.5 in audit-triage.md
-**Files:** `src/cache.rs:206-209` (Embedding, no zero filter), `src/cache.rs:1509-1513` (Query, `.filter(|&n: &u64| n > 0)`)
-
-### Current code
-
-```rust
-// EmbeddingCache (line 206-209)
-let max_size_bytes = std::env::var("CQS_CACHE_MAX_SIZE")
-    .ok()
-    .and_then(|s| s.parse().ok())
-    .unwrap_or(10 * 1024 * 1024 * 1024); // 10GB default
-
-// QueryCache (line 1509-1513)
-let max_size_bytes = std::env::var("CQS_QUERY_CACHE_MAX_SIZE")
-    .ok()
-    .and_then(|s| s.parse().ok())
-    .filter(|&n: &u64| n > 0)
-    .unwrap_or(100 * 1024 * 1024);
-```
-
-### Replacement
-
-Pick semantic: "0 is invalid → fall back to default". Add the filter to `EmbeddingCache`:
-
-```rust
-let max_size_bytes = std::env::var("CQS_CACHE_MAX_SIZE")
-    .ok()
-    .and_then(|s| s.parse().ok())
-    .filter(|&n: &u64| n > 0)
-    .unwrap_or(10 * 1024 * 1024 * 1024);
-```
-
-### Notes
-
-- Folds naturally into the P2.4 helper sweep — drive both through `parse_env_u64_nonzero` once that helper lands.
-- Document chosen semantic at the env-var site.
-
----
-
-## P2.6 / P2.7 / P2.9 / P2.10 — README documentation drift (combined)
-
-**Finding:** P2.6, P2.7, P2.9, P2.10 in audit-triage.md
-**Files:** `README.md:5,467-525,521,530-585,649-653`
-**Why:** TL;DR claims "544-query eval" (actual 218); claims 54 languages but Elm missing from list; Claude Code Integration block omits 5 commands and lists `stats/prune/compact` instead of `stats/clear/prune/compact`.
-
-### Current code (README.md:5)
-
-```markdown
-**TL;DR:** Code intelligence toolkit for Claude Code. ... 17-41x token reduction vs full file reads. **42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 544-query dual-judge eval against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
-```
-
-### Replacement (TL;DR — P2.6, P2.7)
-
-```markdown
-**TL;DR:** Code intelligence toolkit for Claude Code. ... 17-41x token reduction vs full file reads. **42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
-```
-
-Plus add an `Elm` bullet to the alphabetical list under `## Supported Languages (54)` between `Dockerfile` and `Erlang` (or wherever alphabetically).
-
-### Replacement (Claude Code Integration — P2.9, P2.10)
-
-In `README.md:521`:
-
-```markdown
-- `cqs cache stats/clear/prune/compact` - manage the project-scoped embeddings cache at `<project>/.cqs/embeddings_cache.db`. `--per-model` on stats; `clear --model <fp>` deletes all cached embeddings for one fingerprint; `prune <DAYS>` or `prune --model <id>`; `compact` runs VACUUM
-```
-
-Add five new bullets in the alphabetically-correct positions inside the Code Intelligence block (lines 467-525):
-
-```markdown
-- `cqs ping` - daemon healthcheck; reports daemon socket path and uptime if running
-- `cqs eval <fixture>` - run a query fixture against the current index and emit R@K metrics. `--baseline <path>` to compare two reports
-- `cqs model show/list/swap` - inspect the embedding model recorded in the index, list presets, or swap with restore-on-failure semantics
-- `cqs serve [--bind ADDR]` - launch the read-only web UI (graph, hierarchy, cluster, chunk-detail). Per-launch auth token; banner prints the URL
-- `cqs refresh` - invalidate daemon caches and re-open the Store. Alias `cqs invalidate`. No-op when no daemon is running
-```
-
-### Notes
-
-- Eval metrics: optionally also bump to refreshed v3.v2 numbers (`63.3% R@5 test, 74.3% R@5 dev`) per memory file `feedback_eval_line_start_drift.md`. Keep both numbers consistent if updating.
-- Verify language count by walking `define_languages!` macro in `src/language/mod.rs` — fix the README header to match instead of guessing.
-
----
-
-## P2.8 — SECURITY.md omits per-project embeddings_cache.db
-
-**Finding:** P2.8 in audit-triage.md
-**Files:** `SECURITY.md:65-82` (Read Access table)
-
-### Current code
-
-```markdown
-| `~/.cache/cqs/embeddings.db` | Global embedding cache (content-addressed, capped at 1 GB) | Index and search |
-| `~/.cache/cqs/query_cache.db` | Recent query embedding cache (7-day TTL) | Search |
-```
-
-### Replacement
-
-Add row to both Read Access (line 65-82) and Write Access (line 83-95) tables:
-
-```markdown
-| `<project>/.cqs/embeddings_cache.db` | Per-project embedding cache (PR #1105, primary; legacy global cache at `~/.cache/cqs/embeddings.db` is fallback) | `cqs index`, search |
-```
-
-Also fix the misleading "7-day TTL" claim — see P1.2 (PRIVACY.md fix); keep SECURITY consistent: `Recent query embedding cache (size-capped at CQS_QUERY_CACHE_MAX_SIZE, 100 MiB default)`.
-
-### Notes
-
-- Cross-check against PRIVACY.md so wording matches; the same per-project path is documented correctly there at lines 16-20.
-
----
-
-## P2.11 — `cqs --json model swap/show` emits plain-text errors
-
-**Finding:** P2.11 in audit-triage.md
-**Files:** `src/cli/commands/infra/model.rs:144-149` (`cmd_model_show` bail), `src/cli/commands/infra/model.rs:256-261` (`cmd_model_swap` Unknown preset), `src/cli/commands/infra/model.rs:267-272` (`cmd_model_swap` no-index bail)
-
-### Current code
-
-```rust
-// cmd_model_show, line 144-149
-if !index_path.exists() {
-    bail!(
-        "No index at {}. Run `cqs init && cqs index` first.",
-        index_path.display()
-    );
-}
-
-// cmd_model_swap, line 256-272
-let new_cfg = ModelConfig::from_preset(preset).ok_or_else(|| {
-    let valid = ModelConfig::PRESET_NAMES.join(", ");
-    anyhow::anyhow!(
-        "Unknown preset '{preset}'. Valid presets: {valid}. Run `cqs model list` for repos."
-    )
-})?;
-
-if !index_path.exists() {
-    bail!(
-        "No index at {}. Run `cqs init && cqs index --model {preset}` first.",
-        index_path.display()
-    );
-}
-```
-
-### Replacement
-
-Route through `crate::cli::json_envelope::emit_json_error` when `json` is true:
-
-```rust
-// cmd_model_show
-if !index_path.exists() {
-    let msg = format!("No index at {}. Run `cqs init && cqs index` first.", index_path.display());
-    if json {
-        crate::cli::json_envelope::emit_json_error("no_index", &msg)?;
-        std::process::exit(1);
-    }
-    bail!("{msg}");
-}
-
-// cmd_model_swap — Unknown preset
-let new_cfg = match ModelConfig::from_preset(preset) {
-    Some(c) => c,
-    None => {
-        let valid = ModelConfig::PRESET_NAMES.join(", ");
-        let msg = format!("Unknown preset '{preset}'. Valid presets: {valid}. Run `cqs model list` for repos.");
-        if json {
-            crate::cli::json_envelope::emit_json_error("unknown_preset", &msg)?;
-            std::process::exit(1);
-        }
-        bail!("{msg}");
-    }
-};
-
-// cmd_model_swap — no index (mirror cmd_model_show fix)
-```
-
-Also add `already_on_target` code for the no-op short-circuit and `swap_failed` for the post-rebuild restore path.
-
-### Notes
-
-- Pattern matches `cmd_ref_remove` in `src/cli/commands/infra/reference.rs` which the v1.30.0 audit already standardized.
-- Tests: snapshot a `cqs --json model swap nonexistent` against the canonical envelope shape `{data: null, error: {code, message}, version: 1}`.
-
----
-
-## P2.12 — `cqs init / index / convert` lack `--json`
-
-**Finding:** P2.12 in audit-triage.md
-**Files:** `src/cli/commands/infra/init.rs:13` (`cmd_init`), `src/cli/commands/index/build.rs::cmd_index`, `src/cli/commands/index/convert.rs::cmd_convert`, `src/cli/args.rs::IndexArgs`, `src/cli/args.rs` (no `InitArgs` / `ConvertArgs` struct yet)
-
-### Replacement
-
-1. Add `pub json: bool` to `IndexArgs`, introduce `InitArgs { #[arg(long)] pub json: bool }`, add `pub json: bool` to `ConvertArgs`.
-2. Thread `cli.json || args.json` into `cmd_init` / `cmd_index` / `cmd_convert`.
-3. After work completes, emit a final summary envelope:
-
-```rust
-// cmd_init
-if json {
-    let obj = serde_json::json!({
-        "initialized": true,
-        "cqs_dir": cqs_dir.display().to_string(),
-        "model": effective_model_name,
-    });
-    crate::cli::json_envelope::emit_json(&obj)?;
-}
-
-// cmd_index
-if json {
-    let obj = serde_json::json!({
-        "indexed_files": file_count,
-        "indexed_chunks": chunk_count,
-        "took_ms": elapsed.as_millis(),
-        "model": model_name,
-        "summaries_added": summaries_added,
-        "docs_improved": docs_improved,
-    });
-    crate::cli::json_envelope::emit_json(&obj)?;
-}
-
-// cmd_convert
-if json {
-    let obj = serde_json::json!({
-        "converted": converted_paths,
-        "skipped": skipped_paths,
-        "took_ms": elapsed.as_millis(),
-    });
-    crate::cli::json_envelope::emit_json(&obj)?;
-}
-```
-
-4. Suppress per-step progress prints when `json` is true (route to stderr or gate on `!json`).
-
-### Notes
-
-- `cmd_doctor` already has a `Colored human-readable check progress is routed to stderr in this mode` pattern — reuse it.
-- These three commands already emit useful progress; do not regress that for the text path.
-
----
-
-## P2.13 — Global `--slot` silently ignored by `slot` and `cache` subcommands
-
-**Finding:** P2.13 in audit-triage.md
-**Files:** `src/cli/definitions.rs` (`pub slot: Option<String>` is `global = true`); consumers: `src/cli/commands/infra/slot.rs` (`SlotCommand::*`), `src/cli/commands/infra/cache_cmd.rs::resolve_cache_path`
-
-### Replacement
-
-Two acceptable shapes — pick at PR time:
-
-**Option A (recommended):** Move `--slot` off `global = true` and onto only the subcommands that consume it. Apply via `#[command(flatten)]` of a `SlotArg { #[arg(long)] pub slot: Option<String> }` to: `Search`, `Index`, `Doctor`, `ModelSwap`, etc. Drop from `Slot*`/`Cache*`.
-
-**Option B:** Keep global but enforce at dispatch:
-
-```rust
-// In dispatch routing for Slot* / Cache* arms:
-if cli.slot.is_some() {
-    bail!("--slot has no effect on `cqs {subcommand}` (this command is project-scoped, not slot-scoped)");
-}
-```
-
-### Notes
-
-- Cache is project-scoped per #1105, not per-slot — that contract is the source of the bug. Don't accidentally make it slot-scoped without an explicit design decision.
-- Bonus cleanup: `cqs slot create foo --slot bar` is parsed as "create slot foo" today; option A makes the misuse a clap error.
-
----
-
-## P2.14 — `cqs refresh` has no `--json`
-
-**Finding:** P2.14 in audit-triage.md
-**Files:** `src/cli/definitions.rs:759-760` (`Commands::Refresh` — variant has no fields); `src/cli/registry.rs` Refresh dispatch arm; daemon-side `dispatch_refresh` handler
-
-### Current code
-
-```rust
-#[command(visible_alias = "invalidate")]
-Refresh,
-```
-
-### Replacement
-
-```rust
-#[command(visible_alias = "invalidate")]
-Refresh {
-    #[arg(long)]
-    json: bool,
-},
-```
-
-In the dispatch arm, when `json` is set emit:
-
-```rust
-let obj = serde_json::json!({
-    "refreshed": true,
-    "daemon_running": daemon_was_running,
-    "caches_invalidated": ["embedder_session", "query_cache_lru", "notes"],
-});
-crate::cli::json_envelope::emit_json(&obj)?;
-```
-
-### Notes
-
-- `cli.json || args.json` precedence so the global flag still works.
-- Update the registry `for_each_command!` row if pattern-matching on field shape.
-
----
-
-## P2.15 — List-shape JSON envelopes inconsistent across `*list` commands
-
-**Finding:** P2.15 in audit-triage.md
-**Files:** `src/cli/commands/infra/reference.rs::cmd_ref_list` (raw array), `src/cli/commands/infra/model.rs::cmd_model_list` (raw array), `src/cli/commands/infra/project.rs:124-140` (object), `src/cli/commands/infra/slot.rs::slot_list` (object), `src/cli/commands/io/notes.rs::cmd_notes_list` (object), `src/cli/commands/search/query.rs` (object)
-
-### Replacement
-
-Standardize on `{"data": {"<plural>": [...], <optional summary fields>}}`:
-
-```rust
-// cmd_ref_list — change from raw Vec<RefSummary> to:
-let obj = serde_json::json!({ "references": refs });
-crate::cli::json_envelope::emit_json(&obj)?;
-
-// cmd_model_list — change from raw Vec<ModelInfo> to:
-let obj = serde_json::json!({
-    "models": models,
-    "current": current_name, // fold the per-row `current: bool` into a top-level field
-});
-crate::cli::json_envelope::emit_json(&obj)?;
-```
-
-### Notes
-
-- One PR touches both call sites + their tests. No external users — hard rename is fine per project memory.
-- After the rename, `data.{slots,projects,refs,models,notes}` is a uniform accessor.
-
----
-
-## P2.16 — `cache stats` mixes bytes and MB; `cache compact` uses bytes only
-
-**Finding:** P2.16 in audit-triage.md
-**Files:** `src/cli/commands/infra/cache_cmd.rs::cache_stats` (around line 145-149, emits both `total_size_bytes` AND `total_size_mb`), `cache_compact` (bytes only)
-
-### Current code (cache_stats JSON branch)
-
-```rust
-let obj = serde_json::json!({
-    "cache_path": cache_path.display().to_string(),
-    "total_entries": stats.total_entries,
-    "total_size_bytes": stats.total_size_bytes,
-    "total_size_mb": stats.total_size_bytes as f64 / 1_048_576.0,
-    // ...
-});
-```
-
-### Replacement
-
-```rust
-let obj = serde_json::json!({
-    "cache_path": cache_path.display().to_string(),
-    "total_entries": stats.total_entries,
-    "total_size_bytes": stats.total_size_bytes,
-    // total_size_mb dropped — bytes is the canonical unit
-    // ...
-});
-```
-
-Keep the `total_size_mb` rendering only on the human text path (`format!("{:.1} MB", ...)`).
-
-### Notes
-
-- Repository-wide grep for consumers of `total_size_mb` before dropping. None expected (no external users).
-
----
-
-## P2.17 — `dispatch::try_daemon_query` warns then silently re-runs in CLI
-
-**Finding:** P2.17 in audit-triage.md
-**Files:** `src/cli/dispatch.rs:445-462`
-**Why:** EH-13 comment claims "no silent fallback" but the function returns `None` to fall through to CLI anyway. Daemon-only features can produce different results between the warning print and the CLI re-run.
-
-### Current code
-
-```rust
-// EH-13: daemon understood the request but surfaced an error. ... Falling
-// back to CLI now would mask daemon bugs ...
-let msg = resp.get("message").and_then(|v| v.as_str()).unwrap_or("daemon error");
-tracing::warn!(error = msg, "Daemon returned protocol-level error");
-eprintln!("cqs: daemon error: {msg}");
-eprintln!("hint: set CQS_NO_DAEMON=1 to run the command directly in the CLI (bypasses the daemon).");
-// Still return None so we fall through to CLI path, but the user has been
-// told why — no silent fallback.
-None
-```
-
-### Replacement
-
-Change the return type so the protocol-error case bubbles up instead of falling through:
-
-```rust
-// File header: change signature
-fn try_daemon_query(...) -> Result<Option<String>, anyhow::Error> { ... }
-
-// At the EH-13 branch:
-let msg = resp.get("message").and_then(|v| v.as_str()).unwrap_or("daemon error");
-tracing::warn!(error = msg, "Daemon returned protocol-level error");
-return Err(anyhow::anyhow!(
-    "daemon error: {msg}\nhint: set CQS_NO_DAEMON=1 to bypass the daemon"
-));
-```
-
-Caller at `:200` switches from `match try_daemon_query(...) { Some(s) => ..., None => fall_through_to_cli() }` to handling the new `Result<Option<String>>`:
-
-```rust
-match try_daemon_query(...)? {
-    Some(text) => emit(text),
-    None => fall_through_to_cli(),
-}
-```
-
-### Notes
-
-- Exits non-zero with the daemon's message — matches the comment's stated intent.
-- All existing transport-error paths (connect/read/write fail) still return `Ok(None)` so CLI fallback works for those.
-
----
-
-## P2.18 — `LocalProvider::fetch_batch_results` returns empty map on missing batch_id
-
-**Finding:** P2.18 in audit-triage.md
-**Files:** `src/llm/local.rs:542-547`
-
-### Current code
-
-```rust
-fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
-    // Drain the stash entry — returning empty if the id was already
-    // fetched or never existed.
-    let mut stash = self.stash.lock().unwrap();
-    Ok(stash.remove(batch_id).unwrap_or_default())
-}
-```
-
-### Replacement
-
-```rust
-fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
-    let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
-    match stash.remove(batch_id) {
-        Some(m) => Ok(m),
-        None => Err(LlmError::BatchNotFound(format!(
-            "local batch_id {batch_id} not found in stash — already fetched, or submission silently lost results"
-        ))),
-    }
-}
-```
-
-Add the variant at the top of `src/llm/error.rs` (or wherever `LlmError` is defined):
-
-```rust
-#[error("batch not found: {0}")]
-BatchNotFound(String),
-```
-
-### Notes
-
-- Mutex poison fix piggybacks here (recover via `into_inner` instead of `unwrap`) — same lesson as P1.9.
-- Callers in `summary.rs` / `doc_comments.rs` should distinguish `BatchNotFound` (data drift, hard error) from `Http`/`Internal` (transient).
-
----
-
-## P2.19 — `serde_json::to_value(...).unwrap_or_else(json!({}))` at 6 sites
-
-**Finding:** P2.19 in audit-triage.md
-**Files:** `src/impact/format.rs:11-16, 101-106`, `src/cli/commands/io/context.rs:94-97, 320-323, 498-501`, `src/cli/commands/io/blame.rs:240-243`
-
-### Current code (representative — `src/impact/format.rs:11-16`)
-
-```rust
-pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize ImpactResult");
-        serde_json::json!({})
-    })
-}
-```
-
-### Replacement
-
-```rust
-pub fn impact_to_json(result: &ImpactResult) -> Result<serde_json::Value, serde_json::Error> {
-    serde_json::to_value(result)
-}
-```
-
-Apply same shape to all six sites. Bump call sites to `?`-propagate. The functions all already terminate in `crate::cli::json_envelope::emit_json(&obj)?` which handles `Result`.
-
-### Notes
-
-- `serde_json::to_value` only fails on `Serialize` impl bugs — these are programmer errors, must fail loud, not produce `{}` and a journal warn.
-- Six near-identical changes; ship as one PR.
-
----
-
-## P2.20 — `cache_stats` silently treats `QueryCache::open` failure as 0 bytes
-
-**Finding:** P2.20 in audit-triage.md
-**Files:** `src/cli/commands/infra/cache_cmd.rs:120-139`
-
-### Current code
-
-```rust
-let query_cache_size_bytes: u64 = {
-    let q_path = QueryCache::default_path();
-    if q_path.exists() {
-        match QueryCache::open(&q_path) {
-            Ok(qc) => qc.size_bytes().unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Query cache size_bytes failed");
-                0
-            }),
-            Err(e) => {
-                tracing::warn!(error = %e, "Query cache open failed for stats");
-                0
-            }
-        }
-    } else {
-        0
-    }
-};
-```
-
-### Replacement
-
-Surface the error as a structured field instead of collapsing to 0:
-
-```rust
-let (query_cache_size_bytes, query_cache_status): (u64, String) = {
-    let q_path = QueryCache::default_path();
-    if !q_path.exists() {
-        (0, "missing".to_string())
-    } else {
-        match QueryCache::open(&q_path) {
-            Ok(qc) => match qc.size_bytes() {
-                Ok(n) => (n, "ok".to_string()),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Query cache size_bytes failed");
-                    (0, format!("error: {e}"))
+    // 2. cqs_token_<port> cookie. RFC 6265 cookie syntax is name=value
+    // pairs separated by `; `. We don't bother with quoted values —
+    // the server only ever sets this cookie itself and never quotes
+    // it. Cookie name is per-port (#1135) so two cqs serve instances
+    // on the same host don't collide in the browser jar.
+    if let Some(cookie_header) = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+    {
+        let needle = format!("{cookie_name}=");
+        for pair in cookie_header.split(';') {
+            if let Some(value) = pair.trim().strip_prefix(&needle) {
+                if ct_eq(value, expected.as_str()) {
+                    return AuthOutcome::Ok;
                 }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "Query cache open failed for stats");
-                (0, format!("error: {e}"))
             }
         }
     }
-};
-```
 
-Add `query_cache_status` to the JSON envelope and to the text output.
-
----
-
-## P2.21 — `slot_remove` masks `list_slots` failure as "only slot remaining"
-
-**Finding:** P2.21 in audit-triage.md
-**Files:** `src/cli/commands/infra/slot.rs:303-313`
-
-### Current code
-
-```rust
-let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
-let mut all = list_slots(project_cqs_dir).unwrap_or_default();
-all.retain(|n| n != name);
-
-if name == active {
-    if all.is_empty() {
-        anyhow::bail!(
-            "Refusing to remove the only remaining slot '{}'. Create another slot first.",
-            name
-        );
+    // 3. ?token=… query param. axum's `Query` extractor only deserializes
+    // a typed struct; we want raw access without forcing every request
+    // path through a fixed type, so we parse the URI's `query()` directly.
+    if let Some(query) = req.uri().query() {
+        for pair in query.split('&') {
+            if let Some(value) = pair.strip_prefix("token=") {
+                // URI query values can be percent-encoded; the token
+                // alphabet is URL-safe base64 (`A-Z a-z 0-9 - _`) so no
+                // percent-encoding is ever needed in practice. Compare
+                // verbatim — a percent-encoded match would fail `ct_eq`,
+                // which is the conservative choice.
+                if ct_eq(value, expected.as_str()) {
+                    return AuthOutcome::OkViaQueryParam;
+                }
+            }
+        }
     }
-    // ...
+
+    AuthOutcome::Unauthorized
 }
 ```
 
 ### Replacement
 
 ```rust
-use anyhow::Context;
+/// Case-fold + percent-decode a query-pair key for comparison.
+/// SEC-7 leakage fix (CQ-V1.30.1-4): `?Token=…` and `?%74oken=…` must be
+/// recognised as `token=` so the redirect strips them.
+fn pair_key_is_token(pair: &str) -> bool {
+    let Some(eq_idx) = pair.find('=') else {
+        return pair.eq_ignore_ascii_case("token");
+    };
+    let raw_key = &pair[..eq_idx];
+    // Percent-decode the key. The token alphabet itself is URL-safe
+    // base64 (no percent-encoding needed), but operators sometimes
+    // hand-encode the key; we want `%74oken=` to match too.
+    let decoded = percent_encoding::percent_decode_str(raw_key)
+        .decode_utf8_lossy();
+    decoded.eq_ignore_ascii_case("token")
+}
 
-let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
-let mut all = list_slots(project_cqs_dir)
-    .context("Failed to list slots while validating remove")?;
-all.retain(|n| n != name);
-```
-
-### Notes
-
-- Same pattern at `src/cli/commands/infra/slot.rs:273` (`slot_promote`), `:304` (already), and `src/cli/commands/infra/doctor.rs:923` — sweep them all in this PR.
-
----
-
-## P2.22 — `build_token_pack` swallows `get_caller_counts_batch` error
-
-**Finding:** P2.22 in audit-triage.md
-**Files:** `src/cli/commands/io/context.rs:438-441`
-
-### Current code
-
-```rust
-let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_else(|e| {
-    tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");
-    HashMap::new()
-});
-let (included, used) = pack_by_relevance(chunks, &caller_counts, budget, &embedder);
-```
-
-### Replacement
-
-`build_token_pack` already returns `Result`; propagate:
-
-```rust
-let caller_counts = store.get_caller_counts_batch(&names)
-    .context("Failed to fetch caller counts for token packing — ranking signal required")?;
-let (included, used) = pack_by_relevance(chunks, &caller_counts, budget, &embedder);
-```
-
-### Notes
-
-- Packing without ranking signal is worse than failing the command — current behavior silently degrades to file-order with no signal in JSON output.
-- Sibling `build_full_data` carries a `warnings` field; consider folding this into that pattern instead of `?` if the caller wants degraded output. The propagation path is preferred per the finding.
-
----
-
-## P2.23 — `read --focus` silently empties `type_chunks` on store batch failure
-
-**Finding:** P2.23 in audit-triage.md
-**Files:** `src/cli/commands/io/read.rs:230-235`
-
-### Current code
-
-```rust
-let batch_results = store
-    .search_by_names_batch(&type_names, 5)
-    .unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to batch-lookup type definitions for focused read");
-        std::collections::HashMap::new()
-    });
-```
-
-### Replacement
-
-Add a `warnings: Vec<String>` field to `FocusedReadOutput` and push when fetch fails:
-
-```rust
-let batch_results = match store.search_by_names_batch(&type_names, 5) {
-    Ok(m) => m,
-    Err(e) => {
-        let msg = format!("search_by_names_batch failed: {e}; type definitions omitted");
-        tracing::warn!(error = %e, "Failed to batch-lookup type definitions for focused read");
-        warnings.push(msg);
-        std::collections::HashMap::new()
+/// Strip the `token` parameter from the URI's query string for the
+/// post-auth redirect. Other query params are preserved in their
+/// original order. Recognises `Token=`, `%74oken=`, and any case-/
+/// percent-folded variant.
+fn strip_token_param(uri: &Uri) -> String {
+    let path = uri.path();
+    let Some(query) = uri.query() else {
+        return path.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty() && !pair_key_is_token(pair))
+        .collect();
+    if kept.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", kept.join("&"))
     }
-};
+}
+
+/// Extract the token from one of three channels — header, cookie,
+/// or query string — and constant-time-compare against the launched
+/// token. AC-V1.30.1-5: even when Bearer or cookie matches, if a
+/// `token=` query param is also present, return `OkViaQueryParam` so
+/// the caller redirects to the clean URL — leaving a stale `?token=`
+/// in the URL bar is the exact SEC-7 leakage path the redirect closes.
+fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> AuthOutcome {
+    // Sniff for any `?token=…` first — if present, we want to redirect
+    // even when another channel also matches. Validity of the query
+    // value isn't required for the redirect; the redirect's only job
+    // is to scrub the URL bar.
+    let query_has_token_param = req
+        .uri()
+        .query()
+        .is_some_and(|q| q.split('&').any(pair_key_is_token));
+
+    // 1. Authorization: Bearer …
+    let bearer_ok = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|bearer| ct_eq(bearer, expected.as_str()));
+
+    // 2. cqs_token_<port> cookie. RFC 6265 cookie syntax is name=value
+    // pairs separated by `; `. We don't bother with quoted values —
+    // the server only ever sets this cookie itself and never quotes
+    // it. Cookie name is per-port (#1135) so two cqs serve instances
+    // on the same host don't collide in the browser jar.
+    let cookie_ok = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|cookie_header| {
+            let needle = format!("{cookie_name}=");
+            cookie_header.split(';').any(|pair| {
+                pair.trim()
+                    .strip_prefix(&needle)
+                    .is_some_and(|value| ct_eq(value, expected.as_str()))
+            })
+        })
+        .unwrap_or(false);
+
+    // 3. ?token=… query param. axum's `Query` extractor only deserializes
+    // a typed struct; we want raw access without forcing every request
+    // path through a fixed type, so we parse the URI's `query()` directly.
+    let query_ok = req.uri().query().is_some_and(|query| {
+        query
+            .split('&')
+            .filter(|pair| pair_key_is_token(pair))
+            .any(|pair| {
+                let value = pair.split_once('=').map(|(_, v)| v).unwrap_or("");
+                ct_eq(value, expected.as_str())
+            })
+    });
+
+    if !(bearer_ok || cookie_ok || query_ok) {
+        return AuthOutcome::Unauthorized;
+    }
+
+    // AC-V1.30.1-5: presence of `?token=…` (any case-folded form) on a
+    // request that authenticates by ANY channel must trigger the
+    // redirect — otherwise the token sits in the URL bar permanently
+    // after a bookmarked-URL reload, even when the cookie is what
+    // matched.
+    if query_has_token_param {
+        AuthOutcome::OkViaQueryParam
+    } else {
+        AuthOutcome::Ok
+    }
+}
 ```
 
-In the typed output struct:
+Add `percent-encoding = "2"` to `Cargo.toml`'s `[dependencies]` if not already there. (The crate is in the dependency tree via `reqwest`, but the import has to be explicit.) Verify with `cargo tree -p percent-encoding`.
+
+Then invert the two pinned tests at `src/serve/auth.rs` (around lines 572-600):
 
 ```rust
-#[derive(Serialize)]
-struct FocusedReadOutput {
-    // ... existing fields
+    #[test]
+    #[allow(non_snake_case)]
+    fn p2_30_strip_token_param_capital_T_token_IS_stripped() {
+        // CQ-V1.30.1-4: capital `Token=` is case-folded and stripped.
+        // The SEC-7 leakage gap pinned by the previous test is closed.
+        let uri: Uri = "/api/graph?Token=abc&depth=3".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        assert_eq!(stripped, "/api/graph?depth=3");
+    }
+
+    #[test]
+    fn p2_30_strip_token_param_percent_encoded_key_IS_stripped() {
+        // CQ-V1.30.1-4: `%74oken=` is percent-decoded and stripped.
+        let uri: Uri = "/api/graph?%74oken=abc&depth=3".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        assert_eq!(stripped, "/api/graph?depth=3");
+    }
+```
+
+Also add a new test for AC-V1.30.1-5 (cookie + redundant query → redirect):
+
+```rust
+    #[test]
+    fn check_request_cookie_with_redundant_query_token_redirects() {
+        // AC-V1.30.1-5: even when the cookie matches, a `?token=` query
+        // param must trigger the redirect so the URL bar is scrubbed.
+        let token = AuthToken::random();
+        let cookie_name = "cqs_token_8080";
+        let req = Request::builder()
+            .uri("/api/graph?token=anything")
+            .header(
+                header::COOKIE,
+                format!("{cookie_name}={}", token.as_str()),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let outcome = check_request(&req, &token, cookie_name);
+        assert!(matches!(outcome, AuthOutcome::OkViaQueryParam));
+    }
+```
+
+### Verification
+
+- `cargo build --features cuda-index`
+- `cargo test --features cuda-index --lib serve::auth::tests::strip_token_param`
+- `cargo test --features cuda-index --lib serve::auth::tests::p2_30_strip_token_param`
+- `cargo test --features cuda-index --lib serve::auth::tests::check_request`
+- Manual: `cqs serve --bind 127.0.0.1:8088 &` then `curl -i 'http://127.0.0.1:8088/?token=GOOD' --cookie 'cqs_token_8088=GOOD'` should return 302 to `/`.
+
+---
+
+## P1.4: DOC-V1.30.1-1 — PRIVACY/SECURITY misstate embedding-cache primary key
+
+**Reframed during verification:** Original prompt invented a `purpose='summary'` cache row that doesn't exist — `embedding_cache` only has purposes `embedding` and `embedding_base`; the LLM summary text lives in a separate `llm_summaries` table.
+
+**Files:** `PRIVACY.md:16`, `SECURITY.md:47`
+**Effort:** ~5 minutes
+**Why:** The cache schema at `src/cache.rs:263-278` is `PRIMARY KEY (content_hash, model_fingerprint, purpose)` — `purpose` was added in #1128 to discriminate the post-enrichment `embedding` column from the raw `embedding_base` column (added in v18). The two paths produce different vectors for the same content, and without `purpose` in the PK the second writer silently overwrites the first. PRIVACY.md tells users the key is a 2-tuple `(content_hash, model_id)`; SECURITY.md says the LLM summary is "cached by `content_hash`" without naming the table. Per "Docs Lying Is P1": both claims are wrong about *where and how* data is stored, and the corrected text must reflect actual schema (`CachePurpose` is exactly `Embedding ("embedding")` and `EmbeddingBase ("embedding_base")` per `src/cache.rs:84-104`; LLM summaries live in `llm_summaries` keyed by `(content_hash, purpose)` per `src/schema.sql:180-187`).
+
+### Current docs
+
+PRIVACY.md:16:
+```markdown
+- `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_id)` (#1105). Skips re-embedding chunks that haven't changed across reindexes / model swaps.
+```
+
+SECURITY.md:47:
+```markdown
+| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary is cached by `content_hash`, embedded, and replayed to downstream agents | Yes — cached in `llm_summaries` table |
+```
+
+### Replacement
+
+PRIVACY.md:16:
+```markdown
+- `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_fingerprint, purpose)` (#1105, #1128). Skips re-embedding chunks that haven't changed across reindexes / model swaps; the `purpose` discriminator (`embedding` for the post-enrichment vector served by HNSW, `embedding_base` for the raw NL vector served by the dual-index "base" graph) prevents the two streams from overwriting each other when the same chunk produces both.
+```
+
+SECURITY.md:47:
+```markdown
+| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary text is cached in the `llm_summaries` table keyed by `(content_hash, purpose)` per `src/schema.sql:180-187`; the post-summary embedding flows through the normal `embeddings_cache.db` (purpose `embedding`, the same purpose served to search) and is replayed to downstream agents | Yes — cached in `llm_summaries` table + `embeddings_cache.db` |
+```
+
+### Verification
+
+- `grep -n "model_id\|model_fingerprint\|purpose" /mnt/c/Projects/cqs/PRIVACY.md /mnt/c/Projects/cqs/SECURITY.md` — confirm the strings line up with `src/cache.rs:263-278` schema and `src/schema.sql:180-187`.
+- `grep -n "CachePurpose\|as_str" /mnt/c/Projects/cqs/src/cache.rs | head` — confirm only `embedding` and `embedding_base` exist as purpose values; no `'summary'` purpose row exists in `embedding_cache`.
+- No code build needed (doc-only).
+
+---
+
+## P1.5: SEC-V1.30.1-2 — SECURITY.md "Symlink Behavior" matrix contradicts indexer
+
+**Files:** `SECURITY.md:203-215`, `SECURITY.md:162` (cross-check)
+**Effort:** ~5 minutes
+**Why:** SECURITY.md:203-215 promises symlinks are followed-then-validated (`project/link → project/src/file.rs` is allowed). Reality: `cqs::enumerate_files` at `src/lib.rs:601` calls `WalkBuilder::follow_links(false)` — every symlink is silently skipped, regardless of target. SECURITY.md:162 already correctly says "Symlinks are skipped during directory walks and archive extraction". The two sections cannot both be true. Operators expecting indexable in-tree symlinks (e.g. monorepo workspaces) get a partial index with no error message. Per "Docs Lying Is P1": the doc claim must match the code. The indexer behavior is the right one (avoids zip-slip-style attacks); the matrix needs the truth.
+
+### Current docs (SECURITY.md:203-215)
+
+```markdown
+## Symlink Behavior
+
+**Current behavior**: Symlinks are followed, then the resolved path is validated.
+
+| Scenario | Behavior |
+|----------|----------|
+| `project/link → project/src/file.rs` | ✅ Allowed (target inside project) |
+| `project/link → /etc/passwd` | ❌ Blocked (target outside project) |
+| `project/link → ../sibling/file` | ❌ Blocked (target outside project) |
+
+**TOCTOU consideration**: A symlink could theoretically be changed between validation and read. This is a standard filesystem race condition that affects all programs. Mitigation would require `O_NOFOLLOW` or similar, which would break legitimate symlink use cases.
+
+**Recommendation**: If you don't trust symlinks in your project, remove them or use `--no-ignore` to skip gitignored paths where symlinks might hide.
+```
+
+### Replacement
+
+```markdown
+## Symlink Behavior
+
+cqs has **two** symlink-handling regimes, depending on the entry point.
+
+### Directory walks (`cqs index`, `cqs ref add`, `cqs watch` reconcile, `cqs convert`)
+
+Symlinks are **skipped** entirely — `enumerate_files` (`src/lib.rs:601`) sets `WalkBuilder::follow_links(false)` and `cqs convert`'s archive extraction skips them in extract paths. The walker never opens the link's target.
+
+| Scenario | Behavior |
+|----------|----------|
+| `project/link → project/src/file.rs` | Skipped (symlink, regardless of target) |
+| `project/link → /etc/passwd` | Skipped |
+| `project/link → ../sibling/file` | Skipped |
+
+This is conservative: a monorepo workspace that uses in-tree symlinks to share common code will silently miss those files. Workaround: replace the symlinks with the actual files (or use a `[references]` config block to index the shared tree as a separate slot).
+
+### Explicit-path canonicalization (`cqs read <path>`, `cqs ref add --source <path>`)
+
+When the user passes a path on the command line, cqs canonicalizes it (`dunce::canonicalize`), then validates the resolved path against the project root.
+
+| Scenario | Behavior |
+|----------|----------|
+| `cqs read link` where `link → project/src/file.rs` | Allowed (target inside project, canonicalised path reads `project/src/file.rs`) |
+| `cqs read link` where `link → /etc/passwd` | Blocked (target outside project) |
+| `cqs read link` where `link → ../sibling/file` | Blocked (target outside project) |
+
+**TOCTOU consideration**: A symlink could theoretically be changed between canonicalization and read. This is a standard filesystem race condition that affects all programs. Mitigation would require `O_NOFOLLOW` or similar, which would break legitimate symlink use cases on `cqs read`.
+
+**Recommendation**: If you don't trust symlinks in your project, remove them. The directory-walk path is already conservative.
+```
+
+### Verification
+
+- `grep -n "follow_links" /mnt/c/Projects/cqs/src/lib.rs` — confirm `follow_links(false)` still in place.
+- `grep -n "Symlink filtering" /mnt/c/Projects/cqs/SECURITY.md` — line 162 should still read "Symlinks are skipped during directory walks and archive extraction" (consistent with new matrix).
+- No code build needed (doc-only).
+
+---
+
+## P1.6: SEC-V1.30.1-1 — SECURITY claims `read --focus` / `context` carry `trust_level` (they don't)
+
+**Files:** `SECURITY.md:57`, `src/cli/commands/io/read.rs:310-323`, `src/cli/commands/io/context.rs:219-248`
+**Effort:** ~30 minutes
+**Why:** SECURITY.md:57 lists `read`, `read --focus`, and `context` as JSON outputs that carry `trust_level: "user-code" | "reference-code"` and per-chunk `injection_flags: []`. Verification:
+- `FocusedReadJsonOutput` (read.rs:310-323) has fields `{focus, content, hints, warnings}` — no `trust_level`, no `injection_flags`.
+- `FullChunkEntry` (context.rs:239-248) has `{name, chunk_type, signature, line_start, line_end, doc, content}` — no `trust_level`, no `injection_flags`.
+- The `tag_user_code_trust_level` walker only walks scout/onboard shapes (`entry_point`, `call_chain[]`, `callers[]`, `file_groups[].chunks[]`).
+
+Per "Docs Lying Is P1": both the doc claim *and* the code must be brought in line. Cheapest correct fix: extend the JSON shapes to carry the field (fixed value `"user-code"` for project-store paths; `"reference-code"` if the path resolves to a `cqs ref` index — but `read --focus` and `context` always read from the project store, so this fix is the constant `"user-code"` plus the empty `injection_flags`).
+
+### Current code
+
+```rust
+//   src/cli/commands/io/read.rs:310-323
+/// JSON output for a focused read.
+#[derive(Debug, serde::Serialize)]
+struct FocusedReadJsonOutput {
+    focus: String,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hints: Option<ReadHints>,
+    /// P2.23: warnings emitted by the underlying assembly (e.g.
+    /// `search_by_names_batch` failed). Mirrors `SummaryOutput::warnings`
+    /// per EH-V1.29-9 — agents need to distinguish "no type deps" from
+    /// "type-deps lookup failed silently".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
 }
 ```
 
-### Notes
+```rust
+//   src/cli/commands/io/context.rs:237-248
+/// A chunk in full context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct FullChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub signature: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub doc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+```
 
-- Mirrors `SummaryOutput::warnings` in `src/cli/commands/io/context.rs:464`.
-- Either propagation (`?`) or warnings-field is acceptable; warnings-field preferred per the EH-V1.29-9 family.
+### Replacement
+
+```rust
+//   src/cli/commands/io/read.rs:310-323
+/// JSON output for a focused read.
+#[derive(Debug, serde::Serialize)]
+struct FocusedReadJsonOutput {
+    focus: String,
+    content: String,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `read --focus` reads from the project store only
+    /// (no reference-store fan-in), so this is always "user-code".
+    /// SECURITY.md's mitigation contract is that agents can branch
+    /// safely on this field; the `read --focus` path was missing it.
+    trust_level: &'static str,
+    /// SEC-V1.30.1-1: parallel field to chunk JSON. `read --focus`
+    /// content is delivered as a single concatenated string, not a
+    /// per-chunk list, so there is no per-chunk array — a single
+    /// empty array satisfies the schema-stability contract.
+    injection_flags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hints: Option<ReadHints>,
+    /// P2.23: warnings emitted by the underlying assembly (e.g.
+    /// `search_by_names_batch` failed). Mirrors `SummaryOutput::warnings`
+    /// per EH-V1.29-9 — agents need to distinguish "no type deps" from
+    /// "type-deps lookup failed silently".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+}
+```
+
+```rust
+//   src/cli/commands/io/context.rs:237-248
+/// A chunk in full context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct FullChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub signature: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub doc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `cqs context` reads from the project store only;
+    /// always "user-code". SECURITY.md mitigation contract.
+    pub trust_level: &'static str,
+    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags. The full
+    /// per-content-scan integration is #1181 follow-up; for now the
+    /// schema-stability contract requires the field be present and an
+    /// empty `Vec<String>` reflects "no heuristics fired".
+    pub injection_flags: Vec<String>,
+}
+```
+
+Then update the construction sites. In `read.rs`, the production constructor at line 408-413 becomes:
+
+```rust
+        let output = FocusedReadJsonOutput {
+            focus: focus.to_string(),
+            content: result.output,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
+            hints,
+            warnings: result.warnings.clone(),
+        };
+```
+
+The `#[cfg(test)] mod tests` block in the same file has 3 additional `FocusedReadJsonOutput { ... }` literals that the new required fields will break unless updated. The exact sites are:
+
+`src/cli/commands/io/read.rs:447` (`focused_read_output_with_hints`):
+```rust
+        let output = FocusedReadJsonOutput {
+            focus: "search".into(),
+            content: "fn search() { ... }".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
+            hints: Some(ReadHints {
+                caller_count: 3,
+                test_count: 2,
+                no_callers: false,
+                no_tests: false,
+            }),
+            warnings: Vec::new(),
+        };
+```
+
+`src/cli/commands/io/read.rs:470` (`focused_read_output_no_hints`):
+```rust
+        let output = FocusedReadJsonOutput {
+            focus: "MyStruct".into(),
+            content: "struct MyStruct {}".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
+            hints: None,
+            warnings: Vec::new(),
+        };
+```
+
+`src/cli/commands/io/read.rs:486` (`focused_read_output_with_warnings`):
+```rust
+        let output = FocusedReadJsonOutput {
+            focus: "MyStruct".into(),
+            content: "struct MyStruct {}".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
+            hints: None,
+            warnings: vec!["search_by_names_batch failed: db locked".into()],
+        };
+```
+
+In `context.rs`, the `FullChunkEntry` constructor at line 281-289 becomes:
+
+```rust
+            FullChunkEntry {
+                name: c.name.clone(),
+                chunk_type: c.chunk_type.to_string(),
+                signature: c.signature.clone(),
+                line_start: c.line_start,
+                line_end: c.line_end,
+                doc: c.doc.clone(),
+                content,
+                trust_level: "user-code",
+                injection_flags: Vec::new(),
+            }
+```
+
+The `CompactChunkEntry` and `SummaryChunkEntry` structs also need the new fields, since SECURITY.md:57 names `read`, `read --focus`, *and* `context` as carriers of `trust_level`. `cqs context --compact` and `cqs context --summary` both fall under the `context` surface.
+
+`src/cli/commands/io/context.rs:60-68` — extend the struct:
+```rust
+/// A single chunk in compact context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CompactChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub signature: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub caller_count: u64,
+    pub callee_count: u64,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `cqs context --compact` reads from the project store
+    /// only; always "user-code".
+    pub trust_level: &'static str,
+    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags. Empty for now;
+    /// schema-stability contract requires the field be present.
+    pub injection_flags: Vec<String>,
+}
+```
+
+`src/cli/commands/io/context.rs:84` — update the constructor inside `compact_to_json`:
+```rust
+            CompactChunkEntry {
+                name: c.name.clone(),
+                chunk_type: c.chunk_type.to_string(),
+                signature: c.signature.clone(),
+                line_start: c.line_start,
+                line_end: c.line_end,
+                caller_count: cc,
+                callee_count: ce,
+                trust_level: "user-code",
+                injection_flags: Vec::new(),
+            }
+```
+
+`src/cli/commands/io/context.rs:472-477` — extend `SummaryChunkEntry`:
+```rust
+/// A chunk in summary context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SummaryChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `cqs context --summary` reads from the project store
+    /// only; always "user-code".
+    pub trust_level: &'static str,
+    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags.
+    pub injection_flags: Vec<String>,
+}
+```
+
+`src/cli/commands/io/context.rs:486` — update the constructor inside `summary_to_json`:
+```rust
+        .map(|c| SummaryChunkEntry {
+            name: c.name.clone(),
+            chunk_type: c.chunk_type.to_string(),
+            line_start: c.line_start,
+            line_end: c.line_end,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
+        })
+```
+
+If existing integration tests in `context.rs` (e.g. `hp1_compact_to_json_*`) construct any of these structs literally, they need the same two fields added.
+
+### Verification
+
+- `cargo build --features cuda-index`
+- `cargo test --features cuda-index --lib io::read`
+- `cargo test --features cuda-index --lib io::context`
+- Manual: `cqs read --focus some_function --json | jq '.trust_level, .injection_flags'` should print `"user-code"` and `[]`.
+- Manual: `cqs context some_file.rs --full --json | jq '.chunks[0].trust_level, .chunks[0].injection_flags'` should print the same.
+- Manual: `cqs context some_file.rs --compact --json | jq '.chunks[0].trust_level'` and `cqs context some_file.rs --summary --json | jq '.chunks[0].trust_level'` should also print `"user-code"`.
+- `grep -n "trust_level\|injection_flags" /mnt/c/Projects/cqs/SECURITY.md` — confirm SECURITY.md:57 and :61 still read accurately (no doc edit needed once code matches).
 
 ---
 
-## P2.24 — `serve::build_chunk_detail` collapses NULL signature/content to empty string
+## P1.7: DOC-V1.30.1-7 — SECURITY.md auth claim missing cookie + `NoAuthAcknowledgement`
 
-**Finding:** P2.24 in audit-triage.md
-**Files:** `src/serve/data.rs:488-492`
+**Files:** `SECURITY.md:17`
+**Effort:** ~5 minutes
+**Why:** SECURITY.md:17 describes the auth surface as the v1.29 shape — "cookie handoff is `HttpOnly; SameSite=Strict`; compare is constant-time. `--no-auth` opts out". Two v1.30 hardenings landed and aren't reflected:
+- (#1135) Cookie name renamed to `cqs_token_<port>` so concurrent `cqs serve` instances on the same host don't collide in the browser jar.
+- (#1136) `--no-auth` now requires constructing a `NoAuthAcknowledgement` proof token; an internal caller cannot accidentally ship a fully-open server.
+
+Per "Docs Lying Is P1": SECURITY.md is the canonical surface for auth claims; missing protections that were just landed makes the doc weaker than the code.
+
+### Current docs
+
+```markdown
+| **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7); cookie handoff is `HttpOnly; SameSite=Strict`; compare is constant-time. `--no-auth` opts out for scripted automation but is paired with a loud-warn banner on non-loopback binds. |
+```
+
+### Replacement
+
+```markdown
+| **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7). Three credential channels: `Authorization: Bearer`, `cqs_token_<port>` cookie (port-scoped per RFC 6265, #1135 — concurrent instances don't collide in the browser jar), `?token=` query param. Cookie handoff is `HttpOnly; SameSite=Strict; Path=/`; compare is constant-time on every channel. Disabling auth requires `--no-auth` plus an internal `NoAuthAcknowledgement` proof token (#1136), so no internal caller can ship a fully-open server by accident; the disabled branch logs a structured `tracing::error!` regardless of `quiet`. Loud-warn banner on non-loopback binds with `--no-auth`. |
+```
+
+### Verification
+
+- `grep -n "cqs_token_\|NoAuthAcknowledgement" /mnt/c/Projects/cqs/SECURITY.md` — should find at least one match (the new line above).
+- `grep -rn "NoAuthAcknowledgement\|cookie_name_for_port" /mnt/c/Projects/cqs/src/serve/` — confirm both names exist in code (they do, per #1135/#1136 PRs).
+- No code build needed (doc-only).
+
+---
+
+## P1.8: DOC-V1.30.1-4 — ROADMAP claims #1182 acceptance test pending; #1196 already merged
+
+**Files:** `ROADMAP.md:16`, `ROADMAP.md:142`
+**Effort:** ~3 minutes
+**Why:** Both lines say "remaining acceptance item is the WSL-specific integration test" — but `git log` shows `a240ad08 test(watch): bulk-delta reconcile pass for #1182 acceptance — 47-file scenario (#1196)` already merged before v1.30.1 cut. The ROADMAP is now lying about open work; agents reading the roadmap will think there's still a test gap to fill and either duplicate work or distrust the rest of the doc.
+
+### Current docs
+
+ROADMAP.md:16:
+```markdown
+- [#1182](https://github.com/jamie8johnson/cqs/issues/1182) — **perfect watch mode (3-layer reconciliation).** Closes the missed-event classes (bulk git ops, WSL 9P, external writes) via `.git/hooks/post-{checkout,merge,rewrite}` + periodic full-tree fingerprint reconciliation + `cqs status --watch-fresh --wait` API. Promise: "the index is always either fresh or telling you it isn't." Supersedes the CLAUDE.md "always run `cqs index` after branch switches/merges" guidance. **Positioning lever:** *easy to index, hard to keep indexed between turns* — closing the gap promotes freshness to a top-line property alongside semantic search + call graphs. **Prior-art survey 2026-04-28** (in #1182 comment): codeindex.cc has per-query stale flags; Cursor has Merkle-tree sync; CocoIndex has fast incremental updates. None has the blocking `--wait` API + git-hook integration + "between turns" consumer-consistency-model framing. Honest pitch: "the only code search tool that lets your agent **wait** until it's fresh." Marketing claim: closing a known gap with a more complete design, not inventing a new category. **Status (2026-04-28):** Layers 1-4 shipped (#1189 freshness API, #1191 periodic reconciliation, #1193 git hooks, #1194 eval `--require-fresh`). Remaining: a WSL `/mnt/c/` integration test that exercises the full `git checkout` → freshness API stale → rebuild cycle.
+```
+
+ROADMAP.md:142:
+```markdown
+- [x] **#1182 — perfect watch mode (3-layer reconciliation).** Filed 2026-04-28. The closing-the-gap item. Three layers compose: (1) `.git/hooks/post-{checkout,merge,rewrite}` post a `reconcile` message to the daemon socket, (2) periodic full-tree fingerprint reconciliation every `CQS_WATCH_RECONCILE_SECS` (default 30s) catches what hooks + inotify miss, (3) `cqs status --watch-fresh --wait` exposes a freshness contract — eval-runner just calls `--wait` and stops caring. Promise: bounded eventual consistency, agent can either trust `fresh` or block. **Positioning differentiator. Layers 1-4 shipped #1189/#1191/#1193/#1194; remaining acceptance item is the WSL-specific integration test.**
+```
+
+### Replacement
+
+ROADMAP.md:16 — replace the trailing **Status** sentence:
+```markdown
+**Status (2026-04-28):** Layers 1-4 shipped (#1189 freshness API, #1191 periodic reconciliation, #1193 git hooks, #1194 eval `--require-fresh`); 47-file bulk-delta acceptance test landed in #1196. #1182 fully closed.
+```
+
+ROADMAP.md:142 — replace the trailing **Positioning differentiator** sentence:
+```markdown
+**Positioning differentiator. Layers 1-4 shipped #1189/#1191/#1193/#1194; 47-file bulk-delta acceptance test landed in #1196.**
+```
+
+### Verification
+
+- `grep -n "remaining acceptance item\|WSL-specific integration test" /mnt/c/Projects/cqs/ROADMAP.md` — should return zero matches.
+- `git log --oneline --all | grep "#1196"` — confirms `a240ad08` is on main.
+- No code build needed (doc-only).
+
+---
+
+## P1.9: SHL-V1.30-1 — `embed_batch_size_for` dead code; production OOMs nomic-coderank
+
+**Files:** `src/cli/pipeline/types.rs:147-207`, `src/cli/pipeline/parsing.rs:14,42`, `src/cli/enrichment.rs:73-74`, `src/cli/pipeline/mod.rs:15`, `src/cli/commands/index/build.rs:520-522`
+**Effort:** ~25 minutes
+**Why:** P2.41 in v1.30.0 triage was marked "fixed (added `embed_batch_size_for(model)`; pipeline migration follow-on)" — but the helper is still `#[allow(dead_code)]` and zero production callers exist. Both `parser_stage` (parsing.rs:42) and `enrichment_pass` (enrichment.rs:74) call legacy `embed_batch_size()` which returns 64 regardless of model. `cqs index --model nomic-coderank` (768 dim, 2048 seq) at batch=64 ships with a known OOM config on RTX 4060 8GB. Same pattern as the configurable-models disaster from MEMORY.md.
 
 ### Current code
 
 ```rust
-let signature: String = row
-    .get::<Option<String>, _>("signature")
-    .unwrap_or_default();
-let doc: Option<String> = row.get("doc");
-let content: String = row.get::<Option<String>, _>("content").unwrap_or_default();
+//   src/cli/pipeline/types.rs:178-179
+#[allow(dead_code)] // P2.41: opt-in helper; pipeline migration is a follow-on PR.
+pub(crate) fn embed_batch_size_for(model: &cqs::embedder::ModelConfig) -> usize {
 ```
 
-### Replacement
-
 ```rust
-let signature: Option<String> = row.get("signature");
-let doc: Option<String> = row.get("doc");
-let content: Option<String> = row.get("content");
+//   src/cli/pipeline/parsing.rs:14
+use super::types::{embed_batch_size, file_batch_size, ParsedBatch, RelationshipData};
 ```
 
-Update `ChunkDetail` struct to `signature: Option<String>` and `content: Option<String>`. Update `src/serve/assets/views/chunk-detail.js` to render `null` as a `<missing — DB column NULL>` placeholder instead of an empty pane.
-
-### Notes
-
-- NULL is a real signal (partial write during indexing, SIGKILL between INSERT phases) — flattening to `""` loses it.
-- The `content_preview` derivation at line 496 changes too: `content.as_deref().map(|c| c.lines().take(30)...)`.
-
----
-
-## P2.25 — Per-request span and `build_*` spans disconnected via `spawn_blocking`
-
-**Finding:** P2.25 in audit-triage.md
-**Files:** `src/serve/handlers.rs:86,111,131,160,210,236` (every `spawn_blocking` call)
-
-### Current code (representative — handlers.rs:86)
-
 ```rust
-let store = state.store.clone();
-let stats = tokio::task::spawn_blocking(move || super::data::build_stats(&store))
-    .await
-    .map_err(|e| ServeError::Internal(format!("stats join: {e}")))?
-    .map_err(ServeError::from)?;
+//   src/cli/pipeline/parsing.rs:28-42 (signature + body)
+pub(super) fn parser_stage(
+    files: Vec<PathBuf>,
+    ctx: ParserStageContext,
+    parse_tx: Sender<ParsedBatch>,
+) -> Result<()> {
+    let _span = tracing::info_span!("parser_stage").entered();
+    let ParserStageContext {
+        root,
+        force,
+        parser,
+        store,
+        parsed_count,
+        parse_errors,
+    } = ctx;
+    let batch_size = embed_batch_size();
+    let file_batch_size = file_batch_size();
 ```
 
-### Replacement
-
-Capture the calling span and re-enter inside the closure:
-
 ```rust
-use tracing::Instrument;
-let span = tracing::Span::current();
-let store = state.store.clone();
-let stats = tokio::task::spawn_blocking({
-    move || {
-        let _entered = span.enter();
-        super::data::build_stats(&store)
-    }
-})
-.await
-.map_err(|e| ServeError::Internal(format!("stats join: {e}")))?
-.map_err(ServeError::from)?;
-```
-
-Apply at all six handlers (stats / graph / chunk_detail / search / hierarchy / cluster_2d).
-
-### Notes
-
-- After this lands, drop the per-handler `tracing::info!` lines (`80, 100, 126, 149, 175, 201, 231`) — the inner `build_*` span entry plus `FmtSpan::CLOSE` will produce one structured event per request.
-- Ties to P1.20 (default subscriber drops INFO spans) — the value of this fix only materializes after that one ships.
-
----
-
-## P2.26 — TC-ADV: `LocalProvider` body-size DoS test
-
-**Finding:** P2.26 in audit-triage.md
-**Files:** `src/llm/local.rs:474-500` (production); `src/llm/local.rs:595+` (existing tests module)
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod body_size_dos_tests {
-    use super::*;
-    use httpmock::prelude::*;
-
-    #[test]
-    fn test_oversized_response_body_capped_at_5mb() {
-        let server = MockServer::start();
-        // Mock 200-OK with a 50 MB JSON body
-        let huge_body: String = "{\"choices\":[{\"message\":{\"content\":\"".to_string()
-            + &"x".repeat(50 * 1024 * 1024)
-            + "\"}}]}";
-        let _m = server.mock(|when, then| {
-            when.method(POST).path("/v1/chat/completions");
-            then.status(200).body(huge_body);
-        });
-        let cfg = make_config(&format!("{}/v1", server.base_url()), Duration::from_secs(5));
-        let provider = LocalProvider::new(&cfg).unwrap();
-        let items = vec![/* one minimal chat item */];
-        let start = std::time::Instant::now();
-        let result = provider.submit_batch_prebuilt(&items, None);
-        // Expectation: either errors out with a body-size cap, or completes in
-        // bounded memory (we cannot assert allocator behavior portably; the
-        // PR-side fix should add a 4 MiB cap via reqwest body limits).
-        assert!(
-            result.is_err() || start.elapsed() < Duration::from_secs(30),
-            "unbounded body read or excessive retry stall"
-        );
-    }
-
-    #[test]
-    fn test_4xx_with_large_body_does_not_buffer_entire_body() {
-        let server = MockServer::start();
-        let _m = server.mock(|when, then| {
-            when.method(POST).path("/v1/chat/completions");
-            then.status(400).body("x".repeat(50 * 1024 * 1024));
-        });
-        let cfg = make_config(&format!("{}/v1", server.base_url()), Duration::from_secs(5));
-        let provider = LocalProvider::new(&cfg).unwrap();
-        // body_preview should produce ≤ 256 chars; assert it doesn't OOM
-        // and returns a bounded preview.
-        let result = provider.submit_batch_prebuilt(&[/* one item */], None);
-        assert!(result.is_err());
-        // Optional: peek into the LlmError variant and assert preview length
-    }
-}
-```
-
-### Notes
-
-- Production-side fix (per RB-V1.30-1): add `Content-Length` inspection or a `take(N)` adaptor with a 4 MiB cap on summary responses, 2 KiB on `body_preview`. New env var `CQS_LOCAL_LLM_MAX_BODY_BYTES`.
-- Tests remain meaningful even if the fix is deferred — they pin current unbounded behavior so a regression after the fix is loud.
-
----
-
-## P2.27 — TC-ADV: cache accepts NaN/Inf embeddings
-
-**Finding:** P2.27 in audit-triage.md
-**Files:** `src/cache.rs:332-407` (`EmbeddingCache::write_batch`), `src/cache.rs:1677-1699` (`QueryCache::put`)
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod nan_inf_tests {
-    use super::*;
-
-    #[test]
-    fn test_write_batch_rejects_nan_embedding() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = EmbeddingCache::open(&dir.path().join("emb.db")).unwrap();
-        let bad = vec![1.0_f32, f32::NAN, 0.5, /* pad to dim */];
-        // Pad bad to expected dim
-        let dim = bad.len();
-        let entries = &[("a".repeat(64).as_str(), bad.as_slice())];
-        let written = cache.write_batch(entries, "fp1", dim).unwrap();
-        assert_eq!(written, 0, "NaN embedding must be rejected, not silently stored");
-        // Read back must return no row for that hash
-        let got = cache.read_batch(&[&"a".repeat(64)], "fp1", dim).unwrap();
-        assert!(got.is_empty(), "rejected entry must not appear in read_batch");
-    }
-
-    #[test]
-    fn test_write_batch_rejects_inf_embedding() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = EmbeddingCache::open(&dir.path().join("emb.db")).unwrap();
-        let bad = vec![f32::INFINITY; 16];
-        let entries = &[("b".repeat(64).as_str(), bad.as_slice())];
-        let written = cache.write_batch(entries, "fp1", 16).unwrap();
-        assert_eq!(written, 0);
-        let bad2 = vec![f32::NEG_INFINITY; 16];
-        let entries2 = &[("c".repeat(64).as_str(), bad2.as_slice())];
-        let written2 = cache.write_batch(entries2, "fp1", 16).unwrap();
-        assert_eq!(written2, 0);
-    }
-
-    #[test]
-    fn test_query_cache_put_rejects_non_finite() {
-        // Same shape against QueryCache::put
-    }
-}
-```
-
-### Notes
-
-- Production fix: add `if embedding.iter().any(|f| !f.is_finite()) { tracing::warn!(...); continue; }` next to the existing `embedding.len() != dim` skip block in both write paths.
-- #1105 made this worse by extending cache lifetime cross-slot.
-
----
-
-## P2.28 — TC-ADV: slot create/remove TOCTOU under concurrent operation
-
-**Finding:** P2.28 in audit-triage.md
-**Files:** `src/cli/commands/infra/slot.rs:219-266` (slot_create), `src/cli/commands/infra/slot.rs:299-350` (slot_remove); existing tests at `:391-516`
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod toctou_tests {
-    use super::*;
-
-    #[test]
-    fn test_slot_create_concurrent_same_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let cqs_dir = dir.path().join(".cqs");
-        std::fs::create_dir_all(&cqs_dir).unwrap();
-        let dir1 = cqs_dir.clone();
-        let dir2 = cqs_dir.clone();
-        let h1 = std::thread::spawn(move || slot_create(&dir1, "foo", Some("bge-large"), false));
-        let h2 = std::thread::spawn(move || slot_create(&dir2, "foo", Some("e5-base"), false));
-        let r1 = h1.join().unwrap();
-        let r2 = h2.join().unwrap();
-        // Contract: at most one returns Ok; the slot ends up with a deterministic model.
-        assert!(r1.is_ok() ^ r2.is_ok() || (r1.is_ok() && r2.is_err()) || (r1.is_err() && r2.is_ok()));
-        let model = read_slot_model(&cqs_dir, "foo");
-        assert!(model == Some("bge-large".into()) || model == Some("e5-base".into()));
-    }
-
-    #[test]
-    fn test_slot_remove_during_open_index_db() {
-        // Open a Store::open_readonly_pooled on slots/foo/index.db, spawn slot_remove
-        // from another thread, assert either the open store keeps working OR the remove
-        // returns an error. Currently neither is guaranteed.
-    }
-}
-```
-
-### Notes
-
-- Production fix: `flock` on `.cqs/slots.lock` acquired by both `slot_remove` and the indexer, so the second to-arrive blocks or errors instead of corrupting.
-- Pin current behavior even if not yet fixed — any future regression away from "deterministic" must trip this test.
-
----
-
-## P2.29 — TC-ADV: Non-blocking HNSW rebuild — no panic/dim-drift/store-fail tests
-
-**Finding:** P2.29 in audit-triage.md
-**Files:** `src/cli/watch.rs:965-1042` (`spawn_hnsw_rebuild`), `:1058+` (`drain_pending_rebuild`); existing tests at `:3979-4115`
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod rebuild_adversarial_tests {
-    use super::*;
-
-    #[test]
-    fn test_spawn_hnsw_rebuild_dim_mismatch_clears_pending() {
-        // Set up a Store with dim=768, call spawn_hnsw_rebuild with expected_dim=1024,
-        // then drain_pending_rebuild; assert pending is cleared and no dangling channel.
-    }
-
-    #[test]
-    fn test_spawn_hnsw_rebuild_thread_panic_drops_delta_loudly() {
-        // Wrap the rebuild closure with a feature-flagged panic injection point.
-        // Assert the delta is NOT silently dropped (current behavior leaks it).
-        // Production fix wraps closure in catch_unwind and replays delta on panic.
-    }
-
-    #[test]
-    fn test_spawn_hnsw_rebuild_store_open_fails_clears_pending() {
-        // Point at a non-existent index path; assert drain_pending_rebuild
-        // clears pending after the receiver sees the error.
-    }
-
-    #[test]
-    fn test_spawn_hnsw_rebuild_failure_to_spawn_disconnect_path() {
-        // Synthesize spawn failure (rlimit on threads); assert a follow-up
-        // drain_pending_rebuild clears via Disconnected (does not leak forever).
-    }
-}
-```
-
-### Notes
-
-- The "delta dropped on panic" case is a real bug per the finding, not just a coverage gap. Test must fail today.
-- Production fix: wrap the spawn closure in `std::panic::catch_unwind` and replay the delta into `state.hnsw_index` on panic.
-
----
-
-## P2.30 — TC-ADV: serve auth `strip_token_param` case/percent-encoding gaps
-
-**Finding:** P2.30 in audit-triage.md
-**Files:** `src/serve/auth.rs:101-115` (`strip_token_param`); existing tests at `:269-291`
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod auth_strip_tests {
-    use super::*;
-
-    #[test]
-    fn test_strip_token_param_case_insensitive() {
-        // ?Token=abc — currently kept in URL (capital T fails starts_with("token="))
-        // Pin the desired behavior: stripped (auth check should be case-insensitive
-        // on param name to match HTTP convention).
-        let stripped = strip_token_param("foo=1&Token=secret&bar=2");
-        assert!(!stripped.contains("Token"), "case-insensitive strip required");
-    }
-
-    #[test]
-    fn test_check_request_rejects_percent_encoded_token_key() {
-        // ?%74oken=abc (where %74 = 't')
-        // Today: literal starts_with("token=") fails, falls through to no-token, 401.
-        // Pin: either decode (preferred) or 401.
-    }
-
-    #[test]
-    fn test_strip_token_param_handles_double_ampersand() {
-        // ?token=abc&&depth=3 — the empty pair between && fails starts_with
-        // and survives into the rejoined query. Pin redirect output.
-        let stripped = strip_token_param("token=abc&&depth=3");
-        assert_eq!(stripped, "depth=3");
-    }
-
-    #[test]
-    fn test_strip_token_param_empty_value() {
-        // ?token= — pin behavior: stripped (so it doesn't sit in URL bar).
-        let stripped = strip_token_param("token=&depth=3");
-        assert_eq!(stripped, "depth=3");
-    }
-}
-```
-
-### Notes
-
-- Production fix: percent-decode the *key* via `percent_encoding::percent_decode_str` (already in dep tree) and lowercase the key. Token *value* stays exact-match for `ct_eq`.
-- Failing tests today are the SEC-7 leakage path (token survives in URL bar after redirect).
-
----
-
-## P2.31 — TC-ADV: `slot::migrate_legacy` rollback path untested
-
-**Finding:** P2.31 in audit-triage.md
-**Files:** `src/slot/mod.rs:511-593` (migration), `:561-582` (rollback loop); tests at `:850+` cover happy-path only
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod migrate_rollback_tests {
-    use super::*;
-
-    #[test]
-    fn test_migrate_rollback_on_second_file_failure() {
-        // Plant index.db and index.db-wal; make index.db-wal fail to move
-        // (e.g. open it with an exclusive flock on Linux, or remove read perms
-        // mid-test). Assert:
-        //   - rollback restores index.db to .cqs/
-        //   - slots/ is fully cleaned up
-        //   - next migration call still works (idempotent recovery)
-    }
-
-    #[test]
-    fn test_migrate_rollback_failure_leaves_loud_signal() {
-        // Make rollback ITSELF fail (chmod source dir read-only after first move).
-        // Assert migration returns Err(SlotError::Migration(...)) AND there is a
-        // single known signal (e.g. .cqs/migration_failed marker) — not silent
-        // split state.
-    }
-}
-```
-
-### Notes
-
-- Production fix (per RB-V1.30-4): write a `.cqs/migration.lock` sentinel at start, only remove on full success. Subsequent migration calls error if sentinel found.
-- EBUSY on Windows for `index.db-wal` is the realistic trigger.
-
----
-
-## P2.32 — TC-ADV: `LocalProvider` non-HTTP api_base + concurrency mis-sizing
-
-**Finding:** P2.32 in audit-triage.md
-**Files:** `src/llm/local.rs:88-121` (`LocalProvider::new`), `:128-312` (`submit_via_chat_completions`), `:153` (channel sizing)
-
-### Test skeleton
-
-```rust
-#[cfg(test)]
-mod local_provider_edge_tests {
-    use super::*;
-
-    #[test]
-    fn test_non_http_api_base_fails_fast() {
-        let cfg = make_config("file:///tmp/foo", Duration::from_secs(5));
-        let provider = LocalProvider::new(&cfg).unwrap();
-        let start = std::time::Instant::now();
-        let result = provider.submit_batch_prebuilt(&[/* one item */], None);
-        // Should error within 100ms, NOT take 7.5s for the full retry stall.
-        assert!(result.is_err());
-        assert!(start.elapsed() < Duration::from_millis(500));
-    }
-
-    #[test]
-    fn test_api_base_with_trailing_slash_works() {
-        // Pin behavior: ?token=abc with cfg api_base ending in `/`
-        // either succeeds (most servers tolerate doubled slash) or normalizes.
-    }
-
-    #[test]
-    fn test_concurrency_clamped_to_item_count_when_smaller() {
-        // For items.len()=1 and concurrency=64, only 1 worker thread
-        // should be spawned. Verify via a counter in a custom worker-spawn hook,
-        // or by enumerating thread names.
-    }
-}
-```
-
-### Notes
-
-- Production fix: bail in `LocalProvider::new` if `Url::parse(&api_base).scheme() not in {"http", "https"}`. Clamp workers via `let workers = self.concurrency.min(items.len()).max(1);` at line 166.
-
----
-
-## P2.33 — RB: Slot pointer files unbounded `read_to_string`
-
-**Finding:** P2.33 in audit-triage.md
-**Files:** `src/slot/mod.rs:207, 323`
-
-### Current code (representative — :207)
-
-```rust
-let raw = match fs::read_to_string(&path) {
-    Ok(s) => s,
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-    Err(e) => { /* warn, return None */ }
-};
-```
-
-### Replacement
-
-```rust
-use std::io::Read;
-
-let raw = match std::fs::File::open(&path) {
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-    Err(e) => { tracing::warn!(path = %path.display(), error = %e, "open failed"); return None; }
-    Ok(f) => {
-        let mut buf = String::new();
-        if let Err(e) = f.take(4096).read_to_string(&mut buf) {
-            tracing::warn!(path = %path.display(), error = %e, "bounded read failed; treating as missing");
-            return None;
-        }
-        buf
-    }
-};
-```
-
-Apply at both sites (`:207` `read_slot_model` and `:323` `read_active_slot`).
-
-### Notes
-
-- 4 KiB is enough for `slot.toml` (and 100× headroom on the active_slot pointer).
-- An oversize pointer file becomes "treated as missing" with a `tracing::warn!`, instead of OOMing every CLI invocation.
-
----
-
-## P2.34 — RB: `migrate_legacy` rollback leaves undetectable half-state
-
-**Finding:** P2.34 in audit-triage.md
-**Files:** `src/slot/mod.rs:511-593`, `:628-638` (`move_file`)
-
-### Replacement
-
-Write a sentinel file before the migration starts; remove on full success only. On startup, refuse if sentinel exists:
-
-```rust
-let sentinel = project_cqs_dir.join("migration.lock");
-if sentinel.exists() {
-    return Err(SlotError::Migration(format!(
-        "previous migration failed (see {}). Manually recover then `rm {}`",
-        sentinel.display(),
-        sentinel.display()
-    )));
-}
-std::fs::write(&sentinel, format!("started_at={}\n", chrono::Utc::now().to_rfc3339()))?;
-// ... do the migration (existing logic)
-// On full success only:
-std::fs::remove_file(&sentinel)?;
-```
-
-On the rollback path, leave the sentinel in place but write the failure reason to it:
-
-```rust
-// Inside rollback failure arm:
-let _ = std::fs::write(&sentinel, format!(
-    "failed_at={}\nrollback_failure={}\nrolled_back_files={:?}\n",
-    chrono::Utc::now().to_rfc3339(), e, rolled_back
-));
-```
-
-### Notes
-
-- Pairs with P2.31 test skeleton (rollback failure leaves a loud signal).
-- Half-state ambiguity is the actual robustness gap — the sentinel file disambiguates.
-
----
-
-## P2.35 — RB: `auth_attempts` / `auth_failures` mutex unwrap cascades worker poison
-
-**Finding:** P2.35 in audit-triage.md
-**Files:** `src/llm/local.rs:393-396`
-
-### Current code
-
-```rust
-if is_first_attempt && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN) {
-    *auth_attempts.lock().unwrap() += 1;
-    *auth_failures.lock().unwrap() += 1;
-} else if is_first_attempt {
-    *auth_attempts.lock().unwrap() += 1;
-}
-```
-
-### Replacement
-
-```rust
-if is_first_attempt && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN) {
-    *auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;
-    *auth_failures.lock().unwrap_or_else(|p| p.into_inner()) += 1;
-} else if is_first_attempt {
-    *auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;
-}
-```
-
-### Notes
-
-- Counters are advisory — a poisoned mutex shouldn't escalate to a panic cascade across 64 worker threads.
-- Same pattern used elsewhere in P1.9 (LocalProvider mutex poison fix).
-
----
-
-## P2.36 — RB: redirect policy disagrees between production (none) and doctor (limited(2))
-
-**Finding:** P2.36 in audit-triage.md
-**Files:** `src/llm/local.rs:99` (`Policy::none()`) vs `src/cli/commands/infra/doctor.rs:578` (`Policy::limited(2)`)
-
-### Current code
-
-```rust
-// src/llm/local.rs:97-100
-let http = Client::builder()
-    .timeout(timeout)
-    .redirect(reqwest::redirect::Policy::none())
-    .build()?;
-
-// src/cli/commands/infra/doctor.rs:576-580
-let client = match reqwest::blocking::Client::builder()
-    .timeout(std::time::Duration::from_secs(3))
-    .redirect(reqwest::redirect::Policy::limited(2))
-    .build()
-```
-
-### Replacement
-
-Align both to `Policy::limited(2)` (a same-origin HTTP→HTTPS redirect on bind-localhost is benign):
-
-```rust
-// src/llm/local.rs:99
-.redirect(reqwest::redirect::Policy::limited(2))
-```
-
-### Notes
-
-- Alternative: keep `Policy::none()` in production but log a once-per-launch warning in doctor when a redirect was followed during the probe. Less surgical but preserves strict prod stance.
-
----
-
-## P2.37 — SHL: CAGRA `itopk_size < k` on small indexes
-
-**Finding:** P2.37 in audit-triage.md
-**Files:** `src/cagra.rs:359` (computation), `:166-170` (`cagra_itopk_max_default`)
-
-### Current code
-
-```rust
-let itopk_size = (k * 2).clamp(itopk_min, itopk_max);
-```
-
-### Replacement
-
-Enforce the cuVS hard requirement `itopk_size >= k`, and degrade if the cap can't honor it:
-
-```rust
-// CONSTRAINT: cuVS CAGRA requires itopk_size >= k. Document at top of fn.
-let itopk_size = (k * 2).clamp(itopk_min, itopk_max).max(k);
-if itopk_size > itopk_max {
-    tracing::warn!(
-        k,
-        itopk_max,
-        n_vectors = self.len(),
-        "CAGRA: k exceeds itopk_max for this corpus size; falling back to HNSW"
-    );
-    return Err(CagraError::CapacityExceeded { k, itopk_max });
-}
-```
-
-Add `CagraError::CapacityExceeded { k: usize, itopk_max: usize }` variant.
-
-### Notes
-
-- The `MEMORY.md` workaround "keep eval at limit=20" only protects the eval path; production `cqs search --limit 500 --rerank` over a small subset trips this silently.
-- Caller in `src/store/search.rs` must catch `CapacityExceeded` and fall back to HNSW cleanly.
-
----
-
-## P2.38 — SHL: `nl::generate_nl` `char_budget` defaults to 512 even with 2048 max_seq_len
-
-**Finding:** P2.38 in audit-triage.md
-**Files:** `src/nl/mod.rs:222-229`
-
-### Current code
-
-```rust
-static MAX_SEQ: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-let max_seq = *MAX_SEQ.get_or_init(|| {
-    std::env::var("CQS_MAX_SEQ_LENGTH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(512)
-});
-```
-
-### Replacement
-
-Plumb the active model's `max_seq_length` through. Pass it as an argument to `generate_nl_with_template`:
-
-```rust
-pub(crate) fn generate_nl_with_template(
-    chunk: &Chunk,
-    template: NlTemplate,
-    model_max_seq_len: usize,  // NEW: from caller's ModelConfig
-) -> String {
+//   src/cli/enrichment.rs:23 (signature) and 73-74 (call site)
+pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -> Result<usize> {
     // ...
-    // Env var becomes a fallback override only:
-    let max_seq = std::env::var("CQS_MAX_SEQ_LENGTH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(model_max_seq_len);
-    let char_budget = max_seq.saturating_mul(4).saturating_sub(200).max(400);
-    // ...
-}
+    // SHL-27: Use shared embed_batch_size() so CQS_EMBED_BATCH_SIZE env var is respected
+    let enrich_embed_batch: usize = super::pipeline::embed_batch_size();
 ```
 
-Caller in `pipeline/parsing.rs` already has `Embedder` in scope; pass `embedder.model_config().max_seq_length`.
-
-### Notes
-
-- BGE/E5/v9-200k all use 512; **nomic-coderank uses 2048** per `embedder/models.rs:366` — env var as source of truth caps it at 25% of capacity.
-- The OnceLock memoization no longer makes sense once the value depends on the caller; drop it.
-
----
-
-## P2.39 — SHL: `MAX_BATCH_SIZE = 10_000` LLM module
-
-**Finding:** P2.39 in audit-triage.md
-**Files:** `src/llm/mod.rs:192`; consumers at `src/llm/summary.rs:58,92`, `src/llm/hyde.rs:39-41`, `src/llm/doc_comments.rs:271`
-
-### Current code
-
 ```rust
-const MAX_BATCH_SIZE: usize = 10_000;
+//   src/cli/pipeline/mod.rs:15
+pub(crate) use types::embed_batch_size;
 ```
 
 ### Replacement
 
-Move to `src/limits.rs` with an env resolver:
-
 ```rust
-// src/limits.rs
-pub fn llm_max_batch_size() -> usize {
-    parse_env_usize_clamped("CQS_LLM_MAX_BATCH_SIZE", 10_000, 1, 100_000)
-}
+//   src/cli/pipeline/types.rs:178-179 (drop the dead-code suppression)
+pub(crate) fn embed_batch_size_for(model: &cqs::embedder::ModelConfig) -> usize {
 ```
 
-Replace the `const MAX_BATCH_SIZE` import with a function call at every consumer site. At CLI exit, when truncation triggered, surface a hint (current `tracing::info!` is invisible without `RUST_LOG=info`):
+Also mark the legacy entry point with a clear test-only marker:
 
 ```rust
-if remaining_chunks > 0 {
-    eprintln!("note: {} chunks remain unprocessed (cap CQS_LLM_MAX_BATCH_SIZE={}). Rerun to continue.",
-        remaining_chunks, llm_max_batch_size());
-}
-```
-
-### Notes
-
-- 100,000 hard cap honors Anthropic's actual Batches API limit.
-- HyDE and doc_comments share the same const — one env var covers both, but consider `CQS_LLM_HYDE_MAX_BATCH_SIZE` if cost characteristics diverge enough.
-
----
-
-## P2.40 — SHL: serve `ABS_MAX_GRAPH_NODES`/`ABS_MAX_CLUSTER_NODES` 50k hardcoded
-
-**Finding:** P2.40 in audit-triage.md
-**Files:** `src/serve/data.rs:17,24,505,542,571`
-
-### Current code
-
-```rust
-pub(crate) const ABS_MAX_GRAPH_NODES: usize = 50_000;
-pub(crate) const ABS_MAX_GRAPH_EDGES: usize = 500_000;
-pub(crate) const ABS_MAX_CLUSTER_NODES: usize = 50_000;
-// ... in build_chunk_detail:
-// :505 LIMIT 50 callers
-// :542 LIMIT 50 callees
-// :571 LIMIT 20 tests
-```
-
-### Replacement
-
-Move to `src/limits.rs` with env overrides + a hard ceiling:
-
-```rust
-pub fn serve_max_graph_nodes() -> usize {
-    parse_env_usize_clamped("CQS_SERVE_MAX_GRAPH_NODES", 50_000, 1, 1_000_000)
-}
-pub fn serve_max_cluster_nodes() -> usize { /* analog */ }
-pub fn serve_chunk_detail_callers_limit() -> usize {
-    parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_CALLERS", 50, 1, 1_000)
-}
-// ... callees, tests
-```
-
-In `build_chunk_detail`, bind the limits as `?` parameters and emit `truncated: bool` when the cap is hit. Accept `?max_callers / ?max_callees / ?max_tests` query params.
-
-### Notes
-
-- Cytoscape's render ceiling is ~5-10k nodes anyway, so the *default* 50k is too high for the UI; the *cap* 1M is for power-user queries.
-- For graph/cluster, derive the default from `chunk_count` so small projects ship the whole graph.
-
----
-
-## P2.41 — SHL: `embed_batch_size` default 64 doesn't scale with model dim/seq
-
-**Finding:** P2.41 in audit-triage.md
-**Files:** `src/cli/pipeline/types.rs:143-160`, `src/embedder/mod.rs:685-689`
-
-### Current code
-
-```rust
+//   src/cli/pipeline/types.rs:139-164 (replace existing comment + body)
+/// Legacy fixed-batch helper kept ONLY for callers without a `ModelConfig`
+/// in scope (currently: nothing in production, only the in-tree tests
+/// `pipeline::tests::test_embed_batch_size` and the parser-stage drain
+/// regression test). Production must use [`embed_batch_size_for`] which
+/// scales batch with the active model's dim & seq — at batch=64 the
+/// nomic-coderank preset (768 dim, 2048 seq) OOMs an 8 GB GPU.
+///
+/// Returns 64 with `CQS_EMBED_BATCH_SIZE` env override.
+#[cfg(test)]
 pub(crate) fn embed_batch_size() -> usize {
     match std::env::var("CQS_EMBED_BATCH_SIZE") {
         Ok(val) => match val.parse::<usize>() {
-            Ok(size) if size > 0 => size,
-            _ => 64,
+            Ok(size) if size > 0 => {
+                tracing::info!(batch_size = size, "CQS_EMBED_BATCH_SIZE override");
+                size
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_EMBED_BATCH_SIZE, using default 64"
+                );
+                64
+            }
         },
         Err(_) => 64,
     }
 }
 ```
 
-### Replacement
+(The `#[cfg(test)]` gate is the structural guarantee — production grep for `embed_batch_size()` outside `#[cfg(test)]` blocks now fails to compile.)
 
-Make the default scale with model dim and seq_len:
+Then update `pipeline/mod.rs:15`:
 
 ```rust
-pub(crate) fn embed_batch_size_for(model: &cqs::embedder::ModelConfig) -> usize {
-    if let Ok(val) = std::env::var("CQS_EMBED_BATCH_SIZE") {
-        if let Ok(size) = val.parse::<usize>() { if size > 0 { return size; } }
-    }
-    // Target ~130 MB per forward-pass tensor:
-    //   batch * seq * dim * 4 bytes
-    // With BGE-large (1024 dim, 512 seq): 64 * 512 * 1024 * 4 ≈ 130 MB
-    // Scale inversely as dim or seq grow.
-    let baseline = 64.0_f64;
-    let dim_factor = 1024.0 / model.dim as f64;
-    let seq_factor = (512.0 / model.max_seq_length as f64).max(0.25);
-    let scaled = (baseline * dim_factor * seq_factor).max(1.0) as usize;
-    // Round to nearest power of 2 for ORT efficiency
-    scaled.next_power_of_two().min(256).max(2)
-}
+pub(crate) use types::embed_batch_size_for;
+#[cfg(test)]
+pub(crate) use types::embed_batch_size;
 ```
 
-Replace `embed_batch_size()` callers with `embed_batch_size_for(&self.model_config)`.
+Update `parser_stage` to take a `ModelConfig` (already in scope at the only caller site, `pipeline/mod.rs:80-94`). Update its signature in `parsing.rs:18-25`:
 
-### Notes
+```rust
+//   src/cli/pipeline/parsing.rs:14 — adjust import
+use super::types::{embed_batch_size_for, file_batch_size, ParsedBatch, RelationshipData};
 
-- BGE-large + 512 seq + 64 batch = OK on RTX 4060 8GB. Nomic-coderank + 2048 seq + 64 batch OOMs.
-- Optional follow-on: query GPU VRAM via `nvml-wrapper` (transitive via cuVS) and target 25% of free VRAM.
+//   src/cli/pipeline/parsing.rs:18-25 — extend the context struct
+pub(super) struct ParserStageContext {
+    pub root: PathBuf,
+    pub force: bool,
+    pub parser: Arc<CqParser>,
+    pub store: Arc<Store>,
+    pub parsed_count: Arc<AtomicUsize>,
+    pub parse_errors: Arc<AtomicUsize>,
+    pub model_config: cqs::embedder::ModelConfig,
+}
+
+//   src/cli/pipeline/parsing.rs:28-42 — read from ctx instead of hardcoded
+pub(super) fn parser_stage(
+    files: Vec<PathBuf>,
+    ctx: ParserStageContext,
+    parse_tx: Sender<ParsedBatch>,
+) -> Result<()> {
+    let _span = tracing::info_span!("parser_stage").entered();
+    let ParserStageContext {
+        root,
+        force,
+        parser,
+        store,
+        parsed_count,
+        parse_errors,
+        model_config,
+    } = ctx;
+    let batch_size = embed_batch_size_for(&model_config);
+    let file_batch_size = file_batch_size();
+```
+
+In `pipeline/mod.rs:80-94` (the parser_handle spawn), thread `model_config`:
+
+```rust
+    let parser_handle = {
+        let parser = Arc::clone(&parser);
+        let store = Arc::clone(&store);
+        let parsed_count = Arc::clone(&parsed_count);
+        let parse_errors = Arc::clone(&parse_errors);
+        let root = root.to_path_buf();
+        let model_config = model_config.clone();
+        thread::spawn(move || {
+            parser_stage(
+                files,
+                ParserStageContext {
+                    root,
+                    force,
+                    parser,
+                    store,
+                    parsed_count,
+                    parse_errors,
+                    model_config,
+                },
+                parse_tx,
+            )
+        })
+    };
+```
+
+For `enrichment.rs`, plumb the `ModelConfig` through. Update the signature at line 23:
+
+```rust
+//   src/cli/enrichment.rs:23
+pub(crate) fn enrichment_pass(
+    store: &Store,
+    embedder: &Embedder,
+    model_config: &cqs::embedder::ModelConfig,
+    quiet: bool,
+) -> Result<usize> {
+    let _span = tracing::info_span!("enrichment_pass").entered();
+```
+
+And at line 73-74 in `enrichment.rs`:
+
+```rust
+    // SHL-V1.30-1: model-aware batch size so nomic-coderank (768 dim,
+    // 2048 seq) doesn't OOM at batch=64 on an 8 GB GPU.
+    let enrich_embed_batch: usize = super::pipeline::embed_batch_size_for(model_config);
+```
+
+Update the only production caller at `src/cli/commands/index/build.rs:520-522`:
+
+```rust
+        let model_config = cli.try_model_config()?.clone();
+        let embedder = Embedder::new(model_config.clone())
+            .context("Failed to create embedder for enrichment pass")?;
+        match enrichment_pass(&store, &embedder, &model_config, cli.quiet) {
+```
+
+Update test fixtures in `src/cli/pipeline/mod.rs` and `src/cli/pipeline/parsing.rs` that construct `ParserStageContext` directly to pass `model_config: cqs::embedder::ModelConfig::resolve(None, None)`. (`resolve` returns `Self` directly per `src/embedder/models.rs:427`, *not* a `Result`/`Option` — a stray `.unwrap()` here will fail to compile.) The pre-existing test `test_embed_batch_size` already serializes via `TEST_ENV_MUTEX`, so it stays valid using the test-only `embed_batch_size()`.
+
+### Verification
+
+- `cargo build --features cuda-index` (the `#[cfg(test)]` gate forces a compile-error on any production caller that still uses bare `embed_batch_size()`)
+- `cargo build --features cuda-index 2>&1 | grep -i warning` — confirm no dead-code warnings on `embed_batch_size_for`
+- `cargo test --features cuda-index --lib pipeline::tests::test_embed_batch_size`
+- `cargo test --features cuda-index --lib pipeline::parsing::tests`
+- Manual: `RUST_LOG=cqs::cli::pipeline=debug cqs index --model nomic-coderank` should log `embed_batch_size_for: model-derived default rounded=16` (768 dim, 2048 seq) instead of the legacy 64.
+- `grep -rn "embed_batch_size()" /mnt/c/Projects/cqs/src/cli/ --include='*.rs' | grep -v cfg(test)` — should return zero non-test matches.
 
 ---
 
-## P2.42 — SHL: `CagraIndex::gpu_available` no VRAM ceiling — OOMs on 8GB GPUs
+## P1.10: SEC-V1.30.1-8 — daemon env snapshot logs `CQS_LLM_API_KEY` to journal
 
-**Finding:** P2.42 in audit-triage.md
-**Files:** `src/cagra.rs:262-264`
+**Files:** `src/cli/watch/mod.rs:525-532`
+**Effort:** ~10 minutes
+**Why:** On daemon startup, the code iterates every `CQS_*` env var and logs the values via `tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot")`. The list is not redacted. `CQS_LLM_API_KEY` (used by `src/llm/local.rs:110` per the audit) is one of the env knobs that flows through this snapshot if set. With OB-V1.30-1 having raised the default subscriber to surface info-level events to systemd-journald, every daemon start now writes the API key into a 30-day journal artifact. Same class as P1.13 (auth token printed to stdout).
 
 ### Current code
 
 ```rust
-pub fn gpu_available() -> bool {
-    cuvs::Resources::new().is_ok()
+//   src/cli/watch/mod.rs:525-532
+        // OB-NEW-2: Self-maintaining env snapshot — iterate every CQS_*
+        // variable instead of a hardcoded whitelist that drifts as new
+        // knobs are added. Env vars set on client subprocesses do NOT
+        // affect daemon-served queries; only the daemon's own env applies.
+        let cqs_vars: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("CQS_"))
+            .collect();
+        tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot");
+```
+
+### Replacement
+
+```rust
+        // OB-NEW-2 / SEC-V1.30.1-8: Self-maintaining env snapshot —
+        // iterate every CQS_* variable instead of a hardcoded whitelist
+        // that drifts as new knobs are added. Env vars set on client
+        // subprocesses do NOT affect daemon-served queries; only the
+        // daemon's own env applies.
+        //
+        // Redact secrets — any var whose name suffix matches a known
+        // secret marker is logged with `<redacted len=N>` instead of
+        // the value. With OB-V1.30-1 surfacing info-level to journald,
+        // an unredacted log lands in a 30-day journal artifact.
+        const SECRET_SUFFIXES: &[&str] =
+            &["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"];
+        let cqs_vars: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("CQS_"))
+            .map(|(k, v)| {
+                let is_secret = SECRET_SUFFIXES
+                    .iter()
+                    .any(|suffix| k.ends_with(suffix));
+                let value = if is_secret {
+                    format!("<redacted len={}>", v.len())
+                } else {
+                    v
+                };
+                (k, value)
+            })
+            .collect();
+        tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot");
+```
+
+### Verification
+
+- `cargo build --features cuda-index`
+- Add a regression test (in `src/cli/watch/tests.rs` or a new `#[cfg(test)] mod` in `mod.rs`):
+  ```rust
+  #[test]
+  fn env_snapshot_redacts_api_key() {
+      // CQS_LLM_API_KEY mustn't land in journald.
+      // Build the same redaction logic and assert against a fixture.
+      const SECRET_SUFFIXES: &[&str] =
+          &["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"];
+      let pairs = vec![
+          ("CQS_LLM_API_KEY".to_string(), "sk-real-secret".to_string()),
+          ("CQS_TELEMETRY".to_string(), "1".to_string()),
+      ];
+      let redacted: Vec<(String, String)> = pairs
+          .into_iter()
+          .map(|(k, v)| {
+              let is_secret = SECRET_SUFFIXES
+                  .iter()
+                  .any(|suffix| k.ends_with(suffix));
+              let value = if is_secret {
+                  format!("<redacted len={}>", v.len())
+              } else {
+                  v
+              };
+              (k, value)
+          })
+          .collect();
+      assert_eq!(
+          redacted[0].1, "<redacted len=14>",
+          "CQS_LLM_API_KEY value must not appear in plaintext"
+      );
+      assert_eq!(redacted[1].1, "1", "CQS_TELEMETRY is non-secret, kept verbatim");
+  }
+  ```
+- `cargo test --features cuda-index --lib env_snapshot_redacts_api_key`
+- Manual: `CQS_LLM_API_KEY=sk-test-secret CQS_TELEMETRY=1 cqs watch --serve` then `journalctl --user-unit cqs-watch | grep cqs_vars` should show `<redacted len=14>`, never `sk-test-secret`.
+
+---
+
+## P1.11: DS-V1.30.1-D2 — `run_daemon_reconcile` bypasses `max_pending_files()` cap
+
+**Files:** `src/cli/watch/reconcile.rs:63-148`, callers at `src/cli/watch/mod.rs:1055-1061,1268-1274`
+**Effort:** ~20 minutes
+**Why:** The inotify ingest path at `events.rs:108` enforces `pending_files.len() < max_pending_files()` before inserting and increments `dropped_this_cycle` when the queue is full. `run_daemon_reconcile` blindly inserts every divergent file with no cap check. On a `git checkout` of a sibling branch with 50k file changes, reconcile pushes the queue size to 50k. Two consequences: (1) the queue overshoots `max_pending_files()` (default 10000), making subsequent inotify drops look like sustained pressure when they're actually held above the cap by reconcile; (2) the next `process_file_changes` parses + embeds 50k synchronously while holding the index lock. The whole point of `max_pending_files()` is to bound per-cycle work; reconcile defeats it.
+
+### Current code
+
+```rust
+//   src/cli/watch/reconcile.rs:63-148
+pub(super) fn run_daemon_reconcile(
+    store: &Store,
+    root: &Path,
+    parser: &CqParser,
+    no_ignore: bool,
+    pending_files: &mut HashSet<PathBuf>,
+) -> usize {
+    let _span = tracing::info_span!("daemon_reconcile").entered();
+
+    // Walk disk → set of relative paths visible to indexing.
+    let exts = parser.supported_extensions();
+    let disk_files = match cqs::enumerate_files(root, &exts, no_ignore) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "Reconcile: enumerate_files failed");
+            return 0;
+        }
+    };
+
+    // One SELECT pulls every indexed source-file origin + its stored
+    // mtime. Map keyed by origin string for cheap lookups in the loop.
+    let indexed = match store.indexed_file_origins() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Reconcile: indexed_file_origins failed");
+            return 0;
+        }
+    };
+
+    let mut added = 0usize;
+    let mut modified = 0usize;
+    let mut queued = 0usize;
+    for rel in disk_files {
+        // Stored origins are typically relative; normalize to forward
+        // slashes for cross-platform matching parity with the rest of the
+        // store layer.
+        let origin = rel.to_string_lossy().replace('\\', "/");
+        match indexed.get(&origin) {
+            None => {
+                // ADDED: no chunks for this file in the index. Queue.
+                if pending_files.insert(rel.clone()) {
+                    added += 1;
+                    queued += 1;
+                }
+            }
+            Some(stored_mtime) => {
+                // MODIFIED: same path indexed, but mtime moved forward.
+                // `None` stored mtime → treat as stale (legacy schema).
+                let lookup_path: PathBuf = if rel.is_absolute() {
+                    rel.clone()
+                } else {
+                    root.join(&rel)
+                };
+                let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(cqs::duration_to_mtime_millis),
+                    Err(_) => None,
+                };
+                let needs_reindex = match (stored_mtime, disk_mtime) {
+                    (Some(stored), Some(disk)) => disk > *stored,
+                    (None, _) => true,        // legacy/null stored mtime
+                    (Some(_), None) => false, // can't read disk mtime → leave to GC
+                };
+                if needs_reindex && pending_files.insert(rel.clone()) {
+                    modified += 1;
+                    queued += 1;
+                }
+            }
+        }
+    }
+
+    if queued > 0 {
+        tracing::info!(
+            queued,
+            added,
+            modified,
+            "Reconcile: queued divergent files for reindex"
+        );
+    } else {
+        tracing::debug!("Reconcile: no divergence detected");
+    }
+
+    queued
 }
 ```
 
 ### Replacement
 
-Probe GPU VRAM and gate on estimated build memory:
-
 ```rust
-pub fn gpu_available_for(n_vectors: usize, dim: usize) -> bool {
-    if cuvs::Resources::new().is_err() {
-        return false;
-    }
-    // Estimate build memory: dataset bytes + graph bytes + ~30% slack
-    let dataset_bytes = (n_vectors * dim * 4) as u64;
-    let graph_bytes = (n_vectors * 64 * 4) as u64; // graph_degree default 64
-    let estimated = (dataset_bytes + graph_bytes) * 130 / 100;
+pub(super) fn run_daemon_reconcile(
+    store: &Store,
+    root: &Path,
+    parser: &CqParser,
+    no_ignore: bool,
+    pending_files: &mut HashSet<PathBuf>,
+    max_pending: usize,
+) -> usize {
+    let _span = tracing::info_span!("daemon_reconcile", max_pending).entered();
 
-    let cap = std::env::var("CQS_CAGRA_MAX_GPU_BYTES")
-        .ok().and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            // Best-effort: query free VRAM. If we cannot, fall back to a
-            // conservative 2 GiB cap so 8 GiB GPUs don't OOM.
-            cuvs_free_vram_bytes().unwrap_or(2 * 1024 * 1024 * 1024)
-        });
-    if estimated > cap * 80 / 100 {
-        tracing::warn!(estimated, cap, "GPU has insufficient free VRAM for CAGRA build — falling back to HNSW");
-        return false;
-    }
-    true
-}
-
-// Back-compat shim:
-pub fn gpu_available() -> bool { Self::gpu_available_for(0, 0) }
-```
-
-Caller in `cli/store.rs::build_vector_index_with_config` switches to `gpu_available_for(chunk_count, dim)`.
-
-### Notes
-
-- `cuvs_free_vram_bytes()` may need to call CUDA's `cudaMemGetInfo` directly via FFI if `cuvs` doesn't expose it. Investigate before signing off.
-- A6000 48GB hosts are unaffected; RTX 4000 8GB benefits.
-
----
-
-## P2.43 — `semantic_diff` sort tie-breaker (already fixed — pin with test)
-
-**Finding:** P2.43 in audit-triage.md
-**Files:** `src/diff.rs:202-218` — fix already on disk (cascade on `(file, name, chunk_type)`).
-
-### Regression-pin test
-
-```rust
-#[cfg(test)]
-mod determinism_tests {
-    use super::*;
-
-    #[test]
-    fn semantic_diff_sort_is_deterministic_under_shuffled_input() {
-        // Build a DiffResult with 5 modified entries, all similarity=0.73
-        // and varying (file, name) tuples.
-        let entries = vec![
-            DiffEntry { file: "z.rs".into(), name: "a".into(), similarity: Some(0.73), chunk_type: ChunkType::Function, /* ... */ },
-            DiffEntry { file: "a.rs".into(), name: "z".into(), similarity: Some(0.73), chunk_type: ChunkType::Function, /* ... */ },
-            // ... 3 more
-        ];
-        let mut runs = Vec::new();
-        for _ in 0..50 {
-            let mut shuffled = entries.clone();
-            // Use a different random seed each iteration
-            shuffled.shuffle(&mut rand::thread_rng());
-            // Re-run the production sort
-            shuffled.sort_by(/* the cascade from src/diff.rs:208-218 */);
-            runs.push(shuffled);
+    // Walk disk → set of relative paths visible to indexing.
+    let exts = parser.supported_extensions();
+    let disk_files = match cqs::enumerate_files(root, &exts, no_ignore) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "Reconcile: enumerate_files failed");
+            return 0;
         }
-        // Assert all 50 produced the same order
-        for w in runs.windows(2) {
-            assert_eq!(w[0], w[1], "sort must be deterministic across input shuffles");
+    };
+
+    // One SELECT pulls every indexed source-file origin + its stored
+    // mtime. Map keyed by origin string for cheap lookups in the loop.
+    let indexed = match store.indexed_file_origins() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Reconcile: indexed_file_origins failed");
+            return 0;
         }
-    }
-}
-```
+    };
 
-### Notes
-
-- Production code at `src/diff.rs:208-218` already cascades — this test pins it so a future regression is loud.
-
----
-
-## P2.44 — `is_structural_query` end-of-query keyword (already fixed — pin with test)
-
-**Finding:** P2.44 in audit-triage.md
-**Files:** `src/search/router.rs:806-817` — fix already on disk (uses `words.iter().any(|w| w == kw)` instead of `format!(" {} ", kw)`).
-
-### Regression-pin test
-
-```rust
-#[cfg(test)]
-mod structural_query_tests {
-    use super::*;
-
-    #[test]
-    fn structural_keywords_at_end_of_query_route_correctly() {
-        // Each of these ends with a structural keyword and must be is_structural=true
-        for q in &["find all trait", "show me all trait", "find every impl", "list all enum", "all class", "find enum"] {
-            assert!(is_structural_query(q), "query `{}` must classify as structural", q);
+    let mut added = 0usize;
+    let mut modified = 0usize;
+    let mut queued = 0usize;
+    let mut skipped_at_cap = 0usize;
+    for rel in disk_files {
+        // DS-V1.30.1-D2: respect the same cap as the inotify path so a
+        // bulk branch switch (50k files) doesn't drown the next
+        // `process_file_changes` cycle. Files we skip here are picked
+        // up by the next reconcile pass — the walk is idempotent.
+        if pending_files.len() >= max_pending {
+            skipped_at_cap += 1;
+            continue;
+        }
+        // Stored origins are typically relative; normalize to forward
+        // slashes for cross-platform matching parity with the rest of the
+        // store layer.
+        let origin = rel.to_string_lossy().replace('\\', "/");
+        match indexed.get(&origin) {
+            None => {
+                // ADDED: no chunks for this file in the index. Queue.
+                if pending_files.insert(rel.clone()) {
+                    added += 1;
+                    queued += 1;
+                }
+            }
+            Some(stored_mtime) => {
+                // MODIFIED: same path indexed, but mtime moved forward.
+                // `None` stored mtime → treat as stale (legacy schema).
+                let lookup_path: PathBuf = if rel.is_absolute() {
+                    rel.clone()
+                } else {
+                    root.join(&rel)
+                };
+                let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(cqs::duration_to_mtime_millis),
+                    Err(_) => None,
+                };
+                let needs_reindex = match (stored_mtime, disk_mtime) {
+                    (Some(stored), Some(disk)) => disk > *stored,
+                    (None, _) => true,        // legacy/null stored mtime
+                    (Some(_), None) => false, // can't read disk mtime → leave to GC
+                };
+                if needs_reindex && pending_files.insert(rel.clone()) {
+                    modified += 1;
+                    queued += 1;
+                }
+            }
         }
     }
 
+    if skipped_at_cap > 0 {
+        tracing::warn!(
+            queued,
+            skipped_at_cap,
+            cap = max_pending,
+            "Reconcile: hit pending-files cap; skipped files will be picked up on next reconcile pass"
+        );
+    } else if queued > 0 {
+        tracing::info!(
+            queued,
+            added,
+            modified,
+            "Reconcile: queued divergent files for reindex"
+        );
+    } else {
+        tracing::debug!("Reconcile: no divergence detected");
+    }
+
+    queued
+}
+```
+
+Update the two production callers in `src/cli/watch/mod.rs`:
+
+```rust
+//   src/cli/watch/mod.rs:1055-1061 (on-demand reconcile)
+                if on_demand_reconcile_requested && reconcile_enabled_flag {
+                    let queued = run_daemon_reconcile(
+                        &store,
+                        &root,
+                        &parser,
+                        no_ignore,
+                        &mut state.pending_files,
+                        max_pending_files(),
+                    );
+```
+
+```rust
+//   src/cli/watch/mod.rs:1268-1274 (periodic reconcile)
+                        let queued = run_daemon_reconcile(
+                            &store,
+                            &root,
+                            &parser,
+                            no_ignore,
+                            &mut state.pending_files,
+                            max_pending_files(),
+                        );
+```
+
+Update the 5 test call sites in `src/cli/watch/reconcile.rs:190,204,225,362,450` to pass a sentinel cap (e.g. `usize::MAX` for unbounded test behaviour, or a small number for cap-respect tests). Existing tests should mostly use `usize::MAX` so behaviour is unchanged; add a new test that exercises the cap:
+
+```rust
     #[test]
-    fn structural_keyword_as_substring_does_not_falsely_match() {
-        // "training" contains "trait" but NOT as a word — must NOT classify structural
-        assert!(!is_structural_query("training pipeline"));
+    fn run_daemon_reconcile_respects_max_pending_cap() {
+        // DS-V1.30.1-D2: cap shared with the inotify path so a bulk
+        // git-checkout doesn't drown the next process_file_changes
+        // cycle.
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        // Use the existing `open_store` helper at reconcile.rs:170 — it
+        // takes the `.cqs/` dir, not the project root. There is no
+        // `setup_store_for_test`; pinning that name was an artifact of
+        // a draft.
+        let store = open_store(&cqs_dir);
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        // Pre-fill 5 entries so `pending.len() >= cap=5` immediately.
+        for i in 0..5 {
+            pending.insert(PathBuf::from(format!("preexisting_{i}.rs")));
+        }
+        // Create 20 files on disk.
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        for i in 0..20 {
+            fs::write(src_dir.join(format!("file_{i}.rs")), "fn x(){}").unwrap();
+        }
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            5, // cap is already met
+        );
+        assert_eq!(queued, 0, "cap already met → no new entries queued");
+        assert_eq!(pending.len(), 5, "pending must not exceed cap");
+    }
+```
+
+### Verification
+
+- `cargo build --features cuda-index`
+- `cargo test --features cuda-index --lib watch::reconcile`
+- `cargo test --features cuda-index --lib watch::reconcile::tests::run_daemon_reconcile_respects_max_pending_cap`
+- Manual: with `CQS_WATCH_MAX_PENDING=10`, `git checkout` of a 47-file diff should leave `pending_files.len() == 10`, with the journal showing `Reconcile: hit pending-files cap; skipped files will be picked up on next reconcile pass cap=10 skipped_at_cap=37`.
+
+---
+
+## P1.12: AC-V1.30.1-1 — reconcile `disk > stored` strict predicate misses non-monotonic checkouts
+
+**Files:** `src/cli/watch/reconcile.rs:108-127`
+**Effort:** ~25 minutes
+**Why:** The reconcile predicate is `(stored, disk) => disk > *stored`. Reconcile is the Layer 2 safety net for bulk git operations the inotify path misses. But `git checkout` of a sibling branch restores file mtimes to **commit time** — easily *older* than the indexed `source_mtime`. Concrete repro: index `foo.rs` at HEAD (mtime=now), then `git checkout HEAD~5 -- foo.rs` where `HEAD~5` is from last week. Disk content is now different, but `disk_mtime <= stored_mtime`, so reconcile classifies the file as "fine" and skips it. The inotify path also uses `mtime <= last` (events.rs:100) — silently stale until either `cqs index --force` or the file is touched again. The bulk-delta acceptance test (#1196) only exercises forward-mtime cases.
+
+### Current code
+
+```rust
+//   src/cli/watch/reconcile.rs:108-132
+            Some(stored_mtime) => {
+                // MODIFIED: same path indexed, but mtime moved forward.
+                // `None` stored mtime → treat as stale (legacy schema).
+                let lookup_path: PathBuf = if rel.is_absolute() {
+                    rel.clone()
+                } else {
+                    root.join(&rel)
+                };
+                let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(cqs::duration_to_mtime_millis),
+                    Err(_) => None,
+                };
+                let needs_reindex = match (stored_mtime, disk_mtime) {
+                    (Some(stored), Some(disk)) => disk > *stored,
+                    (None, _) => true,        // legacy/null stored mtime
+                    (Some(_), None) => false, // can't read disk mtime → leave to GC
+                };
+                if needs_reindex && pending_files.insert(rel.clone()) {
+                    modified += 1;
+                    queued += 1;
+                }
+            }
+```
+
+### Replacement
+
+```rust
+            Some(stored_mtime) => {
+                // MODIFIED: same path indexed, but disk content may have
+                // diverged. `None` stored mtime → treat as stale (legacy
+                // schema).
+                let lookup_path: PathBuf = if rel.is_absolute() {
+                    rel.clone()
+                } else {
+                    root.join(&rel)
+                };
+                let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(cqs::duration_to_mtime_millis),
+                    Err(_) => None,
+                };
+                // AC-V1.30.1-1: use `!=` not `>` because `git checkout`
+                // restores commit-time mtimes, which can be *older* than
+                // the indexed `source_mtime`. The inotify path's
+                // `mtime <= last` mtime-equality skip is correct for
+                // single-file edits (where mtime always advances), but
+                // reconcile exists *specifically* for bulk git ops where
+                // mtime is non-monotonic. Any disk/stored mismatch is
+                // a queue trigger; the reindex itself is content-hashed
+                // so a no-op rewrite costs only the parse + cache-hit.
+                let needs_reindex = match (stored_mtime, disk_mtime) {
+                    (Some(stored), Some(disk)) => disk != *stored,
+                    (None, _) => true,        // legacy/null stored mtime
+                    (Some(_), None) => false, // can't read disk mtime → leave to GC
+                };
+                if needs_reindex && pending_files.insert(rel.clone()) {
+                    modified += 1;
+                    queued += 1;
+                }
+            }
+```
+
+Add a regression test alongside the existing reconcile tests in the same file's `#[cfg(test)]` block. The test uses two helpers already in scope: `open_store` at `reconcile.rs:170` and `placeholder_embedding` at `reconcile.rs:271`. Disk-mtime rewinds use `std::fs::File::set_modified` (stable since Rust 1.75 — same pattern already in use at `src/store/migrations.rs:2635` and `src/cli/batch/mod.rs:2763`), which avoids adding `filetime` as a new dev-dependency:
+
+```rust
+    /// AC-V1.30.1-1: `git checkout HEAD~5 -- foo.rs` restores the file
+    /// with its commit-time mtime, which is *older* than the indexed
+    /// `source_mtime`. The strict `disk > stored` predicate would skip
+    /// this file silently. Reconcile must use `disk != stored` so any
+    /// divergence — forward or backward in time — queues a reindex.
+    #[test]
+    fn run_daemon_reconcile_queues_older_disk_mtime() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use std::time::{Duration, SystemTime};
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // Write the file with new content (post-checkout state).
+        let rel = "src/foo.rs";
+        let abs = dir.path().join(rel);
+        fs::write(&abs, "fn rewound() {}").unwrap();
+
+        // Rewind the disk mtime to a week ago to simulate `git checkout`
+        // restoring a commit-time mtime older than what we'll seed as
+        // the stored mtime. `set_modified` is stable since Rust 1.75
+        // (cqs MSRV is 1.95).
+        let week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 60 * 60);
+        let f = std::fs::OpenOptions::new().write(true).open(&abs).unwrap();
+        f.set_modified(week_ago).unwrap();
+        drop(f);
+
+        // Seed the index with a HIGHER stored_mtime than the rewound
+        // disk mtime — simulates "indexed at HEAD (today), then file
+        // rewound by checkout to last week's commit". Use a "now" stored
+        // mtime in milliseconds; even if the test runs millis after the
+        // rewind, `now > week_ago` by a comfortable margin.
+        let stored_mtime_ms = cqs::duration_to_mtime_millis(
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let content = "fn original() {}".to_string(); // any content; only mtime drives the predicate
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "original".to_string(),
+            signature: "fn original()".to_string(),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(
+                &[(chunk, placeholder_embedding(0.0))],
+                Some(stored_mtime_ms),
+            )
+            .expect("seed chunk at stored mtime");
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+
+        assert_eq!(queued, 1, "older-mtime divergent file must be queued");
+        assert!(pending.contains(&PathBuf::from(rel)));
+    }
+```
+
+(No `filetime` dependency: `std::fs::File::set_modified` is stable since Rust 1.75 and cqs MSRV is 1.95. The `open_store` and `placeholder_embedding` helpers already in `mod tests` are reused. Existing test pattern at `reconcile_detects_bulk_modify_burst` (line 304) shows the `upsert_chunks_batch` + explicit `stored_mtime_ms` shape this test mirrors.)
+
+### Verification
+
+- `cargo build --features cuda-index`
+- `cargo test --features cuda-index --lib watch::reconcile::tests::run_daemon_reconcile_queues_older_disk_mtime`
+- `cargo test --features cuda-index --lib watch::reconcile`
+- Manual on a real repo: `git checkout HEAD~5 -- src/lib.rs` then wait `CQS_WATCH_RECONCILE_SECS` seconds. `cqs status --watch-fresh --json` should show `state: "stale"` until reconcile drains; before the fix it would stay `fresh` because `disk_mtime < stored_mtime` skipped the file.
+
+---
+
+## Summary
+
+**12 distinct fix prompts cover the 14 P1 findings.** Three groupings collapsed multiple cross-listings: P1.1 (3 IDs → 1 prompt for `delta_saturated`), P1.2 (3 IDs → 1 prompt for `dropped_this_cycle`), P1.3 (2 IDs → 1 prompt for the auth ladder rewrite).
+
+**Top 5 most-touched files:**
+1. `src/watch_status.rs` — P1.1 state machine + tests
+2. `src/cli/watch/events.rs` — P1.2 reset ordering
+3. `src/serve/auth.rs` — P1.3 strip + check_request rewrite
+4. `src/cli/watch/reconcile.rs` — P1.11 cap + P1.12 mtime predicate
+5. `src/cli/pipeline/types.rs` + `parsing.rs` + `enrichment.rs` + `mod.rs` (all four touched by P1.9)
+
+**Documentation files:** SECURITY.md (P1.5, P1.7), PRIVACY.md (P1.4), ROADMAP.md (P1.8), and one fix that requires both code-change + doc-claim alignment (P1.6 — adding `trust_level` to `read --focus` and `context` so SECURITY.md:57 is no longer lying).
+
+**No P1 was skipped.** All 14 finding IDs in the triage's P1 table are covered by the 12 prompts above.
+
+---
+
+## Verification Report
+
+Generated 2026-04-28 by the verification pass. Each P1 prompt was checked against current source for line-drift, compile-correctness, edge-case coverage, caller-sweep completeness, and lying-doc fix completeness.
+
+### P1.1 — delta_saturated: VERIFIED
+
+All current/replacement code matches source verbatim (`src/watch_status.rs:199-209` for `compute()`, fields on `WatchSnapshotInput` at lines 181-193, struct field on `WatchSnapshot` at line 87). Test field types align (`incremental_count: usize`, `dropped_this_cycle: usize`, `last_event: std::time::Instant`). New tests cover the failure mode: `delta_saturated_marks_stale_when_no_other_work` triggers the saturated-rebuild → discard-on-swap path the audit finding describes. Caller sweep clean (no new call sites required since `compute()` signature is unchanged).
+
+### P1.2 — dropped_this_cycle reset before publish: VERIFIED
+
+Current code at `src/cli/watch/events.rs:131-157` matches verbatim. The successful-reindex `Ok(...)` arm starts at line 195 (prompt cite "around line 195" — exact). Replacement removes the early reset and adds it inside the success arm — the exact ordering fix the audit identifies. The verification regression-test design (seed `dropped_this_cycle=5`, fail embedder, assert no zero) matches the failure mode.
+
+### P1.3 — auth ladder leaks ?token=: VERIFIED
+
+Current code at `src/serve/auth.rs:243-321` (both `strip_token_param` and `check_request`) matches verbatim. The two pinned tests at lines 572-600 exist with the exact `_NOT_stripped_today` / `_today_rejects` naming. `axum::body::Body` is in scope at the module level (line 35), so `Body::empty()` in the new test compiles. `AuthToken::random()` and `cookie_name_for_port` exist as cited. The `pair_key_is_token` helper handles all the case-fold + percent-decode cases the audit names. The `!pair.is_empty()` filter cleanup is consistent with the existing `p2_30_strip_token_param_handles_double_ampersand` test's permissive assertion (`==` either form). `percent-encoding` is in the lockfile transitively but not a direct dep — prompt correctly calls out the explicit add to `Cargo.toml`.
+
+### P1.4 — PRIVACY/SECURITY misstate cache key: NEEDS FIX
+
+- **Issue:** PRIVACY.md replacement claims "the `purpose` discriminator (`embedding` vs `summary`)" — but `src/cache.rs:99-104` shows `CachePurpose` is `Embedding ("embedding")` and `EmbeddingBase ("embedding_base")`. There is no `'summary'` purpose in the `embedding_cache` table; the `'summary'` purpose lives in a different table (`llm_summaries` per `src/schema.sql:182`).
+- **Issue:** SECURITY.md replacement says "the post-summary embedding is cached in `embeddings_cache.db` keyed by `(content_hash, model_fingerprint, purpose='summary')` (#1128)" — same conflation. The post-summary embedding actually goes through the `Embedding` purpose path (no separate `summary` purpose row in `embedding_cache`).
+- **Correction (PRIVACY.md:16):**
+  ```markdown
+  - `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_fingerprint, purpose)` (#1105, #1128). Skips re-embedding chunks that haven't changed across reindexes / model swaps; the `purpose` discriminator (`embedding` for the post-enrichment vector, `embedding_base` for the raw NL vector) prevents the two streams from overwriting each other when the same chunk produces both.
+  ```
+- **Correction (SECURITY.md:47):**
+  ```markdown
+  | **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary is cached in `llm_summaries` keyed by `(content_hash, purpose)` per `src/schema.sql:178-182`; the post-summary embedding flows through the normal `embeddings_cache.db` (purpose `embedding`) and is replayed to downstream agents | Yes — cached in `llm_summaries` table + `embeddings_cache.db` |
+  ```
+
+### P1.5 — Symlink Behavior matrix: VERIFIED
+
+Current docs at `SECURITY.md:203-215` match verbatim. `enumerate_files` at `src/lib.rs:601` uses `WalkBuilder::follow_links(false)` as cited. The split-into-two-regimes replacement is accurate to actual code paths. Cross-check with `SECURITY.md:162` ("Symlinks are skipped during directory walks and archive extraction") confirmed consistent.
+
+### P1.6 — read --focus / context trust_level: NEEDS FIX
+
+- **Issue:** Prompt says "find the `FocusedReadJsonOutput { ... }` literal (around line 369-380)" — actual production literal is at `src/cli/commands/io/read.rs:408`. More importantly, there are 3 additional `FocusedReadJsonOutput { ... }` literals inside `#[cfg(test)] mod tests` at lines 447, 470, 486 (`focused_read_output_with_hints`, `focused_read_output_no_hints`, `focused_read_output_with_warnings`). Adding required `trust_level` and `injection_flags` fields to the struct without updating these 3 test sites breaks the build.
+- **Issue:** For `context.rs`, the prompt says "Apply the same pattern to `compact_to_json` and `summary_to_json` constructors" but does not show the actual constructor sites. `CompactChunkEntry` literal is at `src/cli/commands/io/context.rs:84`, `SummaryChunkEntry` literal at line 486. Both these structs *also* lack the new fields, so the audit-finding's claim that the JSON shape is consistent across all chunk-emitting commands implies these structs need the same `trust_level` + `injection_flags` additions as `FullChunkEntry`. The prompt omits the explicit struct-definition edits.
+- **Correction:** Add explicit edits to (1) the 3 test-site `FocusedReadJsonOutput` constructions, (2) the `CompactChunkEntry` struct definition + `compact_to_json` constructor at line 84, (3) the `SummaryChunkEntry` struct definition + `summary_to_json` constructor at line 486. Existing integration tests in the same file (`hp1_compact_to_json_*` etc.) will also need their literal constructions updated.
+
+### P1.7 — SECURITY auth surface backfill: VERIFIED
+
+Current SECURITY.md:17 matches verbatim. `NoAuthAcknowledgement` exported at `src/serve/mod.rs:47`, `cookie_name_for_port` at `src/serve/auth.rs:62`. The replacement accurately reflects the v1.30 hardenings (#1135 cookie scoping + #1136 ack token).
+
+### P1.8 — ROADMAP #1182 closed: VERIFIED
+
+ROADMAP.md:16 and :142 match verbatim. Recent git log confirms `a240ad08 test(watch): bulk-delta reconcile pass for #1182 acceptance — 47-file scenario (#1196)` is on main. The replacement accurately closes the doc claim.
+
+### P1.9 — embed_batch_size_for wiring: NEEDS FIX
+
+- **Issue:** Prompt's test fixture update says "pass `model_config: cqs::embedder::ModelConfig::resolve(None, None).unwrap()`". But `ModelConfig::resolve` at `src/embedder/models.rs:427` returns `Self`, not `Result<Self>` or `Option<Self>`. `.unwrap()` on a non-`Result`/`Option` will not compile.
+- **Correction:** Use `cqs::embedder::ModelConfig::resolve(None, None)` (no `.unwrap()`).
+- All other line citations verified (types.rs:147-207, parsing.rs:14-42, enrichment.rs:23 + 73-74, pipeline/mod.rs:15 + 74-94, build.rs:520-522). Test fixture site at `parsing.rs:344` does construct `ParserStageContext` directly and would need the `model_config` field added — prompt mentions this generically.
+
+### P1.10 — daemon env snapshot redaction: VERIFIED
+
+Current code at `src/cli/watch/mod.rs:525-532` matches verbatim. `CQS_LLM_API_KEY` is referenced at `src/llm/local.rs:110` as cited. The redaction list `["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"]` covers the named threat. Test design captures the exact in-prod logic.
+
+### P1.11 — run_daemon_reconcile cap: NEEDS FIX
+
+- **Issue:** Prompt's regression test calls `setup_store_for_test(dir.path())` — but no such helper exists in `src/cli/watch/reconcile.rs`. The actual helper is `open_store(cqs_dir)` at line 170, which takes the `.cqs/` dir, not the project root.
+- **Correction:** Replace the test's setup with the existing helper pattern:
+  ```rust
+  let dir = tempfile::tempdir().unwrap();
+  let cqs_dir = dir.path().join(".cqs");
+  std::fs::create_dir_all(&cqs_dir).unwrap();
+  let store = open_store(&cqs_dir);
+  ```
+- All other citations verified: `run_daemon_reconcile` at lines 63-148, callers at `mod.rs:1055` and `mod.rs:1268`, 5 test sites at lines 190/204/225/362/450. Caller sweep complete.
+
+### P1.12 — reconcile non-monotonic mtime predicate: NEEDS FIX
+
+- **Issue:** Same `setup_store_for_test` helper does not exist (see P1.11 — actual helper is `open_store`).
+- **Issue:** Prompt claims "`filetime` is already a dev-dependency via `tempfile` interactions". Verified against `Cargo.toml:289-297` and `Cargo.lock` — `filetime` is NOT in `[dev-dependencies]` and NOT in the lockfile. Any `use filetime::...` in the new test will fail to compile.
+- **Correction (helper):** Use `open_store(&dir.path().join(".cqs"))` per existing tests, after `std::fs::create_dir_all` on the `.cqs` dir.
+- **Correction (filetime):** Add `filetime = "0.2"` to `[dev-dependencies]` in `Cargo.toml`. `filetime::FileTime::from_system_time` and `filetime::set_file_mtime` are stable across 0.2.x.
+- Current code at `src/cli/watch/reconcile.rs:108-127` matches verbatim. Predicate change `disk > stored` → `disk != stored` correctly addresses the non-monotonic-mtime case the audit identifies.
+
+---
+
+**Tally:** 7 VERIFIED, 5 NEEDS FIX (P1.4, P1.6, P1.9, P1.11, P1.12).
+
+**Most concerning issue:** **P1.4 — PRIVACY/SECURITY incorrect cache-key claim.** The prompt itself is a "fix the lying doc" P1, and its replacement text introduces a *new* lie (claiming `purpose='summary'` rows exist in `embedding_cache.db`). Per the skill's "Lying-doc P1s" rule, the doc must stop lying — applying P1.4 as written would replace one factual error with another. This is the highest-impact verification miss because the audit's whole point of categorizing P1.4 as P1 is that PRIVACY.md is the canonical user-facing surface for "what does cqs store"; a second wrong claim there would be discovered by the next reader as another audit finding.
+
+**Secondary concern:** **P1.11 + P1.12 use a fictional `setup_store_for_test` helper.** Both prompts will fail to compile their regression tests. Easy mechanical fix once flagged but worth catching before the implementation pass dispatches.
+
+# v1.30.1 Audit P2 Fix Prompts
+
+Generated 2026-04-28. Total P2 findings: 32. Distinct fix prompts after grouping: 22.
+
+Grouped bundles:
+- **P2-bundle-wait-fresh** absorbs RB-9, EH-V1.30.1-2, OB-V1.30.1-8, TC-HAP-1.30.1-5, TC-ADV-1.30.1-4 (5 findings → 1 prompt). All five share the `wait_for_fresh` poll loop refactor.
+- **P2-bundle-reconcile-stat** absorbs EH-V1.30.1-7, TC-ADV-1.30.1-5, TC-ADV-1.30.1-6 (3 findings → 1 prompt). Same `metadata()` arm at `reconcile.rs:116-127`.
+- **P2-bundle-watch-status-machine** absorbs OB-V1.30.1-3, TC-HAP-1.30.1-8 (2 findings → 1 prompt). Both about `WatchSnapshot::compute` + transition emission.
+- **P2-bundle-eval-gate** absorbs OB-V1.30.1-6, TC-HAP-1.30.1-4, TC-HAP-1.30.1-7 (3 findings → 1 prompt). Same `require_fresh_gate` function.
+- **P2-bundle-rb1-rb6** absorbs RB-1, RB-6 (2 findings → 1 prompt). Both about path-string handling in enumerate/reconcile.
+
+Remaining 17 single-issue prompts cover the rest.
+
+---
+
+## P2: P2-bundle-wait-fresh — `wait_for_fresh` papercut bundle (RB-9 + EH-V1.30.1-2 + OB-V1.30.1-8 + TC-HAP-1.30.1-5 + TC-ADV-1.30.1-4)
+
+**Files:** `src/daemon_translate.rs:625-679`, `src/cli/commands/eval/mod.rs:246-264`, plus tests at `src/daemon_translate.rs:1208-1376`
+**Effort:** ~90 minutes
+**Why:** `wait_for_fresh` is on the hot path of #1182 and bundles five independent papercuts: stringly-typed errors collapse transport/parse failures into `NoDaemon` (wrong advice), `daemon_status` warns at info-level on every connect failure during the 250 ms poll loop (up to 2400 lines/600 s), no exponential backoff, no test for Stale→Fresh transition, no test for daemon-dies-mid-poll. Single refactor pass touches all five surfaces.
+
+### Current code
+
+```rust
+// src/daemon_translate.rs:623-678
+/// #1182 — Layer 4: outcome of [`wait_for_fresh`].
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub enum FreshnessWait {
+    Fresh(crate::watch_status::WatchSnapshot),
+    Timeout(crate::watch_status::WatchSnapshot),
+    NoDaemon(String),
+}
+
+#[cfg(unix)]
+pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWait {
+    let _span = tracing::info_span!("wait_for_fresh", wait_secs).entered();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+    let poll_interval = std::time::Duration::from_millis(250);
+
+    loop {
+        match daemon_status(cqs_dir) {
+            Ok(snap) => {
+                if snap.is_fresh() {
+                    return FreshnessWait::Fresh(snap);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return FreshnessWait::Timeout(snap);
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(msg) => return FreshnessWait::NoDaemon(msg),
+        }
     }
 }
 ```
 
-### Notes
-
-- Production code is correct; this is regression protection.
-
----
-
-## P2.45 — `bfs_expand` HashMap seed order (already fixed — pin with test)
-
-**Finding:** P2.45 in audit-triage.md
-**Files:** `src/gather.rs:317-330` — fix already on disk (sorts seeds by `(score desc, name asc)` before enqueue).
-
-### Regression-pin test
-
 ```rust
-#[cfg(test)]
-mod bfs_seed_order_tests {
-    use super::*;
-
-    #[test]
-    fn bfs_expand_is_deterministic_under_seed_shuffling() {
-        // Build name_scores with two entries scored equally and one above.
-        // Run bfs_expand 100 times; assert the resulting name_scores is
-        // identical across runs.
-    }
-
-    #[test]
-    fn bfs_expand_processes_higher_scoring_seed_first() {
-        // Two seeds: ("foo", 0.9) and ("bar", 0.5).
-        // With max_expanded_nodes=1 (cap before second seed expands),
-        // assert "foo"'s neighbors got into name_scores, not "bar"'s.
-    }
-}
-```
-
-### Notes
-
-- Production code is correct; this pins it.
-
----
-
-## P2.46 — `contrastive_neighbors` top-K tie-break (already fixed — pin with test)
-
-**Finding:** P2.46 in audit-triage.md
-**Files:** `src/llm/summary.rs:263-282` — fix already on disk (`.then(a.0.cmp(&b.0))` cascade on all three sorts).
-
-### Regression-pin test
-
-```rust
-#[cfg(test)]
-mod contrastive_neighbor_tests {
-    use super::*;
-
-    #[test]
-    fn contrastive_neighbors_top_k_is_deterministic_under_ties() {
-        // Build a similarity matrix where row 0 has multiple entries scoring
-        // exactly the same. Run contrastive_neighbors 50 times; assert the
-        // returned neighbor list is identical every time.
-    }
-}
-```
-
-### Notes
-
-- Production code is correct; this pins it for the cache-cost-sensitive contrastive summary path (~$0.38/run Haiku regenerates if cache misses).
-
----
-# P2 Part B Fix Prompts (P2.47–P2.92)
-
-## P2.47 — reranker compute_scores unchecked batch_size*stride
-
-**Finding:** P2.47 in audit-triage.md
-**Files:** `src/reranker.rs:368-415`
-**Why:** Listed as algorithm bug; verifying source shows the negative-dim guard AND the `checked_mul` guard already landed.
-
-### Notes
-
-Audit description claimed: "shape[1] = -1 → wraps to usize::MAX" and "batch_size * stride unchecked." Reading `src/reranker.rs:385-405` shows both guards are already present:
-
-```rust
-let stride = if shape.len() == 2 {
-    let dim = shape[1];
-    if dim < 0 {
-        return Err(RerankerError::Inference(format!(
-            "Model returned negative output dim {dim} (dynamic axis not bound?)"
-        )));
-    }
-    dim as usize
-} else { 1 };
-if stride == 0 { ... }
-let expected_len = batch_size.checked_mul(stride).ok_or_else(|| {
-    RerankerError::Inference(format!(
-        "Reranker output too large: batch_size={batch_size} * stride={stride} overflows usize"
-    ))
+// src/daemon_translate.rs:438-441 — connect-stage warn fires every poll
+let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
+    tracing::warn!(stage = "connect", error = %e, "daemon_status failed");
+    format!("connect to {} failed: {e}", sock_path.display())
 })?;
 ```
 
-**Action:** No-op — finding is already fixed by AC-V1.29-6 comment block. Verifier should mark P2.47 as resolved without code change. Optionally add a regression test that constructs a fake `(shape=[batch,−1])` path through a mock and asserts the negative-dim error is returned (the panic-on-overflow path is covered by `checked_mul`).
+### Replacement / approach
 
----
+1. **Distinguish daemon errors at the `daemon_status` layer.** Introduce a `DaemonStatusError` enum with `SocketMissing`, `Transport(String)`, `BadResponse(String)` variants. Update `daemon_status`, `daemon_ping`, `daemon_reconcile` signatures to return `Result<T, DaemonStatusError>` (this fold-in collapses API-V1.30.1-5 too — see separate prompt; keep that finding noted). Demote the connect-failure `tracing::warn!` inside `daemon_status` to `tracing::debug!` so the `wait_for_fresh` poll loop doesn't spam the journal at info level (OB-V1.30.1-8). The caller is responsible for the final-decision warn.
 
-## P2.48 — doc_comments select_uncached tertiary tie-break
-
-**Finding:** P2.48 in audit-triage.md
-**Files:** `src/llm/doc_comments.rs:222-242`
-**Why:** Verify whether the chunk-id tie-break is missing.
-
-### Notes
-
-Reading `src/llm/doc_comments.rs:231-239`:
+2. **Extend `FreshnessWait`** to mirror the new error shape:
 
 ```rust
-uncached.sort_by(|a, b| {
-    let a_no_doc = a.doc.as_ref().is_none_or(|d| d.trim().is_empty());
-    let b_no_doc = b.doc.as_ref().is_none_or(|d| d.trim().is_empty());
-    // no-doc before thin-doc
-    b_no_doc
-        .cmp(&a_no_doc)
-        .then_with(|| b.content.len().cmp(&a.content.len()))
-        .then_with(|| a.id.cmp(&b.id))
-});
-```
-
-The tertiary `a.id.cmp(&b.id)` already exists (annotated AC-V1.29-7). **Action:** No-op — already fixed. Verifier should mark P2.48 resolved.
-
----
-
-## P2.49 — map_hunks_to_functions HashMap iteration order
-
-**Finding:** P2.49 in audit-triage.md
-**Files:** `src/impact/diff.rs:38-106` (map_hunks_to_functions), `src/impact/diff.rs:154-168` (cap)
-**Why:** `HashMap<&Path, Vec<…>>` is iterated to produce a Vec — non-deterministic when two files exist; downstream `take(cap)` then drops different functions per run.
-
-### Current code
-
-`src/impact/diff.rs:46-65`:
-
-```rust
-    // Group hunks by file
-    let mut by_file: HashMap<&Path, Vec<&crate::diff_parse::DiffHunk>> = HashMap::new();
-    for hunk in hunks {
-        by_file.entry(&hunk.file).or_default().push(hunk);
-    }
-
-    // PF-1: Batch-fetch all file chunks in a single query instead of N queries
-    let normalized_paths: Vec<String> = by_file
-        .keys()
-        .map(|f| normalize_slashes(&f.to_string_lossy()))
-        .collect();
-    let origin_refs: Vec<&str> = normalized_paths.iter().map(|s| s.as_str()).collect();
-    let chunks_by_origin = match store.get_chunks_by_origins_batch(&origin_refs) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to batch-fetch chunks for diff hunks");
-            return functions;
-        }
-    };
-
-    for (file, file_hunks) in &by_file {
-```
-
-### Replacement
-
-After building `functions` via map (or after returning from `map_hunks_to_functions`), sort deterministically. Easiest: change `by_file` to `BTreeMap` so iteration is by path:
-
-```rust
-use std::collections::BTreeMap;
-// ...
-let mut by_file: BTreeMap<&Path, Vec<&crate::diff_parse::DiffHunk>> = BTreeMap::new();
-for hunk in hunks {
-    by_file.entry(&hunk.file).or_default().push(hunk);
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub enum FreshnessWait {
+    Fresh(crate::watch_status::WatchSnapshot),
+    Timeout(crate::watch_status::WatchSnapshot),
+    /// Socket file missing — the daemon never started.
+    NoDaemon(String),
+    /// Connect/read/write/timeout — daemon is gone or hung.
+    Transport(String),
+    /// Envelope/JSON/parse error — daemon answered but garbled.
+    BadResponse(String),
 }
 ```
 
-And, before returning, sort `functions` for full determinism:
+3. **Refactor the poll loop with bounded poll count, exponential backoff, and terminal tracing** (RB-9 + RB-2 + OB-V1.30.1-4 fold-in):
 
 ```rust
-functions.sort_by(|a, b| {
-    a.file.cmp(&b.file)
-        .then(a.line_start.cmp(&b.line_start))
-        .then(a.name.cmp(&b.name))
-});
-functions
-```
+#[cfg(unix)]
+pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWait {
+    let _span = tracing::info_span!("wait_for_fresh", wait_secs).entered();
+    let start = std::time::Instant::now();
+    // Defensive cap: caller should pass a sane budget but a `pub fn` must
+    // not panic on `Instant + Duration::from_secs(u64::MAX)` (RB-2).
+    let bounded_secs = wait_secs.min(86_400);
+    let deadline = start + std::time::Duration::from_secs(bounded_secs);
 
-### Notes
-
-The `seen: HashSet<String>` dedup uses `chunk.name`, but only first-seen wins — under HashMap order this is also non-deterministic. The final sort eliminates both effects. Add a regression test seeding 3 files with overlapping function names and asserting `map_hunks_to_functions` is identical across 100 calls.
-
----
-
-## P2.50 — search_reference threshold/weight ordering
-
-**Finding:** P2.50 in audit-triage.md
-**Files:** `src/reference.rs:231-285`
-**Why:** Underlying search caps at `limit` against unweighted scores AND filters at unweighted threshold; post-weight retain double-filters. Multi-ref ranking under-samples corpus when weight<1.
-
-### Current code
-
-`src/reference.rs:242-258`:
-
-```rust
-    let mut results = ref_idx.store.search_filtered_with_index(
-        query_embedding,
-        filter,
-        limit,
-        threshold,
-        ref_idx.index.as_deref(),
-    )?;
-    if apply_weight {
-        for r in &mut results {
-            r.score *= ref_idx.weight;
-        }
-        // Re-filter after weight: results that passed raw threshold may fall
-        // below after weighting (consistent with name_only path)
-        results.retain(|r| r.score >= threshold);
-    }
-    Ok(results)
-```
-
-### Replacement
-
-```rust
-    let raw_threshold = if apply_weight && ref_idx.weight > 0.0 {
-        threshold / ref_idx.weight
-    } else {
-        threshold
-    };
-    let raw_limit = if apply_weight {
-        // 2× over-fetch leaves headroom for weighted retain step
-        limit.saturating_mul(2).max(limit)
-    } else {
-        limit
-    };
-    let mut results = ref_idx.store.search_filtered_with_index(
-        query_embedding,
-        filter,
-        raw_limit,
-        raw_threshold,
-        ref_idx.index.as_deref(),
-    )?;
-    if apply_weight {
-        for r in &mut results {
-            r.score *= ref_idx.weight;
-        }
-        results.retain(|r| r.score >= threshold);
-        results.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then(a.chunk.id.cmp(&b.chunk.id))
-        });
-        results.truncate(limit);
-    }
-    Ok(results)
-```
-
-Mirror the same shape in `search_reference_by_name` at `src/reference.rs:265-285` — its `retain(|r| r.score * weight >= threshold)` already applies the right boundary, but it doesn't over-fetch from `search_by_name`. Pass a relaxed `limit * 2` to `store.search_by_name`, retain+weight+sort+truncate at the end.
-
-### Notes
-
-`SearchResult.chunk.id` (or whatever the canonical id field is) is the deterministic tertiary key. Confirm field path before applying.
-
----
-
-## P2.51 — find_type_overlap chunk_info HashMap iteration
-
-**Finding:** P2.51 in audit-triage.md
-**Files:** `src/related.rs:131-157`
-**Why:** Three sources of HashMap iteration leak into `cqs related` output: (a) `chunk_info` `or_insert` retains first arrival, (b) sort lacks tie-break on equal counts, (c) earlier `type_names` collected from HashSet.
-
-### Current code
-
-`src/related.rs:128-157`:
-
-```rust
-    let mut type_counts: HashMap<String, u32> = HashMap::new();
-    let mut chunk_info: HashMap<String, (PathBuf, u32)> = HashMap::new();
-
-    for chunks in results.values() {
-        for chunk in chunks {
-            if chunk.name == target_name {
-                continue;
-            }
-            if !matches!(
-                chunk.chunk_type,
-                crate::language::ChunkType::Function | crate::language::ChunkType::Method
-            ) {
-                continue;
-            }
-            *type_counts.entry(chunk.name.clone()).or_insert(0) += 1;
-            chunk_info
-                .entry(chunk.name.clone())
-                .or_insert((chunk.file.clone(), chunk.line_start));
-        }
-    }
-
-    tracing::debug!(
-        candidates = type_counts.len(),
-        "Type overlap candidates found"
+    let mut poll_interval = std::time::Duration::from_millis(
+        crate::limits::freshness_poll_ms_initial(),
     );
+    let max_interval = std::time::Duration::from_secs(2);
 
-    // Sort by overlap count descending
-    let mut sorted: Vec<(String, u32)> = type_counts.into_iter().collect();
-    sorted.sort_by_key(|e| std::cmp::Reverse(e.1));
-    sorted.truncate(limit);
-```
-
-### Replacement
-
-```rust
-    let mut type_counts: HashMap<String, u32> = HashMap::new();
-    let mut chunk_info: HashMap<String, (PathBuf, u32)> = HashMap::new();
-
-    // Iterate `results` in deterministic key order so `or_insert` first-wins
-    // is reproducible across runs.
-    let mut keys: Vec<&String> = results.keys().collect();
-    keys.sort();
-    for key in keys {
-        let chunks = &results[key];
-        for chunk in chunks {
-            if chunk.name == target_name {
-                continue;
-            }
-            if !matches!(
-                chunk.chunk_type,
-                crate::language::ChunkType::Function | crate::language::ChunkType::Method
-            ) {
-                continue;
-            }
-            *type_counts.entry(chunk.name.clone()).or_insert(0) += 1;
-            // Pick min (file, line) so two identical-named functions across files
-            // produce a deterministic representative regardless of insertion order.
-            let entry = (chunk.file.clone(), chunk.line_start);
-            chunk_info
-                .entry(chunk.name.clone())
-                .and_modify(|cur| {
-                    if entry < *cur {
-                        *cur = entry.clone();
-                    }
-                })
-                .or_insert(entry);
-        }
-    }
-
-    tracing::debug!(
-        candidates = type_counts.len(),
-        "Type overlap candidates found"
-    );
-
-    // Sort by count desc, then name asc for stable tie-break.
-    let mut sorted: Vec<(String, u32)> = type_counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    sorted.truncate(limit);
-```
-
-Also, locate the `type_names` collection earlier (~`src/related.rs:59-65`):
-
-```rust
-let mut type_names: Vec<&str> = type_set.iter().copied().collect();
-type_names.sort();
-type_names.dedup();
-```
-
-### Notes
-
-Verify the `type_names` site shape before edit — finding cites lines 59-65 but the actual variable name and source set need to be confirmed via Read.
-
----
-
-## P2.52 — CAGRA search_with_filter under-fills when included<k
-
-**Finding:** P2.52 in audit-triage.md
-**Files:** `src/cagra.rs:520-598`
-**Why:** When filter retains fewer than `k` candidates, CAGRA is asked for `k` slots and silently returns under-filled results; when `k > itopk_max` AND `included < k`, CAGRA errors and `search_impl` returns empty without retry at feasible `k`.
-
-### Current code
-
-`src/cagra.rs:540-597`:
-
-```rust
-        // Build bitset on host: evaluate predicate for each vector
-        let n = self.id_map.len();
-        let n_words = n.div_ceil(32);
-        let mut bitset = vec![0u32; n_words];
-        let mut included = 0usize;
-        for (i, id) in self.id_map.iter().enumerate() {
-            if filter(id) {
-                bitset[i / 32] |= 1u32 << (i % 32);
-                included += 1;
-            }
-        }
-
-        // If everything passes the filter, use unfiltered search (faster)
-        if included == n {
-            return CagraIndex::search(self, query, k);
-        }
-
-        // If nothing passes, no results
-        if included == 0 {
-            return Vec::new();
-        }
-        // ...
-        self.search_impl(&gpu, query, k, Some(&bitset_device))
-```
-
-### Replacement
-
-```rust
-        // Cap effective k at the count of vectors that actually pass the
-        // filter — asking CAGRA for more slots than feasible silently
-        // under-fills (or, when k > itopk_max, errors out and zeroes the
-        // result). Both modes hide a "no candidates" answer behind the same
-        // empty Vec a real "no matches" would produce.
-        let effective_k = k.min(included);
-        if effective_k < k {
-            tracing::debug!(
-                requested = k,
-                effective = effective_k,
-                included,
-                "CAGRA filtered search: capping k at included to avoid under-fill"
+    loop {
+        // RB-9 / AC-V1.30.1-6: deadline-first so a slow daemon timeout
+        // can't push us over budget.
+        if std::time::Instant::now() >= deadline {
+            tracing::info!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "wait_for_fresh: deadline reached",
             );
+            return FreshnessWait::Timeout(crate::watch_status::WatchSnapshot::unknown());
         }
-        // ...
-        self.search_impl(&gpu, query, effective_k, Some(&bitset_device))
-```
 
-### Notes
-
-Caller (`Store::search_filtered_with_index`) does not currently propagate a `truncated` flag for under-fill; the audit recommends a follow-on but mark out of scope here. The minimal fix is the `effective_k` cap. Add a regression test that builds a 12-vector index, calls `search_with_filter` with `k=20`, asserts result length == 12 and no error logged.
-
----
-
-## P2.53 — Hybrid SPLADE alpha=0 unbounded score cliff
-
-**Finding:** P2.53 in audit-triage.md
-**Files:** `src/search/query.rs:649-672`
-**Why:** `alpha == 0` branch emits `1.0 + s` (in `[1.0, 2.0]`) while dense path emits `[-1, 1]` cosine; any positive sparse signal beats every dense match.
-
-### Current code
-
-`src/search/query.rs:649-672`:
-
-```rust
-        let mut fused: Vec<crate::index::IndexResult> = all_ids
-            .iter()
-            .map(|id| {
-                let d = dense_scores.get(id).copied().unwrap_or(0.0);
-                let s = sparse_scores.get(id).copied().unwrap_or(0.0);
-                let score = if alpha <= 0.0 {
-                    // Pure re-rank mode: SPLADE score for chunks it found,
-                    // cosine score (demoted) for chunks it didn't.
-                    // This preserves cosine ordering for SPLADE-unknown chunks
-                    // while letting SPLADE override when it has signal.
-                    if s > 0.0 {
-                        1.0 + s
-                    } else {
-                        d
-                    }
-                } else {
-                    alpha * d + (1.0 - alpha) * s
-                };
-                crate::index::IndexResult {
-                    id: id.to_string(),
-                    score,
+        match daemon_status(cqs_dir) {
+            Ok(snap) => {
+                if snap.is_fresh() {
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        modified_files = snap.modified_files,
+                        "wait_for_fresh: index reached Fresh",
+                    );
+                    return FreshnessWait::Fresh(snap);
                 }
-            })
-            .collect();
-```
-
-### Replacement
-
-```rust
-        let mut fused: Vec<crate::index::IndexResult> = all_ids
-            .iter()
-            .map(|id| {
-                let d = dense_scores.get(id).copied().unwrap_or(0.0);
-                let s = sparse_scores.get(id).copied().unwrap_or(0.0);
-                let score = if alpha <= 0.0 {
-                    // Pure re-rank mode: SPLADE-found chunks get a small
-                    // additive boost over their dense cosine, so SPLADE
-                    // signal nudges ranking without dominating it. The
-                    // boost stays within the dense [-1, 1] band — no
-                    // magic "1.0 + s" cliff that drowns strong cosine
-                    // matches under any positive sparse signal.
-                    let boost = s * 0.1;
-                    d + boost
-                } else {
-                    alpha * d + (1.0 - alpha) * s
-                };
-                crate::index::IndexResult {
-                    id: id.to_string(),
-                    score,
+                if std::time::Instant::now() >= deadline {
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        modified_files = snap.modified_files,
+                        rebuild_in_flight = snap.rebuild_in_flight,
+                        "wait_for_fresh: timeout — index still stale",
+                    );
+                    return FreshnessWait::Timeout(snap);
                 }
-            })
-            .collect();
-```
-
-### Notes
-
-Add a regression test: dense pool `[(A, 0.95)]`, sparse pool `[(B, 0.001 normalized)]`, alpha=0 → expect `A` first, not `B@1.001`. Eval drift expected — re-run dev-set R@5 after this change.
-
----
-
-## P2.54 — apply_scoring_pipeline name_boost sign-flip
-
-**Finding:** P2.54 in audit-triage.md
-**Files:** `src/search/scoring/candidate.rs:283-298`
-**Why:** Out-of-range `name_boost` (CLI accepts arbitrary finite f32) makes `(1 - nb)` negative; `.max(0.0)` then nukes good matches. Even in-range, raw embedding can be negative, contaminating the blend.
-
-### Current code
-
-`src/search/scoring/candidate.rs:282-298`:
-
-```rust
-    let base_score = if let Some(matcher) = ctx.name_matcher {
-        let n = name.unwrap_or("");
-        let name_score = matcher.score(n);
-        (1.0 - ctx.filter.name_boost) * embedding_score + ctx.filter.name_boost * name_score
-    } else {
-        embedding_score
-    };
-
-    if let Some(matcher) = ctx.glob_matcher {
-        if !matcher.is_match(file_part) {
-            return None;
+                std::thread::sleep(poll_interval);
+                poll_interval = (poll_interval * 2).min(max_interval);
+            }
+            Err(DaemonStatusError::SocketMissing(msg)) => {
+                tracing::info!(error = %msg, "wait_for_fresh: daemon socket missing");
+                return FreshnessWait::NoDaemon(msg);
+            }
+            Err(DaemonStatusError::Transport(msg)) => {
+                tracing::info!(error = %msg, "wait_for_fresh: transport failure");
+                return FreshnessWait::Transport(msg);
+            }
+            Err(DaemonStatusError::BadResponse(msg)) => {
+                tracing::info!(error = %msg, "wait_for_fresh: malformed daemon response");
+                return FreshnessWait::BadResponse(msg);
+            }
         }
     }
-
-    let chunk_name = name.unwrap_or("");
-    let mut score = base_score.max(0.0) * ctx.note_index.boost(file_part, chunk_name);
-```
-
-### Replacement
-
-```rust
-    // Clamp inputs to [0, 1] before linear interpolation so the blend is
-    // always between two same-range numbers and never sign-flips. This
-    // closes the failure mode where an out-of-range `name_boost` produces
-    // `(1 - nb) < 0`, multiplies a strong embedding match by a negative
-    // weight, and the downstream `.max(0.0)` then deletes it silently.
-    let embedding_score = embedding_score.clamp(0.0, 1.0);
-    let nb = ctx.filter.name_boost.clamp(0.0, 1.0);
-    let base_score = if let Some(matcher) = ctx.name_matcher {
-        let n = name.unwrap_or("");
-        let name_score = matcher.score(n);
-        (1.0 - nb) * embedding_score + nb * name_score
-    } else {
-        embedding_score
-    };
-
-    if let Some(matcher) = ctx.glob_matcher {
-        if !matcher.is_match(file_part) {
-            return None;
-        }
-    }
-
-    let chunk_name = name.unwrap_or("");
-    let mut score = base_score.max(0.0) * ctx.note_index.boost(file_part, chunk_name);
-```
-
-### Notes
-
-P1.16 closes the CLI side (clamp at SearchFilter construction). This finding is the in-function defense-in-depth — keep both fixes. Add a property test: for any `name_boost`, `embedding_score`, `name_score` ∈ `f32::finite()`, the output is in `[0.0, ∞)`.
-
----
-
-## P2.55 — open_browser uses explorer.exe on Windows
-
-**Finding:** P2.55 in audit-triage.md
-**Files:** `src/cli/commands/serve.rs:89-104`
-**Why:** `explorer.exe <url>` doesn't navigate URLs reliably and can strip `?token=...` query strings. With auth on by default, this breaks the `--open` flow on Windows.
-
-### Current code
-
-`src/cli/commands/serve.rs:87-104`:
-
-```rust
-fn open_browser(url: &str) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    let cmd = "xdg-open";
-    #[cfg(target_os = "macos")]
-    let cmd = "open";
-    #[cfg(target_os = "windows")]
-    let cmd = "explorer.exe";
-
-    std::process::Command::new(cmd)
-        .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("Failed to spawn {cmd} {url}"))?;
-    Ok(())
 }
 ```
 
-### Replacement
+4. **Update the eval gate's `require_fresh_gate`** at `src/cli/commands/eval/mod.rs:246-264` to give different advice per variant (EH-V1.30.1-2):
 
 ```rust
-fn open_browser(url: &str) -> Result<()> {
-    // PB-V1.30: on Windows, `explorer.exe <url>` doesn't reliably navigate
-    // and can strip query strings (the `?token=...` we depend on for auth).
-    // `cmd /C start "" "<url>"` hands the URL to the user's default browser
-    // through the documented Win32 protocol-handler path. The empty `""` is
-    // required because `start`'s first quoted arg is the window title.
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .with_context(|| format!("Failed to spawn cmd /C start \"\" {url}"))?;
+match cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs) {
+    FreshnessWait::Fresh(_) => Ok(()),
+    FreshnessWait::Timeout(snap) => anyhow::bail!(
+        "watch index is still stale after {budget_secs}s wait \
+         (modified_files={}, pending_notes={}, rebuild_in_flight={}); \
+         wait longer with --require-fresh-secs N or skip with --no-require-fresh",
+        snap.modified_files, snap.pending_notes, snap.rebuild_in_flight,
+    ),
+    FreshnessWait::NoDaemon(msg) => anyhow::bail!(
+        "watch daemon not reachable: {msg}\n\n\
+         Eval --require-fresh requires a running `cqs watch --serve`. Start it \
+         (`systemctl --user start cqs-watch`) or rerun with `--no-require-fresh`."
+    ),
+    FreshnessWait::Transport(msg) => anyhow::bail!(
+        "watch daemon transport error: {msg}\n\n\
+         The daemon socket exists but isn't responding. Check daemon health: \
+         `journalctl --user -u cqs-watch -n 50` and consider \
+         `systemctl --user restart cqs-watch`."
+    ),
+    FreshnessWait::BadResponse(msg) => anyhow::bail!(
+        "watch daemon returned malformed response: {msg}\n\n\
+         The daemon answered but the response was unparseable — likely a \
+         version skew. Restart cqs-watch and retry."
+    ),
+}
+```
+
+5. **Add `crate::limits::freshness_poll_ms_initial()`** reading `CQS_FRESHNESS_POLL_MS` (default 100, floor 25, ceiling 5000). Folds in SHL-V1.30-2 if convenient.
+
+6. **Add three tests** at `src/daemon_translate.rs::tests` (mirroring the existing `wait_for_fresh_returns_fresh_on_first_poll` mock pattern):
+   - `wait_for_fresh_returns_fresh_after_two_stale_polls` — TC-HAP-1.30.1-5: `UnixListener` accepts 3 connections, writes Stale envelope twice then Fresh, assert `FreshnessWait::Fresh(_)` and elapsed ≥ initial poll interval.
+   - `wait_for_fresh_returns_transport_when_daemon_dies_mid_poll` — TC-ADV-1.30.1-4: listener accepts first connection (returns Stale), then closes; assert subsequent return is `Transport(_)` not `NoDaemon` (socket file still exists but connection refused).
+   - `daemon_status_returns_bad_response_on_malformed_envelope` — TC-ADV-1.30.1-4: listener writes `{"status":"ok","output":` and closes; assert `Err(BadResponse(_))` distinguishable from socket-missing case.
+
+### Verification
+
+- `cargo build --features gpu-index` succeeds.
+- `cargo test --features gpu-index --lib daemon_translate -- wait_for_fresh` passes the three new tests.
+- Run `cqs eval --require-fresh` against a daemon that's hung (`kill -STOP $(pgrep -f cqs-watch)`) — expect a `Transport(...)` bail message within `--require-fresh-secs`, not `NoDaemon`.
+- Verify journal output during a long wait: `journalctl --user -u cqs-watch -f` shows at most one info line per poll outcome, never a flood of connect-warn lines.
+
+---
+
+## P2: P2-bundle-reconcile-stat — Reconcile `metadata()` error swallowed (EH-V1.30.1-7 + TC-ADV-1.30.1-5 + TC-ADV-1.30.1-6)
+
+**Files:** `src/cli/watch/reconcile.rs:116-132`, plus parallel pattern at `src/cli/watch/reindex.rs:501-509`
+**Effort:** ~45 minutes
+**Why:** Reconcile's `(Some(_), None)` and `disk > stored` arms swallow stat failures and clock skew silently. Permission-denied files or backwards-clock files quietly stay stale forever. No tracing, no test seeds the unreadable / future-mtime cases.
+
+### Current code
+
+```rust
+// src/cli/watch/reconcile.rs:116-132
+let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+    Ok(t) => t
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(cqs::duration_to_mtime_millis),
+    Err(_) => None,
+};
+let needs_reindex = match (stored_mtime, disk_mtime) {
+    (Some(stored), Some(disk)) => disk > *stored,
+    (None, _) => true,        // legacy/null stored mtime
+    (Some(_), None) => false, // can't read disk mtime → leave to GC
+};
+if needs_reindex && pending_files.insert(rel.clone()) {
+    modified += 1;
+    queued += 1;
+}
+```
+
+### Replacement / approach
+
+```rust
+// 1. Capture the stat error so we can warn on it.
+let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+    Ok(t) => t
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(cqs::duration_to_mtime_millis),
+    Err(e) => {
+        // EH-V1.30.1-7 / TC-ADV-1.30.1-6: surface stat failures so the
+        // operator can distinguish permission-denied files from
+        // genuinely-missing ones. Debug level keeps the journal clean
+        // for the common transient-AV-scan-on-WSL case but still
+        // searchable via `journalctl --priority=debug`.
+        tracing::debug!(
+            path = %lookup_path.display(),
+            error = %e,
+            "Reconcile: stat failed, leaving file to GC",
+        );
+        None
+    }
+};
+
+let needs_reindex = match (stored_mtime, disk_mtime) {
+    (Some(stored), Some(disk)) => {
+        // TC-ADV-1.30.1-5: detect clock-skew (stored > disk) and warn so
+        // the operator sees the corruption instead of silently dropping
+        // the file from reconcile forever. Treat as stale (reindex) —
+        // the file's content may have changed even if mtime moves
+        // backward (git checkout to older commit, for instance).
+        if *stored > disk {
+            tracing::warn!(
+                path = %lookup_path.display(),
+                stored_mtime = stored,
+                disk_mtime = disk,
+                "Reconcile: stored mtime is in the future relative to disk \
+                 (clock skew or git checkout to older commit?) — queuing reindex",
+            );
+            true
+        } else {
+            disk > *stored
+        }
+    }
+    (None, _) => true,        // legacy/null stored mtime
+    (Some(_), None) => false, // can't read disk mtime → leave to GC (debug warning above)
+};
+if needs_reindex && pending_files.insert(rel.clone()) {
+    modified += 1;
+    queued += 1;
+}
+```
+
+Apply the same `tracing::debug!` warning to the parallel arm at `src/cli/watch/reindex.rs:501-509` where `mtime=None` is silently stored.
+
+### Tests to add (in `src/cli/watch/reconcile.rs::tests`)
+
+```rust
+#[test]
+#[cfg(unix)]
+fn reconcile_clock_skew_stored_mtime_in_future_queues_reindex() {
+    // Seed a chunk with stored_mtime = now + 1h, write file at now.
+    // Assert the file is queued in pending_files (clock-skew detected).
+    // Verify the warn fires via tracing_test or capture.
+}
+
+#[test]
+#[cfg(unix)]
+fn reconcile_metadata_err_leaves_file_alone_with_debug_log() {
+    // chmod 0 on parent dir, run reconcile, assert file is NOT queued
+    // and the debug-level message was emitted (use tracing_test).
+}
+```
+
+### Verification
+
+- `cargo test --features gpu-index --lib reconcile -- reconcile_clock_skew reconcile_metadata_err`.
+- Manually: `chmod 000 /path/inside/repo`, restart daemon, `journalctl --user -u cqs-watch -f --priority=debug` shows the path-with-error line. Restore perms.
+
+---
+
+## P2: P2-bundle-watch-status-machine — Silent state transitions (OB-V1.30.1-3 + TC-HAP-1.30.1-8)
+
+**Reframed during verification:** original prompt's two proposed compute_* tests duplicated the existing `rebuild_dominates_over_stale_files` test at `src/watch_status.rs:278`. Both have been dropped. The transition-log emission fix (the load-bearing piece) is unchanged. The follow-on test that captures the transition log requires a non-existing `tracing-test` dev-dep — left as an explicit (a)-vs-(b) decision below. Both bundled finding IDs (OB-V1.30.1-3, TC-HAP-1.30.1-8) remain substantively covered: OB-V1.30.1-3 by the prev/next-compare emission, TC-HAP-1.30.1-8 by the existing 6 `compute_*` tests already pinning all four states.
+
+**Files:** `src/cli/watch/mod.rs:149-185`, `src/watch_status.rs:195-224`, tests in `src/watch_status.rs::tests`
+**Effort:** ~30 minutes (was ~45 — test additions dropped)
+**Why:** `publish_watch_snapshot` overwrites the snapshot every 100 ms with no transition logging — operators see no journal trail for Fresh↔Stale↔Rebuilding flips. (Original Why also claimed "Rebuilding and Unknown have no test through compute()" — that was wrong; the existing 6 `compute_*` tests already cover all four states including Rebuilding via `rebuild_dominates_over_stale_files` at line 278.)
+
+### Current code
+
+```rust
+// src/cli/watch/mod.rs:149-185
+fn publish_watch_snapshot(
+    handle: &cqs::watch_status::SharedWatchSnapshot,
+    state: &WatchState,
+    index_path: &std::path::Path,
+) {
+    let last_synced_at = std::fs::metadata(index_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let delta_saturated = state
+        .pending_rebuild
+        .as_ref()
+        .map(|p| p.delta_saturated)
+        .unwrap_or(false);
+    let snap = cqs::watch_status::WatchSnapshot::compute(cqs::watch_status::WatchSnapshotInput {
+        // ...
+    });
+    match handle.write() {
+        Ok(mut guard) => *guard = snap,
+        Err(poisoned) => {
+            tracing::warn!("watch_snapshot RwLock poisoned — recovering and continuing to publish");
+            *poisoned.into_inner() = snap;
+        }
+    }
+}
+```
+
+### Replacement / approach
+
+1. **Compare prev and next state under the write lock** and emit a single info-level transition event:
+
+```rust
+fn publish_watch_snapshot(
+    handle: &cqs::watch_status::SharedWatchSnapshot,
+    state: &WatchState,
+    index_path: &std::path::Path,
+) {
+    // ... existing snapshot-build code ...
+
+    let prev_state;
+    match handle.write() {
+        Ok(mut guard) => {
+            prev_state = guard.state;
+            *guard = snap.clone(); // clone to log after lock release
+        }
+        Err(poisoned) => {
+            tracing::warn!("watch_snapshot RwLock poisoned — recovering and continuing to publish");
+            let mut guard = poisoned.into_inner();
+            prev_state = guard.state;
+            *guard = snap.clone();
+        }
+    }
+
+    if prev_state != snap.state {
+        tracing::info!(
+            prev = prev_state.as_str(),
+            next = snap.state.as_str(),
+            modified_files = snap.modified_files,
+            rebuild_in_flight = snap.rebuild_in_flight,
+            dropped_this_cycle = snap.dropped_this_cycle,
+            "watch state transition",
+        );
+    }
+}
+```
+
+(Note: `WatchSnapshot` already derives `Clone`. `FreshnessState` derives `Copy` per `watch_status.rs:51`.)
+
+2. **Drop both originally-proposed `compute_*` tests** — they duplicated the existing `rebuild_dominates_over_stale_files` test at `watch_status.rs:278` which already pins `rebuild_in_flight=true, pending_files=5 -> Rebuilding`. The Why-section claim "Rebuilding has no test through compute()" was wrong; the existing 6 compute_* tests cover Fresh, Stale (via pending_files / pending_notes / dropped_events), Rebuilding, and Unknown.
+
+The remaining coverage question is whether `publish_watch_snapshot` actually emits the transition log on a state flip. There is no existing log-capture infrastructure in this codebase (verified: no `tracing-test` dev-dep in `Cargo.toml`, no `logs_contain` helper anywhere in `src/` or `tests/`). Two options:
+
+   **(a) Skip the transition-emission test** and rely on the manual journalctl smoke step below — the OB-V1.30.1-3 finding is substantively addressed by the prev/next compare under the write lock; an automated assertion adds little because the only failure mode is "didn't emit", which is hard to regress accidentally given the explicit `if prev_state != snap.state` branch.
+
+   **(b) If automated coverage matters,** add `tracing-test = "0.2"` to `[dev-dependencies]` in `Cargo.toml` and write a `#[tracing_test::traced_test]` test that drives `publish_watch_snapshot` twice with different states and asserts `logs_contain("watch state transition")`. Mark this as scope-creep relative to OB-V1.30.1-3 and split into a separate prompt if it doesn't fit the bundle's effort budget.
+
+Recommend (a) for this bundle — the transition-emission code path is small and reading the diff is sufficient verification.
+
+### Verification
+
+- `cargo test --features gpu-index --lib watch_status` (existing 6 compute_* tests still pass — Rebuilding precedence already covered by `rebuild_dominates_over_stale_files`).
+- Manually trigger reindex, observe one `watch state transition prev=fresh next=stale` line in `journalctl`, then `prev=stale next=rebuilding`, then `prev=rebuilding next=fresh`. No spam between transitions.
+
+---
+
+## P2: P2-bundle-eval-gate — `require_fresh_gate` invisible + untested (OB-V1.30.1-6 + TC-HAP-1.30.1-4 + TC-HAP-1.30.1-7)
+
+**Files:** `src/cli/commands/eval/mod.rs:219-275`, plus new `tests/cli_eval_freshness_gate_test.rs`
+**Effort:** ~60 minutes
+**Why:** `require_fresh_gate` is the central #1182 control point but lacks entry/exit tracing, the function itself is never called by any test, and every integration test bypasses it via `CQS_EVAL_REQUIRE_FRESH=0`.
+
+### Current code
+
+```rust
+// src/cli/commands/eval/mod.rs:219-275
+fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()> {
+    if *no_require_fresh_flag {
+        tracing::info!("Eval freshness gate disabled via --no-require-fresh");
+        return Ok(());
+    }
+    if env_disables_freshness_gate() {
+        tracing::info!("Eval freshness gate disabled via CQS_EVAL_REQUIRE_FRESH");
+        eprintln!(
+            "[eval] CQS_EVAL_REQUIRE_FRESH disables the freshness gate; running against current index"
+        );
+        return Ok(());
+    }
+    // ... wait_for_fresh dispatch ...
+}
+```
+
+### Replacement / approach
+
+1. **Wrap the function body in a span and emit terminal events**:
+
+```rust
+fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()> {
+    let _span = tracing::info_span!("require_fresh_gate", wait_secs).entered();
+    let start = std::time::Instant::now();
+
+    if *no_require_fresh_flag {
+        tracing::info!(
+            outcome = "bypass_flag",
+            "require_fresh_gate: disabled via --no-require-fresh",
+        );
+        return Ok(());
+    }
+    if env_disables_freshness_gate() {
+        tracing::info!(
+            outcome = "bypass_env",
+            "require_fresh_gate: disabled via CQS_EVAL_REQUIRE_FRESH",
+        );
+        eprintln!(
+            "[eval] CQS_EVAL_REQUIRE_FRESH disables the freshness gate; running against current index"
+        );
         return Ok(());
     }
 
-    #[cfg(target_os = "linux")]
-    let cmd = "xdg-open";
-    #[cfg(target_os = "macos")]
-    let cmd = "open";
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(unix)]
     {
-        std::process::Command::new(cmd)
-            .arg(url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .with_context(|| format!("Failed to spawn {cmd} {url}"))?;
-    }
-    Ok(())
-}
-```
+        use cqs::daemon_translate::FreshnessWait;
+        let root = crate::cli::find_project_root();
+        let cqs_dir = cqs::resolve_index_dir(&root);
+        let budget_secs = wait_secs.min(600);
 
----
+        eprintln!(
+            "[eval] checking watch-mode freshness (--no-require-fresh to skip; CQS_EVAL_REQUIRE_FRESH=0 in env)"
+        );
 
-## P2.56 — NTFS/FAT32 mtime equality
-
-**Finding:** P2.56 in audit-triage.md
-**Files:** `src/cli/watch.rs:551-560`
-**Why:** Watch loop uses exact `SystemTime` equality on cached mtime. FAT32 USB mounts have 2s mtime resolution — two saves within 2s collide, second save skipped.
-
-### Current code
-
-`src/cli/watch.rs:551-561` (`prune_last_indexed_mtime`) is *not* the equality site — it's the prune. The actual equality check lives in `should_reindex` callers. Audit cites `:551-560` as a proxy / pointer.
-
-### Notes
-
-Locate the actual mtime equality site via grep for `last_indexed_mtime.get` or `last_indexed_mtime` reads against a saved value. It's likely in `process_file_changes` or `should_reindex`. Once located, replace exact `==` with one of:
-
-1. `<` against bucketed mtime when `is_wsl_drvfs_path(path)` is true:
-   ```rust
-   let stale = if is_wsl_drvfs_path(path) {
-       // 2 s buckets — FAT32 mtime granularity floor
-       cached_mtime + Duration::from_secs(2) > current_mtime
-   } else {
-       cached_mtime == current_mtime
-   };
-   ```
-2. Or: fall back to content-hash equality on suspicious mtime ties (parser already computes content hash).
-
-Verifier should grep for the equality site, apply option (1), add a test that constructs two `SystemTime`s 1 second apart, the WSL path triggers the bucketed comparison, the non-WSL path keeps strict equality. Document the FAT32 caveat in the function header.
-
----
-
-## P2.57 — enforce_host_allowlist accepts missing Host
-
-**Finding:** P2.57 in audit-triage.md
-**Files:** `src/serve/mod.rs:230-251`
-**Why:** Missing-Host bypass is a unit-test ergonomic in production middleware. HTTP/1.0 + raw nc clients reach the handler with no allowlist check.
-
-### Current code
-
-`src/serve/mod.rs:234-251`:
-
-```rust
-async fn enforce_host_allowlist(
-    State(allowed): State<AllowedHosts>,
-    req: Request,
-    next: Next,
-) -> Result<Response, (StatusCode, &'static str)> {
-    match req.headers().get(header::HOST) {
-        None => Ok(next.run(req).await),
-        Some(value) => {
-            let host = value.to_str().unwrap_or("");
-            if allowed.contains(host) {
-                Ok(next.run(req).await)
-            } else {
-                tracing::warn!(host = %host, "serve: rejected request with disallowed Host header");
-                Err((StatusCode::BAD_REQUEST, "disallowed Host header"))
-            }
+        let result = cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs);
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        match &result {
+            FreshnessWait::Fresh(snap) => tracing::info!(
+                outcome = "fresh",
+                elapsed_ms,
+                modified_files = snap.modified_files,
+                "require_fresh_gate: resolved",
+            ),
+            FreshnessWait::Timeout(snap) => tracing::info!(
+                outcome = "timeout",
+                elapsed_ms,
+                modified_files = snap.modified_files,
+                "require_fresh_gate: resolved",
+            ),
+            FreshnessWait::NoDaemon(_) => tracing::info!(
+                outcome = "no_daemon",
+                elapsed_ms,
+                "require_fresh_gate: resolved",
+            ),
+            // ... new variants from P2-bundle-wait-fresh ...
         }
+        // ... existing bail/return logic ...
     }
+    // ... non-unix branch unchanged ...
 }
 ```
 
-### Replacement
+2. **Make `require_fresh_gate` and `env_disables_freshness_gate` `pub(crate)`** if not already, so the new test crate can call them.
+
+3. **Add unit tests** in `src/cli/commands/eval/mod.rs::tests`:
 
 ```rust
-async fn enforce_host_allowlist(
-    State(allowed): State<AllowedHosts>,
-    req: Request,
-    next: Next,
-) -> Result<Response, (StatusCode, &'static str)> {
-    let host = match req.headers().get(header::HOST) {
-        Some(v) => v.to_str().unwrap_or(""),
+#[test]
+fn require_fresh_gate_no_require_fresh_flag_returns_ok_without_daemon() {
+    // Just call it — no socket needed because the flag short-circuits
+    // before any daemon call.
+    let result = require_fresh_gate(&true, 5);
+    assert!(result.is_ok());
+}
+
+#[test]
+#[serial_test::serial(cqs_eval_require_fresh_env)]
+fn require_fresh_gate_env_disable_returns_ok_without_daemon() {
+    // SAFETY: serial test guards env mutation
+    unsafe {
+        std::env::set_var("CQS_EVAL_REQUIRE_FRESH", "0");
+    }
+    let result = require_fresh_gate(&false, 5);
+    unsafe {
+        std::env::remove_var("CQS_EVAL_REQUIRE_FRESH");
+    }
+    assert!(result.is_ok());
+}
+```
+
+4. **Add an integration test** at `tests/cli_eval_freshness_gate_test.rs`:
+   - Spin up the same `UnixListener` mock as `wait_for_fresh_returns_fresh_on_first_poll`.
+   - Point `XDG_RUNTIME_DIR` at the tempdir hosting it.
+   - Run `cqs eval` *without* `CQS_EVAL_REQUIRE_FRESH=0`.
+   - Assert exit 0 within 10 s, the `[eval] checking watch-mode freshness` line on stderr, and a non-zero `recall_at_5` in the report JSON.
+   - Gate behind `slow-tests` like other CLI tests.
+
+### Verification
+
+- `cargo test --features gpu-index --lib eval -- require_fresh_gate`.
+- `cargo test --features gpu-index,slow-tests --test cli_eval_freshness_gate_test`.
+- `journalctl` shows `outcome=fresh elapsed_ms=...` or `outcome=timeout` per eval invocation.
+
+---
+
+## P2: P2-bundle-rb1-rb6 — Path string mangling in reconcile + enumerate (RB-1 + RB-6)
+
+**Files:** `src/cli/watch/reconcile.rs:99`, `src/lib.rs:680-685`
+**Effort:** ~45 minutes
+**Why:** Two parallel "lossy path string" papercuts. Reconcile builds a UTF-8 lookup key via `to_string_lossy().replace('\\', "/")` — non-UTF-8 paths get U+FFFD substitution that won't match the indexer's own lossy conversion, causing permanent reindex storms. `enumerate_files` uses `unwrap_or(&path)` after a failed `strip_prefix` — on case-insensitive Windows / NTFS this silently leaks absolute paths into the relative-path workflow.
+
+### Current code
+
+```rust
+// src/cli/watch/reconcile.rs:95-99
+for rel in disk_files {
+    // Stored origins are typically relative; normalize to forward
+    // slashes for cross-platform matching parity with the rest of the
+    // store layer.
+    let origin = rel.to_string_lossy().replace('\\', "/");
+```
+
+```rust
+// src/lib.rs:680-685
+if path.starts_with(&root) {
+    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
+} else {
+    tracing::warn!(path = %e.path().display(), "Skipping path outside project");
+    None
+}
+```
+
+### Replacement / approach
+
+```rust
+// src/cli/watch/reconcile.rs:95-99 — skip non-UTF-8 paths up front with warn
+for rel in disk_files {
+    let origin = match rel.to_str() {
+        Some(s) => s.replace('\\', "/"),
         None => {
-            // SEC-V1.30: missing-Host is malformed in production (HTTP/1.1
-            // requires Host; hyper synthesizes one on real traffic). Reject
-            // 400 instead of passing through — closes the DNS-rebinding
-            // bypass for HTTP/1.0 clients and raw nc requests. Tests that
-            // need to skip the allowlist now stamp a Host header in the
-            // Request::builder().
-            tracing::warn!("serve: rejected request missing Host header");
-            return Err((StatusCode::BAD_REQUEST, "missing Host header"));
+            // RB-1: non-UTF-8 path bytes don't round-trip through
+            // `to_string_lossy()` consistently with the indexer's own
+            // lossy conversion. Skipping with a warn is strictly
+            // better than re-queuing the file forever every reconcile
+            // cycle (~30 s) on WSL `/mnt/c/`.
+            tracing::warn!(
+                path = %rel.display(),
+                "reconcile: skipping non-UTF-8 path (will not be indexed until renamed)",
+            );
+            continue;
         }
     };
-    if allowed.contains(host) {
-        Ok(next.run(req).await)
-    } else {
-        tracing::warn!(host = %host, "serve: rejected request with disallowed Host header");
-        Err((StatusCode::BAD_REQUEST, "disallowed Host header"))
-    }
-}
 ```
 
-### Notes
-
-Existing `src/serve/tests.rs` fixtures via `Request::builder()` need `.header(HOST, "127.0.0.1:8080")` added. P1.12 covers the same bypass at higher priority — confirm this finding hasn't been swept into that fix already; if so, mark resolved.
-
----
-
-## P2.58 — --bind 0.0.0.0 host-allowlist breaks LAN
-
-**Finding:** P2.58 in audit-triage.md
-**Files:** `src/serve/mod.rs:207-218`
-**Why:** Wildcard bind populates allowlist with `{loopback, 0.0.0.0, 0.0.0.0:port}` only. LAN clients sending `Host: 192.168.1.5:8080` get 400, push operators to `--no-auth`.
-
-### Current code
-
-`src/serve/mod.rs:207-218`:
-
 ```rust
-pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
-    let port = bind_addr.port();
-    let mut set = HashSet::new();
-    for host in ["localhost", "127.0.0.1", "[::1]"] {
-        set.insert(host.to_string());
-        set.insert(format!("{host}:{port}"));
-    }
-    // SocketAddr::to_string wraps IPv6 in brackets automatically.
-    set.insert(bind_addr.to_string());
-    set.insert(bind_addr.ip().to_string());
-    Arc::new(set)
-}
-```
-
-### Replacement
-
-```rust
-pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
-    let port = bind_addr.port();
-    let mut set = HashSet::new();
-    for host in ["localhost", "127.0.0.1", "[::1]"] {
-        set.insert(host.to_string());
-        set.insert(format!("{host}:{port}"));
-    }
-    set.insert(bind_addr.to_string());
-    set.insert(bind_addr.ip().to_string());
-
-    // SEC-V1.30: when binding to a wildcard, we have no way to know which
-    // interface IP a legitimate LAN client will dial. Enumerate all local
-    // interfaces and add their IPs (plus `:port`) to the allowlist so
-    // teammate browsers on the same VLAN don't get 400'd into `--no-auth`.
-    if bind_addr.ip().is_unspecified() {
-        if let Ok(addrs) = if_addrs::get_if_addrs() {
-            for ifa in addrs {
-                let ip = ifa.ip().to_string();
-                set.insert(ip.clone());
-                set.insert(format!("{ip}:{port}"));
-            }
-        } else {
+// src/lib.rs:680-685 — surface case-insensitive-FS disagreement
+if path.starts_with(&root) {
+    match path.strip_prefix(&root) {
+        Ok(rel) => Some(rel.to_path_buf()),
+        Err(_) => {
+            // RB-6: starts_with said yes but strip_prefix said no —
+            // case-insensitive filesystem (NTFS/HFS+) where byte
+            // comparison sees `Cqs` vs `cqs` as different. Skip and
+            // warn so the operator sees the disagreement; the
+            // alternative (unwrap_or(&path)) silently leaks an
+            // absolute path into the rel workflow and breaks every
+            // downstream lookup.
             tracing::warn!(
-                "wildcard bind: failed to enumerate interfaces; LAN clients may hit \
-                 disallowed-Host 400. Use an explicit --bind <ip> if this is a problem."
+                path = %path.display(),
+                root = %root.display(),
+                "enumerate_files: starts_with passed but strip_prefix failed \
+                 (case-insensitive fs?) — skipping",
             );
+            None
         }
     }
-    Arc::new(set)
+} else {
+    tracing::warn!(path = %e.path().display(), "Skipping path outside project");
+    None
 }
 ```
 
-### Notes
+### Verification
 
-Adds `if_addrs` workspace dep — confirm via `Cargo.toml` whether it's already pulled in transitively (`notify` may already use it). If a new dep is unwanted, the alternative is to skip the host-header check entirely when `bind.is_unspecified()` and emit a one-line stderr at startup. State the trade-off in the verifier's PR.
+- `cargo build --features gpu-index`.
+- Linux test: create file with non-UTF-8 bytes (`touch $(printf 'foo\xff.rs')`), run reconcile, observe warn line + file absent from `pending_files`.
+- Windows test (manual): in a repo at `C:\Projects\cqs`, force a path with mismatched case via junction; run `cqs index` and check for the warn rather than absolute paths in the chunk store.
 
 ---
 
-## P2.59 — Migration restore_from_backup overwrites live DB while pool open
+## P2: EH-V1.30.1-1 — Parse failure leaves file with stale chunks AND no mtime update — reconciles forever
 
-**Finding:** P2.59 in audit-triage.md
-**Files:** `src/store/backup.rs:171-180`, `src/store/migrations.rs:106-128`
-**Why:** Atomic-replace over `db_path` while the SQLite pool from `migrate()`'s caller still holds open file descriptors. Pool sees old (unlinked) inode; new processes see restored DB. Two-state divergence in daemon contexts.
-
-### Current code
-
-`src/store/backup.rs:171-180`:
-
-```rust
-pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<(), StoreError> {
-    let _span = tracing::info_span!("restore_from_backup").entered();
-    copy_triplet(backup_db, db_path)?;
-    tracing::info!(
-        db = %db_path.display(),
-        backup = %backup_db.display(),
-        "Restored DB from backup after migration failure"
-    );
-    Ok(())
-}
-```
-
-### Replacement
-
-Change the contract: `restore_from_backup` requires the caller to drop the pool first. Update the caller in `src/store/migrations.rs:106-128` to drop pool before calling.
-
-```rust
-/// Restore a DB file (+ WAL/SHM sidecars) from a backup.
-///
-/// # Safety
-/// Caller MUST close every pool open against `db_path` BEFORE calling. SQLite
-/// in-process pools hold file descriptors against the old inode that the
-/// atomic replace unlinks; queries through those descriptors after restore
-/// see the unlinked-old inode while new processes see the backup. Two-state
-/// divergence is silent — the WAL/SHM sidecars copied alongside the main DB
-/// land on the new inode while the pool's mmap'd sidecars belong to the old.
-///
-/// Public API note: callers that re-open a pool after restore must reopen
-/// fresh; the in-process Store handle held during migration is invalid.
-pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<(), StoreError> {
-    let _span = tracing::info_span!("restore_from_backup").entered();
-    copy_triplet(backup_db, db_path)?;
-    tracing::info!(
-        db = %db_path.display(),
-        backup = %backup_db.display(),
-        "Restored DB from backup after migration failure"
-    );
-    Ok(())
-}
-```
-
-And in `src/store/migrations.rs:106-128`, hoist the pool close before the restore call. Use `pool.close().await` (via the existing `rt.block_on`) on every pool the migration owns.
-
-### Notes
-
-Verifier needs to read `migrations.rs:106-128` to identify the actual pool ownership. The minimal fix is correct documentation + caller-side `pool.close().await`. Add `PRAGMA wal_checkpoint(TRUNCATE)` against the live DB before restore to ensure WAL is drained.
-
----
-
-## P2.60 — stream_summary_writer bypasses WRITE_LOCK
-
-**Finding:** P2.60 in audit-triage.md
-**Files:** `src/store/chunks/crud.rs:504-545`
-**Why:** Streamed `INSERT OR IGNORE` from LLM provider threads runs against the SqlitePool directly, no WRITE_LOCK. Concurrent reindex contends for SQLite's exclusive lock; per-row implicit transactions are 1 fsync per row.
+**Files:** `src/cli/watch/reindex.rs:255-314`
+**Effort:** ~45 minutes
+**Why:** When `parser.parse_file_all_with_chunk_calls` returns `Err`, the watch loop emits `vec![]` for that file. The previous chunks stay as ghosts (no `upsert_*_and_prune` call), AND `chunks.source_mtime` is never updated, so reconcile keeps classifying the file MODIFIED on every tick — unbounded reindex-fail-warn loop until the syntax error is fixed.
 
 ### Current code
 
-`src/store/chunks/crud.rs:504-540`:
-
 ```rust
-    pub fn stream_summary_writer(
-        &self,
-        model: String,
-        purpose: String,
-    ) -> crate::llm::provider::OnItemCallback {
-        use std::sync::Arc;
-        let pool = self.pool.clone();
-        let rt = Arc::clone(&self.rt);
-        Box::new(move |custom_id: &str, text: &str| {
-            let now = chrono::Utc::now().to_rfc3339();
-            let pool = pool.clone();
-            let model = model.clone();
-            let purpose = purpose.clone();
-            let custom_id = custom_id.to_string();
-            let text = text.to_string();
-            let result = rt.block_on(async move {
-                sqlx::query(
-                    "INSERT OR IGNORE INTO llm_summaries \
-                     (content_hash, summary, model, purpose, created_at) \
-                     VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind(&custom_id)
-                .bind(&text)
-                .bind(&model)
-                .bind(&purpose)
-                .bind(&now)
-                .execute(&pool)
-                .await
-            });
-            if let Err(e) = result { /* ... */ }
-        })
-    }
-```
-
-### Replacement
-
-Move the streamed inserts through a buffered queue drained under `begin_write()`. Spawn a single drain task that reads from a `Mutex<Vec<(custom_id, text)>>` flushed every ~200ms or when 64 entries accumulate.
-
-```rust
-    pub fn stream_summary_writer(
-        &self,
-        model: String,
-        purpose: String,
-    ) -> crate::llm::provider::OnItemCallback {
-        use std::sync::Arc;
-        // Buffered queue: streamed callbacks push into this Vec; a drain
-        // task flushes under begin_write() so all writes serialize through
-        // WRITE_LOCK like every other Store mutation. The mutex is local to
-        // this writer instance — concurrent stream_summary_writer calls get
-        // their own queues.
-        let queue: Arc<std::sync::Mutex<Vec<(String, String)>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let rt = Arc::clone(&self.rt);
-        let pool = self.pool.clone();
-        let write_lock = self.write_lock(); // assuming a getter for WRITE_LOCK Arc<Mutex<()>>
-        let queue_drain = Arc::clone(&queue);
-        let model_drain = model.clone();
-        let purpose_drain = purpose.clone();
-
-        // Spawn drain thread; flushes at most every 200ms or when 64 items
-        // queued. Exits when queue is dropped (Arc strong_count reaches 1).
-        rt.spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let drained: Vec<(String, String)> = {
-                    let mut q = queue_drain.lock().unwrap_or_else(|p| p.into_inner());
-                    if q.is_empty() {
-                        if Arc::strong_count(&queue_drain) == 1 { break; }
-                        continue;
-                    }
-                    std::mem::take(&mut *q)
-                };
-                let _g = write_lock.lock().await;
-                let now = chrono::Utc::now().to_rfc3339();
-                let mut tx = match pool.begin().await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "stream_summary_writer drain begin failed");
-                        continue;
-                    }
-                };
-                for (custom_id, text) in drained {
-                    let _ = sqlx::query(
-                        "INSERT OR IGNORE INTO llm_summaries \
-                         (content_hash, summary, model, purpose, created_at) \
-                         VALUES (?, ?, ?, ?, ?)",
-                    )
-                    .bind(&custom_id)
-                    .bind(&text)
-                    .bind(&model_drain)
-                    .bind(&purpose_drain)
-                    .bind(&now)
-                    .execute(&mut *tx)
-                    .await;
+// src/cli/watch/reindex.rs:308-314
+                    file_chunks
                 }
-                let _ = tx.commit().await;
+                Err(e) => {
+                    tracing::warn!(path = %abs_path.display(), error = %e, "Failed to parse file");
+                    vec![]
+                }
             }
-        });
-
-        Box::new(move |custom_id: &str, text: &str| {
-            let mut q = queue.lock().unwrap_or_else(|p| p.into_inner());
-            q.push((custom_id.to_string(), text.to_string()));
-        })
-    }
 ```
 
-### Notes
+### Replacement / approach
 
-Requires exposing `WRITE_LOCK` accessor on `Store`. If not present, expose via `pub(crate) fn write_lock(&self) -> Arc<...>`. Verifier must check the lock implementation (sync `std::sync::Mutex` vs Tokio `Mutex`) and adjust accordingly. The above is a sketch — actual impl needs to match `begin_write()` signatures.
-
-If a full async drain is too invasive, an interim fix is to acquire WRITE_LOCK inside the callback before each insert (still per-row, but properly serialized). That's a smaller diff.
-
----
-
-## P2.61 — slot_remove TOCTOU on concurrent promote
-
-**Finding:** P2.61 in audit-triage.md
-**Files:** `src/cli/commands/infra/slot.rs:299-350`
-**Why:** Read active_slot → list_slots → remove_dir_all is non-atomic; concurrent promote can change active between steps, leaving system pointing at deleted slot.
-
-### Current code
-
-`src/cli/commands/infra/slot.rs:299-350` (excerpted):
+1. On parse failure, still touch `chunks.source_mtime` for this file so reconcile sees `disk == stored` and stops requeuing.
+2. Optionally also queue the file's chunks for deletion (matching the deleted-file branch at line 244-253) so a syntax-error file doesn't keep ghost results in search.
+3. Add a `parse_errors` counter to `WatchState` and surface it in `WatchSnapshot` so `cqs status --watch-fresh` shows stuck files.
 
 ```rust
-fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("slot_remove", name, force).entered();
-    validate_slot_name(name)?;
-    let dir = slot_dir(project_cqs_dir, name);
-    if !dir.exists() {
-        let available = list_slots(project_cqs_dir).unwrap_or_default().join(", ");
-        anyhow::bail!(/*...*/);
-    }
-    let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
-    let mut all = list_slots(project_cqs_dir).unwrap_or_default();
-    all.retain(|n| n != name);
-    if name == active { /*...*/ }
-    fs::remove_dir_all(&dir)?;
-    /*...*/
-}
-```
-
-### Replacement
-
-Wrap the entire read-validate-mutate sequence in an exclusive lock on `.cqs/slots.lock`, mirroring `notes.toml.lock`:
-
-```rust
-fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("slot_remove", name, force).entered();
-    validate_slot_name(name)?;
-
-    // Take an exclusive lock so concurrent slot_promote / slot_create /
-    // slot_remove can't race the read-validate-mutate sequence below.
-    let _slots_lock = cqs::slot::acquire_slots_lock(project_cqs_dir)?;
-
-    let dir = slot_dir(project_cqs_dir, name);
-    // ... rest unchanged
-}
-```
-
-Add `acquire_slots_lock` helper in `src/slot/mod.rs`:
-
-```rust
-/// Acquire an exclusive flock on `.cqs/slots.lock`. Held for the duration of
-/// any slot lifecycle operation (create/promote/remove) so concurrent calls
-/// across processes serialize. Lock file is created if missing.
-pub fn acquire_slots_lock(project_cqs_dir: &Path) -> Result<std::fs::File, SlotError> {
-    fs::create_dir_all(project_cqs_dir).map_err(|source| SlotError::Io {
-        slot: "slots.lock".to_string(),
-        source,
-    })?;
-    let path = project_cqs_dir.join("slots.lock");
-    let f = fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .map_err(|source| SlotError::Io {
-            slot: "slots.lock".to_string(),
-            source,
-        })?;
-    f.lock().map_err(|source| SlotError::Io {
-        slot: "slots.lock".to_string(),
-        source,
-    })?;
-    Ok(f)
-}
-```
-
-Apply the same `acquire_slots_lock` at the top of `slot_create` and `slot_promote`.
-
-### Notes
-
-`std::fs::File::lock()` is Rust 1.89+, MSRV 1.95 covers it. Rolls together P2.62 and P2.34 (same TOCTOU class). Add a regression test that spawns two threads, each calls `slot_remove` and `slot_promote` for the same target, asserts no orphaned active_slot pointer.
-
----
-
-## P2.62 — Slot legacy migration moves live WAL/SHM
-
-**Finding:** P2.62 in audit-triage.md
-**Files:** `src/slot/mod.rs:511-624`
-**Why:** Migration moves `index.db-wal`/`-shm` without checkpointing first. Cross-device fallback is non-atomic — interrupt mid-copy can leave new index.db without WAL, SQLite then truncates uncommitted pages.
-
-### Current code
-
-`src/slot/mod.rs:511-545` (start of `migrate_legacy_index_to_default_slot`):
-
-```rust
-pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bool, SlotError> {
-    let _span = tracing::info_span!(
-        "migrate_legacy_index_to_default_slot",
-        cqs_dir = %project_cqs_dir.display()
-    )
-    .entered();
-    if !project_cqs_dir.exists() { return Ok(false); }
-    let slots_dir = slots_root(project_cqs_dir);
-    if slots_dir.exists() { return Ok(false); }
-    let legacy_index = project_cqs_dir.join(crate::INDEX_DB_FILENAME);
-    if !legacy_index.exists() { return Ok(false); }
-    let dest = slot_dir(project_cqs_dir, DEFAULT_SLOT);
-    fs::create_dir_all(&dest).map_err(/*...*/)?;
-    let migration_files = collect_migration_files(project_cqs_dir);
-    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for src in &migration_files { /* move_file */ }
-    /* ... */
-}
-```
-
-### Replacement
-
-Insert a WAL-checkpoint step before the file moves so WAL is drained into main DB:
-
-```rust
-pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bool, SlotError> {
-    let _span = tracing::info_span!(/*...*/).entered();
-    if !project_cqs_dir.exists() { return Ok(false); }
-    let slots_dir = slots_root(project_cqs_dir);
-    if slots_dir.exists() { return Ok(false); }
-    let legacy_index = project_cqs_dir.join(crate::INDEX_DB_FILENAME);
-    if !legacy_index.exists() { return Ok(false); }
-
-    // Drain any uncommitted WAL pages into the main DB before we move files.
-    // Without this, the move shuffles index.db, index.db-wal, and index.db-shm
-    // separately; a non-atomic copy + remove (the EXDEV cross-device fallback
-    // in move_file) can interrupt between index.db and index.db-wal, leaving
-    // the new slots/default/index.db without its WAL — SQLite then opens the
-    // partial DB and silently truncates the missing pages.
-    if let Err(e) = checkpoint_legacy_index(&legacy_index) {
-        // Non-fatal: the moves still proceed atomically on same-fs renames.
-        // On cross-device, the user accepts the remaining risk — log loudly.
-        tracing::warn!(
-            error = %e,
-            "Failed to checkpoint legacy index.db before migration; cross-device move \
-             may lose uncommitted WAL pages"
-        );
-    }
-
-    let dest = slot_dir(project_cqs_dir, DEFAULT_SLOT);
-    fs::create_dir_all(&dest).map_err(/*...*/)?;
-    /* unchanged */
-}
-
-/// Open the legacy DB and run `PRAGMA wal_checkpoint(TRUNCATE)` so the WAL
-/// sidecar is empty before the migration moves files. Closes the connection
-/// after the pragma so file handles don't leak into the move loop.
-fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
-    let conn = rusqlite::Connection::open(legacy_index)
-        .map_err(|e| SlotError::Migration(format!("open legacy db: {e}")))?;
-    conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
-        .map_err(|e| SlotError::Migration(format!("checkpoint: {e}")))?;
-    Ok(())
-}
-```
-
-### Notes
-
-If `rusqlite` isn't a dep here, use `sqlx` via a small `tokio::runtime` block. Verifier should pick whichever matches local conventions. Also see P2.34 (rollback half-state) — same migration, related fix; ideally combined into one PR.
-
----
-
-## P2.63 — model_fingerprint Unix timestamp fallback
-
-**Finding:** P2.63 in audit-triage.md
-**Files:** `src/embedder/mod.rs:435-465`
-**Why:** Four error branches use `format!("{}:{}", repo, ts)` where ts changes per restart. Cross-slot copy by content_hash is broken; cache writes accumulate as orphans.
-
-### Current code
-
-`src/embedder/mod.rs:435-465` (excerpted):
-
-```rust
-                                Err(e) => {
-                                    tracing::warn!(error = %e, "Failed to stream-hash model, using repo+timestamp fallback");
-                                    let ts = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs();
-                                    format!("{}:{}", self.model_config.repo, ts)
+                Err(e) => {
+                    tracing::warn!(
+                        path = %abs_path.display(),
+                        error = %e,
+                        "Failed to parse file — touching mtime to break reconcile loop",
+                    );
+                    // EH-V1.30.1-1: refresh source_mtime so reconcile.rs:124
+                    // sees disk == stored and stops re-queuing this file every
+                    // 30 s. The file stays unindexed (its previous chunks may
+                    // still serve from the index as ghosts — that's accepted
+                    // until the user fixes the syntax error and triggers a
+                    // re-parse). The mtime touch is the load-bearing piece.
+                    if let Ok(meta) = std::fs::metadata(&abs_path) {
+                        if let Ok(disk_mtime) = meta.modified() {
+                            if let Ok(d) = disk_mtime.duration_since(std::time::UNIX_EPOCH) {
+                                let mtime_ms = cqs::duration_to_mtime_millis(d);
+                                if let Err(touch_err) =
+                                    store.touch_source_mtime(rel_path, mtime_ms)
+                                {
+                                    tracing::warn!(
+                                        path = %rel_path.display(),
+                                        error = %touch_err,
+                                        "Failed to touch source_mtime for parse-failed file",
+                                    );
                                 }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to open model for fingerprint, using repo+timestamp fallback");
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    format!("{}:{}", self.model_config.repo, ts)
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to get model paths for fingerprint, using repo+timestamp fallback");
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            format!("{}:{}", self.model_config.repo, ts)
-        }
-```
-
-### Replacement
-
-Replace the three timestamp fallbacks with a stable shape derived from repo + file size (when available) + a `:fallback` discriminator. Prefer file size when readable; fall back to repo only if size is unavailable.
-
-```rust
-/// Stable fallback fingerprint shape — must NOT include any value that
-/// changes across process restarts. Cross-slot embedding cache copy by
-/// content_hash relies on the model fingerprint matching across runs, so a
-/// per-restart timestamp fragments the cache and orphans every fallback
-/// embedding. File size is the lightest stable discriminator we can compute
-/// without re-reading the file; if even size is unavailable we still want a
-/// stable string so multiple fallback runs collide on the same key.
-fn fallback_fingerprint(repo: &str, model_path: Option<&Path>) -> String {
-    let size = model_path
-        .and_then(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len())
-        .unwrap_or(0);
-    format!("{}:fallback:size={}", repo, size)
-}
-```
-
-Then at each of the three error sites:
-
-```rust
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Failed to stream-hash model, using stable fallback fingerprint"
-                                    );
-                                    fallback_fingerprint(&self.model_config.repo, Some(&model_path))
-                                }
-```
-
-```rust
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to open model for fingerprint, using stable fallback fingerprint"
-                    );
-                    fallback_fingerprint(&self.model_config.repo, Some(&model_path))
+                    vec![]
                 }
 ```
 
-```rust
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "Failed to get model paths for fingerprint, using stable fallback fingerprint"
-            );
-            fallback_fingerprint(&self.model_config.repo, None)
-        }
-```
+`Store::touch_source_mtime(&Path, i64)` does not exist yet (verified — `grep -rn touch_source_mtime src/` returns nothing). Add it as a thin `UPDATE chunks SET source_mtime = ? WHERE origin = ?` wrapper next to `delete_by_origin` (`src/store/chunks/crud.rs:614`).
 
-### Notes
-
-Verifier must read the surrounding context to thread the actual `model_path` binding into the first two arms (the path is in scope at the inner Err arm because the outer match opened the file). P1.8 covers the same fingerprint failure as a separate finding — confirm both fixes converge to the same `fallback_fingerprint` helper.
-
----
-
-## P2.64 — Daemon serializes ALL queries through one Mutex
-
-**Finding:** P2.64 in audit-triage.md
-**Files:** `src/cli/watch.rs:1775-1858`
-**Why:** `Arc<Mutex<BatchContext>>` wraps the entire dispatch path. Slow query (LLM batch fetch, large gather) blocks every other reader. Deadlock surface with stream_summary_writer.
-
-### Current code
-
-`src/cli/watch.rs:1775`:
+**Critical:** the helper MUST call `crate::normalize_path(origin)` before binding to `WHERE origin = ?` — see `delete_by_origin` at `src/store/chunks/crud.rs:614-616` for the canonical pattern (`let origin_str = crate::normalize_path(origin);`). Without normalization the path-vs-origin string format won't match what the indexer stored (Windows `\\` vs Unix `/` separator, leading `./`, etc.) and the UPDATE will silently affect zero rows — defeating the entire fix.
 
 ```rust
-                let ctx = Arc::new(Mutex::new(ctx));
-```
+/// Refresh source_mtime on every chunk for `origin` without touching content.
+/// Used by the watch loop's parse-failure path so reconcile sees disk == stored
+/// and stops re-queuing files that the parser cannot handle.
+pub fn touch_source_mtime(&self, origin: &Path, mtime_ms: i64) -> Result<u32, StoreError> {
+    let _span = tracing::debug_span!("touch_source_mtime", origin = %origin.display()).entered();
+    let origin_str = crate::normalize_path(origin); // load-bearing — must match indexer's key format
 
-`src/cli/watch.rs:1853-1858`:
-
-```rust
-                            if let Err(e) = std::thread::Builder::new()
-                                .name("cqs-daemon-client".to_string())
-                                .spawn(move || {
-                                    handle_socket_client(stream, &ctx_clone);
-                                    in_flight_clone.fetch_sub(1, Ordering::AcqRel);
-                                })
-```
-
-### Replacement
-
-Convert the outer `Mutex<BatchContext>` to `RwLock<BatchContext>` — read-heavy paths (search, callers, stats) take `read()`; mutation paths (sweep_idle_sessions, reload notes, set_pending_*) take `write()`.
-
-```rust
-                let ctx = Arc::new(std::sync::RwLock::new(ctx));
-```
-
-Then inside `handle_socket_client` (and the periodic sweep), pick the right lock kind. The sweep at `:1807-1812` becomes:
-
-```rust
-                    if last_idle_sweep.elapsed() >= idle_sweep_interval {
-                        if let Ok(mut ctx_guard) = ctx.try_write() {
-                            ctx_guard.sweep_idle_sessions();
-                        }
-                        last_idle_sweep = std::time::Instant::now();
-                    }
-```
-
-Inside `handle_socket_client`, `ctx.read()` for read-only dispatch, `ctx.write()` for mutators. This requires walking the dispatch table to classify each command.
-
-### Notes
-
-This is a non-trivial refactor — the verifier should treat it as a focused PR, not a sweep. Alternative phase 1: keep `Mutex` but split BatchContext into per-resource mutexes (sessions, notes cache, embedder). The audit names both options; pick based on remaining work pressure. State this trade-off explicitly in the PR description.
-
-If RwLock pivot is chosen, audit `stream_summary_writer` (P2.60) — its callbacks fire from outside the daemon thread, must NOT live inside the RwLock guard.
-
----
-
-## P2.65 — embedding_cache schema purpose conflation
-
-**Finding:** P2.65 in audit-triage.md
-**Files:** `src/cache.rs:159-171`
-**Why:** Cache PRIMARY KEY is `(content_hash, model_fingerprint)` — no `purpose` column distinguishing `embedding` vs `embedding_base`. Lookups can return wrong vector after #1040 enrichment overwrites only `embedding`.
-
-### Current code
-
-`src/cache.rs:159-178`:
-
-```rust
-            sqlx::query(
-                "CREATE TABLE IF NOT EXISTS embedding_cache (
-                    content_hash TEXT NOT NULL,
-                    model_fingerprint TEXT NOT NULL,
-                    embedding BLOB NOT NULL,
-                    dim INTEGER NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    PRIMARY KEY (content_hash, model_fingerprint)
-                )",
-            )
-```
-
-### Replacement
-
-Schema migration: add `purpose` column (default `'embedding'`), include in PK. New rows MUST set purpose; old rows take the default.
-
-```rust
-            sqlx::query(
-                "CREATE TABLE IF NOT EXISTS embedding_cache (
-                    content_hash TEXT NOT NULL,
-                    model_fingerprint TEXT NOT NULL,
-                    purpose TEXT NOT NULL DEFAULT 'embedding',
-                    embedding BLOB NOT NULL,
-                    dim INTEGER NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    PRIMARY KEY (content_hash, model_fingerprint, purpose)
-                )",
-            )
-            .execute(&pool)
+    self.rt.block_on(async {
+        let (_guard, mut tx) = self.begin_write().await?;
+        let result = sqlx::query("UPDATE chunks SET source_mtime = ?1 WHERE origin = ?2")
+            .bind(mtime_ms)
+            .bind(&origin_str)
+            .execute(&mut *tx)
             .await?;
-
-            // Idempotent migration for existing caches: ALTER TABLE if the
-            // column doesn't exist. SQLite ignores the ADD COLUMN if the
-            // table is fresh (the CREATE above already includes purpose).
-            sqlx::query(
-                "ALTER TABLE embedding_cache ADD COLUMN purpose TEXT NOT NULL DEFAULT 'embedding'"
-            )
-            .execute(&pool)
-            .await
-            .ok(); // ignore "duplicate column" error on already-migrated caches
-```
-
-Then update read/write sites: `read_batch`, `write_batch`, `evict()` queries — every site that touches the cache must bind `purpose`. Find all sites with `grep -n 'embedding_cache' src/cache.rs`.
-
-### Notes
-
-This is a cache schema migration — bumps embedding_cache schema version (separate from main `chunks` schema v22). Document in CHANGELOG. Old cache rows ALTER-defaulted to `'embedding'` is correct because `embedding_base` cache writes have never happened (the audit confirms PR #1040 only writes `embedding`). After this lands, writers that want to cache `embedding_base` pass `purpose='embedding_base'` and lookups disambiguate.
-
----
-
-## P2.66 — Cache evict() vs write_batch() race
-
-**Finding:** P2.66 in audit-triage.md
-**Files:** `src/cache.rs:354-460`
-**Why:** `evict()` holds `evict_lock` mutex; `write_batch()` does NOT. Under WAL, evict's BEGIN takes a snapshot; concurrent commit between SELECT-size and DELETE deletes just-inserted rows.
-
-### Current code
-
-`src/cache.rs:354-398` (`write_batch` opens a transaction without `evict_lock`):
-
-```rust
-    pub fn write_batch(
-        &self,
-        entries: &[(&str, &[f32])],
-        model_fingerprint: &str,
-        dim: usize,
-    ) -> Result<usize, CacheError> {
-        // ... no evict_lock acquisition ...
-        self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
-            // ...
-        })
-    }
-```
-
-`src/cache.rs:408-416` (`evict` acquires `evict_lock`):
-
-```rust
-    pub fn evict(&self) -> Result<usize, CacheError> {
-        let _span = tracing::info_span!("cache_evict").entered();
-        let _guard = self
-            .evict_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.rt.block_on(async { /* ... */ })
-    }
-```
-
-### Replacement
-
-Acquire `evict_lock` in `write_batch` too (same pattern):
-
-```rust
-    pub fn write_batch(
-        &self,
-        entries: &[(&str, &[f32])],
-        model_fingerprint: &str,
-        dim: usize,
-    ) -> Result<usize, CacheError> {
-        // DS-V1.30: hold evict_lock across writes too so concurrent evict()
-        // can't measure size, then delete rows committed by an in-flight
-        // write_batch between its SELECT and DELETE. Without this, a writer
-        // sees its INSERT succeed while a cross-session read sees a cache
-        // miss — silently re-embedding chunks the cache "should" have.
-        let _evict_guard = self
-            .evict_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        let _span = tracing::info_span!(/* existing */).entered();
-        // ... rest unchanged
-    }
-```
-
-### Notes
-
-Per-batch lock is cheap. Verify naming (`evict_lock` field) by reading `EmbeddingCache` struct definition. If the lock name differs (e.g. `write_lock`), align. Add a regression test that spawns concurrent `write_batch` + `evict` and asserts no row written by `write_batch` is deleted by the racing `evict`.
-
----
-
-## P2.67 — reindex_files double-parses calls per chunk
-
-**Finding:** P2.67 in audit-triage.md
-**Files:** `src/cli/watch.rs:2815, 2930-2939`
-**Why:** Watch path uses `parse_file_all` (returns file-level `calls`), then re-runs `extract_calls_from_chunk` per chunk. Bulk pipeline already uses `parse_file_all_with_chunk_calls`. ~14k extra tree-sitter parses per repo-wide reindex.
-
-### Current code
-
-`src/cli/watch.rs:2815, 2930-2939`:
-
-```rust
-            match parser.parse_file_all(&abs_path) {
-                Ok((mut file_chunks, calls, chunk_type_refs)) => {
-                    /* ... */
-                    if let Err(e) = store.upsert_function_calls(rel_path, &calls) { /* ... */ }
-                    file_chunks
-                }
-                /* ... */
-            }
-        })
-        .collect();
-
-    /* ... */
-
-    // DS-2: Extract call graph from chunks (same loop), then use atomic upsert.
-    let mut calls_by_id: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
-    for chunk in &chunks {
-        let calls = parser.extract_calls_from_chunk(chunk);
-        if !calls.is_empty() {
-            calls_by_id
-                .entry(chunk.id.clone())
-                .or_default()
-                .extend(calls);
-        }
-    }
-```
-
-### Replacement
-
-Switch the inner parse to `parse_file_all_with_chunk_calls`. The fourth tuple element is `Vec<(String, CallSite)>` keyed by absolute-path chunk id; rewrite ids using the same prefix-strip the watch path already does for `chunk.id`, then build `calls_by_id` from the returned chunk_calls without re-parsing.
-
-```rust
-            match parser.parse_file_all_with_chunk_calls(&abs_path) {
-                Ok((mut file_chunks, calls, chunk_type_refs, chunk_calls)) => {
-                    /* path rewrite block unchanged */
-                    let abs_norm = cqs::normalize_path(&abs_path);
-                    let rel_norm = cqs::normalize_path(rel_path);
-                    for chunk in &mut file_chunks {
-                        chunk.file = rel_path.clone();
-                        if let Some(rest) = chunk.id.strip_prefix(abs_norm.as_str()) {
-                            chunk.id = format!("{}{}", rel_norm, rest);
-                        }
-                    }
-                    if !chunk_type_refs.is_empty() {
-                        all_type_refs.push((rel_path.clone(), chunk_type_refs));
-                    }
-                    if let Err(e) = store.upsert_function_calls(rel_path, &calls) { /* ... */ }
-                    // Stash chunk-level calls keyed by the post-rewrite chunk id.
-                    for (abs_chunk_id, call) in chunk_calls {
-                        let chunk_id = match abs_chunk_id.strip_prefix(abs_norm.as_str()) {
-                            Some(rest) => format!("{}{}", rel_norm, rest),
-                            None => abs_chunk_id,
-                        };
-                        per_file_chunk_calls.push((chunk_id, call));
-                    }
-                    file_chunks
-                }
-                /* ... */
-            }
-```
-
-Replace the per-chunk `extract_calls_from_chunk` loop with a fold over the collected `per_file_chunk_calls`:
-
-```rust
-    let mut calls_by_id: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
-    for (chunk_id, call) in per_file_chunk_calls {
-        calls_by_id.entry(chunk_id).or_default().push(call);
-    }
-```
-
-### Notes
-
-`per_file_chunk_calls` needs to be a top-level `Vec<(String, CallSite)>` accumulator outside the `flat_map`, or threaded via `(file_chunks, Vec<(String, CallSite)>)` tuples. Inspect actual loop shape in watch.rs before applying — the `.collect()` at line 2866 may need restructuring.
-
----
-
-## P2.68 — reindex_files watch path bypasses global EmbeddingCache
-
-**Finding:** P2.68 in audit-triage.md
-**Files:** `src/cli/watch.rs:2876-2887` vs `src/cli/pipeline/embedding.rs:39-62`
-**Why:** Watch path only checks `store.get_embeddings_by_hashes`; never sees the per-project `EmbeddingCache` from #1105. File saves in watch mode pay GPU cost for every chunk not in current slot's `chunks.embedding`.
-
-### Current code
-
-`src/cli/watch.rs:2876-2887`:
-
-```rust
-    // Check content hash cache to skip re-embedding unchanged chunks
-    let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-    let existing = store.get_embeddings_by_hashes(&hashes)?;
-
-    let mut cached: Vec<(usize, Embedding)> = Vec::new();
-    let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
-    for (i, chunk) in chunks.iter().enumerate() {
-        if let Some(emb) = existing.get(&chunk.content_hash) {
-            cached.push((i, emb.clone()));
-        } else {
-            to_embed.push((i, chunk));
-        }
-    }
-```
-
-### Replacement
-
-Plumb `Option<&EmbeddingCache>` through `cmd_watch` → `WatchConfig` → `reindex_files`. Replace the manual two-tier check with `prepare_for_embedding` from the bulk pipeline:
-
-```rust
-    use crate::cli::pipeline::embedding::prepare_for_embedding;
-    let prep = prepare_for_embedding(
-        &chunks,
-        store,
-        config.global_cache, // Option<&EmbeddingCache>
-        embedder.model_fingerprint(),
-        embedder.dim(),
-    )?;
-    let cached = prep.cached;
-    let to_embed = prep.to_embed;
-```
-
-(Adapt to the actual `prepare_for_embedding` return shape — read `src/cli/pipeline/embedding.rs:39-82` to confirm the API.)
-
-### Notes
-
-This consolidates P2.67, P2.68, P3.41, P3.42, P3.46 — all watch reindex hot path issues. Verifier may bundle as one PR. The `WatchConfig` struct at `src/cli/watch.rs:572` needs a new field for the global cache. Lifetime threading: `EmbeddingCache` is owned by `cmd_watch`, borrowed for the watch loop's lifetime — straightforward.
-
----
-
-## P2.69 — wrap_value deep-clones via serde round trip
-
-**Finding:** P2.69 in audit-triage.md
-**Files:** `src/cli/json_envelope.rs:160-176`
-**Why:** `serde_json::to_value(Envelope::ok(&payload))` walks the entire payload tree and rebuilds it. ~30KB allocator churn per gather call at 100 QPS = ~3MB/s pointless allocations.
-
-### Current code
-
-`src/cli/json_envelope.rs:160-176`:
-
-```rust
-pub fn wrap_value(payload: &serde_json::Value) -> serde_json::Value {
-    serde_json::to_value(Envelope::ok(payload)).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "wrap_value: envelope serialization failed; emitting fallback shape");
-        let owned = payload.clone();
-        serde_json::json!({
-            "data": owned,
-            "error": null,
-            "version": JSON_OUTPUT_VERSION,
-        })
+        tx.commit().await?;
+        Ok(result.rows_affected() as u32)
     })
 }
 ```
 
-### Replacement
+### Verification
 
-Build the envelope as a `serde_json::Map` directly. The shallow clone of the outer payload is unavoidable when callers pass `&Value`; a follow-on can make `wrap_value` take `Value` by value to drop even that.
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib store -- touch_source_mtime` (add a unit test that asserts `rows_affected > 0` for a chunk inserted with the indexer's normalized origin format).
+- Smoke: introduce a syntax error in a watched file (`echo 'fn foo(' > foo.rs`); observe one warn line then no further requeue spam in `journalctl`. Fix the syntax error, file gets reindexed.
+
+---
+
+## P2: EH-V1.30.1-8 — watch reindex failure leaves HNSW dirty without observability
+
+**Reframed during verification:** original title said `try_init_embedder Err leaves HNSW dirty`, but `try_init_embedder` returns `Option<Embedder>` (`None`, not `Err`) and the actual scope is the dirty-flag path at `events.rs:178-185` plus the `reindex_files` Err arm at line 419-421. Title and Why now describe the real symptom: a failed reindex cycle (SQLite busy, OOM, etc.) sets the dirty flag, the `Err` branch only emits a warn, and `clear_hnsw_dirty_with_retry` is never reached so the flag stays set indefinitely.
+
+**Files:** `src/cli/watch/events.rs:178-185` (dirty-flag set), `src/cli/watch/events.rs:419-421` (reindex_files Err arm)
+**Effort:** ~30 minutes
+**Why:** `set_hnsw_dirty(true)` runs at `events.rs:178-185` before every reindex attempt. When `reindex_files` returns `Err` (e.g. SQLite busy, panic, OOM), the match arm at line 419-421 just emits `warn!("Reindex error")` and returns — the matching `clear_hnsw_dirty_with_retry` (at line 364, only on the Ok path) never fires. There's no operator visibility into "we've been dirty for N cycles in a row" — each failed cycle just emits a warn and moves on.
+
+### Current code
 
 ```rust
-pub fn wrap_value(payload: &serde_json::Value) -> serde_json::Value {
-    // PF-V1.30: build the envelope as a Map directly. Previously we ran the
-    // payload through `serde_json::to_value(Envelope::ok(&payload))` which
-    // walks the inner tree and rebuilds every Map/Vec — a deep clone
-    // disguised as a re-serialization round trip. The hot-path daemon
-    // dispatch wraps tens of KB per query at hundreds of QPS, so the
-    // deep clone is real allocator pressure.
-    let mut env = serde_json::Map::with_capacity(3);
-    env.insert("data".to_string(), payload.clone());
-    env.insert("error".to_string(), serde_json::Value::Null);
+// src/cli/watch/events.rs:178-185
+    if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, true) {
+        tracing::warn!(error = %e, "Cannot set enriched HNSW dirty flag — skipping reindex to prevent stale index on crash");
+        return;
+    }
+    if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, true) {
+        tracing::warn!(error = %e, "Cannot set base HNSW dirty flag — skipping reindex to prevent stale index on crash");
+        return;
+    }
+```
+
+### Replacement / approach
+
+1. Add a `consecutive_dirty_cycles: u32` field to `WatchState`.
+2. In the `reindex_files` `Err` arm (or wherever the dirty-clear call lives), increment the counter on failure and reset to 0 on the success path right after `clear_hnsw_dirty_with_retry`.
+3. After increment, if `consecutive_dirty_cycles >= 3` emit a louder warn:
+
+```rust
+state.consecutive_dirty_cycles = state.consecutive_dirty_cycles.saturating_add(1);
+if state.consecutive_dirty_cycles >= 3 {
+    tracing::warn!(
+        cycles = state.consecutive_dirty_cycles,
+        "HNSW has been dirty for {N} cycles — search may serve stale results until \
+         reindex completes; check journalctl for prior errors",
+    );
+}
+```
+
+4. Surface the count in `WatchSnapshot` (add `consecutive_dirty_cycles: u32` field, plumb through `WatchSnapshotInput`).
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib watch_status` for new field's serde round-trip.
+- Manual: simulate failure by `chmod -w` on the index dir, confirm 3+ cycles produce the louder warn.
+
+---
+
+## P2: RB-9 — `wait_for_fresh` infinite poll loop on slow daemon (covered by P2-bundle-wait-fresh)
+
+**See:** P2-bundle-wait-fresh above. RB-9's exponential-backoff and bounded-poll-count fixes are folded into the bundle.
+
+---
+
+## P2: RB-1 — `to_string_lossy()` on path keys (covered by P2-bundle-rb1-rb6)
+
+**See:** P2-bundle-rb1-rb6 above.
+
+---
+
+## P2: RB-6 — `enumerate_files` `unwrap_or(&path)` (covered by P2-bundle-rb1-rb6)
+
+**See:** P2-bundle-rb1-rb6 above.
+
+---
+
+## P2: AC-V1.30.1-3 — BFS `bfs_expand` cap check skips score-bump for already-visited neighbors
+
+**Files:** `src/gather.rs:357-381`
+**Effort:** ~30 minutes
+**Why:** Inner cap check at line 357 fires *before* the visited-neighbor score-bump at line 366-377. When the cap fires partway through a high-fanout node's neighbors, downstream nodes that *would* have had their score bumped to a higher value keep their stale lower score. Quality degrades silently at the cap boundary.
+
+### Current code
+
+```rust
+// src/gather.rs:341-383
+    while let Some((name, depth)) = queue.pop_front() {
+        if depth >= opts.expand_depth {
+            continue;
+        }
+        if name_scores.len() >= opts.max_expanded_nodes && visited.len() > initial_size {
+            expansion_capped = true;
+            break;
+        }
+
+        let neighbors = get_neighbors(graph, &name, opts.direction);
+        let base_score = name_scores
+            .get(name.as_ref())
+            .map(|(s, _)| *s)
+            .unwrap_or(0.5);
+        let new_score = base_score * opts.decay_factor;
+        for neighbor in neighbors {
+            if name_scores.len() >= opts.max_expanded_nodes {
+                expansion_capped = true;
+                break;
+            }
+            if !visited.contains(&neighbor) {
+                visited.insert(Arc::clone(&neighbor));
+                let key: String = neighbor.to_string();
+                name_scores.insert(key, (new_score, depth + 1));
+                queue.push_back((neighbor, depth + 1));
+            } else if let Some(existing) = name_scores.get_mut(neighbor.as_ref()) {
+                if new_score > existing.0 {
+                    existing.0 = new_score;
+                    existing.1 = existing.1.min(depth + 1);
+                }
+            }
+        }
+        if expansion_capped {
+            break;
+        }
+    }
+```
+
+### Replacement / approach
+
+```rust
+        for neighbor in neighbors {
+            if !visited.contains(&neighbor) {
+                // Cap is on `name_scores.len()`, only checked for new
+                // insertions. Already-visited bumps below don't grow
+                // the map, so let them through unconditionally.
+                if name_scores.len() >= opts.max_expanded_nodes {
+                    expansion_capped = true;
+                    break;
+                }
+                visited.insert(Arc::clone(&neighbor));
+                let key: String = neighbor.to_string();
+                name_scores.insert(key, (new_score, depth + 1));
+                queue.push_back((neighbor, depth + 1));
+            } else if let Some(existing) = name_scores.get_mut(neighbor.as_ref()) {
+                // AC-V1.30.1-3: always run the score-bump even when the
+                // cap is reached; the bump doesn't grow `name_scores`.
+                if new_score > existing.0 {
+                    existing.0 = new_score;
+                    existing.1 = existing.1.min(depth + 1);
+                }
+            }
+        }
+```
+
+### Tests to add
+
+```rust
+#[test]
+fn bfs_expand_score_bump_runs_when_cap_reached() {
+    // Construct a graph where two seeds both expand into a shared third
+    // node N. Set max_expanded_nodes such that the cap fires after the
+    // first seed's expansion. Assert N's score is the max of the two
+    // seeds' decayed scores, not whichever the BFS reached first.
+}
+```
+
+### Verification
+
+- `cargo test --features gpu-index --lib gather -- bfs_expand`.
+
+---
+
+## P2: AC-V1.30.1-9 — `daemon_socket_path` uses `DefaultHasher`
+
+**Files:** `src/daemon_translate.rs:174-205`
+**Effort:** ~30 minutes
+**Why:** `DefaultHasher` uses Rust-version-dependent SipHash. A `cargo update` of std could change socket names, breaking systemd `cqs-watch` units that hardcode a previous socket path. Codebase already depends on `blake3` for content hashing.
+
+### Current code
+
+```rust
+// src/daemon_translate.rs:174-205
+#[cfg(unix)]
+pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::path::PathBuf;
+
+    let sock_dir = match std::env::var_os("XDG_RUNTIME_DIR") {
+        // ... unchanged ...
+    };
+    let sock_name = format!("cqs-{:x}.sock", {
+        let mut h = DefaultHasher::new();
+        cqs_dir.hash(&mut h);
+        h.finish()
+    });
+    sock_dir.join(sock_name)
+}
+```
+
+### Replacement / approach
+
+```rust
+#[cfg(unix)]
+pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    let sock_dir = match std::env::var_os("XDG_RUNTIME_DIR") {
+        // ... unchanged ...
+    };
+    // AC-V1.30.1-9: BLAKE3 is stable across Rust versions — important
+    // because systemd unit files hardcode the resulting socket path.
+    // Truncate to 8 hex bytes (16 chars) — collision probability for
+    // 100 projects is ~1e-15.
+    let canonical_path_bytes = cqs_dir.as_os_str().as_encoded_bytes();
+    let hash = blake3::hash(canonical_path_bytes);
+    let truncated = &hash.as_bytes()[..8];
+    let sock_name = format!(
+        "cqs-{}.sock",
+        truncated.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    );
+    sock_dir.join(sock_name)
+}
+```
+
+### Migration note (one-time operator action)
+
+This is a wire-format change to the socket name, not just an internal refactor. The existing `DefaultHasher` produces variable-length unpadded hex (`cqs-deadbeef.sock`), the BLAKE3 + 8-byte truncation produces fixed 16-char hex (`cqs-1234567890abcdef.sock`). For a given `cqs_dir` the new hash is **different** from the old — operators with a running `cqs-watch` systemd unit must:
+
+```bash
+systemctl --user restart cqs-watch
+# old socket abandoned; daemon binds new path; CLI auto-discovers via XDG_RUNTIME_DIR
+```
+
+CLI auto-connects (the wrapper at `src/cli/files.rs:26` calls the same path resolver), so once the daemon binds the new name, queries find it. The transition window is one restart, no config files to edit. Ship this in the same release as the rest of v1.30.x or operators will see "daemon not responding" until they restart.
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib daemon_translate -- daemon_socket_path` passes (existing tests should still hash to deterministic outputs).
+- Pin a regression test: hash for a known input path (e.g. `/tmp/foo`) returns a known fixed string.
+- After the upgrade, smoke-test: `systemctl --user restart cqs-watch && cqs status --json` should return a non-error envelope within 2 seconds.
+
+---
+
+## P2: AC-V1.30.1-10 — `incremental_count = 0` reset on idle-clear loses delta context
+
+**Files:** `src/cli/watch/mod.rs:1175-1182`
+**Effort:** ~30 minutes
+**Why:** When the watch loop has been idle ~5 minutes, it clears the embedder session AND resets `state.incremental_count = 0` AND drops `state.hnsw_index`. The counter reset is the bug: counter should track "incremental inserts since last full rebuild", not "since last embedder-session reset". Resetting on idle understates delta size and delays the next threshold-driven rebuild.
+
+### Current code
+
+```rust
+// src/cli/watch/mod.rs:1175-1182
+                    if cycles_since_clear >= 3000 {
+                        if let Some(emb) = shared_embedder.get() {
+                            emb.clear_session();
+                        }
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
+                        cycles_since_clear = 0;
+                    }
+```
+
+### Replacement / approach
+
+```rust
+                    if cycles_since_clear >= 3000 {
+                        if let Some(emb) = shared_embedder.get() {
+                            emb.clear_session();
+                        }
+                        // AC-V1.30.1-10: do NOT reset incremental_count
+                        // on idle-clear. The counter's contract is
+                        // "incremental inserts since last full rebuild";
+                        // a 5-minute idle hasn't changed the on-disk
+                        // delta. Resetting here means the next file
+                        // event starts the threshold timer from scratch
+                        // and understates delta size, delaying the
+                        // rebuild that should fire on accumulated drift.
+                        state.hnsw_index = None;
+                        cycles_since_clear = 0;
+                    }
+```
+
+### Test to add
+
+```rust
+#[test]
+fn incremental_count_persists_across_idle_clear() {
+    // Set state.incremental_count = threshold - 1, simulate 3000-tick
+    // idle, push one file event, assert a full rebuild fires (not an
+    // incremental insert). Mock the rebuild via a callback counter.
+}
+```
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib watch -- incremental_count`.
+
+---
+
+## P2: API-V1.30.1-1 — `cqs status --wait` emits success envelope but exits 1 on timeout
+
+**Reframed during verification:** original prompt referenced `error_codes::TIMEOUT` which does not exist — the real `error_codes` module (`src/cli/json_envelope.rs:125-139`) only defines `NOT_FOUND`, `INVALID_INPUT`, `PARSE_ERROR`, `IO_ERROR`, `INTERNAL`. Replacement now extends `ErrorCode` enum with a `Timeout` variant + `error_codes::TIMEOUT` constant (the cleanest fix, in keeping with the existing single-source-of-truth pattern at `src/cli/json_envelope.rs:80-138`).
+
+**Files:** `src/cli/commands/infra/status.rs:85-90`, `src/cli/json_envelope.rs:80-139` (extension)
+**Effort:** ~30 minutes
+**Why:** On `Timeout`, the command emits the success-envelope JSON via `emit_snapshot` *and* exits 1. JSON consumers see `{"status":"ok",...}` then a non-zero exit code — contradicts the contract that error envelopes have `status:"err"`. A scripted consumer parsing the envelope alone gets the wrong answer.
+
+### Current code
+
+```rust
+// src/cli/commands/infra/status.rs:85-90
+            cqs::daemon_translate::FreshnessWait::Timeout(snap) => {
+                emit_snapshot(&snap, json)?;
+                // Budget expired before fresh — surface as exit 1
+                // so scripts can distinguish "fresh" from "timed
+                // out still stale".
+                std::process::exit(1);
+            }
+```
+
+### Replacement / approach
+
+**Step 1.** Extend the `ErrorCode` enum + `error_codes` module in `src/cli/json_envelope.rs`. The current set covers `NotFound`, `InvalidInput`, `ParseError`, `IoError`, `Internal`. Add a `Timeout` variant alongside:
+
+```rust
+// src/cli/json_envelope.rs:80-93 — add to the enum
+pub enum ErrorCode {
+    NotFound,
+    InvalidInput,
+    ParseError,
+    IoError,
+    Internal,
+    /// Operation exceeded its time budget (status --wait, eval timeout, etc).
+    Timeout,
+}
+
+// src/cli/json_envelope.rs:96-106 — add the as_str arm
+impl ErrorCode {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ErrorCode::NotFound => "not_found",
+            ErrorCode::InvalidInput => "invalid_input",
+            ErrorCode::ParseError => "parse_error",
+            ErrorCode::IoError => "io_error",
+            ErrorCode::Internal => "internal",
+            ErrorCode::Timeout => "timeout",
+        }
+    }
+}
+
+// src/cli/json_envelope.rs:125-139 — add the constant
+pub mod error_codes {
+    use super::ErrorCode;
+    pub const NOT_FOUND: &str = ErrorCode::NotFound.as_str();
+    pub const INVALID_INPUT: &str = ErrorCode::InvalidInput.as_str();
+    pub const PARSE_ERROR: &str = ErrorCode::ParseError.as_str();
+    pub const IO_ERROR: &str = ErrorCode::IoError.as_str();
+    pub const INTERNAL: &str = ErrorCode::Internal.as_str();
+    /// Operation exceeded its time budget. Used by `cqs status --wait`
+    /// timeout and any future time-bounded operation that times out
+    /// before producing a result.
+    pub const TIMEOUT: &str = ErrorCode::Timeout.as_str();
+}
+```
+
+The `ErrorCode` enum is `#[non_exhaustive]` so adding a variant is non-breaking.
+
+**Step 2.** `emit_json_error_with_data` does not exist (verified — only `emit_json_error` exists at `src/cli/json_envelope.rs:352`). Add it as a thin variant beside `emit_json_error`:
+
+```rust
+// src/cli/json_envelope.rs — new helper next to emit_json_error
+/// Like `emit_json_error` but carries an optional `data` payload alongside
+/// the error so consumers can still surface counters (snapshot, wait_secs,
+/// etc). Used by `cqs status --wait` timeout to embed the stale snapshot
+/// in the error envelope.
+pub fn emit_json_error_with_data(
+    code: &str,
+    message: &str,
+    data: Option<serde_json::Value>,
+) -> Result<()> {
+    let mut env = serde_json::Map::with_capacity(4);
+    env.insert(
+        "data".to_string(),
+        data.unwrap_or(serde_json::Value::Null),
+    );
+    env.insert(
+        "error".to_string(),
+        serde_json::json!({"code": code, "message": message}),
+    );
     env.insert(
         "version".to_string(),
         serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
     );
-    serde_json::Value::Object(env)
-}
-```
-
-### Notes
-
-Even better follow-on: change `wrap_value(payload: serde_json::Value) -> serde_json::Value` so the outer clone disappears entirely. Most callers (`batch/mod.rs::write_json_line`) already produce the value just-in-time. Out of scope here unless verifier wants to bundle.
-
----
-
-## P2.70 — build_graph correlated subquery for n_callers
-
-**Finding:** P2.70 in audit-triage.md
-**Files:** `src/serve/data.rs:234-264`
-**Why:** Per-row `(SELECT COUNT(*) FROM function_calls WHERE callee_name = c.name)` is O(N × log M) where N=ABS_MAX_GRAPH_NODES, M=function_calls row count. `LEFT JOIN (... GROUP BY)` is O(M+N).
-
-### Current code
-
-`src/serve/data.rs:234-264`:
-
-```rust
-        let mut node_query = "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
-                    c.line_start, c.line_end, \
-                    COALESCE((SELECT COUNT(*) FROM function_calls fc \
-                              WHERE fc.callee_name = c.name), 0) AS n_callers_global \
-             FROM chunks c \
-             WHERE 1=1"
-            .to_string();
-        let mut binds: Vec<String> = Vec::new();
-        if let Some(file) = file_filter {
-            let escaped = file.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-            node_query.push_str(" AND c.origin LIKE ? ESCAPE '\\'");
-            binds.push(format!("{escaped}%"));
-        }
-        if let Some(kind) = kind_filter {
-            node_query.push_str(" AND c.chunk_type = ?");
-            binds.push(kind.to_string());
-        }
-        node_query.push_str(" ORDER BY n_callers_global DESC, c.id ASC LIMIT ?");
-        binds.push(effective_cap.to_string());
-```
-
-### Replacement
-
-```rust
-        // PF-V1.30: replace per-row correlated subquery with one aggregated
-        // subselect joined by name. Previously each scanned row triggered a
-        // log-N index probe into function_calls (~75k probes for a 5000-cap
-        // graph against a 30k-edge corpus). One GROUP BY pass is O(M+N).
-        let mut node_query = "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
-                    c.line_start, c.line_end, \
-                    COALESCE(cc.n, 0) AS n_callers_global \
-             FROM chunks c \
-             LEFT JOIN (SELECT callee_name, COUNT(*) AS n \
-                        FROM function_calls GROUP BY callee_name) cc \
-               ON cc.callee_name = c.name \
-             WHERE 1=1"
-            .to_string();
-```
-
-Rest of the function (file_filter, kind_filter, ORDER BY, LIMIT) is unchanged.
-
-### Notes
-
-`build_hierarchy` at `src/serve/data.rs:670-754` has the same shape per the audit — apply the same JOIN there. Add an explain-plan smoke test if practical, otherwise a benchmark assertion on a large fixture.
-
----
-
-## P2.71–P2.77, P2.92 — Resource Management cluster
-
-**Finding:** P2.71–P2.77 and P2.92 in audit-triage.md
-**Files:** Multiple — see individual sub-sections.
-**Why:** Eight resource-management findings introduced in v1.30.0. Most are independent fixes; group together because all are easy-to-medium and share the "v1.30.0 introduced bounded-resource leaks" theme.
-
----
-
-### P2.71 — Background HNSW rebuild thread detached
-
-**File:** `src/cli/watch.rs:965-1042` (`spawn_hnsw_rebuild`)
-
-#### Current code
-
-`src/cli/watch.rs:1031-1042`:
-
-```rust
-    if let Err(e) = thread_result {
-        tracing::warn!(error = %e, context, "Failed to spawn HNSW rebuild thread");
-    }
-    PendingRebuild {
-        rx,
-        delta: Vec::new(),
-        started_at,
-    }
-```
-
-The `JoinHandle` returned by `thread_result` is `Result<JoinHandle, _>` — currently used only for the spawn-error log. Drop sites the `JoinHandle`.
-
-#### Replacement
-
-Hold the `JoinHandle` inside `PendingRebuild`. On daemon shutdown, `join()` it with a bounded timeout.
-
-```rust
-struct PendingRebuild {
-    rx: std::sync::mpsc::Receiver<RebuildOutcome>,
-    delta: Vec<(String, Embedding)>,
-    started_at: std::time::Instant,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-```
-
-```rust
-    let handle = match thread_result {
-        Ok(h) => Some(h),
-        Err(e) => {
-            tracing::warn!(error = %e, context, "Failed to spawn HNSW rebuild thread");
-            None
-        }
-    };
-    PendingRebuild { rx, delta: Vec::new(), started_at, handle }
-```
-
-On the daemon shutdown path (the `loop` exit in `cmd_watch`), join the handle before letting the daemon exit. If the audit confirms a `state.pending_rebuild.take()` happens during normal swap, this just adds shutdown handling.
-
-### Notes
-
-A bounded timeout via spinning on `JoinHandle::is_finished()` plus a final detached-drop would be the least invasive — full join needs cancellation flag plumbed through `build_hnsw_index_owned`. Audit calls out cancellation as the proper fix; mark as follow-on issue.
-
----
-
-### P2.72 — pending_rebuild.delta unbounded
-
-**File:** `src/cli/watch.rs:611, 2667-2674, 2740-2741`
-
-#### Current code
-
-`src/cli/watch.rs:611, 623-626`:
-
-```rust
-struct PendingRebuild {
-    rx: std::sync::mpsc::Receiver<RebuildOutcome>,
-    delta: Vec<(String, Embedding)>,
-    started_at: std::time::Instant,
-}
-```
-
-The `delta.push((id, emb))` site at lines ~2667-2674 has no cap.
-
-#### Replacement
-
-Add a cap and a saturation flag:
-
-```rust
-const MAX_PENDING_REBUILD_DELTA: usize = 5_000;
-
-// at the push site:
-if let Some(ref mut pending) = state.pending_rebuild {
-    if pending.delta.len() >= MAX_PENDING_REBUILD_DELTA {
-        if !pending.delta_saturated {
-            tracing::warn!(
-                cap = MAX_PENDING_REBUILD_DELTA,
-                "pending HNSW rebuild delta saturated; abandoning in-flight rebuild — \
-                 next threshold rebuild will pick up changes from SQLite"
-            );
-            pending.delta_saturated = true;
-        }
-        // Drop newest events; the next threshold_rebuild reads from SQLite anyway.
-    } else {
-        pending.delta.push((chunk_id, embedding));
-    }
-}
-```
-
-Add `delta_saturated: bool` to `PendingRebuild`. On swap, if `delta_saturated`, abandon the rebuilt index (set `pending = None`) so we don't ship a stale snapshot.
-
-### Notes
-
-Combine with P2.71 — same struct, same surgery. Verifier should land both in one PR.
-
----
-
-### P2.73 — LocalProvider stash retains all submitted batch results
-
-**File:** `src/llm/local.rs:74, 304-309, 542-547`
-
-#### Current code
-
-`src/llm/local.rs:304-311`:
-
-```rust
-        let results_map = results.into_inner().unwrap_or_default();
-        self.stash
-            .lock()
-            .unwrap()
-            .insert(batch_id.clone(), results_map);
-
-        Ok(batch_id)
-```
-
-#### Replacement
-
-Cap stash size and clear failed batches.
-
-```rust
-        let results_map = results.into_inner().unwrap_or_default();
-        let mut stash = self.stash
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-
-        // Cap total stash entries — if we exceed MAX_STASH_BATCHES, evict
-        // oldest by insertion order (HashMap doesn't preserve order; switch
-        // to `IndexMap` if available, else use a `VecDeque<String>` of
-        // insertion order tracked alongside).
-        const MAX_STASH_BATCHES: usize = 128;
-        while stash.len() >= MAX_STASH_BATCHES {
-            // Pick an arbitrary key to evict — production callers fetch in FIFO
-            // order, so any non-current key is dead weight.
-            if let Some(stale_key) = stash.keys().next().cloned() {
-                stash.remove(&stale_key);
-                tracing::warn!(
-                    batch_id = %stale_key,
-                    "LocalProvider stash exceeded cap; evicting oldest entry"
-                );
-            } else {
-                break;
-            }
-        }
-        stash.insert(batch_id.clone(), results_map);
-        drop(stash);
-        Ok(batch_id)
-```
-
-Also: in the auth-fail Err arm at `:286`, explicitly `stash.remove(&batch_id)` before returning Err.
-
-### Notes
-
-The audit recommends an LRU; `MAX_STASH_BATCHES=128` is a plain cap. If `IndexMap` is not in deps, this is acceptable — the assumption is that production callers drain in submit-order so the cap rarely fires. Add a regression test that submits 200 batches without fetching, asserts `stash.len() == 128`.
-
----
-
-### P2.74 — Daemon never checks fs.inotify.max_user_watches
-
-**File:** `src/cli/watch.rs:1947-1949`
-
-#### Current code
-
-`src/cli/watch.rs:1947-1949`:
-
-```rust
-        Box::new(RecommendedWatcher::new(tx, config)?)
-    };
-    watcher.watch(&root, RecursiveMode::Recursive)?;
-```
-
-#### Replacement
-
-Read `/proc/sys/fs/inotify/max_user_watches` at startup, count directories under `root` honoring gitignore, warn if >90% of limit.
-
-```rust
-        Box::new(RecommendedWatcher::new(tx, config)?)
-    };
-
-    // RM-V1.30: warn when the project tree approaches the inotify watch
-    // limit. notify::watch(Recursive) registers a watch per directory; on
-    // distros with the old default of 8192 a moderately-deep monorepo
-    // exhausts the limit and per-subdir registration failures are silent.
-    #[cfg(target_os = "linux")]
-    if !use_poll {
-        if let Ok(limit_str) = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches") {
-            if let Ok(limit) = limit_str.trim().parse::<usize>() {
-                let dir_count = count_watchable_dirs(&root);
-                if dir_count * 10 > limit * 9 {
-                    tracing::warn!(
-                        dir_count,
-                        limit,
-                        "inotify watch limit nearly exhausted; consider \
-                         `cqs watch --poll` or `sudo sysctl -w fs.inotify.max_user_watches={}`",
-                        limit * 4
-                    );
-                }
-            }
-        }
-    }
-
-    watcher.watch(&root, RecursiveMode::Recursive)?;
-```
-
-```rust
-#[cfg(target_os = "linux")]
-fn count_watchable_dirs(root: &Path) -> usize {
-    let mut count = 0usize;
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .build();
-    for entry in walker.flatten() {
-        if entry.file_type().is_some_and(|t| t.is_dir()) {
-            count += 1;
-        }
-    }
-    count
-}
-```
-
-### Notes
-
-`ignore::WalkBuilder` is already a dep (used elsewhere). The alternative — manually descending and registering only non-ignored dirs — is the audit's recommended deeper fix; mark as follow-on issue.
-
----
-
-### P2.75 — select_provider triggers CUDA probe + symlink ops on every CLI process
-
-**File:** `src/embedder/provider.rs:171-248`, `src/embedder/mod.rs:312-313`
-
-#### Current code
-
-`src/embedder/provider.rs:171-173`:
-
-```rust
-pub(crate) fn select_provider() -> ExecutionProvider {
-    *CACHED_PROVIDER.get_or_init(detect_provider)
-}
-```
-
-`Embedder::new` (`src/embedder/mod.rs:312-313`) calls `select_provider()` unconditionally during construction — even on `cqs notes list` / `cqs slot list` / etc. that never run an inference.
-
-#### Replacement
-
-Defer the probe to first inference. Replace eager `select_provider()` call in `Embedder::new` with a lazy `OnceLock<ExecutionProvider>` populated in `Session::create_session`.
-
-The minimal change: introduce `Embedder::provider_lazy()` that calls `select_provider()` on first use, and have `embed_query`/`embed_documents` route through it. `Embedder::new` stops eagerly resolving the provider.
-
-```rust
-// In Embedder struct:
-provider: std::sync::OnceLock<ExecutionProvider>,
-
-// New helper:
-fn provider(&self) -> ExecutionProvider {
-    *self.provider.get_or_init(crate::embedder::provider::select_provider)
-}
-
-// Session::create_session and other call sites use self.provider() instead
-// of self.provider.
-```
-
-Update `Embedder::new` to pass the resolved-or-deferred provider to the struct. Remove the eager `select_provider()` call.
-
-### Notes
-
-Verifier needs to read `Embedder::new` and `Session::create_session` signatures to thread this through. The audit's bigger-picture recommendation (move probe inside `Session::create_session`) is the right end state. Pragmatic minimum: keep the `OnceLock` outside session, lazy on first access.
-
----
-
-### P2.76 — serve handlers spawn_blocking unbounded
-
-**File:** `src/serve/handlers.rs:86-89` + 5 sites + `src/serve/mod.rs:92-95`
-
-#### Current code
-
-`src/serve/mod.rs:92-95`:
-
-```rust
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-```
-
-Default `max_blocking_threads=512`.
-
-#### Replacement
-
-```rust
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get().min(4))
-        .max_blocking_threads(8)
-        .enable_all()
-        .build()
-```
-
-### Notes
-
-8 concurrent SQL queries is plenty for an interactive single-user UI. Combined with worker_threads cap, daemon's max steady-state thread count is bounded at 12 (vs. 512+num_cpus today). Optionally wrap each handler's `spawn_blocking` in `tokio::time::timeout(30s, ...)` — separate change, mark follow-on.
-
-If `num_cpus` not in deps, use `std::thread::available_parallelism()` directly.
-
----
-
-### P2.77 — Embedder clear_session doubled-memory window
-
-**File:** `src/embedder/mod.rs:261, 808-823`
-
-#### Current code
-
-`src/embedder/mod.rs:808-823`:
-
-```rust
-    pub fn clear_session(&self) {
-        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = None;
-        let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
-        cache.clear();
-        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
-        *tok = None;
-        tracing::info!("Embedder session, query cache, and tokenizer cleared");
-    }
-```
-
-#### Replacement
-
-Surface the doubled-memory window via tracing, since the deeper fix (RwLock around tokenizer to wait for in-flight inference) extends the inference critical section.
-
-```rust
-    pub fn clear_session(&self) {
-        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = None;
-        let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
-        cache.clear();
-        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
-        // RM-V1.30: surface the doubled-memory window when in-flight
-        // inference holds an Arc clone of the tokenizer concurrent with
-        // the next-use lazy reload. Strong count > 1 means another thread
-        // is mid-encode; the inner Option clears here, but the cloned Arc
-        // keeps the old tokenizer alive until that thread releases it,
-        // so peak memory transiently exceeds documented ~500MB by the
-        // tokenizer size (~10-20MB).
-        if let Some(t) = tok.as_ref() {
-            let strong = std::sync::Arc::strong_count(t);
-            if strong > 1 {
-                tracing::info!(
-                    strong_count = strong,
-                    stage = "clear_during_inference",
-                    "tokenizer Arc still referenced by in-flight inference; \
-                     transient doubled-memory window during reload"
-                );
-            }
-        }
-        *tok = None;
-        tracing::info!("Embedder session, query cache, and tokenizer cleared");
-    }
-```
-
-### Notes
-
-Audit calls option (a) — RwLock around tokenizer with clear taking write lock — as higher-risk because it extends the inference critical section. Option (b) here just surfaces the cost so operators can correlate memory spikes. Mark option (a) as follow-on issue.
-
----
-
-### P2.92 — Embedder::new opens fresh QueryCache + 7-day prune on every CLI command
-
-**File:** `src/embedder/mod.rs:355-366`
-
-#### Current code
-
-`src/embedder/mod.rs:353-366`:
-
-```rust
-        // Best-effort disk cache for query embeddings. Opens a small SQLite
-        // DB at ~/.cache/cqs/query_cache.db. Failure is non-fatal.
-        let disk_query_cache =
-            match crate::cache::QueryCache::open(&crate::cache::QueryCache::default_path()) {
-                Ok(c) => {
-                    let _ = c.prune_older_than(7);
-                    Some(c)
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "Disk query cache unavailable (non-fatal)");
-                    None
-                }
-            };
-```
-
-#### Replacement
-
-Lazy-open. Replace `Option<QueryCache>` with `OnceLock<Option<QueryCache>>` and open on first `embed_query`.
-
-```rust
-// Struct field change:
-// disk_query_cache: Option<crate::cache::QueryCache>,
-// →
-disk_query_cache: std::sync::OnceLock<Option<crate::cache::QueryCache>>,
-
-// In Embedder::new — drop the eager open block. Initialize the OnceLock
-// empty:
-disk_query_cache: std::sync::OnceLock::new(),
-
-// New accessor:
-fn disk_query_cache(&self) -> Option<&crate::cache::QueryCache> {
-    self.disk_query_cache
-        .get_or_init(|| {
-            match crate::cache::QueryCache::open(
-                &crate::cache::QueryCache::default_path(),
-            ) {
-                Ok(c) => {
-                    let _ = c.prune_older_than(7);
-                    Some(c)
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        "Disk query cache unavailable (non-fatal)"
-                    );
-                    None
-                }
-            }
-        })
-        .as_ref()
-}
-```
-
-Update every site that uses `self.disk_query_cache` to call `self.disk_query_cache()`.
-
-### Notes
-
-The audit calls out 16 call sites that construct an embedder via `try_model_config` for commands that never call `embed_query` — `notes list`, `slot list`, `cache stats`. Lazy-open eliminates the WSL DrvFS 30-50ms cold-open per CLI invocation.
-
----
-
-## P2.78–P2.87 — Test Coverage (happy-path) cluster
-
-**Finding:** P2.78–P2.87 in audit-triage.md
-**Why:** Every v1.30.0 surface (#1113 HNSW rebuild, #1114 registry, #1118 auth, #1120 provider, serve data, batch dispatch handlers, LLM passes) shipped without tests. Bundle into a coherent test-debt PR series.
-
-Group structure: each test cluster gets one prompt with a test skeleton. Tests use `InProcessFixture` style seeding.
-
----
-
-### P2.78 — TC-HAP: serve data endpoints (build_graph, build_chunk_detail, build_hierarchy, build_cluster) untested with populated data
-
-**Files:** `src/serve/data.rs:192,452,586,825,933`, `src/serve/tests.rs:25` (`fixture_state` is empty-only).
-
-#### Test skeleton
-
-Add `src/serve/tests/data_populated.rs` (or extend `tests.rs`):
-
-```rust
-// Seed: process_data → validate → format_output, plus one test chunk.
-// Assert build_graph returns 3 nodes + 2 call edges; max_nodes=1 truncates;
-// kind_filter excludes tests.
-
-#[test]
-fn build_graph_returns_seeded_nodes_and_edges() {
-    let fx = InProcessFixture::seed_minimal_call_graph();
-    let result = build_graph(&fx.store, None, None, None).unwrap();
-    assert_eq!(result.nodes.len(), 3);
-    assert_eq!(result.edges.len(), 2);
-}
-
-#[test]
-fn build_graph_max_nodes_truncates() {
-    let fx = InProcessFixture::seed_minimal_call_graph();
-    let result = build_graph(&fx.store, None, None, Some(1)).unwrap();
-    assert_eq!(result.nodes.len(), 1);
-}
-
-#[test]
-fn build_chunk_detail_returns_callers_callees_tests() {
-    let fx = InProcessFixture::seed_minimal_call_graph();
-    let detail = build_chunk_detail(&fx.store, "process_data_chunk_id").unwrap().unwrap();
-    assert_eq!(detail.callers.len(), 0);
-    assert_eq!(detail.callees.len(), 2);
-    assert_eq!(detail.tests.len(), 1);
-}
-
-#[test]
-fn build_hierarchy_callees_returns_subtree() {
-    let fx = InProcessFixture::seed_minimal_call_graph();
-    let h = build_hierarchy(&fx.store, "process_data", Direction::Callees, 5).unwrap();
-    assert_eq!(h.nodes.len(), 3);
-}
-
-#[test]
-fn build_cluster_returns_nodes_when_umap_populated() {
-    let fx = InProcessFixture::seed_with_umap_coords();
-    let result = build_cluster(&fx.store, None).unwrap();
-    assert!(!result.nodes.is_empty());
-}
-```
-
-### Notes
-
-`InProcessFixture::seed_minimal_call_graph` doesn't exist yet — needs a small helper that inserts 3 chunks + 2 function_calls rows. Pattern lives in `tests/related_impact_test.rs` or similar; verifier should grep for an existing seeding helper before rolling a new one.
-
----
-
-### P2.79 — TC-HAP: 16 batch dispatch handlers have zero tests
-
-**Files:** `src/cli/batch/handlers/misc.rs:15,131,173,209` + `graph.rs:24,63,103,143,233,292,375,392` + `info.rs:46,100,168,302`
-
-#### Test skeleton
-
-Add `tests/batch_handlers_test.rs`:
-
-```rust
-fn seeded_ctx() -> (BatchContext, Sink) { /* InProcessFixture + tiny corpus */ }
-
-#[test] fn dispatch_callers_round_trips() {
-    let (mut ctx, mut sink) = seeded_ctx();
-    ctx.dispatch_line("callers process_data", &mut sink).unwrap();
-    let env: Value = serde_json::from_slice(&sink.bytes).unwrap();
-    assert!(env["data"]["callers"].is_array());
-}
-
-// Repeat for: dispatch_callees, dispatch_impact, dispatch_test_map,
-// dispatch_trace, dispatch_similar, dispatch_explain, dispatch_context,
-// dispatch_deps, dispatch_related, dispatch_impact_diff, dispatch_gather,
-// dispatch_scout, dispatch_task, dispatch_where, dispatch_onboard.
-```
-
-### Notes
-
-Each test is ~10 lines. Bundle as one file. Use `dispatch_search` test pattern at `src/cli/batch/handlers/search.rs:528-742` as template. Each handler test asserts only envelope shape + a non-empty results array, not algorithmic correctness.
-
----
-
-### P2.80 — TC-HAP: Reranker rerank/rerank_with_passages no tests
-
-**Files:** `src/reranker.rs:160, 190`
-
-#### Test skeleton
-
-```rust
-#[test]
-#[ignore] // requires reranker model on disk
-fn rerank_preserves_input_set_reorders_by_score() {
-    let r = Reranker::new(&Config::default()).unwrap();
-    let q = "rust async await";
-    let passages = ["tokio runtime docs", "how to bake sourdough", "rust futures trait"];
-    let scored: Vec<SearchResult> = passages.iter().enumerate().map(|(i, p)| /*...*/).collect();
-    let out = r.rerank(q, scored).unwrap();
-    assert_eq!(out.len(), 3, "all 3 passages preserved");
-    let last = out.last().unwrap();
-    assert!(last.content.contains("sourdough"), "baking ranks last");
-}
-
-#[test]
-fn rerank_with_passages_empty_input_returns_empty() {
-    let r = Reranker::new(&Config::default()).unwrap();
-    let out = r.rerank_with_passages("q", vec![], vec![]).unwrap();
-    assert!(out.is_empty());
-}
-```
-
-### Notes
-
-The empty-input test does NOT need the model — it should hit a no-op shortcut. Verify the no-op path exists at the top of `rerank_with_passages`; if not, add it. The model-loading test stays `#[ignore]`-gated.
-
----
-
-### P2.81 — TC-HAP: cmd_project Search has no CLI integration test
-
-**Files:** `src/cli/commands/infra/project.rs:70` (`cmd_project Search` arm)
-
-#### Test skeleton
-
-Add `tests/cli_project_search_test.rs`:
-
-```rust
-#[test]
-fn project_search_returns_results_from_each_registered_project() {
-    let proj_a = TempProject::with_content(&[("a/foo.rs", "fn process_data() {}")]);
-    let proj_b = TempProject::with_content(&[("b/bar.rs", "fn validate() {}")]);
-    cqs!(["project", "register", "a", proj_a.root().to_str().unwrap()]);
-    cqs!(["project", "register", "b", proj_b.root().to_str().unwrap()]);
-    cqs!(["index"], cwd = proj_a.root());
-    cqs!(["index"], cwd = proj_b.root());
-    let out = cqs!(["project", "search", "process", "--json"]);
-    let env: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let results = env["data"]["results"].as_array().unwrap();
-    let projects: HashSet<&str> = results.iter().map(|r| r["project"].as_str().unwrap()).collect();
-    assert!(projects.contains("a"));
-    // (project b might or might not match depending on query; relax to "at least one").
-    assert!(!results.is_empty());
-}
-```
-
-### Notes
-
-`tests/cross_project_test.rs` likely has the cross-project fixture; reuse if present. The `cqs!` macro is whatever the project's existing CLI invocation harness uses — grep for usage in `tests/cli_*.rs`.
-
----
-
-### P2.82 — TC-HAP: cqs ref add/list/remove/update no end-to-end CLI test
-
-**Files:** `src/cli/commands/infra/reference.rs:88, 187, 320, 350`
-
-#### Test skeleton
-
-Add `tests/cli_ref_test.rs`:
-
-```rust
-#[test]
-fn ref_add_then_list_shows_reference_with_chunk_count() {
-    let proj = TempProject::with_content(&[("src/x.rs", "fn foo() {}")]);
-    let refp = TempProject::with_content(&[("ref/y.rs", "fn bar() {}"), ("ref/z.rs", "fn baz() {}")]);
-    cqs!(["init"], cwd = proj.root());
-    cqs!(["index"], cwd = proj.root());
-    cqs!(["ref", "add", "lib", refp.root().to_str().unwrap()], cwd = proj.root());
-    let out = cqs!(["ref", "list", "--json"], cwd = proj.root());
-    let env: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let refs = env["data"]["refs"].as_array().unwrap();
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0]["name"], "lib");
-    assert!(refs[0]["chunks"].as_u64().unwrap() >= 2);
-}
-
-#[test]
-fn ref_remove_deletes_from_config_and_disk() { /* ... */ }
-#[test]
-fn ref_update_reindexes_source_content() { /* ... */ }
-#[test]
-fn ref_add_weight_rejects_out_of_range() { /* ... */ }
-```
-
-### Notes
-
-The `cqs!` invocation pattern + JSON parse is shared across `tests/cli_*.rs`. `weight` must be in `0.0..=1.0` per existing `validate_ref_name` logic.
-
----
-
-### P2.83 — TC-HAP: handle_socket_client no happy-path round-trip test
-
-**Files:** `src/cli/watch.rs:160`
-
-#### Test skeleton
-
-Add `tests/daemon_socket_roundtrip_test.rs`:
-
-```rust
-#[tokio::test(flavor = "multi_thread")]
-async fn handle_socket_client_round_trips_stats() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::UnixStream;
-    let (mut client, server) = UnixStream::pair().unwrap();
-    let server_std = server.into_std().unwrap();
-    server_std.set_nonblocking(false).unwrap();
-
-    let store = InProcessFixture::seed_minimal();
-    let ctx = BatchContext::new(store);
-
-    // Spawn the server-side handler against the std stream.
-    let handle = std::thread::spawn(move || {
-        handle_socket_client(server_std, &ctx);
-    });
-
-    let request = br#"{"command":"stats","args":[]}\n"#;
-    client.write_all(request).await.unwrap();
-    let mut buf = Vec::new();
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        client.read_to_end(&mut buf),
-    ).await;
-
-    let env: Value = serde_json::from_slice(&buf).unwrap();
-    assert!(env["data"]["total_chunks"].is_number());
-    assert!(env["error"].is_null());
-    handle.join().unwrap();
-}
-```
-
-### Notes
-
-`handle_socket_client` likely takes a `&Mutex<BatchContext>` per current signature — wrap appropriately. `stats` chosen because it needs no embedder. Adjust framing (newline vs length-prefix) by reading the actual `handle_socket_client` impl.
-
----
-
-### P2.84 — TC-HAP: spawn_hnsw_rebuild/drain_pending_rebuild zero tests
-
-**Files:** `src/cli/watch.rs spawn_hnsw_rebuild` (~965), `drain_pending_rebuild`
-
-#### Test skeleton
-
-Add `src/cli/watch/tests.rs` (or `tests/watch_hnsw_rebuild_test.rs`):
-
-```rust
-#[test]
-fn rebuild_completes_and_swaps_owned_index() {
-    let fx = InProcessFixture::seed_n_chunks(50, dim = 16);
-    let pending = spawn_hnsw_rebuild(
-        fx.cqs_dir.clone(),
-        fx.index_db.clone(),
-        16,
-        "test",
-    );
-    let outcome = pending.rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
-    let idx = outcome.expect("rebuild produced an index");
-    assert_eq!(idx.len(), 50);
-}
-
-#[test]
-fn delta_replayed_on_swap() { /* seed 50, push 5 deltas mid-rebuild, assert post-swap len == 55 */ }
-
-#[test]
-fn delta_dedup_avoids_double_insert() { /* seed 50, push delta with existing id, assert len == 50 */ }
-```
-
-### Notes
-
-dim=16 keeps the test fast; `build_hnsw_index_owned` doesn't care about embedding semantics. Verifier needs to spec out the actual `swap` API call sequence — `drain_pending_rebuild` is the consumer in the watch loop.
-
----
-
-### P2.85 — TC-HAP: for_each_command! macro + 4 emitters no behavioral tests
-
-**Files:** `src/cli/registry.rs:61`, `src/cli/definitions.rs:850,897`, `src/cli/dispatch.rs:51,83`
-
-#### Test skeleton
-
-Add `src/cli/registry.rs::tests`:
-
-```rust
-#[test]
-fn every_command_variant_has_batch_support_entry() {
-    use strum::IntoEnumIterator; // assumes Commands derives EnumIter
-    let allowed_none: HashSet<&str> = ["Help", "Version"].iter().copied().collect();
-    for v in Commands::iter() {
-        let bs = BatchSupport::for_command(&v);
-        if matches!(bs, BatchSupport::None) {
-            assert!(
-                allowed_none.contains(variant_name(&v)),
-                "Variant {:?} returns BatchSupport::None but is not on the allowed list",
-                variant_name(&v)
-            );
-        }
-    }
-}
-
-#[test]
-fn group_a_variants_disjoint_from_group_b() {
-    let a: HashSet<&str> = group_a_variant_names().into_iter().collect();
-    let b: HashSet<&str> = group_b_variant_names().into_iter().collect();
-    let inter: Vec<_> = a.intersection(&b).collect();
-    assert!(inter.is_empty(), "Variants in both groups: {:?}", inter);
-}
-```
-
-### Notes
-
-`Commands` may not derive `EnumIter` — if not, hand-roll a `for_each_command!`-driven const list helper. `group_a_variant_names()` / `group_b_variant_names()` need helper functions exposed by the registry. Verifier must wire those up.
-
-`compile_fail` test via `trybuild` was the audit's bonus — out of scope unless `trybuild` is already a dev-dep.
-
----
-
-### P2.86 — TC-HAP: build_hnsw_index_owned/build_hnsw_base_index no direct tests
-
-**Files:** `src/cli/commands/index/build.rs:848, 880`
-
-#### Test skeleton
-
-Add `src/cli/commands/index/build.rs::tests`:
-
-```rust
-#[test]
-fn build_hnsw_index_owned_returns_index_with_chunk_count() {
-    let fx = InProcessFixture::seed_n_chunks(10, dim = 16);
-    let idx = build_hnsw_index_owned(&fx.store, &fx.cqs_dir).unwrap().unwrap();
-    assert_eq!(idx.len(), 10);
-}
-
-#[test]
-fn build_hnsw_base_index_returns_none_when_no_base_rows() {
-    let fx = InProcessFixture::empty();
-    let result = build_hnsw_base_index(&fx.store, &fx.cqs_dir).unwrap();
-    assert!(result.is_none());
-}
-
-#[test]
-fn build_hnsw_index_owned_round_trips_through_disk() {
-    let fx = InProcessFixture::seed_n_chunks(10, dim = 16);
-    let idx = build_hnsw_index_owned(&fx.store, &fx.cqs_dir).unwrap().unwrap();
-    // Reload from disk:
-    let loaded = HnswIndex::load_with_dim(&fx.cqs_dir, "index", 16).unwrap();
-    assert_eq!(loaded.len(), idx.len());
-    let an_id = idx.ids().iter().next().cloned().unwrap();
-    assert!(loaded.ids().contains(&an_id));
-}
-```
-
-### Notes
-
-`HnswIndex::load_with_dim` API confirm in `src/hnsw/`. dim=16 keeps test fast.
-
----
-
-### P2.87 — TC-HAP: hyde_query_pass and doc_comment_pass have zero tests
-
-**Files:** `src/llm/hyde.rs:11`, `src/llm/doc_comments.rs:135`
-
-#### Test skeleton
-
-Extend `tests/local_provider_integration.rs`:
-
-```rust
-#[test]
-fn hyde_query_pass_round_trips_through_mock_server() {
-    let fx = InProcessFixture::seed_n_chunks(3, /* with text content */);
-    let mock = MockLlmServer::with_canned("hyde response").start();
-    std::env::set_var("CQS_LLM_PROVIDER", "local");
-    std::env::set_var("CQS_LLM_API_BASE", mock.url());
-    let count = hyde_query_pass(&fx.store, /* args */).unwrap();
-    assert_eq!(count, 3);
-    let rows = fx.store.get_summaries_by_purpose("hyde").unwrap();
-    assert_eq!(rows.len(), 3);
-}
-
-#[test]
-fn doc_comment_pass_skips_already_documented_functions() {
-    let fx = InProcessFixture::seed_with_doc_status(&[
-        ("foo", false), ("bar", false), ("baz_documented", true),
-    ]);
-    let mock = MockLlmServer::with_canned("doc response").start();
-    std::env::set_var("CQS_LLM_PROVIDER", "local");
-    std::env::set_var("CQS_LLM_API_BASE", mock.url());
-    let count = doc_comment_pass(&fx.store, /* args */).unwrap();
-    assert_eq!(count, 2);
-}
-```
-
-### Notes
-
-`MockLlmServer` should already exist for the existing `llm_summary_pass` tests in `tests/local_provider_integration.rs:113-280`. Reuse the harness.
-
----
-
-## P2.88 — Adding third score signal touches two parallel fusion paths
-
-**Finding:** P2.88 in audit-triage.md
-**Files:** `src/store/search.rs:182-229`, `src/search/query.rs:511-720`
-**Why:** RRF locked to two lists (`semantic_ids`, `fts_ids`); SPLADE fuses on a separate α-blend path. Type boost is a third post-fusion multiplier.
-
-### Notes
-
-This is an extensibility / refactor finding, not a single-line bug. Producing a "minimal change" prompt would understate the scope. Mark as a tracking issue:
-
-- Generalize `Store::rrf_fuse` to `rrf_fuse_n(ranked_lists: &[&[&str]], limit: usize) -> Vec<(String, f32)>`.
-- Introduce `trait ScoreSignal { fn rank(&self, query: &Query) -> Vec<&str>; fn weight(&self) -> f32; }` and a `FusionPipeline` that owns an ordered list of signals.
-- Migrate semantic + FTS + SPLADE + name-fingerprint + type-boost to uniform participants.
-
-Out of scope for inline fix. **Recommendation:** file as GitHub issue, mark P2.88 as "issue" disposition.
-
----
-
-## P2.89 — Vector index backend selection is hand-coded if/else
-
-**Finding:** P2.89 in audit-triage.md
-**Files:** `src/cli/store.rs:423-540`
-**Why:** 120-line `#[cfg(feature = "cuda-index")]` block; new backend = new env var, new branch, new persisted-path literal, new gate. `VectorIndex` trait clean but selector isn't trait-driven.
-
-### Notes
-
-Same shape as P2.88 — extensibility refactor, not a single-line bug. The audit recommends extending `VectorIndex` with `try_open` + `priority` so the selector iterates a `&[&dyn IndexBackend]` slice. Out of scope for inline fix. **Recommendation:** file as issue, mark P2.89 as "issue" disposition.
-
----
-
-## P2.90 — ScoringOverrides knob → 4 sites; no shared resolver
-
-**Finding:** P2.90 in audit-triage.md
-**Files:** `src/config.rs:153-172` + scoring sites
-**Why:** Each scoring knob requires editing struct, defaults, env-var resolver, consumer.
-
-### Notes
-
-Same shape — extensibility refactor. Audit recommends `HashMap<&'static str, f32>` + `static SCORING_KNOBS: &[ScoringKnob]` table. Out of scope for inline fix. **Recommendation:** file as issue, mark P2.90 as "issue" disposition.
-
----
-
-## P2.91 — NoteEntry has no kind/tag taxonomy
-
-**Finding:** P2.91 in audit-triage.md
-**Files:** `src/note.rs:41-89`
-**Why:** Sentiment-only; no kind field; "TODO" / "design-decision" / "known-bug" must be encoded in note text as unsearchable string patterns.
-
-### Notes
-
-Schema migration + struct change + TOML round-trip + CLI flag — multi-file refactor. **Recommendation:** file as issue, mark P2.91 as "issue" disposition. Inline fix would understate scope.
-
----
-# P3 + P4 fix prompts — v1.30.0 audit
-
-Inputs: `docs/audit-triage.md` + `docs/audit-findings.md`. P3 are minimal Edit-style fix prompts. P4 are paste-ready GitHub issue bodies.
-
----
-
-## P3.1 — Hoist `panic_message` helper into one place
-
-**Finding:** P3.1
-**Files:** `src/cli/pipeline/mod.rs:223-232`, `src/store/mod.rs:1322-1326`, `src/cache.rs:743-747`, `src/cache.rs:1735-1739`
-**Why:** Four copies of identical panic-payload extraction logic across 3 modules. Make it `pub(crate)` and use it everywhere.
-
-### Current code
-```rust
-// src/cli/pipeline/mod.rs:223-232 — pub(crate)? actually `fn` (private)
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
-}
-```
-Plus 3 inline copies inside `Drop` impls (`Store::drop`, `EmbeddingCache::drop`, `QueryCache::drop`) — each a 4-arm `match payload.downcast_ref::<&str>()` ladder.
-
-### Replacement
-1. Promote `panic_message` to `pub(crate) fn` in `src/lib.rs` (next to `temp_suffix`) keeping the same signature `&Box<dyn Any + Send> -> String`.
-2. Delete the private function in `src/cli/pipeline/mod.rs`; replace the 3 inline copies in the Drop impls with `crate::panic_message(payload)`.
-
----
-
-## P3.2 — Extract one `find_reference_config` helper for resolve.rs
-
-**Finding:** P3.2
-**Files:** `src/cli/commands/resolve.rs:26-39, 46-57`
-**Why:** `find_reference` and `resolve_reference_db` re-roll the same `iter().find(|r| r.name == name)` + verbatim error message. Single source of truth.
-
-### Current code
-```rust
-// resolve.rs:26-39  find_reference
-let cfg = config.references.iter()
-    .find(|r| r.name == name)
-    .ok_or_else(|| anyhow::anyhow!(
-        "Reference '{}' not found. Run 'cqs ref list' to see available references.", name
-    ))?;
-// ...load_references for full ReferenceIndex
-
-// resolve.rs:46-57  resolve_reference_db (inline duplicate)
-let cfg = config.references.iter()
-    .find(|r| r.name == name)
-    .ok_or_else(|| anyhow::anyhow!(
-        "Reference '{}' not found. Run 'cqs ref list' to see available references.", name
-    ))?;
-// uses cfg.path
-```
-
-### Replacement
-Add a private helper at the top of `resolve.rs`:
-```rust
-fn find_reference_config<'a>(
-    config: &'a Config,
-    name: &str,
-) -> anyhow::Result<&'a ReferenceConfig> {
-    config.references.iter()
-        .find(|r| r.name == name)
-        .ok_or_else(|| anyhow::anyhow!(
-            "Reference '{}' not found. Run 'cqs ref list' to see available references.", name
-        ))
-}
-```
-Call it from both sites.
-
----
-
-## P3.3 + P3.19 — `slot::libc_exdev` hardcode (combined)
-
-**Finding:** P3.3 (cosmetic) + P3.19 (Windows wrong constant)
-**Files:** `src/slot/mod.rs:628-647`
-**Why:** The `libc_exdev() -> 18` shim is justified by an outdated comment (libc is already a workspace dep), AND it mis-identifies the cross-device error on Windows (`ERROR_NOT_SAME_DEVICE = 17`). Drop the magic number entirely and fall back to copy+remove on any rename failure.
-
-### Current code
-```rust
-// src/slot/mod.rs:628-647
-pub(crate) fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    match fs::rename(src, dst) {
-        Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(libc_exdev()) => {
-            fs::copy(src, dst)?;
-            fs::remove_file(src)?;
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// EXDEV `errno` value (cross-device link). We hardcode 18 (Linux) since
-/// `libc::EXDEV` would pull in a libc dep just for this constant. macOS also
-/// uses 18; Windows doesn't surface EXDEV the same way (rename across
-/// filesystems just succeeds via the win32 API).
-#[inline]
-fn libc_exdev() -> i32 { 18 }
-```
-
-### Replacement
-```rust
-pub(crate) fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    match fs::rename(src, dst) {
-        Ok(()) => Ok(()),
-        // Fall back to copy+remove on ANY rename failure (cross-device,
-        // ERROR_NOT_SAME_DEVICE on Windows, EXDEV on Unix). Cheaper than
-        // tracking platform-specific errno constants — if the source is
-        // gone after the copy, callers see the I/O error from copy() instead.
-        Err(_) => {
-            fs::copy(src, dst)?;
-            fs::remove_file(src)?;
-            Ok(())
-        }
-    }
-}
-```
-Delete `fn libc_exdev()` entirely.
-
----
-
-## P3.4 — Doc: `enumerate_files` honors .cqsignore too
-
-**Finding:** P3.4
-**Files:** `src/lib.rs:542-547`
-**Why:** Public-API doc comment claims gitignore-only; body adds `.cqsignore` when `no_ignore=false`.
-
-### Current code
-```rust
-/// Enumerate files to index in a project directory.
-///
-/// Respects .gitignore, skips hidden files and files larger than
-/// `CQS_MAX_FILE_SIZE` bytes (default 1MB — generated code can exceed this).
-/// Returns relative paths from the project root.
-///
-/// Shared file enumeration for consistent indexing.
-pub fn enumerate_files(
-```
-
-### Replacement
-```rust
-/// Enumerate files to index in a project directory.
-///
-/// Respects `.gitignore` and `.cqsignore` (additive on top of `.gitignore`,
-/// both disabled by `no_ignore=true`); skips hidden files and files larger
-/// than `CQS_MAX_FILE_SIZE` bytes (default 1 MiB — generated code can
-/// exceed this). Returns relative paths from the project root.
-pub fn enumerate_files(
-```
-
----
-
-## P3.5 — Drop dead `generate_nl_with_call_context` from public API
-
-**Finding:** P3.5
-**Files:** `src/lib.rs:165` (`pub use nl::*`); `src/nl/mod.rs:43-59`
-**Why:** Five-arg wrapper that hardcodes `summary=None, hyde=None`. Zero production callers, only test references; leaks via glob re-export.
-
-### Current code
-```rust
-// src/nl/mod.rs:43-59
-pub fn generate_nl_with_call_context(
-    chunk: &Chunk, callers: &[String], callees: &[String],
-    note: Option<&str>, template: NlTemplate,
-) -> String {
-    generate_nl_with_call_context_and_summary(
-        chunk, callers, callees, note, /*summary=*/ None,
-        /*hyde=*/ None, template,
-    )
-}
-```
-
-### Replacement
-Delete the wrapper. Update tests in `src/nl/mod.rs` that call it to call `generate_nl_with_call_context_and_summary(.., None, None, ..)` directly. Optionally tighten the glob: replace `pub use nl::*` in `src/lib.rs:165` with an explicit `pub use nl::{NlTemplate, generate_nl_description, generate_nl_with_template, generate_nl_with_call_context_and_summary};`.
-
----
-
-## P3.6 — Rename `GatherArgs::expand` to `--depth`
-
-**Finding:** P3.6
-**Files:** `src/cli/args.rs:GatherArgs::expand`
-**Why:** Top-level `--expand-parent` (bool) and `cqs gather --expand <N>` (usize) collide; v1.30.0 only half-fixed the rename. Align `gather` with `onboard`/`impact`/`test-map` which already use `--depth`.
-
-### Current code
-```rust
-// in GatherArgs (src/cli/args.rs)
-#[arg(long, default_value = "2")]
-pub expand: usize,
-```
-
-### Replacement
-```rust
-/// Call-graph BFS depth for gather expansion (matches onboard/impact/test-map).
-#[arg(long, default_value = "2", visible_alias = "expand")]
-pub depth: usize,
-```
-Sweep references to `args.expand` in `src/cli/commands/search/gather.rs` to `args.depth`.
-
----
-
-## P3.7 — `cqs eval --save` requires `.json`
-
-**Finding:** P3.7
-**Files:** `src/cli/commands/eval/mod.rs` (`EvalCmdArgs::save`); call site that opens the file
-**Why:** Accepts any path; eval reports are JSON-only. Asymmetric with `--baseline` which already requires the file exist.
-
-### Current code
-```rust
-// EvalCmdArgs::save: Option<PathBuf>  — no validation
-// In the runner: File::create(&save_path)?
-```
-
-### Replacement
-At the runner's open site (or top of `cmd_eval`):
-```rust
-let save_path = args.save.as_deref().map(|p| {
-    let ext = p.extension().and_then(|e| e.to_str());
-    match ext {
-        Some("json") => Ok(p.to_path_buf()),
-        Some(other) => anyhow::bail!(
-            "--save must end in .json (got .{other}); eval reports are JSON-only"
-        ),
-        None => {
-            let with_ext = p.with_extension("json");
-            tracing::info!(path = %with_ext.display(), "appending .json to --save path");
-            Ok(with_ext)
-        }
-    }
-}).transpose()?;
-```
-
----
-
-## P3.8 — Eval runner: `eprintln!` → `tracing::info!`
-
-**Finding:** P3.8
-**Files:** `src/cli/commands/eval/runner.rs:163-168`
-**Why:** Every other progress signal uses `tracing::info!`; `eprintln!` defeats `RUST_LOG` filtering and JSON log redirect.
-
-### Current code
-```rust
-// runner.rs:167 (approx)
-eprintln!("[eval] {done}/{total} queries ({qps:.1} q/s)");
-```
-
-### Replacement
-```rust
-tracing::info!(done, total = total_queries, qps, "eval progress");
-```
-
----
-
-## P3.9 — Add a span to `nl::generate_nl_with_template`
-
-**Finding:** P3.9
-**Files:** `src/nl/mod.rs:209` (and transitively covers `:43, :65, :189`)
-**Why:** All four NL generators flow into `generate_nl_with_template`; a single `debug_span!` at that root site covers them all.
-
-### Current code
-```rust
-pub fn generate_nl_with_template(
-    chunk: &Chunk, callers: &[String], callees: &[String],
-    note: Option<&str>, summary: Option<&str>, hyde: Option<&str>,
-    template: NlTemplate,
-) -> String {
-    // ...
-}
-```
-
-### Replacement
-Insert at line 1 of the body:
-```rust
-let _span = tracing::debug_span!(
-    "generate_nl",
-    template = ?template,
-    chunk_kind = ?chunk.chunk_type,
-    len = chunk.content.len(),
-).entered();
-```
-
----
-
-## P3.10 — `embed_documents`/`embed_query` completion events
-
-**Finding:** P3.10
-**Files:** `src/embedder/mod.rs:683` (`embed_documents`), `:722` (`embed_query`)
-**Why:** Entry spans only carry input fields; no completion event with output dim/count/time.
-
-### Current code
-```rust
-// inside embed_documents, after the loop returns embeddings:
-Ok(embeddings)
-
-// inside embed_query, before returning:
-Ok(embedding)
-```
-
-### Replacement
-At the bottom of `embed_documents` (just before `Ok(embeddings)`):
-```rust
-tracing::info!(
-    total = embeddings.len(),
-    dim = self.embedding_dim(),
-    input_count = texts.len(),
-    "embed_documents complete"
-);
-```
-At the bottom of `embed_query` (just before `Ok(embedding)`):
-```rust
-tracing::debug!(
-    dim = self.embedding_dim(),
-    "embed_query complete"
-);
-```
-
----
-
-## P3.11 — Reranker `rerank_with_passages` length-mismatch warn + error
-
-**Finding:** P3.11
-**Files:** `src/reranker.rs:200-220`
-**Why:** When passages.len() != results.len(), the function silently scores arbitrary pairs and corrupts ranks. Hard error + structured warn.
-
-### Current code
-```rust
-pub fn rerank_with_passages(
-    &self, query: &str, passages: &[&str], results: &mut Vec<SearchResult>,
-) -> Result<(), RerankerError> {
-    let _span = tracing::info_span!("rerank_with_passages",
-        n = passages.len()).entered();
-    if results.is_empty() { return Ok(()); }
-    // ... compute_scores etc.
-}
-```
-
-### Replacement
-After the entry span / early-return:
-```rust
-if passages.len() != results.len() {
-    tracing::warn!(
-        passages = passages.len(),
-        results = results.len(),
-        "rerank_with_passages: length mismatch — caller bug, refusing to score",
-    );
-    return Err(RerankerError::InvalidArguments(format!(
-        "passages.len()={} != results.len()={}",
-        passages.len(), results.len()
-    )));
-}
-```
-Add the `InvalidArguments(String)` variant to `RerankerError` if not present.
-
----
-
-## P3.12 — `train_data` git wrappers log non-zero exits
-
-**Finding:** P3.12
-**Files:** `src/train_data/git.rs:65-242` (`git_log` ~65, `git_diff_tree` ~131, `git_show` ~173)
-**Why:** Each wrapper bundles exit + stderr into an `Err` and returns silently. Operators with shallow clones hit "50% calls fail" with no journal trail.
-
-### Current code (pattern repeated 3x)
-```rust
-if !output.status.success() {
-    return Err(TrainDataError::Git(format!(
-        "git diff-tree failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    )));
-}
-```
-
-### Replacement
-At each site, before the early-return:
-```rust
-if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    tracing::warn!(
-        exit = output.status.code(),
-        stderr = %stderr.trim(),
-        "git_diff_tree failed",  // change message per fn: git_log / git_show
-    );
-    return Err(TrainDataError::Git(format!(
-        "git diff-tree failed: {}", stderr.trim()
-    )));
-}
-```
-Apply consistently to `git_log` (~line 65), `git_diff_tree` (~131), `git_show` (~173). Keep the per-fn message identifier so operators can grep.
-
----
-
-## P3.13 — Convert format-string `tracing::info!` to structured fields (9 sites)
-
-**Finding:** P3.13
-**Files:** `src/hnsw/build.rs:78,236`, `src/hnsw/persist.rs:210,638,771`, `src/reference.rs:220`, `src/cli/commands/train/export_model.rs:76`, `src/audit.rs:85,93`, `src/embedder/provider.rs:149`
-**Why:** Format-string interpolation produces unparseable rendered messages once OB-V1.30-1 lands JSON formatting. Pure-mechanical change to structured fields.
-
-### Current code → Replacement (one-pass sweep)
-```rust
-// src/hnsw/build.rs:78
-- tracing::info!("Building HNSW index with {} vectors", nb_elem);
-+ tracing::info!(count = nb_elem, "Building HNSW index");
-
-// src/hnsw/build.rs:236
-- tracing::info!("HNSW index built: {} vectors", id_map.len());
-+ tracing::info!(count = id_map.len(), "HNSW index built");
-
-// src/hnsw/persist.rs:210
-- tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
-+ tracing::info!(dir = %dir.display(), basename, "Saving HNSW index");
-
-// src/hnsw/persist.rs:638
-- tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
-+ tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
-
-// src/hnsw/persist.rs:771
-- tracing::info!("HNSW index loaded: {} vectors", id_map.len());
-+ tracing::info!(count = id_map.len(), "HNSW index loaded");
-
-// src/reference.rs:220
-- tracing::info!("Loaded {} reference indexes", refs.len());
-+ tracing::info!(count = refs.len(), "Loaded reference indexes");
-
-// src/cli/commands/train/export_model.rs:76
-- tracing::info!("Model exported to {}", output.display());
-+ tracing::info!(output = %output.display(), "Model exported");
-
-// src/audit.rs:85
-- tracing::debug!("Failed to parse audit-mode.json: {}", e);
-+ tracing::debug!(error = %e, "Failed to parse audit-mode.json");
-
-// src/audit.rs:93
-- .map_err(|e| tracing::debug!("Failed to parse expires_at: {}", e))
-+ .map_err(|e| tracing::debug!(error = %e, "Failed to parse expires_at"))
-
-// src/embedder/provider.rs:149
-- tracing::debug!("Failed to symlink {}: {}", lib, e);
-+ tracing::debug!(lib = %lib, error = %e, "Failed to symlink");
-```
-Verify post-fix with `rg 'tracing::(info|warn|debug|error)!\("[^"]*\{' src/` — should return zero hits in these files.
-
----
-
-## P3.14 — `build_cluster` warn when corpus has chunks but no UMAP coords
-
-**Finding:** P3.14
-**Files:** `src/serve/data.rs:901, 1020` (in `build_cluster`)
-**Why:** Empty cluster view leaves operators staring at a blank pane with no journal hint that `cqs index --umap` is needed.
-
-### Current code (sketch — at the end of `build_cluster`)
-```rust
-Ok(ClusterResponse { nodes, skipped, total_chunks })
-```
-
-### Replacement
-Right before the return:
-```rust
-if nodes.is_empty() && skipped > 0 {
-    tracing::warn!(
-        skipped,
-        total_chunks,
-        "build_cluster: corpus has chunks but no UMAP coordinates — run `cqs index --umap`",
-    );
-}
-Ok(ClusterResponse { nodes, skipped, total_chunks })
-```
-
----
-
-## P3.15 — Reject leading/trailing-dash slot names
-
-**Finding:** P3.15
-**Files:** `src/slot/mod.rs:159-178` (`validate_slot_name`); test block `:661+`
-**Why:** `-foo` collides with clap's flag parser; trailing dashes get stripped by various copy-paste pipelines.
-
-### Current code
-```rust
-pub fn validate_slot_name(name: &str) -> Result<(), SlotError> {
-    if name.is_empty() || name.len() > 32 { /* ... */ }
-    if !name.chars().all(|c| c.is_ascii_lowercase()
-        || c.is_ascii_digit() || c == '_' || c == '-') { /* ... */ }
+    env.insert("_meta".to_string(), serde_json::to_value(EnvelopeMeta::new())?);
+    let buf = serde_json::Value::Object(env);
+    let s = format_envelope_to_string(&buf)?;
+    println!("{s}");
     Ok(())
 }
 ```
 
-### Replacement
-After the existing checks, add:
+**Step 3.** Update the timeout arm in `status.rs`:
+
 ```rust
-if name.starts_with('-') || name.ends_with('-') {
-    return Err(SlotError::InvalidName(format!(
-        "slot name '{name}' cannot start or end with '-' \
-         (clap parses leading dash as a flag)"
-    )));
-}
+            cqs::daemon_translate::FreshnessWait::Timeout(snap) => {
+                if json {
+                    // API-V1.30.1-1: error envelope so JSON consumers
+                    // see error.code="timeout" alongside the non-zero exit
+                    // code. Embed the snapshot in the error data so callers
+                    // can still surface counters.
+                    let payload = serde_json::json!({
+                        "snapshot": snap,
+                        "wait_secs": budget_secs,
+                    });
+                    crate::cli::json_envelope::emit_json_error_with_data(
+                        crate::cli::json_envelope::error_codes::TIMEOUT,
+                        &format!("watch index still stale after {budget_secs}s"),
+                        Some(payload),
+                    )?;
+                } else {
+                    print_text(&snap);
+                    eprintln!(
+                        "cqs: watch index still stale after {budget_secs}s wait",
+                    );
+                }
+                std::process::exit(1);
+            }
 ```
-Add tests in `src/slot/mod.rs::tests`: `validate_rejects_leading_dash`, `validate_rejects_trailing_dash`.
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib json_envelope` (covers new variant + helper).
+- Manual: stop daemon, queue files, run `cqs status --watch-fresh --wait --wait-secs 1 --json`; check stdout JSON has `"error":{"code":"timeout",...}` and exit code is 1.
+- Update / add `tests/cli_status_test.rs` to pin the envelope shape with the new `code: "timeout"`.
 
 ---
 
-## P3.16 — Provider tests for malformed cmdline / `LD_LIBRARY_PATH`
+## P2: API-V1.30.1-5 — `daemon_ping`/`status`/`reconcile` return `Result<T, String>` (folded into P2-bundle-wait-fresh)
 
-**Finding:** P3.16
-**Files:** `src/embedder/provider.rs:67-123`; new `#[cfg(test)] mod tests` in same file
-**Why:** No tests in `provider.rs` today; silent CPU fallback on weird inputs is the production failure mode.
+**Files:** `src/daemon_translate.rs:271, 422, 541`
+**Effort:** subsumed by P2-bundle-wait-fresh's `DaemonStatusError` enum
+**Why:** Stringly-typed errors on the public API. Three call sites with overlapping failure modes (socket-missing, transport, parse) collapse into opaque strings. Caller can't distinguish "daemon never ran" from "daemon crashed mid-call" from "daemon answered with garbage".
 
-### Replacement
-Add at the bottom of `src/embedder/provider.rs`:
+### Approach
+
+The wait-fresh bundle already introduces `DaemonStatusError { SocketMissing, Transport, BadResponse }`. Apply the same enum to all three RPCs:
+
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-    use std::sync::Mutex;
+#[cfg(unix)]
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum DaemonRpcError {
+    #[error("daemon socket missing: {0}")]
+    SocketMissing(String),
+    #[error("daemon transport failure: {0}")]
+    Transport(String),
+    #[error("daemon returned malformed response: {0}")]
+    BadResponse(String),
+    #[error("daemon error: {0}")]
+    DaemonError(String),
+}
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, DaemonRpcError> { ... }
+pub fn daemon_status(cqs_dir: &std::path::Path) -> Result<WatchSnapshot, DaemonRpcError> { ... }
+pub fn daemon_reconcile(...) -> Result<DaemonReconcileResponse, DaemonRpcError> { ... }
+```
 
-    #[test]
-    fn find_ld_library_dir_skips_empty_entries() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev = env::var_os("LD_LIBRARY_PATH");
-        // SAFETY: serialized via ENV_LOCK
-        unsafe { env::set_var("LD_LIBRARY_PATH", ":/tmp:"); }
-        let dir = find_ld_library_dir();
-        // /tmp is the only non-empty entry that exists
-        assert_eq!(dir.as_deref(), Some(std::path::Path::new("/tmp")));
-        unsafe {
-            match prev {
-                Some(p) => env::set_var("LD_LIBRARY_PATH", p),
-                None => env::remove_var("LD_LIBRARY_PATH"),
-            }
+Map existing `format!(...)` errors to the appropriate variant:
+- `if !sock_path.exists()` → `SocketMissing`
+- `UnixStream::connect`, `set_*_timeout`, `write`, `read` failures → `Transport`
+- `serde_json::from_str` envelope parse, missing/non-string `status` field, deserialize → `BadResponse`
+- Daemon-returned `status: "err"` envelopes → `DaemonError`
+
+### Verification
+
+- `cargo build --features gpu-index` — likely many call-site fixups (eval/mod.rs, status.rs, hook.rs, doctor.rs); expect ~20-30 lines of churn across callers.
+- All existing tests should pass after updating `Err(String)` to `Err(DaemonRpcError::Variant(_))`.
+
+---
+
+## P2: API-V1.30.1-10 — `WatchSnapshot.idle_secs` frozen at compute time — wire shape lies once snapshot served later
+
+**Files:** `src/watch_status.rs:101, 219`
+**Effort:** ~45 minutes
+**Why:** `idle_secs` is computed via `last_event.elapsed().as_secs()` at snapshot-publish time, but the snapshot can be read by clients seconds later (the daemon publishes every ~100 ms but clients poll arbitrarily). The wire shape claims "seconds since last event" — but it's actually "seconds since last event as of N seconds ago." Consumers gating on `idle_secs > threshold` get a stale answer.
+
+### Current code
+
+```rust
+// src/watch_status.rs:101
+    pub idle_secs: u64,
+
+// src/watch_status.rs:219
+            idle_secs: input.last_event.elapsed().as_secs(),
+```
+
+### Replacement / approach
+
+Two paths — pick one:
+
+**(a) Compute idle on read.** Change `idle_secs` to be derived at JSON-serialization time from a `last_event_unix_secs: i64` field stored in the snapshot. Requires custom serde or a `to_wire` helper. More invasive.
+
+**(b) Document and rename.** Rename the field on the wire to `idle_secs_at_snapshot` and add `snapshot_at` (already exists at line 109) — consumers compute `now - last_event_unix_secs` on their side. Add `last_event_unix_secs: i64` (Unix seconds when the event happened) to the wire shape. Keep `idle_secs` for backcompat as `snapshot_at - last_event_unix_secs` so existing JSON consumers don't break, but mark deprecated in the doc.
+
+**Recommended: (b)** because it makes the wire shape self-describing and consumers can compute fresher idle on demand:
+
+```rust
+// src/watch_status.rs:75-110 — add new field
+pub struct WatchSnapshot {
+    // ... existing fields ...
+    /// Unix timestamp (seconds) of the last filesystem event the watch
+    /// loop observed. Lets clients compute fresher idle on demand
+    /// without retransacting through the daemon. Pair with `snapshot_at`
+    /// to compute `idle_at_snapshot_time` if you need historical value.
+    pub last_event_unix_secs: i64,
+    // idle_secs becomes derived but kept for backcompat:
+    /// Snapshot-time idle seconds. For fresh idle, prefer
+    /// `now - last_event_unix_secs`.
+    pub idle_secs: u64,
+    // ... existing snapshot_at ...
+}
+```
+
+Plumb `last_event_unix_secs` through `WatchSnapshotInput` (compute once at publish: `last_event_unix_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64 - last_event.elapsed().as_secs() as i64).unwrap_or(0)`).
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib watch_status`.
+- Manual: `cqs status --watch-fresh --json`, sleep 5 s, run again — `last_event_unix_secs` is the same value across both calls if no events fired; `idle_secs` differs by 5.
+
+---
+
+## P2: OB-V1.30.1-9 — `process_file_changes` uses `println!` in non-quiet mode
+
+**Files:** `src/cli/watch/events.rs:147-152`
+**Effort:** ~15 minutes
+**Why:** Daemon process writes user-facing UI to stdout — bypasses tracing infrastructure, can't be filtered by log level, breaks structured-log parsers.
+
+### Current code
+
+```rust
+// src/cli/watch/events.rs:147-152
+    if !cfg.quiet {
+        println!("\n{} file(s) changed, reindexing...", files.len());
+        for f in &files {
+            println!("  {}", f.display());
         }
     }
-
-    #[test]
-    fn find_ld_library_dir_handles_unset() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev = env::var_os("LD_LIBRARY_PATH");
-        unsafe { env::remove_var("LD_LIBRARY_PATH"); }
-        let dir = find_ld_library_dir();
-        assert!(dir.is_none());
-        unsafe { if let Some(p) = prev { env::set_var("LD_LIBRARY_PATH", p); } }
-    }
-}
 ```
 
----
+### Replacement / approach
 
-## P3.17 — `blake3_hex_or_passthrough` boundary tests
-
-**Finding:** P3.17
-**Files:** `src/cache.rs:709-721` + `src/cache.rs::tests`
-**Why:** Pin the uppercase / short-hex / passthrough surprises so a future "always-encode" tightening surfaces as an intentional break.
-
-### Replacement
-Add to `src/cache.rs::tests`:
 ```rust
-#[test]
-fn blake3_hex_or_passthrough_uppercase_64_chars_passthrough() {
-    let upper = "ABCDEF0123456789".repeat(4); // 64 chars, all hex
-    assert_eq!(blake3_hex_or_passthrough(upper.as_bytes()), upper);
-}
-
-#[test]
-fn blake3_hex_or_passthrough_short_hex_string_gets_encoded() {
-    let short = "abcd"; // 4 hex chars
-    let out = blake3_hex_or_passthrough(short.as_bytes());
-    assert_eq!(out, "61626364"); // hex of ASCII 'a','b','c','d'
-}
-
-#[test]
-fn blake3_hex_or_passthrough_64_byte_non_hex_gets_encoded() {
-    let bytes = vec![0xAB; 64];
-    let out = blake3_hex_or_passthrough(&bytes);
-    assert_eq!(out.len(), 128);
-    assert!(out.chars().all(|c| c.is_ascii_hexdigit()));
-}
+    // OB-V1.30.1-9: replace stdout println with structured tracing.
+    // The daemon has no terminal — stdout goes to journald via the
+    // systemd unit which writes unstructured. Tracing routes through
+    // the configured subscriber (journald JSON or stderr text) and
+    // honours filter levels.
+    tracing::info!(
+        file_count = files.len(),
+        files = ?files,
+        "watch: reindexing changed files",
+    );
 ```
+
+If a foreground (non-daemon) UX really needs the unstructured print, gate it on a separate `cfg.foreground` or new `cfg.show_progress` flag, not `!cfg.quiet`. The daemon is the sole runtime caller today.
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- Restart daemon, edit a file, `journalctl --user -u cqs-watch -o json | jq '.MESSAGE' | head -3` shows the structured event.
 
 ---
 
-## P3.18 — `SystemTime → i64` cache cast: guard against year-2554 wrap
+## P2: OB-V1.30.1-10 — `serve::search` info logs full query at info — bypasses TraceLayer redaction
 
-**Finding:** P3.18
-**Files:** `src/cache.rs:349-352, 551-555`
-**Why:** `as_secs() as i64` wraps silently above i64::MAX. Defense-in-depth.
+**Files:** `src/serve/handlers.rs:189-232`
+**Effort:** ~15 minutes
+**Why:** `tracing::info!(query = %params.q, ...)` at line 193 logs the user's full search query at info level. TraceLayer already records the URI with redaction; this duplicate log bypasses it. A user accidentally pasting a credential as a search query writes the credential to journal.
 
 ### Current code
-```rust
-// cache.rs:349-352 (write_batch)
-let now = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_secs() as i64;
 
-// cache.rs:551-555 (prune_older_than)
-let cutoff = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_secs() as i64
-    - (days as i64 * 86400);
-```
-
-### Replacement
-Add a helper at module top:
 ```rust
-fn now_unix_i64() -> Result<i64, CacheError> {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| CacheError::Internal("clock before unix epoch".into()))?
-        .as_secs();
-    i64::try_from(secs)
-        .map_err(|_| CacheError::Internal("clock above i64 cap".into()))
+// src/serve/handlers.rs:189-232
+pub(crate) async fn search(
+    State(state): State<AppState>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, ServeError> {
+    tracing::info!(query = %params.q, limit = params.limit, "serve::search");
+
+    // ... rest unchanged ...
+
+    tracing::info!(matches = matches.len(), "search returned");
+    Ok(Json(SearchResponse { matches }))
 }
 ```
-Replace both sites:
+
+### Replacement / approach
+
 ```rust
-let now = now_unix_i64()?;
-// ...
-let cutoff = now_unix_i64()? - (days as i64 * 86400);
+pub(crate) async fn search(
+    State(state): State<AppState>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, ServeError> {
+    // OB-V1.30.1-10: log only metadata at info; full query at debug
+    // so it's available for local debugging but not journal-retained
+    // by default. The TraceLayer span already has the redacted URI.
+    tracing::debug!(query = %params.q, "serve::search query received");
+    tracing::info!(q_len = params.q.len(), limit = params.limit, "serve::search");
+
+    // ... rest unchanged ...
+
+    tracing::info!(matches = matches.len(), "search returned");
+    Ok(Json(SearchResponse { matches }))
+}
 ```
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- Run `cqs serve` with default `RUST_LOG`, send a search request via curl, confirm `q=...` does not appear in journal at info; appears only at debug.
 
 ---
 
-## P3.20 — Clamp `cqs cache prune --older-than` to sane ceiling
+## P2: PB-V1.30.1-1 — `cmd_serve` `--no-auth` warning misses `0.0.0.0` and `::` wildcard binds
 
-**Finding:** P3.20
-**Files:** `src/cache.rs:548, 551-555`
-**Why:** `u32::MAX * 86400` overflow / underflow → silent "prune everything" on typo.
+**Files:** `src/cli/commands/serve.rs:27`
+**Effort:** ~20 minutes
+**Why:** The "non-loopback + no-auth" warning fires on `--bind 192.168.1.5 --no-auth` but is silent for `0.0.0.0` and `::` — the *most* exposed bind targets. The current substring check `bind != "127.0.0.1" && bind != "localhost" && bind != "::1"` passes wildcard strings unchanged.
 
 ### Current code
+
 ```rust
-pub fn prune_older_than(&self, days: u32) -> Result<usize, CacheError> {
-    let _span = tracing::info_span!("cache_prune", days).entered();
-    let cutoff = /* now */ - (days as i64 * 86400);
-    // ...
-}
+// src/cli/commands/serve.rs:27
+    if no_auth && bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
+        tracing::warn!(
+            bind = %bind,
+            "binding cqs serve to non-localhost without auth — anyone with network \
+             access to this address can read the index"
+        );
+        eprintln!(
+            "WARN: --bind {bind} with --no-auth exposes cqs serve beyond localhost \
+             with no authentication"
+        );
+    }
 ```
 
-### Replacement
-At the top of the function, clamp + reject:
+### Replacement / approach
+
 ```rust
-pub fn prune_older_than(&self, days: u32) -> Result<usize, CacheError> {
-    const MAX_PRUNE_DAYS: u32 = 36_500; // 100 years
-    let days = days.min(MAX_PRUNE_DAYS);
-    let _span = tracing::info_span!("cache_prune", days).entered();
-    let now = now_unix_i64()?; // see P3.18
-    let cutoff = now - (days as i64 * 86400);
-    if cutoff < 0 {
-        return Err(CacheError::Internal(
-            format!("prune cutoff below epoch (days={days})")
-        ));
+    if no_auth {
+        // PB-V1.30.1-1: parse `bind` once and warn on anything that
+        // doesn't resolve to a loopback address. This subsumes 0.0.0.0
+        // and :: (UNSPECIFIED — most exposed configs of all), concrete
+        // LAN IPs, and hostnames that don't loop back. Parse-failure
+        // (e.g. "localhost") falls through to the explicit name check.
+        let is_loopback = match bind.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip.is_loopback(),
+            Err(_) => matches!(bind.as_str(), "localhost"),
+        };
+        if !is_loopback {
+            tracing::warn!(
+                bind = %bind,
+                "binding cqs serve to non-localhost without auth — anyone with network \
+                 access to this address can read the index"
+            );
+            eprintln!(
+                "WARN: --bind {bind} with --no-auth exposes cqs serve beyond localhost \
+                 with no authentication"
+            );
+        }
     }
-    // ...
-}
 ```
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cqs serve --no-auth --bind 0.0.0.0` emits the warn line.
+- `cqs serve --no-auth --bind ::` emits the warn line.
+- `cqs serve --no-auth --bind 127.0.0.1` does not.
+- Add a small unit test if a `serve_warn_decision(bind: &str, no_auth: bool) -> bool` helper is factored out.
 
 ---
 
-## P3.21 — Centralize `i64.max(0) as u32` clamp (8+ sites)
+## P2: PB-V1.30.1-3 — `process_exists` (Windows) substring-matches localized `tasklist` output
 
-**Finding:** P3.21
-**Files:** `src/serve/data.rs:290, 299, 300, 587, 588, 777, 778, 993, 994` (verified 9 sites — note line 290 is a `n_callers` clamp, not just line_start/line_end; audit said 8)
-**Why:** Repeated open-coded clamp pattern silently masks DB-corruption / migration bugs. Replace with a named helper that logs once on negative input.
+**Files:** `src/cli/files.rs:59-72`
+**Effort:** ~45 minutes
+**Why:** `tasklist /FI "PID eq <pid>" /NH` emits `INFO:` only on English Windows. German `INFORMATION:`, French `INFORMATIONS:`, Japanese `情報:`, etc. silently bypass the stale-PID detection, causing every non-English Windows user to see persistent stale-lock errors.
 
-### Current code (one example site)
+### Current code
+
 ```rust
-line_start: line_start.max(0) as u32,
-line_end: line_end.max(0) as u32,
+// src/cli/files.rs:59-72
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use std::process::Command;
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .output()
+        .map(|o| {
+            let output = String::from_utf8_lossy(&o.stdout);
+            // tasklist /FI "PID eq N" does exact filtering.
+            // "INFO:" appears when no process matches; its absence means a match.
+            !output.contains("INFO:")
+        })
+        .unwrap_or(false)
+}
 ```
 
-### Replacement
-Add a helper at top of `src/serve/data.rs`:
+### Replacement / approach
+
 ```rust
-/// Clamp an i64 SQL line number to u32, warning once if the input was
-/// negative (signals DB corruption or migration bug).
-#[inline]
-fn clamp_line_to_u32(v: i64) -> u32 {
-    if v < 0 {
-        tracing::warn!(value = v, "negative line number clamped to 0");
-        0
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use std::process::Command;
+    // PB-V1.30.1-3: CSV format is locale-independent. tasklist /NH /FO CSV
+    // emits exactly one row per match; empty stdout (or whitespace only)
+    // means no match. No human-readable strings to misinterpret.
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
+        .output()
+        .map(|o| {
+            let output = String::from_utf8_lossy(&o.stdout);
+            // A successful match looks like: "cqs.exe","1234","Console",... CRLF
+            // No match → empty or whitespace-only output.
+            output.trim().contains(&format!(",\"{}\",", pid))
+        })
+        .unwrap_or(false)
+}
+```
+
+The `.contains(&format!(",\"{},\"", pid))` check matches the CSV `pid` column to defend against substring collisions (e.g., PID `12` matching PID `1234`).
+
+### Verification
+
+- `cargo build --target x86_64-pc-windows-msvc --features gpu-index` (or run on Windows).
+- Add a unit test: parse a sample CSV output blob with and without the target PID column.
+- Smoke on a non-English Windows VM: kill an old PID, run `cqs index`, confirm the stale-lock-retry loop fires instead of the immediate fail.
+
+---
+
+## P2: PB-V1.30.1-7 — `cqs hook fire` on Windows-native: `.cqs/.dirty` written but no consumer reads it
+
+**Files:** `src/cli/commands/infra/hook.rs:309-335`, `src/cli/commands/index/build.rs` (consumer side)
+**Effort:** ~45 minutes
+**Why:** On Windows-native, `cqs hook fire` falls through to `.cqs/.dirty` because the daemon path is `#[cfg(unix)]`. But the `.cqs/.dirty` consumer at `watch/mod.rs:594` is *also* `#[cfg(unix)]`. Net: Windows-native users get a marker nothing reads. They must run `cqs index` manually after every git op.
+
+### Current code
+
+```rust
+// src/cli/commands/infra/hook.rs:323-332
+    #[cfg(not(unix))]
+    {
+        report.daemon_error = Some("hook fire requires unix sockets".to_string());
+    }
+
+    // Fallback: leave a marker the daemon will pick up on next start.
+    let dirty = cqs_dir.join(".dirty");
+    std::fs::create_dir_all(&cqs_dir).with_context(|| format!("create {}", cqs_dir.display()))?;
+    std::fs::write(&dirty, b"").with_context(|| format!("touch {}", dirty.display()))?;
+    report.dirty_marker = Some(dirty);
+```
+
+### Replacement / approach
+
+Make `cqs index` (the foreground reindex command) check for `.cqs/.dirty` at startup and consume it. This gives Windows users equivalent functionality on next manual reindex.
+
+1. Add a helper in `src/cli/commands/index/build.rs` (or a new `dirty_marker` module):
+
+```rust
+/// Check `.cqs/.dirty` and consume it (delete) at startup.
+///
+/// Daemon-less platforms (Windows-native) write this marker via
+/// `cqs hook fire`; the next `cqs index` clears it as evidence
+/// that the requested reindex has occurred.
+pub(crate) fn consume_dirty_marker(cqs_dir: &Path) -> bool {
+    let marker = cqs_dir.join(".dirty");
+    if marker.exists() {
+        if let Err(e) = std::fs::remove_file(&marker) {
+            tracing::warn!(error = %e, "failed to remove .dirty marker");
+        }
+        true
     } else {
-        v.min(u32::MAX as i64) as u32
+        false
     }
 }
 ```
-Sweep all 8/9 occurrences of `<x>.max(0) as u32` to `clamp_line_to_u32(<x>)`. Verify with `rg 'max\(0\) as u32' src/serve/data.rs` returning zero hits.
 
----
+2. Call it at the top of `cmd_index` (`src/cli/commands/index/build.rs`):
 
-## P3.22 — Daemon socket-thread join: warn on detach-after-timeout
-
-**Finding:** P3.22
-**Files:** `src/cli/watch.rs:2374-2400`
-**Why:** Doc-comment claims "joined cleanly" but deadline-fall-through silently detaches the thread. Add the warn so logs match reality.
-
-### Current code (sketch — the polling loop)
 ```rust
-let deadline = Instant::now() + Duration::from_secs(5);
-loop {
-    if handle.is_finished() {
-        let _ = handle.join();
-        tracing::info!("Daemon socket thread joined cleanly");
-        break;
-    }
-    if Instant::now() > deadline { break; }
-    std::thread::sleep(Duration::from_millis(50));
+let dirty_consumed = consume_dirty_marker(&cqs_dir);
+if dirty_consumed {
+    tracing::info!("consumed .cqs/.dirty marker — reindex triggered by hook");
 }
 ```
 
-### Replacement
+3. Update the `cqs hook install` Windows-native warning so users understand the `cqs index` requirement:
+
 ```rust
-let deadline = Instant::now() + Duration::from_secs(5);
-let mut joined = false;
-loop {
-    if handle.is_finished() {
-        let _ = handle.join();
-        tracing::info!("Daemon socket thread joined cleanly");
-        joined = true;
-        break;
-    }
-    if Instant::now() > deadline { break; }
-    std::thread::sleep(Duration::from_millis(50));
-}
-if !joined {
-    tracing::warn!(
-        "Daemon socket thread did not exit within 5s; detaching"
+#[cfg(windows)]
+fn cmd_install(...) {
+    eprintln!(
+        "Note: on Windows-native, hooks write `.cqs/.dirty` and your next \
+         `cqs index` will pick it up. Run `cqs index` after major git ops."
     );
 }
 ```
 
----
+### Verification
 
-## P3.23 — `diff::EMBEDDING_BATCH_SIZE` env override
-
-**Finding:** P3.23
-**Files:** `src/diff.rs:158`
-**Why:** Hardcoded 1000 doesn't scale with model dim; ~12 MB only at 1024-dim.
-
-### Current code
-```rust
-const EMBEDDING_BATCH_SIZE: usize = 1000;
-```
-
-### Replacement
-```rust
-fn embedding_batch_size() -> usize {
-    std::env::var("CQS_DIFF_EMBEDDING_BATCH_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(1000)
-}
-```
-Replace the const reference at the call site with `embedding_batch_size()`. Update the surrounding comment to mention `CQS_DIFF_EMBEDDING_BATCH_SIZE` and the dim sensitivity.
+- `cargo build --features gpu-index`.
+- Manual on a Windows VM: install hook, run a git op, confirm `.cqs/.dirty` appears, then `cqs index` removes it and reindexes.
 
 ---
 
-## P3.24 — Daemon `worker_threads` env override
+## P2: SEC-V1.30.1-3 — `callgraph-3d.js` interpolates `e.message` into innerHTML without escapeHtml
 
-**Finding:** P3.24
-**Files:** `src/cli/watch.rs:115-119`
-**Why:** Hardcoded `min(num_cpus, 4)` caps large-machine parallelism with no escape hatch.
-
-### Current code
-```rust
-let worker_threads = std::thread::available_parallelism()
-    .map(|n| n.get()).unwrap_or(1).min(4);
-```
-
-### Replacement
-```rust
-let worker_threads = std::env::var("CQS_DAEMON_WORKER_THREADS")
-    .ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0)
-    .unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get()).unwrap_or(1).min(4)
-    });
-```
-
----
-
-## P3.25 — `train_data::MAX_SHOW_SIZE` env override
-
-**Finding:** P3.25
-**Files:** `src/train_data/git.rs:167`; ideally moved into `src/limits.rs`
-**Why:** Hardcoded 50 MB silently drops large files from training-data extraction with no log signal.
+**Files:** `src/serve/assets/views/callgraph-3d.js:55`
+**Effort:** ~15 minutes
+**Why:** SEC-2 hardening landed `escapeHtml` mirrors in cluster-3d.js and hierarchy-3d.js with explicit comments. callgraph-3d.js missed the pass. Defence-in-depth XSS gap on the bundle-load-failure error path.
 
 ### Current code
-```rust
-const MAX_SHOW_SIZE: usize = 50 * 1024 * 1024;
-```
 
-### Replacement
-```rust
-fn max_show_size() -> usize {
-    std::env::var("CQS_TRAIN_GIT_SHOW_MAX_BYTES")
-        .ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0)
-        .unwrap_or(50 * 1024 * 1024)
-}
-```
-Update the caller to call `max_show_size()` and add a `tracing::warn!(path = %path, size, max, "git_show output exceeds max — skipping")` at the early-return site so callers can distinguish "too large" from "binary".
+```js
+// src/serve/assets/views/callgraph-3d.js:43-58
+    async init(container, options) {
+      this.container = container;
+      this.cb = options.callbacks || {};
+      container.innerHTML =
+        '<div style="margin:24px;color:#666">loading 3D renderer…</div>';
 
----
-
-## P3.26 — Lift `BatchCmd::is_pipeable` into the registry
-
-**Finding:** P3.26
-**Files:** `src/cli/batch/commands.rs:325-364` (`is_pipeable`); registry at `src/cli/registry.rs`
-**Why:** #1114 collapsed Group-A/B exhaustive matches but the batch-side `is_pipeable` enum-match was missed; one row per command becomes one row + one batch arm.
-
-### Current code
-```rust
-// src/cli/batch/commands.rs:325-364
-impl BatchCmd {
-    pub fn is_pipeable(&self) -> bool {
-        match self {
-            BatchCmd::Search { .. } | BatchCmd::Gather { .. }
-            | BatchCmd::Scout { .. } | BatchCmd::Onboard { .. }
-            | /* ... ~30 arms ... */ => true,
-            _ => false,
+      if (typeof window.cqsEnsureThreeBundle === "function") {
+        try {
+          await window.cqsEnsureThreeBundle();
+        } catch (e) {
+          container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${e.message}</div>`;
+          throw e;
         }
+      }
+```
+
+### Replacement / approach
+
+Mirror the `escapeHtml` helper at the top of the IIFE (matching `cluster-3d.js:21` / `hierarchy-3d.js:19`) and use it on the interpolation:
+
+```js
+// At top of the IIFE, alongside other helpers:
+// SEC-V1.30.1-3 / SEC-2 mirror: this IIFE can't reach app.js's escapeHtml,
+// so mirror it here for any server-derived string interpolated into innerHTML.
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[c]));
+
+// At line 55:
+container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${escapeHtml(e.message)}</div>`;
+```
+
+### Verification
+
+- `cargo build --features gpu-index` (no Rust changes; ensures asset reloads).
+- Manual: simulate a bundle load failure (point the script tag at a 404), confirm error renders as text not HTML.
+
+---
+
+## P2: SEC-V1.30.1-4 — `tag_user_code_trust_level` is shape-coupled
+
+**Files:** `src/cli/commands/mod.rs:216-257`
+**Effort:** ~60 minutes
+**Why:** Walks four hardcoded JSON shapes (`entry_point`, `call_chain`, `callers`, `file_groups[].chunks[]`). Any chunk-shaped object outside these (a future `dependents[]`, `examples[]`, top-level `chunks[]`) is silently emitted with no `trust_level` field. The contract claims "every chunk-returning JSON output carries `trust_level`" but the implementation is "every chunk in one of these four arrays."
+
+### Current code
+
+```rust
+// src/cli/commands/mod.rs:216-257
+pub(crate) fn tag_user_code_trust_level(json: &mut serde_json::Value) {
+    fn tag(obj: &mut serde_json::Map<String, serde_json::Value>) {
+        obj.insert(
+            "trust_level".to_string(),
+            serde_json::Value::String("user-code".to_string()),
+        );
+    }
+    if let Some(root) = json.as_object_mut() {
+        if let Some(ep) = root.get_mut("entry_point").and_then(|v| v.as_object_mut()) {
+            tag(ep);
+        }
+        // ... three more hand-rolled walks ...
     }
 }
 ```
 
-### Replacement
-Add an `is_pipeable: bool` flag to each row of `for_each_command!` in `src/cli/registry.rs`. Generate `BatchCmd::is_pipeable(&self)` from the table via a new `gen_is_pipeable_impl!()` macro. Delete the manual match in `commands.rs:325-364`.
+### Replacement / approach
 
-(If the BatchCmd enum itself isn't yet driven from the registry, this prompt narrows to "drive `is_pipeable` from the table"; the wider refactor of folding `BatchCmd` into the registry is P2-level and listed as #2.)
+Replace the four-shape walker with a recursive visitor that detects chunk-shape signatures:
 
----
-
-## P3.27 — `LlmProvider` resolver via registry slice
-
-**Finding:** P3.27
-**Files:** `src/llm/mod.rs:200-205, 284-304, 362-398`
-**Why:** Three hand-coded match arms (enum, env-var resolve, factory) per provider. Walk a `&[&dyn ProviderRegistry]` slice instead.
-
-### Current code
 ```rust
-// llm/mod.rs:284-304 (resolve)
-match std::env::var("CQS_LLM_PROVIDER").as_deref() {
-    Ok("anthropic") | Err(_) => LlmProvider::Anthropic,
-    Ok("local") => LlmProvider::Local,
-    Ok(other) => { tracing::warn!(provider = other, "unknown CQS_LLM_PROVIDER, defaulting to anthropic"); LlmProvider::Anthropic }
-}
+pub(crate) fn tag_user_code_trust_level(json: &mut serde_json::Value) {
+    // SEC-V1.30.1-4: recursive visitor — any object with the chunk-shape
+    // signature (presence of `name` AND `file` AND a numeric `line_start`)
+    // gets tagged. Future scout/onboard surfaces that grow new
+    // chunk-bearing keys are tagged automatically.
+    fn looks_like_chunk(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+        obj.contains_key("name")
+            && obj.contains_key("file")
+            && obj.get("line_start").is_some_and(|v| v.is_number())
+    }
 
-// llm/mod.rs:362-398 (create_client)
-match provider {
-    LlmProvider::Anthropic => /* build AnthropicClient */,
-    LlmProvider::Local => /* build LocalProvider */,
+    fn walk(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if looks_like_chunk(map) {
+                    map.insert(
+                        "trust_level".to_string(),
+                        serde_json::Value::String("user-code".to_string()),
+                    );
+                }
+                for (_k, v) in map.iter_mut() {
+                    walk(v);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    walk(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    walk(json);
 }
 ```
 
-### Replacement
-Introduce a registry trait + slice:
-```rust
-pub(crate) trait ProviderRegistry: Sync {
-    fn name(&self) -> &'static str;
-    fn build(&self, cfg: &LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError>;
-}
+### Tests to add
 
-static PROVIDERS: &[&dyn ProviderRegistry] = &[
-    &AnthropicRegistry, &LocalRegistry,
-];
-```
-`resolve()` walks `PROVIDERS.iter().find(|p| p.name() == requested)`; `create_client()` calls the matched `build()`. Add a provider = add one impl + one slice row.
-
----
-
-## P3.28 — Tree-sitter registry coverage self-test
-
-**Finding:** P3.28
-**Files:** `src/language/queries/*.scm`; new test in `src/language/mod.rs`
-**Why:** An empty `chunks.scm` `include_str!`s as `""` and silently emits zero chunks. One assertion catches it.
-
-### Replacement
-Add to `src/language/mod.rs::tests`:
 ```rust
 #[test]
-fn registry_languages_have_nonempty_chunk_query() {
-    for lang in REGISTRY.all() {
-        if !lang.has_grammar() { continue; }
-        assert!(
-            !lang.chunk_query.is_empty(),
-            "{:?}: chunk_query is empty — silent zero-chunk language",
-            lang.lang
-        );
-    }
-}
-```
-(`has_grammar` may already exist or can be a small helper that returns true when the lang's tree-sitter feature is enabled.)
-
----
-
-## P3.29 — `find_project_root` markers as a data table
-
-**Finding:** P3.29
-**Files:** `src/cli/config.rs:155-162`
-**Why:** Hardcoded array works today; converting to a `static` table makes adding Maven / Gradle / .NET / Bazel a one-row change.
-
-### Current code
-```rust
-let markers = [
-    "Cargo.toml", "package.json", "pyproject.toml",
-    "setup.py", "go.mod", ".git",
-];
-for current in path.ancestors() {
-    for marker in &markers {
-        if current.join(marker).exists() { return Some(current.to_path_buf()); }
-    }
-}
-```
-
-### Replacement
-At module top:
-```rust
-/// (marker filename, label) — label is informational, not used in lookup.
-static PROJECT_ROOT_MARKERS: &[(&str, &str)] = &[
-    ("Cargo.toml", "rust"),
-    ("package.json", "node"),
-    ("pyproject.toml", "python"),
-    ("setup.py", "python"),
-    ("go.mod", "go"),
-    (".git", "fallback"),
-];
-```
-Iterate `PROJECT_ROOT_MARKERS.iter().any(|(m, _)| current.join(m).exists())`.
-
----
-
-## P3.30 — `structural_matchers` shared library
-
-**Finding:** P3.30
-**Files:** `src/language/mod.rs:191, 345`; `src/structural.rs`
-**Why:** Currently per-language `Option<&[(name, fn)]>`; sharing common matchers (SwallowedException, AsyncIO, Mutex, Unsafe) across Python/JS/Go/Rust requires copying fn bodies.
-
-### Replacement
-Define a small set of cross-language matcher functions in `src/structural.rs` keyed by `(Pattern, Language)`:
-```rust
-pub(crate) static SHARED_MATCHERS: &[(Pattern, Language, StructuralMatcherFn)] = &[
-    (Pattern::SwallowedException, Language::Rust, matchers::rust::swallow_exc),
-    (Pattern::SwallowedException, Language::Python, matchers::python::swallow_exc),
-    // ...
-];
-```
-Have `LanguageDef::structural_matchers` either be derived from this table at lookup time (filter by `lang`), or keep the field but have each `definition_*` row reference the shared fn pointer. Adding a pattern-language pair = one slice row, not a new fn body.
-
----
-
-## P3.31 — Embedder preset `extras` map (deferred-friendly)
-
-**Finding:** P3.31
-**Files:** `src/embedder/models.rs:163-300`
-**Why:** New cross-cutting preset attribute fans out to every row; flagging now since presets are still stable but pressure is rising.
-
-### Replacement
-Skip if presets are stable. If/when frequent attribute additions land, extend the `define_embedder_presets!` macro grammar with an `extras: { gpu_only = true, expects_bos = true }` block per row that desugars to a `HashMap<&'static str, ModelAttr>` field on `ModelConfig`. Required fields stay positional; sparse/optional ones go through `extras`.
-
----
-
-## P3.32 — Cache paths use `dirs::cache_dir()` on Windows
-
-**Finding:** P3.32
-**Files:** `src/cache.rs:80-84` (`EmbeddingCache::default_path`), `src/cache.rs:1399-1403` (`QueryCache::default_path`), `src/cli/batch/commands.rs:373-376` (query_log)
-**Why:** Hardcoded `~/.cache/cqs/...` becomes a hidden `.cache` folder under `C:\Users\X\` on Windows; native is `%LOCALAPPDATA%\cqs\`.
-
-### Current code (pattern at all 3 sites)
-```rust
-dirs::home_dir()
-    .map(|h| h.join(".cache").join("cqs").join("embeddings.db"))
-```
-
-### Replacement
-```rust
-dirs::cache_dir()
-    .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
-    .map(|c| c.join("cqs").join("embeddings.db"))
-```
-Apply the same shape to `QueryCache::default_path` (`query_cache.db`) and the `query_log.jsonl` path in `cli/batch/commands.rs:373-376`.
-
----
-
-## P3.33 — `dispatch_drift/diff` JSON file fields use `normalize_path`
-
-**Finding:** P3.33
-**Files:** `src/suggest.rs:101`, `src/store/types.rs:220`
-**Why:** Two more PB-V1.29-5 sites that emit Windows backslashes via `.display().to_string()`.
-
-### Current code
-```rust
-// src/suggest.rs:101
-let file = dead.chunk.file.display().to_string();
-
-// src/store/types.rs:220
-let file_display = file.display().to_string();
-```
-
-### Replacement
-```rust
-// src/suggest.rs:101
-let file = crate::normalize_path(&dead.chunk.file);
-
-// src/store/types.rs:220
-let file_display = crate::normalize_path(file);
-```
-(If `normalize_path` accepts `&Path` not `&PathBuf`, adjust the borrow.)
-
----
-
-## P3.34 — `find_ld_library_dir` Windows arm (or doc the gap)
-
-**Finding:** P3.34
-**Files:** `src/embedder/provider.rs:115-123`
-**Why:** Currently `cfg(target_os="linux")`-gated; no Windows equivalent. Either add one or doc the delegation explicitly.
-
-### Replacement (lower-cost: doc the gap)
-Add at the top of `ensure_ort_provider_libs`:
-```rust
-/// On Linux this walks `LD_LIBRARY_PATH` (`:`-separated) and symlinks ORT
-/// provider .so files into the runtime's search dir. On Windows and macOS
-/// provider DLL/dylib resolution is delegated entirely to ORT's loader
-/// (Windows: `PATH` search; macOS: `DYLD_*` paths). If a future regression
-/// surfaces on those platforms, add an arm with `;`-split for `PATH` (Win)
-/// or `DYLD_LIBRARY_PATH` (mac).
-```
-Keep behavior unchanged.
-
----
-
-## P3.35 — Document `index.lock` advisory-vs-mandatory split
-
-**Finding:** P3.35
-**Files:** `src/cli/files.rs:120-213`
-**Why:** Same code, two very different concurrency contracts (Linux advisory `flock` vs Windows mandatory `LockFileEx`). Doc + one-time warn so callers can reason about it.
-
-### Replacement
-1. Extend the `acquire_index_lock` doc-comment to spell out: Linux/macOS = advisory (non-cqs writers can corrupt); Windows = mandatory (third-party tools may see "sharing violation"); WSL `/mnt/c/` follows Linux semantics for the call but Windows for the underlying file.
-2. On Windows only, add a one-shot `tracing::warn!` (gated on `OnceLock`) at first lock acquisition:
-```rust
-#[cfg(windows)]
-{
-    static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    WARNED.get_or_init(|| {
-        tracing::warn!(
-            "index.lock is mandatory on Windows — third-party tools opening \
-             index.db may fail with sharing violations while cqs is running"
-        );
+fn tag_user_code_visits_arbitrary_nested_chunks() {
+    let mut json = serde_json::json!({
+        "entry_point": {"name": "foo", "file": "a.rs", "line_start": 10},
+        "future_field": {
+            "examples": [
+                {"name": "bar", "file": "b.rs", "line_start": 20},
+            ]
+        }
     });
+    tag_user_code_trust_level(&mut json);
+    assert_eq!(json["entry_point"]["trust_level"], "user-code");
+    assert_eq!(json["future_field"]["examples"][0]["trust_level"], "user-code");
+}
+
+#[test]
+fn tag_user_code_does_not_tag_non_chunk_objects() {
+    let mut json = serde_json::json!({"meta": {"version": 1}});
+    tag_user_code_trust_level(&mut json);
+    assert!(json["meta"].get("trust_level").is_none());
 }
 ```
+
+### Verification
+
+- `cargo test --features gpu-index --lib commands -- tag_user_code`.
+- Confirm scout / onboard / where output JSON shapes still pass downstream consumers.
 
 ---
 
-## P3.36 — `is_wsl_drvfs_path` matches UNC + uppercase drives
+## P2: DS-V1.30.1-D1 — `cqs index --force` reopen leaves stale `pending_rebuild`
 
-**Finding:** P3.36
-**Files:** `src/config.rs:92-101`
-**Why:** Misses `//wsl.localhost/`, `//wsl$/`, and uppercase drive letters when WSL `automount.options=case=force` is set.
+**Files:** `src/cli/watch/mod.rs:1102-1122`
+**Effort:** ~45 minutes
+**Why:** When the watch loop detects `cqs index --force` rotated `index.db`, it reopens the Store but does NOT reset `state.pending_rebuild`. The in-flight rebuild's pre-rotation delta references OLD DB chunk IDs; replaying it against the NEW HNSW corrupts vectors.
 
 ### Current code
+
 ```rust
-pub fn is_wsl_drvfs_path(path: &Path) -> bool {
-    let s = path.to_string_lossy();
-    s.starts_with("/mnt/")
-        && s.chars().nth(5).is_some_and(|c| c.is_ascii_lowercase())
-        && s.chars().nth(6) == Some('/')
-}
+// src/cli/watch/mod.rs:1102-1122
+                    let current_id = db_file_identity(&index_path);
+                    if current_id != db_id {
+                        info!("index.db replaced (likely cqs index --force), reopening store");
+                        drop(store);
+                        store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+                            .with_context(|| {
+                                format!(
+                                    "Failed to re-open store at {} after DB replacement",
+                                    index_path.display()
+                                )
+                            })?;
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
+                    }
 ```
 
-### Replacement
+### Replacement / approach
+
 ```rust
-pub fn is_wsl_drvfs_path(path: &Path) -> bool {
-    let s = path.to_string_lossy();
-    // Standard /mnt/<letter>/ — accept upper or lowercase
-    if let Some(rest) = s.strip_prefix("/mnt/") {
-        if let (Some(c), Some('/')) = (rest.chars().next(), rest.chars().nth(1)) {
-            if c.is_ascii_alphabetic() { return true; }
+                    let current_id = db_file_identity(&index_path);
+                    if current_id != db_id {
+                        info!("index.db replaced (likely cqs index --force), reopening store");
+                        drop(store);
+                        store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+                            .with_context(|| {
+                                format!(
+                                    "Failed to re-open store at {} after DB replacement",
+                                    index_path.display()
+                                )
+                            })?;
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
+                        // DS-V1.30.1-D1: drop in-flight rebuild whose pending
+                        // delta references OLD DB chunk IDs. The rebuild
+                        // thread will tx.send(...) into a dropped receiver
+                        // (no-op per rebuild.rs:289). Force a fresh rebuild
+                        // on the next threshold tick against the new DB.
+                        if state.pending_rebuild.take().is_some() {
+                            tracing::info!(
+                                "discarded in-flight HNSW rebuild after DB replacement; \
+                                 next threshold tick will rebuild against new DB",
+                            );
+                        }
+                    }
+```
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- Test: simulate concurrent `cqs index --force` while a rebuild is in flight, confirm the pending_rebuild is dropped and the next snapshot doesn't show stale `delta_saturated`.
+
+---
+
+## P2: DS-V1.30.1-D2 — `run_daemon_reconcile` bypasses `max_pending_files()` cap
+
+**Files:** `src/cli/watch/reconcile.rs:103, 128`, `src/cli/watch/events.rs` (max_pending_files reference)
+**Effort:** ~45 minutes
+**Why:** Reconcile blindly inserts every divergent file into `pending_files` with no cap check. A `git checkout` of a sibling branch with 50k file changes pushes the queue well past `max_pending_files()` (default 5000), defeating the documented backpressure. Subsequent inotify events increment `dropped_this_cycle` for unrelated reasons; the next `process_file_changes` tries to drain 50k files in one batch.
+
+### Current code
+
+```rust
+// src/cli/watch/reconcile.rs:95-134
+    for rel in disk_files {
+        let origin = rel.to_string_lossy().replace('\\', "/");
+        match indexed.get(&origin) {
+            None => {
+                if pending_files.insert(rel.clone()) {
+                    added += 1;
+                    queued += 1;
+                }
+            }
+            Some(stored_mtime) => {
+                // ...
+                if needs_reindex && pending_files.insert(rel.clone()) {
+                    modified += 1;
+                    queued += 1;
+                }
+            }
         }
     }
-    // UNC paths reaching back into WSL
-    if s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/") {
-        return true;
+```
+
+### Replacement / approach
+
+Pass `max_pending_files()` into reconcile and stop inserting once the queue hits the cap. Track skipped count locally:
+
+```rust
+pub(super) fn run_daemon_reconcile(
+    store: &Store,
+    root: &Path,
+    parser: &CqParser,
+    no_ignore: bool,
+    pending_files: &mut HashSet<PathBuf>,
+    cap: usize,  // new parameter — caller passes max_pending_files()
+) -> usize {
+    let _span = tracing::info_span!("daemon_reconcile").entered();
+    // ... existing setup ...
+
+    let mut added = 0usize;
+    let mut modified = 0usize;
+    let mut queued = 0usize;
+    let mut skipped_cap = 0usize;
+    for rel in disk_files {
+        // DS-V1.30.1-D2: respect the same backpressure cap as the inotify
+        // ingest path (events.rs:108). Without this, a bulk branch switch
+        // can push the queue to 50k files on one tick, masking subsequent
+        // genuine drop signals and forcing a 50k-file synchronous drain.
+        if pending_files.len() >= cap {
+            skipped_cap += 1;
+            continue;
+        }
+
+        // ... existing match dispatch using pending_files.insert ...
     }
-    false
+
+    if skipped_cap > 0 {
+        tracing::warn!(
+            cap,
+            skipped = skipped_cap,
+            "Reconcile: queue cap reached; deferred {skipped_cap} divergent files \
+             to next reconcile pass",
+        );
+    }
+    // ... existing terminal info/debug ...
+    queued
+}
+```
+
+Update **all 7 call sites** when adding the `cap: usize` parameter — the signature change cascades:
+
+**Production (2 sites):**
+- `src/cli/watch/mod.rs:1055` — pass `crate::cli::watch::events::max_pending_files()`
+- `src/cli/watch/mod.rs:1268` — same
+
+**Tests (5 sites in the same file as the function):**
+- `src/cli/watch/reconcile.rs:190`
+- `src/cli/watch/reconcile.rs:204`
+- `src/cli/watch/reconcile.rs:225`
+- `src/cli/watch/reconcile.rs:362`
+- `src/cli/watch/reconcile.rs:450`
+
+Tests can pass any value — `usize::MAX` to keep behaviour unchanged for tests not exercising the cap, or a small integer (10) for the new `reconcile_respects_pending_cap` test.
+
+### Verification
+
+- `cargo test --features gpu-index --lib reconcile` (all 5 existing tests must still pass after signature update).
+- Add `reconcile_respects_pending_cap` test: seed 100 divergent files, set `cap=10`, run reconcile, assert `pending_files.len() == 10` and the warn log fired with `skipped=90`.
+- Compile-time check via the cascade: removing or renaming a call site argument fails the build immediately, so the 5-test sweep is mechanical.
+
+---
+
+## P2: DS-V1.30.1-D5 — `.cqs/.dirty` fallback marker write not atomic
+
+**Reframed during verification:** original prompt called `atomic_replace(&dirty, b"")` with wrong arity; real signature is `(tmp_path: &Path, final_path: &Path) -> io::Result<()>`. Replacement now stages bytes to a `.dirty.tmp` sibling, then promotes via `atomic_replace`.
+
+**Files:** `src/cli/commands/infra/hook.rs:329-332`
+**Effort:** ~15 minutes
+**Why:** `std::fs::write(&dirty, b"")` is a non-atomic open+write+close, no fsync. On crash + power loss between the hook's write and the next fs sync of `.cqs/`, the file's directory entry can be lost. Since `cqs hook` exists *specifically* for the daemon-offline case, losing the marker means a `git checkout` post-reboot won't trigger reconcile.
+
+### Current code
+
+```rust
+// src/cli/commands/infra/hook.rs:329-332
+    let dirty = cqs_dir.join(".dirty");
+    std::fs::create_dir_all(&cqs_dir).with_context(|| format!("create {}", cqs_dir.display()))?;
+    std::fs::write(&dirty, b"").with_context(|| format!("touch {}", dirty.display()))?;
+```
+
+### Replacement / approach
+
+`cqs::fs::atomic_replace` (real signature `(tmp_path: &Path, final_path: &Path) -> io::Result<()>` per `src/fs.rs:41`) is a write-tmp-then-rename helper, not a write-bytes helper. For the empty marker, write `b""` to a `.dirty.tmp` sibling first, then promote:
+
+```rust
+    let dirty = cqs_dir.join(".dirty");
+    std::fs::create_dir_all(&cqs_dir).with_context(|| format!("create {}", cqs_dir.display()))?;
+    // DS-V1.30.1-D5: stage to .dirty.tmp then atomic_replace so the
+    // marker survives a power-cut between write and the next directory
+    // sync. atomic_replace fsyncs the tmp before rename and best-effort
+    // fsyncs the parent afterwards. The marker is the *only* signal the
+    // daemon will see post-reboot, so durability matters more than the
+    // empty-file write cost.
+    let tmp = cqs_dir.join(".dirty.tmp");
+    std::fs::write(&tmp, b"").with_context(|| format!("stage {}", tmp.display()))?;
+    cqs::fs::atomic_replace(&tmp, &dirty)
+        .with_context(|| format!("promote {} -> {}", tmp.display(), dirty.display()))?;
+```
+
+`crate::fs::atomic_replace` already exists (used by `notes.toml`, `audit-mode.json`, slot writers post-#P3.39). It owns the fsync-tmp-then-rename-then-fsync-parent sequence — caller stages the bytes.
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib hook`.
+- Add a test that writes the marker, confirms it exists, the file size is 0, and `.dirty.tmp` was cleaned up by the rename.
+
+---
+
+## P2: DS-V1.30.1-D7 — HNSW rollback path leaves `.bak` files orphaned when restore-rename fails
+
+**Reframed during verification:** original prompt mis-named the function as `save_owned` (real name: `save` per `src/hnsw/persist.rs:208`) and used `anyhow::anyhow!` / `anyhow::bail!` inside a function returning `Result<(), HnswError>`. Replacement now uses the correct name and returns `HnswError::Internal(...)` so the patch compiles.
+
+**Files:** `src/hnsw/persist.rs:509-553`
+**Effort:** ~45 minutes
+**Why:** Rollback path iterates `all_exts` and on `std::fs::rename` failure logs an error and continues — so `bak_path` is in an indeterminate state. The next `save` skips the rename-back step (line 436 guards on `final_path.exists()`), then writes new finals, and a subsequent rollback restores from the *stale* `.bak` from the prior failure. Silently overwrites known-good index with known-bad backup.
+
+### Current code
+
+```rust
+// src/hnsw/persist.rs:509-553 (inside `pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError>`)
+        if let Err(e) = rename_result {
+            // Roll back: remove new files and restore originals from .bak
+            for ext in &moved_exts {
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                let _ = std::fs::remove_file(&final_path);
+            }
+            for ext in &all_exts {
+                let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                if bak_path.exists() {
+                    if let Err(e) = std::fs::rename(&bak_path, &final_path) {
+                        tracing::error!(
+                            path = %final_path.display(),
+                            error = %e,
+                            "Failed to restore backup during HNSW save rollback"
+                        );
+                    }
+                }
+            }
+            // ... fsync + final cleanup ...
+        }
+```
+
+### Replacement / approach
+
+Track which `.bak` files were successfully restored. On any failure, leave the un-restored ones in place AND emit a clear recovery breadcrumb. At the start of `save`, refuse the new save if `.bak` files exist (evidence of a prior incomplete rollback).
+
+`save` returns `Result<(), HnswError>`, so error returns must produce `HnswError` variants (use `HnswError::Internal(String)` — see `src/hnsw/mod.rs:115`). Do **not** introduce `anyhow` here.
+
+```rust
+        if let Err(e) = rename_result {
+            for ext in &moved_exts {
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                let _ = std::fs::remove_file(&final_path);
+            }
+            // DS-V1.30.1-D7: track which .bak files were successfully
+            // restored. Any unrestored ones are left in place as recovery
+            // breadcrumbs and the operator gets an actionable error.
+            let mut restore_failures: Vec<(String, std::io::Error)> = Vec::new();
+            for ext in &all_exts {
+                let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                if bak_path.exists() {
+                    if let Err(rename_err) = std::fs::rename(&bak_path, &final_path) {
+                        restore_failures.push((final_path.display().to_string(), rename_err));
+                    }
+                }
+            }
+
+            if !restore_failures.is_empty() {
+                let detail: String = restore_failures
+                    .iter()
+                    .map(|(p, e)| format!("  {p}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                tracing::error!(
+                    %detail,
+                    dir = %dir.display(),
+                    "HNSW rollback INCOMPLETE — manual recovery required: \
+                     restore .bak files matching {basename}.*.bak in dir",
+                );
+                // Don't fsync over a half-restored state; surface the
+                // partial failure so the next save can refuse cleanly.
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(HnswError::Internal(format!(
+                    "HNSW rollback partially failed; .bak files present, \
+                     manual recovery required:\n{detail}"
+                )));
+            }
+            // ... existing fsync logic for the all-restored case ...
+        }
+```
+
+Add a guard at the start of `save` (right after the count-mismatch check at line 214):
+
+```rust
+pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError> {
+    // ... existing _span + count-mismatch check ...
+
+    // DS-V1.30.1-D7: refuse to start a new save if a previous rollback
+    // left .bak files behind. The operator must clear them manually so
+    // we don't silently overwrite a known-good index with a stale .bak
+    // on a future rollback.
+    let all_exts = ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+    let stale_baks: Vec<std::path::PathBuf> = all_exts
+        .iter()
+        .filter_map(|ext| {
+            let bak = dir.join(format!("{}.{}.bak", basename, ext));
+            if bak.exists() { Some(bak) } else { None }
+        })
+        .collect();
+    if !stale_baks.is_empty() {
+        return Err(HnswError::Internal(format!(
+            "stale .bak files from prior failed save: {:?}; manual recovery required \
+             (remove them or rename to current files)",
+            stale_baks,
+        )));
+    }
+    // ... existing body that creates target dir, locks, etc. ...
+}
+```
+
+(Note: `all_exts` is also defined locally lower down at the existing line ~421; either hoist it once or scope this guard's copy with a different name. Hoisting is cleaner.)
+
+### Verification
+
+- `cargo build --features gpu-index`.
+- `cargo test --features gpu-index --lib hnsw -- save_rollback`.
+- Add a test that injects a rename failure mid-rollback and asserts the operator-actionable error message (`HnswError::Internal` with the breadcrumb text) + that subsequent `save` calls bail with the stale-bak guard.
+
+---
+
+## P2: TC-HAP-1.30.1-2 — `cmd_uninstall`, `cmd_fire`, `cmd_status` (hook status) ship with zero tests
+
+**Reframed during verification:** original title and test names referenced `cmd_hook_status`, but the real function is `cmd_status` (verified at `src/cli/commands/infra/hook.rs:339`). Renamed test + extracted helper. Also clarified the marker constants: code matches with `HOOK_MARKER_PREFIX` (`"# cqs:hook"` per line 45), and `HOOK_MARKER_CURRENT` (`"# cqs:hook v1"` per line 46) is what install writes — `CURRENT` contains `PREFIX` so seeding tests with `HOOK_MARKER_CURRENT` exercises the same matcher.
+
+**Files:** `src/cli/commands/infra/hook.rs:262-373`, plus new `tests/cli_hook_test.rs` or in-module tests
+**Effort:** ~75 minutes
+**Why:** Three #1182 CLI commands ship with no test coverage. `cmd_uninstall` foreign-hook-skip branch, `cmd_fire` daemon-fallback branch, and `cmd_status` three-state classifier (installed / foreign / missing) are all unverified.
+
+### Approach
+
+Add three tests in `src/cli/commands/infra/hook.rs::tests` (the file already has a `tests` module per finding TC-HAP-1.30.1-1):
+
+```rust
+#[test]
+fn cmd_uninstall_removes_only_marked_hooks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hooks = tmp.path().join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    // Two cqs-marked + one foreign hook. Seeding with HOOK_MARKER_CURRENT
+    // works because the classifier at line 176 checks HOOK_MARKER_PREFIX
+    // (= "# cqs:hook") and HOOK_MARKER_CURRENT (= "# cqs:hook v1") contains
+    // the prefix.
+    std::fs::write(hooks.join("post-checkout"), HOOK_MARKER_CURRENT).unwrap();
+    std::fs::write(hooks.join("post-merge"), HOOK_MARKER_CURRENT).unwrap();
+    std::fs::write(hooks.join("post-rewrite"), "#!/bin/sh\necho user").unwrap();
+
+    // Need to factor cmd_uninstall to take an explicit git_dir param
+    // (or use a path-override env var). See note below.
+    let report = do_uninstall(&hooks).unwrap();
+    assert_eq!(report.removed.len(), 2);
+    assert_eq!(report.skipped_foreign, vec!["post-rewrite".to_string()]);
+}
+
+#[test]
+#[cfg(unix)]
+fn cmd_fire_writes_dirty_marker_when_daemon_absent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cqs_dir = tmp.path().join(".cqs");
+    // No socket — daemon unreachable. Same path-override pattern.
+    let report = do_fire(&cqs_dir, "post-checkout", vec![], false).unwrap();
+    assert!(!report.sent_to_daemon);
+    assert!(cqs_dir.join(".dirty").exists());
+    assert_eq!(report.dirty_marker, Some(cqs_dir.join(".dirty")));
+}
+
+#[test]
+fn cmd_status_classifies_three_hook_states() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hooks = tmp.path().join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    // installed: written with marker (HOOK_MARKER_CURRENT contains HOOK_MARKER_PREFIX)
+    std::fs::write(hooks.join("post-checkout"), HOOK_MARKER_CURRENT).unwrap();
+    // foreign: no cqs marker — body never matches HOOK_MARKER_PREFIX
+    std::fs::write(hooks.join("post-merge"), "#!/bin/sh\nuser stuff").unwrap();
+    // missing: post-rewrite absent on disk
+
+    let report = do_hook_status(&hooks).unwrap();
+    assert_eq!(report.installed, vec!["post-checkout".to_string()]);
+    assert_eq!(report.foreign, vec!["post-merge".to_string()]);
+    assert_eq!(report.missing, vec!["post-rewrite".to_string()]);
+}
+```
+
+### Note: factor out path-aware helpers
+
+The current `cmd_uninstall` / `cmd_fire` / `cmd_status` call `find_project_root()` inside; tests need explicit-path equivalents. Factor them:
+
+```rust
+fn cmd_uninstall(json: bool) -> Result<()> {
+    let root = find_project_root();
+    let git_dir = locate_git_hooks_dir(&root)?;
+    let report = do_uninstall(&git_dir)?;
+    emit(&report, json)?;
+    Ok(())
+}
+
+fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
+    // ... existing body, now takes git_dir as param ...
+}
+```
+
+Same for `cmd_fire` (extract `do_fire(cqs_dir, name, args, dirty_path)`) and `cmd_status` (extract `do_hook_status(git_dir, cqs_dir_for_daemon_check)` — note the helper is `do_hook_status`, distinct from the public `cmd_status`).
+
+### Verification
+
+- `cargo test --features gpu-index --lib hook -- cmd_uninstall cmd_fire cmd_status`.
+
+---
+
+## P2: RB-10 — `now_unix_secs()` swallows clock-before-epoch errors as `0`
+
+**Files:** `src/watch_status.rs:226-231`
+**Effort:** ~30 minutes
+**Why:** `SystemTime::now().duration_since(UNIX_EPOCH).map(...).unwrap_or(0)` silently returns `0` (= 1970-01-01) on a clock-before-epoch error. Reachable on real systems: pre-NTP-sync VMs/Pis, WSL hypervisor pause-resume, misconfigured Windows RTC. When this happens, every WatchSnapshot publishes `snapshot_at: 0`, downstream freshness logic (`now - snapshot_at > threshold`) decides every snapshot is "56 years stale" and marks the daemon dead.
+
+### Current code
+
+```rust
+// src/watch_status.rs:226-231
+fn now_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+```
+
+### Replacement / approach
+
+**Reframed during verification:** changing `WatchSnapshot.snapshot_at: i64` to `Option<i64>` is a wire-shape change with a non-trivial blast radius. The original prompt said "wire shape contract changes" but didn't enumerate the impacted sites; here is the full list.
+
+Change `snapshot_at` to `Option<i64>` so missing-clock is unrepresentable as a valid timestamp, and warn-once on bad-clock:
+
+1. Update `WatchSnapshot.snapshot_at` field at `src/watch_status.rs:109` from `i64` to `Option<i64>`.
+
+2. Replace `now_unix_secs` body:
+
+```rust
+fn now_unix_secs() -> Option<i64> {
+    use std::sync::OnceLock;
+    static WARNED_BAD_CLOCK: OnceLock<()> = OnceLock::new();
+
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(e) => {
+            // RB-10: surface the bad-clock condition once per process so
+            // journalctl operators can correlate stale snapshots with
+            // NTP-pre-sync boot.
+            WARNED_BAD_CLOCK.get_or_init(|| {
+                tracing::warn!(
+                    error = %e,
+                    "system clock is before UNIX_EPOCH — snapshot_at will be None \
+                     until NTP sync; check `timedatectl` / `chronyc tracking`",
+                );
+            });
+            None
+        }
+    }
+}
+```
+
+3. Update **all 5 sites** that touch `snapshot_at` (compile errors will not surface them all in one pass — `i64` -> `Option<i64>` is silent at most assignments because of `Option::Some(x)` wrapping, so enumerate explicitly):
+
+   **Production (3 sites in `watch_status.rs`):**
+   - `src/watch_status.rs:109` — field declaration: `pub snapshot_at: Option<i64>,`
+   - `src/watch_status.rs:128` — `WatchSnapshot::unknown`: `snapshot_at: now_unix_secs(),` (already returns `Option<i64>`, no change needed once signature is updated)
+   - `src/watch_status.rs:221` — `WatchSnapshot::compute`: same — `snapshot_at: now_unix_secs(),`
+
+   **Test fixtures (3 sites in `daemon_translate.rs`):**
+   - `src/daemon_translate.rs:1032` — change `snapshot_at: 1_734_120_500,` to `snapshot_at: Some(1_734_120_500),`
+   - `src/daemon_translate.rs:1237` — same
+   - `src/daemon_translate.rs:1313` — same
+
+   **Batch handler validator (1 site):**
+   - `src/cli/batch/handlers/misc.rs:638-639` — the `obj.contains_key("snapshot_at")` assertion still holds because `null` is still a key (serde serializes `Option::None` as JSON `null`, key present). Verify the test's intent: if it's checking "field is present in JSON regardless of value" the existing line is correct. If it's checking "snapshot_at is a number" add a follow-up `obj["snapshot_at"].is_number()` for the healthy-clock path. Recommend the latter — leave the contains_key check, add `is_number()` for the success-path test.
+
+4. Downstream JSON consumers will see `"snapshot_at": null` instead of `0` on a bad clock — the wire shape contract changes from "always populated, may be 1970" to "Some when the clock is sane." This is intentional; the previous shape was a lie and consumers comparing `now - snapshot_at > threshold` were already buggy.
+
+### Verification
+
+- `cargo build --features gpu-index` (must build cleanly after all 7 sites are updated).
+- `cargo test --features gpu-index --lib watch_status`.
+- `cargo test --features gpu-index --lib daemon_translate` (test fixtures must compile).
+- `cargo test --features gpu-index --lib batch -- snapshot_envelope_shape` (the misc.rs validator at line 638).
+- Verify wire-shape change: `cqs status --watch-fresh --json` shows `"snapshot_at": <int>` on a healthy system, `null` only on bad clock.
+
+---
+
+## P2: TC-HAP-1.30.1-3 — `cmd_status` 6-row behavior matrix unpinned
+
+**Files:** `src/cli/commands/infra/status.rs:38-103`, plus new `tests/cli_status_test.rs`
+**Effort:** ~60 minutes
+**Why:** `cmd_status` ships zero tests on the CLI body. The docstring promises a 6-row behaviour matrix (no flag, --watch-fresh, --wait without --watch-fresh, etc.) — none of the exit codes or output shapes are pinned. A regression that swaps `state:` and `modified_files=` lines goes undetected.
+
+### Approach
+
+Add `tests/cli_status_test.rs` (mirrors `tests/cli_ref_test.rs` shape — XDG-isolated, `assert_cmd`, gated behind `slow-tests`):
+
+```rust
+//! Integration tests for `cqs status`. Pins the 6-row behaviour matrix
+//! from the cmd_status docstring.
+
+#[cfg(all(unix, feature = "slow-tests"))]
+#[test]
+fn cqs_status_no_flag_exits_one_with_gate_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = assert_cmd::Command::cargo_bin("cqs")
+        .unwrap()
+        .arg("status")
+        .env("XDG_RUNTIME_DIR", tmp.path())
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--watch-fresh"));
+}
+
+#[cfg(all(unix, feature = "slow-tests"))]
+#[test]
+fn cqs_status_wait_without_watch_fresh_exits_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = assert_cmd::Command::cargo_bin("cqs")
+        .unwrap()
+        .args(["status", "--wait"])
+        .env("XDG_RUNTIME_DIR", tmp.path())
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[cfg(all(unix, feature = "slow-tests"))]
+#[test]
+fn cqs_status_watch_fresh_without_daemon_exits_one_with_friendly_msg() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = assert_cmd::Command::cargo_bin("cqs")
+        .unwrap()
+        .args(["status", "--watch-fresh"])
+        .env("XDG_RUNTIME_DIR", tmp.path())
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cqs:"));
+}
+
+// Daemon-up paths use UnixListener mock pattern from
+// daemon_translate.rs::tests::wait_for_fresh_returns_fresh_on_first_poll.
+#[cfg(all(unix, feature = "slow-tests"))]
+#[test]
+fn cqs_status_watch_fresh_with_fresh_daemon_exits_zero_pins_text_format() {
+    // Spin up UnixListener mock at $XDG_RUNTIME_DIR/cqs-<hash>.sock
+    // Respond to one status request with Fresh envelope.
+    // Run `cqs status --watch-fresh`, assert exit 0.
+    // Pin stdout: must contain "state: fresh" on its own line.
+}
+```
+
+### Verification
+
+- `cargo test --features gpu-index,slow-tests --test cli_status_test`.
+
+---
+
+## Summary
+
+**32 P2 findings → 22 distinct fix prompts after grouping.**
+
+### Bundled prompts (5 bundles absorbing 15 findings)
+
+1. **P2-bundle-wait-fresh** — RB-9, EH-V1.30.1-2, OB-V1.30.1-8, TC-HAP-1.30.1-5, TC-ADV-1.30.1-4 (5 findings → 1 prompt)
+2. **P2-bundle-reconcile-stat** — EH-V1.30.1-7, TC-ADV-1.30.1-5, TC-ADV-1.30.1-6 (3 findings → 1 prompt)
+3. **P2-bundle-watch-status-machine** — OB-V1.30.1-3, TC-HAP-1.30.1-8 (2 findings → 1 prompt)
+4. **P2-bundle-eval-gate** — OB-V1.30.1-6, TC-HAP-1.30.1-4, TC-HAP-1.30.1-7 (3 findings → 1 prompt)
+5. **P2-bundle-rb1-rb6** — RB-1, RB-6 (2 findings → 1 prompt)
+
+### Single-issue prompts (17 distinct fixes, one per finding)
+
+6. EH-V1.30.1-1 — Parse failure leaves stale chunks
+7. EH-V1.30.1-8 — `try_init_embedder` Err strands HNSW dirty without observability
+8. AC-V1.30.1-3 — BFS cap-check skips score-bump
+9. AC-V1.30.1-9 — `daemon_socket_path` uses `DefaultHasher`
+10. AC-V1.30.1-10 — `incremental_count = 0` reset loses delta
+11. API-V1.30.1-1 — `cqs status --wait` success envelope but exits 1
+12. API-V1.30.1-5 — `daemon_*` Result<T, String> (folded into bundle-wait-fresh)
+13. API-V1.30.1-10 — `WatchSnapshot.idle_secs` frozen at compute time
+14. OB-V1.30.1-9 — `process_file_changes` uses println
+15. OB-V1.30.1-10 — `serve::search` info-logs full query
+16. PB-V1.30.1-1 — `--no-auth` warning misses 0.0.0.0/::
+17. PB-V1.30.1-3 — Windows `tasklist` substring-matches localized output
+18. PB-V1.30.1-7 — `cqs hook fire` Windows-native marker has no consumer
+19. SEC-V1.30.1-3 — callgraph-3d.js innerHTML XSS gap
+20. SEC-V1.30.1-4 — `tag_user_code_trust_level` shape-coupled
+21. DS-V1.30.1-D1 — `cqs index --force` reopen leaves stale pending_rebuild
+22. DS-V1.30.1-D2 — Reconcile bypasses max_pending_files cap
+23. DS-V1.30.1-D5 — `.cqs/.dirty` marker not atomic
+24. DS-V1.30.1-D7 — HNSW rollback orphans .bak files
+25. TC-HAP-1.30.1-2 — `cmd_uninstall`/`cmd_fire`/`cmd_hook_status` zero tests
+26. TC-HAP-1.30.1-3 — `cmd_status` 6-row matrix unpinned
+27. RB-10 — `now_unix_secs()` swallows clock-before-epoch as 0
+
+Item 12 (API-V1.30.1-5) refactors three RPC return types as part of bundle-wait-fresh's `DaemonStatusError` introduction; the standalone prompt above documents the call-site impact. Three additional cross-reference stubs at #8/#9/#10 of the document point to bundles (RB-9 → bundle-wait-fresh; RB-1, RB-6 → bundle-rb1-rb6).
+
+**Net distinct prompts: 22** (5 bundles + 17 single-issue, with API-V1.30.1-5 folded inside bundle-wait-fresh and three RB cross-reference stubs).
+## P2 Verification Report
+
+Generated 2026-04-28 against actual source. 22 distinct P2 prompts checked (5 bundles + 17 single-issue + 3 cross-reference stubs).
+
+> **Note:** Append this section to `audit-fix-prompts.md` immediately before `# v1.30.1 Audit — P3 Fix Prompts` at line 3943. Edit-tool insertion was blocked by a `PreToolUse` hook resolution error (`docs/.claude/hooks/pre-edit-impact.py` missing) so the report was written to this side file instead.
+
+### P2-bundle-wait-fresh: VERIFIED
+
+Code at `daemon_translate.rs:637-679` matches; eval gate at `eval/mod.rs:246-264` matches. Cited connect-stage warn at line 438-441 verified. Bundle covers all 5 finding IDs (RB-9, EH-V1.30.1-2, OB-V1.30.1-8, TC-HAP-1.30.1-5, TC-ADV-1.30.1-4). Caller sweep is complete (3 production callers: `infra/ping.rs`, `infra/hook.rs:311+369`, `infra/status.rs:68`; plus 5 in-module test sites). Note: cited line range "623-678" is off-by-12; actual range is 635-679, but content matches.
+
+### P2-bundle-reconcile-stat: VERIFIED
+
+`reconcile.rs:116-127` matches verbatim. Parallel pattern at `reindex.rs:501-509` confirmed. All 3 finding IDs covered (EH-V1.30.1-7, TC-ADV-1.30.1-5, TC-ADV-1.30.1-6).
+
+### P2-bundle-watch-status-machine: NEEDS FIX
+
+Issues:
+- The proposed test `compute_with_rebuild_in_flight_returns_rebuilding` and `compute_rebuilding_takes_precedence_over_pending_files` are **redundant** — `watch_status.rs:278-284` already has `rebuild_dominates_over_stale_files` which pins `rebuild_in_flight=true, pending_files_count=5 -> state == Rebuilding`. The Why section's claim "Rebuilding... has no test through compute()" is false.
+- Both 2 finding IDs are still substantively covered (transition logging is the load-bearing fix); just the test list overstates.
+
+Correction: drop both proposed Rebuilding tests (already covered) or rename them to something orthogonal, e.g. a test pinning the prev/next transition log line. The main transition-emission fix is sound.
+
+### P2-bundle-eval-gate: VERIFIED
+
+`eval/mod.rs:219-275` matches verbatim. `env_disables_freshness_gate` exists at line 282. `serial_test = "3"` available; `#[serial_test::serial(name)]` style matches existing daemon_translate usage. All 3 finding IDs covered.
+
+### P2-bundle-rb1-rb6: VERIFIED
+
+Both `reconcile.rs:99` and `lib.rs:680-685` match verbatim. Both 2 finding IDs covered (RB-1, RB-6).
+
+### EH-V1.30.1-1 (parse failure stale chunks): NEEDS FIX
+
+Issues:
+- Function `Store::touch_source_mtime(&Path, i64)` does NOT exist. Prompt says "if it doesn't exist yet, add it" — that's correct framing.
+- However, the new helper must call `crate::normalize_path()` on the path before binding to the `WHERE origin = ?` query — otherwise it will fail to match the path-vs-origin string format used by the indexer (see `delete_by_origin` at `store/chunks/crud.rs:614-616` for the canonical pattern).
+
+Correction: add an explicit note that the new `touch_source_mtime` must `crate::normalize_path(origin)` to match the indexer's storage convention.
+
+### EH-V1.30.1-8 (try_init_embedder Err): NEEDS FIX
+
+Issues:
+- Title says "`try_init_embedder` Err leaves HNSW dirty" — but `try_init_embedder` returns `Option<Embedder>` (None, not Err). The fix's actual scope (the dirty-flag path at `events.rs:178-185`) is correct, but the title and Why section are wrong about the surfaced symptom.
+
+Correction: rename title to "watch reindex failure leaves HNSW dirty without observability" and revise Why section to state events.rs:178-185 dirty-flag set + reindex_files failure path, not embedder.
+
+### AC-V1.30.1-3 (BFS cap skips score-bump): VERIFIED
+
+`gather.rs:341-378` matches verbatim. Fix correctly moves cap check inside `!visited.contains()` branch.
+
+### AC-V1.30.1-9 (DefaultHasher): NEEDS FIX
+
+Issues:
+- Wire-format change: existing `format!("cqs-{:x}.sock", h.finish())` produces variable-length unpadded hex (e.g. `cqs-deadbeef.sock` for shorter values), while the proposed BLAKE3 + 8-byte-truncated hex produces fixed 16-char output. Switching means existing systemd units pointing at the old socket name will not find the new one, requiring operators to restart `cqs-watch` — but the prompt does NOT call out this transition pain.
+- The `cli/files.rs:26` wrapper `daemon_socket_path` already delegates to `daemon_translate::daemon_socket_path`, so changing the impl in one place is sufficient (verified).
+
+Correction: add a note that this is a one-time migration: existing `cqs-watch` services will need to be restarted after the upgrade so the daemon binds to the new socket name and CLI clients connect to the same.
+
+### AC-V1.30.1-10 (incremental_count idle reset): VERIFIED
+
+`watch/mod.rs:1175-1182` matches verbatim. Fix is a single line removal.
+
+### API-V1.30.1-1 (status --wait timeout envelope): NEEDS FIX
+
+Issues:
+- The replacement uses `error_codes::TIMEOUT` which does NOT exist. `error_codes` module at `cli/json_envelope.rs:125-139` only defines `NOT_FOUND`, `INVALID_INPUT`, `PARSE_ERROR`, `IO_ERROR`, `INTERNAL`.
+- Prompt acknowledges `emit_json_error_with_data` doesn't exist and says "add it". OK.
+
+Correction: either add a `Timeout` variant to the `ErrorCode` enum + `error_codes::TIMEOUT` constant (wire shape extension), or use `error_codes::IO_ERROR` (closest existing match), or use a literal `"timeout"` string code. The cleanest fix is extending the enum since this is the first time-budget-exceeded error envelope.
+
+### API-V1.30.1-5: VERIFIED (folded into bundle-wait-fresh)
+
+Cross-reference correctly notes the fold into bundle-wait-fresh. Approach uses `thiserror::Error` derive — `thiserror` is already in deps.
+
+### API-V1.30.1-10 (idle_secs frozen): VERIFIED
+
+Code at `watch_status.rs:101, 219` matches. Fix proposes (b) "document and rename" approach — adds `last_event_unix_secs: i64`. Wire shape extension is consistent. Note: the plumbing instruction `last_event_unix_secs = SystemTime::now()...as_secs() as i64 - last_event.elapsed().as_secs() as i64` is fine but `last_event` is `Instant` not `SystemTime`, so we can't directly compute Unix secs from it — the subtraction approach is the right workaround. Correctly identified.
+
+### OB-V1.30.1-9 (println! in watch): VERIFIED
+
+`events.rs:147-152` matches verbatim. Fix replaces with `tracing::info!`.
+
+### OB-V1.30.1-10 (serve::search query log): VERIFIED
+
+`serve/handlers.rs:189-232` matches verbatim. Demote query-string from info to debug is straightforward.
+
+### PB-V1.30.1-1 (--no-auth wildcard binds): VERIFIED
+
+`serve.rs:27` matches verbatim. Fix uses `IpAddr::is_loopback()` + name fallback for "localhost". Correctly handles 0.0.0.0 / :: as non-loopback.
+
+### PB-V1.30.1-3 (Windows tasklist localized): VERIFIED
+
+`cli/files.rs:59-72` matches verbatim. Switching to `/FO CSV` with column-bounded substring check is sound.
+
+### PB-V1.30.1-7 (Windows .dirty consumer): VERIFIED
+
+`hook.rs:323-332` matches; consumer at `watch/mod.rs:594` confirmed `#[cfg(unix)]`. `cmd_index` at `index/build.rs:23` exists. Fix proposes adding `consume_dirty_marker` helper — sensible.
+
+### SEC-V1.30.1-3 (XSS in callgraph-3d.js): VERIFIED
+
+`callgraph-3d.js:43-58` matches; `escapeHtml` mirror pattern from cluster-3d.js / hierarchy-3d.js confirmed.
+
+### SEC-V1.30.1-4 (tag_user_code shape coupling): VERIFIED
+
+`commands/mod.rs:216-257` matches verbatim. Recursive visitor approach is sound. Tests are well-scoped.
+
+### DS-V1.30.1-D1 (--force reopen pending_rebuild): VERIFIED
+
+`watch/mod.rs:1102-1122` matches; `pending_rebuild` field on `WatchState` confirmed at line 139. `state.pending_rebuild.take()` is a real `Option<PendingRebuild>` field.
+
+### DS-V1.30.1-D2 (reconcile bypasses pending cap): NEEDS FIX
+
+Issues:
+- Prompt says "Update both call sites in src/cli/watch/mod.rs:1262-1283" but there are TWO production call sites at `watch/mod.rs:1055` AND `watch/mod.rs:1268`. Only one range is mentioned.
+- Test call sites at `reconcile.rs:190, 204, 225, 362, 450` (5 sites) all need updating because the function signature gains a new `cap: usize` parameter. The prompt does not enumerate these.
+
+Correction: enumerate all 7 call sites (2 production in `watch/mod.rs` + 5 in-module tests in `reconcile.rs`) that must be updated when adding the `cap` parameter. The signature change cascades.
+
+### DS-V1.30.1-D5 (.dirty atomic write): NEEDS FIX
+
+Issue:
+- The replacement calls `cqs::fs::atomic_replace(&dirty, b"")` — the actual signature at `fs.rs:41` is `atomic_replace(tmp_path: &Path, final_path: &Path) -> io::Result<()>`. It takes TWO `&Path` arguments (tmp + final), NOT a path and bytes.
+- This will fail to compile: `b""` is `&[u8; 0]`, not `&Path`.
+
+Correction: write content to a `.dirty.tmp` path first, then call `atomic_replace(&tmp, &final)`:
+```rust
+let tmp = cqs_dir.join(".dirty.tmp");
+std::fs::write(&tmp, b"")?;
+cqs::fs::atomic_replace(&tmp, &dirty)?;
+```
+
+### DS-V1.30.1-D7 (HNSW rollback .bak orphans): NEEDS FIX
+
+Issues:
+- Prompt repeatedly references `save_owned`. The actual function is `save` (verified at `hnsw/persist.rs:208`). No `save_owned` exists.
+- The replacement uses `anyhow::anyhow!` and `anyhow::bail!` — but `save` returns `Result<(), HnswError>`, not `Result<()>` (anyhow). Anyhow types will not coerce into HnswError. This would not compile.
+
+Correction: rename all `save_owned` references to `save`. Replace `anyhow::anyhow!(...)` with `HnswError::Internal(format!(...))` and `anyhow::bail!(...)` with `return Err(HnswError::Internal(format!(...)))`. The cited line range 509-553 matches but the function is `save` not `save_owned`.
+
+### TC-HAP-1.30.1-2 (zero tests for hook commands): NEEDS FIX
+
+Issues:
+- Function name in title is `cmd_hook_status`, but the actual function is `cmd_status` (verified at `infra/hook.rs:339`). Test name `cmd_hook_status_classifies_three_hook_states` describes a fictitious function.
+- Hook content marker check uses `HOOK_MARKER_PREFIX`, not `HOOK_MARKER_CURRENT`. The proposed test seeds files with `HOOK_MARKER_CURRENT` which CONTAINS the prefix, so the test would still pass — but the test code claims to be testing the foreign-vs-marked classifier.
+
+Correction: rename `cmd_hook_status` references to `cmd_status` in the test name and approach. Note that `HOOK_MARKER_PREFIX` is what the code matches; clarify that test seeds using `HOOK_MARKER_CURRENT` work because they contain the prefix.
+
+### RB-10 (now_unix_secs swallows clock errors): NEEDS FIX
+
+Issues:
+- Changing `WatchSnapshot.snapshot_at: i64` to `Option<i64>` is a wire-shape break. The prompt says "wire shape contract changes" but does not enumerate the impacted sites. Tests at `daemon_translate.rs:1032, 1237, 1313` use `snapshot_at: 1_734_120_500` (literal i64) and would not compile after the change. `cli/batch/handlers/misc.rs:638-639` validates `snapshot_at` presence in JSON, also affected.
+- The Replacement code has stray whitespace inside a backslash-continued string literal — copy-paste artifact.
+
+Correction: enumerate the i64 -> Option<i64> blast radius (5 known sites: `watch_status.rs:109, 128, 221`, `daemon_translate.rs:1032/1237/1313`, `batch/handlers/misc.rs:638-639`) and fix them in the same prompt, or split into a multi-step refactor.
+
+### TC-HAP-1.30.1-3 (cmd_status matrix unpinned): VERIFIED
+
+`status.rs:38-103` matches; flow at lines 41-54 confirms `--wait` without `--watch-fresh` exits 1. `slow-tests` feature exists in Cargo.toml. Tests use `assert_cmd::Command::cargo_bin("cqs")` — convention matches existing CLI tests. Note: existing convention uses file-level `#![cfg(feature = "slow-tests")]`, not per-test `#[cfg(all(unix, feature = "slow-tests"))]` — minor stylistic deviation, but both compile.
+
+### Cross-reference stubs (RB-9, RB-1, RB-6, API-V1.30.1-5): VERIFIED
+
+All four cross-reference entries correctly point to their merging bundle. No content to verify; redirects only.
+
+---
+
+### Summary
+
+- **VERIFIED:** 13 prompts (2 bundles + 8 single-issue + 3 cross-reference stubs)
+- **NEEDS FIX:** 9 prompts (1 bundle partially + 8 single-issue with concrete errors)
+
+### Three most concerning issues (severity-ordered)
+
+1. **DS-V1.30.1-D5 — `cqs::fs::atomic_replace` API mismatch.** The proposed call `atomic_replace(&dirty, b"")` will not compile; the function takes `(tmp_path: &Path, final_path: &Path)`, not `(path, bytes)`. This is the same class of error as the P1 verifier flagged: a fix that uses a fictitious API shape.
+
+2. **DS-V1.30.1-D7 — Wrong function name + wrong error type.** Prompt repeatedly says `save_owned` (doesn't exist; actual is `save`) AND uses `anyhow::anyhow!` / `anyhow::bail!` in a function that returns `Result<(), HnswError>` (not anyhow). Two separate compile errors stacked.
+
+3. **API-V1.30.1-1 — `error_codes::TIMEOUT` doesn't exist.** The replacement code references a constant that's never been defined. The error_codes module has only NOT_FOUND, INVALID_INPUT, PARSE_ERROR, IO_ERROR, INTERNAL.
+
+### Bundle completeness
+
+All 5 bundles cover every merged finding ID — no IDs slipped through. The watch-status-machine bundle's tests are partly redundant with existing tests but the merged finding IDs are still substantively addressed.
+# v1.30.1 Audit — P3 Fix Prompts
+
+P3 = easy + low impact, fix if time. 78 findings collapsed into ~32 prompts via grouping.
+
+Generated 2026-04-28. Cross-referenced with audit-triage.md and audit-findings.md.
+
+---
+
+## P3-DOC-1 — Five doc-only edits (no trust claim shifts)
+
+**Reframed during verification:** anchors corrected — PRIVACY block is 18-22 (three legacy lines, not one); SECURITY platform-native paths live in the read-access table at 111-115. Item 4's existing line already documents the 250 ms poll cap; the rewrite still adds the more-discoverable "30 s default budget" wording.
+
+**Files:** `README.md:540-569`, `CONTRIBUTING.md:149-340`, `PRIVACY.md:18-22`, `SECURITY.md:111-115`, `README.md:219-220`, `CHANGELOG.md:71`, `ROADMAP.md:131`
+**Effort:** ~15 min total
+**Bundles:** DOC-V1.30.1-2, DOC-V1.30.1-3, DOC-V1.30.1-5, DOC-V1.30.1-6, DOC-V1.30.1-9
+
+**Fixes:**
+
+1. **README canonical command list** (`README.md:540-569`): insert two new rows after line 568 (before the `cqs completions` row at 569):
+   ```
+   - `cqs hook install/uninstall/status/fire` - manage `.git/hooks/post-{checkout,merge,rewrite}` for watch-mode reconciliation. Idempotent; respects third-party hooks via marker check (#1182)
+   - `cqs status --watch-fresh [--wait [--wait-secs N]]` - report watch-loop freshness; `--wait` blocks until `state == fresh` (default 30 s, capped at 600 s) (#1182)
+   ```
+
+2. **CONTRIBUTING Architecture Overview** (`CONTRIBUTING.md:149-340`): append missing entries — `eval/` (mod.rs + schema.rs), `watch_status.rs`, `daemon_translate.rs`, `fs.rs`, `limits.rs`, `aux_model.rs`, `cli/commands/serve.rs`. In `cli/commands/infra/`: `hook.rs`, `model.rs`, `ping.rs`, `slot.rs`, `status.rs`. In `cli/commands/index/`: `umap.rs`. In `cli/watch/`: `reconcile.rs - Layer 2 periodic full-tree reconciliation (#1182)`.
+
+3. **PRIVACY/SECURITY platform-native cache paths** — extend (don't replace) the legacy `~/.cache/cqs/` block:
+   - **PRIVACY.md:18-22**: the legacy block is three lines (`embeddings.db`, `query_cache.db`, `query_log.jsonl`). Add a leading platform-resolution note above it:
+     ```
+     The legacy cache root resolves per platform: Linux `$XDG_CACHE_HOME/cqs/` or `~/.cache/cqs/`; macOS `~/Library/Caches/cqs/`; Windows `%LOCALAPPDATA%\cqs\`. The three files below live under that root.
+     ```
+     Then update the `rm -rf` block lower in the file to include `~/Library/Caches/cqs/` and `%LOCALAPPDATA%\cqs\` alongside the existing Linux path.
+   - **SECURITY.md:111-115** (read access table for `~/.cache/cqs/embeddings.db`, `query_cache.db`): add a footnote row noting that on macOS the path is `~/Library/Caches/cqs/...` and on Windows `%LOCALAPPDATA%\cqs\...`. Mirror in the write-access table at 134-136.
+
+4. **README Watch Mode default budget** (`README.md:219-220`): existing line 219 is `cqs status --watch-fresh --wait` with `(250 ms poll, capped at 600 s)`. Rewrite to lead with the default 30 s budget for discoverability:
+   ```
+   cqs status --watch-fresh --wait                     # block until fresh (default 30 s budget, 250 ms poll, capped at 600 s)
+   cqs status --watch-fresh --wait --wait-secs 600     # extend up to the 600 s cap
+   ```
+
+5. **CHANGELOG/ROADMAP cache subcommand list** (`CHANGELOG.md:71`, `ROADMAP.md:131`): change `{stats,prune,compact}` to `{stats,clear,prune,compact}`.
+
+---
+
+## P3-DOC-2 — Skip: subsumed
+
+- `DOC-V1.30.1-8` (CONTRIBUTING test count) — **Covered by:** P3-DOC-1 item 2 (the architecture overview update); no separate action needed per the finding's own note.
+
+---
+
+## P3-CQ-1 — eval Timeout error message: include drop/saturation signals
+
+**File:** `src/cli/commands/eval/mod.rs:248-255`
+**Effort:** ~5 min
+**Finding:** CQ-V1.30.1-3
+
+**Fix:**
+```rust
+// before (lines 248-255):
+FreshnessWait::Timeout(snap) => anyhow::bail!(
+    "watch index is still stale after {budget_secs}s wait \
+     (modified_files={}, pending_notes={}, rebuild_in_flight={}); \
+     wait longer with --require-fresh-secs N or skip with --no-require-fresh",
+    snap.modified_files,
+    snap.pending_notes,
+    snap.rebuild_in_flight,
+),
+
+// after — add dropped_this_cycle and delta_saturated:
+FreshnessWait::Timeout(snap) => anyhow::bail!(
+    "watch index is still stale after {budget_secs}s wait \
+     (modified_files={}, pending_notes={}, rebuild_in_flight={}, \
+     dropped_this_cycle={}, delta_saturated={}); \
+     wait longer with --require-fresh-secs N or skip with --no-require-fresh",
+    snap.modified_files,
+    snap.pending_notes,
+    snap.rebuild_in_flight,
+    snap.dropped_this_cycle,
+    snap.delta_saturated,
+),
+```
+
+---
+
+## P3-CQ-2 — Dedupe `ort_err` helpers across embedder/reranker/splade
+
+**Files:** `src/embedder/provider.rs:14`, `src/reranker.rs:100`, `src/splade/mod.rs:27`
+**Effort:** ~10 min
+**Finding:** CQ-V1.30.1-5
+
+**Fix:** Promote `embedder::provider::ort_err` to a crate-private free function (e.g., `crate::ort_helpers::ort_to_inference<E: From<String>>`) and add `From<String>` impls (or per-enum constructors) on `RerankerError::Inference` and `SpladeError::Inference`. Then delete the two duplicate helpers and reuse the central one. Saves ~9 LOC and removes the cross-module rationale comment at `reranker.rs:99`.
+
+---
+
+## P3-CQ-3 — Drop redundant `--no-auth` localhost warning at boot
+
+**File:** `src/cli/commands/serve.rs:27-37`
+**Effort:** ~5 min
+**Finding:** CQ-V1.30.1-6
+
+**Fix:** The CLI-side warning at `cmd_serve:27-37` is silent for the most-common localhost+`--no-auth` footgun, while `serve/mod.rs:162-165` already emits a structured warning unconditionally. Drop the early `if no_auth && bind != "127.0.0.1" && bind != "localhost" && bind != "::1"` block entirely; rely on the `run_server` warning. Don't carry both. (See P3-PB-1 for the wildcard-bind tightening.)
+
+---
+
+## P3-API-1 — Renames, defaults, and shape unifications across `cqs status`, `cqs eval`, daemon RPCs (8 quick wins)
+
+**Bundles:** API-V1.30.1-2, API-V1.30.1-3, API-V1.30.1-4, API-V1.30.1-6, API-V1.30.1-7, API-V1.30.1-8, API-V1.30.1-9, API-V1.30.1-10
+**Effort:** ~30-45 min total
+
+| ID | File:Line | Fix |
+|----|-----------|-----|
+| API-V1.30.1-2 | `definitions.rs:792`, `eval/mod.rs:85` | Doc-only fix: append a one-liner in each `--help` cross-referencing the other surface. ("Note: `cqs eval --require-fresh-secs` has the same semantics; default differs by use case.") No flag rename — that breaks scripts. |
+| API-V1.30.1-3 | `eval/mod.rs:79-80` | Add a `///` line on `no_require_fresh`: "Off-switch for the default-on `--require-fresh` gate. Set `CQS_EVAL_REQUIRE_FRESH=0` for the env equivalent." Don't rename — this is the only `--no-X` flag intentionally because it gates a default-on safety surface. |
+| API-V1.30.1-4 | `daemon_translate.rs:236`, `watch_status.rs:105` | Add `#[serde(alias = "last_synced_at")]` to `PingResponse.last_indexed_at`, OR `#[serde(alias = "last_indexed_at")]` to `WatchSnapshot.last_synced_at`. Pick one canonical name in docs but keep both deserializing. |
+| API-V1.30.1-6 | `daemon_translate.rs:517-519` | Drop the `queued: bool` field — `Ok(...)` already conveys "queued". Delete the field, drop the doc lie about "always true", bump `JSON_OUTPUT_VERSION`. |
+| API-V1.30.1-7 | `watch_status.rs:181-193` | Add a `pub fn new(...)` constructor on `WatchSnapshotInput<'a>` that takes the named fields and fills `_marker: PhantomData`. Make the field set encapsulated. Migrate the one caller in `cli/watch/mod.rs:165` (inside `publish_watch_snapshot`; line 1303 is the `publish_watch_snapshot(...)` invocation, not the struct construction) to `WatchSnapshotInput::new(...)`. (Don't drop the lifetime today — it's load-bearing for future borrow-only fields per the comment.) |
+| API-V1.30.1-8 | `cli/commands/infra/status.rs:41-54` | Change the no-flag `eprintln!` to a stderr hint: `eprintln!("cqs status: hint: try --watch-fresh --wait")` and keep `exit(1)`. Document in `--help` that `--watch-fresh` is currently the only mode. |
+| API-V1.30.1-9 | `watch_status.rs:51-60` | Add `impl std::fmt::Display for FreshnessState { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.as_str()) } }`. Two-line addition. Lets `tracing::info!(state = %snap.state)` work. |
+| API-V1.30.1-10 | `watch_status.rs:101,219` | Update doc comment on `idle_secs`: "Seconds since last filesystem event **at snapshot time** (not live; see `last_event_at` for live-idle computation)." Optionally add `last_event_at: Option<i64>` so consumers can derive `now() - last_event_at` for live idle. Pure documentation fix is the cheap path. |
+
+---
+
+## P3-API-2 — Skip: covered by P2
+
+- **API-V1.30.1-5** (`Result<T, String>` on daemon RPCs): **Covered by:** the P2 entry of the same ID. Not duplicated as a P3 prompt.
+
+---
+
+## P3-EH-1 — Replace four `unwrap_or_default()` / `let _ =` swallow-error sites with explicit warns
+
+**Bundles:** EH-V1.30.1-3, EH-V1.30.1-4, EH-V1.30.1-5, EH-V1.30.1-6
+**Effort:** ~15 min total
+
+| ID | File:Line | Fix |
+|----|-----------|-----|
+| EH-V1.30.1-3 | `src/cli/dispatch.rs:207` | Replace `let resolved_slot = cqs::slot::resolve_slot_name(...).ok();` with `match` — on Err: `tracing::warn!(error = %e, slot = ?cli.slot, "slot resolution failed when looking up persisted model intent"); None`. |
+| EH-V1.30.1-4 | `src/cli/commands/infra/doctor.rs:923` | Replace `cqs::slot::list_slots(...).unwrap_or_default()` with explicit `match`: on Err, emit `tracing::warn!` AND add a `slot_listing_error: Option<String>` field to the doctor JSON envelope. The whole point of `cqs doctor` is to surface failures. |
+| EH-V1.30.1-5 | `src/cli/commands/index/build.rs:863-867` | Replace both `try_model_config().map(...).unwrap_or_default()` and `store.chunk_count().unwrap_or(0)` with `?` propagation (the index command returns `Result`). Or include explicit `error` field in the JSON envelope. |
+| EH-V1.30.1-6 | `src/reranker.rs:524` | Replace `let _ = std::fs::write(&marker, &expected_marker);` with `if let Err(e) = std::fs::write(&marker, &expected_marker) { tracing::warn!(error = %e, path = %marker.display(), "Failed to write reranker verification marker — next launch will re-verify checksums"); }`. Two lines. |
+
+---
+
+## P3-OB-1 — Demote per-search `tracing::info!` spam to `debug!`
+
+**Bundles:** OB-V1.30.1-1, OB-V1.30.1-2
+**Effort:** ~5 min
+**Files:** `src/search/router.rs:469-474, 491-496, 549-554` (SPLADE routing) + `:1146-1150` (centroid Unknown-gap)
+
+**Fix:** Demote four call sites from `tracing::info!` to `tracing::debug!`. The existing entry `info_span!`s already provide traceability when the operator opts into debug logs.
+
+| Line range | Current | Replacement |
+|------------|---------|-------------|
+| `:469-474` | `tracing::info!(category, alpha, source, "SPLADE routing")` | `tracing::debug!(category, alpha, source, "SPLADE routing")` |
+| `:491-496` | same shape | demote to `debug!` |
+| `:549-554` | same shape | demote to `debug!` |
+| `:1146-1150` | `tracing::info!(centroid_category, margin, "centroid filled Unknown gap")` | demote to `debug!` |
+
+---
+
+## P3-OB-2 — Add closing tracing event to `wait_for_fresh` (entry/timeout/no-daemon)
+
+**File:** `src/daemon_translate.rs:660-679`
+**Effort:** ~5 min
+**Finding:** OB-V1.30.1-4
+
+**Fix:** Before each terminal `return` in `wait_for_fresh`, add an info event:
+```rust
+let start = std::time::Instant::now();
+// ... existing loop ...
+
+// success path:
+tracing::info!(elapsed_ms = start.elapsed().as_millis() as u64, modified_files = snap.modified_files, "wait_for_fresh: index reached Fresh");
+return FreshnessWait::Fresh(snap);
+
+// timeout path:
+tracing::info!(elapsed_ms = start.elapsed().as_millis() as u64, modified_files = snap.modified_files, pending_notes = snap.pending_notes, rebuild_in_flight = snap.rebuild_in_flight, "wait_for_fresh: timeout — index still stale");
+return FreshnessWait::Timeout(snap);
+
+// no-daemon path:
+tracing::info!(error = %msg, "wait_for_fresh: daemon unreachable");
+return FreshnessWait::NoDaemon(msg);
+```
+
+---
+
+## P3-OB-3 — Reason field on `enforce_auth` 401 warn
+
+**File:** `src/serve/auth.rs:389-401, 269-321`
+**Effort:** ~10 min
+**Finding:** OB-V1.30.1-5
+
+**Fix:** Change `AuthOutcome::Unauthorized` to carry a low-cardinality reason enum:
+```rust
+enum UnauthorizedReason { MissingAll, BearerMismatch, CookieMismatch, QueryParamMismatch }
+
+// in check_request, replace bare `AuthOutcome::Unauthorized` with `Unauthorized(UnauthorizedReason::<which one fired>)`
+// in the 401 warn at :389-401:
+tracing::warn!(method = %req.method(), path = %req.uri().path(), reason = ?reason, "serve: rejected unauthenticated request");
+```
+
+---
+
+## P3-OB-4 — Entry span + final-decision info on `require_fresh_gate`
+
+**File:** `src/cli/commands/eval/mod.rs:219-275`
+**Effort:** ~5 min
+**Finding:** OB-V1.30.1-6
+
+**Fix:** Wrap the function body in:
+```rust
+let _span = tracing::info_span!("require_fresh_gate", wait_secs).entered();
+```
+After `wait_for_fresh` returns, emit one structured event before the bail/Ok path:
+```rust
+tracing::info!(outcome = "fresh"|"timeout"|"no_daemon", elapsed_ms, modified_files = snap.modified_files, "require_fresh_gate: resolved");
+```
+
+---
+
+## P3-OB-5 — `elapsed_ms` field on `daemon_reconcile` and GC walks
+
+**Files:** `src/cli/watch/reconcile.rs:63-148`, `src/cli/watch/gc.rs:103-180,195-243`
+**Effort:** ~5 min
+**Finding:** OB-V1.30.1-7
+
+**Fix:** Capture `let start = std::time::Instant::now()` at function entry; include `elapsed_ms = start.elapsed().as_millis() as u64` in the terminal `tracing::info!` for `run_daemon_reconcile`, `run_daemon_startup_gc`, and `run_daemon_periodic_gc`. Pattern matches what HNSW build sites already do.
+
+---
+
+## P3-OB-6 — Skip: covered by P2
+
+- **OB-V1.30.1-8** (daemon_status connect-warn loop): **Covered by:** P2 entry of same ID — same fix point, broader scope.
+- **OB-V1.30.1-9** (println! in process_file_changes): **Covered by:** P2 entry of same ID.
+- **OB-V1.30.1-10** (serve::search query at info): **Covered by:** P2 entry of same ID.
+
+---
+
+## P3-TC-ADV-1 — Bundle: 5 adversarial test additions for serve/auth + daemon
+
+**Bundles:** TC-ADV-1.30.1-1, TC-ADV-1.30.1-2, TC-ADV-1.30.1-3, TC-ADV-1.30.1-9, TC-ADV-1.30.1-10
+**Effort:** ~25 min total
+
+Add to `src/serve/auth.rs::tests`:
+
+```rust
+#[test]
+fn try_from_string_accepts_long_alphabet_input_today() {
+    // Pin current shape — no MAX_TOKEN_LEN cap exists.
+    // If a cap is ever added, this test should invert.
+    let long = "a".repeat(10_240);
+    assert!(AuthToken::try_from_string(long).is_ok());
+}
+
+#[test]
+fn auth_query_wrong_cookie_right_authenticates_via_cookie_no_redirect() {
+    // Pin: cookie wins over query. Stale ?token= survives in URL bar.
+    // SEC-7: this test pins the leakage gap. Invert when CQ-V1.30.1-4 lands.
+    // ... build req with valid cookie + ?token=wrong ...
+    // assert AuthOutcome::Ok (NOT OkViaQueryParam)
+}
+
+#[test]
+fn auth_query_right_cookie_wrong_redirects_and_overwrites_cookie() {
+    // ... build req with wrong cookie + ?token=right ...
+    // assert AuthOutcome::OkViaQueryParam (current behavior, regression-pin)
+}
+
+#[test]
+fn auth_two_cookies_with_same_name_uses_first_occurrence() {
+    // RFC 6265 allows duplicates; current code matches first.
+    // ... build req with `Cookie: cqs_token_8080=wrong; cqs_token_8080=right` ...
+    // assert 401 (first wrong one matches first; pin behavior)
+}
+
+#[test]
+fn bearer_lowercase_scheme_returns_401_today() {
+    // RFC 6750 §2.1 says case-insensitive; current code is strict.
+    // Pin current 401 behavior; invert when grammar is relaxed.
+    // ... build req with `Authorization: bearer <token>` ...
+    // assert 401
+}
+
+#[test]
+fn bearer_double_space_returns_401_today() {
+    // ... build req with `Authorization: Bearer  <token>` ...
+    // assert 401
+}
+
+#[test]
+fn bearer_no_separator_returns_401_today() {
+    // ... build req with `Authorization: Bearer<token>` ...
+    // assert 401
+}
+```
+
+Add to `src/daemon_translate.rs::tests`:
+
+```rust
+#[test]
+fn daemon_status_handles_err_envelope_with_no_message() {
+    // ... mock daemon writes `{"status":"err"}` (no message field) ...
+    // assert err string includes the raw envelope, not "daemon error: daemon error"
+}
+
+#[test]
+fn daemon_status_handles_err_envelope_with_non_string_message() {
+    // ... mock daemon writes `{"status":"err","message": 42}` ...
+    // assert err string surfaces the shape mismatch
+}
+
+#[test]
+fn unwrap_dispatch_payload_distinguishes_envelope_no_data_from_bare_form() {
+    // Send `{"data": null, "error": "internal", "version": 1}` — should surface error
+    // Signature: fn unwrap_dispatch_payload(output: &serde_json::Value, type_name: &str) -> Result<Value, String>
+    let v = serde_json::json!({"data": null, "error": "internal", "version": 1});
+    let result = unwrap_dispatch_payload(&v, "TestType");
+    assert!(result.is_err());  // not silently passing wrapper through
 }
 ```
 
 ---
 
-## P3.37 — `blame.rs` git_file via `normalize_slashes`
+## P3-TC-ADV-2 — `env_disables_freshness_gate`: rewrite to call function with real env
 
-**Finding:** P3.37
-**Files:** `src/cli/commands/io/blame.rs:113-115`
-**Why:** Current `replace('\\', "/")` only handles backslashes; verbatim `\\?\` prefix slips through, breaking `git log --format=... -- <file>`.
+**File:** `src/cli/commands/eval/mod.rs:282-290, 405-432`
+**Effort:** ~10 min
+**Finding:** TC-ADV-1.30.1-7
 
-### Current code
+**Fix:** Rewrite the test (currently re-implements function body inline) to actually call `env_disables_freshness_gate()` with `serial_test::serial(cqs_eval_require_fresh_env)`. Use the `unsafe` env-var save/restore pattern from `daemon_translate.rs::tests` (e.g., `reconcile_enabled_default_true`). Cover at minimum:
+
 ```rust
-let git_file = rel_file.replace('\\', "/");
-```
+#[test]
+#[serial_test::serial(cqs_eval_require_fresh_env)]
+fn env_disables_freshness_gate_real_env() {
+    // SAFETY: serial_test guards env-var collisions.
+    unsafe { std::env::remove_var("CQS_EVAL_REQUIRE_FRESH"); }
+    assert!(!env_disables_freshness_gate(), "unset = gate stays on");
 
-### Replacement
-```rust
-let git_file = crate::normalize_slashes(&rel_file);
-```
-
----
-
-## P3.38 — Daemon socket-path: warn on `XDG_RUNTIME_DIR` unset (Linux only)
-
-**Finding:** P3.38
-**Files:** `src/daemon_translate.rs:179-188`
-**Why:** Silent fallback to `/tmp` (mode 1777) hides a meaningful trust drop on multi-user Linux. macOS `/var/folders/...` is fine.
-
-### Current code
-```rust
-fn daemon_socket_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    dir.join(/* per-user socket name */)
+    for (val, expected) in [
+        ("0", true), ("false", true), ("no", true), ("off", true),
+        ("  off  ", true),    // whitespace
+        ("1", false), ("true", false),
+        ("garbage", false), ("", false),    // unknown / empty
+    ] {
+        unsafe { std::env::set_var("CQS_EVAL_REQUIRE_FRESH", val); }
+        assert_eq!(env_disables_freshness_gate(), expected,
+                   "value {val:?}: expected {expected}");
+    }
+    unsafe { std::env::remove_var("CQS_EVAL_REQUIRE_FRESH"); }
 }
 ```
 
-### Replacement
+Drop the inline-body test at `:405-432`.
+
+---
+
+## P3-TC-ADV-3 — Skip: covered by P1
+
+- **TC-ADV-1.30.1-8** (`delta_saturated=true → Fresh` test): **Covered by:** the CQ-V1.30.1-2 P1 fix, which changes the state machine so this test then asserts `Stale`. Add the test there, not separately.
+
+---
+
+## P3-RB-1 — `wait_for_fresh` defensive cap on `wait_secs`
+
+**File:** `src/daemon_translate.rs:660-662`
+**Effort:** ~3 min
+**Finding:** RB-2
+
+**Fix:**
 ```rust
-fn daemon_socket_path() -> PathBuf {
-    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(d).join(/* socket name */);
+// before:
+let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+
+// after — defensive cap to prevent Instant+Duration overflow:
+let wait_secs = wait_secs.min(86_400);
+let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+```
+
+---
+
+## P3-RB-2 — Hoist `unix_secs_i64()` helper for 5 cast sites
+
+**Bundles:** RB-3, RB-10
+**Effort:** ~10 min
+**Sites:** `src/watch_status.rs:229`, `src/cli/batch/mod.rs:779`, `src/cli/batch/mod.rs:1988`, `src/cli/commands/infra/ping.rs:122`, `src/cli/watch/mod.rs:159`
+
+**Fix:** Add to `src/lib.rs` (or `src/time.rs` if creating module):
+```rust
+/// Defensive `SystemTime::now() → Unix seconds as i64`. Returns `None` when
+/// the clock is before epoch (RTC mis-set, hypervisor pause, etc.) and
+/// emits a `tracing::warn!` once per process so journal surfaces bad-clock
+/// conditions. Use everywhere instead of bare `as_secs() as i64`.
+pub fn unix_secs_i64() -> Option<i64> {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    match std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(_) => {
+            WARNED.get_or_init(|| {
+                tracing::warn!("system clock is before UNIX epoch — timestamps will be None");
+            });
+            None
+        }
     }
-    #[cfg(target_os = "linux")]
-    {
-        static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        WARNED.get_or_init(|| {
-            tracing::info!(
-                "XDG_RUNTIME_DIR unset — daemon socket falls back to temp_dir; \
-                 consider XDG_RUNTIME_DIR=/run/user/$(id -u)"
-            );
-        });
-    }
-    std::env::temp_dir().join(/* socket name */)
 }
 ```
 
----
-
-## P3.39 — `write_slot_model` / `write_active_slot` use `atomic_replace`
-
-**Finding:** P3.39
-**Files:** `src/slot/mod.rs:237-277` (`write_slot_model`), `src/slot/mod.rs:363-406` (`write_active_slot`)
-**Why:** Bespoke temp+rename without parent-dir fsync. `crate::fs::atomic_replace` already does this for `notes.toml` / `audit-mode.json`.
-
-### Current code (sketch — both functions)
-```rust
-let tmp = dir.join(format!(".slot.toml.{}.tmp", temp_suffix()));
-let mut f = fs::File::create(&tmp)?;
-f.write_all(contents.as_bytes())?;
-f.sync_all()?;
-fs::rename(&tmp, &final_path)?;
-// no parent-dir fsync
-```
-
-### Replacement
-```rust
-crate::fs::atomic_replace(&final_path, contents.as_bytes())?;
-```
-Drop the bespoke temp+rename block from each function. ~20 LOC each.
+Migrate the 5 callsites:
+| Site | Current pattern |
+|------|----------------|
+| `watch_status.rs:226-231` (`now_unix_secs`) | replace body with `unix_secs_i64().unwrap_or(0)` — and consider changing return to `Option<i64>` per RB-10 (optional, slightly more invasive). |
+| `cli/batch/mod.rs:779` | swap `.map(\|d\| d.as_secs() as i64)` chain for `cqs::unix_secs_i64()` |
+| `cli/batch/mod.rs:1988` | same |
+| `cli/commands/infra/ping.rs:122` | same |
+| `cli/watch/mod.rs:159` (the `last_synced_at` line — uses metadata's modified time, NOT `SystemTime::now()`) | leave for a separate pass — different shape (`m.modified()` not `now()`); keep the `as_secs() as i64` but wrap in `i64::try_from(d.as_secs()).ok()` for overflow defense. |
 
 ---
 
-## P3.40 — `update_umap_coords_batch`: DROP TEMP TABLE before CREATE
+## P3-RB-3 — `as_millis() as i64` truncation in reindex
 
-**Finding:** P3.40
-**Files:** `src/store/chunks/crud.rs:392-450`
-**Why:** TEMP TABLE is connection-scoped, not transaction-scoped; rollback can leave a stale `_update_umap` between calls on the same pooled connection.
+**File:** `src/cli/watch/reindex.rs:507-508`
+**Effort:** ~3 min
+**Finding:** RB-4
 
-### Current code
+**Fix:**
 ```rust
-sqlx::query("CREATE TEMP TABLE IF NOT EXISTS _update_umap (...)").execute(&mut *tx).await?;
-sqlx::query("DELETE FROM _update_umap").execute(&mut *tx).await?;
-// ... INSERT INTO _update_umap, UPDATE chunks FROM _update_umap, DROP TABLE IF EXISTS _update_umap;
-```
+// before:
+.map(|d| d.as_millis() as i64)
 
-### Replacement
-```rust
-sqlx::query("DROP TABLE IF EXISTS _update_umap").execute(&mut *tx).await?;
-sqlx::query("CREATE TEMP TABLE _update_umap (...)").execute(&mut *tx).await?;
-// no DELETE needed; INSERT INTO _update_umap proceeds cleanly
+// after — surface overflow as None, treated same as missing mtime:
+.and_then(|d| i64::try_from(d.as_millis()).ok())
 ```
 
 ---
 
-## P3.41 — `reindex_files`: build embeddings without placeholders
+## P3-RB-4 — Cap `migrate_legacy` sentinel read
 
-**Finding:** P3.41
-**Files:** `src/cli/watch.rs:2918-2924`
-**Why:** Allocates N empty `Embedding::new(vec![])` placeholders then overwrites each — pure waste plus a future zero-norm-vector landmine.
+**File:** `src/slot/mod.rs:656`
+**Effort:** ~5 min
+**Finding:** RB-5
 
-### Current code
+**Fix:**
 ```rust
-let mut embeddings: Vec<Embedding> = vec![Embedding::new(vec![]); chunk_count];
-for (i, e) in cached { embeddings[i] = e; }
-for (i, e) in new_embeddings { embeddings[i] = e; }
-```
+// before:
+let detail = fs::read_to_string(&sentinel).unwrap_or_default();
 
-### Replacement
-Mirror the bulk-pipeline pattern (`src/cli/pipeline/embedding.rs::create_embedded_batch`):
-```rust
-let mut by_index: HashMap<usize, Embedding> = HashMap::with_capacity(chunk_count);
-for (i, e) in cached { by_index.insert(i, e); }
-for (i, e) in new_embeddings { by_index.insert(i, e); }
-let embeddings: Vec<Embedding> = (0..chunk_count)
-    .map(|i| by_index.remove(&i)
-        .unwrap_or_else(|| panic!("missing embedding at index {i}")))
-    .collect();
-```
-(Or refactor to call `create_embedded_batch` directly if its signature fits.)
-
----
-
-## P3.42 — `prepare_for_embedding`: skip store query when global cache satisfies all
-
-**Finding:** P3.42
-**Files:** `src/cli/pipeline/embedding.rs:64-82`
-**Why:** Always issues `store.get_embeddings_by_hashes` even when global cache has every entry; one wasted bind-heavy SELECT per warm reindex.
-
-### Current code (sketch)
-```rust
-let global_hits = global_cache.read_batch(&hashes, ...)?;
-let store_hits = store.get_embeddings_by_hashes(&hashes)?; // unconditional
-```
-
-### Replacement
-```rust
-let global_hits = global_cache.read_batch(&hashes, ...)?;
-let missed: Vec<&str> = hashes.iter()
-    .filter(|h| !global_hits.contains_key(h.as_str()))
-    .map(|h| h.as_str()).collect();
-let store_hits = if missed.is_empty() {
-    HashMap::new()
-} else {
-    store.get_embeddings_by_hashes(&missed)?
+// after — cap at 64 KiB matching SLOT_POINTER_MAX_BYTES sibling:
+let detail = {
+    use std::io::Read;
+    let mut buf = String::new();
+    fs::File::open(&sentinel)
+        .and_then(|f| f.take(64 * 1024).read_to_string(&mut buf).map(|_| ()))
+        .map(|_| buf)
+        .unwrap_or_default()
 };
 ```
 
 ---
 
-## P3.43 — Daemon socket: fold args validation + extraction into one pass
+## P3-RB-5 — `enumerate_files` strip_prefix mismatch warn-and-skip
 
-**Finding:** P3.43
-**Files:** `src/cli/watch.rs:266-297`
-**Why:** Every daemon query walks the args array twice (validation + extraction). Single pass collects both.
+**File:** `src/lib.rs:680-685`
+**Effort:** ~5 min
+**Finding:** RB-6
 
-### Current code
+**Fix:**
 ```rust
-let bad_arg_indices: Vec<usize> = arr.iter().enumerate()
-    .filter_map(|(i, v)| (!v.is_string()).then_some(i)).collect();
-if !bad_arg_indices.is_empty() { /* reject */ }
-let args: Vec<String> = arr.iter()
-    .filter_map(|v| v.as_str().map(String::from)).collect();
-```
+// before:
+if path.starts_with(&root) {
+    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
+} else { /* ... */ }
 
-### Replacement
-```rust
-let mut args = Vec::with_capacity(arr.len());
-let mut bad_arg_indices = Vec::new();
-for (i, v) in arr.iter().enumerate() {
-    match v.as_str() {
-        Some(s) => args.push(s.to_string()),
-        None => bad_arg_indices.push(i),
+// after — surface case-insensitive-fs disagreement:
+match path.strip_prefix(&root) {
+    Ok(rel) => Some(rel.to_path_buf()),
+    Err(_) => {
+        tracing::warn!(
+            path = %path.display(),
+            root = %root.display(),
+            "starts_with said yes but strip_prefix failed — case-insensitive fs?"
+        );
+        None
     }
 }
-if !bad_arg_indices.is_empty() { /* reject as before */ }
 ```
 
 ---
 
-## P3.44 — `build_graph` edge dedup with hashed key
+## P3-RB-6 — Saturating cast on WatchSnapshot counters
 
-**Finding:** P3.44
-**Files:** `src/serve/data.rs:367-373`
-**Why:** `(file.clone(), caller.clone(), callee.clone())` allocates 3 Strings per row even on dedup miss. Hash to u64 instead.
+**File:** `src/watch_status.rs:213-218`
+**Effort:** ~3 min
+**Finding:** RB-7
 
-### Current code
+**Fix:** Replace bare `as u64` casts with saturating conversions (defense-in-depth, matches RB-V1.30-3 pattern):
 ```rust
-let key = (file.clone(), caller_name.clone(), callee_name.clone());
-if seen.insert(key) {
-    accum.push((file, caller_name, callee_name));
-}
-```
+// before:
+modified_files: input.pending_files_count as u64,
+pending_notes: input.pending_notes,
+rebuild_in_flight: input.rebuild_in_flight,
+delta_saturated: input.delta_saturated,
+incremental_count: input.incremental_count as u64,
+dropped_this_cycle: input.dropped_this_cycle as u64,
 
-### Replacement
-```rust
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
-let mut h = DefaultHasher::new();
-file.hash(&mut h); caller_name.hash(&mut h); callee_name.hash(&mut h);
-if seen.insert(h.finish()) {
-    accum.push((file, caller_name, callee_name));
-}
+// after — saturating:
+modified_files: u64::try_from(input.pending_files_count).unwrap_or(u64::MAX),
+// (others unchanged or apply same pattern to incremental_count + dropped_this_cycle)
+incremental_count: u64::try_from(input.incremental_count).unwrap_or(u64::MAX),
+dropped_this_cycle: u64::try_from(input.dropped_this_cycle).unwrap_or(u64::MAX),
 ```
-Change `seen` type from `HashSet<(String,String,String)>` to `HashSet<u64>`.
 
 ---
 
-## P3.45 — `extract_imports`: borrow keys, allocate only on accept
+## P3-RB-7 — `print_text_report` empty-fixture refusal
 
-**Finding:** P3.45
-**Files:** `src/where_to_add.rs:258-276`
-**Why:** `seen.insert(trimmed.to_string())` per candidate line allocates even on rejection.
+**File:** `src/cli/commands/eval/mod.rs:296-309`
+**Effort:** ~5 min
+**Finding:** RB-8
 
-### Current code
+**Fix:** Short-circuit at the top of `print_text_report`:
 ```rust
-let mut seen: HashSet<String> = HashSet::new();
-let mut imports: Vec<String> = Vec::new();
-for chunk in chunks {
-    for line in chunk.content.lines() {
-        let trimmed = line.trim();
-        for &prefix in prefixes {
-            if trimmed.starts_with(prefix) && imports.len() < max
-                && seen.insert(trimmed.to_string()) {
-                imports.push(trimmed.to_string());
-                break;
+if report.overall.n == 0 {
+    eprintln!("[eval] no queries with gold_chunk; refusing to emit report (use --allow-empty to override)");
+    std::process::exit(2);
+}
+```
+Do this before computing `pct(...)`. Stops `NaN%` from leaking into reports and downstream gate checks.
+
+---
+
+## P3-SHL-1 — `wait_for_fresh` poll-interval env knob
+
+**File:** `src/daemon_translate.rs:663`
+**Effort:** ~5 min
+**Finding:** SHL-V1.30-2
+
+**Fix:** Add `CQS_FRESHNESS_POLL_MS` to `crate::limits` (default 250, floor 25, ceiling 5000). Read once per `wait_for_fresh` call (not cached) so tests can flip values.
+
+---
+
+## P3-SHL-2 — Drop `--require-fresh-secs` 600 s clamp (or warn on engagement)
+
+**File:** `src/cli/commands/eval/mod.rs:237`
+**Effort:** ~5 min
+**Finding:** SHL-V1.30-3
+
+**Fix (cheap):** Add `tracing::warn!` when the `min(600)` clamp engages:
+```rust
+let budget_secs = if wait_secs > 600 {
+    tracing::warn!(requested = wait_secs, capped = 600u64,
+        "--require-fresh-secs capped at 600 — set CQS_EVAL_REQUIRE_FRESH_MAX_SECS to override");
+    600
+} else { wait_secs };
+```
+Optionally read `CQS_EVAL_REQUIRE_FRESH_MAX_SECS` for an env override.
+
+---
+
+## P3-SHL-3 — Honor `CQS_GATHER_*` env vars in `task::run_task`
+
+**File:** `src/task.rs:19-25, 143-149`
+**Effort:** ~5 min
+**Finding:** SHL-V1.30-4
+
+**Fix:** Drop the `.with_max_expanded_nodes(TASK_GATHER_MAX_NODES)` override that masks `CQS_GATHER_MAX_NODES`. Either:
+- **Option (a):** Remove the `.with_*` calls so gather's existing env-knob defaults flow through.
+- **Option (b):** Rename to `CQS_TASK_GATHER_DEPTH` / `CQS_TASK_GATHER_MAX_NODES` env knobs that override the `TASK_*` constants per-task.
+
+Option (a) is the cheaper one — the user's `CQS_GATHER_*` setting just works.
+
+---
+
+## P3-SHL-4 — Onboard caps env knobs
+
+**File:** `src/onboard.rs:30-33, 174-175`
+**Effort:** ~5 min
+**Finding:** SHL-V1.30-5
+
+**Fix:** Promote `MAX_CALLEE_FETCH = 30` and `MAX_CALLER_FETCH = 15` to env-overridable resolvers:
+```rust
+fn max_callee_fetch() -> usize {
+    std::env::var("CQS_ONBOARD_CALLEE_FETCH")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(30)
+}
+fn max_caller_fetch() -> usize {
+    std::env::var("CQS_ONBOARD_CALLER_FETCH")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(15)
+}
+```
+Surface truncation in `OnboardSummary` JSON when caps engage so consumers see "I dropped N callers".
+
+---
+
+## P3-SHL-5 — `MAX_REFERENCES` env knob
+
+**File:** `src/config.rs:390-405`
+**Effort:** ~5 min
+**Finding:** SHL-V1.30-6
+
+**Fix:**
+```rust
+// before:
+const MAX_REFERENCES: usize = 20;
+
+// after — replace with crate::limits::max_references():
+fn max_references() -> usize {
+    std::env::var("CQS_MAX_REFERENCES")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(20)
+}
+```
+Update lines 391-404 to call `max_references()`. Memo the warning at load time so it doesn't fire on every `validate()`.
+
+---
+
+## P3-SHL-6 — Notes file-size + entry-count env knobs
+
+**File:** `src/note.rs:20, 169, 245`
+**Effort:** ~10 min
+**Finding:** SHL-V1.30-7
+
+**Fix:**
+1. Hoist the duplicated `const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;` (lines 169, 245) to module scope, single declaration.
+2. Wrap with `crate::limits::max_notes_file_size()` reading `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB).
+3. Same for `MAX_NOTES = 10_000` (line 20) → `CQS_NOTES_MAX_ENTRIES`.
+4. Replace silent `.take(MAX_NOTES)` (line 331) with a `tracing::warn!` when truncation engages.
+
+---
+
+## P3-SHL-7 — `ENRICHMENT_PAGE_SIZE` env knob
+
+**File:** `src/cli/enrichment.rs:46, 127`
+**Effort:** ~3 min
+**Finding:** SHL-V1.30-8
+
+**Fix:**
+```rust
+fn enrichment_page_size() -> usize {
+    std::env::var("CQS_ENRICHMENT_PAGE_SIZE")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(500)
+}
+```
+Replace `ENRICHMENT_PAGE_SIZE` const at lines 46, 127 with the resolver.
+
+---
+
+## P3-SHL-8 — `LAST_INDEXED_PRUNE_SIZE_THRESHOLD` env knob
+
+**File:** `src/cli/watch/gc.rs:36-42`
+**Effort:** ~3 min
+**Finding:** SHL-V1.30-9
+
+**Fix:** Replace const with `crate::limits` resolver reading `CQS_WATCH_PRUNE_SIZE_THRESHOLD` (default 5_000). Update doc to drop "intentionally not an env var" wording.
+
+---
+
+## P3-SHL-9 — Drop `OnceLock` cache on `daemon_periodic_gc_cap`
+
+**File:** `src/cli/watch/gc.rs:78-86`
+**Effort:** ~3 min
+**Finding:** SHL-V1.30-10
+
+**Fix:**
+```rust
+// before:
+fn daemon_periodic_gc_cap() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
+            .ok().and_then(|v| v.parse().ok())
+            .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
+    })
+}
+
+// after — read on every call so systemctl set-environment works:
+fn daemon_periodic_gc_cap() -> usize {
+    std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
+        .ok().and_then(|v| v.parse().ok())
+        .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
+}
+```
+One `getenv` per GC tick is microseconds; ticks are minutes apart. Matches `reconcile_enabled` semantic.
+
+---
+
+## P3-AC-1 — Case-fold `is_structural_query`
+
+**File:** `src/search/router.rs:813-816`
+**Effort:** ~5 min
+**Finding:** AC-V1.30.1-2
+
+**Fix:** Note that line 643 already passes `&query_lower`, so the bug is at *other* callers (lines 900, 1265, 1275-1276) that pass raw query strings. Either:
+- **Option (a) (cleaner):** Lowercase inside `is_structural_query`:
+  ```rust
+  fn is_structural_query(query: &str) -> bool {
+      let query_lower = query.to_ascii_lowercase();
+      let query = query_lower.as_str();
+      // ... rest unchanged ...
+  }
+  ```
+- **Option (b):** Force every caller to pre-lowercase. (More fragile.)
+
+Pick option (a). Add a regression-pin test: `assert!(is_structural_query("Class Foo"))`, `assert!(is_structural_query("Trait Iterator"))`, `assert!(is_structural_query("FIND ALL STRUCTS"))`.
+
+---
+
+## P3-AC-2 — `wait_for_fresh` deadline-first ordering
+
+**File:** `src/daemon_translate.rs:660-679`
+**Effort:** ~5 min
+**Finding:** AC-V1.30.1-6
+
+**Reframed during verification:** the budget overrun is up to ~5 s (one `daemon_status` read+write timeout, set at `daemon_translate.rs:444`), not 30 s. Mechanical fix unchanged.
+
+**Fix:** Move the `if Instant::now() >= deadline` check *before* the `daemon_status` call so a stuck status RPC doesn't push the helper over budget by up to ~5 s (one `daemon_status` read+write timeout).
+```rust
+loop {
+    if std::time::Instant::now() >= deadline {
+        return FreshnessWait::Timeout(WatchSnapshot::unknown());
+    }
+    match daemon_status(cqs_dir) { ... }
+    // ... rest unchanged
+    std::thread::sleep(POLL_INTERVAL);
+}
+```
+
+---
+
+## P3-AC-3 — `BoundedScoreHeap::push` total_cmp on score equality
+
+**File:** `src/search/scoring/candidate.rs:231`
+**Effort:** ~3 min
+**Finding:** AC-V1.30.1-7
+
+**Fix:**
+```rust
+// before (line 231):
+let better = score > *worst_score || (score == *worst_score && id < *worst_id);
+
+// after — use total_cmp for consistency with the OrderedFloat wrapper:
+use std::cmp::Ordering;
+let better = match score.total_cmp(worst_score) {
+    Ordering::Greater => true,
+    Ordering::Equal => id < *worst_id,
+    Ordering::Less => false,
+};
+```
+Add a `debug_assert!(score.is_finite())` immediately above to pin the upstream filter invariant.
+
+---
+
+## P3-AC-4 — `idle_secs` sub-second resolution
+
+**File:** `src/watch_status.rs:219`
+**Effort:** ~3 min
+**Finding:** AC-V1.30.1-8
+
+**Fix:** Add `idle_ms: u64` field on `WatchSnapshot` populated from `last_event.elapsed().as_millis() as u64`. Keep `idle_secs` for backwards compat. Document the addition in the struct's wire-shape doc.
+
+---
+
+## P3-AC-5 — Skip: covered by P2
+
+- **AC-V1.30.1-3** (BFS expansion-capped score-bump): **Covered by:** P2 entry of same ID.
+- **AC-V1.30.1-9** (DefaultHasher socket name): **Covered by:** P2 entry of same ID.
+- **AC-V1.30.1-10** (incremental_count idle-clear reset): **Covered by:** P2 entry of same ID.
+
+---
+
+## P3-EX-1 — `log_query` table-driven via dispatch macro
+
+**File:** `src/cli/batch/commands.rs:508, 531, 567, 577, 581, 603`
+**Effort:** ~10 min
+**Finding:** EX-V1.30.1-3
+
+**Fix:** Extend the existing `for_each_batch_cmd_pipeability!` macro (line 372-447) with a `log_as: Option<&str>` column. The macro emits the `log_query` call automatically when `log_as` is `Some(name)`. Removes 6 hand-sprinkled call sites. Normalize the arg-struct field name to `query` (or add a `fn query(&self) -> &str` accessor) so the macro can reach it without the per-variant divergence (`args.description` vs `args.query`).
+
+---
+
+## P3-EX-2 — Centralize CQS_* env-var falsy parsing
+
+**File:** `src/cli/commands/eval/mod.rs:282-289` (callers across 30+ sites)
+**Effort:** ~10 min
+**Finding:** EX-V1.30.1-7
+
+**Fix:** Add to `src/lib.rs` (or new `src/env.rs` module):
+```rust
+const FALSY: &[&str] = &["0", "false", "no", "off"];
+const TRUTHY: &[&str] = &["1", "true", "yes", "on"];
+
+pub fn env_truthy(name: &str) -> bool {
+    std::env::var(name).map(|v| TRUTHY.contains(&v.trim().to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+pub fn env_falsy(name: &str) -> bool {
+    std::env::var(name).map(|v| FALSY.contains(&v.trim().to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+```
+Migrate `env_disables_freshness_gate()` to use `crate::env_falsy("CQS_EVAL_REQUIRE_FRESH")`. Audit can flag the 30+ other sites in a follow-up PR.
+
+---
+
+## P3-PB-1 — `--no-auth` warning uses `IpAddr::is_loopback()` (no false positives on 127.0.0.0/8)
+
+**File:** `src/cli/commands/serve.rs:27`
+**Effort:** ~5 min
+**Finding:** PB-V1.30.1-1
+
+**Reframed during verification:** the original "misses wildcard binds" framing is wrong — the existing predicate `bind != "127.0.0.1" && bind != "localhost" && bind != "::1"` *does* warn for `0.0.0.0` and `::`. The real defect is the opposite: it over-warns on the rest of `127.0.0.0/8` (e.g. `127.0.0.2`), which are loopback. Refactoring to `IpAddr::is_loopback()` is still cleaner and keeps wildcard coverage intact.
+
+**Fix:** Replace the string-equality predicate with `IpAddr::is_loopback()`:
+```rust
+// before:
+if no_auth && bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
+
+// after — parse once, check is_loopback (suppresses warn for 127.0.0.0/8 and ::1 alike;
+// still warns for 0.0.0.0, ::, and any LAN address):
+let is_loopback = bind.parse::<std::net::IpAddr>()
+    .map(|ip| ip.is_loopback())
+    .unwrap_or(matches!(bind.as_str(), "localhost"));
+if no_auth && !is_loopback {
+```
+
+(Combine with P3-CQ-3 above — drop the redundant duplicate and keep this single warning as the canonical surface.)
+
+---
+
+## P3-PB-2 — `--bind localhost` resolution
+
+**File:** `src/cli/commands/serve.rs:39-41`
+**Effort:** ~5 min
+**Finding:** PB-V1.30.1-2
+
+**Fix:** Resolve `localhost` to `127.0.0.1` before `parse::<SocketAddr>`:
+```rust
+let bind_str = if bind == "localhost" { "127.0.0.1" } else { bind.as_str() };
+let bind_addr: SocketAddr = format!("{bind_str}:{port}")
+    .parse()
+    .with_context(|| format!("Failed to parse {bind_str}:{port} as a SocketAddr"))?;
+```
+
+---
+
+## P3-PB-3 — Skip: P2 territory
+
+- **PB-V1.30.1-3** (`tasklist INFO:` localized): **Covered by:** P2 entry of same ID.
+- **PB-V1.30.1-7** (Windows hook fire): **Covered by:** P2 entry of same ID.
+- **PB-V1.30.1-9** (reconcile path normalization): **Covered by:** P2 entry of same ID.
+
+---
+
+## P3-PB-4 — `atomic_replace` skip parent-dir fsync on Windows
+
+**File:** `src/fs.rs:90-108`
+**Effort:** ~3 min
+**Finding:** PB-V1.30.1-6
+
+**Fix:** Wrap the parent-fsync block in `#[cfg(unix)]`:
+```rust
+// before:
+if let Some(parent) = final_path.parent() {
+    match std::fs::File::open(parent) { ... }
+}
+
+// after:
+#[cfg(unix)]
+if let Some(parent) = final_path.parent() {
+    match std::fs::File::open(parent) { ... }
+}
+```
+The doc comment at line 85-89 already promises this no-op behavior. One syscall less per persisted file on Windows; debug-spam ends.
+
+---
+
+## P3-PB-5 — `git_dir` path normalization in hook reports
+
+**File:** `src/cli/commands/infra/hook.rs:99-105, 152, 354`
+**Effort:** ~10 min
+**Finding:** PB-V1.30.1-8
+
+**Fix:** Change `git_dir: PathBuf` → `git_dir: String` on `InstallReport`, `UninstallReport`, `StatusReport`, `FireReport`. Store `cqs::normalize_path(&path)` at construction. Same for `dirty_marker: Option<PathBuf>` → `Option<String>`. Match the convention in the rest of the JSON surface (per `src/store/types.rs:220`).
+
+---
+
+## P3-PB-6 — Linux daemon restart fallback when systemd unit missing
+
+**File:** `src/cli/commands/infra/model.rs:710-738`
+**Effort:** ~10 min
+**Finding:** PB-V1.30.1-10
+
+**Fix:** Probe `systemctl --user is-enabled cqs-watch` first. On exit code != 0 (unit not loaded), fall back to spawning `cqs watch --serve` directly — same pattern as the macOS branch at line 745.
+```rust
+let probe = std::process::Command::new("systemctl")
+    .args(["--user", "is-enabled", "cqs-watch"])
+    .output();
+let unit_exists = matches!(probe, Ok(o) if o.status.success());
+if unit_exists {
+    // existing systemctl --user start path
+} else {
+    // spawn cqs watch --serve directly (mirror macOS branch)
+}
+```
+
+---
+
+## P3-SEC-1 — `cqs ref add` walk parents and chmod
+
+**File:** `src/cli/commands/infra/reference.rs:137-145`
+**Effort:** ~5 min
+**Finding:** SEC-V1.30.1-9
+
+**Fix:** Walk every parent the call may have created and chmod each. Or set process umask to `0o077` for the duration of `create_dir_all`:
+```rust
+#[cfg(unix)]
+{
+    use std::os::unix::fs::PermissionsExt;
+    // ensure ~/.local/share/cqs/refs/ is also 0o700
+    if let Some(refs_root) = ref_dir.parent() {
+        let _ = std::fs::set_permissions(refs_root, std::fs::Permissions::from_mode(0o700));
+    }
+    // existing chmod on ref_dir itself
+}
+```
+Mirror the SEC-D.6 socket pattern at `watch/mod.rs:496` if simpler.
+
+---
+
+## P3-SEC-2 — `cqs ref add` chmod 0o600 on index DB
+
+**File:** `src/cli/commands/infra/reference.rs:165-178`
+**Effort:** ~5 min
+**Finding:** SEC-V1.30.1-10
+
+**Fix:** After `Store::open(...)` succeeds, walk every file in `ref_dir` and chmod to `0o600` (Unix only). Match the pattern in `cqs export-model` for `model.toml`.
+```rust
+#[cfg(unix)]
+{
+    use std::os::unix::fs::PermissionsExt;
+    for entry in std::fs::read_dir(&ref_dir).into_iter().flatten().flatten() {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                let _ = std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600));
             }
         }
     }
 }
 ```
 
-### Replacement
+---
+
+## P3-SEC-3 — `escapeHtml` mirror in callgraph-3d.js
+
+**File:** `src/serve/assets/views/callgraph-3d.js:55`
+**Effort:** ~3 min
+**Finding:** SEC-V1.30.1-3
+
+**Fix:** Mirror the `escapeHtml` helper at the top of the file (matching `cluster-3d.js:21` / `hierarchy-3d.js:19`). Wrap `e.message` at line 55:
+```js
+// at top of file (after IIFE wrapper):
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+// at line 55:
+container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${escapeHtml(e.message)}</div>`;
+```
+
+---
+
+## P3-SEC-4 — Skip: covered by P2
+
+- **SEC-V1.30.1-4** (tag_user_code_trust_level shape coupling): **Covered by:** P2 entry of same ID.
+
+---
+
+## P3-PF-1 — `enumerate_files` skip-replacement-when-no-backslash
+
+**File:** `src/cli/watch/reconcile.rs:99`
+**Effort:** ~3 min
+**Finding:** PF-V1.30.1-4
+
+**Fix:**
 ```rust
-let mut seen: HashSet<&str> = HashSet::new();
-let mut imports: Vec<String> = Vec::new();
-for chunk in chunks {
-    for line in chunk.content.lines() {
-        let trimmed = line.trim();
-        for &prefix in prefixes {
-            if trimmed.starts_with(prefix) && imports.len() < max
-                && seen.insert(trimmed) {
-                imports.push(trimmed.to_string());
-                break;
-            }
+// before:
+let origin = rel.to_string_lossy().replace('\\', "/");
+
+// after — Linux fast path stays Cow::Borrowed:
+use std::borrow::Cow;
+let origin_lossy = rel.to_string_lossy();
+let origin: Cow<str> = if origin_lossy.contains('\\') {
+    Cow::Owned(origin_lossy.replace('\\', "/"))
+} else {
+    origin_lossy
+};
+```
+Use `origin.as_ref()` against the `HashMap<String, _>`. Cuts unnecessary allocations on Linux/WSL.
+
+---
+
+## P3-PF-2 — `build_stats` collapse 4 round-trips into 1
+
+**File:** `src/serve/data.rs:1105-1128`
+**Effort:** ~5 min
+**Finding:** PF-V1.30.1-5
+
+**Fix:**
+```rust
+let row: (i64, i64, i64, i64) = sqlx::query_as(
+    "SELECT
+        (SELECT COUNT(*) FROM chunks),
+        (SELECT COUNT(DISTINCT origin) FROM chunks),
+        (SELECT COUNT(*) FROM function_calls),
+        (SELECT COUNT(*) FROM type_edges)"
+).fetch_one(&store.pool).await?;
+Ok(StatsResponse {
+    total_chunks: row.0.max(0) as u64,
+    total_files: row.1.max(0) as u64,
+    call_edges: row.2.max(0) as u64,
+    type_edges: row.3.max(0) as u64,
+})
+```
+
+---
+
+## P3-PF-3 — Pre-build cookie needle in AuthMiddlewareState
+
+**File:** `src/serve/auth.rs:357, 292`
+**Effort:** ~10 min
+**Finding:** PF-V1.30.1-6 (also subsumes RM-6, RM-7)
+
+**Fix:** Add `cookie_name: Arc<str>` and `cookie_lookup_needle: Arc<str>` to `AuthMiddlewareState`. Populate at construction time from `cookie_name_for_port(port)` and `format!("{cookie_name}=")`. Update `check_request` to take `&str` for the needle (or borrow from state directly). Both are `Arc<str>` so `Clone` of the state stays cheap. Net: zero allocations per request for auth happy path.
+
+---
+
+## P3-PF-4 — Watch reindex content_hash clone reduction
+
+**File:** `src/cli/watch/reindex.rs:414-417`
+**Effort:** ~5 min
+**Finding:** PF-V1.30.1-7
+
+**Fix (cheap option):** Pre-allocate `Vec::with_capacity(to_embed.len())` to avoid resize cost. Real fix: change downstream HNSW insert API to take `&[&str]` so the clone disappears entirely. Pre-allocate as the immediate win:
+```rust
+let mut content_hashes: Vec<String> = Vec::with_capacity(to_embed.len());
+content_hashes.extend(to_embed.iter().map(|(_, c)| c.content_hash.clone()));
+```
+
+---
+
+## P3-PF-5 — Cache `last_synced_at` to skip `fs::metadata` syscall
+
+**File:** `src/cli/watch/mod.rs:149-185, 1303`
+**Effort:** ~10 min
+**Finding:** PF-V1.30.1-1
+
+**Fix (cheap):** Throttle the metadata call to once per N ticks (e.g., every 10s) since `last_synced_at` is whole-second resolution anyway. Use a `last_metadata_check: Instant` field on `WatchState`.
+
+**Fix (proper):** Add `last_synced_at: Arc<AtomicI64>` to `WatchState`, updated only when the daemon successfully commits a write batch. Publish path reads atomic with no syscall. Strictly better — zero stat() syscalls and exact precision.
+
+---
+
+## P3-RM-1 — Drop `thread_local! REQ_LINE` (premise was wrong)
+
+**File:** `src/cli/watch/socket.rs:91-99`
+**Effort:** ~3 min
+**Finding:** RM-1
+
+**Fix:** Daemon spawns a fresh thread per accept (`daemon.rs:189-205`), not a Tokio blocking pool — so the thread_local doesn't amortize anything. Replace with a plain `let mut line = String::with_capacity(8192);` at the call site. Drop the `thread_local!` block. Same cost, simpler code, comment stops lying.
+
+---
+
+## P3-RM-2 — `read_context_lines` bounded read
+
+**File:** `src/cli/display.rs:59-99, 489`
+**Effort:** ~10 min
+**Finding:** RM-3
+
+**Reframed during verification:** function name corrected — production fn is `read_context_lines` (`display.rs:16-100`); the test-only mirror is `read_context_lines_test` (`display.rs:483-519`). No `compute_context` exists. Both have the `read_to_string(file)` + `content.lines().collect()` pattern at the cited lines (59 and 489 respectively).
+
+**Fix:** Replace `std::fs::read_to_string(file)` + `content.lines().collect()` with a `BufReader` that breaks early. The bound has to be computed up front from the input args (`line_end + context + 1`) since the indexing logic below currently relies on having `lines.len()` for clamping:
+```rust
+use std::io::{BufRead, BufReader};
+let f = std::fs::File::open(file).with_context(...)?;
+// line_start/line_end are already normalised above (max(1)); compute upper bound
+// before clamping so we don't pull lines we'll discard.
+let limit = (line_end as usize)
+    .saturating_add(context)
+    .saturating_add(1);
+let lines: Vec<String> = BufReader::new(f)
+    .lines()
+    .take(limit)
+    .map(|l| l.unwrap_or_default().trim_end_matches('\r').to_string())
+    .collect();
+// rest of indexing logic unchanged
+```
+Apply at both `read_context_lines` (`display.rs:59`) and `read_context_lines_test` (`display.rs:489`).
+
+---
+
+## P3-RM-3 — Skip: P4 / covered
+
+- **RM-2** (wait_for_fresh socket churn): **Covered by:** RB-9 + P4 PF-V1.30.1-2.
+- **RM-4** (HNSW snapshot map): **medium**, P4 territory.
+- **RM-5** (reconcile holds full repo set): **medium**, P4 territory.
+- **RM-6, RM-7**: **Covered by:** P3-PF-3 above.
+
+---
+
+## P3-TC-HAP-1 — Add 4 missing happy-path tests
+
+**Bundles:** TC-HAP-1.30.1-1, TC-HAP-1.30.1-8, TC-HAP-1.30.1-9, TC-HAP-1.30.1-10
+**Effort:** ~30 min total
+
+**Reframed during verification:** signatures fixed against source — `daemon_reconcile(cqs_dir: &Path, hook: Option<&str>, args: &[String])` (not `&str` + `Vec<String>`); `print_text_report(report: &EvalReport)` writes to stdout via `println!` (no `Write` sink), so the -9 test needs a prerequisite refactor; `do_install` doesn't exist (only `cmd_install(no_overwrite, json)` + the lower-level `write_hook_script`), so the -1 test should drive `write_hook_script` directly the way the existing `install_writes_three_hooks_into_fresh_repo` test (`hook.rs:441-456`) does, OR a separate prep prompt should extract `do_install` first. `let mut inp` in -8 is unnecessary — `compute(input(...))` consumes by value.
+
+**TC-HAP-1.30.1-1 — `cmd_install` upgrade-marker** (`src/cli/commands/infra/hook.rs::tests`).
+
+There are two ways to land this; pick one:
+
+(a) **Drive the existing helpers directly** — matches `install_writes_three_hooks_into_fresh_repo` (`hook.rs:441-456`). No new public surface required.
+
+```rust
+#[test]
+fn install_upgrade_replaces_v0_marker_with_current() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hooks = tmp.path().join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let path = hooks.join("post-checkout");
+    std::fs::write(&path, "#!/bin/sh\n# cqs:hook v0\n").unwrap();
+    // Pre-check: marker is the legacy prefix, not current.
+    let pre = std::fs::read_to_string(&path).unwrap();
+    assert!(pre.contains(HOOK_MARKER_PREFIX));
+    assert!(!pre.contains(HOOK_MARKER_CURRENT));
+    // Drive the lower-level write directly (cmd_install would call
+    // find_project_root, which is bound to the workspace, not the temp tree).
+    write_hook_script(&path, "post-checkout").unwrap();
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains(HOOK_MARKER_CURRENT));
+}
+
+#[test]
+fn install_idempotent_second_run_keeps_marker() {
+    // After two write_hook_script(...) calls, file still contains HOOK_MARKER_CURRENT once.
+}
+
+#[test]
+fn install_no_overwrite_path_skips_when_hook_absent() {
+    // Reproduce the cmd_install None branch with no_overwrite=true: skipped_no_overwrite gets the hook;
+    // assert the file was NOT written.
+}
+```
+
+(b) **Prerequisite refactor first** — split this prompt into:
+   - **TC-HAP-1.30.1-1a (refactor):** extract `fn do_install(git_dir: &Path, no_overwrite: bool) -> Result<InstallReport>` from `cmd_install` (`hook.rs:149`). `cmd_install` becomes a thin wrapper that calls `find_project_root()` + `locate_git_hooks_dir()` + `do_install`.
+   - **TC-HAP-1.30.1-1b (test):** then the original test skeleton works as written:
+     ```rust
+     let report = do_install(&hooks, false).unwrap();
+     assert_eq!(report.upgraded.len(), 1);
+     ```
+
+Pick (a) if minimising scope; (b) if a `do_install` is wanted for other tests too.
+
+**TC-HAP-1.30.1-8 — `WatchSnapshot::compute` Rebuilding state** (`src/watch_status.rs::tests`).
+
+Note: existing `rebuild_dominates_over_stale_files` (`watch_status.rs:278`) covers rebuild + queued files. This adds the zero-pending case:
+
+```rust
+#[test]
+fn compute_with_rebuild_in_flight_zero_pending_returns_rebuilding() {
+    let snap = WatchSnapshot::compute(input(0, true, false, 0));  // helper at :237
+    assert_eq!(snap.state, FreshnessState::Rebuilding);
+    assert!(!snap.is_fresh());
+    assert_eq!(snap.modified_files, 0);
+}
+```
+
+(Drop the `let mut inp = ...` — `compute` consumes the value; binding it adds nothing.)
+
+**TC-HAP-1.30.1-9 — `print_text_report` canonical format** (`src/cli/commands/eval/mod.rs::tests`).
+
+Current signature: `fn print_text_report(report: &EvalReport)` — writes via `println!` to stdout. Two paths:
+
+(a) **Prerequisite refactor:** change to `fn print_text_report<W: std::io::Write>(report: &EvalReport, w: &mut W) -> std::io::Result<()>` (or `&mut dyn Write`). Update the one caller. Then test against a `Vec<u8>` sink:
+```rust
+#[test]
+fn print_text_report_renders_canonical_header_and_metrics() {
+    let report = EvalReport { /* deterministic fixture */ };
+    let mut buf = Vec::new();
+    print_text_report(&report, &mut buf).unwrap();
+    let out = String::from_utf8(buf).unwrap();
+    assert!(out.contains("=== eval results: test (N=2) ==="));
+    assert!(out.contains("R@1=50%"));   // current pct() format — adjust if pct returns "0.5"
+    assert!(out.contains("R@5=100%"));
+}
+```
+
+(b) **No-refactor fallback:** drop this from the bundle and re-file as a `print_text_report` `&mut dyn Write` refactor proposal. Capturing stdout under `cargo test` is brittle (parallel tests, threading); it's not worth the test if the function isn't refactored.
+
+**TC-HAP-1.30.1-10 — `daemon_reconcile` forwards args verbatim** (`src/daemon_translate.rs::tests`).
+
+Real signature (verified `daemon_translate.rs:537-541`):
+```rust
+pub fn daemon_reconcile(
+    cqs_dir: &std::path::Path,
+    hook: Option<&str>,
+    args: &[String],
+) -> Result<DaemonReconcileResponse, String>
+```
+
+```rust
+#[test]
+fn daemon_reconcile_forwards_hook_args_verbatim() {
+    // extend the existing mock to *capture* the request line as a String
+    let captured = daemon_reconcile(
+        cqs_dir,
+        Some("post-checkout"),
+        &["abc123".into(), "def456".into(), "1".into()],
+    );
+    // assert captured JSON: parsed_request["args"] == ["abc123","def456","1"]
+}
+
+#[test]
+fn daemon_reconcile_forwards_unicode_args() {
+    let _ = daemon_reconcile(
+        cqs_dir,
+        Some("post-merge"),
+        &["mañana".into(), "🚀".into()],
+    );
+    // assert captured payload preserves UTF-8
+}
+```
+
+---
+
+## P3-TC-HAP-2 — Skip: P2 / hard / subsumed
+
+- **TC-HAP-1.30.1-2,3,4,7** are P2 entries (hook commands, status, gate end-to-end). Skipped here.
+- **TC-HAP-1.30.1-5** (Stale → Fresh transition): **medium** effort, falls into the P2 batch refactor of `wait_for_fresh` (cross-cutting bundle).
+- **TC-HAP-1.30.1-6** (process_file_changes direct tests): **hard**, P4 territory.
+
+---
+
+# Summary
+
+**Distinct prompts after grouping: 51 actionable + 9 explicit skip markers = 60 entries total**
+
+78 raw P3 findings collapsed into 51 distinct actionable fix prompts. The 9 skip markers document why specific P3 IDs are covered by higher-priority fixes (P1/P2) or subsumed by another P3 bundle.
+
+**Top 5 patterns bundled:**
+
+1. **Per-file env-knob promotion** (P3-SHL-1 through P3-SHL-9, 9 sites) — replace hardcoded constants with `crate::limits::*` resolvers reading `CQS_*` env vars. Single canonical pattern, applied to wait poll interval, eval cap, task gather, onboard caps, MAX_REFERENCES, MAX_NOTES file/entries, ENRICHMENT_PAGE_SIZE, prune threshold, gc_cap caching.
+
+2. **Documentation drift** (P3-DOC-1, 5 sites in one prompt) — README command list, CONTRIBUTING architecture overview, PRIVACY/SECURITY platform paths, README watch-mode default, CHANGELOG/ROADMAP cache subcommand list. All small text tweaks with no trust-claim shifts.
+
+3. **`unwrap_or_default()`/`let _ =` swallow-error** (P3-EH-1, 4 sites in one prompt) — replace with explicit `match` + `tracing::warn!` per the post-v0.12.1 audit rule. Covers slot resolution, doctor list_slots, index --json envelope, reranker checksum write.
+
+4. **Saturating/defensive timestamp casts** (P3-RB-2, P3-RB-3, P3-RB-6 — 3 prompts; ~7 cast sites total) — hoist `unix_secs_i64()` helper, swap `as i64` for `try_from(...).ok()`, use saturating cast on WatchSnapshot counters.
+
+5. **Tracing observability papercuts** (P3-OB-1 through P3-OB-5, 5 prompts) — demote per-search info spam to debug; add closing events to wait_for_fresh; add reason-enum to 401 warns; add entry span + outcome event to require_fresh_gate; add elapsed_ms to reconcile/GC walks.
+
+---
+
+## P3 Verification Report
+
+Verification pass run 2026-04-28 against source at HEAD (c19a2eef post-v1.30.1 + #1197 / #1198). Each prompt's "before" / cited line is checked; tableized prompts are spot-checked across all rows.
+
+### P3-DOC-1: NEEDS FIX
+**Issue (item 1 README:540-569):** the `cqs hook` and `cqs status --watch-fresh` rows are NOT yet in the canonical command list at README:540-569 — verified by grep; absent. Prompt's instruction to add them is correct, anchor is right.
+**Issue (item 3 PRIVACY anchors):** Prompt cites "PRIVACY.md:21-22" as the `~/.cache/cqs/` line. Actual PRIVACY.md:20 is `~/.cache/cqs/embeddings.db`, :21 is `query_cache.db`, :22 is `query_log.jsonl` — three lines, not one. The fix needs to extend the legacy block at 18-22 with platform paths, not replace a single line.
+**Issue (item 4 README:219-220):** existing line 219 already says "(250 ms poll, capped at 600 s)". Replacement adds default-30s; current text is acceptable but the "default 30 s budget" is more discoverable. Minor.
+**Issue (item 5 ROADMAP/CHANGELOG):** verified both ROADMAP.md:131 and CHANGELOG.md:71 have `{stats,prune,compact}` (missing `clear`). Replacement to `{stats,clear,prune,compact}` is correct.
+**Correction:** Item 1 anchors verified — insert two new rows after README:568. Item 3: cite anchors as PRIVACY.md:18-22 (legacy block) and SECURITY.md:111-115 (read-access table). Item 4 verbatim acceptable. Item 5 verbatim correct.
+
+### P3-DOC-2: VERIFIED
+Skip marker for DOC-V1.30.1-8 — folded into DOC-1 item 2.
+
+### P3-CQ-1: VERIFIED
+Lines 248-255 match exactly. `snap.modified_files`, `snap.dropped_this_cycle`, `snap.delta_saturated` all real fields on `WatchSnapshot`.
+
+### P3-CQ-2: VERIFIED
+`embedder/provider.rs:14`, `reranker.rs:100`, `splade/mod.rs:27` all hold the duplicate `ort_err`. The cross-module rationale comment at `reranker.rs:99` is verified.
+
+### P3-CQ-3: VERIFIED
+`cli/commands/serve.rs:27-37` matches; `serve/mod.rs:162-165` has the unconditional `WARN: --no-auth` warning.
+
+### P3-API-1: NEEDS FIX
+**Issue (API-V1.30.1-7):** Prompt cites `cli/watch/mod.rs:1303` as the WatchSnapshotInput caller; the real call site is at `cli/watch/mod.rs:165`. Line 1303 is the `publish_watch_snapshot(...)` invocation, not the struct construction.
+**Correction:** Change "Migrate the one caller in `cli/watch/mod.rs:1303`" → "Migrate the one caller in `cli/watch/mod.rs:165`".
+**All other rows verified:** API-V1.30.1-2 (definitions.rs:792 + eval/mod.rs:85), -3 (eval/mod.rs:79-80), -4 (daemon_translate.rs:236, watch_status.rs:105), -6 (daemon_translate.rs:517-519), -8 (status.rs:41-54), -9 (watch_status.rs:51-60), -10 (watch_status.rs:101 + 219).
+
+### P3-API-2: VERIFIED
+Skip marker for API-V1.30.1-5 (folded into bundle-wait-fresh).
+
+### P3-EH-1: VERIFIED
+All four sites verified at the cited lines: `dispatch.rs:207`, `doctor.rs:923`, `build.rs:863-867`, `reranker.rs:524`.
+
+### P3-OB-1: VERIFIED
+`router.rs:469-474, 491-496, 549-554, 1146-1150` all hold `tracing::info!` with the cited shapes.
+
+### P3-OB-2: VERIFIED
+`daemon_translate.rs:660-679` is the function body. Three terminal returns at lines 669, 672, 676 — all need the closing event per the prompt.
+
+### P3-OB-3: VERIFIED
+`auth.rs:389-401` is the warn site; `auth.rs:269-321` is `check_request`. Both line ranges correct. `AuthOutcome::Unauthorized` is bare today (no reason carried).
+
+### P3-OB-4: VERIFIED
+`eval/mod.rs:219-275` is the `require_fresh_gate` body. Three terminal paths (Fresh Ok, Timeout bail, NoDaemon bail) all need the outcome event.
+
+### P3-OB-5: VERIFIED
+`reconcile.rs:63-148` is `run_daemon_reconcile`; `gc.rs:103-180` is `run_daemon_startup_gc`; `gc.rs:195-243` is `run_daemon_periodic_gc`. All have terminal `tracing::info!` per the prompt.
+
+### P3-OB-6: VERIFIED
+Skip markers — OB-V1.30.1-8/-9/-10 covered by P2 entries.
+
+### P3-TC-ADV-1: NEEDS FIX
+**Issue (unwrap_dispatch_payload test):** Prompt's test calls `unwrap_dispatch_payload(v, "TestType")` but the function signature is `fn unwrap_dispatch_payload(output: &serde_json::Value, type_name: &str) -> Result<serde_json::Value, String>`. The first arg must be a reference: `&v`.
+**Correction:** `let result = unwrap_dispatch_payload(&v, "TestType");` (& added).
+**Other tests verified:** `try_from_string_accepts_long_alphabet_input_today` (AuthToken::try_from_string takes `impl Into<String>`); cookie/bearer pin tests pin current behavior accurately per `auth.rs:269-321`.
+
+### P3-TC-ADV-2: VERIFIED
+`eval/mod.rs:282-290` is `env_disables_freshness_gate`; `:405-432` is the test inline-rewriting the body. The rewrite pattern using `serial_test::serial(...)` matches existing convention in `daemon_translate.rs::tests`.
+
+### P3-TC-ADV-3: VERIFIED
+Skip marker for TC-ADV-1.30.1-8 — covered by CQ-V1.30.1-2 P1 fix.
+
+### P3-RB-1: VERIFIED
+`daemon_translate.rs:660-662` matches the function signature + deadline calc. The defensive `.min(86_400)` cap is sound.
+
+### P3-RB-2: VERIFIED
+All 5 sites verified: `watch_status.rs:226-231` (now_unix_secs), `cli/batch/mod.rs:779`, `cli/batch/mod.rs:1988`, `cli/commands/infra/ping.rs:122`, `cli/watch/mod.rs:159`. The 5th-site caveat about `m.modified()` vs `now()` is correct.
+
+### P3-RB-3: VERIFIED
+`cli/watch/reindex.rs:507-508` has `.map(|d| d.as_millis() as i64)`.
+
+### P3-RB-4: VERIFIED
+`slot/mod.rs:656` has `let detail = fs::read_to_string(&sentinel).unwrap_or_default();`.
+
+### P3-RB-5: VERIFIED
+`lib.rs:680-685` matches the `if path.starts_with(&root) { ... } else { ... }` pattern.
+
+### P3-RB-6: VERIFIED
+`watch_status.rs:213-218` matches the cited cast block.
+
+### P3-RB-7: VERIFIED
+`eval/mod.rs:296-309` is `print_text_report` body; the empty-fixture short-circuit before `pct(...)` is correct.
+
+### P3-SHL-1: VERIFIED
+`daemon_translate.rs:663` has the `poll_interval = Duration::from_millis(250)`.
+
+### P3-SHL-2: VERIFIED
+`eval/mod.rs:237` has `let budget_secs = wait_secs.min(600);`.
+
+### P3-SHL-3: VERIFIED
+`task.rs:19-25` (constants) and `task.rs:143-149` (`.with_max_expanded_nodes(...)` chain) both verified.
+
+### P3-SHL-4: VERIFIED
+`onboard.rs:30-33` (constants) and `:174-175` (caps) both verified.
+
+### P3-SHL-5: VERIFIED
+`config.rs:390-405` has `const MAX_REFERENCES: usize = 20;` and the validate truncate block.
+
+### P3-SHL-6: VERIFIED
+`note.rs:20` has `MAX_NOTES = 10_000`; lines 169 and 245 each have the duplicated `MAX_NOTES_FILE_SIZE`; `note.rs:331` has the silent `.take(MAX_NOTES)`.
+
+### P3-SHL-7: VERIFIED
+`enrichment.rs:46` has `const ENRICHMENT_PAGE_SIZE: usize = 500;`; `:127` has `chunks_paged(cursor, ENRICHMENT_PAGE_SIZE)`.
+
+### P3-SHL-8: VERIFIED
+`gc.rs:42` has `LAST_INDEXED_PRUNE_SIZE_THRESHOLD: usize = 5_000;`.
+
+### P3-SHL-9: VERIFIED
+`gc.rs:78-86` matches the `OnceLock` cache pattern.
+
+### P3-AC-1: VERIFIED
+`router.rs:813-816` is inside `is_structural_query`; the callers at 643 (lowercased), 900, 1265, 1275-1276 (raw) are correctly identified.
+
+### P3-AC-2: NEEDS FIX
+**Issue:** Prompt says "stuck status RPC doesn't push the helper over budget by up to one daemon-timeout's worth (~30s)". Actual `daemon_status` timeout is 5s (`daemon_translate.rs:444`), not 30s. The fix is still valid but the impact framing is inflated.
+**Correction:** Update prompt to say "by up to ~5s (one daemon_status read+write timeout)" instead of ~30s. Mechanical fix unchanged.
+
+### P3-AC-3: VERIFIED
+`search/scoring/candidate.rs:231` has the `score > *worst_score || (score == *worst_score && id < *worst_id)` predicate.
+
+### P3-AC-4: VERIFIED
+`watch_status.rs:219` has `idle_secs: input.last_event.elapsed().as_secs()`. Adding `idle_ms` field is non-invasive.
+
+### P3-AC-5: VERIFIED
+Skip markers — AC-V1.30.1-3, -9, -10 covered by P2 entries.
+
+### P3-EX-1: VERIFIED
+All 6 `log_query` sites confirmed at `commands.rs:508, 531, 567, 577, 581, 603`. Macro `for_each_batch_cmd_pipeability!` at `:372-447` exists and is the right extension target.
+
+### P3-EX-2: VERIFIED
+`eval/mod.rs:282-289` matches the `env_disables_freshness_gate` body.
+
+### P3-PB-1: NEEDS FIX
+**Issue:** Premise is partially mistaken. Current code `bind != "127.0.0.1" && bind != "localhost" && bind != "::1"` DOES warn for `0.0.0.0` and `::` because they don't match any of the three exclusions. So the prompt's claim that the warning "misses wildcard binds" is wrong — it actually warns for them today. The `is_loopback()` refactor is still cleaner (catches `127.0.0.2` etc. as loopback, currently false-positive-warned), but the framing should be flipped.
+**Correction:** Reword prompt: "Replace string-equality with `IpAddr::is_loopback()` so any 127.0.0.0/8 bind correctly suppresses the warning. Current code over-warns on `127.0.0.2` and similar — does NOT under-warn on `0.0.0.0`."
+
+### P3-PB-2: VERIFIED
+`serve.rs:39-41` matches.
+
+### P3-PB-3: VERIFIED
+Skip markers for PB-V1.30.1-3, -7, -9.
+
+### P3-PB-4: VERIFIED
+`fs.rs:90-108` has the parent-fsync block (open + sync_all). Wrapping in `#[cfg(unix)]` is correct.
+
+### P3-PB-5: VERIFIED
+`hook.rs:99-105` has `InstallReport { git_dir: PathBuf, ... }`; `:152` is `let git_dir = locate_git_hooks_dir(&root)?;`; `:354` is `let path = git_dir.join(hook);`.
+
+### P3-PB-6: VERIFIED
+`model.rs:710-738` has the systemctl restart block; `:745+` has the macOS `current_exe()` direct-spawn fallback.
+
+### P3-SEC-1: VERIFIED
+`reference.rs:137-145` has create_dir_all + chmod block.
+
+### P3-SEC-2: VERIFIED
+`reference.rs:165-178` is the Store::open + run_index_pipeline path. The fix to walk read_dir + chmod after is correct.
+
+### P3-SEC-3: VERIFIED
+`callgraph-3d.js:55` has the unescaped `${e.message}`. `cluster-3d.js:21` and `hierarchy-3d.js:19` both have the `escapeHtml` helper to mirror.
+
+### P3-SEC-4: VERIFIED
+Skip marker for SEC-V1.30.1-4.
+
+### P3-PF-1: VERIFIED
+`cli/watch/reconcile.rs:99` has `let origin = rel.to_string_lossy().replace('\\', "/");`.
+
+### P3-PF-2: VERIFIED
+`serve/data.rs:1105-1128` has the 4-query `build_stats` body matching the "before".
+
+### P3-PF-3: VERIFIED
+`serve/auth.rs:357` has the per-request `cookie_name_for_port(state.cookie_port)` allocation; `:292` has `let needle = format!("{cookie_name}=");`. The pre-build target `AuthMiddlewareState` at `:339-342` has `token: AuthToken, cookie_port: u16` fields.
+
+### P3-PF-4: VERIFIED
+`reindex.rs:414-417` is the `Vec::collect()` of cloned content_hashes.
+
+### P3-PF-5: VERIFIED
+`cli/watch/mod.rs:149-185` is `publish_watch_snapshot`; `:1303` is its only caller. The metadata fast-path optimization is mechanically sound.
+
+### P3-RM-1: VERIFIED
+`socket.rs:91-99` has `thread_local! { static REQ_LINE: RefCell<String> ... }`. `daemon.rs:189-205` confirms a fresh thread per accept (`std::thread::Builder::new().spawn(...)`), so the thread_local doesn't amortize across connections.
+
+### P3-RM-2: NEEDS FIX
+**Issue:** Prompt says fix targets `compute_context` at `display.rs:59` and `:489`. **No `compute_context` function exists in display.rs.** The actual functions are `read_context_lines` (`display.rs:16-100`) and `read_context_lines_test` (`display.rs:483+`, inside `#[cfg(test)] mod tests`). Both have the `read_to_string` + `lines().collect()` pattern at the cited line numbers (59, 489).
+**Correction:** Rename target in prompt: "Replace the `read_to_string(file)` + `content.lines().collect()` pattern in `read_context_lines` (`display.rs:59`) and `read_context_lines_test` (`display.rs:489`)."
+
+### P3-RM-3: VERIFIED
+Skip markers for RM-2, RM-4, RM-5, RM-6, RM-7.
+
+### P3-TC-HAP-1: NEEDS FIX
+**Issue (TC-HAP-1.30.1-1):** Test skeleton uses `do_install(&hooks, false)` — **`do_install` does not exist in `hook.rs`**. Only `cmd_install(no_overwrite, json)` exists, which calls `find_project_root()` + `locate_git_hooks_dir()`. The prompt acknowledges in passing ("factor out a do_install...") but the test as-written won't compile.
+**Issue (TC-HAP-1.30.1-10):** Test skeleton calls `daemon_reconcile(cqs_dir, "post-checkout", vec!["abc123".into(), ...])`. Real signature is `pub fn daemon_reconcile(cqs_dir: &std::path::Path, hook: Option<&str>, args: &[String]) -> Result<DaemonReconcileResponse, String>`. The hook arg must be `Some("post-checkout")` and args must be `&["abc123".into(), ...]` (slice ref, not Vec).
+**Issue (TC-HAP-1.30.1-8):** Skeleton's `let mut inp = input(0, true, false, 0)` — the `mut` is unnecessary (compute moves the value). Also note the existing test `rebuild_dominates_over_stale_files` at `watch_status.rs:278-284` already covers `Rebuilding` state with files queued; this test is incremental (rebuild + zero pending).
+**Issue (TC-HAP-1.30.1-9):** Test for `print_text_report` — function signature is `fn print_text_report(report: &EvalReport)` (prints to stdout via `println!`, not a `Write`-trait sink). Skeleton needs `print_text_report` refactored first to take `&mut dyn Write`.
+**Correction:** TC-HAP-1.30.1-1: prerequisite step — refactor `cmd_install` to extract `do_install(git_dir: &Path, no_overwrite: bool) -> Result<InstallReport>` first; existing tests already follow the "drive the lower-level write directly" pattern (`hook.rs:441-456`, `install_writes_three_hooks_into_fresh_repo`). TC-HAP-1.30.1-10: fix sig — `daemon_reconcile(cqs_dir, Some("post-checkout"), &["abc123".into(), "def456".into(), "1".into()])`. TC-HAP-1.30.1-9: requires refactoring `print_text_report(report: &EvalReport, w: &mut dyn Write)` first.
+
+### P3-TC-HAP-2: VERIFIED
+Skip markers for TC-HAP-1.30.1-2, -3, -4, -5, -6, -7.
+
+---
+
+### P3 Verification Summary
+
+- **VERIFIED:** 41
+- **NEEDS FIX:** 8 (DOC-1, API-1, TC-ADV-1, AC-2, PB-1, RM-2, TC-HAP-1, plus minor anchor inaccuracies in DOC-1)
+- **ALREADY FIXED:** 0
+
+### Top Systematic Defects Across NEEDS FIX
+
+1. **Wrong function names / line numbers from drift** — P3-RM-2 cites `compute_context` (doesn't exist; function is `read_context_lines`); P3-API-1 cites `cli/watch/mod.rs:1303` for WatchSnapshotInput caller (real line 165, line 1303 is `publish_watch_snapshot` invocation). Both stem from the prompt author searching by function role rather than reading source.
+2. **Fictional helpers required by test skeletons** — P3-TC-HAP-1's `do_install` doesn't exist; the prompt assumes a refactor that hasn't happened. P3-TC-HAP-1's `print_text_report` test assumes a Write-trait refactor. These prompts mix prerequisite refactor with the test it enables.
+3. **Wrong API signatures in test skeletons** — P3-TC-HAP-1's `daemon_reconcile` call passes `&str` for `Option<&str>` and `Vec<String>` for `&[String]`. P3-TC-ADV-1's `unwrap_dispatch_payload(v, ...)` passes value where `&serde_json::Value` is expected.
+4. **Inflated impact framing** — P3-AC-2 says "~30s overrun" when daemon_status timeout is actually 5s. P3-PB-1 says wildcard binds are "missed" when current code DOES warn for them. Mechanical fixes still valid; triage rationale overstated.
+
+### P3 Promotions Suggested
+
+None — no NEEDS FIX entry surfaces a hidden P1. Defects are mechanical (line drift, wrong sig, fictional helper) rather than impact mismeasurement. AC-2 and PB-1 inflated impact still keeps them P3 once the framing is corrected.
+
+# P4 Trivial Inline Fixes
+
+## P4-trivial: SEC-V1.30.1-5 — `trust_level: "user-code"` covers vendored third-party in tree
+**File:** `SECURITY.md` (next to existing trust-level discussion) + `src/store/helpers/types.rs:172-196`
+**Effort:** ~5 min
+**Fix:** Per the audit's "option (a)" suggested fix — add a one-paragraph note to `SECURITY.md` clarifying that `trust_level: "user-code"` means *"from the user's project store"* (i.e., not from a `cqs ref` reference index), not *"authored by the user"*. Vendored upstream content (`vendor/`, `third_party/`, `node_modules/`, copied SDKs committed to the project tree) and content surfaced by `cqs notes mention` from `docs/notes.toml` retain `user-code` even though they are exactly the indirect-prompt-injection surface the trust-level field exists to flag. The proper fix (path-prefix denylist + per-chunk `vendored: bool`) is captured under P4-issue. Doc-only clarification, no code change. Pairs with the SEC-V1.30.1-1 / SEC-V1.30.1-2 lying-docs cluster already in P1.
+
+## P4-trivial: DS-V1.30.1-D6 — duplicate of CQ-V1.30.1-2 (P1)
+**File:** `src/watch_status.rs:199-209`
+**Effort:** 0 min — no separate fix
+**Fix:** Already covered by the P1 fix for CQ-V1.30.1-2 (`compute()` ignores `delta_saturated`). The triage table flags this as a duplicate so it doesn't get re-implemented; reference the P1 PR's commit when closing the audit pass.
+
+## P4-trivial: DS-V1.30.1-D8 — duplicate of CQ-V1.30.1-1 (P1)
+**File:** `src/cli/watch/events.rs:139-146`
+**Effort:** 0 min — no separate fix
+**Fix:** Already covered by the P1 fix for CQ-V1.30.1-1 (`dropped_this_cycle` reset before publish). Same duplicate-cross-reference pattern as DS-V1.30.1-D6.
+
+## P4-trivial: DOC-V1.30.1-8 — subsumed by DOC-V1.30.1-3 (P1)
+**File:** `CONTRIBUTING.md`
+**Effort:** 0 min — no separate fix
+**Fix:** Folded into the DOC-V1.30.1-3 P1 fix (CONTRIBUTING Architecture Overview refresh). When that PR lands, this entry is closed automatically.
+
+## P4-trivial: PF-V1.30.1-2 — covered by RB-9 + RM-2
+**File:** `src/daemon_translate.rs:660-679, 422-510`
+**Effort:** 0 min — no separate fix
+**Fix:** Per the triage notes, this performance complaint is the duplicate of the resource-management (RM-2) and robustness (RB-9) angles on the same code. The RM-2 P4-issue below captures the "fresh socket connect every 250ms" cost; RB-9 (already P3) captures the "no exponential backoff" angle. Closing PF-V1.30.1-2 follows from either being addressed.
+
+# P4 Hard — File as GitHub Issues
+
+## P4-issue: EX-V1.30.1-1 — daemon_ping/status/reconcile near-identical 80-LOC copies
+**Why an issue:** Refactor of three production daemon RPC functions; needs a small design pass for the helper signature (envelope shape, error tag, span name) before touching code. Low risk but worth a focused PR.
+
+**Suggested labels:** `enhancement`, `tier-3`, `extensibility`
+
+**Issue body draft:**
+```
+EX-V1.30.1-1: Extract `daemon_request<T>` to dedupe daemon_ping/status/reconcile
+
+`daemon_ping`, `daemon_status`, and `daemon_reconcile` are three near-identical
+~80-LOC functions in `src/daemon_translate.rs`. Each does the same work:
+
+- socket connect → set_read_timeout → set_write_timeout
+- write request line → flush
+- read response line (64 KiB cap)
+- parse envelope → check `status == "ok"` → extract `output`
+- unwrap dispatch payload → deserialize sequence
+
+The only differences are: (a) the `command` string in the request, (b) the
+`tracing::info_span!` name, (c) the deserialized type, (d) the error tag in
+`unwrap_dispatch_payload`. The 5-second timeout, 64 KiB read cap, and 6+
+`tracing::warn!` `stage=` arms are duplicated verbatim.
+
+Three is the threshold where duplication becomes its own bug surface — a
+future change to the timeout default, or a new error path in
+`unwrap_dispatch_payload`, has to be synced across all three. This is also
+the daemon-client side of the EX-V1.29-1 (Commands trait, #1097) problem.
+
+**Current shape:** `src/daemon_translate.rs:271-356` (ping), `:422-510` (status),
+`:537-621` (reconcile). Three functions, each ~80 LOC, 90% byte-identical
+across the body.
+
+**Proposed direction:** Extract a single helper:
+
+```rust
+fn daemon_request<T: DeserializeOwned>(
+    cqs_dir: &Path,
+    command: &str,
+    payload_label: &str,
+    request_args: serde_json::Value,
+) -> Result<T, String>
+```
+
+The three public entry points become 3-5 line shims that call the helper
+with their command name and expected payload tag. Centralizes timeout,
+read cap, span, and warn `stage=` arms so a future `daemon_gc` or
+`daemon_invalidate` is a one-line addition. Composes with a
+`daemon_request_with_args` overload for the `Reconcile { hook, args }` shape.
+
+**Acceptance criteria:**
+- `daemon_ping`, `daemon_status`, `daemon_reconcile` each ≤ 10 LOC.
+- Existing tests in `src/daemon_translate.rs` (`*_mock_round_trip`) still
+  pass without modification.
+- Adding a hypothetical `daemon_invalidate` becomes one new wrapper plus
+  the helper's existing infrastructure.
+- `cargo build --features cuda-index` warning-clean (no dead-code on
+  `unwrap_dispatch_payload` or any helper).
+
+**Out of scope:**
+- Changing the wire format or envelope shape.
+- Changing `Result<T, String>` to a typed error (covered by API-V1.30.1-5,
+  separate P2 fix).
+- Adding a new daemon RPC.
+```
+
+## P4-issue: EX-V1.30.1-2 — BatchCmd dispatch hand-routed match (33 arms)
+**Why an issue:** Refactor with a real architectural decision (extending the existing `for_each_batch_cmd_pipeability!` macro vs. a separate dispatch table); needs design discussion to keep the macro readable as the variant set grows.
+
+**Suggested labels:** `enhancement`, `tier-3`, `extensibility`, `arch`
+
+**Issue body draft:**
+```
+EX-V1.30.1-2: Drive BatchCmd dispatch from the macro table instead of a 33-arm match
+
+Variant pipeability is now table-driven via `for_each_batch_cmd_pipeability!`
+(issue #1137 fix, `src/cli/batch/commands.rs:372-447`): adding a `BatchCmd`
+variant *requires* adding a `(Variant, bool)` row to the macro or the build
+fails. But `dispatch()` 60 lines further down is still a hand-maintained
+match — 33 arms — with no compile-time check that every variant has a
+handler. Adding a new variant means:
+
+(a) Add the variant — compile-enforced.
+(b) Add the pipeability row — compile-enforced.
+(c) Add the dispatch arm — NOT compile-enforced today (no `_` wildcard,
+    so a missing arm fails). But a future refactor that adds `_ =>` would
+    silently route new variants to nowhere.
+(d) Write the handler.
+
+Plus `Refresh` is special-cased outside `dispatch()` in `dispatch_via_view`
+(line 1481), compounding the surgery cost: a new "side-effect" command
+needs touches in `dispatch_via_view`, `dispatch`, and the pipeability
+table.
+
+**Current shape:** `src/cli/batch/commands.rs:503-636` (dispatch arms), with
+six arms also calling `log_query` (covered separately by EX-V1.30.1-3,
+already P3).
+
+**Proposed direction:** Extend the existing macro table with a handler
+function pointer per row:
+
+```rust
+for_each_batch_cmd!(
+    (Search,   pipeable: false, handler: dispatch_search,   query_field: Some(query)),
+    (Callers,  pipeable: true,  handler: dispatch_callers,  query_field: None),
+    ...
+);
+```
+
+The macro emits both `is_pipeable` and a single `dispatch_handler`
+function. Side-effect commands like `Refresh` get a third column flag
+(`needs_outer_lock`) so `dispatch_via_view` consults the same table
+instead of an `if matches!()` special case.
+
+**Acceptance criteria:**
+- Adding a new `BatchCmd` variant requires editing exactly one row in
+  the macro table plus writing the handler function.
+- All 33 existing dispatch arms collapse into the macro table; `dispatch()`
+  body shrinks to a generated match arm or a simple lookup.
+- The `Refresh` / `Ping` / `Status` / `Reconcile` side-effect commands
+  unify under the same macro-driven path; no `if matches!()` in
+  `dispatch_via_view`.
+- Tests for batch-mode dispatch (existing in `src/cli/batch/`) pass.
+- `cargo expand --features cuda-index src::cli::batch::commands` produces
+  the same dispatch shape as the current hand-rolled match (sanity check).
+
+**Out of scope:**
+- Changing the public `BatchCmd` enum shape.
+- Migrating CLI dispatch (`cli/dispatch.rs`) — that's the EX-V1.29-1
+  Commands trait work tracked in #1097.
+- Adding new commands.
+```
+
+## P4-issue: EX-V1.30.1-4 — `write_slot_model` clobbers all non-`[embedding]` keys
+**Why an issue:** Schema/extensibility issue; touches every future per-slot field. Needs design pass on whether to use `toml_edit` document round-trip or a structured `SlotConfig` builder. Also intersects with #1107 (slot create --model not persisted).
+
+**Suggested labels:** `enhancement`, `tier-3`, `extensibility`, `schema`
+
+**Issue body draft:**
+```
+EX-V1.30.1-4: Replace `write_slot_model` round-trip-clobber with section-preserving edit
+
+`write_slot_model` (`src/slot/mod.rs:307-351`) emits
+`format!("[embedding]\nmodel = {}\n", ...)` and overwrites the entire
+slot.toml. The doc comment at `:300-302` acknowledges the issue and
+hand-waves: *"Existing TOML keys outside [embedding] are not preserved —
+slot.toml is owned by cqs."*
+
+That hand-wave is fine for v1.29.1 (only one section) but expensive the
+moment any future per-slot field lands:
+
+- #1107 already filed: `slot create --model` doesn't persist the model.
+  Fixing it via this code path requires read-modify-write, not the
+  current write-only.
+- Obvious next sections: `[reranker]`, `[splade]`, `[index].backend`,
+  `[chunk].max_seq_len`, per-slot `[ignore]` overrides.
+- Each addition would need: (a) field in `SlotConfigFile`, (b) extending
+  `write_slot_model` to accept it, (c) renaming the function (it now
+  writes more than the model), (d) auditing every existing slot.toml
+  on upgrade.
+
+**Current shape:** `src/slot/mod.rs:307-351` — single `format!()` body,
+deserialize side at `:283-286` only reads `[embedding].model`.
+
+**Proposed direction:** Two options, pick one:
+
+(a) **`toml_edit::Document` round-trip** — read the existing file,
+    parse with `toml_edit`, mutate the requested key, serialize back.
+    Preserves comments and section ordering. Already in workspace
+    (transitive of cargo metadata?); confirm and pull in if needed.
+
+(b) **Structured `SlotConfig` builder** — extend `SlotConfigFile` to
+    cover every section, deserialize-fully on read, serialize-fully
+    on write. Loses comments but is type-safe.
+
+Option (a) is the proper fix for "slot.toml owned by cqs but extensible";
+option (b) is simpler if we accept comment loss.
+
+**Acceptance criteria:**
+- A slot.toml with hand-added keys (e.g. `[notes].project_id = "foo"`)
+  survives `write_slot_model` unchanged.
+- Adding a new `[reranker].preset` field requires zero changes to
+  `write_slot_model` itself — just extend `SlotConfig` and call a
+  `set_field("[reranker].preset", value)` helper.
+- Existing tests in `src/slot/mod.rs` and `slot_create_default_smoke` /
+  `slot_promote_smoke` pass.
+- Fixing #1107 (slot create --model) becomes one call to the new
+  function, not a redesign.
+
+**Out of scope:**
+- Migrating existing slot.toml files (they're forward-compatible; new
+  keys are only read on demand).
+- Adding actual new sections (reranker/splade) — separate features.
+```
+
+## P4-issue: EX-V1.30.1-5 — `check_request` hardcoded three-channel ladder
+**Why an issue:** Auth surface refactor; needs design discussion on the channel-trait signature, ordering policy, and how `AuthOutcome` collapses. Pairs with the P1 SEC-7 leakage fix (CQ-V1.30.1-4 + AC-V1.30.1-5) — landing those first lets this refactor preserve the fix as a property of the query-channel impl.
+
+**Suggested labels:** `enhancement`, `tier-3`, `extensibility`, `auth`
+
+**Issue body draft:**
+```
+EX-V1.30.1-5: Replace `check_request` if/else ladder with `AuthChannel` trait + registry
+
+`check_request` (`src/serve/auth.rs:269-321`) walks three explicit code
+blocks in order: (1) `Authorization: Bearer …` header, (2) `cqs_token_<port>`
+cookie, (3) `?token=…` query param. Each block has its own `for/loop`,
+its own `ct_eq` call, its own success-return.
+
+Adding a fourth channel — mTLS client cert (in the SECURITY threat model
+already), API key for headless CI, session JWT for audit-trail integration,
+SSO bearer — requires:
+
+(a) New code block in `check_request`.
+(b) Possibly a new `AuthOutcome` variant (see how `OkViaQueryParam`
+    triggers a redirect).
+(c) Sibling helper if the channel needs sanitization (the way
+    `strip_token_param` strips `?token=`).
+(d) Explicit ordering decision: does mTLS supersede a bearer header?
+
+Today's three channels also have a known leakage gap (`strip_token_param`
+not case-folding or percent-decoding — covered by P1 CQ-V1.30.1-4) that
+*should* be a property of the channel module, not a free function bolted
+onto the URI walk.
+
+**Current shape:** `src/serve/auth.rs:269-321` (check_request) +
+`:246-260` (strip_token_param) + `:323-332` (AuthOutcome enum). Three
+hand-rolled blocks, one sibling helper, one variant for "channel that
+needs post-auth redirect."
+
+**Proposed direction:**
+
+```rust
+trait AuthChannel: Send + Sync {
+    fn check(&self, req: &Request, expected: &AuthToken) -> Option<ChannelMatch>;
+    fn sanitize_request(&self, req: &mut Request);  // default: no-op
+    fn name(&self) -> &'static str;
+}
+
+struct AuthChannelRegistry {
+    channels: Vec<Box<dyn AuthChannel>>,  // priority order
+}
+```
+
+Each existing channel becomes one impl (~30 LOC):
+- `BearerHeaderChannel`
+- `CookieChannel` (port-aware)
+- `QueryParamChannel` (sanitize_request strips `?token=`)
+
+`AuthOutcome` collapses into `Option<ChannelMatch { needs_redirect: bool }>`
+— single decision point. Adding mTLS/API key/JWT becomes "implement
+the trait, add to the registry constructor."
+
+**Acceptance criteria:**
+- Each of the three existing channels lives in its own ~30-LOC impl
+  block; `check_request` becomes a 5-line registry walk.
+- The P1 SEC-7 fix (`strip_token_param` case-fold + percent-decode)
+  lives entirely inside `QueryParamChannel::sanitize_request`.
+- Ordering policy is explicit and documented (header > cookie > query,
+  matching today's behavior).
+- Auth tests in `tests/cli_serve_auth_test.rs` pass without modification.
+- Adding a stub `MtlsChannel` in a follow-up PR is one new file plus
+  one line in the registry constructor.
+
+**Out of scope:**
+- Actually implementing mTLS / API key / JWT.
+- Changing the wire shape of the cookie or query param.
+- Audit logging of which channel matched (separate observability work).
+```
+
+## P4-issue: EX-V1.30.1-6 — Reconcile fingerprint is `(path, mtime)` only
+**Why an issue:** Schema migration plus reconcile-logic rewrite; spans Store, watch reconcile, GC, and any tool that consumes `indexed_file_origins`. Hard work that needs a design doc before code, especially around the fingerprint policy enum.
+
+**Suggested labels:** `enhancement`, `tier-3`, `data-integrity`, `schema`
+
+**Issue body draft:**
+```
+EX-V1.30.1-6: Add content-hash + size to reconcile fingerprint (schema v23)
+
+`run_daemon_reconcile` (`src/cli/watch/reconcile.rs:84-134`) decides
+"is this file divergent?" by `disk > stored` mtime comparison only
+(line 124). Two well-known reconciliation bugs slip through:
+
+(a) **Coarse-mtime collisions.** WSL DrvFS / NTFS / HFS+ / SMB mount
+    points have ≥1 s mtime resolution. Two saves within the same
+    second produce identical mtimes; reconcile skips the second one.
+    `events.rs:85-100` has a per-FS workaround for the inotify path
+    (the `is_wsl_drvfs_path` toggle), but reconcile's whole-tree-walk
+    path doesn't compensate.
+
+(b) **Content-identical-but-mtime-bumped.** Formatter passes, `touch`,
+    branch checkouts that restore the same content all re-trigger
+    full embedder cost on every `git checkout`. ~3-5k unnecessary
+    reembeds per branch flip on a mid-size repo.
+
+The fingerprint shape is hardcoded into both the SQLite column choice
+(`indexed_files.last_indexed_mtime` is a single i64) and the in-memory
+map type (`HashMap<String, Option<i64>>` from `indexed_file_origins`).
+
+**Current shape:**
+- `src/store/chunks/staleness.rs:627-637` — `indexed_file_origins`
+  returns `HashMap<String, Option<i64>>`.
+- `src/cli/watch/reconcile.rs:84-134` — divergence is a single
+  `disk > stored` predicate.
+- Schema: `chunks.source_mtime` column only.
+
+**Proposed direction:**
+
+```rust
+struct FileFingerprint {
+    mtime: Option<i64>,
+    size: Option<u64>,
+    content_hash: Option<[u8; 32]>,
+}
+
+enum FingerprintPolicy {
+    MtimeOnly,        // current behavior, fast path
+    MtimeOrHash,      // recommended default
+    HashOnly,         // for `cqs index --strict`
+}
+
+impl FileFingerprint {
+    fn matches(&self, other: &Self, policy: FingerprintPolicy) -> bool { ... }
+}
+```
+
+- Schema v23 + migration: add nullable `chunks.source_size INTEGER`
+  and `chunks.source_content_hash BLOB` columns.
+- `indexed_file_origins` returns `HashMap<String, FileFingerprint>`.
+- Reconcile passes the policy to one helper instead of inlining the
+  comparison at 5 callsites.
+- `cqs index --strict` opt-in for hash-on-walk; default path stays
+  mtime-cheap.
+
+**Acceptance criteria:**
+- Schema v23 migration lands with backfill (NULL hash + size for
+  pre-migration rows; first re-embed populates them).
+- `cqs index --force` populates new columns on every chunk.
+- Reconcile reduced to one helper call: `disk_fp.matches(stored_fp,
+  policy)`.
+- A test covering coarse-mtime FS (synthetic stat with 1 s rounding)
+  uses the policy to detect divergence on identical-mtime files.
+- Existing reconcile tests pass.
+- Eval R@5 on test/dev fixtures unchanged (this is plumbing, not a
+  scoring change).
+
+**Out of scope:**
+- Adding the strict-hash flag to `cqs watch` (CLI work, follow-up).
+- Cross-slot summary reuse (separate workflow already documented in
+  feedback_summary_cross_slot.md).
+- Removing the in-memory `HashMap` materialization (covered by RM-5
+  P4-issue below).
+```
+
+## P4-issue: EX-V1.30.1-8 — Reranker is a concrete struct, no trait
+**Why an issue:** Deep refactor; touches every callsite that holds `&Reranker` (search, search_filtered, daemon batch, eval, doctor). Needs design discussion on the trait surface (especially the `expects_token_type_ids` private state) before code.
+
+**Suggested labels:** `enhancement`, `tier-3`, `extensibility`, `eval`
+
+**Issue body draft:**
+```
+EX-V1.30.1-8: Extract `Reranker` trait + ONNX impl + LlmReranker / NoopReranker
+
+`Reranker` (`src/reranker.rs:108-167`) is a concrete struct that bakes
+"ONNX session + tokenizer + token_type_ids feature-detection" directly
+into the type. `RerankerError::Inference(String)` is itself ONNX-shaped.
+
+Adding any non-ONNX scoring family — LLM-judge reranker via the
+existing `BatchProvider` trait, BM25-on-content baseline for IR-eval
+parity, dot-product reranker over a different embedding model, or a
+no-op pass-through for benchmarking — requires touching every callsite
+that holds a `&Reranker` (search, search_filtered, daemon batch, eval
+harness, doctor) and either adding an enum or duplicating each callsite.
+
+The codebase already extracted `BatchProvider` for LLMs
+(`src/llm/provider.rs:42`) — same shape works for rerankers. The
+known BERT-vs-RoBERTa input-shape divergence
+(`expects_token_type_ids: Mutex<Option<bool>>` at lines 121-124) is
+itself a within-implementation polymorphism leak; cleaner trait split
+would put that state inside the impl, not on the trait surface.
+
+**Current shape:** `src/reranker.rs:108-167` (struct + ctor),
+`:172-211` (rerank), `:212-...` (rerank_with_passages). Single
+concrete type, ONNX-only.
+
+**Proposed direction:**
+
+```rust
+pub trait Reranker: Send + Sync {
+    fn rerank(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        limit: usize,
+    ) -> Result<(), RerankerError>;
+
+    fn rerank_with_passages(
+        &self,
+        query: &str,
+        passages: &mut Vec<RerankPassage>,
+        limit: usize,
+    ) -> Result<(), RerankerError>;
+}
+
+pub struct OnnxReranker { /* current struct fields */ }
+impl Reranker for OnnxReranker { ... }
+
+pub struct NoopReranker;
+impl Reranker for NoopReranker { fn rerank(...) { Ok(()) } ... }
+
+pub struct LlmReranker { provider: Arc<dyn BatchProvider> }
+impl Reranker for LlmReranker { ... }
+```
+
+Hold rerankers as `Arc<dyn Reranker>` everywhere — the existing
+Mutex-around-session pattern means `dyn` overhead is below the noise
+floor. The `expects_token_type_ids` feature detection becomes private
+to `OnnxReranker`.
+
+**Acceptance criteria:**
+- `Reranker` trait + `OnnxReranker` impl with current behavior.
+- `NoopReranker` shipped (eval-harness ablation use case).
+- `LlmReranker` skeleton that delegates to `BatchProvider` (no
+  production use; just proves the trait surface).
+- All call sites switch from `&Reranker` to `Arc<dyn Reranker>`.
+- Eval R@5 on test/dev fixtures unchanged with `OnnxReranker`
+  (this is purely a refactor; no scoring change).
+- An eval-harness ablation switch (`--reranker none|onnx`) lands
+  with `NoopReranker` for instant comparison.
+
+**Out of scope:**
+- Actual LLM reranker production deployment (just the skeleton lands).
+- BM25 reranker (separate feature, future PR).
+- Changing `RerankerError` shape from `Inference(String)` —
+  follow-up if it becomes a constraint.
+```
+
+## P4-issue: SEC-V1.30.1-5 — `trust_level: "user-code"` for vendored content (proper fix)
+**Why an issue:** The doc-only mitigation (in P4-trivial above) is a stop-gap. The proper fix is a path-prefix denylist, per-chunk `vendored: bool`, and downgraded trust level. That requires schema + indexer + JSON-shape changes and careful agent-facing impact analysis.
+
+**Suggested labels:** `enhancement`, `tier-3`, `security`, `schema`
+
+**Issue body draft:**
+```
+SEC-V1.30.1-5 (proper fix): Tag vendored chunks at index time, downgrade trust_level
+
+When `--include-refs` is unset, search results emit
+`trust_level: "user-code"` unconditionally
+(`src/store/helpers/types.rs:172-196`). The "user-code" claim is
+structural — it tracks "did this come from a `cqs ref` reference index"
+not "is this code authored by the project owner."
+
+Vendored/copied third-party code committed into the project tree, and
+content surfaced by `cqs notes` from `docs/notes.toml`, all emit as
+`user-code` despite being exactly the indirect-prompt-injection surface
+the trust-level field exists to flag. SECURITY.md explicitly calls out
+vendored upstream content as a payload vector but the trust-level
+signal cannot distinguish vendored from authored code.
+
+The doc-only mitigation (clarifying SECURITY.md that "user-code" means
+"from project store" not "authored by user") is landing as a P4-trivial
+fix. This issue tracks the proper structural fix.
+
+**Current shape:** `src/store/helpers/types.rs:172-196`
+(`to_json_with_origin`) emits `"trust_level": "user-code"` whenever
+`ref_name.is_none()`. Per-chunk source classification stops at "is
+this from a reference?".
+
+**Proposed direction:**
+
+(1) Add `vendored: bool` column on `chunks` (schema v23 if
+    EX-V1.30.1-6 lands first, else v23 carrying just this field).
+(2) Compile a default path-prefix denylist at index time:
+    `["vendor/", "third_party/", "node_modules/", ".cargo/", "target/",
+    "dist/", "build/"]`. Make it `.cqs.toml`-overridable
+    (`[index].vendored_paths`).
+(3) During `enumerate_files` / index pipeline, mark any chunk whose
+    `origin` starts with a denylist prefix as `vendored: true`.
+(4) `to_json_with_origin` downgrades to `"third-party-code"` for
+    vendored chunks (or a third tier `"vendored-code"` if we want
+    to keep "third-party-code" reserved for `cqs ref` refs).
+
+**Acceptance criteria:**
+- Schema v23 (or v24, depending on EX-V1.30.1-6 ordering) adds
+  `chunks.vendored` column.
+- Default vendor-prefix list documented in CONTRIBUTING.md and
+  matched by an index-time test.
+- `.cqs.toml` `[index].vendored_paths` override honoured by
+  index pipeline.
+- A new chunk with `origin = "vendor/oss-lib/foo.rs"` emits
+  `trust_level: "vendored-code"` in search/scout/onboard JSON.
+- SECURITY.md trust-level table updated to document the new
+  category.
+- Eval R@5 unchanged (vendored chunks still show up in results;
+  only the `trust_level` JSON field differs).
+
+**Out of scope:**
+- Excluding vendored code from indexing entirely (separate config;
+  current behavior preserves it for searchability).
+- Per-chunk attribution beyond the binary user/vendored split.
+- The doc-only stop-gap fix (lands in P4-trivial).
+```
+
+## P4-issue: SEC-V1.30.1-6 — `cqs ref add` accepts symlinked source path with no audit
+**Why an issue:** Security-relevant input validation that needs a clear policy decision (warn vs. refuse) and tests covering the cross-tree symlink case. Not a one-liner.
+
+**Suggested labels:** `bug`, `tier-3`, `security`
+
+**Issue body draft:**
+```
+SEC-V1.30.1-6: Surface symlink resolution in `cqs ref add` source path
+
+`cmd_ref_add` (`src/cli/commands/infra/reference.rs:130-150`)
+canonicalizes the `--source` path via `dunce::canonicalize` but does
+not compare the user-supplied path against the resolved root. If the
+user runs `cqs ref add foo /home/me/projects/foo` against a path
+that's a symlink to `/some/other/dir/proprietary-code/`, the indexed
+corpus is the *target* of the symlink — not what the user asked to
+index.
+
+Nothing in the ref add flow flags the redirection. The reference is
+persisted into `.cqs.toml` as `source = <canonical-resolved-path>`,
+so a follow-up `cqs ref list` shows the resolved path — but if the
+user's mental model is "I added /home/me/projects/foo," the reindex
+behavior is surprising.
+
+Concrete failure case: operators who symlink
+`vendored-monorepo-pull/ → ~/work/customer-A-private/` to "test cqs
+ref" and silently end up with a customer-content reference index.
+Also relevant if `cqs ref add` is used inside CI/automation that
+takes `--source` from a config file controlled by a less-trusted
+contributor.
+
+**Current shape:** `src/cli/commands/infra/reference.rs:130-150` —
+`source = dunce::canonicalize(source)?;` with no comparison or
+warning if it differs from the user input.
+
+**Proposed direction:**
+
+(1) Compare `source_input` (raw user arg, after `Path::new`) to
+    `dunce::canonicalize(source_input)`. If they differ, log a
+    `tracing::warn!` and emit a `warnings: ["source path resolved
+    via symlink to ..."]` field on the JSON return.
+(2) Optionally: add `--allow-symlink-source` opt-in flag; refuse
+    by default with a clear error pointing at the flag and the
+    resolved target.
+
+Option (1) is the smaller change with adequate operator visibility;
+option (2) is the strict-fail variant for CI use.
+
+**Acceptance criteria:**
+- A symlinked source path triggers a `tracing::warn!` with both
+  user-supplied and resolved paths.
+- JSON output includes the warning field.
+- A new test in `tests/cli_ref_test.rs` (or unit in
+  `reference.rs::tests`) creates a symlink-source tempdir,
+  invokes `cmd_ref_add`, asserts the warning fires and the
+  index DB lives at the resolved path.
+- README / SECURITY.md updated to document the resolution behavior.
+
+**Out of scope:**
+- Canonicalizing symlinks *inside* the source tree during the walk
+  (`enumerate_files` already passes `follow_links(false)`).
+- Cross-platform symlink semantics on Windows (this is a Linux/macOS
+  feature for now; Windows symlinks need admin and are rare).
+```
+
+## P4-issue: SEC-V1.30.1-7 — `LocalProvider` redirect policy doesn't enforce same-origin
+**Why an issue:** Security-grade behavior with a behavioural-correctness gap (the comment claims same-origin but the code doesn't enforce it). Needs custom policy closure + tests + verifying reqwest's strip-on-redirect behavior across the pinned version.
+
+**Suggested labels:** `bug`, `tier-3`, `security`, `auth`
+
+**Issue body draft:**
+```
+SEC-V1.30.1-7: Enforce same-origin redirects on bearer-bearing LLM requests
+
+`LocalProvider` HTTP client (`src/llm/local.rs:124-129`) uses
+`Policy::limited(2)` for redirects. The change rationale comment
+claims "Same-origin HTTP→HTTPS redirects on bind-localhost are benign"
+but `Policy::limited(2)` does *not* enforce same-origin. A misconfigured
+`CQS_LLM_API_BASE` (load balancer that 302s from `http://internal-llm/`
+→ `http://attacker-controlled-origin/v1/chat/completions`) follows
+the redirect.
+
+reqwest 0.12.x strips `Authorization` cross-origin by default — so
+this is currently observability-grade (silent 401 instead of "redirect
+to other origin, bearer stripped"). But:
+
+(a) The strip is silent; operators see infinite-401 loops instead
+    of a clean fail-fast.
+(b) A future reqwest bump (or a misconfigured global default) that
+    re-enables cross-origin auth header propagation turns this into
+    a credential-leak path.
+(c) The comment in the code claims a property the code doesn't
+    enforce — that's a maintainability bug at minimum.
+
+**Current shape:** `src/llm/local.rs:124-129` —
+`.redirect(reqwest::redirect::Policy::limited(2))`. Doctor probe
+(`src/llm/local.rs:435-437`) sends `Authorization: Bearer <key>`
+header without same-origin guard.
+
+**Proposed direction:**
+
+```rust
+let same_origin_policy = reqwest::redirect::Policy::custom(|attempt| {
+    let prev = attempt.previous().last();
+    let next = attempt.url();
+    if let Some(prev_url) = prev {
+        if prev_url.origin() != next.origin() {
+            tracing::warn!(
+                from = %prev_url,
+                to = %next,
+                "Refusing cross-origin redirect on bearer-bearing request"
+            );
+            return attempt.stop();
         }
     }
-}
+    if attempt.previous().len() >= 2 {
+        return attempt.stop();
+    }
+    attempt.follow()
+});
+
+Client::builder()
+    .redirect(same_origin_policy)
+    .timeout(timeout)
+    ...
 ```
 
----
+Apply the same policy to the doctor probe.
 
-## P3.46 — Watch reindex: `existing.remove` instead of `.get().clone()`
+**Acceptance criteria:**
+- Cross-origin redirects on `LocalProvider` produce a clear
+  `tracing::warn!` and a fail-fast error, not a silent 401 loop.
+- A test using `wiremock` or `httpmock` simulates a cross-origin
+  302; assert the request errors with a redirect-policy diagnostic.
+- Doctor probe matches the same policy.
+- The misleading comment at `:124-129` is replaced with text that
+  matches what the code enforces.
 
-**Finding:** P3.46
-**Files:** `src/cli/watch.rs:2879-2887`
-**Why:** Per cache hit clones a 4 KB `Embedding` (1024-dim). `.remove()` takes ownership.
+**Out of scope:**
+- mTLS or SAN-based origin matching (origin string compare only).
+- Changing the limit on same-origin redirect chain length
+  (stays at 2).
+```
 
-### Current code
+## P4-issue: PB-V1.30.1-4 — `open_browser` on WSL launches Linux browser via `xdg-open`
+**Why an issue:** WSL platform behavior with multiple fallbacks (`wslview` / `cmd.exe` / `xdg-open`) and a clear ordering. Not a one-liner because it needs `is_wsl()` integration into `open_browser` plus testing across WSL2 with and without `wslu` installed.
+
+**Suggested labels:** `bug`, `tier-3`, `platform-wsl`
+
+**Issue body draft:**
+```
+PB-V1.30.1-4: Detect WSL in `open_browser` and prefer Windows-side default
+
+WSL satisfies `cfg(target_os = "linux")`, so `open_browser`
+(`src/cli/commands/serve.rs:99-132`) hits the Linux branch and
+spawns `xdg-open <url>`. On a fresh WSL install there is no Linux
+GUI / browser, so `xdg-open` either errors with `xdg-open: no method
+available` or hangs trying to launch a non-existent browser.
+
+The user sees `WARN: --open requested but failed to launch browser`
+and has to copy-paste the URL into Windows. The intended behavior
+on WSL is `cmd.exe /c start <url>` (or `wslview <url>` if `wslu` is
+installed) which hands the URL to the Windows default browser.
+
+`is_wsl()` already exists in `src/config.rs:47` and is used elsewhere
+— `open_browser` ignores it.
+
+**Current shape:** `src/cli/commands/serve.rs:117-130` — single
+`#[cfg(target_os = "linux")]` arm, hardcoded `xdg-open`.
+
+**Proposed direction:**
+
 ```rust
-let existing = store.get_embeddings_by_hashes(&hashes)?;
-for (i, chunk) in chunks.iter().enumerate() {
-    if let Some(emb) = existing.get(&chunk.content_hash) {
-        cached.push((i, emb.clone()));
+#[cfg(target_os = "linux")]
+{
+    if cqs::config::is_wsl() {
+        // 1. Try `wslview` (handles auth-token URLs cleanly).
+        // 2. Fall back to `cmd.exe /c start "" "<url>"` (interop layer
+        //    translates the call from WSL Linux).
+        // 3. Final fallback: xdg-open on the off chance a Linux GUI exists.
+        for &cmd in &["wslview", "cmd.exe", "xdg-open"] {
+            let mut args = match cmd {
+                "cmd.exe" => vec!["/C", "start", "", url],
+                _         => vec![url],
+            };
+            ... try-spawn ...
+        }
     } else {
-        to_embed.push((i, chunk));
+        std::process::Command::new("xdg-open")...
     }
 }
 ```
 
-### Replacement
-```rust
-let mut existing = store.get_embeddings_by_hashes(&hashes)?;
-for (i, chunk) in chunks.iter().enumerate() {
-    if let Some(emb) = existing.remove(&chunk.content_hash) {
-        cached.push((i, emb));
-    } else {
-        to_embed.push((i, chunk));
-    }
-}
+A successful spawn on any of the three is enough; bail on first
+success. Continue silently to the next on `Command::status()` failure.
+
+**Acceptance criteria:**
+- On WSL2 without `wslu` installed, `cqs serve --open` hands the
+  URL to the Windows default browser via `cmd.exe /c start ...`.
+- On WSL2 with `wslu` installed, `wslview` is preferred (cleaner
+  arg handling).
+- On native Linux, behavior is unchanged.
+- A unit test in `serve.rs::tests` (or a manual smoke checklist
+  documented in CONTRIBUTING.md) covers the three-path fallback.
+
+**Out of scope:**
+- Native macOS handling (`open` is already correct).
+- Windows handling (`cmd /C start "" "<url>"` already correct).
+- Detecting *which* Windows browser will launch.
 ```
 
----
+## P4-issue: PB-V1.30.1-5 — `events.rs` mtime-equality wrong on macOS HFS+ and SMB/NFS
+**Why an issue:** Cross-platform watch correctness. Touches the same predicate also addressed by EX-V1.30.1-6 (reconcile fingerprint) but on the inotify-event path. Should pair with that issue or land first since it's the smaller change.
 
-## P3.47 — `LocalProvider` worker thread stack 512 KB
+**Suggested labels:** `bug`, `tier-3`, `platform`, `data-integrity`
 
-**Finding:** P3.47
-**Files:** `src/llm/local.rs:163-256`
-**Why:** Default 2 MB stack × concurrency=64 = 128 MB just for the fan-out. Worker body is shallow.
+**Issue body draft:**
+```
+PB-V1.30.1-5: Treat any coarse-mtime FS as "always reindex on tie", not just WSL drvfs
 
-### Current code (sketch)
+`events.rs` mtime-equality skip (`src/cli/watch/events.rs:85-102`)
+toggles between strict `<` (WSL drvfs) and `<=` (everything else):
+
 ```rust
-std::thread::scope(|s| {
-    for _ in 0..workers {
-        s.spawn(|| { /* recv → http → parse → mutex.insert */ });
-    }
+let coarse_fs = cqs::config::is_wsl_drvfs_path(&path);
+let stale = state.last_indexed_mtime.get(rel).is_some_and(|last| {
+    if coarse_fs { mtime < *last } else { mtime <= *last }
 });
 ```
 
-### Replacement
-Switch to `Builder`-based threads with manual join, since `std::thread::scope::Scope::spawn` lacks a stack-size hook:
+Comment claims "On Linux/macOS we keep the original `<=` because
+sub-second mtimes there are reliable and equality genuinely means
+same content." This is true for ext4 / APFS / btrfs.
+
+It is **false** for:
+- HFS+ on macOS (1-second mtime resolution) — still common on
+  external drives, Time Machine restores, macOS < 10.14.
+- SMB/NFS shares mounted on Linux or macOS — typically 1-2 second
+  mtime resolution depending on server.
+- FAT32 USB / SD-card mounts on Linux.
+
+Two saves of the same file within the same second produce identical
+mtimes; the watch loop sees the second save's mtime equal to
+`last_indexed_mtime` and skips the reindex. The user's last edit
+silently doesn't make it into the index.
+
+**Current shape:** `src/cli/watch/events.rs:85-102` — `is_wsl_drvfs_path`
+is the only gate triggering strict `<`.
+
+**Proposed direction:**
+
+Replace the predicate from "is WSL drvfs" to "is the cached mtime
+within `coarse_fs_resolution()` of `mtime`":
+
 ```rust
-let mut handles = Vec::with_capacity(workers);
-for i in 0..workers {
-    let h = std::thread::Builder::new()
-        .name(format!("cqs-llm-worker-{i}"))
-        .stack_size(512 * 1024)
-        .spawn(/* worker closure */)?;
-    handles.push(h);
+fn coarse_fs_resolution(path: &Path) -> Duration {
+    if cqs::config::is_wsl_drvfs_path(path) { Duration::from_secs(2) }
+    else if is_macos_hfs(path) { Duration::from_secs(1) }
+    else if is_remote_mount(path) { Duration::from_secs(1) }
+    else { Duration::from_millis(0) }
 }
-for h in handles { let _ = h.join(); }
-```
-Adjust the captured borrows to be `Arc`-cloned since we're outside `scope`. Drop the upper concurrency clamp from 64 to 16 in `local_concurrency()` while you're there.
 
----
-
-## P3.48 — `LocalProvider::http`: cap idle pool
-
-**Finding:** P3.48
-**Files:** `src/llm/local.rs:97-100`
-**Why:** Default reqwest pool = unbounded idle, 90 s timeout. Long indexing runs leak idle slots into vLLM/llama.cpp.
-
-### Current code
-```rust
-Client::builder()
-    .timeout(timeout)
-    .redirect(Policy::none())
-    .build()?
+let stale = state.last_indexed_mtime.get(rel).is_some_and(|last| {
+    let resolution = coarse_fs_resolution(&path);
+    let delta = mtime.duration_since(*last).unwrap_or_default();
+    delta > resolution
+});
 ```
 
-### Replacement
-```rust
-Client::builder()
-    .timeout(timeout)
-    .redirect(Policy::none())
-    .pool_max_idle_per_host(self.concurrency)
-    .pool_idle_timeout(Duration::from_secs(30))
-    .build()?
+Treat any cached value within `coarse_fs_resolution` of `mtime` as
+ambiguous and force-reindex. Cheap conservative default; cost is at
+most one redundant reindex on rapid re-saves on fine-grained FS, vs.
+silent missed reindexes on coarse ones.
+
+**Acceptance criteria:**
+- HFS+, SMB, NFS path detection lands in a new helper.
+- Two saves within `coarse_fs_resolution` on a coarse-mtime FS
+  produce two reindexes, not one.
+- On ext4 / APFS / btrfs, behavior is unchanged (resolution = 0).
+- A unit test in `events.rs::tests` covers the predicate's
+  decision matrix using synthetic mtime/now/cached values.
+
+**Out of scope:**
+- Detecting per-FS resolution by `statvfs` flags or `f_frsize`
+  inspection (use mount-type heuristics).
+- Reconcile path mtime equality (covered by EX-V1.30.1-6).
+- Adding a `--strict-mtime` CLI flag (env var only if needed).
 ```
 
----
+## P4-issue: PF-V1.30.1-3 — Periodic GC and reconcile do back-to-back tree walks
+**Why an issue:** Performance refactor with shared cache between two callers; touches both gc.rs and reconcile.rs scheduling and needs verification that the shared HashSet doesn't change reconcile's mtime-comparison semantics.
 
-## P3.49 — `cmd_similar` (CLI) integration test
+**Suggested labels:** `enhancement`, `tier-3`, `performance`
 
-**Finding:** P3.49
-**Files:** `src/cli/commands/search/similar.rs:41`
-**Why:** Library `find_similar` is tested; the CLI wrapper (target lookup + pattern filter + JSON build) is not.
+**Issue body draft:**
+```
+PF-V1.30.1-3: Share `enumerate_files` walk between periodic GC and reconcile
 
-### Replacement
-Add to `src/cli/commands/search/similar.rs::tests` (or new `tests/cli_similar_test.rs` if `cmd_similar` is hard to drive in-process):
+When the daemon idles ≥ `daemon_periodic_gc_idle_secs()` (default 60s),
+both periodic GC and periodic reconcile may fire in the same tick:
+
+- GC's `Duration::from_secs(daemon_periodic_gc_interval_secs())`
+  (default 1800s) gates its walk.
+- Reconcile's `daemon_reconcile_interval_secs()` (default 30s) gates
+  the second walk.
+
+Their idle gates are identical, so on tick boundaries that satisfy
+both intervals, the daemon walks the entire working tree **twice in
+succession**, each walk doing per-file canonicalization through
+`dunce::canonicalize`.
+
+On a 17k-chunk corpus with ~3-5k unique source files on WSL `/mnt/c/`,
+each walk is ~1s wall (per the docstring on
+`DAEMON_RECONCILE_INTERVAL_SECS_DEFAULT`); doing it twice back-to-back
+is a 2s contention window every 30 minutes. Even when only one fires,
+both call paths build a `HashSet<PathBuf>` of disk files (gc.rs:211,
+reconcile.rs:84+95), so the same data is materialized twice in the
+same tick whenever both run.
+
+**Current shape:**
+- `src/cli/watch/mod.rs:1198-1283` — idle-tick gating + dispatch.
+- `src/cli/watch/gc.rs:209` — first `enumerate_files` callsite.
+- `src/cli/watch/reconcile.rs:74` — second `enumerate_files` callsite.
+
+**Proposed direction:**
+
+Lift the walk out of both call sites:
+
 ```rust
-#[test]
-fn cmd_similar_returns_other_seeded_chunks() {
-    let fix = common::InProcessFixture::new();
-    fix.seed_chunks(&[("foo", "fn foo() { bar(); }"),
-                      ("bar", "fn bar() { 1+1; }"),
-                      ("baz", "fn baz() { unrelated(); }")]);
-    let mut sink = Vec::<u8>::new();
-    let ctx = fix.command_context_with_json_sink(&mut sink);
-    cmd_similar(&ctx, "foo", /*limit*/ 2).unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&sink).unwrap();
-    let names: Vec<&str> = json["data"]["results"].as_array().unwrap().iter()
-        .map(|r| r["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"bar"));
-    assert!(!names.contains(&"foo")); // self excluded
+// In the idle-tick block, before either GC or reconcile fires:
+let disk_files: Option<Arc<HashSet<PathBuf>>> = if gc_due || reconcile_due {
+    Some(Arc::new(enumerate_files(...)?.collect()))
+} else {
+    None
+};
+
+if gc_due {
+    run_periodic_gc(&store, disk_files.as_deref()...);
 }
-```
-
----
-
-## P3.50 — `cmd_ci` happy-path test
-
-**Finding:** P3.50
-**Files:** `src/cli/commands/review/ci.rs:9` + `tests/cli_train_review_test.rs` (or new `tests/cli_ci_test.rs`)
-**Why:** Existing tests cover error paths only; markdown formatting + exit-code mapping for a real diff are unpinned.
-
-### Replacement
-Add a test that feeds a real unified diff touching a hotspot function in an `InProcessFixture`-seeded corpus:
-```rust
-#[test]
-fn cmd_ci_high_risk_diff_emits_high_risk_section_and_nonzero_exit() {
-    let fix = common::InProcessFixture::new();
-    fix.seed_chunks(&[("hotspot", "fn hotspot() { /* many callers */ }")]);
-    fix.seed_callers("hotspot", 12); // synthetic call edges
-    let diff = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n \
-                fn hotspot() {\n-    do_old();\n+    do_new();\n }\n";
-    let mut stdout = Vec::<u8>::new();
-    let exit = cmd_ci_with_input(&fix.context(), diff, &mut stdout).unwrap();
-    let out = String::from_utf8(stdout).unwrap();
-    assert!(out.contains("High-risk"));
-    assert_ne!(exit, 0);
-}
-```
-
----
-
-## P3.51 — `cmd_gather` (CLI) integration test
-
-**Finding:** P3.51
-**Files:** `src/cli/commands/search/gather.rs:77`
-**Why:** Library `gather()` is tested; CLI-only steps (`--max-files` clamp, content injection, token-budget trim) are not.
-
-### Replacement
-Add `tests/cli_gather_test.rs`:
-```rust
-#[test]
-fn cli_gather_clamps_max_files_and_injects_content() {
-    let fix = common::InProcessFixture::new();
-    fix.seed_chunks(&[/* 5 chunks across 5 files */]);
-    let out = cqs(&["gather", "needle", "--json", "--max-files", "2"]).output();
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let groups = json["data"]["results"].as_array().unwrap();
-    assert_eq!(groups.len(), 2);                              // clamp
-    assert!(groups[0]["content"].as_str().unwrap().len() > 0); // content injected
+if reconcile_due {
+    run_daemon_reconcile_with_walk(&store, disk_files.as_deref()...);
 }
 ```
 
----
+Both already operate on the same set of disk files; the only daylight
+is reconcile checks each file's mtime and GC checks its existence —
+both derivable from one walk.
 
-## P3.52 — `dispatch_line` happy-path test for a valid command
+**Acceptance criteria:**
+- When both intervals fire on the same tick, only one
+  `enumerate_files` walk happens.
+- When only one fires, behavior is unchanged.
+- GC's `prune_missing` still operates correctly (consumes the
+  shared set).
+- Reconcile's mtime-comparison loop still operates correctly
+  (consumes the shared set + still calls `metadata()` per-file
+  for mtime).
+- A test in `gc.rs::tests` or `reconcile.rs::tests` asserts that
+  back-to-back invocations with `disk_files: Some(shared_set)` do
+  not call `enumerate_files` again.
 
-**Finding:** P3.52
-**Files:** `src/cli/batch/mod.rs:557` (`dispatch_line`); test block in same file
-**Why:** Existing tests are all error/adversarial. A success-envelope shape regression would slip through.
-
-### Replacement
-Add to `src/cli/batch/mod.rs::tests`:
-```rust
-#[test]
-fn test_dispatch_line_stats_emits_success_envelope() {
-    let fix = common::InProcessFixture::new();
-    let mut ctx = fix.batch_context();
-    let mut sink = Vec::<u8>::new();
-    ctx.dispatch_line("stats", &mut sink).unwrap();
-    let line = std::str::from_utf8(&sink).unwrap().lines().next().unwrap();
-    let v: serde_json::Value = serde_json::from_str(line).unwrap();
-    assert!(v["error"].is_null());
-    assert!(v["data"]["total_chunks"].is_number());
-}
+**Out of scope:**
+- Streaming the walk (covered by RM-5 P4-issue).
+- Changing the interval defaults.
+- Eliminating per-file `dunce::canonicalize` cost (separate fix).
 ```
 
----
+## P4-issue: PF-V1.30.1-8 — `indexed_file_origins` SELECT DISTINCT silent overwrite
+**Why an issue:** Subtle data-shape bug (silent overwrite when DISTINCT pairs differ on mtime) that needs a query rewrite plus a test pinning the deterministic-MAX behavior. Pairs with EX-V1.30.1-6 (fingerprint refactor) but is independently mergeable.
 
-## P3.53 — `select_provider` / `detect_provider` direct tests
+**Suggested labels:** `bug`, `tier-3`, `data-integrity`, `performance`
 
-**Finding:** P3.53
-**Files:** `src/embedder/provider.rs:171, 188, 258`; new `#[cfg(test)] mod tests` (overlaps P3.16; consolidate)
-**Why:** #1120's provider split has zero tests for the cache-on-first-call invariant or the priority list.
-
-### Replacement
-Add to `src/embedder/provider.rs::tests` (alongside the P3.16 tests):
-```rust
-#[test]
-fn select_provider_caches_first_call() {
-    // OnceCell semantics — first call wins, second returns same value.
-    let p1 = select_provider();
-    let p2 = select_provider();
-    assert_eq!(format!("{p1:?}"), format!("{p2:?}"));
-}
-
-#[cfg(not(any(feature = "cuda-index", feature = "ep-coreml", feature = "ep-rocm")))]
-#[test]
-fn detect_provider_returns_cpu_when_no_features() {
-    // Pure-CPU build must yield the CPU branch.
-    assert!(matches!(detect_provider(), ExecutionProvider::CPU));
-}
+**Issue body draft:**
 ```
-(Add a `cuda-index`-gated test that asserts CUDA selection on a CUDA build if the runtime has a GPU; otherwise skip.)
+PF-V1.30.1-8: Replace `SELECT DISTINCT origin, source_mtime` with `GROUP BY origin, MAX(mtime)`
 
----
+`indexed_file_origins` (`src/store/chunks/staleness.rs:627-637`)
+runs:
 
-# P4 — GitHub Issues (paste-ready)
+```sql
+SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type='file'
+```
 
-## P4.1 — AuthToken alphabet invariant via type-state
+and collects into `HashMap<String, Option<i64>>`. If a file's chunks
+were written across two upserts at different mtimes (a known edge
+case during partial reindex failures, or transient writes during a
+watch tick), `rows.into_iter().collect::<HashMap<_,_>>()` arbitrarily
+picks the **last** one in iteration order — silently dropping the
+earlier mtimes.
 
-**Disposition:** GitHub issue
-**Files:** `src/serve/auth.rs:75-78` (`from_string`), `src/serve/auth.rs:218-220` (`HeaderValue::from_str(&cookie).expect(…)`)
+From the reconcile caller's perspective, the wrong stored mtime
+causes either a missed reindex (if the chosen mtime happens to be
+≥ disk mtime) or a spurious one. Order is undefined per SQL spec —
+SQLite happens to be fairly deterministic but the contract isn't
+guaranteed.
 
-### Issue body (paste-ready)
+The DISTINCT also does extra work: it returns up to chunks-per-file
+rows when the caller wants one row per file. For a 17k-chunk corpus
+with 3k files at avg 5 chunks/file, that's 17k rows scanned and
+collapsed into a 3k-entry HashMap.
 
-**Title:** auth: harden AuthToken alphabet invariant via type-state, not docstring
+**Current shape:** `src/store/chunks/staleness.rs:627-637`.
 
-**Body:**
+**Proposed direction:**
 
-> `AuthToken::from_string` is currently `#[cfg(test)]` so production code cannot construct a token with arbitrary bytes. The contract that the alphabet is URL-safe base64 (and that `HeaderValue::from_str(&cookie)` therefore cannot fail) is enforced only by the docstring on `random()`. The `.expect(…)` at `auth.rs:218` is a real panic if the invariant ever fails.
->
-> If a future feature lifts the cfg-gate (e.g. "stable token from env var" for scripted automation) and the env var contains CR/LF, `;`, or `,`, the worker panics on every redirect or smuggles a second cookie pair into the `Set-Cookie` header. Today the path is unreachable from outside tests, but the type does not enforce the invariant; one cfg-gate change is all it takes.
->
-> **Why deferred:** a clean fix is a type-state refactor — wrap the inner `String` in a `pub struct AuthToken(String)` newtype constructed only via `random()` / a validated `from_str_validated`. Both constructors verify `[A-Za-z0-9_-]{32,}` and panic at construction, not at use. That changes the `pub` surface of the `auth` module and ripples into every test that builds tokens by hand.
->
-> **Pointers:**
-> - construction sites: `src/serve/auth.rs:75-78` (`from_string`), `src/serve/auth.rs:60-72` (`random`)
-> - panic site that would convert into a real safety proof: `src/serve/auth.rs:218-220`
-> - test usage to migrate: search `AuthToken::from_string` under `src/serve/`
+```sql
+SELECT origin, MAX(source_mtime) FROM chunks
+WHERE source_type='file'
+GROUP BY origin
+```
 
----
+- One row per origin.
+- Deterministic: returns the most-recent stored mtime, which is
+  the semantically correct value for reconcile's `disk > stored`
+  predicate.
+- Fewer rows materialized.
 
-## P4.2 — Path=/ cookie scope on 127.0.0.1 — multi-instance hijack
+**Acceptance criteria:**
+- Query returns exactly one row per (origin, source_type='file').
+- Returned mtime is the MAX across all chunks for that origin.
+- A test in `staleness.rs::tests` writes two chunks for the same
+  origin at different `source_mtime` values, asserts
+  `indexed_file_origins` returns the larger.
+- Reconcile tests pass without modification.
+- Eval R@5 unchanged (this is a metadata query, not a scoring path).
 
-**Disposition:** GitHub issue
-**Files:** `src/serve/auth.rs:211-214` (`Set-Cookie: cqs_token={token}; Path=/; HttpOnly; SameSite=Strict`)
+**Out of scope:**
+- Changing the `HashMap<String, Option<i64>>` return type to
+  `FileFingerprint` (covered by EX-V1.30.1-6).
+- Adding a content-hash column (covered by EX-V1.30.1-6).
+```
 
-### Issue body (paste-ready)
+## P4-issue: RM-2 — `wait_for_fresh` opens fresh socket every 250ms for up to 600s
+**Why an issue:** Resource-management refactor with two competing approaches (server-side wait via `tokio::sync::Notify` vs. client-side connection reuse). Needs design discussion before code; partly overlaps with PF-V1.30.1-2 and RB-9.
 
-**Title:** serve: localhost cookie collision when running multiple `cqs serve` instances
+**Suggested labels:** `enhancement`, `tier-3`, `performance`, `resource-management`
 
-**Body:**
+**Issue body draft:**
+```
+RM-2: Replace `wait_for_fresh` 250ms-poll with persistent connection or server push
 
-> Browsers scope cookies by `(host, path)` but **not by port**. Two `cqs serve` instances on the same machine but different ports (project A on 8080, project B on 8081) both set `cqs_token` with `Path=/`. Authenticating to one overwrites the cookie set by the other; the previously-authenticated tab silently 401s on every navigation, and (worse) any link sends the wrong token to the wrong server.
->
-> Threat model: an attacker who can convince a victim to run `cqs serve` against a malicious project on a port the attacker controls can drop any cookie they like into the victim's localhost cookie jar — combined with `SameSite=Strict`-bypass via top-level navigation, this is a real cookie-jar overwrite vector.
->
-> **Steps:**
-> 1. Run `cqs serve --port 8080` in project A; auth via the browser banner.
-> 2. Run `cqs serve --port 8081` in project B; auth via the browser banner.
-> 3. Reload project A's tab — every request now 401s because the project B token clobbered it.
->
-> **Why deferred:** clean fixes all have trade-offs. `__Host-` cookie prefix requires `Secure`, which loopback HTTP doesn't satisfy. Port-suffixed cookie names (`cqs_token_8080`) increase knob count and break URL-bar bookmarks across launches when the port floats. Path-rewriting (`Path=/api/__cqs_<port>/`) is heavy. Pragmatic option: derive cookie name from a hash of `(bind_addr, launch_time)` so two instances don't collide and a new launch invalidates the old cookie — but that changes the CLI launch banner (the printed token URL must include the cookie-name salt) and requires a one-time UX audit.
->
-> **Pointers:**
-> - cookie set: `src/serve/auth.rs:211-214`
-> - cookie read: `src/serve/auth.rs:158-172` (`check_request`)
-> - launch-banner path: `src/serve/mod.rs:111-117`
-> - existing acknowledgement of the issue: `src/serve/auth.rs:42-47`
+`wait_for_fresh` (`src/daemon_translate.rs:660-679`) is the shared
+client-side polling primitive for `cqs status --watch-fresh --wait`
+and `cqs eval --require-fresh`. Each iteration calls `daemon_status`,
+which opens a fresh `UnixStream::connect`, sets read/write timeouts,
+writes a 30-byte JSON request, reads a 64 KiB-bounded response, and
+drops the stream.
 
----
+With the default `--require-fresh-secs=600`, a stuck-stale tree
+triggers up to **2,400 socket connects + 2,400 JSON round trips** in
+a single eval gate. None of this is catastrophic — Unix sockets are
+cheap — but for a primitive that's now on the hot path of #1182 (the
+freshness gate), the cost shape is wrong.
 
-## P4.3 — `Option<AuthToken>` permits silent no-auth router
+On the daemon side, each connection: (1) wakes the accept loop's
+WouldBlock-poll thread, (2) spawns a *fresh OS thread* (per RM-1 —
+no thread pool), (3) takes the `BatchContext` mutex to dispatch
+`status`, (4) RwLock-reads the snapshot, (5) tears the thread down.
+Two concurrent `eval --require-fresh` runs (real scenario when an
+agent batch fans out) easily generate 4-5k connect-spawn-teardown
+cycles in a 60s wait.
 
-**Disposition:** GitHub issue
-**Files:** `src/serve/mod.rs:78-83` (`run_server` signature), `src/serve/mod.rs:154-178` (`build_router`)
+This issue subsumes PF-V1.30.1-2 (perf angle on the same code) and
+pairs with RB-9 (no-exponential-backoff angle, P3).
 
-### Issue body (paste-ready)
+**Current shape:** `src/daemon_translate.rs:660-679` (poll loop) +
+`:438` (per-call `UnixStream::connect`).
 
-**Title:** serve: type-state `AuthMode` to prevent silently building a no-auth router
+**Proposed direction:** Two complementary fixes — pick (a) for
+simplicity, or both for full eradication.
 
-**Body:**
+(a) **Persistent connection:** Keep the `UnixStream` open across
+    polls inside `wait_for_fresh` and reuse it for subsequent
+    `status` requests. One connect + N writes + N read_lines
+    until either fresh or timeout. ~30-line change confined to
+    `daemon_translate.rs`.
 
-> `run_server` and `build_router` both take `auth: Option<AuthToken>`. Passing `None` silently disables auth — there is no compile-time gate. The `cmd_serve` entry path correctly defaults to `Some(random())` and only opts into `None` on `--no-auth`, but the type does not constrain future internal callers (an embedded smoke test, a feature-gated dev mode, an alternate CLI surface) from passing `None` and shipping a fully open server. The only runtime signal is an `eprintln!` gated on `quiet == false` (`mod.rs:120-123`).
->
-> Today `run_server(store, addr, /* quiet */ true, /* auth */ None)` ships a wide-open server with zero output. The "default secure" property lives in convention, not in the type system. The equivalent invariant in `cqs ref add` is enforced by validate-by-construction; here it is not.
->
-> **Why deferred:** the clean fix is a type-state refactor — replace `Option<AuthToken>` with `enum AuthMode { Required(AuthToken), Disabled { ack: NoAuthAcknowledgement } }` where `NoAuthAcknowledgement` is a `pub` zero-sized type only constructable inside `cmd_serve` after the `--no-auth` flag is parsed. Future internal callers cannot instantiate the disabled variant without intentionally importing the proof type. This ripples into every test that builds a router today via `build_router(.., None)` and the public-ish `run_server` signature.
->
-> **Cheaper interim mitigation** (one-line, can land before the refactor): in the `None` arm of `build_router` add a `tracing::error!("serve: AUTH DISABLED — request layer is open")` so any caller (test or future) shows up loudly in journald. Not a substitute for the type-state fix; just blast-radius limiter.
->
-> **Pointers:**
-> - signature: `src/serve/mod.rs:78-83`
-> - router construction: `src/serve/mod.rs:154-178`
-> - the only caller that legitimately passes `None`: `src/cli/commands/serve.rs:61-65` (after `--no-auth` parse)
-> - banner suppression: `src/serve/mod.rs:120-123`
+(b) **Server-side wait:** Add a `status --wait <secs>` daemon
+    command that blocks server-side on a `tokio::sync::Notify`
+    flipped by the watch loop when `state` transitions to `fresh`,
+    then returns. One round-trip total instead of N. Bigger
+    daemon-side change but eliminates polling entirely.
 
----
+Both pair well with RB-9's exponential-backoff fix (300ms → 600 →
+1.2s → 2.4s with cap) for the case where polling is preferred.
+
+**Acceptance criteria:**
+- A 60-second stale-then-fresh wait produces ≤ 1 socket
+  connection (option a) or ≤ 2 (option b) — verified via a
+  test that counts mock `accept()` calls.
+- Existing tests
+  (`wait_for_fresh_returns_fresh_on_first_poll` etc.) pass.
+- A new test pins the connection-count contract.
+- `cqs eval --require-fresh` is no slower on the realistic
+  Stale → Fresh path.
+
+**Out of scope:**
+- Inotify-based push (separate design; option c in audit notes).
+- Daemon thread pool work (RM-1 is a separate finding).
+- Removing the `wait_for_fresh` helper entirely.
+```
+
+## P4-issue: RM-5 — Reconcile holds entire repo's filename set in RAM every 30s
+**Why an issue:** Resource-management refactor that touches `enumerate_files` shape (Vec → impl Iterator) and reconcile's loop shape; pairs with PF-V1.30.1-3 (shared walk) but is independently scoped. Needs design pass to avoid breaking GC's existing consumer.
+
+**Suggested labels:** `enhancement`, `tier-3`, `resource-management`, `scaling`
+
+**Issue body draft:**
+```
+RM-5: Stream `enumerate_files` walk; query indexed origins per-file in reconcile
+
+`run_daemon_reconcile` (`src/cli/watch/reconcile.rs:74-90`) runs every
+30s by default when the daemon is idle. Each tick:
+
+1. `enumerate_files(root, &exts, no_ignore)` returns a `Vec<PathBuf>`
+   materialized via `walker.collect::<Vec<_>>()` — the **entire**
+   tree's matching files in one allocation (lib.rs:618). For a
+   100k-file monorepo at avg 80 B/PathBuf, that's ~8 MB.
+
+2. `indexed_file_origins()` returns a `HashMap<String, Option<i64>>`
+   with one entry per indexed source file — typically ~30k entries
+   × ~120 B = ~3.5 MB.
+
+3. Both are held simultaneously through the loop body that does
+   set-difference and metadata() probes.
+
+Every 30s, ~12 MB allocated, walked, and dropped. Not a leak — the
+allocations are scoped — but it's repetitive heap churn the watch
+daemon pays *forever in idle*, and it doesn't scale: a 1M-file
+Chromium-class repo would hit ~120 MB transient per tick.
+
+#1182's whole-tree-walk-on-idle premise should not break on a
+1M-file repo.
+
+**Current shape:**
+- `src/cli/watch/reconcile.rs:74-90` — both materializations.
+- `src/lib.rs:618` — `enumerate_files` returns `Vec<PathBuf>`.
+
+**Proposed direction:**
+
+Stream the disk walk: change `enumerate_files` to expose
+`enumerate_files_iter(root, exts, no_ignore) -> impl
+Iterator<Item = anyhow::Result<PathBuf>>`. The Vec-collecting
+version stays as a thin wrapper for callers that genuinely need
+the count.
+
+In reconcile, switch `for rel in disk_files` to consume the iterator
+directly, prepared-statement-querying `chunks.source_mtime WHERE
+origin = ?` per file (or chunked in 1k batches) instead of
+pre-loading the full `indexed` HashMap. Memory drops to
+O(batch_size) regardless of repo size, and the walk + DB lookups
+overlap in time.
+
+**Acceptance criteria:**
+- `enumerate_files_iter` exists and the existing
+  `enumerate_files` is its `.collect::<Vec<_>>()` wrapper.
+- Reconcile peak memory drops to O(batch_size) — verified via
+  a synthetic 100k-file tempdir test that asserts steady-state
+  RSS doesn't grow with file count.
+- Per-file SQL lookup batched in groups of 1k via a prepared
+  statement; not 100k individual `fetch_one` round trips.
+- Reconcile correctness tests
+  (`reconcile_detects_bulk_modify_burst` etc.) pass.
+- GC and other `enumerate_files` consumers are unchanged.
+
+**Out of scope:**
+- Sharing the walk between GC and reconcile (covered by
+  PF-V1.30.1-3).
+- Adding a memory budget knob (env var). Streaming is the
+  budget.
+- Eliminating per-file `dunce::canonicalize` in the walk
+  (separate concern).
+```
+
+## P4-issue: TC-HAP-1.30.1-6 — `process_file_changes` zero direct tests
+**Why an issue:** Test-infra work; the function is the central watch-loop reindex path and "no direct tests" maps to "needs a test harness with a stub embedder" — that scaffolding is the actual work. Hard because the function takes an embedder, store, and config and spans the entire pending-files drain path.
+
+**Suggested labels:** `tests`, `tier-3`, `test-coverage`
+
+**Issue body draft:**
+```
+TC-HAP-1.30.1-6: Add direct tests for `process_file_changes` watch-loop drain
+
+`process_file_changes` (`src/cli/watch/events.rs:131-300+`) is the
+function the watch daemon calls every cycle to drain `pending_files`
+into the index. It has zero direct tests.
+
+`grep -rn process_file_changes src` returns three production call
+sites in `watch/mod.rs` (lines 1125, 1254, 1276) and zero test sites.
+The `reconcile.rs::tests::reconcile_detects_bulk_modify_burst` test
+exercises *queueing* into `pending_files`, then asserts the snapshot
+reads Stale — but never invokes `process_file_changes` to drain it.
+So the canonical "queue → drain → snapshot reads Fresh" round-trip
+is not an end-to-end test in the suite; both halves exist, only the
+seam is untested.
+
+Critical untested paths:
+- The `try_init_embedder` Err arm (already flagged as EH-V1.30.1-8)
+  silently returns without clearing dirty flags.
+- The `dropped_this_cycle > 0` warn arm (line 139-145) — pairs with
+  CQ-V1.30.1-1 P1 fix.
+- The println! gating on `cfg.quiet` (line 147) — pairs with
+  OB-V1.30.1-9.
+
+**Current shape:** `src/cli/watch/events.rs:131-300+`. Production
+function with three production callers and zero tests.
+
+**Proposed direction:**
+
+Build a stub-embedder test harness in `events.rs::tests` (or move
+the tests to `cli/watch/mod.rs::tests` if that's where embedder
+fixtures already live). Tests to add:
+
+(1) `process_file_changes_zero_files_is_noop` — empty
+    `pending_files`, run, assert `state.pending_files.is_empty()`
+    and no panics, no embedder init.
+
+(2) `process_file_changes_single_file_drains_into_index` — seed
+    one Rust file in a tempdir, push its rel path into
+    `pending_files`, run with a stub embedder (existing
+    `placeholder_embedding` helper from reconcile tests), assert
+    (a) `state.pending_files` is empty after, (b) `store.search`
+    returns the new chunk.
+
+(3) `process_file_changes_reports_dropped_warn_once_then_resets`
+    — set `state.dropped_this_cycle = 5`, run, assert
+    `state.dropped_this_cycle == 0` after (this pins the
+    reset-after-warn semantic the audit's CQ-V1.30.1-1 P1 fix
+    will fix the *ordering* of).
+
+(4) `process_file_changes_handles_embedder_init_error` — stub
+    that returns Err from `try_init_embedder`, assert
+    `state.dropped_this_cycle` is preserved (not reset),
+    `state.pending_files` is preserved.
+
+The embedder stub probably already exists in
+`cli/watch/reconcile.rs::tests` (`placeholder_embedding`). Reuse it.
+
+**Acceptance criteria:**
+- Four (or more) direct tests in `events.rs::tests` covering
+  the four cases above.
+- Coverage for the `try_init_embedder` Err path validated by
+  test failures when EH-V1.30.1-8's intended fix lands.
+- Tests run in <1s; no real embedder loaded.
+- `cargo test --features cuda-index events::` passes.
+
+**Out of scope:**
+- Adding production tracing to `process_file_changes` —
+  separate observability work (OB-V1.30.1-9 P3).
+- Refactoring `process_file_changes` into smaller subfunctions
+  (only refactor when tests force it).
+- Integration tests that drive the full daemon loop —
+  separate scope.
+```
+
+## P4-issue: DS-V1.30.1-D3 — Periodic reconcile reads through stale `store` handle
+**Why an issue:** Race-condition fix that needs explicit `db_file_identity` check before each periodic reconcile (matching the pattern at `mod.rs:1105`); medium effort since it touches the watch loop's hot path.
+
+**Suggested labels:** `bug`, `tier-3`, `data-integrity`, `concurrency`
+
+**Issue body draft:**
+```
+DS-V1.30.1-D3: Add db_file_identity check before periodic reconcile fires
+
+The periodic reconcile path (`src/cli/watch/mod.rs:1262-1283`) skips
+the `db_file_identity` check that `should_process` does at line 1105.
+
+If `cqs index --force` rotated the DB while the watch loop was idle,
+periodic reconcile fires, calls `run_daemon_reconcile(&store, ...)`
+against the stale store handle (orphaned inode), and reads
+`indexed_file_origins()` + `source_mtime` from the OLD DB. Files that
+got newer mtimes in the NEW DB look "stale" against the old store;
+reconcile queues them as MODIFIED. The next `should_process` cycle
+reopens the store, drains those queued paths, and re-embeds files
+that were already current in the new DB.
+
+Worst case isn't corruption — it's silent re-work that defeats
+`--force`'s "I just rebuilt cleanly, you can stand down" semantics.
+
+**Current shape:** `src/cli/watch/mod.rs:1262-1283`. The `if reconcile_enabled_flag && ...` block dispatches reconcile without checking
+`db_file_identity`.
+
+**Proposed direction:**
+
+Either (a) add a `db_file_identity` check before each periodic
+reconcile call and reopen the store if it changed (matching the
+pattern at line 1105), or (b) acquire a *shared* (read) index lock
+during reconcile so it serializes against `cqs index --force`'s
+exclusive lock.
+
+Option (a) is the smaller change.
+
+**Acceptance criteria:**
+- A test that simulates `cqs index --force` rotation while
+  the watch loop is idle, then triggers periodic reconcile,
+  asserts no spurious reindexes happen post-rotation.
+- The `db_file_identity` check at line 1105 and the new check
+  use the same helper.
+- No new lock contention on the hot path (reconcile remains
+  read-only against the store).
+
+**Out of scope:**
+- Rewriting the watch loop's main scheduling.
+- Sharing locks between the watch loop and `cqs index --force`
+  beyond the DS-W5 reopen pattern.
+- Handling slot promotion races (separate concern, possibly
+  DS-V1.30.1-D1).
+```
+
+## P4-issue: DS-V1.30.1-D4 — `slot remove` does not check whether daemon is serving the slot
+**Why an issue:** Concurrency safety; needs explicit daemon-status probe before unlink and a clear `--force` opt-out path. Medium effort because it touches the slot-remove flow's user-facing error semantics.
+
+**Suggested labels:** `bug`, `tier-3`, `data-integrity`, `concurrency`
+
+**Issue body draft:**
+```
+DS-V1.30.1-D4: Refuse `slot remove` if a daemon is actively serving the slot
+
+`slot_remove` (`src/cli/commands/infra/slot.rs:322-369`) holds
+`acquire_slots_lock` across `read_active_slot → list_slots →
+remove_dir_all`, which prevents concurrent CLI invocations from
+racing each other. But the lock doesn't bind a *daemon* that's
+already serving from `slots/<name>/index.db`.
+
+Concrete failure scenario:
+1. `cqs watch --serve --slot foo` is running (holds a long-lived
+   `Store::open` against `slots/foo/index.db` + an HNSW Arc + ~500MB
+   ONNX session).
+2. Operator runs `cqs slot remove foo --force`.
+3. The CLI acquires the slots lock (the daemon doesn't hold it —
+   it isn't a slot-lifecycle operation), passes the existence
+   check, calls `fs::remove_dir_all(&dir)`.
+
+On Linux the unlink succeeds because the daemon's open file
+descriptors keep the inodes alive. But:
+
+- The daemon's WAL checkpoint on next write hits an
+  unlinked-but-open inode; checkpoints work but the rebuilt HNSW
+  persists into the (now-detached) directory tree, which is
+  reaped on daemon exit. Hours of incremental rebuild work
+  vanish silently.
+- The daemon's BatchContext serves stale snapshots forever — no
+  path notices the directory disappeared until restart.
+- `fs::remove_dir_all` on `index.db-wal` / `index.db-shm` while
+  another process is mmap'ing them is undefined per SQLite docs.
+  On WSL or any non-overlay FS that surfaces EBUSY or partial
+  removal, the user gets a half-deleted slot dir and no rollback.
+
+**Current shape:** `src/cli/commands/infra/slot.rs:322-369`. Calls
+`fs::remove_dir_all(&dir)` at line 369 without checking daemon
+status.
+
+**Proposed direction:**
+
+Before `remove_dir_all`, check `daemon_status(project_cqs_dir)`
+(the same probe `cqs hook status` uses). If a daemon is up *and*
+its active slot equals `name`, refuse with a clear error:
+
+```rust
+bail!(
+    "daemon is currently serving slot '{name}'. \
+     Stop it first: systemctl --user stop cqs-watch"
+);
+```
+
+With `--force`, downgrade to a `tracing::warn!` and proceed
+(operator opt-in). Mirrors the existing `--force` semantics for
+"this is the active slot" at line 357.
+
+**Acceptance criteria:**
+- A test using a `UnixListener` mock daemon socket that responds
+  with `slot: "foo"` causes `cqs slot remove foo` to error.
+- `cqs slot remove foo --force` against the same mock proceeds
+  with a warn.
+- The error message points operators at the systemd unit name
+  (or `cqs watch` PID) for stopping the daemon.
+- Existing slot tests pass.
+
+**Out of scope:**
+- Auto-stopping the daemon on remove (operators decide).
+- Cross-process atomic-replace of slot dirs (out of scope for
+  v1.30.x).
+- Windows-side daemon behavior (no Windows daemon today —
+  separate work).
+```

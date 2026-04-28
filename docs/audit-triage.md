@@ -1,236 +1,180 @@
-# v1.30.0 Post-Release Audit Triage
+# v1.30.1 Audit Triage
 
-Generated: 2026-04-26T20:42:41Z
-Total findings: 170 (8 batch 1 categories + 8 batch 2 categories)
+Generated: 2026-04-28T18:49:20Z
+Total findings: 144
+Categorization: P1 14, P2 32, P3 78, P4 23 (duplicate entries cross-referenced rather than removed; 3 are explicitly noted as subsumed)
 
-Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, batch) · P3 (easy + low, quick wins) · P4 (hard or low impact, issues or inline trivial)
+## Cross-cutting themes
 
-## Rolling Status (auto-updated as fixes land)
+- **`delta_saturated` flag is half-wired (3 findings, same root cause).** `WatchSnapshotInput` carries it, the wire shape serializes it, but `WatchSnapshot::compute()` never consults it. Surfaces in code-quality, data-safety, and adversarial test coverage. After a saturated rebuild discards on swap, the snapshot reports `Fresh` and `cqs eval --require-fresh` accepts a doomed rebuild. P1: defeats #1182's day-1 gate.
+- **`dropped_this_cycle` reset-before-publish defeats the freshness gate (3 findings, one fix).** Counter is zeroed at line 145 of `events.rs` before reindex completes; `publish_watch_snapshot` runs after the drain, so `compute()` never observes a non-zero value. AC-V1.30.1-4 adds the embedder-init-failure twist. P1 because it lets dropped events pass `--require-fresh` invisibly.
+- **`wait_for_fresh` is the new hot path and is full of papercuts (9+ findings across 7 categories).** Poll-cadence cost (RM-2, PF-V1.30.1-2), stringly-typed errors collapsed to `NoDaemon` (EH-V1.30.1-2, AC-V1.30.1-6), no entry/exit telemetry (OB-V1.30.1-4, OB-V1.30.1-6, OB-V1.30.1-8), `Instant` overflow (RB-2), 250 ms hardcoded interval (SHL-V1.30-2), no exponential backoff (RB-9), only the trivial Fresh-on-first-poll path tested (TC-HAP-1.30.1-5, TC-ADV-1.30.1-4). Treat as a single batch refactor pass.
+- **"Lying docs" cluster — P1 by team rule (5 findings).** PRIVACY says `(content_hash, model_id)` but schema is `(content_hash, model_fingerprint, purpose)`. SECURITY's symlink matrix promises "follow then validate" but the indexer skips them entirely. SECURITY's trust-level mitigation list claims `read --focus` and `context` carry `trust_level`/`injection_flags` — they don't. SECURITY's auth claim doesn't mention the `cqs_token_<port>` cookie or `NoAuthAcknowledgement`. ROADMAP says #1182 acceptance test is pending — #1196 already merged it.
+- **v0.12.1 swallow-error anti-pattern recurrence (7+ findings).** New code (`dispatch.rs:207`, `doctor.rs:923`, `cli/index/build.rs:863`, `reconcile.rs:116`, `reranker.rs:524`) ships with `.ok()` / `.unwrap_or_default()` swallowing real failures with no `tracing::warn!`. The exact pattern MEMORY.md called out post-v0.12.1 audit. EH-V1.30.1-* and TC-ADV-1.30.1-6 come at it from different angles.
+- **Wiring-verification regressions (3 findings, P1 by memory rule).** `embed_batch_size_for(model)` shipped as the v1.30.0 fix, still `#[allow(dead_code)]`, prod still uses unscaled `embed_batch_size()=64` — exactly the configurable-models disaster. `BatchCmd` dispatch is hand-routed match (33 arms); `log_query` hand-sprinkled across 6 dispatch arms.
+- **Coverage gaps where #1182 commands shipped untested (5 findings).** `cmd_uninstall`/`cmd_fire`/`cmd_hook_status` zero tests; `cmd_status` body never invoked by tests; `require_fresh_gate` itself never called by tests (env logic re-implemented inline); `process_file_changes` zero direct tests; `cqs eval` end-to-end never run *without* `CQS_EVAL_REQUIRE_FRESH=0` bypass.
+- **Three-channel auth surface has known bugs pinned in *tests that assert the wrong behavior* (4 findings).** SEC-7 leakage: `strip_token_param` doesn't case-fold or percent-decode; cookie wins over query so stale `?token=` survives in URL; Bearer prefix grammar gaps; reasoning-only collision tests. P1 because security-surface tests asserting current-bad behavior is the wrong shape per audit charter.
 
-- **P1 — 20/21 fixed + 1 deferred.** P1.17 (drain_pending_rebuild dedup) is structural — filed as #1124, slated to land alongside P2.29 (HNSW rebuild adversarial tests). Branch `audit-v1.30.0-p1-fixes` commit `cce0fbdc` covers all 20 applied.
-- **P2 — 83/92 fixed, 9 filed as issues.** All 92 P2 rows accounted for. Issues #1125 (P2.59), #1126 (P2.60), #1127 (P2.64), #1128 (P2.65), #1129 (P2.68), #1130 (P2.88), #1131 (P2.89), #1132 (P2.90), #1133 (P2.91).
-- **P3 — 49/53 fixed, 4 filed as issues #1137 (P3.26), #1138 (P3.27), #1139 (P3.30), #1140 (P3.31).** All 53 P3 rows accounted for.
-- **P4 — 0/3 fixed, 3 filed as issues #1134, #1135, #1136.**
+## P1 — Easy + high impact (fix immediately)
 
-(Counts include only `✅ fixed` cells; `structural — file as issue` rows count as deferred.)
+| ID | Title | Category | Location | Effort | Status |
+|----|-------|----------|----------|--------|--------|
+| CQ-V1.30.1-2 | `delta_saturated` flag published but ignored by `FreshnessState::compute` | Code Quality | `src/watch_status.rs:199-209` | easy | ✅ PR #1202 |
+| CQ-V1.30.1-1 | `dropped_this_cycle` reset before snapshot publish hides drop signal from `--require-fresh` | Code Quality | `src/cli/watch/events.rs:139-146` + `mod.rs:1303` | medium | ✅ PR #1202 |
+| CQ-V1.30.1-4 | `strip_token_param` doesn't case-fold or percent-decode — token leaks into redirect URL (SEC-7) | Code Quality | `src/serve/auth.rs:246-260, 305-318` | medium | ✅ PR #1201 |
+| AC-V1.30.1-5 | `check_request` cookie-wins-over-query leaks stale `?token=` permanently in URL bar | Algorithm Correctness | `src/serve/auth.rs:269-321` | easy | ✅ PR #1201. Notes: paired with CQ-V1.30.1-4. |
+| DOC-V1.30.1-1 | PRIVACY/SECURITY misstate embedding-cache primary key (drops `purpose` column) | Documentation | `PRIVACY.md:16`, `SECURITY.md:47` | easy | ✅ PR #1199 |
+| SEC-V1.30.1-2 | SECURITY.md "Symlink Behavior" matrix contradicts `enumerate_files(follow_links=false)` | Security | `SECURITY.md:203-215` | easy | ✅ PR #1199 |
+| SEC-V1.30.1-1 | SECURITY.md falsely claims `read --focus` / `context` carry `trust_level`/`injection_flags` | Security | `SECURITY.md:14` vs `read.rs:312`, `context.rs:269-325` | medium | ✅ PR #1200 |
+| DOC-V1.30.1-7 | SECURITY.md auth claim missing `cqs_token_<port>` cookie + `NoAuthAcknowledgement` from #1135/#1136 | Documentation | `SECURITY.md:17` | easy | ✅ PR #1201 |
+| DOC-V1.30.1-4 | ROADMAP claims #1182 acceptance test pending, but #1196 already merged | Documentation | `ROADMAP.md:16,142` | easy | ✅ PR #1199 |
+| SHL-V1.30-1 | `embed_batch_size_for` dead code — production still uses unscaled 64; nomic-coderank OOMs | Scaling | `src/cli/pipeline/types.rs:178-207`, `parsing.rs:42`, `enrichment.rs:74` | easy | ✅ PR #1203. Notes: Wiring-verification regression per MEMORY.md. |
+| SEC-V1.30.1-8 | Daemon env snapshot logs every `CQS_*` at info — `CQS_LLM_API_KEY` lands in journal | Security | `src/cli/watch/mod.rs:529-532` | easy | ✅ PR #1201 |
+| DS-V1.30.1-D2 | `run_daemon_reconcile` bypasses `max_pending_files()` cap — drowns queue on bulk branch switch | Data Safety | `src/cli/watch/reconcile.rs:103,128` | medium | ✅ PR #1203 |
+| AC-V1.30.1-1 | Reconcile `disk > stored` strict predicate misses `git checkout HEAD~5 -- foo.rs` (older mtime) | Algorithm Correctness | `src/cli/watch/reconcile.rs:124` | medium | ✅ PR #1203 |
+| AC-V1.30.1-4 | `process_file_changes` resets `dropped_this_cycle` before embedder check — drops silently lost on init failure | Algorithm Correctness | `src/cli/watch/events.rs:139-156` | medium | ✅ PR #1202. Notes: same root cause as CQ-V1.30.1-1. |
 
-## P1 — Fix Immediately
+## P2 — Medium effort + high impact (fix in batch)
 
-| # | Title | Category | Location | Status |
-|---|-------|----------|----------|--------|
-| P1.1 | PRIVACY/SECURITY claim query_log is opt-in but it's unconditional | Documentation | `PRIVACY.md:22, SECURITY.md:101` vs `src/cli/batch/commands.rs:371` | ✅ fixed |
-| P1.2 | PRIVACY claims 7-day TTL on query_cache.db; only size cap exists | Documentation | `PRIVACY.md:21` vs `src/cache.rs:1536` | ✅ fixed |
-| P1.3 | CHANGELOG names CQS_LLM_ENDPOINT — actual var is CQS_LLM_API_BASE | Documentation | `CHANGELOG.md:19` | ✅ fixed |
-| P1.4 | CONTRIBUTING tells contributors to edit dispatch.rs (registry.rs now) | Documentation | `CONTRIBUTING.md:339-355` | ✅ fixed |
-| P1.5 | ProjectRegistry doc lies about path on macOS/Windows | Platform | `src/project.rs:1-3, 176` | ✅ fixed |
-| P1.6 | gather warning hardcodes "200" — lies when CQS_GATHER_MAX_NODES set | Code Quality | `src/cli/commands/search/gather.rs:200` | ✅ fixed |
-| P1.7 | Reranker silently ignores [reranker] config section | Code Quality | `src/reranker.rs:127-154, 442` | ✅ fixed |
-| P1.8 | Embedder fingerprint falls back to repo:timestamp — cache thrash | Error Handling | `src/embedder/mod.rs:435-466` | ✅ fixed |
-| P1.9 | LocalProvider Mutex::into_inner().unwrap_or_default() loses all batch results on poison | Error Handling | `src/llm/local.rs:155, 196, 271-279, 305` | ✅ fixed |
-| P1.10 | LocalProvider unbounded HTTP body read — OOM on hostile/buggy server | Robustness | `src/llm/local.rs:97-100, 474-487` | ✅ fixed |
-| P1.11 | Auth token leaked into TraceLayer span URI logging | Security | `src/serve/mod.rs:195` + `src/serve/auth.rs:226` | ✅ fixed |
-| P1.12 | enforce_host_allowlist passes through missing Host header — DNS-rebinding bypass | Security | `src/serve/mod.rs:234-251` | ✅ fixed |
-| P1.13 | Auth token printed to stdout — captured by journald for 30-day retention | Security | `src/serve/mod.rs:111-117` | ✅ fixed |
-| P1.14 | cqs serve has no RequestBodyLimitLayer — authenticated client can OOM via large POST | Security | `src/serve/mod.rs:154-196` | ✅ fixed |
-| P1.15 | UMAP coords not invalidated on chunk content change — cluster view serves stale | Data Safety | `src/store/chunks/async_helpers.rs:339` | ✅ fixed |
-| P1.16 | --name-boost CLI accepts >1 / <0 — embedding signal sign-flips, deletes good results | Algorithm | `src/cli/args.rs:57` + `src/search/scoring/candidate.rs:286` | ✅ fixed (consumer-side clamp; CLI parser fix already shipped in v1.29.x) |
-| P1.17 | drain_pending_rebuild dedup drops fresh embeddings during rebuild window | Algorithm | `src/cli/watch.rs:1077-1105` | 📋 issue #1124 |
-| P1.18 | token_pack break-on-first-oversized — drops smaller items that would fit | Algorithm | `src/cli/commands/mod.rs:398-417` | ✅ fixed |
-| P1.19 | cqs serve shutdown handles only Ctrl-C — SIGTERM (systemctl) skips graceful drain | Platform | `src/serve/mod.rs:253-260` | ✅ fixed |
-| P1.20 | OB-V1.30-1 default subscriber drops every info_span — 150 spans invisible at default level | Observability | `src/main.rs:14-32` | ✅ fixed |
-| P1.21 | Auth failures log nothing — no journal trail for 401s | Observability | `src/serve/auth.rs:194-232` | ✅ fixed |
+| ID | Title | Category | Location | Effort | Status |
+|----|-------|----------|----------|--------|--------|
+| EH-V1.30.1-1 | Parse failure leaves stale chunks AND no mtime update — reconciles forever | Error Handling | `src/cli/watch/reindex.rs:255-314` | medium | pending |
+| EH-V1.30.1-2 | `wait_for_fresh` collapses transport AND parse errors into `NoDaemon` — wrong advice | Error Handling | `src/daemon_translate.rs:660-678` | easy | pending |
+| EH-V1.30.1-7 | Reconcile mtime-stat error swallowed — file may oscillate as "always stale" | Error Handling | `src/cli/watch/reconcile.rs:116-127` + `reindex.rs:501-509` | medium | pending |
+| EH-V1.30.1-8 | `try_init_embedder` Err path strands HNSW dirty flag without observability | Error Handling | `src/cli/watch/events.rs:154-185` | medium | pending |
+| RB-1 | `to_string_lossy()` on path keys silently mangles non-UTF-8 paths into permanent reindex storms | Robustness | `src/cli/watch/reconcile.rs:99` + `staleness.rs:627-637` | medium | pending |
+| RB-9 | `wait_for_fresh` infinite poll loop on slow daemon — no exp backoff, 2400 socket connects/600s | Robustness | `src/daemon_translate.rs:665-678` | medium | pending |
+| RB-10 | `now_unix_secs()` swallows clock-before-epoch error as `0` — masks systemic bad-clock | Robustness | `src/watch_status.rs:226-231` | easy | pending |
+| RB-6 | `enumerate_files` `unwrap_or(&path)` on canonicalize-mismatch leaks abs paths into rel workflow | Robustness | `src/lib.rs:680-685` | medium | pending |
+| AC-V1.30.1-3 | BFS `bfs_expand` cap check skips score-bump for already-visited neighbors at boundary | Algorithm Correctness | `src/gather.rs:357-381` | medium | pending |
+| AC-V1.30.1-9 | `daemon_socket_path` uses `DefaultHasher` — Rust-version-dependent, breaks systemd unit naming | Algorithm Correctness | `src/daemon_translate.rs:174-200` | medium | pending |
+| AC-V1.30.1-10 | `incremental_count = 0` reset on idle-clear loses delta context — late HNSW rebuilds | Algorithm Correctness | `src/cli/watch/mod.rs:1180` | medium | pending |
+| API-V1.30.1-1 | `cqs status --wait` emits success envelope but exits 1 on timeout — contradicts contract | API Design | `src/cli/commands/infra/status.rs:85-90` | easy | pending |
+| API-V1.30.1-5 | `daemon_ping`/`status`/`reconcile` return `Result<T, String>` — stringly-typed errors on public API | API Design | `src/daemon_translate.rs:271,422,541` | medium | pending |
+| API-V1.30.1-10 | `WatchSnapshot.idle_secs` frozen at compute time — wire shape lies once snapshot served later | API Design | `src/watch_status.rs:101,219` | medium | pending |
+| OB-V1.30.1-3 | `WatchSnapshot` state transitions silent — Fresh↔Stale↔Rebuilding flips have no journal trail | Observability | `src/cli/watch/mod.rs:149-185`, `watch_status.rs:195-224` | medium | pending |
+| OB-V1.30.1-6 | `require_fresh_gate` lacks entry span + final-decision info — eval gate decisions invisible | Observability | `src/cli/commands/eval/mod.rs:219-275` | easy | pending |
+| OB-V1.30.1-8 | `daemon_status` connect-failure warns every 250 ms during startup race — 2400 lines/600s wait | Observability | `src/daemon_translate.rs:438-441` | medium | pending |
+| OB-V1.30.1-9 | `process_file_changes` uses `println!` in non-quiet — bypasses tracing infrastructure | Observability | `src/cli/watch/events.rs:147-152` | easy | pending |
+| OB-V1.30.1-10 | `serve::search` info logs full query at info — bypasses TraceLayer redaction | Observability | `src/serve/handlers.rs:189-232` | easy | pending |
+| PB-V1.30.1-1 | `cmd_serve` `--no-auth` warning misses `0.0.0.0` and `::` wildcard binds — most-exposed configs | Platform Behavior | `src/cli/commands/serve.rs:27` | easy | pending |
+| PB-V1.30.1-3 | `process_exists` (Windows) substring-matches `INFO:` against localized `tasklist` output | Platform Behavior | `src/cli/files.rs:59-72` | medium | pending |
+| PB-V1.30.1-7 | `cqs hook fire` on Windows-native: `.cqs/.dirty` written but no consumer ever reads it | Platform Behavior | `src/cli/commands/infra/hook.rs:309-335` | medium | pending |
+| SEC-V1.30.1-3 | `callgraph-3d.js` interpolates `e.message` into `innerHTML` without `escapeHtml` — XSS gap | Security | `src/serve/assets/views/callgraph-3d.js:55` | easy | pending |
+| SEC-V1.30.1-4 | `tag_user_code_trust_level` shape-coupled — silently no-ops on unknown JSON shapes | Security | `src/cli/commands/mod.rs:216-257` | medium | pending |
+| DS-V1.30.1-D1 | `cqs index --force` reopen leaves stale `pending_rebuild` against orphaned store handle | Data Safety | `src/cli/watch/mod.rs:1102-1122` | medium | pending |
+| DS-V1.30.1-D5 | `.cqs/.dirty` fallback marker write not atomic — crash drops the only signal daemon will see | Data Safety | `src/cli/commands/infra/hook.rs:329-332` | easy | pending |
+| DS-V1.30.1-D7 | HNSW rollback path leaves `.bak` files orphaned when restore-rename fails | Data Safety | `src/hnsw/persist.rs:509-553` | medium | pending |
+| TC-HAP-1.30.1-2 | `cmd_uninstall`, `cmd_fire`, `cmd_hook_status` — three CLI commands ship with zero tests | Test Coverage (happy) | `src/cli/commands/infra/hook.rs:262-373` | medium | pending |
+| TC-HAP-1.30.1-3 | `cmd_status` — 6-row behavior matrix promised, zero outcomes pinned | Test Coverage (happy) | `src/cli/commands/infra/status.rs:38-103` | medium | pending |
+| TC-HAP-1.30.1-4 | `require_fresh_gate` — function never called by any test; bypass logic re-implemented inline | Test Coverage (happy) | `src/cli/commands/eval/mod.rs:219-275` | easy | pending |
+| TC-HAP-1.30.1-7 | Eval freshness gate untested end-to-end — every test sets `CQS_EVAL_REQUIRE_FRESH=0` bypass | Test Coverage (happy) | `tests/eval_subcommand_test.rs:88-93` | medium | pending |
 
-## P2 — Batch Fix
+## P3 — Easy + low impact (fix if time)
 
-| # | Title | Category | Location | Status |
-|---|-------|----------|----------|--------|
-| P2.1 | cmd_similar JSON emits 3 fields vs CLI's 9 — schema parity drop | Code Quality | `src/cli/batch/handlers/info.rs:139` | ✅ fixed |
-| P2.2 | dispatch_diff target_store placeholder dead in else branch | Code Quality | `src/cli/batch/handlers/misc.rs:354-387` | ✅ fixed |
-| P2.3 | Embedding/Query cache open_with_runtime ~80% copy-paste (90+ lines) | Code Quality | `src/cache.rs:103-220, 1412-1522` | ✅ fixed |
-| P2.4 | Repeated env::var parse pattern at 25+ sites — shared helpers exist but private | Code Quality | `src/limits.rs:230-260` + 25 sites | ✅ fixed (helpers promoted to pub; reranker + 2 embedder sites swapped, others left to keep tracing logs) |
-| P2.5 | EmbeddingCache accepts MAX_SIZE=0; QueryCache rejects — opposite behavior | Code Quality | `src/cache.rs:206-209, 1509-1513` | ✅ fixed |
-| P2.6 | DOC: README "544-query eval" should be 218; metrics also stale | Documentation | `README.md:5,649` | ✅ fixed |
-| P2.7 | DOC: README claims 54 languages but Cargo.toml/source disagree (Elm) | Documentation | `README.md:5,530-585` | ✅ fixed |
-| P2.8 | DOC: SECURITY omits per-project embeddings_cache.db | Documentation | `SECURITY.md:65-82` | ✅ fixed |
-| P2.9 | DOC: README/Claude integration list missing 5 commands (ping/eval/model/serve/refresh) | Documentation | `README.md:467-525` | ✅ fixed |
-| P2.10 | DOC: README cache subcommands list missing `clear` | Documentation | `README.md:521` | ✅ fixed |
-| P2.11 | --json model swap/show emits plain-text errors — no envelope | API Design | `src/cli/commands/infra/model.rs` | ✅ fixed |
-| P2.12 | cqs init/index/convert lack --json | API Design | `src/cli/commands/infra/init.rs`, etc. | ✅ fixed |
-| P2.13 | Global --slot silently ignored by `slot`/`cache` subcommands | API Design | `src/cli/definitions.rs` + slot/cache cmds | ✅ fixed (Option B: bail in cmd_slot/cmd_cache) |
-| P2.14 | cqs refresh has no --json | API Design | `src/cli/definitions.rs:755-761` | ✅ fixed |
-| P2.15 | List-shape JSON envelopes inconsistent across `*list` commands | API Design | `cmd_ref_list/cmd_model_list/cmd_project_list` | ✅ fixed (ref + model now emit `{plural: [...]}` shape; project already had it) |
-| P2.16 | cache stats mixes bytes and MB; cache compact uses bytes only | API Design | `src/cli/commands/infra/cache_cmd.rs` | ✅ fixed |
-| P2.17 | dispatch::try_daemon_query warns then silently re-runs in CLI | Error Handling | `src/cli/dispatch.rs:445-462` | ✅ fixed |
-| P2.18 | LocalProvider::fetch_batch_results returns empty map on missing batch_id | Error Handling | `src/llm/local.rs:542-547` | ✅ fixed (added `LlmError::BatchNotFound`) |
-| P2.19 | impact/format `serde_json::to_value...unwrap_or_else(json!({}))` at 6 sites | Error Handling | `src/impact/format.rs`, etc. | ✅ fixed (impact/format + context.rs sites — blame.rs out-of-scope, owned by Agent A) |
-| P2.20 | cache_stats silently treats QueryCache::open failure as 0 bytes | Error Handling | `src/cli/commands/infra/cache_cmd.rs:120-139` | ✅ fixed |
-| P2.21 | slot_remove masks list_slots failure as "only slot remaining" | Error Handling | `src/cli/commands/infra/slot.rs:303-313` | ✅ fixed |
-| P2.22 | build_token_pack swallows get_caller_counts_batch — silently degrades ranking | Error Handling | `src/cli/commands/io/context.rs:438-441` | ✅ fixed |
-| P2.23 | read --focus silently empties type_chunks on store batch failure | Error Handling | `src/cli/commands/io/read.rs:230-235` | ✅ fixed (added `warnings` field to FocusedReadResult/JsonOutput) |
-| P2.24 | serve::build_chunk_detail collapses NULL signature/content to empty string | Error Handling | `src/serve/data.rs:488-492` | ✅ fixed (signature/content_preview now `Option<String>`; JS shows `<missing — DB column NULL>` placeholder) |
-| P2.25 | Per-request span and build_* spans disconnected (spawn_blocking drops span ctx) | Observability | `src/serve/handlers.rs:86,111,131,160,210,236` | ✅ fixed (capture `Span::current()` and re-enter inside the blocking closure at all 6 handlers) |
-| P2.26 | TC-ADV: LocalProvider body-size DoS — buffers entire HTTP response | Test Coverage (adv) | `src/llm/local.rs:474-500` | ✅ fixed (regression-pin tests at `src/llm/local.rs::body_size_dos_tests`: `oversized_response_body_capped_at_max`, `fourxx_with_large_body_does_not_buffer_entire_body`) |
-| P2.27 | TC-ADV: EmbeddingCache/QueryCache accept NaN/Inf — cross-process cache poisoning | Test Coverage (adv) | `src/cache.rs:332-407, 1677-1699` | ✅ fixed |
-| P2.28 | TC-ADV: slot_create/slot_remove TOCTOU under concurrent operation | Test Coverage (adv) | `src/cli/commands/infra/slot.rs:219-350` | ✅ fixed (regression-pin test added: `slot_create_concurrent_same_name_produces_deterministic_outcome`) |
-| P2.29 | TC-ADV: Non-blocking HNSW rebuild — no panic/dim-drift/store-fail tests | Test Coverage (adv) | `src/cli/watch.rs:965-1042` | ✅ fixed (regression-pin tests: `spawn_hnsw_rebuild_dim_mismatch_returns_error_outcome`, `spawn_hnsw_rebuild_missing_index_path_returns_error_outcome`, `drain_clears_pending_when_spawned_rebuild_errors`) |
-| P2.30 | TC-ADV: serve auth strip_token_param case/percent-encoding gaps | Test Coverage (adv) | `src/serve/auth.rs:101-115` | ✅ tests pinned current behavior (capital `Token=`, `%74oken=`, `&&`, multiple `token=`, empty value, capital-T check_request rejects); prod fix follow-on |
-| P2.31 | TC-ADV: slot::migrate_legacy rollback path untested; rollback failure leaves split state | Test Coverage (adv) | `src/slot/mod.rs:511-593` | ✅ fixed (regression-pin tests: `migrate_refuses_to_proceed_when_sentinel_exists`, `migrate_clears_sentinel_on_full_success`) |
-| P2.32 | TC-ADV: LocalProvider non-HTTP api_base + concurrency mis-sizing | Test Coverage (adv) | `src/llm/local.rs:88-121` | ✅ prod fix (api_base scheme guard + worker = min(concurrency, items.len()).max(1)); test skeletons left to follow-on |
-| P2.33 | RB: Slot pointer files read with unbounded read_to_string | Robustness | `src/slot/mod.rs:207, 323` | ✅ fixed |
-| P2.34 | RB: migrate_legacy rollback leaves undetectable half-state | Robustness | `src/slot/mod.rs:511-593` | ✅ fixed |
-| P2.35 | RB: local.rs auth_attempts mutex unwrap cascades worker poison | Robustness | `src/llm/local.rs:393-396` | ✅ fixed |
-| P2.36 | RB: redirect policy disagrees between production (none) and doctor (limited(2)) | Robustness | `src/llm/local.rs:99` vs `src/cli/commands/infra/doctor.rs:578` | ✅ fixed (LocalProvider now uses `limited(2)` to match doctor) |
-| P2.37 | SHL: CAGRA itopk_size < k on small indexes — silent zero-result regression | Scaling | `src/cagra.rs:359` | ✅ fixed (force itopk_size ≥ k; warn-and-empty when k > itopk_max so caller falls back to HNSW) |
-| P2.38 | SHL: nl::generate_nl char_budget defaults to 512 even with 2048 max_seq_len | Scaling | `src/nl/mod.rs:222-229` | ✅ fixed (added `generate_nl_with_template_and_seq_len` + `_with_seq_len` accessor; legacy entry points keep env-only behavior) |
-| P2.39 | SHL: MAX_BATCH_SIZE=10_000 silently truncates summary/HyDE on large corpora | Scaling | `src/llm/mod.rs:192` | ✅ fixed (`crate::limits::llm_max_batch_size` reads CQS_LLM_MAX_BATCH_SIZE; truncation now surfaces on stderr) |
-| P2.40 | SHL: serve graph/cluster cap 50_000 hardcoded; chunk_detail LIMIT 50/50/20 | Scaling | `src/serve/data.rs:17,24,505,542,571` | ✅ fixed (env-tunable via `CQS_SERVE_GRAPH_MAX_NODES/EDGES`, `CQS_SERVE_CLUSTER_MAX_NODES`, `CQS_SERVE_CHUNK_DETAIL_{CALLERS,CALLEES,TESTS}` in `crate::limits`; clamped to hard ceilings) |
-| P2.41 | SHL: embed_batch_size default 64 doesn't scale with model dim/seq | Scaling | `src/cli/pipeline/types.rs:143` | ✅ fixed (added `embed_batch_size_for(model)`; pipeline migration follow-on) |
-| P2.42 | SHL: CagraIndex::gpu_available has no VRAM ceiling — OOMs on 8GB GPUs | Scaling | `src/cagra.rs:262-264` | ✅ fixed (`gpu_available_for(n,dim)` with 2 GiB conservative cap + `CQS_CAGRA_MAX_GPU_BYTES`; legacy `gpu_available` shims through) |
-| P2.43 | semantic_diff sort lacks tie-breaker — non-deterministic JSON across runs | Algorithm | `src/diff.rs:202-207` | ✅ fixed (already cascading; pinned by existing `test_diff_sort_tie_break_deterministic`) |
-| P2.44 | is_structural_query keyword probe misses keywords at end-of-query | Algorithm | `src/search/router.rs:787-789` | ✅ fixed (regression-pin tests added: `test_p2_44_*`) |
-| P2.45 | bfs_expand processes seeds in HashMap order — non-deterministic name_scores at cap | Algorithm | `src/gather.rs:317-320` | ✅ fixed (regression-pin test added: `test_p2_45_bfs_seed_order_is_deterministic`) |
-| P2.46 | llm summary contrastive_neighbors top-K sort lacks tie-breaker | Algorithm | `src/llm/summary.rs:263-267` | ✅ fixed (regression-pin test added: `p2_46_contrastive_neighbors_top_k_deterministic_under_ties`) |
-| P2.47 | reranker compute_scores unchecked batch_size*stride; negative shape[1] panic | Algorithm | `src/reranker.rs:368-387` | ✅ fixed (already guarded via AC-V1.29-6; verified) |
-| P2.48 | doc_comments select_uncached sort lacks chunk-id tertiary key | Algorithm | `src/llm/doc_comments.rs:222-242` | ✅ fixed (already cascading on `a.id.cmp(&b.id)`; verified) |
-| P2.49 | map_hunks_to_functions returns hunks in HashMap order — non-deterministic impact-diff | Algorithm | `src/impact/diff.rs:38-168` | ✅ fixed (BTreeMap by_file + post-loop sort on (file, line_start, name)) |
-| P2.50 | search_reference threshold/weight ordering bug — under-samples corpus when weight<1 | Algorithm | `src/reference.rs:231-285` | ✅ fixed (relax raw_threshold = threshold/weight + 2× over-fetch + post-weight retain/sort/truncate) |
-| P2.51 | find_type_overlap chunk_info uses HashMap iteration — non-deterministic file attribution | Algorithm | `src/related.rs:131-157` | ✅ fixed (sorted result keys + min(file,line) representative + (count desc, name asc) tie-break + sorted type_names) |
-| P2.52 | CAGRA search_with_filter under-fills when included<k — caller can't distinguish | Algorithm | `src/cagra.rs:520-598` | ✅ fixed (cap effective_k = k.min(included)) |
-| P2.53 | Hybrid SPLADE alpha=0 emits 1.0+s scores; cliff at SPLADE boundary | Algorithm | `src/search/query.rs:649-672` | ✅ fixed (boost = s * 0.1; dense cosine remains dominant signal) |
-| P2.54 | apply_scoring_pipeline sign-flips on out-of-range name_boost; clamp embedding pre-blend | Algorithm | `src/search/scoring/candidate.rs:283-298` | ✅ fixed (clamp `embedding_score` into [0,1] before blend; name_boost clamp already present) |
-| P2.55 | open_browser uses explorer.exe on Windows — drops query string/token | Platform | `src/cli/commands/serve.rs:89-104` | ✅ fixed |
-| P2.56 | NTFS/FAT32 mtime equality check — watch loop skips second save on FAT32 USB | Platform | `src/cli/watch.rs:551-560` | ✅ fixed (actual equality at watch.rs:2475 — strict `<` on WSL drvfs paths) |
-| P2.57 | enforce_host_allowlist accepts missing Host header (dev ergonomic) | Platform | `src/serve/mod.rs:230-251` | ✅ fixed (covered by P1.12 — now rejects missing Host) |
-| P2.58 | --bind 0.0.0.0 host-allowlist breaks LAN — pushes operators to --no-auth | Security | `src/serve/mod.rs:207-218` | ✅ fixed (wildcard bind returns empty allowlist + startup warn; middleware short-circuits to "accept any Host"; per-launch token remains primary defence — avoids new `if_addrs` dep) |
-| P2.59 | Migration restore_from_backup overwrites live DB while pool open | Data Safety | `src/store/backup.rs:171-180` | 📋 issue #1125 |
-| P2.60 | stream_summary_writer bypasses WRITE_LOCK — concurrent writer collides with reindex | Data Safety | `src/store/chunks/crud.rs:504-545` | 📋 issue #1126 |
-| P2.61 | slot_remove TOCTOU on concurrent promote — active_slot points to deleted dir | Data Safety | `src/cli/commands/infra/slot.rs:299-350` | ✅ fixed |
-| P2.62 | Slot legacy migration moves live WAL/SHM instead of checkpointing first | Data Safety | `src/slot/mod.rs:511-624` | ✅ fixed |
-| P2.63 | model_fingerprint fallback uses Unix timestamp — every restart misses cache | Data Safety | `src/embedder/mod.rs:435-465` | ✅ fixed |
-| P2.64 | Daemon serializes ALL queries through one Mutex<BatchContext> | Data Safety | `src/cli/watch.rs:1775-1858` | 📋 issue #1127 |
-| P2.65 | embedding_cache schema doesn't separate `embedding` vs `embedding_base` purpose | Data Safety | `src/cache.rs:159-171` | 📋 issue #1128 |
-| P2.66 | cache evict() vs write_batch race — evict deletes rows just inserted | Data Safety | `src/cache.rs:354-460` | ✅ fixed |
-| P2.67 | PF: reindex_files watch path double-parses calls per chunk | Performance | `src/cli/watch.rs:2815, 2930-2939` | ✅ fixed |
-| P2.68 | PF: reindex_files watch path bypasses global EmbeddingCache | Performance | `src/cli/watch.rs:2876-2887` | 📋 issue #1129 |
-| P2.69 | PF: wrap_value deep-clones entire payload via serde round trip | Performance | `src/cli/json_envelope.rs:160-176` | ✅ fixed |
-| P2.70 | PF: build_graph correlated subquery for n_callers — N rows × COUNT(*) | Performance | `src/serve/data.rs:234-264` | ✅ fixed (replaced per-row correlated subquery with `LEFT JOIN (SELECT callee_name, COUNT(*) ... GROUP BY)` — O(M+N) instead of O(N log M)) |
-| P2.71 | RM: Background HNSW rebuild thread detached — daemon shutdown can't wait | Resource Mgmt | `src/cli/watch.rs:965-1042` | ✅ fixed |
-| P2.72 | RM: pending_rebuild.delta grows unbounded during long rebuild | Resource Mgmt | `src/cli/watch.rs:611, 2667-2741` | ✅ fixed |
-| P2.73 | RM: LocalProvider::stash retains all submitted batch results until drop | Resource Mgmt | `src/llm/local.rs:74, 304-309, 542-547` | ✅ fixed (cap MAX_STASH_BATCHES=128; evict-oldest on insert) |
-| P2.74 | RM: Daemon never checks fs.inotify.max_user_watches — silently drops events | Resource Mgmt | `src/cli/watch.rs:1947-1949` | ✅ fixed |
-| P2.75 | RM: select_provider triggers CUDA probe + symlink for every CLI process | Resource Mgmt | `src/embedder/provider.rs:171-248` | ✅ fixed (Embedder.provider is now `OnceLock<ExecutionProvider>` resolved on first inference; `new_cpu` pre-populates) |
-| P2.76 | RM: serve handlers spawn_blocking unbounded — 512 thread × 10MB working set | Resource Mgmt | `src/serve/handlers.rs:86-89` + `mod.rs:92` | ✅ fixed (semaphore in `AppState.blocking_permits`, default 32, env-tunable via `CQS_SERVE_BLOCKING_PERMITS`; permit acquired before spawn_blocking and held by closure) |
-| P2.77 | RM: Embedder clear_session doubled-memory window invisible | Resource Mgmt | `src/embedder/mod.rs:261, 808-823` | ✅ fixed (logs `strong_count` when in-flight inference is mid-encode at clear time) |
-| P2.78 | TC-HAP: cqs serve data endpoints never tested with populated data | Test Coverage | `src/serve/data.rs` + `src/serve/tests.rs` | ✅ fixed (populated_fixture tests at serve/tests.rs:1007–1146) |
-| P2.79 | TC-HAP: 16 batch dispatch handlers have zero tests | Test Coverage | `src/cli/batch/handlers/{misc,graph,info}.rs` | ✅ fixed (8 new tests across graph/info/misc handlers + the pre-existing 7-test `dispatch_tests` mod cover the high-traffic surface: `dispatch_callers/callees/related/impact_diff` in `graph::tests`, `dispatch_stats` in `info::tests`, `dispatch_ping/help/refresh` in `misc::tests`) |
-| P2.80 | TC-HAP: Reranker::rerank/rerank_with_passages have no tests | Test Coverage | `src/reranker.rs:160, 190` | ✅ fixed (`test_rerank_empty_input_returns_empty` no-op shortcut + `#[ignore]`-gated `test_rerank_reorders_by_relevance` for the model-loading happy path) |
-| P2.81 | TC-HAP: cmd_project Search has no CLI integration test | Test Coverage | `src/cli/commands/infra/project.rs:70` | ✅ fixed (`tests/cli_project_search_test.rs` — XDG-isolated two-project search with assert_cmd, gated behind `slow-tests`) |
-| P2.82 | TC-HAP: cqs ref add/list/remove/update no end-to-end CLI test | Test Coverage | `src/cli/commands/infra/reference.rs` | ✅ fixed (`tests/cli_ref_test.rs` — round-trip add/list/remove/update coverage) |
-| P2.83 | TC-HAP: handle_socket_client no happy-path round-trip test | Test Coverage | `src/cli/watch.rs:160` | ✅ fixed (UnixStream-pair round-trip in `watch::adversarial_socket_tests` — seeds chunk, sends `stats` request, asserts `status:ok` envelope with numeric `total_chunks`) |
-| P2.84 | TC-HAP: spawn_hnsw_rebuild/drain_pending_rebuild ship with zero tests | Test Coverage | `src/cli/watch.rs spawn_hnsw_rebuild` | ✅ fixed (covered by P2.29 spawn_hnsw_rebuild tests + existing `drain_pending_rebuild_*` tests in watch::tests) |
-| P2.85 | TC-HAP: for_each_command! macro + 4 emitters have no behavioral tests | Test Coverage | `src/cli/registry.rs:61` | ✅ fixed (`variant_name_pins_critical_command_labels` + 3× `batch_support_*` tests in `definitions::tests` exercise the macro-emitted `variant_name()` and `batch_support()` impls) |
-| P2.86 | TC-HAP: build_hnsw_index_owned/build_hnsw_base_index — no direct tests | Test Coverage | `src/cli/commands/index/build.rs:848,880` | ✅ fixed (4 direct happy-path + empty-store tests added in `build::tests`) |
-| P2.87 | TC-HAP: hyde_query_pass and doc_comment_pass have zero tests | Test Coverage | `src/llm/hyde.rs:11`, `src/llm/doc_comments.rs:135` | ✅ fixed (`hyde_query_pass_returns_zero_for_empty_store`, `doc_comment_pass_returns_empty_for_empty_store` — local-provider config, empty-store short-circuit) |
-| P2.88 | EX: Adding third score signal touches two parallel fusion paths | Extensibility | `src/store/search.rs:182-229`, `src/search/query.rs:511-720` | 📋 issue #1130 |
-| P2.89 | EX: Vector index backend selection is hand-coded if/else; no IndexBackend trait | Extensibility | `src/cli/store.rs:423-540` | 📋 issue #1131 |
-| P2.90 | EX: ScoringOverrides knob → 4 sites; no shared resolver | Extensibility | `src/config.rs:153-172` + scoring | 📋 issue #1132 |
-| P2.91 | EX: NoteEntry has no kind/tag taxonomy — only sentiment | Extensibility | `src/note.rs:41-89` | 📋 issue #1133 |
-| P2.92 | RM: Embedder::new opens fresh QueryCache + 7-day prune on every CLI command | Resource Mgmt | `src/embedder/mod.rs:355-366` | ✅ fixed |
+| ID | Title | Category | Location | Effort | Status |
+|----|-------|----------|----------|--------|--------|
+| CQ-V1.30.1-3 | `cqs eval --require-fresh` Timeout error message omits drop/saturation signals | Code Quality | `src/cli/commands/eval/mod.rs:248-255` | easy | pending |
+| CQ-V1.30.1-5 | Three near-identical `ort_err` helpers across embedder/reranker/splade | Code Quality | embedder/reranker/splade modules | easy | pending |
+| CQ-V1.30.1-6 | Auth `--no-auth` warning at boot silent for localhost binds — duplicate warning logic | Code Quality | `src/cli/commands/serve.rs:27-37` | easy | pending |
+| DOC-V1.30.1-2 | README canonical command list omits `cqs hook` and `cqs status` (#1182 commands) | Documentation | `README.md:540-569` | easy | pending |
+| DOC-V1.30.1-3 | CONTRIBUTING Architecture Overview stale — missing eval/, watch_status.rs, daemon_translate.rs, etc | Documentation | `CONTRIBUTING.md:149-340` | easy | pending |
+| DOC-V1.30.1-5 | PRIVACY/SECURITY document only Linux path for query_log/query_cache (macOS/Windows missing) | Documentation | `PRIVACY.md:21-22`, `SECURITY.md:111-136` | easy | pending |
+| DOC-V1.30.1-6 | README "Watch Mode" section omits default `--wait-secs` budget (30 s) | Documentation | `README.md:219-220` | easy | pending |
+| DOC-V1.30.1-9 | v1.30.0 CHANGELOG/ROADMAP lists `cqs cache {stats,prune,compact}` missing `clear` (cosmetic) | Documentation | `CHANGELOG.md:71`, `ROADMAP.md:131` | easy | pending |
+| API-V1.30.1-2 | `--watch-fresh --wait-secs 30` vs `--require-fresh-secs 600` — same op, 20× different default | API Design | `definitions.rs:792-793`, `eval/mod.rs:85-86` | easy | pending |
+| API-V1.30.1-3 | `cqs eval --no-require-fresh` is the only `--no-X` flag in the CLI surface | API Design | `src/cli/commands/eval/mod.rs:79-80` | easy | pending |
+| API-V1.30.1-4 | `PingResponse.last_indexed_at` vs `WatchSnapshot.last_synced_at` — same field, two names | API Design | `daemon_translate.rs:236`, `watch_status.rs:105` | easy | pending |
+| API-V1.30.1-6 | `DaemonReconcileResponse.queued: bool` documented "always true" — useless field | API Design | `src/daemon_translate.rs:517-519` | easy | pending |
+| API-V1.30.1-7 | `WatchSnapshotInput::_marker: PhantomData<&'a ()>` is leaked private invariant | API Design | `src/watch_status.rs:181-193` | easy | pending |
+| API-V1.30.1-8 | `cqs status` (no flag) exits 1 — only mode is gated on a flag user can't avoid | API Design | `src/cli/commands/infra/status.rs:41-54` | easy | pending |
+| API-V1.30.1-9 | `FreshnessState` has `as_str()` but no `Display` — papercut for `format!`/`tracing::info!(state=%)` | API Design | `src/watch_status.rs:51-60` | easy | pending |
+| EH-V1.30.1-3 | `dispatch.rs:207` swallows slot-name validation errors via `.ok()` | Error Handling | `src/cli/dispatch.rs:207` | easy | pending |
+| EH-V1.30.1-4 | `doctor` silently treats `list_slots` failure as empty — diagnostic tool hides its diagnostic | Error Handling | `src/cli/commands/infra/doctor.rs:923` | easy | pending |
+| EH-V1.30.1-5 | `cqs index --json` envelope reports model="" / chunk_count=0 on resolution failure | Error Handling | `src/cli/commands/index/build.rs:863-867` | easy | pending |
+| EH-V1.30.1-6 | Reranker checksum-marker write silently dropped — re-verifies on every cold start | Error Handling | `src/reranker.rs:524` | easy | pending |
+| OB-V1.30.1-1 | "SPLADE routing" `tracing::info!` fires on every search call — journal spam at default | Observability | `src/search/router.rs:469-554` | easy | pending |
+| OB-V1.30.1-2 | `reclassify_with_centroid` info log per Unknown-gap fill — per-search spam | Observability | `src/search/router.rs:1146-1150` | easy | pending |
+| OB-V1.30.1-4 | `wait_for_fresh` polling loop returns without closing tracing event recording outcome+elapsed | Observability | `src/daemon_translate.rs:660-679` | easy | pending |
+| OB-V1.30.1-5 | `enforce_auth` 401 warn lacks rejection reason — three failure modes collapse to one log line | Observability | `src/serve/auth.rs:389-401, 269-321` | easy | pending |
+| OB-V1.30.1-7 | `daemon_reconcile` walk has no `elapsed_ms` field — pass duration unrecoverable | Observability | `src/cli/watch/reconcile.rs:63-148` | easy | pending |
+| TC-ADV-1.30.1-1 | `AuthToken::try_from_string` has no upper-bound length check, no length test | Test Coverage (adv) | `src/serve/auth.rs:123-129` | easy | pending |
+| TC-ADV-1.30.1-2 | `check_request` ambiguous-channel collision tests (cookie+query) missing | Test Coverage (adv) | `src/serve/auth.rs:269-321` | easy | pending |
+| TC-ADV-1.30.1-3 | `check_request` Bearer-prefix grammar gaps unpinned (`bearer`, double-space, no-space) | Test Coverage (adv) | `src/serve/auth.rs:271-280` | easy | pending |
+| TC-ADV-1.30.1-7 | `env_disables_freshness_gate` test re-implements function inline — never calls it | Test Coverage (adv) | `src/cli/commands/eval/mod.rs:282-290, 405-432` | easy | pending |
+| TC-ADV-1.30.1-8 | `WatchSnapshot::compute` `delta_saturated=true, pending=0` reports Fresh — no test | Test Coverage (adv) | `src/watch_status.rs:199-223` | easy | pending. Notes: covered by CQ-V1.30.1-2 fix. |
+| TC-ADV-1.30.1-9 | `daemon_status` non-`ok` envelope with null/number `message` returns `daemon error: daemon error` | Test Coverage (adv) | `src/daemon_translate.rs:487-499` | easy | pending |
+| TC-ADV-1.30.1-10 | `unwrap_dispatch_payload` accepts missing `data` field — passes wrapper through as payload | Test Coverage (adv) | `src/daemon_translate.rs:387-404` | easy | pending |
+| RB-2 | `wait_for_fresh` panics on `Instant + Duration::from_secs(u64::MAX)` if any caller skips cap | Robustness | `src/daemon_translate.rs:660-662` | easy | pending |
+| RB-3 | `as_secs() as i64` SystemTime cast pattern landed in 5 new locations post-RB-V1.30-3 | Robustness | watch_status, batch, ping, watch/mod | easy | pending |
+| RB-4 | `as_millis() as i64` cast in reindex pipeline truncates u128 to i64 silently | Robustness | `src/cli/watch/reindex.rs:507-508` | easy | pending |
+| RB-5 | `migrate_legacy` sentinel read uses unbounded `fs::read_to_string` (RB-V1.30-2 sibling) | Robustness | `src/slot/mod.rs:656` | easy | pending |
+| RB-7 | Atomic `as u64`/`as i64` casts in WatchSnapshot trust unbounded usize from caller | Robustness | `src/watch_status.rs:213-218` | easy | pending |
+| RB-8 | `print_text_report::pct` on empty eval set → division by zero / NaN bleeds into report | Robustness | `src/cli/commands/eval/mod.rs:296-309` | medium | pending |
+| SHL-V1.30-2 | `wait_for_fresh` poll interval hardcoded at 250 ms — no env knob | Scaling | `src/daemon_translate.rs:663` | easy | pending |
+| SHL-V1.30-3 | `eval --require-fresh-secs` silently capped to 600 s inside the wait helper | Scaling | `src/cli/commands/eval/mod.rs:237` | easy | pending |
+| SHL-V1.30-4 | `task::run_task` hardcodes BFS knobs (depth=2, max_nodes=100) overriding `CQS_GATHER_*` | Scaling | `src/task.rs:19-25, 143-149` | easy | pending |
+| SHL-V1.30-5 | `onboard` callee/caller fetch caps hardcoded at 30/15 — silent truncation | Scaling | `src/onboard.rs:30-33, 174-175` | easy | pending |
+| SHL-V1.30-6 | `MAX_REFERENCES = 20` hardcoded — no env knob, silent truncation past 20 | Scaling | `src/config.rs:390-405` | easy | pending |
+| SHL-V1.30-7 | `MAX_NOTES_FILE_SIZE = 10 MB` hardcoded twice + `MAX_NOTES = 10_000` silent truncation | Scaling | `src/note.rs:20, 169, 245` | easy | pending |
+| SHL-V1.30-8 | `ENRICHMENT_PAGE_SIZE = 500` hardcoded — no env knob | Scaling | `src/cli/enrichment.rs:46, 127` | easy | pending |
+| SHL-V1.30-9 | `LAST_INDEXED_PRUNE_SIZE_THRESHOLD = 5_000` "intentionally not env" — but `cqs ref` exceeds | Scaling | `src/cli/watch/gc.rs:36-42` | easy | pending |
+| SHL-V1.30-10 | `daemon_periodic_gc_cap` env override is `OnceLock`-cached — `systemctl set-environment` ineffective | Scaling | `src/cli/watch/gc.rs:78-86` | easy | pending |
+| AC-V1.30.1-2 | `is_structural_query` keyword match is case-sensitive — `Class Foo` misroutes to Conceptual | Algorithm Correctness | `src/search/router.rs:813-816` | easy | pending |
+| AC-V1.30.1-6 | `wait_for_fresh` deadline math allows one over-budget poll on slow daemon (~30s slack) | Algorithm Correctness | `src/daemon_translate.rs:660-679` | easy | pending |
+| AC-V1.30.1-7 | `BoundedScoreHeap::push` score-equality uses `==` not `total_cmp` — bypass-prone | Algorithm Correctness | `src/search/scoring/candidate.rs:231` | easy | pending |
+| AC-V1.30.1-8 | `idle_secs` truncates sub-second freshness — first 9 ticks after event report 0 | Algorithm Correctness | `src/watch_status.rs:219` | easy | pending |
+| EX-V1.30.1-3 | `log_query` hand-sprinkled across 6 dispatch arms — should be a property of the command | Extensibility | `src/cli/batch/commands.rs` | easy | pending |
+| EX-V1.30.1-7 | Env-var falsy parsing hand-rolled in `eval/mod.rs`, not reused for 30+ other CQS_* env vars | Extensibility | `src/cli/commands/eval/mod.rs:282-289` | easy | pending |
+| PB-V1.30.1-2 | `--bind localhost` documented as valid but always fails `SocketAddr::parse` | Platform Behavior | `src/cli/commands/serve.rs:39-41` | easy | pending |
+| PB-V1.30.1-6 | `atomic_replace` opens parent dir on every Windows write — always fails, debug-spam | Platform Behavior | `src/fs.rs:90-108` | easy | pending |
+| PB-V1.30.1-8 | `cqs hook` reports use `\`-separated paths on Windows — every other JSON consumer expects `/` | Platform Behavior | `src/cli/commands/infra/hook.rs:99-105, 152, 354` | easy | pending |
+| PB-V1.30.1-10 | `restart_daemon_if_needed` Linux hardcodes `cqs-watch.service` — fails confusingly without unit | Platform Behavior | `src/cli/commands/infra/model.rs:710-738` | easy | pending |
+| SEC-V1.30.1-9 | `cqs ref add` ref dir 0o700 but parent `~/.local/share/cqs/refs/` inherits umask | Security | `src/cli/commands/infra/reference.rs:137-145` | easy | pending |
+| SEC-V1.30.1-10 | `cqs ref add` does not set 0o600 on index DB after writing — falls back to umask defaults | Security | `src/cli/commands/infra/reference.rs:165-178` | easy | pending |
+| PF-V1.30.1-4 | `run_daemon_reconcile` allocates fresh String per disk file via `replace('\\', "/")` even on Linux | Performance | `src/cli/watch/reconcile.rs:99` | easy | pending |
+| PF-V1.30.1-5 | `build_stats` issues 4 sequential `fetch_one` round-trips for what is one query | Performance | `src/serve/data.rs:1105-1128` | easy | pending |
+| PF-V1.30.1-6 | `enforce_auth` allocates two strings per HTTP request for cookie name + lookup needle | Performance | `src/serve/auth.rs:357, 292` | easy | pending |
+| PF-V1.30.1-7 | Watch reindex clones each `content_hash` String into Vec<String> for incremental HNSW | Performance | `src/cli/watch/reindex.rs:414-417` | easy | pending |
+| PF-V1.30.1-1 | Daemon publishes watch snapshot every 100ms with `fs::metadata(index_path)` syscall | Performance | `src/cli/watch/mod.rs:149-185, 1303` | easy | pending |
+| RM-1 | `daemon-client` thread_local `REQ_LINE` is no-op — daemon spawns fresh thread per accept | Resource Management | `src/cli/watch/socket.rs:91-99`, `daemon.rs:189-205` | easy | pending |
+| RM-3 | `compute_context` reads entire source file into RAM to extract N context lines | Resource Management | `src/cli/display.rs:59-99, 489` | easy | pending |
+| RM-6 | `serve` auth path allocates fresh `format!("{cookie_name}=")` per request | Resource Management | `src/serve/auth.rs:292` | easy | pending |
+| RM-7 | `check_request` cookie loop scans every `;`-separated pair — subsumed by RM-6 | Resource Management | `src/serve/auth.rs:287-300` | easy | pending. Notes: subsumed by RM-6. |
+| TC-HAP-1.30.1-1 | `cmd_install` upgrade-marker path never executed by any test | Test Coverage (happy) | `src/cli/commands/infra/hook.rs:149-200` | easy | pending |
+| TC-HAP-1.30.1-8 | `WatchSnapshot::compute` `Rebuilding` state entry untested through `compute()` | Test Coverage (happy) | `src/watch_status.rs` | easy | pending |
+| TC-HAP-1.30.1-9 | `print_text_report` row-by-row format unpinned — spec-compat guarantee unenforced | Test Coverage (happy) | `src/cli/commands/eval/mod.rs:296+` | easy | pending |
+| TC-HAP-1.30.1-10 | `daemon_reconcile` happy-path pinned but `args` payload (hook arguments) never observed | Test Coverage (happy) | `src/daemon_translate.rs:1102+`, `hook.rs:296-322` | easy | pending |
+| TC-HAP-1.30.1-5 | `wait_for_fresh` Stale → Fresh transition (realistic case) untested; only "fresh on first poll" pinned | Test Coverage (happy) | `src/daemon_translate.rs:660-679` | medium | pending |
+| TC-ADV-1.30.1-5 | Reconcile clock-skew (stored mtime in future) keeps file out of queue forever — no test | Test Coverage (adv) | `src/cli/watch/reconcile.rs:108-132` | medium | pending |
+| TC-ADV-1.30.1-6 | Reconcile `metadata()` Err silently maps to "leave to GC" — masks permission-denied stale state | Test Coverage (adv) | `src/cli/watch/reconcile.rs:116-127` | medium | pending. Notes: paired with EH-V1.30.1-7. |
+| TC-ADV-1.30.1-4 | `wait_for_fresh` daemon-dies-mid-poll path untested; partial-read / malformed JSON path untested | Test Coverage (adv) | `src/daemon_translate.rs:660-679` | medium | pending |
+| RM-4 | `build_hnsw_index_owned` accumulates 17 MB content_hash snapshot used only at swap | Resource Management | `src/cli/commands/index/build.rs:1110-1126`, `rebuild.rs:262-380` | medium | pending |
+| PB-V1.30.1-9 | `reconcile.rs:128` inserts non-normalized PathBuf — same-file Windows separator skew possible | Platform Behavior | `src/cli/watch/reconcile.rs:103, 128`, `events.rs:84, 109` | medium | pending |
 
-## P3 — Quick Wins
+## P4 — Hard or low impact (file as issues; trivial inline fixes welcome)
 
-| # | Title | Category | Location | Status |
-|---|-------|----------|----------|--------|
-| P3.1 | panic_message helper duplicated 4 ways across 3 modules | Code Quality | `src/cli/pipeline/mod.rs:223`, `src/store/mod.rs:1322`, etc. | ✅ fixed |
-| P3.2 | resolve.rs find_reference + resolve_reference_db duplicate "find by name" twice | Code Quality | `src/cli/commands/resolve.rs:26-57` | ✅ fixed |
-| P3.3 | slot::libc_exdev hardcodes 18 with stale comment — libc is workspace dep | Code Quality | `src/slot/mod.rs:640-647` | ✅ fixed |
-| P3.4 | DOC: enumerate_files doc claims gitignore only — also honors .cqsignore | Documentation | `src/lib.rs:542-547` | ✅ fixed |
-| P3.5 | pub use nl::* leaks dead generate_nl_with_call_context wrapper | API Design | `src/lib.rs:165` + `src/nl/mod.rs:43-59` | ✅ fixed |
-| P3.6 | cqs gather --expand vs --expand-parent flag-name collision | API Design | `src/cli/args.rs:GatherArgs::expand` | ✅ fixed |
-| P3.7 | cqs eval --save accepts path with no .json validation | API Design | `src/cli/commands/eval/mod.rs:EvalCmdArgs::save` | ✅ fixed |
-| P3.8 | OB: cqs eval runner uses eprintln! for progress instead of tracing | Observability | `src/cli/commands/eval/runner.rs:163-168` | ✅ fixed |
-| P3.9 | OB: nl/mod.rs public NL generators have zero spans | Observability | `src/nl/mod.rs:43,65,189,209` | ✅ fixed |
-| P3.10 | OB: embed_documents/embed_query lack completion fields (result.len, dim, time) | Observability | `src/embedder/mod.rs:683,722` | ✅ fixed |
-| P3.11 | OB: Reranker::rerank_with_passages swallows length mismatch silently | Observability | `src/reranker.rs:200-220` | ✅ fixed |
-| P3.12 | OB: train_data git wrappers don't log non-zero exit codes | Observability | `src/train_data/git.rs:65-242` | ✅ fixed |
-| P3.13 | OB: format-string-interpolated tracing::info! at 9 sites — fields lost | Observability | `src/hnsw/build.rs:78,236` + 7 sites | ✅ fixed |
-| P3.14 | OB: cluster_2d emits no warn when corpus has chunks but zero UMAP rows | Observability | `src/serve/data.rs:901, 1020` | ✅ fixed |
-| P3.15 | TC-ADV: validate_slot_name accepts leading-dash / trailing-dash names | Test Coverage (adv) | `src/slot/mod.rs:159-178` | ✅ fixed |
-| P3.16 | TC-ADV: provider.rs ort_runtime_search_dir untested for malformed cmdline | Test Coverage (adv) | `src/embedder/provider.rs:67-123` | ✅ fixed |
-| P3.17 | TC-ADV: blake3_hex_or_passthrough uppercase/short-hex edges untested | Test Coverage (adv) | `src/cache.rs:709-721` | ✅ fixed |
-| P3.18 | RB: SystemTime → i64 cache cast wraps in 2554 | Robustness | `src/cache.rs:349-352, 551-555` | ✅ fixed |
-| P3.19 | RB: libc_exdev hardcodes 18 — wrong on Windows (ERROR_NOT_SAME_DEVICE=17) | Robustness | `src/slot/mod.rs:644-647` | ✅ fixed |
-| P3.20 | RB: cache prune --older-than DAYS computes negative cutoff for huge values | Robustness | `src/cache.rs:548, 551-555` | ✅ fixed |
-| P3.21 | RB: serve/data.rs i64.max(0) as u32 grew to 8 sites (was 3) | Robustness | `src/serve/data.rs` (8 sites) | ✅ fixed |
-| P3.22 | RB: Daemon socket-thread join detaches on timeout but logs "joined cleanly" | Robustness | `src/cli/watch.rs:2374-2400` | ✅ fixed |
-| P3.23 | SHL: diff EMBEDDING_BATCH_SIZE=1000 doesn't scale with model dim | Scaling | `src/diff.rs:158` | ✅ fixed |
-| P3.24 | SHL: Daemon worker_threads=min(num_cpus,4) hardcoded — caps large machines | Scaling | `src/cli/watch.rs:115-119` | ✅ fixed |
-| P3.25 | SHL: train_data MAX_SHOW_SIZE=50MB hardcoded — silent skip on big files | Scaling | `src/train_data/git.rs:167` | ✅ fixed |
-| P3.26 | EX: BatchCmd::is_pipeable is a separate match outside command registry | Extensibility | `src/cli/batch/commands.rs:325-538` | 📋 issue #1137 |
-| P3.27 | EX: LlmProvider resolver hand-codes 2 providers — no registry | Extensibility | `src/llm/mod.rs:200-398` | 📋 issue #1138 |
-| P3.28 | EX: Tree-sitter query files no startup self-test (registry consistency) | Extensibility | `src/language/queries/*.scm` | ✅ fixed |
-| P3.29 | EX: find_project_root markers list hardcoded — could be data | Extensibility | `src/cli/config.rs:155-162` | ✅ fixed |
-| P3.30 | EX: structural_matchers per-language fn — no shared library | Extensibility | `src/language/mod.rs:191,345` | 📋 issue #1139 |
-| P3.31 | EX: Embedder constructor no per-preset extras hook | Extensibility | `src/embedder/models.rs:163-300` | 📋 issue #1140 |
-| P3.32 | PB: EmbeddingCache/QueryCache hardcode ~/.cache/cqs on Windows | Platform | `src/cache.rs:80-84, 1399-1403` | ✅ fixed |
-| P3.33 | PB: dispatch_drift/diff JSON file fields use display() in suggest.rs/types.rs | Platform | `src/suggest.rs:101`, `src/store/types.rs:220` | ✅ fixed |
-| P3.34 | PB: find_ld_library_dir splits on `:` — no Windows arm | Platform | `src/embedder/provider.rs:115-123` | ✅ fixed |
-| P3.35 | PB: index.lock advisory on Linux but mandatory on Windows; doc gap | Platform | `src/cli/files.rs:120-213` | ✅ fixed |
-| P3.36 | PB: is_wsl_drvfs_path misses //wsl.localhost and uppercase mounts | Platform | `src/config.rs:92-101` | ✅ fixed |
-| P3.37 | PB: blame git_file = replace('\\', "/") — Windows verbatim prefix slips through | Platform | `src/cli/commands/io/blame.rs:113-115` | ✅ fixed |
-| P3.38 | PB: daemon_socket_path falls back to temp_dir silently — log differing trust | Platform | `src/daemon_translate.rs:179-188` | ✅ fixed |
-| P3.39 | DS: write_slot_model/write_active_slot skip parent-dir fsync after rename | Data Safety | `src/slot/mod.rs:237-406` | ✅ fixed |
-| P3.40 | DS: update_umap_coords_batch uses TEMP TABLE shared across calls | Data Safety | `src/store/chunks/crud.rs:392-450` | ✅ fixed |
-| P3.41 | PF: reindex_files allocates N empty Embedding placeholders | Performance | `src/cli/watch.rs:2918-2924` | ✅ fixed |
-| P3.42 | PF: prepare_for_embedding always issues store-cache query even on full global hit | Performance | `src/cli/pipeline/embedding.rs:64-82` | ✅ fixed |
-| P3.43 | PF: Daemon socket walks args array twice (validation + extraction) | Performance | `src/cli/watch.rs:266-297` | ✅ fixed |
-| P3.44 | PF: build_graph edge-dedup HashSet keys clone (file,caller,callee) per row | Performance | `src/serve/data.rs:367-373` | ✅ fixed |
-| P3.45 | PF: extract_imports HashSet<String> allocates per candidate even on duplicate | Performance | `src/where_to_add.rs:258-276` | ✅ fixed |
-| P3.46 | PF: Watch reindex cached embedding clone via .get instead of .remove | Performance | `src/cli/watch.rs:2879-2887` | ✅ fixed |
-| P3.47 | RM: LocalProvider worker threads use default 2MB stack — 128MB at concurrency=64 | Resource Mgmt | `src/llm/local.rs:163-256` | ✅ fixed (partial: ceiling reduced 64→16; per-worker stack_size deferred — requires lifting workers out of `thread::scope` since `Scope::spawn` lacks a stack-size hook) |
-| P3.48 | RM: LocalProvider::http no pool_max_idle / idle_timeout | Resource Mgmt | `src/llm/local.rs:97-100` | ✅ fixed |
-| P3.49 | TC-HAP: cmd_similar (CLI) has no integration test | Test Coverage | `src/cli/commands/search/similar.rs:41` | ✅ fixed (already covered by `tests/cli_similar_test.rs` — TC-HAP-1.29-7 envelope shape + self-exclusion + unknown-name error) |
-| P3.50 | TC-HAP: cmd_ci happy path untested; only error paths tested | Test Coverage | `src/cli/commands/review/ci.rs:9` | ✅ fixed (already covered by `tests/cli_train_review_test.rs::test_ci_happy_path_non_empty_diff_emits_full_report`) |
-| P3.51 | TC-HAP: cmd_gather (CLI) untested; only library gather() tested | Test Coverage | `src/cli/commands/search/gather.rs:77` | ✅ fixed (already covered by `tests/cli_gather_test.rs` — TC-HAP-1.29-9 envelope + token-budget) |
-| P3.52 | TC-HAP: dispatch_line no happy-path test for valid command | Test Coverage | `src/cli/batch/mod.rs:557` | ✅ fixed (added `test_dispatch_line_stats_emits_success_envelope_shape`) |
-| P3.53 | TC-HAP: select_provider/detect_provider untested (#1120 split) | Test Coverage | `src/embedder/provider.rs:171-258` | ✅ fixed (added `tests` mod with `select_provider_caches_first_call`, `detect_provider_returns_valid_variant`, `execution_provider_is_debug_and_copy`) |
-
-## P4 — Defer / Issues
-
-| # | Title | Category | Location | Disposition | Status |
-|---|-------|----------|----------|-------------|--------|
-| P4.1 | AuthToken::from_string cfg-gated, alphabet invariant relies on docstring | Security | `src/serve/auth.rs:75-78, 218` | issue (hardening) | 📋 issue #1134 |
-| P4.2 | Path=/ cookie scope on 127.0.0.1 — multiple cqs serve on same host stomp | Security | `src/serve/auth.rs:211-214` | issue (browser cookie limit) | 📋 issue #1135 |
-| P4.3 | Auth state ignored by quiet=true — Option<AuthToken> permits silent no-auth | Security | `src/serve/mod.rs:78-83` | issue (type-state refactor) | 📋 issue #1136 |
-
-## Summary
-
-- **P1: 21 findings** — biggest themes:
-  - Docs lying about security/privacy (query_log opt-in, query_cache TTL, registry/dispatch contributor docs, project registry path)
-  - Auth token leakage (TraceLayer span URI, journald banner, missing-Host bypass)
-  - Critical defaults misleading users (gather "200" warning, reranker config ignored, embedder fingerprint cache thrash)
-  - Single-line wiring bugs (LocalProvider mutex poison loses results, name_boost sign-flip, token_pack break-vs-continue, drain_pending_rebuild dedup)
-  - Observability "off" by default — 150 spans invisible until OB-V1.30-1 lands
-- **P2: 92 findings** — biggest themes:
-  - Determinism / tie-break gaps in 8+ sort sites (semantic_diff, bfs_expand, contrastive_neighbors, doc_comments, map_hunks, related, etc.)
-  - Cross-slot data-safety issues stemming from #1105 (slot TOCTOU, fingerprint fallback, evict/write race, schema purpose conflation)
-  - Untested v1.30.0 surfaces (#1113 HNSW rebuild, #1114 registry, #1118 auth, #1120 provider split, serve data endpoints, batch dispatch handlers, LLM passes)
-  - Config/JSON contract drift (--json absent on init/index/convert/refresh; list shapes inconsistent; cache stats unit mix)
-  - Resource-management leaks introduced in v1.30.0 (detached rebuild thread, pending.delta unbounded, LocalProvider stash, eager QueryCache open, eager CUDA probe)
-- **P3: 53 findings** — biggest themes:
-  - Observability convention drift (eprintln, format-string interpolation, missing completion fields, missing spans on hot fns)
-  - Platform/Windows refinements (cache paths, path normalization, EXDEV constant, WSL UNC paths, mtime FAT32)
-  - Performance micro-opts (allocator churn, unnecessary clone, double-pass scans, correlated subquery on small budget)
-  - Adversarial test additions for newly-shipped surfaces
-- **P4: 3 findings** — biggest themes:
-  - Auth/security hardening that requires type-state refactors or cookie scope changes browser-wide
-  - All three are tracking-issue material; no inline triv
-
-## Cross-cutting Observations
-
-- **Docs lying is concentrated in the v1.30.0 release surface.** PRIVACY/SECURITY/CHANGELOG/CONTRIBUTING/README each have ≥1 P1 lie (query_log opt-in, query_cache TTL, CQS_LLM_ENDPOINT, dispatch.rs procedure, project registry path). Each is an easy text fix; together they indicate the v1.30.0 release notes pass (#1122) didn't cross-check against actual code paths.
-- **Mutex/error-handling silent-failure pattern recurs across LocalProvider (#1101).** RB-V1.30-1 (unbounded body), RB-V1.30-7 (auth_attempts mutex unwrap), TC-ADV-1.30-1 (body DoS), EH (Mutex::into_inner unwrap_or_default loses batch results), and the silent fetch_batch_results empty-on-missing all stem from the same "build this fast for #1101 ship date" pattern. A focused PR to harden LocalProvider would close 5+ findings.
-- **#1105 (slots+cache) introduced 8+ TOCTOU/race/cache-mismatch findings.** slot_remove vs slot_promote, slot migrate rollback, embedding_cache purpose column missing, model_fingerprint timestamp fallback breaking cross-slot copy, evict-vs-write race, EmbeddingCache vs QueryCache zero-handling divergence, cache stats silent-zero. The cache+slots subsystem is overdue for a hardening pass with locks (`.cqs/slots.lock`) and schema purposes.
-- **Determinism regressions cluster around HashMap iteration in algorithm code.** semantic_diff sort, bfs_expand seed enqueue, contrastive_neighbors top-K, doc_comments select, map_hunks_to_functions, find_type_overlap chunk_info — six findings, all the same root cause (HashMap iter into score-sorted result), and all easy fixes. One sweep PR closes them.
-- **The v1.30.0 critical surfaces shipped without tests.** #1113 (non-blocking HNSW rebuild), #1114 (single-registration registry), #1118 (serve auth — strip_token_param, missing-Host), #1120 (execution-provider split), serve data endpoints, 16 batch dispatch handlers — all under-tested. TC-HAP findings P2.78–P2.87 form a coherent test-debt PR series that would close ~10 findings and provide regression protection for the next release.
-- **Observability "applied to new modules but default-off" pattern.** v0.12.1 lesson lifted spans into every new module, but OB-V1.30-1 reveals the default subscriber drops everything. Fixing the default plus structured-field cleanup (P3.13) and lazy span propagation across spawn_blocking (P2.25) would make the existing instrumentation actually useful in production.
+| ID | Title | Category | Location | Effort | Status |
+|----|-------|----------|----------|--------|--------|
+| EX-V1.30.1-1 | `daemon_ping`/`status`/`reconcile` are three near-identical 80-LOC copies — refactor target | Extensibility | `src/daemon_translate.rs:271-621` | medium | pending |
+| EX-V1.30.1-2 | `BatchCmd` dispatch is 130-line hand-routed match; macro escape hatch already proven | Extensibility | `src/cli/batch/commands.rs:503-636` | medium | pending |
+| EX-V1.30.1-4 | `write_slot_model` clobbers all non-`[embedding]` keys — adding any per-slot field is breaking | Extensibility | `src/slot/mod.rs:307-351` | medium | pending |
+| EX-V1.30.1-5 | `check_request` is hardcoded three-channel ladder — fourth auth channel needs trait + registry | Extensibility | `src/serve/auth.rs:269-321, 246-260, 323-332` | medium | pending |
+| EX-V1.30.1-6 | Reconcile fingerprint is `(path, mtime)` only — content-hash/size detection needs schema migration | Extensibility | `src/cli/watch/reconcile.rs:84-134` | hard | pending |
+| EX-V1.30.1-8 | `Reranker` is concrete struct with hardcoded ONNX assumptions — no trait, blocks ablations | Extensibility | `src/reranker.rs:108-211` | hard | pending |
+| SEC-V1.30.1-5 | Search results emit `trust_level: "user-code"` for vendored third-party content in project tree | Security | `src/store/helpers/types.rs:172-196` | hard | pending |
+| SEC-V1.30.1-6 | `cqs ref add` accepts symlinked source path with no audit — references can index outside source root | Security | `src/cli/commands/infra/reference.rs:130-150` | medium | pending |
+| SEC-V1.30.1-7 | `LocalProvider` follows up to 2 redirects on `Authorization`-bearing requests — bearer leak risk | Security | `src/llm/local.rs:124-129, 435-437` | medium | pending |
+| PB-V1.30.1-4 | `open_browser` on WSL launches Linux browser via `xdg-open` instead of Windows default | Platform Behavior | `src/cli/commands/serve.rs:99-132` | medium | pending |
+| PB-V1.30.1-5 | `events.rs` mtime-equality skip wrong on macOS HFS+ — only `is_wsl_drvfs_path` triggers strict `<` | Platform Behavior | `src/cli/watch/events.rs:85-102` | medium | pending |
+| PF-V1.30.1-2 | `wait_for_fresh` polls daemon every 250 ms with fresh socket connect + JSON round-trip | Performance | `src/daemon_translate.rs:660-679, 422-510` | medium | pending. Notes: covered by RB-9 + RM-2. |
+| PF-V1.30.1-3 | Periodic GC and reconcile each call `enumerate_files` independently — back-to-back tree walks | Performance | `src/cli/watch/mod.rs:1198-1283`, `gc.rs:209`, `reconcile.rs:74` | medium | pending |
+| PF-V1.30.1-8 | `indexed_file_origins` returns `HashMap<String, Option<i64>>` from `SELECT DISTINCT` overwrites silently | Performance | `src/store/chunks/staleness.rs:627-637` | medium | pending |
+| RM-2 | `wait_for_fresh` opens fresh socket connect+disconnect every 250ms for up to 600s | Resource Management | `src/daemon_translate.rs:660-679, 438` | medium | pending |
+| RM-5 | Reconcile pass holds entire repo's filename set + index origins simultaneously every 30s | Resource Management | `src/cli/watch/reconcile.rs:74-90`, `lib.rs:618` | medium | pending |
+| TC-HAP-1.30.1-6 | `process_file_changes` — central watch-loop reindex function has zero direct tests | Test Coverage (happy) | `src/cli/watch/events.rs:131-300+` | hard | pending |
+| DS-V1.30.1-D3 | Periodic reconcile reads through stale `store` handle on `cqs index --force` race | Data Safety | `src/cli/watch/mod.rs:1262-1283` | medium | pending |
+| DS-V1.30.1-D4 | `slot remove` does not check whether daemon is actively serving the slot it deletes | Data Safety | `src/cli/commands/infra/slot.rs:322-369` | medium | pending |
+| DS-V1.30.1-D6 | `WatchSnapshot.delta_saturated` ignored by `compute()` — duplicate of CQ-V1.30.1-2 | Data Safety | `src/watch_status.rs:199-209` | easy | pending. Notes: covered by CQ-V1.30.1-2 (P1). |
+| DS-V1.30.1-D8 | `dropped_this_cycle` reset before snapshot publish — duplicate of CQ-V1.30.1-1 | Data Safety | `src/cli/watch/events.rs:139-146` | easy | pending. Notes: covered by CQ-V1.30.1-1 (P1). |
+| DOC-V1.30.1-8 | CONTRIBUTING test count + file count out of date — folded into DOC-V1.30.1-3 | Documentation | `CONTRIBUTING.md` | easy | pending. Notes: subsumed by DOC-V1.30.1-3. |
