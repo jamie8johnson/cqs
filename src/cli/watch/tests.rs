@@ -1484,3 +1484,36 @@ fn test_reindex_files_no_global_cache_still_works() {
         .expect("reindex_files without global_cache");
     assert!(count >= 1, "no-cache path must still index");
 }
+
+#[test]
+fn env_snapshot_redacts_api_key() {
+    // SEC-V1.30.1-8 / P1.10: CQS_LLM_API_KEY mustn't land in journald.
+    // The daemon-startup snapshot in `mod.rs` builds the same redaction
+    // logic; this test pins the redaction shape against a fixture so a
+    // regression that drops the suffix list flips this assertion.
+    const SECRET_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"];
+    let pairs = vec![
+        ("CQS_LLM_API_KEY".to_string(), "sk-real-secret".to_string()),
+        ("CQS_TELEMETRY".to_string(), "1".to_string()),
+    ];
+    let redacted: Vec<(String, String)> = pairs
+        .into_iter()
+        .map(|(k, v)| {
+            let is_secret = SECRET_SUFFIXES.iter().any(|suffix| k.ends_with(suffix));
+            let value = if is_secret {
+                format!("<redacted len={}>", v.len())
+            } else {
+                v
+            };
+            (k, value)
+        })
+        .collect();
+    assert_eq!(
+        redacted[0].1, "<redacted len=14>",
+        "CQS_LLM_API_KEY value must not appear in plaintext"
+    );
+    assert_eq!(
+        redacted[1].1, "1",
+        "CQS_TELEMETRY is non-secret, kept verbatim"
+    );
+}

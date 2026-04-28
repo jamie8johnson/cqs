@@ -240,9 +240,25 @@ fn ct_eq(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
+/// Case-fold + percent-decode a query-pair key for comparison.
+/// SEC-7 leakage fix (CQ-V1.30.1-4): `?Token=…` and `?%74oken=…` must be
+/// recognised as `token=` so the redirect strips them.
+fn pair_key_is_token(pair: &str) -> bool {
+    let Some(eq_idx) = pair.find('=') else {
+        return pair.eq_ignore_ascii_case("token");
+    };
+    let raw_key = &pair[..eq_idx];
+    // Percent-decode the key. The token alphabet itself is URL-safe
+    // base64 (no percent-encoding needed), but operators sometimes
+    // hand-encode the key; we want `%74oken=` to match too.
+    let decoded = percent_encoding::percent_decode_str(raw_key).decode_utf8_lossy();
+    decoded.eq_ignore_ascii_case("token")
+}
+
 /// Strip the `token` parameter from the URI's query string for the
 /// post-auth redirect. Other query params are preserved in their
-/// original order.
+/// original order. Recognises `Token=`, `%74oken=`, and any case-/
+/// percent-folded variant.
 fn strip_token_param(uri: &Uri) -> String {
     let path = uri.path();
     let Some(query) = uri.query() else {
@@ -250,7 +266,7 @@ fn strip_token_param(uri: &Uri) -> String {
     };
     let kept: Vec<&str> = query
         .split('&')
-        .filter(|pair| !pair.starts_with("token=") && *pair != "token")
+        .filter(|pair| !pair.is_empty() && !pair_key_is_token(pair))
         .collect();
     if kept.is_empty() {
         path.to_string()
@@ -261,63 +277,74 @@ fn strip_token_param(uri: &Uri) -> String {
 
 /// Extract the token from one of three channels — header, cookie,
 /// or query string — and constant-time-compare against the launched
-/// token. Returns `None` if none matched (caller emits 401).
-///
-/// `query_param_used` is set to true when the match came from
-/// `?token=<…>`; the caller then sets a cookie and 302-redirects to
-/// the clean URL.
+/// token. AC-V1.30.1-5: even when Bearer or cookie matches, if a
+/// `token=` query param is also present, return `OkViaQueryParam` so
+/// the caller redirects to the clean URL — leaving a stale `?token=`
+/// in the URL bar is the exact SEC-7 leakage path the redirect closes.
 fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> AuthOutcome {
+    // Sniff for any `?token=…` first — if present, we want to redirect
+    // even when another channel also matches. Validity of the query
+    // value isn't required for the redirect; the redirect's only job
+    // is to scrub the URL bar.
+    let query_has_token_param = req
+        .uri()
+        .query()
+        .is_some_and(|q| q.split('&').any(pair_key_is_token));
+
     // 1. Authorization: Bearer …
-    if let Some(bearer) = req
+    let bearer_ok = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-    {
-        if ct_eq(bearer, expected.as_str()) {
-            return AuthOutcome::Ok;
-        }
-    }
+        .is_some_and(|bearer| ct_eq(bearer, expected.as_str()));
 
     // 2. cqs_token_<port> cookie. RFC 6265 cookie syntax is name=value
     // pairs separated by `; `. We don't bother with quoted values —
     // the server only ever sets this cookie itself and never quotes
     // it. Cookie name is per-port (#1135) so two cqs serve instances
     // on the same host don't collide in the browser jar.
-    if let Some(cookie_header) = req
+    let cookie_ok = req
         .headers()
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
-    {
-        let needle = format!("{cookie_name}=");
-        for pair in cookie_header.split(';') {
-            if let Some(value) = pair.trim().strip_prefix(&needle) {
-                if ct_eq(value, expected.as_str()) {
-                    return AuthOutcome::Ok;
-                }
-            }
-        }
-    }
+        .map(|cookie_header| {
+            let needle = format!("{cookie_name}=");
+            cookie_header.split(';').any(|pair| {
+                pair.trim()
+                    .strip_prefix(&needle)
+                    .is_some_and(|value| ct_eq(value, expected.as_str()))
+            })
+        })
+        .unwrap_or(false);
 
     // 3. ?token=… query param. axum's `Query` extractor only deserializes
     // a typed struct; we want raw access without forcing every request
     // path through a fixed type, so we parse the URI's `query()` directly.
-    if let Some(query) = req.uri().query() {
-        for pair in query.split('&') {
-            if let Some(value) = pair.strip_prefix("token=") {
-                // URI query values can be percent-encoded; the token
-                // alphabet is URL-safe base64 (`A-Z a-z 0-9 - _`) so no
-                // percent-encoding is ever needed in practice. Compare
-                // verbatim — a percent-encoded match would fail `ct_eq`,
-                // which is the conservative choice.
-                if ct_eq(value, expected.as_str()) {
-                    return AuthOutcome::OkViaQueryParam;
-                }
-            }
-        }
+    let query_ok = req.uri().query().is_some_and(|query| {
+        query
+            .split('&')
+            .filter(|pair| pair_key_is_token(pair))
+            .any(|pair| {
+                let value = pair.split_once('=').map(|(_, v)| v).unwrap_or("");
+                ct_eq(value, expected.as_str())
+            })
+    });
+
+    if !(bearer_ok || cookie_ok || query_ok) {
+        return AuthOutcome::Unauthorized;
     }
 
-    AuthOutcome::Unauthorized
+    // AC-V1.30.1-5: presence of `?token=…` (any case-folded form) on a
+    // request that authenticates by ANY channel must trigger the
+    // redirect — otherwise the token sits in the URL bar permanently
+    // after a bookmarked-URL reload, even when the cookie is what
+    // matched.
+    if query_has_token_param {
+        AuthOutcome::OkViaQueryParam
+    } else {
+        AuthOutcome::Ok
+    }
 }
 
 enum AuthOutcome {
@@ -571,32 +598,21 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
-    fn p2_30_strip_token_param_capital_T_token_NOT_stripped_today() {
-        // Pin current behavior: capital `T` fails `starts_with("token=")`,
-        // survives into the redirect URL. After the SEC fix lands, this
-        // test will fail — invert the assertion at that point.
+    fn p2_30_strip_token_param_capital_T_token_IS_stripped() {
+        // CQ-V1.30.1-4: capital `Token=` is case-folded and stripped.
+        // The SEC-7 leakage gap pinned by the previous test is closed.
         let uri: Uri = "/api/graph?Token=abc&depth=3".parse().unwrap();
         let stripped = strip_token_param(&uri);
-        assert!(
-            stripped.contains("Token="),
-            "current behavior: capital `Token=` is not case-folded; \
-             SEC-7 leakage: token survives in redirect URL"
-        );
+        assert_eq!(stripped, "/api/graph?depth=3");
     }
 
     #[test]
-    fn p2_30_strip_token_param_percent_encoded_key_NOT_stripped_today() {
-        // `%74` is `t`. Pin current behavior: literal byte compare misses.
-        // After fix: percent-decode the key, then case-fold.
-        // axum's Uri parser keeps the percent-encoded form; we observe
-        // the same here.
+    #[allow(non_snake_case)]
+    fn p2_30_strip_token_param_percent_encoded_key_IS_stripped() {
+        // CQ-V1.30.1-4: `%74oken=` is percent-decoded and stripped.
         let uri: Uri = "/api/graph?%74oken=abc&depth=3".parse().unwrap();
         let stripped = strip_token_param(&uri);
-        assert!(
-            stripped.contains("%74oken=") || stripped.contains("token="),
-            "current behavior: percent-encoded `%74oken=` is not decoded; \
-             survives into redirect URL"
-        );
+        assert_eq!(stripped, "/api/graph?depth=3");
     }
 
     #[test]
@@ -641,25 +657,36 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
-    fn p2_30_check_request_capital_T_token_today_rejects() {
-        // The check_request side mirrors the strip side — capital `T`
-        // means the param doesn't match `starts_with("token=")`, so the
-        // token is never observed. Pin: 401 today (no fall-through).
-        // After fix: 200 OkViaQueryParam with case-fold.
+    fn p2_30_check_request_capital_T_token_IS_recognised() {
+        // CQ-V1.30.1-4: capital `Token=` is case-folded; the request
+        // authenticates via the query channel and triggers the redirect.
         let token = AuthToken::try_from_string("secretvalue").expect("test token alphabet");
         let req = Request::builder()
             .uri("/api/graph?Token=secretvalue")
             .body(axum::body::Body::empty())
             .unwrap();
         match check_request(&req, &token, &cookie_name_for_port(8080)) {
-            AuthOutcome::Unauthorized => {}
-            AuthOutcome::Ok | AuthOutcome::OkViaQueryParam => {
+            AuthOutcome::OkViaQueryParam => {}
+            AuthOutcome::Ok | AuthOutcome::Unauthorized => {
                 panic!(
-                    "current behavior expected: capital `Token=` not recognised, request 401s. \
-                     If this test starts failing, the case-fold landed and the assertion \
-                     should invert."
+                    "post-fix expectation: case-folded `Token=` matches and the redirect path fires"
                 );
             }
         }
+    }
+
+    #[test]
+    fn check_request_cookie_with_redundant_query_token_redirects() {
+        // AC-V1.30.1-5: even when the cookie matches, a `?token=` query
+        // param must trigger the redirect so the URL bar is scrubbed.
+        let token = AuthToken::random();
+        let cookie_name = "cqs_token_8080";
+        let req = Request::builder()
+            .uri("/api/graph?token=anything")
+            .header(header::COOKIE, format!("{cookie_name}={}", token.as_str()))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let outcome = check_request(&req, &token, cookie_name);
+        assert!(matches!(outcome, AuthOutcome::OkViaQueryParam));
     }
 }
