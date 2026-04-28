@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **First-encounter shared-notes gate on `cqs index`** (#1168). Indexing a repo for the first time when `docs/notes.toml` exists now prompts to confirm — committed notes affect search rankings and surface in agent context, so a freshly cloned repo's notes shouldn't be silently absorbed. Acceptance is persisted to `.cqs/.accepted-shared-notes` so the prompt doesn't repeat for the same project. New `--accept-shared-notes` flag bypasses the prompt for CI / scripted use; non-TTY stdin auto-skips the notes-indexing pass with a warning so CI never hangs.
+
 ### Changed
 
 - **`cqs index --improve-docs` is now review-gated by default** (#1166). Generated doc comments are written as `git apply`-compatible unified-diff patches under `.cqs/proposed-docs/<rel>.patch`; the source tree is not mutated. Apply with `git apply .cqs/proposed-docs/**/*.patch`. Pass `--apply` to opt back into direct write-back (the previous behaviour); the run prints a warning when it does. This closes the indirect-prompt-injection vector where an LLM-authored doc comment could land in the working tree without human review. New public API: `cqs::doc_writer::rewriter::compute_rewrite()` (parse + resolve, no IO) and `write_proposed_patch()` (writes the patch).

@@ -54,13 +54,13 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 - **No automatic execution**: cqs never executes indexed code; the threat is purely textual relay into agent context.
 - **Reference origin in metadata**: Chunks from `cqs ref` indexes carry reference-name metadata, but it is not yet surfaced as an explicit trust signal in JSON output.
 - **`--improve-docs` review gate (since v1.30.1)**: by default, `cqs index --improve-docs` writes proposed doc comments as unified-diff patches to `.cqs/proposed-docs/<rel>.patch` instead of mutating source files in place. Review with `git diff` and apply with `git apply .cqs/proposed-docs/**/*.patch`. Pass `--apply` to opt back into direct write-back; the run prints a warning when it does.
+- **First-encounter shared-notes gate (since v1.30.1)**: on the first `cqs index` against a repo containing `docs/notes.toml`, cqs prompts to confirm before indexing the notes — committed notes affect search rankings and surface in agent context. Acceptance is persisted to `.cqs/.accepted-shared-notes` so the prompt doesn't repeat. Pass `--accept-shared-notes` to bypass for CI / scripted use; non-TTY stdin auto-skips the notes pass with a warning so CI never hangs. (#1168)
 
 ### Tracked improvements
 
 | Issue | Surface |
 |-------|---------|
 | [#1167](https://github.com/jamie8johnson/cqs/issues/1167) | `trust_level` field + optional content delimiters in chunk-returning JSON output |
-| [#1168](https://github.com/jamie8johnson/cqs/issues/1168) | First-encounter prompt when indexing a repo with committed `docs/notes.toml` |
 | [#1169](https://github.com/jamie8johnson/cqs/issues/1169) | Surface reference origin (`trust_level` + `reference_name`) on every chunk from a `cqs ref` index |
 | [#1170](https://github.com/jamie8johnson/cqs/issues/1170) | Validate LLM summary output before caching (length cap, injection-pattern detection) |
 
