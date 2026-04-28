@@ -59,14 +59,21 @@ fn process_exists(pid: u32) -> bool {
 #[cfg(windows)]
 fn process_exists(pid: u32) -> bool {
     use std::process::Command;
+    // PB-V1.30.1-3: previous impl matched the localized "INFO:" prefix
+    // emitted only on English Windows. German `INFORMATION:`, French
+    // `INFORMATIONS:`, Japanese `情報:`, etc. silently bypassed the
+    // stale-PID detection, producing persistent stale-lock errors for
+    // every non-English Windows user. CSV format is locale-independent:
+    // tasklist /FO CSV /NH emits exactly one row per match and an empty
+    // (or whitespace-only) stdout when no process is found. The PID
+    // column substring `,"<pid>",` defends against substring collisions
+    // (e.g., PID `12` matching PID `1234`).
     Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
         .output()
         .map(|o| {
             let output = String::from_utf8_lossy(&o.stdout);
-            // tasklist /FI "PID eq N" does exact filtering.
-            // "INFO:" appears when no process matches; its absence means a match.
-            !output.contains("INFO:")
+            output.trim().contains(&format!(",\"{}\",", pid))
         })
         .unwrap_or(false)
 }
@@ -286,5 +293,58 @@ mod tests {
             !p.starts_with("/mnt/c"),
             "Socket should be on native filesystem, not /mnt/c/"
         );
+    }
+
+    /// PB-V1.30.1-3: pure parser-shape test for the CSV PID-column
+    /// substring check. Mirrors the post-fix logic in `process_exists`
+    /// (Windows-only) so we can verify the column-bounded match on Linux
+    /// CI without spawning `tasklist`. Avoids substring collisions like
+    /// PID `12` matching PID `1234`.
+    fn csv_contains_pid(output: &str, pid: u32) -> bool {
+        output.trim().contains(&format!(",\"{}\",", pid))
+    }
+
+    #[test]
+    fn csv_parser_matches_exact_pid_column() {
+        // Real tasklist /FO CSV /NH output (sampled from a Windows host):
+        let sample = r#""cqs.exe","1234","Console","1","12,345 K"
+"#;
+        assert!(csv_contains_pid(sample, 1234), "1234 must match exactly");
+    }
+
+    #[test]
+    fn csv_parser_rejects_substring_pid_collision() {
+        let sample = r#""cqs.exe","1234","Console","1","12,345 K"
+"#;
+        // PID 12 must NOT match the row carrying PID 1234.
+        assert!(
+            !csv_contains_pid(sample, 12),
+            "PID 12 must not match PID 1234 column",
+        );
+        // PID 234 must NOT match either — different boundary, same lesson.
+        assert!(
+            !csv_contains_pid(sample, 234),
+            "PID 234 must not match PID 1234 column",
+        );
+    }
+
+    #[test]
+    fn csv_parser_returns_false_on_empty_output() {
+        // tasklist emits an empty stdout (or whitespace) when no match.
+        assert!(!csv_contains_pid("", 1234));
+        assert!(!csv_contains_pid("   \r\n", 1234));
+    }
+
+    #[test]
+    fn csv_parser_locale_independence() {
+        // The whole point of PB-V1.30.1-3: a German "INFORMATION:" or
+        // French "INFORMATIONS:" line must NOT be confused with a match
+        // because the parser only checks the CSV PID column. Empty
+        // stdout (no match) regardless of localized informational text.
+        let german =
+            "INFORMATION: Es laufen keine Tasks, die den angegebenen Kriterien entsprechen.\n";
+        assert!(!csv_contains_pid(german, 1234));
+        let french = "INFORMATIONS: Aucune tâche en cours d'exécution ne correspond aux critères spécifiés.\n";
+        assert!(!csv_contains_pid(french, 1234));
     }
 }

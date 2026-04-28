@@ -354,11 +354,16 @@ pub(crate) fn bfs_expand(
             .unwrap_or(0.5);
         let new_score = base_score * opts.decay_factor;
         for neighbor in neighbors {
-            if name_scores.len() >= opts.max_expanded_nodes {
-                expansion_capped = true;
-                break;
-            }
             if !visited.contains(&neighbor) {
+                // AC-V1.30.1-3: cap is on `name_scores.len()`, so it
+                // only matters for new insertions. Already-visited
+                // bumps below don't grow the map — let them run
+                // unconditionally so a node reached late via a
+                // higher-score path still gets its score promoted.
+                if name_scores.len() >= opts.max_expanded_nodes {
+                    expansion_capped = true;
+                    break;
+                }
                 visited.insert(Arc::clone(&neighbor));
                 let key: String = neighbor.to_string();
                 name_scores.insert(key, (new_score, depth + 1));
@@ -370,6 +375,9 @@ pub(crate) fn bfs_expand(
                 // risks exponential blowup on dense graphs. The max_expanded_nodes cap
                 // keeps memory bounded, and the score update here ensures the node itself
                 // gets the best available score even without re-expansion.
+                //
+                // AC-V1.30.1-3: this branch must run even when the cap
+                // has been hit — the bump doesn't grow `name_scores`.
                 if new_score > existing.0 {
                     existing.0 = new_score;
                     existing.1 = existing.1.min(depth + 1);
@@ -1048,6 +1056,73 @@ mod tests {
             run1.contains_key("callee_0_0"),
             "seed S0 should be processed first under name-ascending sort"
         );
+    }
+
+    /// AC-V1.30.1-3: when the cap fires partway through a node's neighbour
+    /// loop, already-visited neighbours that *would* have had their score
+    /// bumped to a higher value used to keep their stale lower score —
+    /// because the cap check sat ABOVE the visited / bump branches and
+    /// `break` skipped the bump entirely. This test pins the post-fix
+    /// behaviour: the bump runs even after the cap is reached, because
+    /// the cap check now lives inside the `!visited` branch (where new
+    /// insertions actually grow `name_scores`), not above it.
+    #[test]
+    fn bfs_expand_score_bump_runs_when_cap_reached() {
+        // Construct a minimal graph that exercises the bump-after-cap
+        // branch deterministically:
+        //
+        //   Seed -> [Target, new_a, new_b]
+        //
+        // Pre-populate `name_scores` with both Seed (score 1.0, depth 0)
+        // AND Target at a deliberately-low score (0.10 at depth 99) so
+        // Target is *already-visited* before BFS runs. With cap = 2:
+        //   - name_scores starts with {Seed, Target} == 2 entries.
+        //   - Seed expands. First neighbour is Target → already-visited
+        //     branch. Pre-fix: cap check at top of loop breaks. Post-fix:
+        //     bump branch runs (no cap check above it), Target gets
+        //     promoted from 0.10 to 1.0*0.5=0.5.
+        //   - Next neighbour `new_a` → !visited branch → cap check fires
+        //     (len == 2 == cap), sets `expansion_capped=true`, breaks.
+        let mut forward = HashMap::new();
+        let mut reverse = HashMap::new();
+        forward.insert(
+            "Seed".to_string(),
+            vec![
+                "Target".to_string(),
+                "new_a".to_string(),
+                "new_b".to_string(),
+            ],
+        );
+        for callee in ["Target", "new_a", "new_b"] {
+            reverse.insert(callee.to_string(), vec!["Seed".to_string()]);
+        }
+        let graph = CallGraph::from_string_maps(forward, reverse);
+
+        let mut ns: HashMap<String, (f32, usize)> = HashMap::new();
+        ns.insert("Seed".to_string(), (1.0, 0));
+        ns.insert("Target".to_string(), (0.10, 99));
+
+        let opts = GatherOptions::default()
+            .with_expand_depth(1)
+            .with_direction(GatherDirection::Callees)
+            .with_decay_factor(0.5)
+            // Cap == 2: Seed + Target == 2. Any new insertion trips it.
+            .with_max_expanded_nodes(2);
+
+        let capped = bfs_expand(&mut ns, &graph, &opts);
+        assert!(capped, "cap MUST fire under this configuration");
+
+        // AC-V1.30.1-3 assertion: Target's score MUST have been bumped
+        // from 0.10 to Seed's decayed score (1.0 * 0.5 = 0.5). Pre-fix
+        // this assertion fails because the cap-check above the !visited
+        // branch was bypassing the bump.
+        let (target_score, target_depth) = ns["Target"];
+        assert!(
+            (target_score - 0.5).abs() < f32::EPSILON,
+            "Target score should have been bumped to 0.5 (Seed*decay), got {target_score}",
+        );
+        // Depth bump: existing 99 → min(99, 0+1) = 1.
+        assert_eq!(target_depth, 1, "Target depth should be bumped to 1");
     }
 
     #[test]
