@@ -2,28 +2,24 @@
 
 ## Right Now
 
-**v1.30.1 released 2026-04-28.** Patch release shipped earlier this session — three themes: indirect-prompt-injection hardening (closed cluster #1166-#1170 + #1171 SECURITY threat model), v1.30.0 audit-fix wave (#1141, 152 of 170 findings), and watch-mode reliability (#1124-#1129). Plus #1137 + #1138 registry tables for batch + LLM provider. Crates.io published; tag `v1.30.1` pushed.
+**v1.30.1 released 2026-04-28.** Post-release autopilot loop drained the queue across two arcs: #1182 perfect watch mode (Layers 1-4 + acceptance test) and the P4 auth-hardening cluster (#1197 closes #1134/#1135/#1136). Skipped #1139 / #1140 per autopilot directive.
 
-**Master plan snapshot:** `docs/plans/2026-04-28-master-plan.md`.
+**Just landed (post-v1.30.1):**
+- **#1189** — Layer 3 freshness API. `cqs::watch_status::WatchSnapshot` state machine + `Arc<RwLock<...>>` shared between watch writer and daemon reader. `BatchCmd::Status` + `cqs status --watch-fresh [--json] [--wait [--wait-secs N]]`. Drive-by: fixed pre-existing `cqs ping` envelope-vs-payload deserialization bug.
+- **#1191** — Layer 2 periodic full-tree reconciliation (`src/cli/watch/reconcile.rs`). Gitignore-respecting walk → `(path, mtime, size)` fingerprint → divergence → queue for reindex. Wired alongside `run_daemon_periodic_gc`.
+- **#1193** — Layer 1 git hooks. `cqs hook install` + `post-{checkout,merge,rewrite}` + `reconcile` socket message + `.cqs/.dirty` fallback when daemon's down.
+- **#1194** — Layer 4 eval gate. `cqs eval --require-fresh` (default on, `--no-require-fresh` opt-out, `CQS_EVAL_REQUIRE_FRESH=0` env). `daemon_translate::wait_for_fresh()` shared helper between `cqs status` and `cqs eval`.
+- **#1195** — README + ROADMAP docs for the watch-mode landing. ROADMAP marks #1182 `[x]`. Three-layer table, hook examples, freshness API, eval-gate env var.
+- **#1196** — Layer 0 acceptance test (47-file bulk-modify burst). `reconcile_detects_bulk_modify_burst` validates that `WatchSnapshot::compute` ends in `Stale` with `modified_files == 47`; `reconcile_skips_unchanged_files` is the false-positive guard.
+- **#1197** — P4 auth hardening, bundled. #1134 (`AuthToken::try_from_string` alphabet enforcement, `InvalidTokenAlphabet` typed error), #1135 (port-scoped cookie name `cqs_token_<port>` to prevent cross-instance collisions), #1136 (`AuthMode::{Required, Disabled}` enum + `NoAuthAcknowledgement` proof-of-intent type — silent no-auth no longer expressible). 5 new auth.rs unit tests + 3 wire tests in serve/tests.rs. All 71 serve tests pass.
 
-**Active right now: PR #1189 in flight — `feat(watch): cqs status --watch-fresh API (#1182 — Layer 3, PR 1/N)`.** Branch `feat/1182-freshness-api`. CI just kicked off (~30 min run). ScheduleWakeup armed for ~30 min from 04:59 local. Layer 3 (the freshness API) lays down the observable surface; Layers 1 (git hooks) + 2 (periodic walk) follow as separate PRs.
+**Up next:** queue per autopilot directive is drained. #1139 (structural_matchers shared library) + #1140 (Embedder preset extras map) explicitly skipped. Available leftovers if the user redirects:
+- **#1130 / #1176** — phase 2 SPLADE → `rrf_fuse_n` (eval-required A/B)
+- **#1133** — `NoteEntry` kind/tag taxonomy
+- **#1131 follow-on** — wire USearch / SIMD brute-force as `IndexBackend` candidates (trait scaffolding from #1131 already in)
+- **Indexed-content trust** — #1181 general mistrust posture (default-on delimiters + `_meta.handling_advice` + per-chunk `injection_flags`) was filed 2026-04-28 and is the current strategic frontier on the security side; check whether it's already merged before starting fresh work.
 
-What PR #1189 ships:
-- `cqs::watch_status::WatchSnapshot` — state machine + counters + `Arc<RwLock<...>>` shared between watch loop (writer) and daemon's BatchContext (reader).
-- `BatchCmd::Status` + `dispatch_status` handler.
-- `cqs status --watch-fresh [--json] [--wait [--wait-secs N]]` CLI command.
-- `cqs::daemon_translate::daemon_status` library helper.
-- Drive-by: fixed pre-existing `cqs ping` deserialization bug (envelope-vs-payload mismatch) — `daemon_ping` had been silently returning "missing field 'model'" against real daemons since v1.30.0.
-
-Live-tested against running daemon: `cqs status --watch-fresh` reports `state: rebuilding` during HNSW startup, transitions to `fresh` after rebuild completes. `--wait --wait-secs 3` polls 12+ times, prints final stale snapshot, exits 1 on budget expiry.
-
-**Up next (post-PR-1189-merge):**
-- **PR 2 of #1182** — Layer 2 periodic full-tree fingerprint reconciliation (~30s default cadence). Module `src/cli/watch/reconcile.rs`: tree walk (gitignore-respecting) → `(path, mtime, size)` fingerprint hash → divergence detection → queue files for reindex. Wire as a sibling to existing `run_daemon_periodic_gc` idle-tick mechanism.
-- **PR 3 of #1182** — Layer 1 git hooks: `cqs hook install` + `.git/hooks/post-{checkout,merge,reset,rebase}` + `reconcile` daemon socket message + `.cqs/.dirty` fallback when daemon's down.
-- **PR 4 of #1182** — eval `--require-fresh` flag (default on) — first consumer of `--watch-fresh --wait`.
-- **P4 auth bugs** (#1134-#1136) — `cqs serve` correctness fixes from v1.30.0 audit.
-
-**Local state:** working tree clean post-PR-1189-commit. Release binary rebuilt and installed; cqs-watch daemon restarted and serving the new `status` command. Index at 18,755 chunks. 2491 lib+bin tests pass.
+**Local state:** working tree clean on `main` at `8decd9ea`. Release binary rebuild in flight (background task `bh0nm7txz`); after it lands, `systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`. Issues #1134/#1135/#1136 closed via `gh issue close --reason completed`.
 
 **Landed since v1.30.0 release:**
 - **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.
@@ -238,20 +234,17 @@ None. Working tree clean post-release.
 | # | Title | Bucket |
 |---|---|---|
 | 1176 | feat(search): #1130 phase 2 — migrate SPLADE blend to rrf_fuse_n (eval-required) | P2 follow-on |
-| 1140 | EX-V1.30-4: Embedder preset extras map | P3 ergonomics |
-| 1139 | EX-V1.30-3: structural_matchers shared library | P3 ergonomics |
-| 1138 | EX-V1.30-2: LlmProvider resolver via registry slice | P3 ergonomics |
-| 1137 | EX-V1.30-1: Lift BatchCmd::is_pipeable into the registry | P3 ergonomics — **next after cluster** |
-| 1136 | P4.3: Auth state ignored by quiet=true | P4 auth bug |
-| 1135 | P4.2: cookie Path=/ on 127.0.0.1 | P4 auth bug |
-| 1134 | P4.1: AuthToken::from_string alphabet invariant | P4 auth bug |
+| 1140 | EX-V1.30-4: Embedder preset extras map | P3 ergonomics — **skip per autopilot directive** |
+| 1139 | EX-V1.30-3: structural_matchers shared library | P3 ergonomics — **skip per autopilot directive** |
 | 1133 | P2.91: NoteEntry has no kind/tag taxonomy | P2 enhancement |
 
-**Watch-mode infrastructure (filed 2026-04-28):**
+**P4 auth cluster — closed in #1197 (2026-04-28):** #1134 (AuthToken alphabet), #1135 (port-scoped cookie), #1136 (AuthMode enum + NoAuthAcknowledgement proof type). #1137 + #1138 already shipped in v1.30.1 (registry tables for batch + LLM provider).
+
+**Watch-mode infrastructure:**
 
 | # | Title | Status |
 |---|---|---|
-| **1182** | **feat(watch): perfect watch mode — close missed-event classes (bulk git, WSL 9P, external writes) via 3-layer reconciliation** | filed today; positioning lever for "freshness as differentiator" |
+| 1182 | feat(watch): perfect watch mode — 3-layer reconciliation | **closed 2026-04-28** by #1189 + #1191 + #1193 + #1194 + #1195 + #1196 (all four layers + acceptance test) |
 
 **Closed since last tears update:** #1130 (phase 1 only — phase 2 = #1176), #1131 (#1173), #1132 (#1165), #1166-#1169 (PRs merged today; comment-close pending).
 

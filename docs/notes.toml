@@ -1655,3 +1655,13 @@ mentions = [
     "daemon_ping",
     "unwrap_dispatch_payload",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "RFC 6265 cookies are scoped by host but NOT by port. Two cqs serve instances on 127.0.0.1:8080 and :8081 with the same cookie name silently collide in the browser cookie jar — the second launch receives the first's cookie back and fails auth. Fix in #1197: cookie name is now port-scoped (cqs_token_<port>), middleware state carries the port. Same trap exists for any per-instance localhost server that uses cookies."
+mentions = [
+    "src/serve/auth.rs",
+    "cookies",
+    "#1197",
+    "#1135",
+]
