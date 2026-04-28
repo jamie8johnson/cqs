@@ -53,12 +53,12 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 - **`audit-mode`**: `cqs audit-mode on` excludes notes from rankings and forces direct code examination. Mitigates the runtime side of shared-notes injection.
 - **No automatic execution**: cqs never executes indexed code; the threat is purely textual relay into agent context.
 - **Reference origin in metadata**: Chunks from `cqs ref` indexes carry reference-name metadata, but it is not yet surfaced as an explicit trust signal in JSON output.
+- **`--improve-docs` review gate (since v1.30.1)**: by default, `cqs index --improve-docs` writes proposed doc comments as unified-diff patches to `.cqs/proposed-docs/<rel>.patch` instead of mutating source files in place. Review with `git diff` and apply with `git apply .cqs/proposed-docs/**/*.patch`. Pass `--apply` to opt back into direct write-back; the run prints a warning when it does.
 
 ### Tracked improvements
 
 | Issue | Surface |
 |-------|---------|
-| [#1166](https://github.com/jamie8johnson/cqs/issues/1166) | `--improve-docs` review gate: write proposed doc comments to `.cqs/proposed-docs/` instead of in-place |
 | [#1167](https://github.com/jamie8johnson/cqs/issues/1167) | `trust_level` field + optional content delimiters in chunk-returning JSON output |
 | [#1168](https://github.com/jamie8johnson/cqs/issues/1168) | First-encounter prompt when indexing a repo with committed `docs/notes.toml` |
 | [#1169](https://github.com/jamie8johnson/cqs/issues/1169) | Surface reference origin (`trust_level` + `reference_name`) on every chunk from a `cqs ref` index |

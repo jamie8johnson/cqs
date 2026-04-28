@@ -587,10 +587,20 @@ pub(crate) struct IndexArgs {
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]
     pub llm_summaries: bool,
-    /// Generate and write back doc comments for undocumented functions (requires --llm-summaries)
+    /// Generate doc comments for undocumented functions (requires --llm-summaries).
+    ///
+    /// By default, writes proposed edits as unified-diff patches to
+    /// `.cqs/proposed-docs/<rel>.patch` for human review. Apply with
+    /// `git apply .cqs/proposed-docs/**/*.patch`. Pass `--apply` to write
+    /// directly to source files without review.
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]
     pub improve_docs: bool,
+    /// Write generated doc comments directly to source files instead of producing
+    /// review patches under `.cqs/proposed-docs/`. Requires `--improve-docs`.
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub apply: bool,
     /// Regenerate doc comments for all functions, even those with existing docs (requires --improve-docs)
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]
