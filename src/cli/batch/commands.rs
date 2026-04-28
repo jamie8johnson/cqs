@@ -322,59 +322,96 @@ pub(crate) enum BatchCmd {
     },
 }
 
-impl BatchCmd {
-    /// Whether this command accepts a piped function name as its first positional arg.
-    /// Used by pipeline execution to validate downstream segments. Commands that
-    /// take a function name as their primary input are pipeable; commands that
-    /// take queries, paths, or no arguments are not.
-    ///
-    /// API-V1.25-6: `match` is intentionally exhaustive (no wildcard arm) so
-    /// adding a new `BatchCmd` variant forces a classification decision here.
-    /// The `test_is_pipeable_exhaustive` test below pins this behavior —
-    /// removing the exhaustiveness makes the test fail to compile.
-    pub(crate) fn is_pipeable(&self) -> bool {
-        match self {
-            // Pipeable: primary input is a function name.
-            BatchCmd::Blame { .. }
-            | BatchCmd::Callers { .. }
-            | BatchCmd::Callees { .. }
-            | BatchCmd::Deps { .. }
-            | BatchCmd::Explain { .. }
-            | BatchCmd::Similar { .. }
-            | BatchCmd::Impact { .. }
-            | BatchCmd::TestMap { .. }
-            | BatchCmd::Related { .. }
-            | BatchCmd::Scout { .. } => true,
-            // Not pipeable: queries, paths, git refs, or no positional arg.
-            BatchCmd::Search { .. }
-            | BatchCmd::Gather { .. }
-            | BatchCmd::Trace { .. }
-            | BatchCmd::Dead { .. }
-            | BatchCmd::Context { .. }
-            | BatchCmd::Stats { .. }
-            | BatchCmd::Onboard { .. }
-            | BatchCmd::Where { .. }
-            | BatchCmd::Read { .. }
-            | BatchCmd::Stale { .. }
-            | BatchCmd::Health { .. }
-            | BatchCmd::Drift { .. }
-            | BatchCmd::Notes { .. }
-            | BatchCmd::Task { .. }
-            | BatchCmd::Review { .. }
-            | BatchCmd::Ci { .. }
-            | BatchCmd::Diff { .. }
-            | BatchCmd::ImpactDiff { .. }
-            | BatchCmd::Plan { .. }
-            | BatchCmd::Suggest { .. }
-            | BatchCmd::Gc { .. }
-            | BatchCmd::Refresh
-            | BatchCmd::Ping
-            | BatchCmd::Help => false,
-            #[cfg(test)]
-            BatchCmd::TestSleep { .. } => false,
+/// Per-variant pipeability table — single source of truth for `BatchCmd::is_pipeable`.
+///
+/// Issue #1137 (audit finding EX-V1.30-1): the pipeability classification used
+/// to live in a hand-maintained match arm, decoupled from the variant declaration.
+/// Adding a new `BatchCmd` variant required a coordinated edit in two places.
+/// This macro folds the classification into the variant list itself: each row is
+/// `(variant_name, is_pipeable)`. The `gen_is_pipeable_impl` emitter expands the
+/// table into an exhaustive match — adding a new variant without a row is a
+/// compile-time error (the match is non-exhaustive).
+///
+/// Struct variants and unit variants are listed in two named blocks so the
+/// macro emitter can build the right pattern shape (`Variant { .. }` vs `Variant`)
+/// without ambiguity.
+///
+/// Pipeable: primary input is a function name (so a previous segment's output
+/// can be piped in). Not pipeable: queries, paths, git refs, or no positional arg.
+macro_rules! for_each_batch_cmd_pipeability {
+    ($emit:ident) => {
+        $emit! {
+            struct_variants: {
+                // Pipeable — primary input is a function name.
+                (Blame, true)
+                (Callers, true)
+                (Callees, true)
+                (Deps, true)
+                (Explain, true)
+                (Similar, true)
+                (Impact, true)
+                (TestMap, true)
+                (Related, true)
+                (Scout, true)
+
+                // Not pipeable — queries, paths, git refs, or no positional arg.
+                (Search, false)
+                (Gather, false)
+                (Trace, false)
+                (Dead, false)
+                (Context, false)
+                (Stats, false)
+                (Onboard, false)
+                (Where, false)
+                (Read, false)
+                (Stale, false)
+                (Health, false)
+                (Drift, false)
+                (Notes, false)
+                (Task, false)
+                (Review, false)
+                (Ci, false)
+                (Diff, false)
+                (ImpactDiff, false)
+                (Plan, false)
+                (Suggest, false)
+                (Gc, false)
+            }
+            unit_variants: {
+                (Refresh, false)
+                (Ping, false)
+                (Help, false)
+            }
         }
-    }
+    };
 }
+
+/// Emits `BatchCmd::is_pipeable` from the table above.
+///
+/// API-V1.25-6: the generated `match` is intentionally exhaustive (no wildcard
+/// arm), so a new `BatchCmd` variant without a pipeability row fails to compile.
+/// `test_is_pipeable_exhaustive` below double-pins this behaviour.
+macro_rules! gen_is_pipeable_impl {
+    (
+        struct_variants: { $(($svar:ident, $sp:expr))* }
+        unit_variants:   { $(($uvar:ident, $up:expr))* }
+    ) => {
+        impl BatchCmd {
+            /// Whether this command accepts a piped function name as its first positional arg.
+            /// Used by pipeline execution to validate downstream segments.
+            pub(crate) fn is_pipeable(&self) -> bool {
+                match self {
+                    $(BatchCmd::$svar { .. } => $sp,)*
+                    $(BatchCmd::$uvar => $up,)*
+                    #[cfg(test)]
+                    BatchCmd::TestSleep { .. } => false,
+                }
+            }
+        }
+    };
+}
+
+for_each_batch_cmd_pipeability!(gen_is_pipeable_impl);
 
 // ─── Query logging ───────────────────────────────────────────────────────────
 
