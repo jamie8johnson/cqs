@@ -3,11 +3,28 @@
 //! Thin CLI wrapper around `cqs::serve::run_server`. Resolves the
 //! project's read-only store and binds the requested address.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{Context, Result};
 
 use crate::cli::find_project_root;
+
+/// Decide whether `cqs serve --no-auth --bind <bind>` should emit the
+/// "non-loopback exposure" warning.
+///
+/// PB-V1.30.1-1: returns `true` when `bind` resolves to anything that
+/// is NOT a loopback address. Subsumes `0.0.0.0` and `::`
+/// (IPv4/IPv6 UNSPECIFIED — the most exposed bind targets), concrete
+/// LAN IPs, and hostnames that don't loop back. Parse-failure
+/// (e.g. "localhost") falls through to the explicit name check so the
+/// previous behavior on the literal hostname is preserved.
+pub(crate) fn serve_warn_no_auth_exposure(bind: &str) -> bool {
+    let is_loopback = match bind.parse::<IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => matches!(bind, "localhost"),
+    };
+    !is_loopback
+}
 
 /// Entry point for `cqs serve`. Dispatched from `src/cli/dispatch.rs`.
 ///
@@ -20,11 +37,16 @@ use crate::cli::find_project_root;
 pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_serve", port, bind = %bind, open, no_auth).entered();
 
-    // #1096: warn loudly only when --no-auth is paired with a non-
-    // loopback bind. With auth on, non-loopback binds are fine — every
-    // request is gated by the token. The legacy unconditional warning
-    // misled operators into thinking any LAN bind was insecure.
-    if no_auth && bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
+    // #1096 + PB-V1.30.1-1: warn loudly only when --no-auth is paired
+    // with a non-loopback bind. With auth on, non-loopback binds are
+    // fine — every request is gated by the token. The legacy
+    // unconditional warning misled operators into thinking any LAN
+    // bind was insecure. The substring check it replaced silently
+    // accepted `0.0.0.0` and `::` (UNSPECIFIED — the most exposed
+    // bind targets of all); `serve_warn_no_auth_exposure` parses the
+    // bind once with `IpAddr::is_loopback()` so wildcard binds now
+    // trigger the warning explicitly.
+    if no_auth && serve_warn_no_auth_exposure(&bind) {
         tracing::warn!(
             bind = %bind,
             "binding cqs serve to non-localhost without auth — anyone with network \
@@ -129,4 +151,75 @@ fn open_browser(url: &str) -> Result<()> {
             .with_context(|| format!("Failed to spawn {cmd} {url}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // PB-V1.30.1-1: loopback IPv4 — no warning.
+    #[test]
+    fn no_warn_on_ipv4_loopback() {
+        assert!(!serve_warn_no_auth_exposure("127.0.0.1"));
+    }
+
+    // PB-V1.30.1-1: arbitrary loopback IPv4 (127.0.0.0/8) — no warning.
+    #[test]
+    fn no_warn_on_ipv4_loopback_range() {
+        assert!(!serve_warn_no_auth_exposure("127.1.2.3"));
+    }
+
+    // PB-V1.30.1-1: loopback IPv6 — no warning.
+    #[test]
+    fn no_warn_on_ipv6_loopback() {
+        assert!(!serve_warn_no_auth_exposure("::1"));
+    }
+
+    // PB-V1.30.1-1: literal hostname "localhost" — no warning.
+    // Resolves to 127.0.0.1 in practice, parse falls through to the
+    // explicit name check so we preserve the legacy behavior.
+    #[test]
+    fn no_warn_on_localhost_name() {
+        assert!(!serve_warn_no_auth_exposure("localhost"));
+    }
+
+    // PB-V1.30.1-1 (regression): IPv4 wildcard (0.0.0.0) — warning fires.
+    // The legacy substring check silently accepted this string.
+    #[test]
+    fn warn_on_ipv4_wildcard() {
+        assert!(serve_warn_no_auth_exposure("0.0.0.0"));
+    }
+
+    // PB-V1.30.1-1 (regression): IPv6 unspecified (::) — warning fires.
+    #[test]
+    fn warn_on_ipv6_unspecified_short() {
+        assert!(serve_warn_no_auth_exposure("::"));
+    }
+
+    // PB-V1.30.1-1 (regression): IPv6 unspecified (::0) — warning fires.
+    #[test]
+    fn warn_on_ipv6_unspecified_explicit() {
+        assert!(serve_warn_no_auth_exposure("::0"));
+    }
+
+    // PB-V1.30.1-1: concrete LAN IP — warning fires (existing behavior).
+    #[test]
+    fn warn_on_lan_ip() {
+        assert!(serve_warn_no_auth_exposure("192.168.1.5"));
+    }
+
+    // PB-V1.30.1-1: arbitrary hostname that's not "localhost" —
+    // warning fires (we can't resolve at warn-time, conservative is fail-closed).
+    #[test]
+    fn warn_on_arbitrary_hostname() {
+        assert!(serve_warn_no_auth_exposure("server.lan"));
+    }
+
+    // PB-V1.30.1-1: empty bind — falls through, warns. Defensive
+    // behavior: an empty string can't be a loopback, so don't suppress
+    // the warning.
+    #[test]
+    fn warn_on_empty_bind() {
+        assert!(serve_warn_no_auth_exposure(""));
+    }
 }

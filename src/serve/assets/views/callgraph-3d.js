@@ -7,6 +7,19 @@
 (function (window) {
   "use strict";
 
+  // SEC-V1.30.1-3 / SEC-2 mirror: this IIFE can't reach app.js's
+  // escapeHtml, so mirror it here for any server-derived string
+  // interpolated into innerHTML. Matches the helper in
+  // cluster-3d.js / hierarchy-3d.js.
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   const TYPE_COLORS = {
     function: "#4a86e8",
     method: "#3d78d8",
@@ -52,7 +65,8 @@
         try {
           await window.cqsEnsureThreeBundle();
         } catch (e) {
-          container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${e.message}</div>`;
+          // SEC-V1.30.1-3: escape error message before innerHTML interpolation.
+          container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${escapeHtml(e.message)}</div>`;
           throw e;
         }
       }

@@ -210,50 +210,48 @@ pub(crate) fn inject_content_into_scout_json(
 /// Tag every chunk-shaped object in a scout-style JSON tree as user-code. (#1167)
 ///
 /// Scout / onboard / where / plan only query the user's project store, so
-/// every chunk is `trust_level: "user-code"`. This walks the known shapes
-/// and stamps the field; reference-aware commands (search, gather) thread
-/// the origin through `to_json_with_origin` instead.
+/// every chunk is `trust_level: "user-code"`. Reference-aware commands
+/// (search, gather) thread the origin through `to_json_with_origin` instead.
+///
+/// SEC-V1.30.1-4: recursive visitor — any object with the chunk-shape
+/// signature (presence of `name` AND `file` AND a numeric `line_start`)
+/// is tagged. Future scout / onboard surfaces that grow new chunk-bearing
+/// keys (e.g. `dependents[]`, `examples[]`, top-level `chunks[]`) are
+/// tagged automatically; the previous shape-coupled walker silently
+/// no-oped on anything outside `entry_point` / `call_chain` / `callers`
+/// / `file_groups[].chunks[]`.
 pub(crate) fn tag_user_code_trust_level(json: &mut serde_json::Value) {
-    fn tag(obj: &mut serde_json::Map<String, serde_json::Value>) {
-        obj.insert(
-            "trust_level".to_string(),
-            serde_json::Value::String("user-code".to_string()),
-        );
+    let _span = tracing::info_span!("tag_user_code_trust_level").entered();
+
+    fn looks_like_chunk(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+        obj.contains_key("name")
+            && obj.contains_key("file")
+            && obj.get("line_start").is_some_and(|v| v.is_number())
     }
-    if let Some(root) = json.as_object_mut() {
-        // Top-level entry_point (onboard).
-        if let Some(ep) = root.get_mut("entry_point").and_then(|v| v.as_object_mut()) {
-            tag(ep);
-        }
-        // Top-level call_chain[] (onboard).
-        if let Some(arr) = root.get_mut("call_chain").and_then(|v| v.as_array_mut()) {
-            for entry in arr.iter_mut() {
-                if let Some(o) = entry.as_object_mut() {
-                    tag(o);
+
+    fn walk(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if looks_like_chunk(map) {
+                    map.insert(
+                        "trust_level".to_string(),
+                        serde_json::Value::String("user-code".to_string()),
+                    );
+                }
+                for (_k, v) in map.iter_mut() {
+                    walk(v);
                 }
             }
-        }
-        // Top-level callers[] (onboard).
-        if let Some(arr) = root.get_mut("callers").and_then(|v| v.as_array_mut()) {
-            for entry in arr.iter_mut() {
-                if let Some(o) = entry.as_object_mut() {
-                    tag(o);
+            serde_json::Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    walk(v);
                 }
             }
-        }
-        // Top-level file_groups[].chunks[] (scout).
-        if let Some(groups) = root.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
-            for group in groups.iter_mut() {
-                if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
-                    for chunk in chunks.iter_mut() {
-                        if let Some(o) = chunk.as_object_mut() {
-                            tag(o);
-                        }
-                    }
-                }
-            }
+            _ => {}
         }
     }
+
+    walk(json);
 }
 
 /// Inject packed content into onboard-style JSON (`entry_point`, `call_chain[]`, `callers[]`).
@@ -1079,5 +1077,175 @@ mod tests {
             "Expected null-byte rejection, got: {}",
             err
         );
+    }
+
+    // SEC-V1.30.1-4: recursive visitor still tags the four legacy shapes
+    // (entry_point, call_chain[], callers[], file_groups[].chunks[]).
+    #[test]
+    fn tag_user_code_visits_legacy_onboard_shapes() {
+        let mut json = serde_json::json!({
+            "entry_point": {"name": "ep", "file": "a.rs", "line_start": 1},
+            "call_chain": [
+                {"name": "c1", "file": "b.rs", "line_start": 2}
+            ],
+            "callers": [
+                {"name": "caller", "file": "c.rs", "line_start": 3}
+            ]
+        });
+        tag_user_code_trust_level(&mut json);
+        assert_eq!(json["entry_point"]["trust_level"], "user-code");
+        assert_eq!(json["call_chain"][0]["trust_level"], "user-code");
+        assert_eq!(json["callers"][0]["trust_level"], "user-code");
+    }
+
+    // SEC-V1.30.1-4: recursive visitor still tags scout-shape nesting.
+    #[test]
+    fn tag_user_code_visits_legacy_scout_shape() {
+        let mut json = serde_json::json!({
+            "file_groups": [
+                {
+                    "file": "a.rs",
+                    "chunks": [
+                        {"name": "foo", "file": "a.rs", "line_start": 10}
+                    ]
+                }
+            ]
+        });
+        tag_user_code_trust_level(&mut json);
+        assert_eq!(
+            json["file_groups"][0]["chunks"][0]["trust_level"],
+            "user-code"
+        );
+    }
+
+    // SEC-V1.30.1-4: chunks reachable through arbitrary new keys are
+    // tagged — the contract is "every chunk-shaped object", not "every
+    // chunk under one of these four keys."
+    #[test]
+    fn tag_user_code_visits_arbitrary_nested_chunks() {
+        let mut json = serde_json::json!({
+            "entry_point": {"name": "foo", "file": "a.rs", "line_start": 10},
+            "future_field": {
+                "examples": [
+                    {"name": "bar", "file": "b.rs", "line_start": 20},
+                ]
+            }
+        });
+        tag_user_code_trust_level(&mut json);
+        assert_eq!(json["entry_point"]["trust_level"], "user-code");
+        assert_eq!(
+            json["future_field"]["examples"][0]["trust_level"],
+            "user-code"
+        );
+    }
+
+    // SEC-V1.30.1-4: deep object nesting — visitor descends arbitrarily.
+    #[test]
+    fn tag_user_code_visits_deeply_nested_chunks() {
+        let mut json = serde_json::json!({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "name": "deep",
+                        "file": "x.rs",
+                        "line_start": 99
+                    }
+                }
+            }
+        });
+        tag_user_code_trust_level(&mut json);
+        assert_eq!(
+            json["level1"]["level2"]["level3"]["trust_level"],
+            "user-code"
+        );
+    }
+
+    // SEC-V1.30.1-4: nested array of chunk-shaped objects — every
+    // element gets tagged.
+    #[test]
+    fn tag_user_code_visits_nested_array_of_chunks() {
+        let mut json = serde_json::json!({
+            "wrapper": {
+                "list": [
+                    {"name": "a", "file": "a.rs", "line_start": 1},
+                    {"name": "b", "file": "b.rs", "line_start": 2},
+                    {"name": "c", "file": "c.rs", "line_start": 3}
+                ]
+            }
+        });
+        tag_user_code_trust_level(&mut json);
+        let arr = json["wrapper"]["list"].as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        for entry in arr {
+            assert_eq!(entry["trust_level"], "user-code");
+        }
+    }
+
+    // SEC-V1.30.1-4: mixed shape — tag chunk-shaped objects, leave
+    // metadata objects untouched.
+    #[test]
+    fn tag_user_code_mixed_shape_only_tags_chunks() {
+        let mut json = serde_json::json!({
+            "summary": {"total": 5, "stale": 1},
+            "entry": {"name": "foo", "file": "a.rs", "line_start": 1},
+            "siblings": [
+                {"name": "x", "file": "x.rs", "line_start": 2},
+                {"unrelated": true},
+                {"name": "without-line", "file": "y.rs"},
+                {"name": "string-line", "file": "z.rs", "line_start": "10"}
+            ]
+        });
+        tag_user_code_trust_level(&mut json);
+        // Chunk-shaped: tagged.
+        assert_eq!(json["entry"]["trust_level"], "user-code");
+        assert_eq!(json["siblings"][0]["trust_level"], "user-code");
+        // Metadata + non-chunk shapes: untouched.
+        assert!(json["summary"].get("trust_level").is_none());
+        assert!(json["siblings"][1].get("trust_level").is_none());
+        assert!(json["siblings"][2].get("trust_level").is_none()); // missing line_start
+        assert!(json["siblings"][3].get("trust_level").is_none()); // string line_start
+    }
+
+    // SEC-V1.30.1-4: pure-scalar root JSON — visitor is a no-op
+    // (no panic, no tag).
+    #[test]
+    fn tag_user_code_scalar_root_no_op() {
+        let mut s = serde_json::Value::String("hello".into());
+        tag_user_code_trust_level(&mut s);
+        assert_eq!(s, serde_json::Value::String("hello".into()));
+
+        let mut n = serde_json::Value::Number(42.into());
+        tag_user_code_trust_level(&mut n);
+        assert_eq!(n, serde_json::Value::Number(42.into()));
+
+        let mut b = serde_json::Value::Bool(true);
+        tag_user_code_trust_level(&mut b);
+        assert_eq!(b, serde_json::Value::Bool(true));
+
+        let mut nul = serde_json::Value::Null;
+        tag_user_code_trust_level(&mut nul);
+        assert_eq!(nul, serde_json::Value::Null);
+    }
+
+    // SEC-V1.30.1-4: top-level array of chunks — visitor descends in.
+    #[test]
+    fn tag_user_code_array_root() {
+        let mut json = serde_json::json!([
+            {"name": "a", "file": "a.rs", "line_start": 1},
+            {"name": "b", "file": "b.rs", "line_start": 2}
+        ]);
+        tag_user_code_trust_level(&mut json);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr[0]["trust_level"], "user-code");
+        assert_eq!(arr[1]["trust_level"], "user-code");
+    }
+
+    // SEC-V1.30.1-4: object that is NOT chunk-shaped — no tag added.
+    #[test]
+    fn tag_user_code_does_not_tag_non_chunk_objects() {
+        let mut json = serde_json::json!({"meta": {"version": 1}});
+        tag_user_code_trust_level(&mut json);
+        assert!(json["meta"].get("trust_level").is_none());
+        assert!(json.get("trust_level").is_none());
     }
 }
