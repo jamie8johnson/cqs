@@ -202,7 +202,13 @@ impl WatchSnapshot {
         } else if input.pending_files_count > 0
             || input.pending_notes
             || input.dropped_this_cycle > 0
+            || input.delta_saturated
         {
+            // CQ-V1.30.1-2 / DS-V1.30.1-D6: a saturated delta means the
+            // rebuilt HNSW was discarded on swap (rebuild.rs:60-63); the
+            // on-disk index is whatever was there before the rebuild
+            // started. Treat as Stale until the next threshold rebuild
+            // lands cleanly, so `cqs eval --require-fresh` waits.
             FreshnessState::Stale
         } else {
             FreshnessState::Fresh
@@ -291,6 +297,48 @@ mod tests {
         let snap = WatchSnapshot::compute(input(0, false, false, 7));
         assert_eq!(snap.state, FreshnessState::Stale);
         assert_eq!(snap.dropped_this_cycle, 7);
+    }
+
+    /// CQ-V1.30.1-2 / TC-ADV-1.30.1-8: a saturated delta means the in-flight
+    /// rebuild's pending delta exceeded `MAX_PENDING_REBUILD_DELTA` and the
+    /// rebuilt HNSW will be discarded on swap. Until the next threshold
+    /// rebuild reads SQLite fresh, the on-disk index is stale. The flag
+    /// is published; `compute()` must treat it as a Stale signal so
+    /// `cqs eval --require-fresh` doesn't accept a doomed rebuild.
+    #[test]
+    fn delta_saturated_marks_stale_when_no_other_work() {
+        let snap = WatchSnapshot::compute(WatchSnapshotInput {
+            pending_files_count: 0,
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: true,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event: std::time::Instant::now(),
+            last_synced_at: None,
+            _marker: std::marker::PhantomData,
+        });
+        assert_eq!(snap.state, FreshnessState::Stale);
+        assert!(snap.delta_saturated);
+    }
+
+    /// `Rebuilding` still wins when the rebuild is in flight even with a
+    /// saturated delta — the saturation will be observed when the rebuild
+    /// drains and `rebuild_in_flight` flips to false.
+    #[test]
+    fn rebuild_in_flight_dominates_over_delta_saturated() {
+        let snap = WatchSnapshot::compute(WatchSnapshotInput {
+            pending_files_count: 0,
+            pending_notes: false,
+            rebuild_in_flight: true,
+            delta_saturated: true,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event: std::time::Instant::now(),
+            last_synced_at: None,
+            _marker: std::marker::PhantomData,
+        });
+        assert_eq!(snap.state, FreshnessState::Rebuilding);
     }
 
     #[test]
