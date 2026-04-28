@@ -510,10 +510,34 @@ impl Store<ReadWrite> {
     /// and throughput (one fsync per batch).
     #[cfg(feature = "llm-summaries")]
     pub fn queue_summary_write(&self, custom_id: &str, text: &str, model: &str, purpose: &str) {
+        // #1170: validate prose summaries before they reach the cache. The
+        // doc-comment purpose is intentionally exempt — its prompt asks for
+        // imperative reference docs which trip the heuristics on legitimate
+        // content. Doc-comment write-back has its own review gate (#1166).
+        let validated_text = if purpose == "summary" {
+            use crate::llm::validation::{
+                validate_summary, SummaryValidationMode, ValidationOutcome,
+            };
+            let mode = SummaryValidationMode::from_env();
+            match validate_summary(text, mode) {
+                ValidationOutcome::Accept(t) => t,
+                ValidationOutcome::Reject { pattern } => {
+                    tracing::warn!(
+                        custom_id = %custom_id,
+                        pattern = %pattern,
+                        "Dropping summary that matched injection pattern in strict mode"
+                    );
+                    return;
+                }
+            }
+        } else {
+            text.to_string()
+        };
+
         self.summary_queue
             .push(crate::store::summary_queue::PendingSummary {
                 custom_id: custom_id.to_string(),
-                text: text.to_string(),
+                text: validated_text,
                 model: model.to_string(),
                 purpose: purpose.to_string(),
             });
