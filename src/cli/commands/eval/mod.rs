@@ -217,12 +217,21 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
 /// shift that looks identical to a real regression. The escape hatch is
 /// the documented path for offline runs where no daemon is available.
 fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()> {
+    let _span = tracing::info_span!("require_fresh_gate", wait_secs).entered();
+    let start = std::time::Instant::now();
+
     if *no_require_fresh_flag {
-        tracing::info!("Eval freshness gate disabled via --no-require-fresh");
+        tracing::info!(
+            outcome = "bypass_flag",
+            "require_fresh_gate: disabled via --no-require-fresh",
+        );
         return Ok(());
     }
     if env_disables_freshness_gate() {
-        tracing::info!("Eval freshness gate disabled via CQS_EVAL_REQUIRE_FRESH");
+        tracing::info!(
+            outcome = "bypass_env",
+            "require_fresh_gate: disabled via CQS_EVAL_REQUIRE_FRESH",
+        );
         eprintln!(
             "[eval] CQS_EVAL_REQUIRE_FRESH disables the freshness gate; running against current index"
         );
@@ -243,30 +252,60 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
             "[eval] checking watch-mode freshness (--no-require-fresh to skip; CQS_EVAL_REQUIRE_FRESH=0 in env)"
         );
 
-        match cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs) {
-            FreshnessWait::Fresh(_) => Ok(()),
-            FreshnessWait::Timeout(snap) => anyhow::bail!(
-                "watch index is still stale after {budget_secs}s wait \
-                 (modified_files={}, pending_notes={}, rebuild_in_flight={}); \
-                 wait longer with --require-fresh-secs N or skip with --no-require-fresh",
-                snap.modified_files,
-                snap.pending_notes,
-                snap.rebuild_in_flight,
-            ),
-            FreshnessWait::NoDaemon(msg) => anyhow::bail!(
-                "watch daemon not reachable: {msg}\n\
-                 \n\
-                 Eval --require-fresh requires a running `cqs watch --serve`. Either:\n  \
-                   - start the daemon (`systemctl --user start cqs-watch` or `cqs watch --serve`)\n  \
-                   - rerun with `--no-require-fresh` for an offline check\n  \
-                   - export `CQS_EVAL_REQUIRE_FRESH=0` to disable the gate for this shell"
-            ),
+        let result = cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs);
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        match result {
+            FreshnessWait::Fresh(snap) => {
+                tracing::info!(
+                    outcome = "fresh",
+                    elapsed_ms,
+                    modified_files = snap.modified_files,
+                    "require_fresh_gate: resolved",
+                );
+                Ok(())
+            }
+            FreshnessWait::Timeout(snap) => {
+                tracing::info!(
+                    outcome = "timeout",
+                    elapsed_ms,
+                    modified_files = snap.modified_files,
+                    "require_fresh_gate: resolved",
+                );
+                anyhow::bail!(
+                    "watch index is still stale after {budget_secs}s wait \
+                     (modified_files={}, pending_notes={}, rebuild_in_flight={}); \
+                     wait longer with --require-fresh-secs N or skip with --no-require-fresh",
+                    snap.modified_files,
+                    snap.pending_notes,
+                    snap.rebuild_in_flight,
+                )
+            }
+            FreshnessWait::NoDaemon(msg) => {
+                tracing::info!(
+                    outcome = "no_daemon",
+                    elapsed_ms,
+                    "require_fresh_gate: resolved",
+                );
+                anyhow::bail!(
+                    "watch daemon not reachable: {msg}\n\
+                     \n\
+                     Eval --require-fresh requires a running `cqs watch --serve`. Either:\n  \
+                       - start the daemon (`systemctl --user start cqs-watch` or `cqs watch --serve`)\n  \
+                       - rerun with `--no-require-fresh` for an offline check\n  \
+                       - export `CQS_EVAL_REQUIRE_FRESH=0` to disable the gate for this shell"
+                )
+            }
         }
     }
 
     #[cfg(not(unix))]
     {
         let _ = wait_secs;
+        tracing::info!(
+            outcome = "non_unix",
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "require_fresh_gate: resolved",
+        );
         anyhow::bail!(
             "watch-mode freshness gate is unix-only (daemon socket uses Unix domain sockets); \
              rerun with --no-require-fresh on this platform"
@@ -399,16 +438,20 @@ mod tests {
         assert_eq!(w.args.require_fresh_secs, 30);
     }
 
-    /// PR 4 of #1182: env-var falsy values disable the gate.
-    /// Tested as a pure function so the parallel test runner doesn't fight
-    /// over a shared `CQS_EVAL_REQUIRE_FRESH` mutation.
+    /// PR 4 of #1182 / TC-HAP-1.30.1-4: env-var falsy values disable the
+    /// gate. Drives the actual `env_disables_freshness_gate` helper so the
+    /// helper's `matches!` pattern is what gets covered — earlier
+    /// versions of this test re-implemented the logic inline, which left
+    /// the function itself untested and bypass drift invisible.
+    ///
+    /// `#[serial_test::serial]` is required: this test mutates the
+    /// process-wide `CQS_EVAL_REQUIRE_FRESH` env var, and parallel tests
+    /// reading the same var would race.
     #[test]
+    #[serial_test::serial(cqs_eval_require_fresh_env)]
     fn env_disables_freshness_gate_recognises_falsy_strings() {
-        // Save and clear so default flow is observable.
         let saved = std::env::var("CQS_EVAL_REQUIRE_FRESH").ok();
-        // Cargo runs tests in parallel — claim a unique env var for the
-        // assertions below by serializing through a helper that takes the
-        // string explicitly. We can't safely set/unset a real env var here.
+
         let cases: &[(&str, bool)] = &[
             ("0", true),
             ("false", true),
@@ -421,14 +464,63 @@ mod tests {
             ("", false),
         ];
         for (input, expected) in cases {
-            let lower = input.trim().to_ascii_lowercase();
-            let observed = matches!(lower.as_str(), "0" | "false" | "no" | "off");
+            // SAFETY: serial_test guards env mutation; no other thread is
+            // touching CQS_EVAL_REQUIRE_FRESH while this test runs.
+            unsafe {
+                std::env::set_var("CQS_EVAL_REQUIRE_FRESH", input);
+            }
+            let observed = env_disables_freshness_gate();
             assert_eq!(
                 observed, *expected,
                 "input {input:?} should disable={expected}"
             );
         }
-        let _ = saved;
+
+        // SAFETY: same as above — restore prior state.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("CQS_EVAL_REQUIRE_FRESH", v),
+                None => std::env::remove_var("CQS_EVAL_REQUIRE_FRESH"),
+            }
+        }
+    }
+
+    /// TC-HAP-1.30.1-4: drive `require_fresh_gate` via the
+    /// `--no-require-fresh` flag short-circuit. No daemon needed because
+    /// the flag bypass returns `Ok(())` before any socket I/O.
+    #[test]
+    fn require_fresh_gate_no_require_fresh_flag_returns_ok_without_daemon() {
+        let result = require_fresh_gate(&true, 5);
+        assert!(
+            result.is_ok(),
+            "--no-require-fresh must short-circuit to Ok, got: {result:?}"
+        );
+    }
+
+    /// TC-HAP-1.30.1-4: drive `require_fresh_gate` via the
+    /// `CQS_EVAL_REQUIRE_FRESH=0` env-var bypass. Pins the documented
+    /// resolution order — env var disables the gate even when the CLI
+    /// flag is absent.
+    #[test]
+    #[serial_test::serial(cqs_eval_require_fresh_env)]
+    fn require_fresh_gate_env_disable_returns_ok_without_daemon() {
+        let saved = std::env::var("CQS_EVAL_REQUIRE_FRESH").ok();
+        // SAFETY: serial_test guards env mutation.
+        unsafe {
+            std::env::set_var("CQS_EVAL_REQUIRE_FRESH", "0");
+        }
+        let result = require_fresh_gate(&false, 5);
+        // SAFETY: same as above — restore prior state.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("CQS_EVAL_REQUIRE_FRESH", v),
+                None => std::env::remove_var("CQS_EVAL_REQUIRE_FRESH"),
+            }
+        }
+        assert!(
+            result.is_ok(),
+            "CQS_EVAL_REQUIRE_FRESH=0 must short-circuit to Ok, got: {result:?}"
+        );
     }
 
     #[test]
