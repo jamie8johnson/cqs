@@ -2,17 +2,28 @@
 
 ## Right Now
 
-**v1.30.1 released 2026-04-28.** Patch release — three themes: indirect-prompt-injection hardening (closed cluster #1166-#1170 + #1171 SECURITY threat model), v1.30.0 audit-fix wave (#1141, 152 of 170 findings), and watch-mode reliability (#1124-#1129). Plus refactors for cleaner extension points: #1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138 registry tables for batch + LLM provider** (just merged this session). Crates.io published; tag `v1.30.1` pushed; GitHub Release workflow building binaries.
+**v1.30.1 released 2026-04-28.** Patch release shipped earlier this session — three themes: indirect-prompt-injection hardening (closed cluster #1166-#1170 + #1171 SECURITY threat model), v1.30.0 audit-fix wave (#1141, 152 of 170 findings), and watch-mode reliability (#1124-#1129). Plus #1137 + #1138 registry tables for batch + LLM provider. Crates.io published; tag `v1.30.1` pushed.
 
 **Master plan snapshot:** `docs/plans/2026-04-28-master-plan.md`.
 
-**Up next (post-release queue):**
-- **#1181** — "general mistrust" posture (default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice`, per-chunk `injection_flags`).
-- **#1182** — perfect watch mode (3-layer reconciliation — git hooks + periodic walk + `--wait` API). Positioning lever for "freshness as differentiator."
-- **P4 auth bugs** (#1134-#1136) — `cqs serve` correctness fixes from v1.30.0 audit.
-- **P3 ergonomics deferred** — #1139 (structural_matchers shared lib, touches 50+ languages) + #1140 (embedder preset extras map). Skip unless explicitly directed.
+**Active right now: PR #1189 in flight — `feat(watch): cqs status --watch-fresh API (#1182 — Layer 3, PR 1/N)`.** Branch `feat/1182-freshness-api`. CI just kicked off (~30 min run). ScheduleWakeup armed for ~30 min from 04:59 local. Layer 3 (the freshness API) lays down the observable surface; Layers 1 (git hooks) + 2 (periodic walk) follow as separate PRs.
 
-**Local state:** working tree clean. Index at 18,760 chunks (no schema change, no reindex needed). Local binary refreshed to post-#1185 main earlier this session — needs another `cargo build --release --features cuda-index` + restart-cqs-watch to pick up v1.30.1 (mostly cosmetic — only diff vs installed is the version string).
+What PR #1189 ships:
+- `cqs::watch_status::WatchSnapshot` — state machine + counters + `Arc<RwLock<...>>` shared between watch loop (writer) and daemon's BatchContext (reader).
+- `BatchCmd::Status` + `dispatch_status` handler.
+- `cqs status --watch-fresh [--json] [--wait [--wait-secs N]]` CLI command.
+- `cqs::daemon_translate::daemon_status` library helper.
+- Drive-by: fixed pre-existing `cqs ping` deserialization bug (envelope-vs-payload mismatch) — `daemon_ping` had been silently returning "missing field 'model'" against real daemons since v1.30.0.
+
+Live-tested against running daemon: `cqs status --watch-fresh` reports `state: rebuilding` during HNSW startup, transitions to `fresh` after rebuild completes. `--wait --wait-secs 3` polls 12+ times, prints final stale snapshot, exits 1 on budget expiry.
+
+**Up next (post-PR-1189-merge):**
+- **PR 2 of #1182** — Layer 2 periodic full-tree fingerprint reconciliation (~30s default cadence). Module `src/cli/watch/reconcile.rs`: tree walk (gitignore-respecting) → `(path, mtime, size)` fingerprint hash → divergence detection → queue files for reindex. Wire as a sibling to existing `run_daemon_periodic_gc` idle-tick mechanism.
+- **PR 3 of #1182** — Layer 1 git hooks: `cqs hook install` + `.git/hooks/post-{checkout,merge,reset,rebase}` + `reconcile` daemon socket message + `.cqs/.dirty` fallback when daemon's down.
+- **PR 4 of #1182** — eval `--require-fresh` flag (default on) — first consumer of `--watch-fresh --wait`.
+- **P4 auth bugs** (#1134-#1136) — `cqs serve` correctness fixes from v1.30.0 audit.
+
+**Local state:** working tree clean post-PR-1189-commit. Release binary rebuilt and installed; cqs-watch daemon restarted and serving the new `status` command. Index at 18,755 chunks. 2491 lib+bin tests pass.
 
 **Landed since v1.30.0 release:**
 - **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.

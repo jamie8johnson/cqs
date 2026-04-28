@@ -762,6 +762,36 @@ pub(super) enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Watch-mode freshness — show whether the index is caught up
+    ///
+    /// #1182 layer 3: connects to the running `cqs watch --serve` daemon and
+    /// reports the latest [`cqs::watch_status::WatchSnapshot`]. Useful for
+    /// agent loops that want to gate work on freshness (eval runners,
+    /// pre-query checks). Exits 1 if no daemon is running.
+    ///
+    /// `--watch-fresh` is the canonical flag — kept explicit (not the
+    /// implied default) so future siblings (`--last-error`, `--clients`)
+    /// can join cleanly.
+    ///
+    /// `--wait` polls until the snapshot reports `state == fresh` or the
+    /// `--wait-secs` budget expires. Polling happens client-side so the
+    /// daemon thread is never pinned by a long wait.
+    Status {
+        /// Report watch-mode freshness (currently the only mode).
+        #[arg(long)]
+        watch_fresh: bool,
+        /// Output as JSON. Without this, prints a one-line human summary.
+        #[arg(long)]
+        json: bool,
+        /// Block until the snapshot reports `state == fresh` (or until the
+        /// `--wait-secs` budget expires). Requires `--watch-fresh`.
+        #[arg(long)]
+        wait: bool,
+        /// Maximum seconds `--wait` polls before giving up. Capped at 600
+        /// so a runaway agent loop can't pin the daemon socket forever.
+        #[arg(long, default_value_t = 30)]
+        wait_secs: u64,
+    },
     /// Invalidate daemon caches and re-open the Store
     ///
     /// API-V1.29-6: exposes the existing `BatchCmd::Refresh` handler at the

@@ -513,6 +513,18 @@ pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchView) -> Result<serde_json
         .map_err(|e| anyhow::anyhow!("Failed to serialize PingResponse: {e}"))
 }
 
+/// #1182: watch-mode freshness snapshot — returns the latest
+/// [`cqs::watch_status::WatchSnapshot`] the watch loop published. Outside
+/// `cqs watch --serve` (one-shot `cqs batch`) this returns the default
+/// `unknown` snapshot. Pure read — clones the small struct out from under
+/// a `RwLock` read guard and serializes it.
+pub(in crate::cli::batch) fn dispatch_status(ctx: &BatchView) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_status").entered();
+    let snapshot = ctx.watch_snapshot();
+    serde_json::to_value(&snapshot)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"))
+}
+
 // P2.79: TC-HAP — embedder-free misc handler tests. `dispatch_ping`,
 // `dispatch_help`, and `dispatch_refresh` are the cheap healthcheck/
 // metadata surface and shipped with zero per-handler tests in the batch
@@ -555,6 +567,37 @@ mod tests {
         );
         let obj = json.as_object().unwrap();
         assert!(!obj.is_empty(), "ping snapshot must not be empty");
+    }
+
+    /// #1182: `dispatch_status` against an empty `BatchContext` (no watch
+    /// loop publishing) returns the default `unknown` snapshot, serialized
+    /// to a JSON object matching the [`WatchSnapshot`] shape. The handler
+    /// must not block, fail, or read disk — it's a pure RwLock-guarded
+    /// clone of the in-memory snapshot.
+    #[test]
+    fn dispatch_status_returns_unknown_when_no_watch_loop() {
+        let (_dir, _ctx, view) = empty_view();
+        let json = dispatch_status(&view).expect("dispatch_status");
+        assert!(
+            json.is_object(),
+            "status must serialize as a JSON object, got: {json}"
+        );
+        let obj = json.as_object().unwrap();
+        assert_eq!(
+            obj.get("state").and_then(|v| v.as_str()),
+            Some("unknown"),
+            "fresh context with no watch loop must report state=unknown, got: {json}"
+        );
+        // Pin a couple of stable shape invariants so a future field rename
+        // (e.g. `modified_files` → `pending`) trips this test.
+        assert!(
+            obj.contains_key("modified_files"),
+            "snapshot must carry `modified_files` field"
+        );
+        assert!(
+            obj.contains_key("snapshot_at"),
+            "snapshot must carry `snapshot_at` timestamp"
+        );
     }
 
     #[test]

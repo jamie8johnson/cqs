@@ -104,6 +104,7 @@ pub(crate) use infra::cmd_ping;
 pub(crate) use infra::cmd_project;
 pub(crate) use infra::cmd_ref;
 pub(crate) use infra::cmd_slot;
+pub(crate) use infra::cmd_status;
 pub(crate) use infra::cmd_telemetry;
 pub(crate) use infra::cmd_telemetry_reset;
 pub(crate) use infra::CacheCommand;

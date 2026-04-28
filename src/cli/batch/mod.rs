@@ -332,6 +332,15 @@ pub(crate) struct BatchContext {
     /// Read by the `ping` handler. #1127: `Arc<AtomicU64>` for the same
     /// reason as `error_count`.
     pub(crate) query_count: Arc<AtomicU64>,
+    /// #1182: shared snapshot of watch-loop freshness state. Default is
+    /// the `unknown` snapshot — a `cqs status --watch-fresh` against a
+    /// `cqs batch` (no watch loop) gets `state: unknown` and an empty
+    /// counter set. Inside `cqs watch --serve`, the watch loop clones
+    /// this Arc and writes a fresh snapshot every cycle; the daemon's
+    /// `dispatch_status` handler reads through it. The `RwLock` cost is
+    /// trivial — one writer at 100 ms cadence, readers on the daemon
+    /// thread that snapshot-and-drop in microseconds.
+    pub(crate) watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
 }
 
 /// #1127: a number of `BatchContext` accessors are unreachable from non-test
@@ -853,6 +862,18 @@ impl BatchContext {
         self.embedder.set(shared).is_ok()
     }
 
+    /// #1182: Install a shared `Arc<RwLock<WatchSnapshot>>` from the outer
+    /// `cmd_watch` scope. Replaces the constructor's default `unknown`
+    /// handle with one the watch loop also holds, so subsequent
+    /// `watch_snapshot()` reads see the loop's most-recent publish.
+    ///
+    /// Takes `&mut self` so the field can be replaced cleanly; the
+    /// daemon thread binds `let mut ctx = create_context_with_runtime(..)`
+    /// for exactly this swap before wrapping the ctx in `Arc<Mutex<...>>`.
+    pub fn adopt_watch_snapshot(&mut self, shared: cqs::watch_status::SharedWatchSnapshot) {
+        self.watch_snapshot = shared;
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
@@ -1359,6 +1380,7 @@ impl BatchContext {
             query_count: Arc::clone(&self.query_count),
             started_at: self.started_at,
             outer_lock,
+            watch_snapshot: Arc::clone(&self.watch_snapshot),
         }
     }
 }
@@ -1653,6 +1675,12 @@ pub(crate) struct BatchView {
     /// `Some` for daemon connections, where `dispatch_refresh` re-acquires
     /// the mutex briefly to call `invalidate`.
     outer_lock: Option<Arc<Mutex<BatchContext>>>,
+    /// #1182: shared snapshot of watch-loop freshness state. Cloned from
+    /// `BatchContext::watch_snapshot` at view checkout — the Arc itself
+    /// is shared with the watch loop, so a `dispatch_status` handler
+    /// reads the *current* snapshot the loop most recently published, not
+    /// a stale one from the moment the view was built.
+    watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
 }
 
 impl BatchView {
@@ -1896,6 +1924,19 @@ impl BatchView {
     pub fn borrow_ref(&self, name: &str) -> Option<Arc<ReferenceIndex>> {
         let mut cache = self.refs.lock().unwrap_or_else(|p| p.into_inner());
         cache.get(name).map(Arc::clone)
+    }
+
+    /// #1182: take a deep clone of the latest [`cqs::watch_status::WatchSnapshot`]
+    /// the watch loop published. Reads through the shared `Arc<RwLock<...>>`,
+    /// holding the read guard only long enough to clone the small struct out.
+    /// Outside `cqs watch --serve` (e.g. one-shot `cqs batch`) returns the
+    /// default `unknown` snapshot — the watch loop never ticks, so the field
+    /// stays at its initial value.
+    pub fn watch_snapshot(&self) -> cqs::watch_status::WatchSnapshot {
+        self.watch_snapshot
+            .read()
+            .map(|guard| (*guard).clone())
+            .unwrap_or_else(|p| (*p.into_inner()).clone())
     }
 
     /// Build a [`cqs::daemon_translate::PingResponse`] from the snapshot.
@@ -2250,6 +2291,11 @@ pub(crate) fn create_context_with_runtime(
         // meaningful event for the daemon (the embedder load may be later).
         started_at: Instant::now(),
         query_count: Arc::new(AtomicU64::new(0)),
+        // #1182: `cmd_batch` and one-shot `create_context` callers don't run
+        // a watch loop, so the snapshot stays at `unknown` for their whole
+        // lifetime. `watch_and_serve` clones this Arc into the watch loop
+        // and overwrites it on every tick.
+        watch_snapshot: cqs::watch_status::shared_unknown(),
     })
 }
 
@@ -2306,6 +2352,9 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         // counter / uptime values.
         started_at: Instant::now(),
         query_count: Arc::new(AtomicU64::new(0)),
+        // #1182: tests get the same `unknown` initial snapshot. Tests that
+        // exercise the freshness API replace it via the field directly.
+        watch_snapshot: cqs::watch_status::shared_unknown(),
     })
 }
 

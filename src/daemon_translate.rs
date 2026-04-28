@@ -352,17 +352,161 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
         tracing::warn!(stage = "parse", "daemon_ping failed: missing output field");
         "missing 'output' field in daemon response".to_string()
     })?;
-    // The daemon writes the PingResponse as a JSON-string-encoded payload
-    // (because the existing envelope is `{status, output: string}`). When
-    // `output` is a string, parse it; when it's already an object (future-
-    // proofing if the envelope is ever changed), accept that too.
-    let payload: serde_json::Value = match output {
-        serde_json::Value::String(s) => {
-            serde_json::from_str(s).map_err(|e| format!("parse output JSON failed: {e}"))?
-        }
+    let payload = unwrap_dispatch_payload(output, "PingResponse")?;
+    serde_json::from_value(payload).map_err(|e| format!("PingResponse deserialize failed: {e}"))
+}
+
+/// Pull the inner handler payload out of a daemon dispatch response.
+///
+/// The wire chain looks like:
+///
+/// ```text
+/// outer:    {"status":"ok","output":<inner>}        // socket layer
+/// inner:    {"data":<payload>,"error":null,"version":N,"_meta":{...}}
+///           // batch dispatch envelope (write_json_line)
+/// ```
+///
+/// `<inner>` may arrive in two forms:
+///
+/// 1. **Object form** (production daemon socket): `output` parses to a
+///    JSON object — the dispatch envelope. The handler payload is at
+///    `output.data`.
+/// 2. **String form** (some integration test mocks, and any caller that
+///    re-wraps the dispatch bytes verbatim): `output` is a JSON string
+///    that needs a second `from_str` to reach the inner shape.
+///
+/// We accept both forms transparently. If neither produces a `data`
+/// field — i.e. the value is already the bare handler payload — return
+/// it as-is so the legacy mock-test path keeps working.
+///
+/// Pre-existing bug fix: prior to #1182 this function lived inline in
+/// `daemon_ping` without the `data` extraction, which silently broke
+/// production `cqs ping` (envelope deserialized as PingResponse →
+/// "missing field `model`"). Hoisting it lets the new
+/// [`daemon_status`] helper reuse the same well-tested unwrap.
+fn unwrap_dispatch_payload(
+    output: &serde_json::Value,
+    type_name: &str,
+) -> Result<serde_json::Value, String> {
+    let parsed: serde_json::Value = match output {
+        serde_json::Value::String(s) => serde_json::from_str(s).map_err(|e| {
+            tracing::warn!(stage = "parse", error = %e, type_name, "daemon dispatch output JSON parse failed");
+            format!("parse {type_name} output JSON failed: {e}")
+        })?,
         other => other.clone(),
     };
-    serde_json::from_value(payload).map_err(|e| format!("PingResponse deserialize failed: {e}"))
+    // If the inner shape is the dispatch envelope, dig out `data`.
+    // Otherwise pass through (legacy bare-payload mock form).
+    match parsed.as_object().and_then(|m| m.get("data")) {
+        Some(data) => Ok(data.clone()),
+        None => Ok(parsed),
+    }
+}
+
+/// #1182: connect to the running daemon and request a [`WatchSnapshot`].
+///
+/// Mirrors [`daemon_ping`] in shape (same envelope, same string-payload
+/// transport) but issues the `status` command and deserializes a
+/// [`WatchSnapshot`]. The daemon path is chosen because that's where the
+/// watch loop publishes from — the CLI-only path returns a default
+/// `unknown` snapshot, which would defeat the purpose.
+///
+/// Returns explicit `Err(String)` on every failure (no socket, connect
+/// fail, non-`ok` status, malformed payload). Callers can fall back or
+/// surface verbatim.
+///
+/// Unix-only: the daemon socket is unix-only.
+///
+/// [`WatchSnapshot`]: crate::watch_status::WatchSnapshot
+#[cfg(unix)]
+pub fn daemon_status(
+    cqs_dir: &std::path::Path,
+) -> Result<crate::watch_status::WatchSnapshot, String> {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let sock_path = daemon_socket_path(cqs_dir);
+    let _span = tracing::info_span!("daemon_status", path = %sock_path.display()).entered();
+    if !sock_path.exists() {
+        return Err(format!(
+            "no daemon running (socket {} does not exist)",
+            sock_path.display()
+        ));
+    }
+
+    let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
+        tracing::warn!(stage = "connect", error = %e, "daemon_status failed");
+        format!("connect to {} failed: {e}", sock_path.display())
+    })?;
+
+    // 5s is generous: the status handler does a single RwLock read + clone.
+    let timeout = Duration::from_secs(5);
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        tracing::warn!(stage = "set_read_timeout", error = %e, "daemon_status failed");
+        return Err(format!("set_read_timeout failed: {e}"));
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        tracing::warn!(stage = "set_write_timeout", error = %e, "daemon_status failed");
+        return Err(format!("set_write_timeout failed: {e}"));
+    }
+
+    let request = serde_json::json!({"command": "status", "args": []});
+    writeln!(stream, "{}", request).map_err(|e| {
+        tracing::warn!(stage = "write", error = %e, "daemon_status failed");
+        format!("write request failed: {e}")
+    })?;
+    stream.flush().map_err(|e| {
+        tracing::warn!(stage = "flush", error = %e, "daemon_status failed");
+        format!("flush failed: {e}")
+    })?;
+
+    use std::io::Read as _;
+    let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line).map_err(|e| {
+        tracing::warn!(stage = "read", error = %e, "daemon_status failed");
+        format!("read response failed: {e}")
+    })?;
+
+    let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
+        tracing::warn!(stage = "parse", error = %e, "daemon_status failed");
+        format!("parse envelope failed: {e}")
+    })?;
+
+    let status = envelope
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            tracing::warn!(
+                stage = "parse",
+                "daemon_status failed: missing status field"
+            );
+            "missing 'status' field in daemon response".to_string()
+        })?;
+    if status != "ok" {
+        let msg = envelope
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("daemon error");
+        tracing::warn!(
+            stage = "parse",
+            status,
+            msg,
+            "daemon_status failed: non-ok status"
+        );
+        return Err(format!("daemon error: {msg}"));
+    }
+
+    let output = envelope.get("output").ok_or_else(|| {
+        tracing::warn!(
+            stage = "parse",
+            "daemon_status failed: missing output field"
+        );
+        "missing 'output' field in daemon response".to_string()
+    })?;
+    let payload = unwrap_dispatch_payload(output, "WatchSnapshot")?;
+    serde_json::from_value(payload).map_err(|e| format!("WatchSnapshot deserialize failed: {e}"))
 }
 
 #[cfg(test)]
@@ -618,5 +762,149 @@ mod tests {
         assert_eq!(resp.total_queries, 100);
         assert!(resp.splade_loaded);
         assert!(!resp.reranker_loaded);
+    }
+
+    /// #1182: pre-existing `cqs ping` bug fix — production daemon serializes
+    /// `output` as the dispatch envelope `{"data":<payload>,"error":null,...}`,
+    /// not as a JSON-string of the bare payload like the mock above. The
+    /// helper `unwrap_dispatch_payload` digs into `data` so `daemon_ping` /
+    /// `daemon_status` deserialize the actual handler value. Pin both
+    /// paths here.
+    #[test]
+    fn unwrap_dispatch_payload_extracts_data_from_envelope_object() {
+        let envelope = serde_json::json!({
+            "data": {"model": "x", "n": 1},
+            "error": null,
+            "version": 1,
+            "_meta": {"handling_advice": "..."}
+        });
+        let inner = unwrap_dispatch_payload(&envelope, "X").unwrap();
+        assert_eq!(inner, serde_json::json!({"model": "x", "n": 1}));
+    }
+
+    #[test]
+    fn unwrap_dispatch_payload_passes_through_bare_object() {
+        // Legacy mock form: `output` is already the bare payload (no `data`
+        // key). Helper must return it unchanged so existing test mocks keep
+        // working.
+        let bare = serde_json::json!({"model": "x", "n": 1});
+        let inner = unwrap_dispatch_payload(&bare, "X").unwrap();
+        assert_eq!(inner, bare);
+    }
+
+    #[test]
+    fn unwrap_dispatch_payload_parses_string_then_extracts_data() {
+        // String form wrapping an envelope — the helper parses the string,
+        // then digs into `data`.
+        let envelope_str = r#"{"data":{"model":"x"},"error":null,"version":1}"#;
+        let value = serde_json::Value::String(envelope_str.to_string());
+        let inner = unwrap_dispatch_payload(&value, "X").unwrap();
+        assert_eq!(inner, serde_json::json!({"model": "x"}));
+    }
+
+    #[test]
+    fn unwrap_dispatch_payload_parses_string_bare_payload() {
+        let bare_str = r#"{"model":"x","n":1}"#;
+        let value = serde_json::Value::String(bare_str.to_string());
+        let inner = unwrap_dispatch_payload(&value, "X").unwrap();
+        assert_eq!(inner, serde_json::json!({"model": "x", "n": 1}));
+    }
+
+    /// #1182: `daemon_status` happy-path round-trip against a mock listener.
+    /// Mirrors `daemon_ping_mock_round_trip` so a future drift in either
+    /// the envelope shape or the WatchSnapshot fields surfaces here.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_status_mock_round_trip() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: tests run sequentially within a process; this only races
+        // against parallel workers, and the temp_dir is unique per test.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Mock the production envelope shape: `output` is the parsed
+        // dispatch envelope object, not a JSON string.
+        let snap = crate::watch_status::WatchSnapshot {
+            state: crate::watch_status::FreshnessState::Stale,
+            modified_files: 4,
+            pending_notes: true,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 17,
+            dropped_this_cycle: 0,
+            idle_secs: 12,
+            last_synced_at: Some(1_734_120_000),
+            snapshot_at: 1_734_120_500,
+        };
+        let inner_envelope = serde_json::json!({
+            "data": serde_json::to_value(&snap).unwrap(),
+            "error": null,
+            "version": 1,
+        });
+        let outer_envelope = serde_json::json!({
+            "status": "ok",
+            "output": inner_envelope,
+        });
+        let outer_str = outer_envelope.to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            assert!(
+                request_line.contains("\"command\":\"status\""),
+                "expected status request, got: {request_line}"
+            );
+            writeln!(stream, "{outer_str}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_status(&cqs_dir);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        let resp = result.expect("daemon_status should succeed against mock");
+        assert_eq!(resp.state, crate::watch_status::FreshnessState::Stale);
+        assert_eq!(resp.modified_files, 4);
+        assert!(resp.pending_notes);
+        assert_eq!(resp.incremental_count, 17);
+        assert_eq!(resp.last_synced_at, Some(1_734_120_000));
+    }
+
+    /// `daemon_status` surfaces a friendly error (not a panic / generic IO)
+    /// when no daemon socket exists. Mirrors the `daemon_ping` parity test.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_status_errors_without_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let result = daemon_status(&cqs_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no daemon running"),
+            "expected friendly error, got: {err}"
+        );
     }
 }
