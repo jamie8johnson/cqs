@@ -1371,7 +1371,10 @@ mentions = []
         let proceed = first_encounter_notes_gate(tmp.path(), &cqs_dir, true, true).unwrap();
         assert!(proceed, "--accept-shared-notes → proceed");
         let marker = cqs_dir.join(".accepted-shared-notes");
-        assert!(marker.exists(), "marker must be written when accept_flag set");
+        assert!(
+            marker.exists(),
+            "marker must be written when accept_flag set"
+        );
         let body = std::fs::read_to_string(&marker).unwrap();
         assert!(
             body.contains("accepted_at"),
