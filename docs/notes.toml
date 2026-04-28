@@ -1618,3 +1618,31 @@ mentions = [
     "llm_summaries",
     "prompt_injection",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "Every LLM-in-the-loop stage adds an injection surface; pure indexing doesn't. Each transformation that consumes content and emits content (summary cache, doc-writer, contrastive summaries, HyDE) is a vector. Pattern: surface count grows with LLM-stage count, not with feature count. Audit-mode notes gate is the exception (humans write notes), which is why it didn't fit any other mitigation pattern."
+mentions = [
+    "SECURITY.md",
+    "injection",
+    "llm-pipeline",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Threat-model framings: 'cost / tax' frame surfaces removal candidates, aggregation pressure, shared substrate, simplification-over-labeling. 'Dual of capability' frame surfaces what you'd lose by removing the feature. Switch deliberately between the two — cost frame for 'is this surface worth keeping', dual frame for 'what capability dies if I delete'. Picking one and sticking is how you either over-mitigate or under-remove."
+mentions = [
+    "SECURITY.md",
+    "threat-model",
+    "framing",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Cleanest articulation of cqs's hardest problem: 'It's easy to index a codebase, it is not easy to keep it indexed between turns.' Other tools dodge this — IDEs by being the editor (continuous time, editor consumer), Sourcegraph by ignoring the working tree (only commit state), Aider by not indexing. cqs's local-persistent-index-with-CLI shape is right for agent consumers but inherits the freshness problem. Closing the gap (#1182) is positioning lever — freshness as third top-line property alongside semantic search + call graphs. Pitch line: 'the only code search tool that tells you when it's stale.'"
+mentions = [
+    "watch",
+    "#1182",
+    "positioning",
+    "freshness",
+]
