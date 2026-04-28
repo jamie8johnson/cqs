@@ -5,6 +5,7 @@ mod cache_cmd;
 #[cfg(feature = "convert")]
 mod convert;
 mod doctor;
+mod hook;
 mod init;
 mod model;
 mod ping;
@@ -19,6 +20,7 @@ pub(crate) use cache_cmd::{cmd_cache, CacheCommand};
 #[cfg(feature = "convert")]
 pub(crate) use convert::cmd_convert;
 pub(crate) use doctor::cmd_doctor;
+pub(crate) use hook::{cmd_hook, HookCommand};
 pub(crate) use init::cmd_init;
 pub(crate) use model::{cmd_model, ModelCommand};
 pub(crate) use ping::cmd_ping;

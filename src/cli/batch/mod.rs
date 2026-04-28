@@ -341,6 +341,14 @@ pub(crate) struct BatchContext {
     /// trivial — one writer at 100 ms cadence, readers on the daemon
     /// thread that snapshot-and-drop in microseconds.
     pub(crate) watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
+    /// #1182 — Layer 1: shared one-shot signal. The daemon's
+    /// `dispatch_reconcile` handler flips this `true` when a `cqs hook
+    /// fire` client posts a `reconcile` socket message; the watch loop
+    /// observes the flip on its next 100 ms cycle and runs an immediate
+    /// reconcile pass (bypassing the periodic-tick idle gating). Default
+    /// is a fresh `Arc<AtomicBool>` with no listener — outside `cqs watch
+    /// --serve`, dispatching `reconcile` is a no-op rather than an error.
+    pub(crate) reconcile_signal: cqs::watch_status::SharedReconcileSignal,
 }
 
 /// #1127: a number of `BatchContext` accessors are unreachable from non-test
@@ -874,6 +882,17 @@ impl BatchContext {
         self.watch_snapshot = shared;
     }
 
+    /// #1182 — Layer 1: install the shared reconcile-signal handle.
+    /// Called from the daemon thread before lock-wrapping the
+    /// `BatchContext`, so `dispatch_reconcile` flips a flag the watch
+    /// loop is actually watching.
+    ///
+    /// Outside `cqs watch --serve`, this is never called and the field
+    /// stays at the no-op default (no listener picks it up).
+    pub fn adopt_reconcile_signal(&mut self, shared: cqs::watch_status::SharedReconcileSignal) {
+        self.reconcile_signal = shared;
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
@@ -1381,6 +1400,7 @@ impl BatchContext {
             started_at: self.started_at,
             outer_lock,
             watch_snapshot: Arc::clone(&self.watch_snapshot),
+            reconcile_signal: Arc::clone(&self.reconcile_signal),
         }
     }
 }
@@ -1681,6 +1701,11 @@ pub(crate) struct BatchView {
     /// reads the *current* snapshot the loop most recently published, not
     /// a stale one from the moment the view was built.
     watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
+    /// #1182 — Layer 1: shared one-shot reconcile signal. Cloned the
+    /// same way as `watch_snapshot`. `dispatch_reconcile` flips this to
+    /// `true` on the daemon's behalf; the watch loop swaps it back to
+    /// `false` and runs an immediate reconcile pass.
+    reconcile_signal: cqs::watch_status::SharedReconcileSignal,
 }
 
 impl BatchView {
@@ -1937,6 +1962,19 @@ impl BatchView {
             .read()
             .map(|guard| (*guard).clone())
             .unwrap_or_else(|p| (*p.into_inner()).clone())
+    }
+
+    /// #1182 — Layer 1: flip the shared one-shot reconcile flag. Returns
+    /// `true` if the flag was already pending (caller can dedupe in
+    /// log lines), `false` if this call set it. Either way the watch
+    /// loop will run the reconcile on its next 100 ms tick.
+    ///
+    /// `Release` ordering is enough: the watch loop's matching `swap` uses
+    /// `AcqRel`, so any state the daemon thread published before flipping
+    /// the bit is visible to the loop when it observes the flip.
+    pub fn request_reconcile(&self) -> bool {
+        self.reconcile_signal
+            .swap(true, std::sync::atomic::Ordering::Release)
     }
 
     /// Build a [`cqs::daemon_translate::PingResponse`] from the snapshot.
@@ -2296,6 +2334,11 @@ pub(crate) fn create_context_with_runtime(
         // lifetime. `watch_and_serve` clones this Arc into the watch loop
         // and overwrites it on every tick.
         watch_snapshot: cqs::watch_status::shared_unknown(),
+        // #1182 — Layer 1: same model. Outside `cqs watch --serve` no
+        // listener is plugged in, so flipping this from a stray client
+        // is harmless (the watch loop that would consume the signal
+        // simply isn't running).
+        reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
     })
 }
 
@@ -2355,6 +2398,10 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         // #1182: tests get the same `unknown` initial snapshot. Tests that
         // exercise the freshness API replace it via the field directly.
         watch_snapshot: cqs::watch_status::shared_unknown(),
+        // #1182 — Layer 1: tests get an unwired reconcile signal too.
+        // Tests that need to assert the daemon flipped it pull the
+        // field clone before invoking dispatch.
+        reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
     })
 }
 

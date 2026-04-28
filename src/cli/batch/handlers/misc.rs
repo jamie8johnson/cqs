@@ -525,6 +525,46 @@ pub(in crate::cli::batch) fn dispatch_status(ctx: &BatchView) -> Result<serde_js
         .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"))
 }
 
+/// #1182 — Layer 1: git-hook-driven reconcile request. Flips the shared
+/// `SharedReconcileSignal` AtomicBool to `true`; the watch loop swaps it
+/// back to `false` and runs an immediate reconcile pass on its next tick.
+///
+/// The `hook` and `args` fields are advisory — they ride along for tracing
+/// (so `journalctl --user-unit cqs-watch` shows which hook fired) but
+/// don't change the reconcile algorithm. Returning the parameters in the
+/// envelope makes the hook script's stderr useful when debugging
+/// (`cqs hook fire ... --json | jq`).
+///
+/// `was_pending`: `true` if a previous request was still un-drained when
+/// this call arrived. Always-`true` is fine — the watch loop coalesces
+/// repeated requests into one walk, which is the right behavior for a
+/// burst of git operations (e.g. `git rebase -i` firing post-rewrite once
+/// per replayed commit).
+pub(in crate::cli::batch) fn dispatch_reconcile(
+    ctx: &BatchView,
+    hook: Option<String>,
+    args: Vec<String>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!(
+        "batch_reconcile",
+        hook = hook.as_deref().unwrap_or("(unknown)")
+    )
+    .entered();
+    let was_pending = ctx.request_reconcile();
+    tracing::info!(
+        hook = hook.as_deref().unwrap_or("(unknown)"),
+        args_count = args.len(),
+        was_pending,
+        "Reconcile requested"
+    );
+    Ok(serde_json::json!({
+        "queued": true,
+        "was_pending": was_pending,
+        "hook": hook,
+        "args": args,
+    }))
+}
+
 // P2.79: TC-HAP — embedder-free misc handler tests. `dispatch_ping`,
 // `dispatch_help`, and `dispatch_refresh` are the cheap healthcheck/
 // metadata surface and shipped with zero per-handler tests in the batch
@@ -598,6 +638,65 @@ mod tests {
             obj.contains_key("snapshot_at"),
             "snapshot must carry `snapshot_at` timestamp"
         );
+    }
+
+    /// #1182 — Layer 1: `dispatch_reconcile` flips the shared
+    /// `SharedReconcileSignal` AtomicBool. The handler is otherwise
+    /// pure: no store access, no embedder. The view's reconcile_signal
+    /// Arc is shared with the BatchContext's, so we can assert state
+    /// from outside.
+    #[test]
+    fn dispatch_reconcile_flips_signal_and_reports_was_pending() {
+        let (_dir, ctx, view) = empty_view();
+        // Capture a clone of the signal before dispatch so the test can
+        // observe the flip without holding the BatchView's borrow.
+        let signal = {
+            let g = ctx.lock().unwrap();
+            std::sync::Arc::clone(&g.reconcile_signal)
+        };
+
+        // Initially false.
+        assert!(!signal.load(std::sync::atomic::Ordering::Acquire));
+
+        // First dispatch flips it; was_pending must be false.
+        let json = dispatch_reconcile(
+            &view,
+            Some("post-checkout".to_string()),
+            vec!["abc".to_string(), "def".to_string(), "1".to_string()],
+        )
+        .expect("dispatch_reconcile #1");
+        assert_eq!(json.get("queued").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            json.get("was_pending").and_then(|v| v.as_bool()),
+            Some(false),
+            "first reconcile request must report was_pending=false, got: {json}"
+        );
+        assert_eq!(
+            json.get("hook").and_then(|v| v.as_str()),
+            Some("post-checkout")
+        );
+        assert!(signal.load(std::sync::atomic::Ordering::Acquire));
+
+        // Second dispatch (without the loop draining the flag in
+        // between) coalesces — was_pending must be true.
+        let json2 = dispatch_reconcile(&view, Some("post-merge".to_string()), Vec::new())
+            .expect("dispatch_reconcile #2");
+        assert_eq!(
+            json2.get("was_pending").and_then(|v| v.as_bool()),
+            Some(true),
+            "second reconcile request before drain must report was_pending=true, got: {json2}"
+        );
+    }
+
+    #[test]
+    fn dispatch_reconcile_with_no_hook_still_queues() {
+        // `cqs hook fire` always passes a hook name, but the handler
+        // must not require one — hand-rolled `cqs batch reconcile`
+        // sessions skip it.
+        let (_dir, _ctx, view) = empty_view();
+        let json = dispatch_reconcile(&view, None, Vec::new()).expect("dispatch_reconcile");
+        assert_eq!(json.get("queued").and_then(|v| v.as_bool()), Some(true));
+        assert!(json.get("hook").is_some_and(|v| v.is_null()));
     }
 
     #[test]

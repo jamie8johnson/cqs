@@ -18,6 +18,7 @@
 //! Layer 3 (this module) gives those layers an observable surface, and
 //! makes the existing inotify path's state machine queryable.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::SystemTime;
@@ -143,6 +144,32 @@ pub type SharedWatchSnapshot = Arc<RwLock<WatchSnapshot>>;
 /// Build the canonical handle, pre-populated with the "unknown" snapshot.
 pub fn shared_unknown() -> SharedWatchSnapshot {
     Arc::new(RwLock::new(WatchSnapshot::unknown()))
+}
+
+/// Cross-thread one-shot signal that asks the watch loop to run an
+/// out-of-band reconciliation pass on its next tick. (#1182 — Layer 1.)
+///
+/// Set to `true` by:
+///   - The daemon's `dispatch_reconcile` handler when a `cqs hook fire`
+///     client posts a `reconcile` socket message after a git operation.
+///   - The watch loop itself at startup if `.cqs/.dirty` exists (the
+///     fallback that hook scripts touch when the daemon is offline).
+///
+/// Cleared (swap-to-false) by the watch loop once it actually runs the
+/// reconcile pass. The bool is one-shot — coalescing two requests into
+/// one walk is fine because the walk is idempotent.
+///
+/// Atomic, not RwLock-guarded: a single bit doesn't justify the lock,
+/// and the watch loop's `swap(false, AcqRel)` gives the same
+/// "exactly-one consumer" semantics.
+pub type SharedReconcileSignal = Arc<AtomicBool>;
+
+/// Build the canonical reconcile-signal handle, initialised to `false`
+/// (no reconcile pending). The watch loop and the daemon thread each
+/// keep an `Arc` clone; flipping it to `true` from any thread races
+/// safely with the loop's `swap`.
+pub fn shared_reconcile_signal() -> SharedReconcileSignal {
+    Arc::new(AtomicBool::new(false))
 }
 
 /// Inputs the watch loop hands to [`WatchSnapshot::compute`] every cycle.
@@ -293,5 +320,28 @@ mod tests {
     fn shared_unknown_is_unknown() {
         let s = shared_unknown();
         assert_eq!(s.read().unwrap().state, FreshnessState::Unknown);
+    }
+
+    /// #1182 — Layer 1: a fresh signal starts cleared and round-trips
+    /// through `swap` cleanly. Pin both halves so a future refactor of
+    /// `shared_reconcile_signal()` (e.g. switching to a notifier crate)
+    /// can't silently regress to "always pending".
+    #[test]
+    fn shared_reconcile_signal_starts_cleared_and_round_trips() {
+        use std::sync::atomic::Ordering;
+        let s = shared_reconcile_signal();
+        assert!(!s.load(Ordering::Acquire));
+
+        // store=true → swap returns the previous value (false), then
+        // sets the bit.
+        let prev = s.swap(true, Ordering::AcqRel);
+        assert!(!prev);
+        assert!(s.load(Ordering::Acquire));
+
+        // Watch-loop drain pattern: swap to false, get the previous
+        // (was-pending) state.
+        let was_pending = s.swap(false, Ordering::AcqRel);
+        assert!(was_pending);
+        assert!(!s.load(Ordering::Acquire));
     }
 }

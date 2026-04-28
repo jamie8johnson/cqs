@@ -579,6 +579,34 @@ pub fn cmd_watch(
     let watch_snapshot_handle: cqs::watch_status::SharedWatchSnapshot =
         cqs::watch_status::shared_unknown();
 
+    // #1182 — Layer 1: cross-thread one-shot reconcile signal. Allocated
+    // alongside `watch_snapshot_handle` so a single Arc clone reaches each
+    // side. Watch loop swaps it back to `false` after running the on-demand
+    // reconcile pass; daemon's `dispatch_reconcile` flips it to `true`.
+    let reconcile_signal_handle: cqs::watch_status::SharedReconcileSignal =
+        cqs::watch_status::shared_reconcile_signal();
+
+    // #1182 — Layer 1: pick up a leftover `.cqs/.dirty` marker from a
+    // previous session where a git hook fired without a daemon listening.
+    // The hook touches this file as a fallback; on next daemon start we
+    // promote it into a one-shot reconcile request and remove the marker.
+    let dirty_marker_path = cqs_dir.join(".dirty");
+    if dirty_marker_path.exists() {
+        reconcile_signal_handle.store(true, std::sync::atomic::Ordering::Release);
+        if let Err(e) = std::fs::remove_file(&dirty_marker_path) {
+            tracing::warn!(
+                error = %e,
+                path = %dirty_marker_path.display(),
+                ".cqs/.dirty present but could not be removed"
+            );
+        } else {
+            tracing::info!(
+                path = %dirty_marker_path.display(),
+                "Promoted .cqs/.dirty into a one-shot reconcile request"
+            );
+        }
+    }
+
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
     //
@@ -610,6 +638,8 @@ pub fn cmd_watch(
             let daemon_runtime = Arc::clone(&shared_rt);
             // #1182: clone the shared snapshot Arc into the daemon thread.
             let daemon_watch_snapshot = Arc::clone(&watch_snapshot_handle);
+            // #1182 — Layer 1: clone the reconcile-signal Arc too.
+            let daemon_reconcile_signal = Arc::clone(&reconcile_signal_handle);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = daemon::spawn_daemon_thread(
@@ -618,6 +648,7 @@ pub fn cmd_watch(
                 daemon_model_config,
                 daemon_runtime,
                 daemon_watch_snapshot,
+                daemon_reconcile_signal,
             );
             Some(thread)
         } else {
@@ -1005,6 +1036,49 @@ pub fn cmd_watch(
                 warn!(error = %e, "Watch error");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // #1182 — Layer 1: out-of-band reconcile request. The
+                // daemon's `dispatch_reconcile` flips this AtomicBool to
+                // `true` when a `cqs hook fire` client posts a
+                // `reconcile` socket message. Bypasses the periodic
+                // tick's idle gating: a git operation is itself the
+                // user signal, so reconciling immediately is correct
+                // even when `pending_files` is empty (which is exactly
+                // the case `cqs watch` was missing — bulk git ops with
+                // no inotify events).
+                //
+                // Coalesces repeated requests into a single walk: a
+                // `git rebase -i` firing post-rewrite once per replayed
+                // commit only triggers one walk on the next tick.
+                let on_demand_reconcile_requested =
+                    reconcile_signal_handle.swap(false, std::sync::atomic::Ordering::AcqRel);
+                if on_demand_reconcile_requested && reconcile_enabled_flag {
+                    let queued = run_daemon_reconcile(
+                        &store,
+                        &root,
+                        &parser,
+                        no_ignore,
+                        &mut state.pending_files,
+                    );
+                    tracing::info!(
+                        queued,
+                        pending_total = state.pending_files.len(),
+                        "On-demand reconcile (#1182 Layer 1) drained"
+                    );
+                    if queued > 0 {
+                        // Reset `last_event` so the synthetic pending
+                        // entries are picked up by the very next
+                        // `should_process` tick (otherwise the debounce
+                        // window would still hold for `last_event`'s
+                        // worth of milliseconds).
+                        state.last_event = std::time::Instant::now();
+                    }
+                    // Sliding the periodic-tick clock keeps the two
+                    // mechanisms from racing: the next periodic walk
+                    // waits a full `daemon_reconcile_interval_secs()`
+                    // after this on-demand walk.
+                    last_reconcile = std::time::Instant::now();
+                }
+
                 let should_process = (!state.pending_files.is_empty() || state.pending_notes)
                     && state.last_event.elapsed() >= debounce;
 
