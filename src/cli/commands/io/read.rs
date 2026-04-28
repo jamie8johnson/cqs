@@ -312,6 +312,17 @@ struct ReadHints {
 struct FocusedReadJsonOutput {
     focus: String,
     content: String,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `read --focus` reads from the project store only
+    /// (no reference-store fan-in), so this is always "user-code".
+    /// SECURITY.md's mitigation contract is that agents can branch
+    /// safely on this field; the `read --focus` path was missing it.
+    trust_level: &'static str,
+    /// SEC-V1.30.1-1: parallel field to chunk JSON. `read --focus`
+    /// content is delivered as a single concatenated string, not a
+    /// per-chunk list, so there is no per-chunk array — a single
+    /// empty array satisfies the schema-stability contract.
+    injection_flags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hints: Option<ReadHints>,
     /// P2.23: warnings emitted by the underlying assembly (e.g.
@@ -408,6 +419,8 @@ fn cmd_read_focused(
         let output = FocusedReadJsonOutput {
             focus: focus.to_string(),
             content: result.output,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
             hints,
             warnings: result.warnings.clone(),
         };
@@ -447,6 +460,8 @@ mod tests {
         let output = FocusedReadJsonOutput {
             focus: "search".into(),
             content: "fn search() { ... }".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
             hints: Some(ReadHints {
                 caller_count: 3,
                 test_count: 2,
@@ -470,6 +485,8 @@ mod tests {
         let output = FocusedReadJsonOutput {
             focus: "MyStruct".into(),
             content: "struct MyStruct {}".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
             hints: None,
             warnings: Vec::new(),
         };
@@ -486,6 +503,8 @@ mod tests {
         let output = FocusedReadJsonOutput {
             focus: "MyStruct".into(),
             content: "struct MyStruct {}".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
             hints: None,
             warnings: vec!["search_by_names_batch failed: db locked".into()],
         };
@@ -493,6 +512,33 @@ mod tests {
         let warns = json["warnings"].as_array().unwrap();
         assert_eq!(warns.len(), 1);
         assert!(warns[0].as_str().unwrap().contains("db locked"));
+    }
+
+    /// SEC-V1.30.1-1: SECURITY.md:57 promises `read --focus` JSON carries
+    /// `trust_level: "user-code" | "reference-code"` and `injection_flags: []`.
+    /// Before this fix, the doc was lying — `FocusedReadJsonOutput` had
+    /// neither field. This regression-pin keeps the contract honest: future
+    /// removal of these fields would silently break SECURITY.md again.
+    #[test]
+    fn focused_read_output_emits_sec_trust_level_and_injection_flags() {
+        let output = FocusedReadJsonOutput {
+            focus: "f".into(),
+            content: "fn f() {}".into(),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
+            hints: None,
+            warnings: Vec::new(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        // Both fields must serialize (no skip_serializing_if on these).
+        assert_eq!(
+            json["trust_level"], "user-code",
+            "SECURITY.md:57 promises trust_level on read --focus JSON"
+        );
+        let flags = json["injection_flags"].as_array().expect(
+            "SECURITY.md:57 promises injection_flags on read --focus JSON; must serialize as array",
+        );
+        assert!(flags.is_empty(), "no per-content heuristics fired yet");
     }
 
     /// SEC-D.5: `validate_and_read_file` must produce identical error text

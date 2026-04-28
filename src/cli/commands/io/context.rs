@@ -65,6 +65,13 @@ pub(crate) struct CompactChunkEntry {
     pub line_end: u32,
     pub caller_count: u64,
     pub callee_count: u64,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `cqs context --compact` reads from the project store
+    /// only; always "user-code".
+    pub trust_level: &'static str,
+    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags. Empty for now;
+    /// schema-stability contract requires the field be present.
+    pub injection_flags: Vec<String>,
 }
 
 /// Serialize compact data to JSON.
@@ -89,6 +96,8 @@ pub(crate) fn compact_to_json(
                 line_end: c.line_end,
                 caller_count: cc,
                 callee_count: ce,
+                trust_level: "user-code",
+                injection_flags: Vec::new(),
             }
         })
         .collect();
@@ -245,6 +254,15 @@ pub(crate) struct FullChunkEntry {
     pub doc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `cqs context` reads from the project store only;
+    /// always "user-code". SECURITY.md mitigation contract.
+    pub trust_level: &'static str,
+    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags. The full
+    /// per-content-scan integration is #1181 follow-up; for now the
+    /// schema-stability contract requires the field be present and an
+    /// empty `Vec<String>` reflects "no heuristics fired".
+    pub injection_flags: Vec<String>,
 }
 
 /// An external caller in full context output.
@@ -286,6 +304,8 @@ pub(crate) fn full_to_json(
                 line_end: c.line_end,
                 doc: c.doc.clone(),
                 content,
+                trust_level: "user-code",
+                injection_flags: Vec::new(),
             }
         })
         .collect();
@@ -474,6 +494,12 @@ pub(crate) struct SummaryChunkEntry {
     pub chunk_type: String,
     pub line_start: u32,
     pub line_end: u32,
+    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// trust_level. `cqs context --summary` reads from the project store
+    /// only; always "user-code".
+    pub trust_level: &'static str,
+    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags.
+    pub injection_flags: Vec<String>,
 }
 
 pub(crate) fn summary_to_json(
@@ -488,6 +514,8 @@ pub(crate) fn summary_to_json(
             chunk_type: c.chunk_type.to_string(),
             line_start: c.line_start,
             line_end: c.line_end,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
         })
         .collect();
     let mut dep_files: Vec<String> = data.dependent_files.iter().cloned().collect();
@@ -901,5 +929,62 @@ mod tests {
             count_field, arr_len as u64,
             "chunk_count field must equal chunks array length"
         );
+    }
+
+    /// SEC-V1.30.1-1: SECURITY.md:57 lists `cqs context` (all three shapes)
+    /// as JSON outputs that carry `trust_level` and `injection_flags` per
+    /// chunk. Before this fix, none of `CompactChunkEntry` /
+    /// `FullChunkEntry` / `SummaryChunkEntry` had the fields — the doc was
+    /// lying. This regression-pin keeps SECURITY.md honest across all three
+    /// shapes; future field removal would re-break the contract silently.
+    #[test]
+    fn context_chunks_emit_sec_trust_level_and_injection_flags() {
+        // Compact shape.
+        let compact_data = CompactData {
+            chunks: vec![make_chunk("a", 1, 5)],
+            caller_counts: HashMap::new(),
+            callee_counts: HashMap::new(),
+        };
+        let compact_json = compact_to_json(&compact_data, "src/lib.rs").unwrap();
+        let c = &compact_json["chunks"][0];
+        assert_eq!(
+            c["trust_level"], "user-code",
+            "SECURITY.md:57 promises trust_level on context --compact chunks"
+        );
+        let cf = c["injection_flags"]
+            .as_array()
+            .expect("SECURITY.md:57 promises injection_flags on context --compact chunks");
+        assert!(cf.is_empty());
+
+        // Full shape.
+        let full_data = FullData {
+            chunks: vec![make_chunk("b", 1, 5)],
+            external_callers: vec![],
+            external_callees: vec![],
+            dependent_files: HashSet::new(),
+            warnings: Vec::new(),
+        };
+        let full_json = full_to_json(&full_data, "src/lib.rs", None, None).unwrap();
+        let f = &full_json["chunks"][0];
+        assert_eq!(
+            f["trust_level"], "user-code",
+            "SECURITY.md:57 promises trust_level on context --full chunks"
+        );
+        let ff = f["injection_flags"]
+            .as_array()
+            .expect("SECURITY.md:57 promises injection_flags on context --full chunks");
+        assert!(ff.is_empty());
+
+        // Summary shape.
+        let summary_json = summary_to_json(&full_data, "src/lib.rs").unwrap();
+        let s = &summary_json["chunks"][0];
+        assert_eq!(
+            s["trust_level"], "user-code",
+            "SECURITY.md:57 promises trust_level on context --summary chunks"
+        );
+        let sf = s["injection_flags"]
+            .as_array()
+            .expect("SECURITY.md:57 promises injection_flags on context --summary chunks");
+        assert!(sf.is_empty());
     }
 }
