@@ -157,6 +157,33 @@ pub(crate) fn daemon_periodic_gc_idle_secs() -> u64 {
     )
 }
 
+// ============ #1182 Layer 2: periodic full-tree reconciliation ============
+
+/// Default periodic reconciliation interval (seconds). Every this many
+/// seconds the watch loop walks the working tree, compares stored mtime
+/// against current FS mtime via [`Store::list_stale_files`], and queues
+/// any divergent files for reindex. Catches missed inotify events from
+/// bulk git operations, WSL 9P drops, and external writers.
+///
+/// 30 s default targets "user can't tell the freshness gap exists." On a
+/// 17k-chunk corpus the walk is sub-second on Linux and ~1 s on WSL — both
+/// well under the human perceptibility threshold for an idle-time tick.
+pub(crate) const DAEMON_RECONCILE_INTERVAL_SECS_DEFAULT: u64 = 30;
+
+/// Resolve the periodic-reconcile interval honoring `CQS_WATCH_RECONCILE_SECS`.
+/// Falls back to [`DAEMON_RECONCILE_INTERVAL_SECS_DEFAULT`] when unset,
+/// empty, unparseable, or zero.
+///
+/// Set `CQS_WATCH_RECONCILE_SECS=0` via env unset (parser falls back to
+/// default) — to actually disable, use `CQS_WATCH_RECONCILE=0`. The
+/// disable knob is checked in the watch loop, not here.
+pub(crate) fn daemon_reconcile_interval_secs() -> u64 {
+    parse_env_u64(
+        "CQS_WATCH_RECONCILE_SECS",
+        DAEMON_RECONCILE_INTERVAL_SECS_DEFAULT,
+    )
+}
+
 // ============ SHL-V1.29-2: batch stdin line cap ============
 
 /// Default cap on a single batch stdin / daemon line. Matches
