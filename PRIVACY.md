@@ -13,7 +13,7 @@ cqs processes your code locally by default. With `--llm-summaries`, function cod
 When you run `cqs index`, the following is stored under `.cqs/`:
 
 - `.cqs/slots/<name>/index.db` — code chunks, embedding vectors (dim depends on configured model; 1024 for BGE-large default, 768 for E5-base / nomic-coderank presets), file paths, line numbers, modification times. Per-named-slot, side-by-side (#1105). Pre-migration projects may still see a legacy single-slot path at `.cqs/index.db`.
-- `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_id)` (#1105). Skips re-embedding chunks that haven't changed across reindexes / model swaps.
+- `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_fingerprint, purpose)` (#1105, #1128). Skips re-embedding chunks that haven't changed across reindexes / model swaps; the `purpose` discriminator (`embedding` for the post-enrichment vector served by HNSW, `embedding_base` for the raw NL vector served by the dual-index "base" graph) prevents the two streams from overwriting each other when the same chunk produces both.
 
 A legacy global cache may also exist from older versions:
 
