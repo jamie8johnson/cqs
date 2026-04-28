@@ -133,16 +133,22 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     state.pending_files.shrink_to(64);
 
-    // RM-V1.25-23: surface truncated cycles at warn level so operators
-    // notice the gap. The per-event drops are logged at debug to keep
-    // the journal clean on bulk edits.
+    // CQ-V1.30.1-1 / AC-V1.30.1-4 / DS-V1.30.1-D8: warn at the top so
+    // operators see the count, but DO NOT reset the counter here — the
+    // outer loop's `publish_watch_snapshot` runs after this function
+    // returns, and `WatchSnapshot::compute` uses `dropped_this_cycle > 0`
+    // as a Stale signal. If we zero it before the embedder check below
+    // (which may early-return on init failure), the snapshot reports
+    // `Fresh` even though events were dropped and never reindexed —
+    // defeating `cqs eval --require-fresh`. Reset only after a
+    // successful drain so the next cycle's snapshot reflects the
+    // truthful state.
     if state.dropped_this_cycle > 0 {
         tracing::warn!(
             dropped = state.dropped_this_cycle,
             cap = max_pending_files(),
             "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
         );
-        state.dropped_this_cycle = 0;
     }
     if !cfg.quiet {
         println!("\n{} file(s) changed, reindexing...", files.len());
@@ -197,6 +203,12 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
             for (file, mtime) in pre_mtimes {
                 state.last_indexed_mtime.insert(file, mtime);
             }
+            // CQ-V1.30.1-1 / AC-V1.30.1-4: reset only after a successful
+            // drain. The dropped events surfaced in the warn above are
+            // also queued for reconcile (Layer 2) on the next idle pass,
+            // so the count stays meaningful exactly until the reconcile
+            // refills `pending_files` with the same paths.
+            state.dropped_this_cycle = 0;
             // #969: recency prune for the mtime map. Previously this called
             // `Path::exists()` per entry, which on WSL 9P mounts issued up to
             // 5000 serial `stat()` syscalls on the watch thread. The map's

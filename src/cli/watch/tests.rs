@@ -1517,3 +1517,133 @@ fn env_snapshot_redacts_api_key() {
         "CQS_TELEMETRY is non-secret, kept verbatim"
     );
 }
+
+// ===== process_file_changes ordering tests (P1.2) =====
+
+/// CQ-V1.30.1-1 / AC-V1.30.1-4 / DS-V1.30.1-D8: `dropped_this_cycle` must
+/// NOT be reset before the embedder-init check. When `try_init_embedder`
+/// early-returns (init failure or backoff), the counter must survive so
+/// the outer loop's `publish_watch_snapshot` can observe it as a Stale
+/// signal. Pre-fix, the counter was zeroed at the top of the function
+/// regardless of which path ran, so `cqs eval --require-fresh` accepted
+/// indexes whose only-witness drops had been wiped.
+///
+/// We force the embedder-init early-return by recording an
+/// `EmbedderBackoff` failure (so `should_retry()` blocks for ~2 s) on a
+/// state whose `TEST_EMBEDDER` `OnceLock` has never been populated.
+#[test]
+fn dropped_this_cycle_survives_embedder_init_early_return() {
+    let fix = drain_test_fixture(4);
+    let cfg = test_watch_config(
+        fix.tmp.path(),
+        fix.tmp.path(),
+        &fix.notes_path,
+        &fix.supported_ext,
+    );
+
+    let mut state = test_watch_state();
+    // Seed the conditions of a saturated debounce cycle: one queued
+    // file plus a non-zero dropped count from prior cap-overflow events.
+    state.pending_files.insert(PathBuf::from("queued.rs"));
+    state.dropped_this_cycle = 5;
+    // Force `try_init_embedder` → None without loading any model: the
+    // shared `TEST_EMBEDDER` OnceLock is empty (set up in this file as
+    // `LazyLock::new(OnceLock::new)`), so we just need backoff to block
+    // the retry path. One recorded failure is enough — `record_failure`
+    // sets `next_retry = now + 2 s`.
+    state.embedder_backoff.record_failure();
+    assert!(
+        !state.embedder_backoff.should_retry(),
+        "test setup: backoff must block retry so try_init_embedder returns None"
+    );
+
+    process_file_changes(&cfg, &fix.store, &mut state);
+
+    // Pin: the early-return path must NOT have zeroed the counter.
+    assert_eq!(
+        state.dropped_this_cycle, 5,
+        "dropped_this_cycle must survive embedder-init early-return so the \
+         next publish_watch_snapshot reports state=Stale"
+    );
+    // Sanity: `pending_files` is drained at the top of the function (by
+    // design — collected events are taken before any work), so this is
+    // not what shields the snapshot. The drop counter is.
+    assert!(state.pending_files.is_empty(), "pending_files drains first");
+}
+
+/// CQ-V1.30.1-1 ordering complement: a *successful* drain must reset
+/// `dropped_this_cycle` to 0. The reset moved to after `Ok((count, ...))`
+/// so this exercises the post-drain branch and pins the contract for
+/// future refactors. Uses `drain_test_fixture` (no embedder needed) and
+/// confirms the function reaches the success arm by passing an empty
+/// `pending_files` set after seeding the dropped counter — the function
+/// processes "0 files changed" as a successful (count=0) drain.
+///
+/// Implementation note: even with no files, `reindex_files` returns
+/// `Ok((0, vec![]))` and the success arm runs — that's the behavior we
+/// want, since "we got through cleanly" is the right time to reset. A
+/// CPU embedder is required to reach `reindex_files`. We use the same
+/// trick as `dropped_this_cycle_survives_embedder_init_early_return`
+/// inverted: this time the embedder is needed, so we don't want the
+/// backoff path. We `#[ignore]` this test because it requires loading a
+/// real CPU embedder model — the early-return test above carries the
+/// load-bearing regression assertion; this one just documents the
+/// success-arm reset contract for human readers.
+#[test]
+#[ignore = "Requires loading a real CPU embedder; survives_embedder_init_early_return is the load-bearing regression test"]
+fn dropped_this_cycle_resets_after_successful_drain() {
+    use cqs::embedder::ModelConfig;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    let cqs_dir = root.join(".cqs");
+    std::fs::create_dir_all(&cqs_dir).unwrap();
+
+    let model_cfg = ModelConfig::resolve(None, None);
+    let embedder = Embedder::new_cpu(model_cfg).expect("init CPU embedder");
+    let dim = embedder.embedding_dim();
+    let store_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let mut store = Store::open(&store_path).unwrap();
+    store
+        .init(&cqs::store::ModelInfo::new(
+            &embedder.model_config().repo,
+            dim,
+        ))
+        .unwrap();
+    store.set_dim(dim);
+    let notes_path = cqs_dir.join("docs/notes.toml");
+    let supported: HashSet<&str> = HashSet::new();
+
+    // Embedder slot pre-populated so try_init_embedder returns Some.
+    let embedder_slot = std::sync::OnceLock::new();
+    let _ = embedder_slot.set(std::sync::Arc::new(embedder));
+    let model_cfg2 = ModelConfig::default_model();
+    let parser = CqParser::new().unwrap();
+    let gitignore = std::sync::RwLock::new(None);
+
+    let cfg = WatchConfig {
+        root,
+        cqs_dir: &cqs_dir,
+        notes_path: &notes_path,
+        supported_ext: &supported,
+        parser: &parser,
+        embedder: &embedder_slot,
+        quiet: true,
+        model_config: &model_cfg2,
+        gitignore: &gitignore,
+        splade_encoder: None,
+        global_cache: None,
+    };
+
+    let mut state = test_watch_state();
+    state.dropped_this_cycle = 5;
+    // No files queued → reindex_files returns Ok((0, vec![])).
+
+    process_file_changes(&cfg, &store, &mut state);
+
+    assert_eq!(
+        state.dropped_this_cycle, 0,
+        "successful drain must reset the counter so the next cycle's \
+         snapshot reflects fresh state"
+    );
+}
