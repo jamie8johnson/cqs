@@ -876,6 +876,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "shell-words",
+ "similar",
  "simsimd",
  "sqlx",
  "subtle",

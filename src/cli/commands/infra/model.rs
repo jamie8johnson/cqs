@@ -506,6 +506,8 @@ fn reindex_with_new_model(cli: &Cli, new_cfg: ModelConfig) -> Result<()> {
         #[cfg(feature = "llm-summaries")]
         improve_docs: false,
         #[cfg(feature = "llm-summaries")]
+        apply: false,
+        #[cfg(feature = "llm-summaries")]
         improve_all: false,
         #[cfg(feature = "llm-summaries")]
         max_docs: None,

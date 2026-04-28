@@ -39,6 +39,10 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     #[cfg(not(feature = "llm-summaries"))]
     let improve_all = false;
     #[cfg(feature = "llm-summaries")]
+    let apply_docs = args.apply;
+    #[cfg(not(feature = "llm-summaries"))]
+    let apply_docs = false;
+    #[cfg(feature = "llm-summaries")]
     let max_docs = args.max_docs;
     #[cfg(not(feature = "llm-summaries"))]
     let max_docs: Option<usize> = None;
@@ -61,6 +65,10 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     #[cfg(feature = "llm-summaries")]
     if improve_all && !improve_docs {
         anyhow::bail!("--improve-all requires --improve-docs");
+    }
+    #[cfg(feature = "llm-summaries")]
+    if apply_docs && !improve_docs {
+        anyhow::bail!("--apply requires --improve-docs");
     }
 
     let root = find_project_root();
@@ -397,30 +405,75 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         .context("Doc comment generation failed")?;
 
         if !doc_results.is_empty() {
-            // Group by file and write back
+            // Group by file and write back (or stage as review patches)
             use std::collections::HashMap;
             let mut by_file: HashMap<std::path::PathBuf, Vec<_>> = HashMap::new();
             for r in doc_results {
                 by_file.entry(r.file.clone()).or_default().push(r);
             }
             let doc_parser = CqParser::new()?;
-            let mut total = 0;
-            for (path, edits) in &by_file {
-                match cqs::doc_writer::rewriter::rewrite_file(path, edits, &doc_parser) {
-                    Ok(n) => total += n,
-                    Err(e) => tracing::warn!(
-                        file = %path.display(),
-                        error = %e,
-                        "Doc write-back failed"
-                    ),
+            if apply_docs {
+                if !cli.quiet {
+                    println!("  Writing generated doc comments directly to source files (--apply)");
                 }
-            }
-            if !cli.quiet {
-                println!(
-                    "  Doc comments: {} functions across {} files",
-                    total,
-                    by_file.len()
-                );
+                let mut total = 0;
+                for (path, edits) in &by_file {
+                    match cqs::doc_writer::rewriter::rewrite_file(path, edits, &doc_parser) {
+                        Ok(n) => total += n,
+                        Err(e) => tracing::warn!(
+                            file = %path.display(),
+                            error = %e,
+                            "Doc write-back failed"
+                        ),
+                    }
+                }
+                if !cli.quiet {
+                    println!(
+                        "  Doc comments: {} functions across {} files",
+                        total,
+                        by_file.len()
+                    );
+                }
+            } else {
+                let patch_dir = cqs_dir.join("proposed-docs");
+                let mut written = 0usize;
+                let mut skipped = 0usize;
+                for (path, edits) in &by_file {
+                    match cqs::doc_writer::rewriter::write_proposed_patch(
+                        path,
+                        &root,
+                        edits,
+                        &doc_parser,
+                        &patch_dir,
+                    ) {
+                        Ok(true) => written += 1,
+                        Ok(false) => skipped += 1,
+                        Err(e) => tracing::warn!(
+                            file = %path.display(),
+                            error = %e,
+                            "Doc patch write failed"
+                        ),
+                    }
+                }
+                if !cli.quiet {
+                    if written > 0 {
+                        println!(
+                            "  Doc comments: {} proposed update(s) written to {}",
+                            written,
+                            patch_dir.display()
+                        );
+                        println!(
+                            "    Review and apply with: git apply {}/**/*.patch",
+                            patch_dir.display()
+                        );
+                        println!("    Or rerun with --apply to write directly (skips review).");
+                    } else if skipped > 0 {
+                        println!(
+                            "  Doc comments: {} candidate file(s) produced no diff",
+                            skipped
+                        );
+                    }
+                }
             }
         } else if !cli.quiet {
             println!("  Doc comments: 0 candidates");

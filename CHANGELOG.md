@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`cqs index --improve-docs` is now review-gated by default** (#1166). Generated doc comments are written as `git apply`-compatible unified-diff patches under `.cqs/proposed-docs/<rel>.patch`; the source tree is not mutated. Apply with `git apply .cqs/proposed-docs/**/*.patch`. Pass `--apply` to opt back into direct write-back (the previous behaviour); the run prints a warning when it does. This closes the indirect-prompt-injection vector where an LLM-authored doc comment could land in the working tree without human review. New public API: `cqs::doc_writer::rewriter::compute_rewrite()` (parse + resolve, no IO) and `write_proposed_patch()` (writes the patch).
+
 ## [1.30.0] - 2026-04-25
 
 Minor release: closes the v1.29.0 audit umbrella (#1095), ships the cache+slots infrastructure, adds a code-specialised embedder preset, hardens `cqs serve` with per-launch auth, and scaffolds non-NVIDIA `ExecutionProvider` backends. Schema unchanged from v1.29.x; no reindex required for the audit-fix changes (cache+slots auto-migrates the legacy `.cqs/index.db` on first command).

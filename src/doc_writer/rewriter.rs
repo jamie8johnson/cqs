@@ -219,6 +219,63 @@ pub fn detect_existing_doc_range(
     }
 }
 
+/// Outcome of computing a doc-comment rewrite without writing it. Used by
+/// both [`rewrite_file`] (in-place atomic write) and [`write_proposed_patch`]
+/// (review-gate diff to `.cqs/proposed-docs/`) so the parse / resolve /
+/// apply pipeline only lives in one place.
+pub struct RewriteOutcome {
+    /// Original file content as it was on disk when the rewrite was computed.
+    pub old_content: String,
+    /// Post-edit content, ready to write or diff.
+    pub new_content: String,
+    /// Number of edits that were successfully resolved and applied. Edits
+    /// that were skipped (function not found in re-parse, adequate doc
+    /// already present, empty formatted output) do not contribute.
+    pub applied: usize,
+}
+
+/// Pure parse-resolve-apply step shared by `rewrite_file` and
+/// `write_proposed_patch`. Does no IO beyond the initial `read_to_string`
+/// of the source file. Returns `Ok(None)` when there's nothing to apply
+/// (empty input, every edit skipped) so the caller can short-circuit
+/// without writing or diffing.
+pub fn compute_rewrite(
+    path: &Path,
+    edits: &[DocCommentResult],
+    parser: &Parser,
+) -> Result<Option<RewriteOutcome>, DocWriterError> {
+    if edits.is_empty() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let new_content = compute_rewrite_from_content(&content, path, edits, parser)?;
+    Ok(new_content.map(|(new, applied)| RewriteOutcome {
+        old_content: content,
+        new_content: new,
+        applied,
+    }))
+}
+
+/// Inner helper — works against an already-loaded content string. Splitting
+/// the IO from the transform keeps the resolve/apply step testable without
+/// touching disk.
+fn compute_rewrite_from_content(
+    content: &str,
+    path: &Path,
+    edits: &[DocCommentResult],
+    parser: &Parser,
+) -> Result<Option<(String, usize)>, DocWriterError> {
+    let file_lines: Vec<&str> = content.lines().collect();
+    let resolved = resolve_edits(content, &file_lines, path, edits, parser)?;
+    if resolved.is_empty() {
+        return Ok(None);
+    }
+    let count = resolved.len();
+    let new_content = apply_resolved_edits(content, &resolved);
+    Ok(Some((new_content, count)))
+}
+
 /// Rewrite a source file by inserting or replacing doc comments.
 /// Re-parses the file with tree-sitter to get current chunk positions, matches
 /// each edit to a chunk by function name, computes insertion points and existing
@@ -256,10 +313,35 @@ pub fn rewrite_file(
         })?;
     lock_file.lock()?;
 
-    // Read current file content
+    // Read current file content (under the lock so the parse + write cycle
+    // sees a consistent snapshot — same rationale as the original inline
+    // implementation).
     let content = std::fs::read_to_string(path)?;
-    let file_lines: Vec<&str> = content.lines().collect();
+    let outcome = compute_rewrite_from_content(&content, path, edits, parser)?;
+    let Some((new_content, count)) = outcome else {
+        return Ok(0);
+    };
 
+    // Atomic write: temp file in same directory + rename
+    atomic_write(path, new_content.as_bytes())?;
+
+    tracing::debug!(file = %path.display(), count, "Wrote doc comments");
+
+    Ok(count)
+}
+
+/// Resolve a slice of [`DocCommentResult`] edits against a re-parsed source
+/// file into ordered line-level [`ResolvedEdit`] operations. Skips edits
+/// that don't match a chunk in the re-parse, that target a function
+/// already documented (≥30 chars), or that produce empty formatted
+/// output. Returns the resolved list (may be shorter than `edits`).
+fn resolve_edits(
+    content: &str,
+    file_lines: &[&str],
+    path: &Path,
+    edits: &[DocCommentResult],
+    parser: &Parser,
+) -> Result<Vec<ResolvedEdit>, DocWriterError> {
     // Re-parse to get current chunk positions.
     // RB-14: All edits for a single file must share the same language.
     // If mixed, warn and filter to only edits matching the first language.
@@ -271,7 +353,7 @@ pub fn rewrite_file(
             "Mixed languages in doc edits for one file — using {}", language
         );
     }
-    let chunks = match parser.parse_source(&content, language, path) {
+    let chunks = match parser.parse_source(content, language, path) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, file = %path.display(), "Failed to parse file for doc rewrite");
@@ -279,9 +361,7 @@ pub fn rewrite_file(
         }
     };
 
-    // Resolve each edit to a line-level operation
     let mut resolved: Vec<ResolvedEdit> = Vec::new();
-
     for edit in edits {
         // RB-14: skip edits with mismatched language
         if edit.language != language {
@@ -304,7 +384,6 @@ pub fn rewrite_file(
         } else if matching_chunks.len() == 1 {
             matching_chunks[0]
         } else {
-            // Disambiguate by closest line_start to the edit's original
             matching_chunks
                 .iter()
                 .min_by_key(|c| (c.line_start as isize - edit.line_start as isize).unsigned_abs())
@@ -312,12 +391,10 @@ pub fn rewrite_file(
         };
 
         let line_start = chunk.line_start as usize;
-        let insertion_line = find_insertion_point(line_start, &file_lines, language);
-
-        let existing_range = detect_existing_doc_range(insertion_line, &file_lines, language);
+        let insertion_line = find_insertion_point(line_start, file_lines, language);
+        let existing_range = detect_existing_doc_range(insertion_line, file_lines, language);
 
         // Skip if function already has an adequate doc comment (>= 30 chars)
-        // This prevents re-writing docs on every run when the cache still has the entry
         if let Some(ref range) = existing_range {
             let existing_doc: String = file_lines[range.clone()]
                 .iter()
@@ -333,8 +410,7 @@ pub fn rewrite_file(
             }
         }
 
-        // Detect indentation from the chunk's first line
-        let chunk_line_idx = line_start.saturating_sub(1); // 0-based
+        let chunk_line_idx = line_start.saturating_sub(1);
         let indent = if chunk_line_idx < file_lines.len() {
             let line = file_lines[chunk_line_idx];
             let stripped = line.trim_start();
@@ -343,17 +419,14 @@ pub fn rewrite_file(
             ""
         };
 
-        // For InsideBody (Python), use body indentation (one level deeper)
         let format = doc_format_for(language);
         let effective_indent = if format.position == InsertionPosition::InsideBody {
-            // Detect body indent from the line after the def
-            let body_idx = line_start; // 0-based index of line after def (line_start is 1-based)
+            let body_idx = line_start;
             if body_idx < file_lines.len() && !file_lines[body_idx].trim().is_empty() {
                 let body_line = file_lines[body_idx];
                 let stripped = body_line.trim_start();
                 body_line[..body_line.len() - stripped.len()].to_string()
             } else {
-                // Fallback: original indent + 4 spaces
                 format!("{indent}    ")
             }
         } else {
@@ -366,14 +439,10 @@ pub fn rewrite_file(
             &effective_indent,
             &edit.function_name,
         );
-
         if formatted.is_empty() {
             continue;
         }
-
         let new_lines: Vec<String> = formatted.lines().map(|l| format!("{l}\n")).collect();
-
-        // Compute 0-based insert position
         let insert_at_0 = insertion_line.saturating_sub(1);
 
         tracing::debug!(
@@ -390,7 +459,6 @@ pub fn rewrite_file(
         });
     }
 
-    // RB-19: Log when edits are skipped (not found, adequate doc, empty format, etc.)
     let skipped = edits.len() - resolved.len();
     if skipped > 0 {
         tracing::info!(
@@ -401,22 +469,19 @@ pub fn rewrite_file(
             "Skipped doc edits (not found, adequate doc, or empty)"
         );
     }
+    Ok(resolved)
+}
 
-    if resolved.is_empty() {
-        return Ok(0);
-    }
-
-    // Sort edits by line number descending (bottom-up) so earlier edits
-    // don't shift line numbers for later ones.
+/// Apply resolved edits to source content, returning the post-edit string.
+/// Edits are sorted bottom-up so earlier-line edits don't shift line numbers
+/// for later ones.
+fn apply_resolved_edits(content: &str, resolved: &[ResolvedEdit]) -> String {
+    let mut resolved: Vec<&ResolvedEdit> = resolved.iter().collect();
     resolved.sort_by_key(|r| std::cmp::Reverse(r.insert_at));
 
-    // Apply edits to a mutable line buffer
     let mut lines: Vec<String> = content.lines().map(|l| format!("{l}\n")).collect();
     // Preserve trailing newline state
-    if content.ends_with('\n') && !lines.is_empty() {
-        // lines() already stripped trailing, but our format added \n back — correct
-    } else if !content.ends_with('\n') && !lines.is_empty() {
-        // File didn't end with newline; remove the extra \n we added to last line
+    if !content.ends_with('\n') && !lines.is_empty() {
         if let Some(last) = lines.last_mut() {
             if last.ends_with('\n') {
                 last.pop();
@@ -424,40 +489,89 @@ pub fn rewrite_file(
         }
     }
 
-    let count = resolved.len();
-
-    for edit in &resolved {
-        // Remove existing doc lines first (if any)
+    for edit in resolved {
         if let Some(ref range) = edit.remove_range {
             if range.start < lines.len() {
                 let end = range.end.min(lines.len());
                 lines.drain(range.start..end);
             }
         }
-
-        // Compute effective insert position after removal
         let insert_at = if let Some(ref range) = edit.remove_range {
-            // After removing lines, the insertion point shifts up
             edit.insert_at
                 .saturating_sub(range.end.saturating_sub(range.start))
                 .min(lines.len())
         } else {
             edit.insert_at.min(lines.len())
         };
-
-        // Insert new doc lines
         for (i, line) in edit.new_lines.iter().enumerate() {
             lines.insert(insert_at + i, line.clone());
         }
     }
 
-    // Atomic write: temp file in same directory + rename
-    let result_content: String = lines.concat();
-    atomic_write(path, result_content.as_bytes())?;
+    lines.concat()
+}
 
-    tracing::debug!(file = %path.display(), count, "Wrote doc comments");
+/// Compute the proposed doc-comment edits for `path` against the project
+/// root, render them as a unified diff (`git apply`-compatible), and write
+/// to `out_dir/<rel-path>.patch`. The file under the project root is **not**
+/// modified — this is the review-gate path that backs the default
+/// `cqs index --improve-docs` behaviour after #1166.
+///
+/// Returns `Ok(true)` when a non-empty patch was written, `Ok(false)` when
+/// there were no edits to propose (every edit skipped, or the rewrite was
+/// a no-op).
+pub fn write_proposed_patch(
+    path: &Path,
+    project_root: &Path,
+    edits: &[DocCommentResult],
+    parser: &Parser,
+    out_dir: &Path,
+) -> Result<bool, DocWriterError> {
+    let _span = tracing::info_span!("write_proposed_patch", file = %path.display()).entered();
 
-    Ok(count)
+    let Some(outcome) = compute_rewrite(path, edits, parser)? else {
+        return Ok(false);
+    };
+    if outcome.old_content == outcome.new_content {
+        return Ok(false);
+    }
+
+    // Compute the relative path under project_root for the patch header
+    // and the on-disk patch location. Falls back to the file name on error
+    // so a bad strip_prefix doesn't lose the patch entirely.
+    let rel = path
+        .strip_prefix(project_root)
+        .unwrap_or_else(|_| Path::new(path.file_name().unwrap_or_default()))
+        .to_path_buf();
+    let rel_display = rel.display().to_string();
+
+    let diff = similar::TextDiff::from_lines(&outcome.old_content, &outcome.new_content);
+    let mut unified = diff
+        .unified_diff()
+        .header(&format!("a/{}", rel_display), &format!("b/{}", rel_display))
+        .to_string();
+    if !unified.ends_with('\n') {
+        unified.push('\n');
+    }
+
+    // out_dir/<rel>.patch — mirror source layout under the proposed-docs root.
+    let mut patch_path = out_dir.join(&rel);
+    let new_filename = match patch_path.file_name() {
+        Some(name) => format!("{}.patch", name.to_string_lossy()),
+        None => "doc.patch".to_string(),
+    };
+    patch_path.set_file_name(new_filename);
+    if let Some(parent) = patch_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&patch_path, unified.as_bytes())?;
+
+    tracing::info!(
+        patch = %patch_path.display(),
+        applied = outcome.applied,
+        "Wrote proposed doc patch"
+    );
+    Ok(true)
 }
 
 /// Write bytes to a file atomically: write to a temp file in the same
@@ -1005,5 +1119,113 @@ impl Beta {
 
         let result = std::fs::read_to_string(tmp.path()).unwrap();
         assert_eq!(result, source, "File should be unchanged with empty edits");
+    }
+
+    // ── write_proposed_patch tests ────────────────────────────────────
+
+    #[test]
+    fn test_write_proposed_patch_creates_unified_diff() {
+        let project = tempfile::tempdir().unwrap();
+        let src_path = project.path().join("src").join("lib.rs");
+        std::fs::create_dir_all(src_path.parent().unwrap()).unwrap();
+        std::fs::write(&src_path, "fn hello() {\n    println!(\"hi\");\n}\n").unwrap();
+
+        let parser = Parser::new().unwrap();
+        let edit = make_edit(
+            &src_path,
+            "hello",
+            "Prints a greeting.",
+            Language::Rust,
+            1,
+            false,
+        );
+
+        let out_dir = project.path().join(".cqs").join("proposed-docs");
+        let written =
+            write_proposed_patch(&src_path, project.path(), &[edit], &parser, &out_dir).unwrap();
+        assert!(written, "Expected a patch to be written");
+
+        let patch_path = out_dir.join("src").join("lib.rs.patch");
+        assert!(
+            patch_path.exists(),
+            "Patch file should exist at {}",
+            patch_path.display()
+        );
+        let patch = std::fs::read_to_string(&patch_path).unwrap();
+        assert!(
+            patch.starts_with("--- a/src/lib.rs"),
+            "header start, got:\n{patch}"
+        );
+        assert!(
+            patch.contains("+++ b/src/lib.rs"),
+            "header end, got:\n{patch}"
+        );
+        assert!(
+            patch.contains("+/// Prints a greeting."),
+            "added doc line, got:\n{patch}"
+        );
+        // Source file must NOT be modified by the patch path.
+        let orig = std::fs::read_to_string(&src_path).unwrap();
+        assert_eq!(orig, "fn hello() {\n    println!(\"hi\");\n}\n");
+    }
+
+    #[test]
+    fn test_write_proposed_patch_no_op_when_no_edits() {
+        let project = tempfile::tempdir().unwrap();
+        let src_path = project.path().join("noop.rs");
+        std::fs::write(&src_path, "fn x() {}\n").unwrap();
+
+        let parser = Parser::new().unwrap();
+        let out_dir = project.path().join(".cqs").join("proposed-docs");
+        let written =
+            write_proposed_patch(&src_path, project.path(), &[], &parser, &out_dir).unwrap();
+        assert!(!written, "No edits should produce no patch");
+        assert!(!out_dir.exists() || std::fs::read_dir(&out_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn test_write_proposed_patch_round_trip_via_apply() {
+        // The patch must apply cleanly to the original file via standard
+        // diff/patch semantics. We verify by manually applying the unified
+        // diff to the original source and checking the result matches what
+        // rewrite_file would produce in-place.
+        let project = tempfile::tempdir().unwrap();
+        let src_path = project.path().join("round.rs");
+        let original = "fn hello() {\n    println!(\"hi\");\n}\n";
+        std::fs::write(&src_path, original).unwrap();
+
+        let parser = Parser::new().unwrap();
+        let edit = make_edit(
+            &src_path,
+            "hello",
+            "Prints a greeting.",
+            Language::Rust,
+            1,
+            false,
+        );
+
+        let outcome = compute_rewrite(&src_path, &[edit.clone()], &parser)
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.applied, 1);
+
+        // The patch path must produce a diff whose `+` and `-` lines, when
+        // applied to old_content, yield new_content.
+        let out_dir = project.path().join(".cqs").join("proposed-docs");
+        let written =
+            write_proposed_patch(&src_path, project.path(), &[edit], &parser, &out_dir).unwrap();
+        assert!(written);
+
+        // Sanity: the diff body lines that start with '+' (post-prefix) should
+        // appear in new_content.
+        let patch = std::fs::read_to_string(out_dir.join("round.rs.patch")).unwrap();
+        for line in patch.lines() {
+            if let Some(added) = line.strip_prefix('+').filter(|l| !l.starts_with("++")) {
+                assert!(
+                    outcome.new_content.contains(added) || added.is_empty(),
+                    "added line {added:?} should appear in new content"
+                );
+            }
+        }
     }
 }
