@@ -186,11 +186,51 @@ model = "bge-large"              # built-in preset
 Keep your index up to date automatically:
 
 ```bash
-cqs watch              # Watch for changes and reindex
+cqs watch              # Watch for changes and reindex (foreground)
+cqs watch --serve      # + listen on Unix socket so CLI commands hit the daemon (3-19 ms vs 2 s startup)
 cqs watch --debounce 1000  # Custom debounce (ms)
 ```
 
 Watch mode respects `.gitignore` by default. Use `--no-ignore` to index ignored files.
+
+### Three-layer reconciliation (#1182)
+
+`cqs watch --serve` is **always-recoverable, always-detectable** stale: any working-tree change is reflected within seconds, and you can synchronously query "is the index fresh?" before trusting it.
+
+| Layer | Trigger | Latency | Catches |
+|-------|---------|---------|---------|
+| **0** | inotify / poll-watcher events | sub-second | Single-file edits |
+| **1** | `.git/hooks/post-{checkout,merge,rewrite}` → daemon socket | < 1 s | Bulk git operations (`checkout`, `merge`, `rebase`, `reset`) |
+| **2** | Periodic full-tree walk every `CQS_WATCH_RECONCILE_SECS` (default 30 s) | ≤ 30 s | Anything Layer 0/1 missed (WSL `/mnt/c/` 9P drops, external writers, daemon restarts) |
+
+```bash
+cqs hook install       # one-time: install Layer 1 git hooks
+cqs hook status        # show which hooks are installed
+cqs hook uninstall     # remove cqs-marked hooks (leaves third-party hooks alone)
+```
+
+### Freshness API
+
+Ceremony commands (eval, A/B comparisons, anything that must trust the index) gate their work on freshness:
+
+```bash
+cqs status --watch-fresh                 # one-shot text summary
+cqs status --watch-fresh --json          # full WatchSnapshot
+cqs status --watch-fresh --wait           # block until state == fresh (250 ms poll, capped at 600 s)
+cqs status --watch-fresh --wait --wait-secs 30  # custom budget
+```
+
+`cqs eval` consumes the API automatically: `--require-fresh` is on by default, so a stale index can never silently produce a 5-25 pp R@K shift that looks like a real regression. Escape hatches for offline runs:
+
+```bash
+cqs eval queries.json                          # blocks until fresh, errors if no daemon
+cqs eval queries.json --no-require-fresh       # one-shot bypass
+CQS_EVAL_REQUIRE_FRESH=0 cqs eval queries.json # per-shell bypass
+```
+
+### WSL `/mnt/c/` notes
+
+inotify on the 9P bridge is lossy — bulk git operations and external writers routinely miss events. The three-layer model is what keeps watch mode reliable on WSL: even if Layer 0 drops every event for a `git checkout` of a 47-file diff, Layer 1's hook fires within 1 s and Layer 2 catches anything Layer 1 missed within 30 s. You do not need to remember to run `cqs index` after every branch switch.
 
 ## Call Graph
 
