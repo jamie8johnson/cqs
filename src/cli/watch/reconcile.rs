@@ -261,4 +261,197 @@ mod tests {
             }
         }
     }
+
+    /// Build a `[1.0; EMBEDDING_DIM]` placeholder embedding for the seed
+    /// chunks. We don't care about retrieval quality in the reconcile
+    /// tests — `upsert_chunks_batch` just needs *some* embedding per
+    /// chunk for the row to land. Inlined here because `cqs::test_helpers`
+    /// is `#[cfg(test)]`-gated on the lib side and not visible from the
+    /// binary test target.
+    fn placeholder_embedding(seed: f32) -> cqs::embedder::Embedding {
+        let mut v = vec![seed.max(1e-6); cqs::EMBEDDING_DIM];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        cqs::embedder::Embedding::new(v)
+    }
+
+    /// PR 6 of #1182: bulk-delta reconcile pass — the issue's "47-file
+    /// `git checkout` diff" acceptance check.
+    ///
+    /// Models a `git checkout` of a sibling branch under WSL `/mnt/c/`,
+    /// where the 9P bridge silently drops every inotify event for the
+    /// 47-file delta. The watch loop's event queue stays empty; the
+    /// daemon never knows the working tree changed. Only the periodic
+    /// (Layer 2) walk or the git-hook-triggered (Layer 1) walk closes
+    /// the gap.
+    ///
+    /// Seed N files with a deliberately-old `source_mtime` (2023-11-14),
+    /// then run reconcile against the live disk where each file's mtime
+    /// is *now* (2026+). Every file must be queued — otherwise the
+    /// state machine would advertise `state == fresh` while the index
+    /// silently lagged behind disk by N files.
+    ///
+    /// Composes the reconcile + state-machine pieces: after reconcile
+    /// fills `pending_files`, a `WatchSnapshot` computed from the same
+    /// count must report `state == Stale` with `modified_files == N`.
+    /// That's the contract `cqs status --watch-fresh` and
+    /// `cqs eval --require-fresh` ride on top of.
+    #[test]
+    fn reconcile_detects_bulk_modify_burst() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::watch_status::{FreshnessState, WatchSnapshot, WatchSnapshotInput};
+        use std::marker::PhantomData;
+
+        // 47 files mirrors the issue's acceptance test scenario.
+        // Big enough to model a real branch switch; small enough to
+        // run in milliseconds on every CI cycle.
+        const N: usize = 47;
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // Stored mtime is in milliseconds since epoch (matches what
+        // `cqs::duration_to_mtime_millis` produces). 2023-11-14 — well
+        // before any file we're about to write to disk.
+        let stored_mtime_ms: i64 = 1_700_000_000_000;
+
+        let mut pairs: Vec<(Chunk, _)> = Vec::with_capacity(N);
+        for i in 0..N {
+            let rel = format!("src/f{i}.rs");
+            let abs = dir.path().join(&rel);
+            let content = format!("fn f{i}() {{ /* {i} */ }}");
+            fs::write(&abs, &content).unwrap();
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            pairs.push((
+                Chunk {
+                    id: format!("src/f{i}.rs:1:{}", &hash[..8]),
+                    file: PathBuf::from(&rel),
+                    language: Language::Rust,
+                    chunk_type: ChunkType::Function,
+                    name: format!("f{i}"),
+                    signature: format!("fn f{i}()"),
+                    content,
+                    doc: None,
+                    line_start: 1,
+                    line_end: 1,
+                    content_hash: hash,
+                    parent_id: None,
+                    window_idx: None,
+                    parent_type_name: None,
+                    parser_version: 0,
+                },
+                placeholder_embedding(i as f32),
+            ));
+        }
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(&pairs, Some(stored_mtime_ms))
+            .expect("seed N chunks at stored_mtime");
+
+        // Disk mtimes are "now" (post-write), comfortably newer than
+        // `stored_mtime_ms`. Reconcile must classify every file as
+        // MODIFIED and queue it.
+        let mut pending = HashSet::new();
+        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        assert_eq!(
+            queued, N,
+            "all {N} bulk-modified files must be queued (got {queued})"
+        );
+        assert_eq!(pending.len(), N);
+
+        // Compose the state-machine piece: with `pending_files.len() ==
+        // N` the snapshot must report Stale with the same count
+        // surfaced as `modified_files`. This is what
+        // `cqs status --watch-fresh` and `cqs eval --require-fresh`
+        // observe through the `Arc<RwLock<WatchSnapshot>>`.
+        let snap = WatchSnapshot::compute(WatchSnapshotInput {
+            pending_files_count: pending.len(),
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event: std::time::Instant::now(),
+            last_synced_at: None,
+            _marker: PhantomData,
+        });
+        assert_eq!(snap.state, FreshnessState::Stale);
+        assert_eq!(snap.modified_files, N as u64);
+        assert!(!snap.is_fresh());
+    }
+
+    /// PR 6 of #1182: complement to `reconcile_detects_bulk_modify_burst`
+    /// — when disk mtimes are *not* newer than what was indexed, reconcile
+    /// must keep the state Fresh. This pins the false-positive case the
+    /// `git checkout` workflow depends on: just opening files in an editor
+    /// without saving must not trigger a 47-file rebuild burst.
+    #[test]
+    fn reconcile_skips_unchanged_files() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // Write a single file, then store its current disk mtime as the
+        // index's `source_mtime` so reconcile sees `disk_mtime ==
+        // stored_mtime`. The needs_reindex predicate uses strict
+        // `disk > stored`, so equality keeps the file out of the queue.
+        let rel = "src/quiet.rs";
+        let abs = dir.path().join(rel);
+        fs::write(&abs, b"fn quiet() {}").unwrap();
+        let disk_mtime_ms = abs
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let stored_mtime_ms = cqs::duration_to_mtime_millis(disk_mtime_ms);
+
+        let content = "fn quiet() {}".to_string();
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "quiet".to_string(),
+            signature: "fn quiet()".to_string(),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(
+                &[(chunk, placeholder_embedding(0.0))],
+                Some(stored_mtime_ms),
+            )
+            .expect("seed chunk at disk mtime");
+
+        let mut pending = HashSet::new();
+        let queued = run_daemon_reconcile(&store, dir.path(), &parser(), false, &mut pending);
+        assert_eq!(
+            queued, 0,
+            "file with disk_mtime == stored_mtime must not requeue"
+        );
+        assert!(pending.is_empty());
+    }
 }
