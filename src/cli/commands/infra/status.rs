@@ -135,12 +135,12 @@ fn print_text(snap: &cqs::watch_status::WatchSnapshot) {
     // without parsing JSON. Counters that matter live on the second line.
     println!("state: {}", snap.state.as_str());
     println!(
-        "modified_files={} pending_notes={} rebuild_in_flight={} dropped_this_cycle={} idle_secs={}",
+        "modified_files={} pending_notes={} rebuild_in_flight={} dropped_this_cycle={} last_event_unix_secs={}",
         snap.modified_files,
         snap.pending_notes,
         snap.rebuild_in_flight,
         snap.dropped_this_cycle,
-        snap.idle_secs,
+        snap.last_event_unix_secs,
     );
 }
 

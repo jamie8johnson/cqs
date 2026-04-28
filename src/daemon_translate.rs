@@ -1027,9 +1027,9 @@ mod tests {
             delta_saturated: false,
             incremental_count: 17,
             dropped_this_cycle: 0,
-            idle_secs: 12,
+            last_event_unix_secs: 1_734_120_488,
             last_synced_at: Some(1_734_120_000),
-            snapshot_at: 1_734_120_500,
+            snapshot_at: Some(1_734_120_500),
         };
         let inner_envelope = serde_json::json!({
             "data": serde_json::to_value(&snap).unwrap(),
@@ -1232,9 +1232,9 @@ mod tests {
             delta_saturated: false,
             incremental_count: 1234,
             dropped_this_cycle: 0,
-            idle_secs: 30,
+            last_event_unix_secs: 1_734_120_470,
             last_synced_at: Some(1_734_120_000),
-            snapshot_at: 1_734_120_500,
+            snapshot_at: Some(1_734_120_500),
         };
         let inner_envelope = serde_json::json!({
             "data": serde_json::to_value(&snap).unwrap(),
@@ -1308,9 +1308,9 @@ mod tests {
             delta_saturated: false,
             incremental_count: 17,
             dropped_this_cycle: 0,
-            idle_secs: 12,
+            last_event_unix_secs: 1_734_120_488,
             last_synced_at: Some(1_734_120_000),
-            snapshot_at: 1_734_120_500,
+            snapshot_at: Some(1_734_120_500),
         };
         let inner_envelope = serde_json::json!({
             "data": serde_json::to_value(&snap).unwrap(),

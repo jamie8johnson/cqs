@@ -174,12 +174,37 @@ fn publish_watch_snapshot(
     });
     // Poison-recovery: another writer panicking shouldn't silently stop
     // freshness publishing. Recover and overwrite.
+    //
+    // bundle-watch-status-machine / OB-V1.30.1-3: capture the previous
+    // state under the lock so we can emit a transition log line *after*
+    // releasing it. Operators see a journal trail for Fresh↔Stale↔
+    // Rebuilding flips; the loop wrote 100 ms updates with zero state
+    // observability before this. `WatchSnapshot` derives `Clone` and
+    // `FreshnessState` is `Copy`, so the clone-for-log cost is negligible.
+    let prev_state;
+    let next_snap = snap.clone();
     match handle.write() {
-        Ok(mut guard) => *guard = snap,
+        Ok(mut guard) => {
+            prev_state = guard.state;
+            *guard = snap;
+        }
         Err(poisoned) => {
             tracing::warn!("watch_snapshot RwLock poisoned — recovering and continuing to publish");
-            *poisoned.into_inner() = snap;
+            let mut guard = poisoned.into_inner();
+            prev_state = guard.state;
+            *guard = snap;
         }
+    }
+
+    if prev_state != next_snap.state {
+        tracing::info!(
+            prev = prev_state.as_str(),
+            next = next_snap.state.as_str(),
+            modified_files = next_snap.modified_files,
+            rebuild_in_flight = next_snap.rebuild_in_flight,
+            dropped_this_cycle = next_snap.dropped_this_cycle,
+            "watch state transition",
+        );
     }
 }
 
@@ -1192,8 +1217,15 @@ pub fn cmd_watch(
                         if let Some(emb) = shared_embedder.get() {
                             emb.clear_session();
                         }
+                        // AC-V1.30.1-10: do NOT reset incremental_count on
+                        // idle-clear. The counter's contract is "incremental
+                        // inserts since last full rebuild"; a 5-minute idle
+                        // hasn't changed the on-disk delta. Resetting here
+                        // means the next file event starts the threshold
+                        // timer from scratch and understates delta size,
+                        // delaying the rebuild that should fire on
+                        // accumulated drift.
                         state.hnsw_index = None;
-                        state.incremental_count = 0;
                         cycles_since_clear = 0;
                     }
 

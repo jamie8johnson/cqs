@@ -150,12 +150,16 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
             "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
         );
     }
-    if !cfg.quiet {
-        println!("\n{} file(s) changed, reindexing...", files.len());
-        for f in &files {
-            println!("  {}", f.display());
-        }
-    }
+    // OB-V1.30.1-9: replace stdout println with structured tracing.
+    // The daemon has no terminal — stdout goes to journald via the
+    // systemd unit which writes unstructured. Tracing routes through
+    // the configured subscriber (journald JSON or stderr text) and
+    // honours filter levels.
+    tracing::info!(
+        file_count = files.len(),
+        files = ?files,
+        "watch: reindexing changed files",
+    );
 
     let emb = match try_init_embedder(cfg.embedder, &mut state.embedder_backoff, cfg.model_config) {
         Some(e) => e,
@@ -430,6 +434,20 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         }
         Err(e) => {
             warn!(error = %e, "Reindex error");
+            // EH-V1.30.1-8: the dirty flag was set above (lines 184/189)
+            // before the reindex attempt and the success path's
+            // `clear_hnsw_dirty_with_retry` is unreachable from this arm.
+            // Surface that the HNSW will be marked dirty on disk until a
+            // successful reindex cycle clears it — operators correlate
+            // this with the prior `Reindex error` to diagnose persistent
+            // dirty state (SQLite busy / OOM / etc.) and search may
+            // serve stale results in the meantime.
+            tracing::warn!(
+                hnsw_kinds = "enriched,base",
+                "HNSW dirty flag remains set after reindex failure; \
+                 search may serve stale results until next successful \
+                 reindex cycle clears it"
+            );
         }
     }
 }
