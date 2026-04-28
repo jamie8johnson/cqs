@@ -1646,3 +1646,12 @@ mentions = [
     "positioning",
     "freshness",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Pre-existing daemon_ping bug: production daemon wraps dispatch output in {data, error, version, _meta} envelope, but daemon_ping was deserializing the envelope directly into PingResponse. Mock test bypassed the envelope so the bug shipped silently in v1.30.0+. Fixed in #1189 (drive-by during watch_status work) via unwrap_dispatch_payload helper that digs into 'data' if present, falls through to bare-payload for legacy mocks."
+mentions = [
+    "daemon_translate.rs",
+    "daemon_ping",
+    "unwrap_dispatch_payload",
+]
