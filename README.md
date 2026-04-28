@@ -665,9 +665,9 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 
 ## Environment Variables
 
-108 knobs total. Quick index by domain (everything is searchable in the table below):
+109 knobs total. Quick index by domain (everything is searchable in the table below):
 
-- **Trust / injection defence** — `CQS_TRUST_DELIMITERS`
+- **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
 - **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
 - **Daemon, watch, batch** — `CQS_NO_DAEMON`, `CQS_DAEMON_*`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_BATCH_*IDLE_MINUTES`, `CQS_REFS_LRU_SIZE`, `CQS_WATCH_*`, `CQS_CHAT_HISTORY`
@@ -737,6 +737,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_HOTSPOT_MIN_CALLERS` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum caller count for "untested hotspot" / "high risk" detectors. Default scales with corpus size (1k→5, 100k→11, 1M→14). SHL-V1.29-7. |
 | `CQS_DEAD_CLUSTER_MIN_SIZE` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum dead functions in a single file to flag as a "dead code cluster" in `cqs suggest`. Scales with corpus size. SHL-V1.29-7. |
 | `CQS_SUGGEST_HOTSPOT_POOL` | auto (4× hotspot count, clamped `[20, 200]`) | Pool size `cqs suggest` evaluates for risk patterns. SHL-V1.29-7. |
+| `CQS_SUMMARY_VALIDATION` | `loose` | LLM summary validation strictness. `strict`: drop summaries matching injection patterns; `loose`: log + keep matches; `off`: skip. Length cap (1500 chars) is always enforced via deterministic truncation. (#1170) |
 | `CQS_RISK_HIGH` | `5.0` | Risk score threshold above which a function is "High" risk. Drives `cqs review` CI gating; override on monorepos where the default classifies too aggressively. SHL-V1.29-8. |
 | `CQS_RISK_MEDIUM` | `2.0` | Risk score threshold above which a function is "Medium" risk. SHL-V1.29-8. |
 | `CQS_BLAST_LOW_MAX` | `2` | Inclusive upper bound on caller count for "Low" blast radius (callers `0..=N`). SHL-V1.29-8. |

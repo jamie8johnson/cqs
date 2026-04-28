@@ -56,12 +56,13 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 - **First-encounter shared-notes gate (since v1.30.1)**: on the first `cqs index` against a repo containing `docs/notes.toml`, cqs prompts to confirm before indexing the notes — committed notes affect search rankings and surface in agent context. Acceptance is persisted to `.cqs/.accepted-shared-notes` so the prompt doesn't repeat. Pass `--accept-shared-notes` to bypass for CI / scripted use; non-TTY stdin auto-skips the notes pass with a warning so CI never hangs. (#1168)
 - **`trust_level` + `reference_name` on chunk JSON (since v1.30.1)**: every chunk-returning JSON output (`search`, `gather`, `task`, `scout`, `onboard`, `read`, `read --focus`, `context`, `similar`) carries `trust_level: "user-code" | "reference-code"`. Chunks from a `cqs ref` index also carry `reference_name`. Agents should treat `reference-code` content as third-party / less trusted than the user's own project code. (#1167, #1169)
 - **`CQS_TRUST_DELIMITERS=1`** (opt-in): wraps every chunk's `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers so prompt-injection guards downstream of cqs can detect content boundaries even when the agent inlines the rendered string into a larger prompt. Off by default to avoid breaking existing JSON consumers. (#1167)
+- **LLM summary validation (since v1.30.1)**: every summary headed for the `llm_summaries` cache passes through `cqs::llm::validation::validate_summary` before insertion. Catches lazy injections (leading "Ignore prior" / "Disregard"; embedded code fences; embedded URLs) and enforces a 1500-char hard length cap. Configurable via `CQS_SUMMARY_VALIDATION=strict|loose|off` (default `loose`: log + keep on pattern match, truncate over-long; strict drops pattern-matched summaries entirely). Doc-comment generation is intentionally exempt — its prose is imperative by design and would false-positive; it has its own review gate (#1166). (#1170)
 
 ### Tracked improvements
 
 | Issue | Surface |
 |-------|---------|
-| [#1170](https://github.com/jamie8johnson/cqs/issues/1170) | Validate LLM summary output before caching (length cap, injection-pattern detection) |
+| [#1181](https://github.com/jamie8johnson/cqs/issues/1181) | "General mistrust" posture: default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` per JSON response, per-chunk `injection_flags` |
 
 These are defence in depth, not absolute protection. Subtle injections (a summary that is superficially correct but biased) will still get through. The agent-side defence — treat retrieved code as untrusted input, sandbox tool calls, never execute payload-shaped output — remains the load-bearing layer.
 

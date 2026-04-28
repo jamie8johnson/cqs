@@ -20,6 +20,7 @@ pub mod local;
 mod prompts;
 pub mod provider;
 mod summary;
+pub mod validation;
 
 use std::time::Duration;
 
