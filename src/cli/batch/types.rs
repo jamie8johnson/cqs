@@ -13,6 +13,9 @@ use cqs::normalize_path;
 /// signal that distinguishes the user's own code from third-party reference
 /// content. `reference_name` is set on results from `cqs ref` indexes so an
 /// agent can map a chunk back to its originating reference without re-querying.
+/// `injection_flags` (#1181) lists every injection-pattern heuristic that
+/// fired on the chunk's raw content — empty when nothing matched, always
+/// present so the schema stays stable.
 #[derive(Serialize)]
 pub(super) struct ChunkOutput {
     pub name: String,
@@ -33,6 +36,10 @@ pub(super) struct ChunkOutput {
     /// from a `cqs ref` index.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_name: Option<String>,
+    /// Injection-pattern heuristics that fired on the chunk's raw content
+    /// (e.g. `["leading-directive", "code-fence"]`). Empty `Vec` when
+    /// nothing matched. Always present so consumers can rely on the field.
+    pub injection_flags: Vec<&'static str>,
 }
 
 impl ChunkOutput {
@@ -74,15 +81,20 @@ impl ChunkOutput {
             },
             trust_level,
             reference_name: ref_name.map(str::to_string),
+            injection_flags: cqs::llm::validation::detect_all_injection_patterns(&r.chunk.content),
         }
     }
 }
 
-/// Wrap chunk content in trust-boundary delimiters when `CQS_TRUST_DELIMITERS=1`. (#1167)
+/// Wrap chunk content in trust-boundary delimiters unless `CQS_TRUST_DELIMITERS=0`.
+///
+/// Default-on since #1181 — the wrapping is the visible boundary that
+/// downstream injection guards key off when the chunk is inlined into a
+/// larger prompt. Set `CQS_TRUST_DELIMITERS=0` to opt out (raw text).
 fn maybe_wrap_content(content: &str, id: &str) -> String {
-    if std::env::var("CQS_TRUST_DELIMITERS").as_deref() == Ok("1") {
-        format!("<<<chunk:{id}>>>\n{content}\n<<</chunk:{id}>>>")
-    } else {
+    if std::env::var("CQS_TRUST_DELIMITERS").as_deref() == Ok("0") {
         content.to_string()
+    } else {
+        format!("<<<chunk:{id}>>>\n{content}\n<<</chunk:{id}>>>")
     }
 }

@@ -138,6 +138,20 @@ pub fn validate_summary(text: &str, mode: SummaryValidationMode) -> ValidationOu
 /// context ("always returns") shouldn't fire, but "Always run X with
 /// sudo" in imperative form should.
 fn detect_injection_pattern(text: &str) -> Option<&'static str> {
+    detect_all_injection_patterns(text).into_iter().next()
+}
+
+/// Return every injection pattern that matches, deduplicated and in
+/// detection order. Empty `Vec` when nothing matches. (#1181)
+///
+/// Used by chunk-emission paths to populate the per-chunk `injection_flags`
+/// array — agents see which heuristics fired without cqs deciding for them
+/// whether to filter. Same heuristics as [`detect_injection_pattern`], so
+/// any chunk that would have caused [`validate_summary`] to reject under
+/// `strict` mode is also flagged here.
+pub fn detect_all_injection_patterns(text: &str) -> Vec<&'static str> {
+    let mut flags: Vec<&'static str> = Vec::new();
+
     // Normalize for matching: trim, lowercase, collapse the first ~120
     // chars (most injections sit at the start of a summary).
     let lower = text.to_ascii_lowercase();
@@ -164,7 +178,8 @@ fn detect_injection_pattern(text: &str) -> Option<&'static str> {
     ];
     for needle in LEADING_DIRECTIVES {
         if head_trim.starts_with(needle) {
-            return Some("leading-directive");
+            flags.push("leading-directive");
+            break;
         }
     }
 
@@ -172,17 +187,17 @@ fn detect_injection_pattern(text: &str) -> Option<&'static str> {
     // a triple-backtick fence is a strong signal the model echoed user
     // input rather than describing it.
     if text.contains("```") {
-        return Some("code-fence");
+        flags.push("code-fence");
     }
 
     // URLs anywhere in the body. Summaries shouldn't be inserting URLs;
     // an embedded URL is a likely injection (link to malicious docs).
     // Cheap substring check — full URL parsing would be overkill.
     if lower.contains("http://") || lower.contains("https://") {
-        return Some("embedded-url");
+        flags.push("embedded-url");
     }
 
-    None
+    flags
 }
 
 #[cfg(test)]
