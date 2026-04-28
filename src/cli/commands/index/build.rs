@@ -517,9 +517,10 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         if !cli.quiet {
             println!("Enriching embeddings with call graph context...");
         }
-        let embedder = Embedder::new(cli.try_model_config()?.clone())
+        let model_config = cli.try_model_config()?.clone();
+        let embedder = Embedder::new(model_config.clone())
             .context("Failed to create embedder for enrichment pass")?;
-        match enrichment_pass(&store, &embedder, cli.quiet) {
+        match enrichment_pass(&store, &embedder, &model_config, cli.quiet) {
             Ok(count) => {
                 if !cli.quiet && count > 0 {
                     println!("  Enriched: {} chunks", count);

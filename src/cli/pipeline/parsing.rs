@@ -11,7 +11,7 @@ use rayon::prelude::*;
 
 use cqs::{normalize_path, Parser as CqParser, Store};
 
-use super::types::{embed_batch_size, file_batch_size, ParsedBatch, RelationshipData};
+use super::types::{embed_batch_size_for, file_batch_size, ParsedBatch, RelationshipData};
 use crate::cli::check_interrupted;
 
 /// CQ-39: Context struct for parser_stage to avoid too_many_arguments.
@@ -22,6 +22,10 @@ pub(super) struct ParserStageContext {
     pub store: Arc<Store>,
     pub parsed_count: Arc<AtomicUsize>,
     pub parse_errors: Arc<AtomicUsize>,
+    /// SHL-V1.30-1: model config so the per-batch send loop can pick a
+    /// dim/seq-scaled batch size. At batch=64 nomic-coderank (768 dim,
+    /// 2048 seq) OOMs an 8 GB GPU; the model-aware helper drops it to 16.
+    pub model_config: cqs::embedder::ModelConfig,
 }
 
 /// Stage 1: Parse files in parallel batches, filter by staleness, and send to embedder channels.
@@ -38,8 +42,9 @@ pub(super) fn parser_stage(
         store,
         parsed_count,
         parse_errors,
+        model_config,
     } = ctx;
-    let batch_size = embed_batch_size();
+    let batch_size = embed_batch_size_for(&model_config);
     let file_batch_size = file_batch_size();
 
     for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
@@ -272,6 +277,7 @@ pub(super) fn parser_stage(
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::embed_batch_size;
     use super::*;
     use crossbeam_channel::unbounded;
     use std::collections::HashSet;
@@ -348,6 +354,8 @@ mod tests {
             store: Arc::clone(&store),
             parsed_count: Arc::new(AtomicUsize::new(0)),
             parse_errors: Arc::new(AtomicUsize::new(0)),
+            // `resolve` returns `Self`, not Result/Option — no `.unwrap()`.
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
         };
         parser_stage(rel_paths, ctx, tx).unwrap();
 

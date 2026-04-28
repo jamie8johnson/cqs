@@ -136,14 +136,15 @@ pub(super) fn embed_channel_depth() -> usize {
 #[cfg(test)]
 pub(super) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Embedding batch size. Was 32 (backed off from 64 after an undiagnosed crash at 2%).
-/// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,
-/// run with RUST_LOG=debug to capture batch_size/max_char_len/total_chars at failure.
-/// Configurable via `CQS_EMBED_BATCH_SIZE` environment variable.
+/// Legacy fixed-batch helper kept ONLY for callers without a `ModelConfig`
+/// in scope (currently: nothing in production, only the in-tree tests
+/// `pipeline::tests::test_embed_batch_size` and the parser-stage drain
+/// regression test). Production must use [`embed_batch_size_for`] which
+/// scales batch with the active model's dim & seq — at batch=64 the
+/// nomic-coderank preset (768 dim, 2048 seq) OOMs an 8 GB GPU.
 ///
-/// Legacy entry point — kept for callers that don't have a `ModelConfig`
-/// in scope. New sites should prefer [`embed_batch_size_for`] which scales
-/// with the active model's `dim` and `max_seq_length`.
+/// Returns 64 with `CQS_EMBED_BATCH_SIZE` env override.
+#[cfg(test)]
 pub(crate) fn embed_batch_size() -> usize {
     match std::env::var("CQS_EMBED_BATCH_SIZE") {
         Ok(val) => match val.parse::<usize>() {
@@ -163,7 +164,8 @@ pub(crate) fn embed_batch_size() -> usize {
     }
 }
 
-/// P2.41 — scale the embed batch size with the active model's dim & seq.
+/// SHL-V1.30-1 / P2.41 — scale the embed batch size with the active model's
+/// dim & seq.
 ///
 /// BGE-large (1024 dim, 512 seq) at batch=64 ≈ 130 MB per forward-pass tensor
 /// — the empirical sweet spot on RTX 4060 8 GB. Nomic-coderank (768 dim,
@@ -175,7 +177,6 @@ pub(crate) fn embed_batch_size() -> usize {
 /// → `batch_baseline * (1024/dim) * (512/seq)` rounded to a power of 2,
 /// clamped to `[2, 256]`. The env override `CQS_EMBED_BATCH_SIZE` takes
 /// priority — operators with workloads they understand can pin a value.
-#[allow(dead_code)] // P2.41: opt-in helper; pipeline migration is a follow-on PR.
 pub(crate) fn embed_batch_size_for(model: &cqs::embedder::ModelConfig) -> usize {
     if let Ok(val) = std::env::var("CQS_EMBED_BATCH_SIZE") {
         if let Ok(size) = val.parse::<usize>() {

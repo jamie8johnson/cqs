@@ -12,7 +12,7 @@ mod upsert;
 mod windowing;
 
 // Re-export public items
-pub(crate) use types::embed_batch_size;
+pub(crate) use types::embed_batch_size_for;
 pub(crate) use types::PipelineStats;
 pub(crate) use windowing::apply_windowing;
 
@@ -77,6 +77,7 @@ pub(crate) fn run_index_pipeline(
         let parsed_count = Arc::clone(&parsed_count);
         let parse_errors = Arc::clone(&parse_errors);
         let root = root.to_path_buf();
+        let model_config = model_config.clone();
         thread::spawn(move || {
             parser_stage(
                 files,
@@ -87,6 +88,7 @@ pub(crate) fn run_index_pipeline(
                     store,
                     parsed_count,
                     parse_errors,
+                    model_config,
                 },
                 parse_tx,
             )
