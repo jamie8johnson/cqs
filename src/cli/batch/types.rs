@@ -9,7 +9,10 @@ use cqs::normalize_path;
 
 /// Common chunk output shape used by search, similar, and other handlers.
 ///
-/// Fields match the existing JSON output exactly — this is a refactor, not a schema change.
+/// Includes `trust_level` (#1167, #1169) to give consuming agents an explicit
+/// signal that distinguishes the user's own code from third-party reference
+/// content. `reference_name` is set on results from `cqs ref` indexes so an
+/// agent can map a chunk back to its originating reference without re-querying.
 #[derive(Serialize)]
 pub(super) struct ChunkOutput {
     pub name: String,
@@ -23,11 +26,38 @@ pub(super) struct ChunkOutput {
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// "user-code" for chunks from the user's own project, "reference-code"
+    /// for chunks from a `cqs ref` index. Always present.
+    pub trust_level: &'static str,
+    /// Name of the originating reference; only present when the chunk came
+    /// from a `cqs ref` index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_name: Option<String>,
 }
 
 impl ChunkOutput {
     /// Build from a SearchResult (search, name-only search).
+    ///
+    /// Equivalent to `from_search_result_with_origin(r, include_content, None)`:
+    /// emits `trust_level: "user-code"` and omits `reference_name`.
     pub fn from_search_result(r: &cqs::store::SearchResult, include_content: bool) -> Self {
+        Self::from_search_result_with_origin(r, include_content, None)
+    }
+
+    /// Build from a SearchResult, tagging the trust origin.
+    ///
+    /// `ref_name = None` ⇒ `trust_level: "user-code"`. `ref_name = Some(name)`
+    /// ⇒ `trust_level: "reference-code"` plus `reference_name: <name>`.
+    pub fn from_search_result_with_origin(
+        r: &cqs::store::SearchResult,
+        include_content: bool,
+        ref_name: Option<&str>,
+    ) -> Self {
+        let trust_level = if ref_name.is_some() {
+            "reference-code"
+        } else {
+            "user-code"
+        };
         Self {
             name: r.chunk.name.clone(),
             file: normalize_path(&r.chunk.file),
@@ -38,10 +68,21 @@ impl ChunkOutput {
             score: r.score,
             signature: Some(r.chunk.signature.clone()),
             content: if include_content {
-                Some(r.chunk.content.clone())
+                Some(maybe_wrap_content(&r.chunk.content, &r.chunk.id))
             } else {
                 None
             },
+            trust_level,
+            reference_name: ref_name.map(str::to_string),
         }
+    }
+}
+
+/// Wrap chunk content in trust-boundary delimiters when `CQS_TRUST_DELIMITERS=1`. (#1167)
+fn maybe_wrap_content(content: &str, id: &str) -> String {
+    if std::env::var("CQS_TRUST_DELIMITERS").as_deref() == Ok("1") {
+        format!("<<<chunk:{id}>>>\n{content}\n<<</chunk:{id}>>>")
+    } else {
+        content.to_string()
     }
 }

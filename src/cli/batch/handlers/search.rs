@@ -181,11 +181,18 @@ pub(in crate::cli::batch) fn dispatch_search(
         let json_results: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
-                serde_json::to_value(ChunkOutput::from_search_result(r, show_content))
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, name = %r.chunk.name, "ChunkOutput serialization failed (NaN score?)");
-                        serde_json::json!({"error": "serialization failed", "name": r.chunk.name})
-                    })
+                // #1169: --ref scoped search — every chunk came from a single
+                // named reference, so trust_level = "reference-code" and
+                // reference_name = ref_name for all of them.
+                serde_json::to_value(ChunkOutput::from_search_result_with_origin(
+                    r,
+                    show_content,
+                    Some(ref_name),
+                ))
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, name = %r.chunk.name, "ChunkOutput serialization failed (NaN score?)");
+                    serde_json::json!({"error": "serialization failed", "name": r.chunk.name})
+                })
             })
             .collect();
 
@@ -292,6 +299,13 @@ pub(in crate::cli::batch) fn dispatch_search(
     // session don't rebuild every reference Store+HNSW per call. The
     // rayon call below uses the default global pool — the old sequential
     // fallback that built a fresh 4-thread pool per query is gone.
+    //
+    // #1169: the merged tagged Vec carries source info per result. We build
+    // a side-table (`origin_by_id`) keyed by chunk id so the downstream
+    // token-pack + serialize path stays a flat `Vec<UnifiedResult>` while
+    // the JSON emission can still tag each chunk's trust origin.
+    let mut origin_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let results = if args.include_refs {
         let references = ctx.get_all_refs()?;
         if !references.is_empty() {
@@ -317,7 +331,17 @@ pub(in crate::cli::batch) fn dispatch_search(
                 })
                 .collect();
             let tagged = cqs::reference::merge_results(results, ref_results, limit);
-            tagged.into_iter().map(|t| t.result).collect()
+            tagged
+                .into_iter()
+                .map(|t| {
+                    if let (Some(source), cqs::store::UnifiedResult::Code(ref sr)) =
+                        (&t.source, &t.result)
+                    {
+                        origin_by_id.insert(sr.chunk.id.clone(), source.clone());
+                    }
+                    t.result
+                })
+                .collect()
         } else {
             results
         }
@@ -350,11 +374,16 @@ pub(in crate::cli::batch) fn dispatch_search(
         .iter()
         .map(|r| match r {
             cqs::store::UnifiedResult::Code(sr) => {
-                serde_json::to_value(ChunkOutput::from_search_result(sr, show_content))
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, name = %sr.chunk.name, "ChunkOutput serialization failed (NaN score?)");
-                        serde_json::json!({"error": "serialization failed", "name": sr.chunk.name})
-                    })
+                let ref_name = origin_by_id.get(&sr.chunk.id).map(|s| s.as_str());
+                serde_json::to_value(ChunkOutput::from_search_result_with_origin(
+                    sr,
+                    show_content,
+                    ref_name,
+                ))
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, name = %sr.chunk.name, "ChunkOutput serialization failed (NaN score?)");
+                    serde_json::json!({"error": "serialization failed", "name": sr.chunk.name})
+                })
             }
         })
         .collect();

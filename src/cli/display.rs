@@ -422,9 +422,13 @@ pub fn display_tagged_results_json(
     let json_results: Vec<_> = results
         .iter()
         .map(|t| {
-            // Delegate to UnifiedResult::to_json() for canonical base keys,
-            // then layer on parent context and source fields (CQ-NEW-7).
-            let mut json = t.result.to_json();
+            // Delegate to UnifiedResult::to_json_with_origin() for the
+            // canonical base keys + the trust_level/reference_name pair
+            // (#1167, #1169), then layer on parent context and the legacy
+            // `source` field for back-compat (CQ-NEW-7). Existing consumers
+            // can keep reading `source`; new ones should prefer the typed
+            // `trust_level` + `reference_name`.
+            let mut json = t.result.to_json_with_origin(t.source.as_deref());
             let UnifiedResult::Code(sr) = &t.result;
             if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
                 json["parent_name"] = serde_json::json!(parent.name);

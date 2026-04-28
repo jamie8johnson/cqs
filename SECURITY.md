@@ -52,16 +52,15 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 
 - **`audit-mode`**: `cqs audit-mode on` excludes notes from rankings and forces direct code examination. Mitigates the runtime side of shared-notes injection.
 - **No automatic execution**: cqs never executes indexed code; the threat is purely textual relay into agent context.
-- **Reference origin in metadata**: Chunks from `cqs ref` indexes carry reference-name metadata, but it is not yet surfaced as an explicit trust signal in JSON output.
 - **`--improve-docs` review gate (since v1.30.1)**: by default, `cqs index --improve-docs` writes proposed doc comments as unified-diff patches to `.cqs/proposed-docs/<rel>.patch` instead of mutating source files in place. Review with `git diff` and apply with `git apply .cqs/proposed-docs/**/*.patch`. Pass `--apply` to opt back into direct write-back; the run prints a warning when it does.
 - **First-encounter shared-notes gate (since v1.30.1)**: on the first `cqs index` against a repo containing `docs/notes.toml`, cqs prompts to confirm before indexing the notes — committed notes affect search rankings and surface in agent context. Acceptance is persisted to `.cqs/.accepted-shared-notes` so the prompt doesn't repeat. Pass `--accept-shared-notes` to bypass for CI / scripted use; non-TTY stdin auto-skips the notes pass with a warning so CI never hangs. (#1168)
+- **`trust_level` + `reference_name` on chunk JSON (since v1.30.1)**: every chunk-returning JSON output (`search`, `gather`, `task`, `scout`, `onboard`, `read`, `read --focus`, `context`, `similar`) carries `trust_level: "user-code" | "reference-code"`. Chunks from a `cqs ref` index also carry `reference_name`. Agents should treat `reference-code` content as third-party / less trusted than the user's own project code. (#1167, #1169)
+- **`CQS_TRUST_DELIMITERS=1`** (opt-in): wraps every chunk's `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers so prompt-injection guards downstream of cqs can detect content boundaries even when the agent inlines the rendered string into a larger prompt. Off by default to avoid breaking existing JSON consumers. (#1167)
 
 ### Tracked improvements
 
 | Issue | Surface |
 |-------|---------|
-| [#1167](https://github.com/jamie8johnson/cqs/issues/1167) | `trust_level` field + optional content delimiters in chunk-returning JSON output |
-| [#1169](https://github.com/jamie8johnson/cqs/issues/1169) | Surface reference origin (`trust_level` + `reference_name`) on every chunk from a `cqs ref` index |
 | [#1170](https://github.com/jamie8johnson/cqs/issues/1170) | Validate LLM summary output before caching (length cap, injection-pattern detection) |
 
 These are defence in depth, not absolute protection. Subtle injections (a summary that is superficially correct but biased) will still get through. The agent-side defence — treat retrieved code as untrusted input, sandbox tool calls, never execute payload-shaped output — remains the load-bearing layer.
