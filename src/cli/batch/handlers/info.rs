@@ -224,6 +224,8 @@ pub(in crate::cli::batch) fn dispatch_context(
     let entries: Vec<_> = chunks
         .iter()
         .map(|c| {
+            // #1167: chunks from `get_chunks_by_origin` come straight from the
+            // user's project store, so they're always user-code.
             serde_json::json!({
                 "name": c.name,
                 "chunk_type": c.chunk_type.to_string(),
@@ -231,6 +233,7 @@ pub(in crate::cli::batch) fn dispatch_context(
                 "lines": [c.line_start, c.line_end],
                 "signature": c.signature,
                 "content": c.content,
+                "trust_level": "user-code",
             })
         })
         .collect();
@@ -327,8 +330,10 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     result.tests.truncate(limit);
 
     let Some(budget) = tokens else {
-        return serde_json::to_value(&result)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"));
+        let mut json = serde_json::to_value(&result)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
+        crate::cli::commands::tag_user_code_trust_level(&mut json);
+        return Ok(json);
     };
 
     let named_items = crate::cli::commands::onboard_scored_names(&result);
@@ -339,6 +344,8 @@ pub(in crate::cli::batch) fn dispatch_onboard(
         .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
     crate::cli::commands::inject_content_into_onboard_json(&mut json, &content_map, &result);
     crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
+    // #1167: onboard only queries the project store — every chunk is user-code.
+    crate::cli::commands::tag_user_code_trust_level(&mut json);
     Ok(json)
 }
 
@@ -385,6 +392,7 @@ pub(in crate::cli::batch) fn dispatch_read(
         "path": path,
         "content": enriched,
         "notes_injected": notes_injected,
+        "trust_level": "user-code",
     }))
 }
 
@@ -418,6 +426,7 @@ fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Val
     let mut json = serde_json::json!({
         "focus": focus,
         "content": result.output,
+        "trust_level": "user-code",
     });
     if let Some(ref h) = result.hints {
         json["hints"] = serde_json::json!({

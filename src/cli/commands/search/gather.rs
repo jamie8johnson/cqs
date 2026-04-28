@@ -44,7 +44,30 @@ pub(crate) fn build_gather_output(
         .chunks
         .iter()
         .filter_map(|c| match serde_json::to_value(c) {
-            Ok(v) => Some(v),
+            Ok(mut v) => {
+                // #1167, #1169: derive trust_level + reference_name from the
+                // existing `source: Option<String>`. Reference chunks → tagged
+                // as "reference-code" with reference_name set; project chunks
+                // → "user-code" with reference_name omitted (`source` is
+                // already skipped on serialize when None).
+                if let Some(obj) = v.as_object_mut() {
+                    let (trust_level, ref_name) = match c.source.as_ref() {
+                        Some(name) => ("reference-code", Some(name.clone())),
+                        None => ("user-code", None),
+                    };
+                    obj.insert(
+                        "trust_level".to_string(),
+                        serde_json::Value::String(trust_level.to_string()),
+                    );
+                    if let Some(name) = ref_name {
+                        obj.insert(
+                            "reference_name".to_string(),
+                            serde_json::Value::String(name),
+                        );
+                    }
+                }
+                Some(v)
+            }
             Err(e) => {
                 tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
                 None

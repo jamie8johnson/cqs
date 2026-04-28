@@ -665,8 +665,9 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 
 ## Environment Variables
 
-107 knobs total. Quick index by domain (everything is searchable in the table below):
+108 knobs total. Quick index by domain (everything is searchable in the table below):
 
+- **Trust / injection defence** — `CQS_TRUST_DELIMITERS`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
 - **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
 - **Daemon, watch, batch** — `CQS_NO_DAEMON`, `CQS_DAEMON_*`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_BATCH_*IDLE_MINUTES`, `CQS_REFS_LRU_SIZE`, `CQS_WATCH_*`, `CQS_CHAT_HISTORY`
@@ -810,6 +811,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. Disabled by default. |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
+| `CQS_TRUST_DELIMITERS` | (none) | Set to `1` to wrap chunk `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers in chunk-returning JSON output. Off by default to avoid breaking existing JSON consumers. Helps prompt-injection guards downstream of cqs detect content boundaries when the agent inlines the rendered string into a larger prompt. (#1167) |
 | `CQS_TRAIN_GIT_SHOW_MAX_BYTES` | `52428800` (50 MiB) | Max bytes retrieved per file via `git show` during training-data extraction. Files above the cap are skipped; bump to capture larger generated files (schema dumps, vendored corpora). |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |

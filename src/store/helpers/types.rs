@@ -135,13 +135,45 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// Wrap chunk content in trust-boundary delimiters when `CQS_TRUST_DELIMITERS=1`.
+///
+/// Off by default — agents that want explicit `<<<chunk:{id}>>> ... <<</chunk:{id}>>>`
+/// markers around the rendered text can opt in via env var. The delimiter format
+/// includes the chunk id so an agent's prompt-injection guard can match an opening
+/// marker against its closing without colliding with content the chunk happens to
+/// contain. (#1167)
+fn maybe_wrap_content(content: &str, id: &str) -> String {
+    if std::env::var("CQS_TRUST_DELIMITERS").as_deref() == Ok("1") {
+        format!("<<<chunk:{id}>>>\n{content}\n<<</chunk:{id}>>>")
+    } else {
+        content.to_string()
+    }
+}
+
 impl SearchResult {
     /// Serialize to JSON with consistent field order and platform-normalized paths.
     ///
-    /// Normalizes file paths to forward slashes for cross-platform consistency.
-    /// Includes all chunk metadata plus score.
+    /// Equivalent to `to_json_with_origin(None)`: emits `trust_level: "user-code"`
+    /// and omits `reference_name`. Use `to_json_with_origin` when the result came
+    /// from a `cqs ref` index and the consuming agent should see that origin.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        self.to_json_with_origin(None)
+    }
+
+    /// Serialize to JSON, tagging the result with its trust origin.
+    ///
+    /// `ref_name = None` ⇒ `trust_level: "user-code"`, `reference_name` omitted.
+    /// `ref_name = Some(name)` ⇒ `trust_level: "reference-code"`,
+    /// `reference_name: <name>`. Closes #1167 and #1169 — agents consuming the
+    /// JSON now have an explicit, in-protocol signal distinguishing content
+    /// from the user's own project from third-party reference content.
+    pub fn to_json_with_origin(&self, ref_name: Option<&str>) -> serde_json::Value {
+        let trust_level = if ref_name.is_some() {
+            "reference-code"
+        } else {
+            "user-code"
+        };
+        let mut obj = serde_json::json!({
             "file": crate::normalize_path(&self.chunk.file),
             "line_start": self.chunk.line_start,
             "line_end": self.chunk.line_end,
@@ -150,16 +182,36 @@ impl SearchResult {
             "language": self.chunk.language.to_string(),
             "chunk_type": self.chunk.chunk_type.to_string(),
             "score": self.score,
-            "content": self.chunk.content,
+            "content": maybe_wrap_content(&self.chunk.content, &self.chunk.id),
             "has_parent": self.chunk.parent_id.is_some(),
-        })
+            "trust_level": trust_level,
+        });
+        if let Some(name) = ref_name {
+            obj["reference_name"] = serde_json::json!(name);
+        }
+        obj
     }
 
     /// Serialize to JSON with file paths relative to a project root.
     ///
-    /// Strips the prefix and normalizes to forward slashes.
+    /// Strips the prefix and normalizes to forward slashes. Equivalent to
+    /// `to_json_relative_with_origin(root, None)`.
     pub fn to_json_relative(&self, root: &std::path::Path) -> serde_json::Value {
-        serde_json::json!({
+        self.to_json_relative_with_origin(root, None)
+    }
+
+    /// `to_json_relative` plus trust-origin tagging. See `to_json_with_origin`.
+    pub fn to_json_relative_with_origin(
+        &self,
+        root: &std::path::Path,
+        ref_name: Option<&str>,
+    ) -> serde_json::Value {
+        let trust_level = if ref_name.is_some() {
+            "reference-code"
+        } else {
+            "user-code"
+        };
+        let mut obj = serde_json::json!({
             "file": crate::rel_display(&self.chunk.file, root),
             "line_start": self.chunk.line_start,
             "line_end": self.chunk.line_end,
@@ -168,9 +220,14 @@ impl SearchResult {
             "language": self.chunk.language.to_string(),
             "chunk_type": self.chunk.chunk_type.to_string(),
             "score": self.score,
-            "content": self.chunk.content,
+            "content": maybe_wrap_content(&self.chunk.content, &self.chunk.id),
             "has_parent": self.chunk.parent_id.is_some(),
-        })
+            "trust_level": trust_level,
+        });
+        if let Some(name) = ref_name {
+            obj["reference_name"] = serde_json::json!(name);
+        }
+        obj
     }
 }
 
@@ -368,11 +425,16 @@ impl UnifiedResult {
         }
     }
 
-    /// Serialize to JSON with consistent field order.
+    /// Serialize to JSON with consistent field order. See `to_json_with_origin`.
     pub fn to_json(&self) -> serde_json::Value {
+        self.to_json_with_origin(None)
+    }
+
+    /// Serialize to JSON with optional trust-origin tagging. (#1167, #1169)
+    pub fn to_json_with_origin(&self, ref_name: Option<&str>) -> serde_json::Value {
         match self {
             UnifiedResult::Code(r) => {
-                let mut json = r.to_json();
+                let mut json = r.to_json_with_origin(ref_name);
                 json["type"] = serde_json::json!("code");
                 json
             }
@@ -381,9 +443,18 @@ impl UnifiedResult {
 
     /// Serialize to JSON with file paths relative to a project root.
     pub fn to_json_relative(&self, root: &std::path::Path) -> serde_json::Value {
+        self.to_json_relative_with_origin(root, None)
+    }
+
+    /// `to_json_relative` plus trust-origin tagging. See `to_json_with_origin`.
+    pub fn to_json_relative_with_origin(
+        &self,
+        root: &std::path::Path,
+        ref_name: Option<&str>,
+    ) -> serde_json::Value {
         match self {
             UnifiedResult::Code(r) => {
-                let mut json = r.to_json_relative(root);
+                let mut json = r.to_json_relative_with_origin(root, ref_name);
                 json["type"] = serde_json::json!("code");
                 json
             }
@@ -515,7 +586,8 @@ mod tests {
         let json = result.to_json();
         let obj = json.as_object().expect("to_json should return an object");
 
-        // Exactly these 10 fields, no more, no fewer.
+        // Exactly these 11 fields, no more, no fewer. (#1167 added `trust_level`.)
+        // `reference_name` is omitted on user-code chunks via the `Option`-skip path.
         let expected_keys: std::collections::HashSet<&str> = [
             "file",
             "line_start",
@@ -527,6 +599,7 @@ mod tests {
             "score",
             "content",
             "has_parent",
+            "trust_level",
         ]
         .iter()
         .copied()
@@ -602,7 +675,7 @@ mod tests {
             .as_object()
             .expect("to_json_relative should return an object");
 
-        // Same field set as to_json
+        // Same field set as to_json (includes `trust_level` since #1167).
         let expected_keys: std::collections::HashSet<&str> = [
             "file",
             "line_start",
@@ -614,6 +687,7 @@ mod tests {
             "score",
             "content",
             "has_parent",
+            "trust_level",
         ]
         .iter()
         .copied()
@@ -751,5 +825,109 @@ mod tests {
         });
         let s = result.score();
         assert!((s - 0.42).abs() < 1e-6);
+    }
+
+    // ===== #1167 + #1169: trust_level / reference_name =====
+
+    #[test]
+    fn test_to_json_user_code_default() {
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json();
+        assert_eq!(json["trust_level"], "user-code");
+        assert!(json.get("reference_name").is_none());
+    }
+
+    #[test]
+    fn test_to_json_with_origin_reference_code() {
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json_with_origin(Some("rust-stdlib"));
+        assert_eq!(json["trust_level"], "reference-code");
+        assert_eq!(json["reference_name"], "rust-stdlib");
+    }
+
+    #[test]
+    fn test_to_json_relative_with_origin_reference_code() {
+        let root = std::path::Path::new("src");
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json_relative_with_origin(root, Some("third-party"));
+        assert_eq!(json["trust_level"], "reference-code");
+        assert_eq!(json["reference_name"], "third-party");
+    }
+
+    #[test]
+    fn test_to_json_with_origin_none_matches_default() {
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let default_json = result.to_json();
+        let none_json = result.to_json_with_origin(None);
+        assert_eq!(default_json, none_json);
+    }
+
+    #[test]
+    fn test_unified_result_to_json_with_origin() {
+        let result = UnifiedResult::Code(SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        });
+        let json = result.to_json_with_origin(Some("ext"));
+        assert_eq!(json["type"], "code");
+        assert_eq!(json["trust_level"], "reference-code");
+        assert_eq!(json["reference_name"], "ext");
+    }
+
+    #[test]
+    fn test_trust_delimiters_env_off_by_default() {
+        // The env var is intentionally NOT set in this test — should be off.
+        std::env::remove_var("CQS_TRUST_DELIMITERS");
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json();
+        let content = json["content"].as_str().unwrap();
+        assert!(
+            !content.starts_with("<<<chunk:"),
+            "content should not be wrapped when env is off, got: {content}"
+        );
+    }
+
+    #[test]
+    fn test_trust_delimiters_env_on_wraps_content() {
+        // CQS_TRUST_DELIMITERS=1 wraps content in <<<chunk:id>>>...<<</chunk:id>>>.
+        // This test mutates a process-global env var; std::env::set_var is not
+        // thread-safe. To stay race-free, we serialize via a dedicated mutex.
+        // Cargo's test runner is multi-threaded by default — without the lock
+        // a parallel test that reads CQS_TRUST_DELIMITERS could observe the
+        // "on" state and skew a content assertion.
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("CQS_TRUST_DELIMITERS", "1");
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json();
+        std::env::remove_var("CQS_TRUST_DELIMITERS");
+        let content = json["content"].as_str().unwrap();
+        assert!(
+            content.starts_with("<<<chunk:id-foo>>>"),
+            "content should be wrapped with id-keyed marker, got: {content}"
+        );
+        assert!(
+            content.ends_with("<<</chunk:id-foo>>>"),
+            "content should end with closing marker, got: {content}"
+        );
     }
 }

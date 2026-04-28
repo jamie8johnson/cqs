@@ -33,6 +33,8 @@ pub(crate) fn build_scout_output(
     if let Some(cmap) = content_map {
         crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
     }
+    // #1167: scout only queries the project store — every chunk is user-code.
+    crate::cli::commands::tag_user_code_trust_level(&mut output);
     crate::cli::commands::inject_token_info(&mut output, token_info);
     Ok(output)
 }

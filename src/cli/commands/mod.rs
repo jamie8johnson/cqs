@@ -204,6 +204,55 @@ pub(crate) fn inject_content_into_scout_json(
     }
 }
 
+/// Tag every chunk-shaped object in a scout-style JSON tree as user-code. (#1167)
+///
+/// Scout / onboard / where / plan only query the user's project store, so
+/// every chunk is `trust_level: "user-code"`. This walks the known shapes
+/// and stamps the field; reference-aware commands (search, gather) thread
+/// the origin through `to_json_with_origin` instead.
+pub(crate) fn tag_user_code_trust_level(json: &mut serde_json::Value) {
+    fn tag(obj: &mut serde_json::Map<String, serde_json::Value>) {
+        obj.insert(
+            "trust_level".to_string(),
+            serde_json::Value::String("user-code".to_string()),
+        );
+    }
+    if let Some(root) = json.as_object_mut() {
+        // Top-level entry_point (onboard).
+        if let Some(ep) = root.get_mut("entry_point").and_then(|v| v.as_object_mut()) {
+            tag(ep);
+        }
+        // Top-level call_chain[] (onboard).
+        if let Some(arr) = root.get_mut("call_chain").and_then(|v| v.as_array_mut()) {
+            for entry in arr.iter_mut() {
+                if let Some(o) = entry.as_object_mut() {
+                    tag(o);
+                }
+            }
+        }
+        // Top-level callers[] (onboard).
+        if let Some(arr) = root.get_mut("callers").and_then(|v| v.as_array_mut()) {
+            for entry in arr.iter_mut() {
+                if let Some(o) = entry.as_object_mut() {
+                    tag(o);
+                }
+            }
+        }
+        // Top-level file_groups[].chunks[] (scout).
+        if let Some(groups) = root.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
+            for group in groups.iter_mut() {
+                if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
+                    for chunk in chunks.iter_mut() {
+                        if let Some(o) = chunk.as_object_mut() {
+                            tag(o);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Inject packed content into onboard-style JSON (`entry_point`, `call_chain[]`, `callers[]`).
 ///
 /// Replaces content fields for entries whose names appear in `content_map`.

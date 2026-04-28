@@ -45,6 +45,9 @@ pub(crate) fn cmd_onboard(
             crate::cli::commands::inject_token_info(&mut output, Some((used, budget)));
         }
 
+        // #1167: onboard only queries the project store — every chunk is user-code.
+        crate::cli::commands::tag_user_code_trust_level(&mut output);
+
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
         // Text output
