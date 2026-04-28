@@ -33,6 +33,8 @@ pub use local::LocalProvider;
 pub use provider::BatchProvider;
 pub use summary::llm_summary_pass;
 
+use provider::ProviderRegistry;
+
 use crate::Store;
 
 /// An eligible chunk ready for LLM batch processing.
@@ -203,19 +205,18 @@ const HYDE_MAX_TOKENS: u32 = 150;
 /// Poll interval for batch completion
 const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-/// LLM API provider type.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LlmProvider {
-    /// Anthropic Messages Batches API (default)
-    Anthropic,
-    /// OpenAI-compatible `/v1/chat/completions` endpoint (llama.cpp, vLLM, Ollama, LMStudio).
-    Local,
-}
+/// Default LLM provider when `CQS_LLM_PROVIDER` is unset or unknown.
+const DEFAULT_PROVIDER: &str = "anthropic";
 
 /// Resolved LLM configuration (env vars > config file > constants).
+///
+/// `provider` is the canonical name of one of the registries in
+/// [`PROVIDERS`]. The factory [`create_client`] looks the entry up by
+/// name; tests compare it as a plain `&str` (e.g. `"anthropic"`,
+/// `"local"`).
 #[derive(Debug)]
 pub struct LlmConfig {
-    pub provider: LlmProvider,
+    pub provider: &'static str,
     pub api_base: String,
     pub model: String,
     pub max_tokens: u32,
@@ -289,26 +290,29 @@ impl LlmConfig {
             }
         }
 
-        let provider = match std::env::var("CQS_LLM_PROVIDER").ok().as_deref() {
-            Some("anthropic") | None => {
+        let provider: &'static str = match std::env::var("CQS_LLM_PROVIDER").ok().as_deref() {
+            None => {
                 tracing::debug!(
-                    source = "env/default",
-                    provider = "anthropic",
+                    source = "default",
+                    provider = DEFAULT_PROVIDER,
                     "provider resolved"
                 );
-                LlmProvider::Anthropic
+                DEFAULT_PROVIDER
             }
-            Some("local") => {
-                tracing::debug!(source = "env", provider = "local", "provider resolved");
-                LlmProvider::Local
-            }
-            Some(other) => {
-                tracing::warn!(
-                    provider = other,
-                    "Unknown CQS_LLM_PROVIDER, defaulting to anthropic"
-                );
-                LlmProvider::Anthropic
-            }
+            Some(name) => match PROVIDERS.iter().find(|p| p.name() == name) {
+                Some(reg) => {
+                    tracing::debug!(source = "env", provider = reg.name(), "provider resolved");
+                    reg.name()
+                }
+                None => {
+                    tracing::warn!(
+                        provider = name,
+                        "Unknown CQS_LLM_PROVIDER, defaulting to {}",
+                        DEFAULT_PROVIDER
+                    );
+                    DEFAULT_PROVIDER
+                }
+            },
         };
 
         let (model, model_source) = if let Ok(val) = std::env::var("CQS_LLM_MODEL") {
@@ -367,41 +371,79 @@ impl LlmConfig {
 /// EX-31/EX-34: Single factory, provider-aware. Returns a boxed trait object so
 /// callers don't need to care which provider is in use — all operations go
 /// through the [`BatchProvider`] trait.
+///
+/// EX-V1.30-2: Looks up the matching [`ProviderRegistry`] in [`PROVIDERS`]
+/// and delegates construction to its `build` method. Adding a third
+/// provider is one impl + one slice row — `resolve` and `create_client`
+/// stay untouched.
 pub fn create_client(llm_config: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
-    let _span = tracing::info_span!("create_client", provider = ?llm_config.provider).entered();
-    match llm_config.provider {
-        LlmProvider::Anthropic => {
-            let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-                LlmError::ApiKeyMissing(
-                    "ANTHROPIC_API_KEY environment variable required for LLM features".to_string(),
-                )
-            })?;
-            Ok(Box::new(LlmClient::new(&api_key, llm_config)?))
-        }
-        LlmProvider::Local => {
-            // Local provider needs an explicit endpoint URL and model name —
-            // the Anthropic defaults do not apply. Validate here (before any
-            // HTTP traffic) so misconfig surfaces with an actionable message.
-            //
-            // We validate against the *resolved* config: when `CQS_LLM_API_BASE`
-            // or `CQS_LLM_MODEL` is left at the Anthropic default, that's a
-            // misconfig for local use. Users must override both.
-            if llm_config.api_base == API_BASE {
-                return Err(LlmError::ApiKeyMissing(
-                    "CQS_LLM_PROVIDER=local requires CQS_LLM_API_BASE. \
-                     Set CQS_LLM_API_BASE=http://localhost:8080/v1 (or your server's URL)"
-                        .to_string(),
-                ));
+    let _span = tracing::info_span!("create_client", provider = llm_config.provider).entered();
+    let registry = PROVIDERS
+        .iter()
+        .find(|p| p.name() == llm_config.provider)
+        .ok_or_else(|| {
+            // `LlmConfig::resolve` always sets `provider` to a known
+            // registry name (it falls back to DEFAULT_PROVIDER on an
+            // unknown env var), so this branch only fires if a caller
+            // hand-builds a `LlmConfig` with an unknown name.
+            LlmError::Api {
+                status: 0,
+                message: format!("unknown LLM provider: {}", llm_config.provider),
             }
-            if llm_config.model == MODEL {
-                return Err(LlmError::ApiKeyMissing(format!(
-                    "CQS_LLM_PROVIDER=local requires CQS_LLM_MODEL. \
-                     Set CQS_LLM_MODEL=<your-model-name>; try curl {}/models to list available",
-                    llm_config.api_base
-                )));
-            }
-            Ok(Box::new(local::LocalProvider::new(llm_config)?))
+        })?;
+    registry.build(llm_config)
+}
+
+/// Static registry of available LLM providers.
+///
+/// EX-V1.30-2: Adding a new provider means writing an impl for the
+/// trait and adding one row here. `resolve()` and `create_client()`
+/// dispatch from this slice without code changes elsewhere.
+static PROVIDERS: &[&dyn ProviderRegistry] = &[&AnthropicRegistry, &LocalRegistry];
+
+struct AnthropicRegistry;
+impl ProviderRegistry for AnthropicRegistry {
+    fn name(&self) -> &'static str {
+        "anthropic"
+    }
+    fn build(&self, cfg: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            LlmError::ApiKeyMissing(
+                "ANTHROPIC_API_KEY environment variable required for LLM features".to_string(),
+            )
+        })?;
+        Ok(Box::new(LlmClient::new(&api_key, cfg)?))
+    }
+}
+
+struct LocalRegistry;
+impl ProviderRegistry for LocalRegistry {
+    fn name(&self) -> &'static str {
+        "local"
+    }
+    fn build(&self, cfg: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
+        // Local provider needs an explicit endpoint URL and model name —
+        // the Anthropic defaults do not apply. Validate here (before any
+        // HTTP traffic) so misconfig surfaces with an actionable message.
+        //
+        // We validate against the *resolved* config: when `CQS_LLM_API_BASE`
+        // or `CQS_LLM_MODEL` is left at the Anthropic default, that's a
+        // misconfig for local use. Users must override both.
+        if cfg.api_base == API_BASE {
+            return Err(LlmError::ApiKeyMissing(
+                "CQS_LLM_PROVIDER=local requires CQS_LLM_API_BASE. \
+                 Set CQS_LLM_API_BASE=http://localhost:8080/v1 (or your server's URL)"
+                    .to_string(),
+            ));
         }
+        if cfg.model == MODEL {
+            return Err(LlmError::ApiKeyMissing(format!(
+                "CQS_LLM_PROVIDER=local requires CQS_LLM_MODEL. \
+                 Set CQS_LLM_MODEL=<your-model-name>; try curl {}/models to list available",
+                cfg.api_base
+            )));
+        }
+        Ok(Box::new(local::LocalProvider::new(cfg)?))
     }
 }
 
@@ -1177,6 +1219,39 @@ mod tests {
 
         restore_local_env(saved);
 
-        assert_eq!(llm_config.provider, LlmProvider::Local);
+        assert_eq!(llm_config.provider, "local");
+    }
+
+    /// EX-V1.30-2: Unknown CQS_LLM_PROVIDER falls back to the default with a
+    /// `tracing::warn!`. Validates the fallback path drives off the registry,
+    /// not a hand-coded match.
+    #[test]
+    fn provider_unknown_falls_back_to_default() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = save_local_env();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "definitely-not-a-real-provider");
+        std::env::remove_var("CQS_LLM_API_BASE");
+        std::env::remove_var("CQS_API_BASE");
+        std::env::remove_var("CQS_LLM_MODEL");
+
+        let cfg = crate::config::Config::default();
+        let llm_config = LlmConfig::resolve(&cfg).unwrap();
+
+        restore_local_env(saved);
+
+        assert_eq!(
+            llm_config.provider, DEFAULT_PROVIDER,
+            "unknown provider must fall back to DEFAULT_PROVIDER"
+        );
+    }
+
+    /// EX-V1.30-2: PROVIDERS slice contains both built-in registries.
+    /// Guards against accidental row deletion.
+    #[test]
+    fn providers_slice_has_anthropic_and_local() {
+        let names: Vec<&'static str> = PROVIDERS.iter().map(|p| p.name()).collect();
+        assert!(names.contains(&"anthropic"), "anthropic registry missing");
+        assert!(names.contains(&"local"), "local registry missing");
     }
 }

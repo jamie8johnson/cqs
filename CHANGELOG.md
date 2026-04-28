@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Internal
 
 - **`BatchCmd::is_pipeable` driven from a registry table** (#1137 — audit finding EX-V1.30-1). Pipeability classification was a hand-maintained match arm decoupled from the variant declaration; adding a new `BatchCmd` variant required a coordinated edit in two places. Replaced with a `for_each_batch_cmd_pipeability!` table macro paired with a `gen_is_pipeable_impl!` emitter that produces an exhaustive match. Adding a new variant is now a single row; missing rows fail to compile via the same exhaustiveness invariant the previous match relied on.
+- **`LlmProvider` enum lifted into a `ProviderRegistry` slice** (#1138 — audit finding EX-V1.30-2). Provider dispatch was three coordinated edits (`LlmProvider` enum, `LlmConfig::resolve` env match, `create_client` factory match) with no compiler enforcement that they stayed in sync. Replaced with `provider::ProviderRegistry` trait + static `PROVIDERS` slice carrying `AnthropicRegistry` + `LocalRegistry` impls. `LlmConfig.provider` thinned to `&'static str` (the registry's canonical name). Adding a third provider (OpenAI, vLLM, Bedrock, …) is now one impl + one slice row; `resolve()` and `create_client()` stay untouched.
 
 ## [1.30.0] - 2026-04-25
 

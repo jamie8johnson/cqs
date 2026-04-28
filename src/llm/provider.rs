@@ -2,7 +2,19 @@
 
 use std::collections::HashMap;
 
-use super::LlmError;
+use super::{LlmConfig, LlmError};
+
+/// Registry entry for a named LLM provider.
+///
+/// Each provider supplies its canonical env-var name and a factory that
+/// turns a resolved [`LlmConfig`] into a [`BatchProvider`] trait object.
+/// Resolution and dispatch walk a single static slice (`PROVIDERS` in
+/// `super`), so adding a third provider is one impl + one slice row,
+/// not three coordinated edits.
+pub(crate) trait ProviderRegistry: Sync {
+    fn name(&self) -> &'static str;
+    fn build(&self, cfg: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError>;
+}
 
 /// Callback type for the per-item streaming persist hook.
 ///

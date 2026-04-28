@@ -705,7 +705,6 @@ impl BatchProvider for LocalProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::LlmProvider;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -715,7 +714,7 @@ mod tests {
 
     fn make_config(api_base: &str, model: &str) -> LlmConfig {
         LlmConfig {
-            provider: LlmProvider::Local,
+            provider: "local",
             api_base: api_base.to_string(),
             model: model.to_string(),
             max_tokens: 100,
