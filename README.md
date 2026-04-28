@@ -721,6 +721,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
 | `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
 | `CQS_EVAL_OUTPUT` | (none) | Path to write per-query eval diagnostics JSON (used by eval harness) |
+| `CQS_EVAL_REQUIRE_FRESH` | `1` | Set to `0`/`false`/`no`/`off` to disable the freshness gate that `cqs eval` applies before running (#1182). When on, the eval harness blocks until the running `cqs watch --serve` daemon reports `state == fresh`, or errors out if the daemon isn't reachable — prevents silent stale-index runs that look like 5-25pp R@K regressions. Pass `--no-require-fresh` for the same effect on a single invocation. |
 | `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
 | `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
 | `CQS_FORCE_BASE_INDEX` | (none) | Set to `1` to force search via the base (non-enriched) HNSW index |

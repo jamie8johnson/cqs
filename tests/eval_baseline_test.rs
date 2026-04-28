@@ -91,6 +91,9 @@ fn run_cqs_eval_with_baseline(
     args.extend_from_slice(extra_args);
     let result = cqs()
         .env("CQS_NO_DAEMON", "1")
+        // PR 4 of #1182: disable the freshness gate — these baseline
+        // tests run without a daemon and predate the gate.
+        .env("CQS_EVAL_REQUIRE_FRESH", "0")
         .args(&args)
         .current_dir(dir.path())
         .output()
