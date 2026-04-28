@@ -123,13 +123,40 @@ macro_rules! gen_dispatch_group_b {
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
-pub fn run_with(mut cli: Cli) -> Result<()> {
+pub fn run_with(cli: Cli) -> Result<()> {
     // Log command for telemetry (opt-in via CQS_TELEMETRY=1)
     let project_cqs_dir = cqs::resolve_index_dir(&find_project_root());
     let telem_args: Vec<String> = std::env::args().collect();
     let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
     telemetry::log_command(&project_cqs_dir, &telem_cmd, telem_query.as_deref(), None);
+    let started = std::time::Instant::now();
 
+    // Inner function carries the multiple early-return paths (daemon
+    // forwarding, group-A subcommands' `return $body;`, group-B tail) and
+    // funnels them into a single Result we can attach the completion-event
+    // telemetry to. Without this, half the invocations would never get a
+    // duration/ok event recorded.
+    let result = run_with_dispatch(cli, &project_cqs_dir, &telem_cmd);
+
+    telemetry::log_command_complete(
+        &project_cqs_dir,
+        &telem_cmd,
+        started.elapsed().as_millis() as u64,
+        result.is_ok(),
+        result.as_ref().err().map(|e| e.to_string()).as_deref(),
+    );
+    result
+}
+
+/// Inner dispatch body — separated from [`run_with`] so the outer can
+/// uniformly observe the completion outcome via [`telemetry::log_command_complete`].
+/// All early returns from the body land back here as the inner function's
+/// return value, which the outer wraps with timing + ok/err telemetry.
+fn run_with_dispatch(
+    mut cli: Cli,
+    project_cqs_dir: &std::path::Path,
+    telem_cmd: &str,
+) -> Result<()> {
     // v1.22.0 audit OB-14: root span so all per-command logs have a parent.
     let _root = tracing::info_span!("cqs", cmd = %telem_cmd).entered();
 
@@ -138,7 +165,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     // subsequent run observes `.cqs/slots/` and skips. Safe to call on
     // never-indexed projects (returns false, no-op).
     if project_cqs_dir.exists() {
-        if let Err(e) = cqs::slot::migrate_legacy_index_to_default_slot(&project_cqs_dir) {
+        if let Err(e) = cqs::slot::migrate_legacy_index_to_default_slot(project_cqs_dir) {
             tracing::warn!(error = %e, "slot migration failed; continuing without it");
         }
     }
@@ -176,9 +203,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     // slot 1 inside `resolve` (still beating env/config) without needing a new
     // resolve signature.
     let slot_model_intent = if cli.model.is_none() {
-        let resolved_slot =
-            cqs::slot::resolve_slot_name(cli.slot.as_deref(), &project_cqs_dir).ok();
-        resolved_slot.and_then(|s| cqs::slot::read_slot_model(&project_cqs_dir, &s.name))
+        let resolved_slot = cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir).ok();
+        resolved_slot.and_then(|s| cqs::slot::read_slot_model(project_cqs_dir, &s.name))
     } else {
         None
     };
@@ -200,7 +226,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         // P2.17: daemon protocol errors now surface as `Err` instead of being
         // logged-and-fall-through. Transport-level failures still return
         // `Ok(None)` so CLI fallback works for those.
-        if let Some(output) = try_daemon_query(&project_cqs_dir, &cli)? {
+        if let Some(output) = try_daemon_query(project_cqs_dir, &cli)? {
             print!("{}", output);
             return Ok(());
         }
