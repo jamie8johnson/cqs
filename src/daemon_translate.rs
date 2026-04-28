@@ -679,8 +679,19 @@ mod tests {
     /// Task B2: `daemon_ping` must round-trip through a mock listener that
     /// speaks the same envelope as the real daemon. Asserts the field-by-
     /// field decoding so a future drift in either side surfaces here.
+    ///
+    /// `#[serial]` because this and `daemon_status_mock_round_trip` both
+    /// mutate the global `XDG_RUNTIME_DIR` env var to redirect
+    /// `daemon_socket_path` at a per-test tempdir. Running concurrently
+    /// can deadlock the mock listener: test A binds at dir-A's path,
+    /// test B then resets the env to dir-B before test A's
+    /// `UnixStream::connect` resolves the socket — the spawned mock
+    /// thread's `accept()` blocks forever, and `handle.join()` waits on
+    /// it indefinitely. Pinning both tests to the same serialization key
+    /// (`daemon_socket_xdg`) makes the env mutation safe.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_ping_mock_round_trip() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -813,8 +824,11 @@ mod tests {
     /// #1182: `daemon_status` happy-path round-trip against a mock listener.
     /// Mirrors `daemon_ping_mock_round_trip` so a future drift in either
     /// the envelope shape or the WatchSnapshot fields surfaces here.
+    ///
+    /// `#[serial]` — see `daemon_ping_mock_round_trip` for the XDG race.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_status_mock_round_trip() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;

@@ -59,6 +59,9 @@ use gc::{prune_last_indexed_mtime, run_daemon_periodic_gc, run_daemon_startup_gc
 #[cfg(test)]
 use gc::{LAST_INDEXED_PRUNE_AGE_SECS, LAST_INDEXED_PRUNE_SIZE_THRESHOLD};
 
+mod reconcile;
+use reconcile::{reconcile_enabled, run_daemon_reconcile};
+
 mod events;
 #[cfg(test)]
 use events::max_pending_files;
@@ -980,6 +983,19 @@ pub fn cmd_watch(
     }
     let mut last_periodic_gc = std::time::Instant::now();
 
+    // #1182 Layer 2: periodic full-tree reconciliation cadence. Same
+    // gating model as the GC tick — `--serve` only, opt-out via
+    // `CQS_WATCH_RECONCILE=0`. Initialised to "now" so the first tick
+    // fires on the same `daemon_reconcile_interval_secs()` cadence as
+    // every subsequent one (no startup walk; the inotify watcher already
+    // sees fresh changes for the time window between daemon start and
+    // first interval).
+    let reconcile_enabled_flag = serve && reconcile_enabled();
+    if !reconcile_enabled_flag && serve {
+        tracing::info!("CQS_WATCH_RECONCILE=0 — periodic full-tree reconciliation disabled");
+    }
+    let mut last_reconcile = std::time::Instant::now();
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
@@ -1148,6 +1164,48 @@ pub fn cmd_watch(
                         // Always advance the timer so a wedged lock or
                         // failed enumerate doesn't make us retry every loop.
                         last_periodic_gc = std::time::Instant::now();
+                    }
+
+                    // #1182 Layer 2: Periodic full-tree reconciliation.
+                    // Sibling of the GC tick; same idle-gating model:
+                    //   (a) `--serve` on AND `CQS_WATCH_RECONCILE` != "0",
+                    //   (b) `last_event.elapsed() >= daemon_periodic_gc_idle_secs()`
+                    //       — reuses the same idle threshold so a burst of
+                    //       edits doesn't trigger reconcile mid-burst,
+                    //   (c) `last_reconcile.elapsed() >= daemon_reconcile_interval_secs()`
+                    //       (default 30 s — much faster cadence than GC).
+                    //
+                    // Reconcile only *queues* divergent files into
+                    // `state.pending_files`; the next debounce tick drains
+                    // the queue through the existing `process_file_changes`
+                    // path. No parallel reindex code branch — every queued
+                    // file gets the same correctness guarantees as inotify
+                    // events.
+                    //
+                    // Reads only — no write transaction, no index lock
+                    // needed. The `process_file_changes` drain on the next
+                    // tick takes its own lock per its existing contract.
+                    if reconcile_enabled_flag
+                        && state.last_event.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
+                        && last_reconcile.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_reconcile_interval_secs())
+                    {
+                        let queued = run_daemon_reconcile(
+                            &store,
+                            &root,
+                            &parser,
+                            no_ignore,
+                            &mut state.pending_files,
+                        );
+                        if queued > 0 {
+                            // Reset `last_event` so `process_file_changes`
+                            // observes the synthetic pending entries on
+                            // the very next debounce tick (otherwise the
+                            // idle threshold would still hold).
+                            state.last_event = std::time::Instant::now();
+                        }
+                        last_reconcile = std::time::Instant::now();
                     }
                 }
 

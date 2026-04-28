@@ -821,6 +821,8 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_POLL_MS` | `5000` | Poll-watcher tick interval (milliseconds). Only used on WSL `/mnt/c/` and other non-inotify filesystems where notify-rs falls back to polling. Lower = faster reaction; higher = less idle CPU walking the tree. Min 100. |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
+| `CQS_WATCH_RECONCILE` | `1` | Set to `0` to disable Layer 2's periodic full-tree reconciliation (#1182). When on, `cqs watch --serve` walks the working tree on the cadence below and queues files whose stored mtime lags the disk mtime — catches missed events from bulk git operations and WSL `/mnt/c/` 9P drops. |
+| `CQS_WATCH_RECONCILE_SECS` | `30` | Cadence (seconds) for Layer 2 periodic full-tree reconciliation. Lower = faster catch-up after missed events at the cost of more idle CPU; higher = quieter daemon. Idle-gated: tick only fires after `daemon_periodic_gc_idle_secs` of quiet so a long edit burst never triggers a reconcile mid-burst. |
 | `CQS_WATCH_RESPECT_GITIGNORE` | `1` | Set to `0` to stop `cqs watch` from honoring `.gitignore`. Defaults on — prevents ignored paths (e.g. `.claude/worktrees/*`) from polluting the index. |
 
 ## Per-category SPLADE alpha
