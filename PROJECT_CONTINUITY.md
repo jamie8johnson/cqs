@@ -2,21 +2,17 @@
 
 ## Right Now
 
-**v1.30.0 released 2026-04-25.** Post-release polish continues. Sessions on 2026-04-27 / 28 **closed the indirect-injection cluster (#1166-#1170)**: all 5 mitigations landed across 4 PRs (#1177, #1178, #1179, #1180), all 5 issues closed with cluster summary, local binary rebuilt + reinstalled (cqs 1.30.0 + cluster), cqs-watch daemon restarted. Filed two follow-ups: **#1181** ("general mistrust" posture — default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice`, per-chunk `injection_flags`) and **#1182** (perfect watch mode — 3-layer reconciliation closing the missed-event classes; positioning lever for "freshness as differentiator"). Master plan snapshot at `docs/plans/2026-04-28-master-plan.md`.
+**v1.30.1 released 2026-04-28.** Patch release — three themes: indirect-prompt-injection hardening (closed cluster #1166-#1170 + #1171 SECURITY threat model), v1.30.0 audit-fix wave (#1141, 152 of 170 findings), and watch-mode reliability (#1124-#1129). Plus refactors for cleaner extension points: #1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138 registry tables for batch + LLM provider** (just merged this session). Crates.io published; tag `v1.30.1` pushed; GitHub Release workflow building binaries.
 
-**Up next:** P3 ergonomics cluster (#1137-#1140) — eval-neutral refactors. Read each, plan, start the first.
+**Master plan snapshot:** `docs/plans/2026-04-28-master-plan.md`.
 
-**Indirect-injection cluster status:**
-- **#1177 merged** — `--improve-docs` review gate (#1166): defaults to `.cqs/proposed-docs/<rel>.patch`, `--apply` opts back in. Highest-leverage: was the only vector that committed LLM output into git.
-- **#1180 merged** — first-encounter shared-notes gate (#1168): `.cqs/.accepted-shared-notes` marker + `--accept-shared-notes` flag + non-TTY auto-skip.
-- **#1178 merged** — `trust_level` + `reference_name` on chunk JSON (#1167, #1169): every chunk-returning command emits user-code/reference-code; `CQS_TRUST_DELIMITERS=1` opt-in wraps content in `<<<chunk:{id}>>>` markers.
-- **#1179 in flight** — LLM summary validation (#1170): `validate_summary` on every prose summary before cache (1500-char cap + leading-directive/code-fence/URL detection); `CQS_SUMMARY_VALIDATION=strict|loose|off`. Rebased onto post-#1178 main; CI re-running ~25 min.
+**Up next (post-release queue):**
+- **#1181** — "general mistrust" posture (default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice`, per-chunk `injection_flags`).
+- **#1182** — perfect watch mode (3-layer reconciliation — git hooks + periodic walk + `--wait` API). Positioning lever for "freshness as differentiator."
+- **P4 auth bugs** (#1134-#1136) — `cqs serve` correctness fixes from v1.30.0 audit.
+- **P3 ergonomics deferred** — #1139 (structural_matchers shared lib, touches 50+ languages) + #1140 (embedder preset extras map). Skip unless explicitly directed.
 
-**SECURITY.md** now lists 6 mitigations under the indirect-injection threat model (audit-mode, no auto-execution, review gate, notes gate, trust_level/delimiters, summary validation). Tracked-improvements table empty except for #1181. README knob count 107 → 109 (`CQS_TRUST_DELIMITERS` + `CQS_SUMMARY_VALIDATION`).
-
-**After #1179 merges** (next loop iteration): rebuild + reinstall the binary (`cargo build --release --features cuda-index` → stop cqs-watch → cp → restart), close #1166-#1170 with merge-PR comments, then start P3 ergonomics cluster (#1137-#1140).
-
-**Local state:** working tree clean. Local binary still v1.30.0 + dep-bumps; refresh deferred until #1179 merges. Index at 18,760 chunks (no schema change, no reindex needed).
+**Local state:** working tree clean. Index at 18,760 chunks (no schema change, no reindex needed). Local binary refreshed to post-#1185 main earlier this session — needs another `cargo build --release --features cuda-index` + restart-cqs-watch to pick up v1.30.1 (mostly cosmetic — only diff vs installed is the version string).
 
 **Landed since v1.30.0 release:**
 - **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.

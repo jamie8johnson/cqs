@@ -1,31 +1,34 @@
 # Roadmap
 
-## Current: v1.30.0 (released 2026-04-25)
+## Current: v1.30.1 (released 2026-04-28)
 
-Tag `v1.30.0` pushed; `cqs 1.30.0` published to crates.io; GitHub release workflow building prebuilt binaries. Four arcs landed since the v1.29.1 tag:
+Tag `v1.30.1` pushed; `cqs 1.30.1` published to crates.io; GitHub Release workflow building prebuilt binaries. Patch release — three themes:
+
+1. **Indirect-prompt-injection hardening** (cluster #1166-#1170 + threat model #1171). Six in-protocol surfaces now have explicit mitigations: trust labelling on chunk JSON (#1167, #1169), `CQS_TRUST_DELIMITERS` opt-in for downstream injection guards (#1167), first-encounter shared-notes prompt on `cqs index` (#1168), `CQS_SUMMARY_VALIDATION` for prose summaries before caching (#1170), `--improve-docs` review-gated by default (#1166), and a documented threat model in `SECURITY.md` (#1171).
+2. **v1.30.0 audit-fix wave** (#1141 — 152 of 170 findings, P1+P2+P3). Single-PR omnibus across error-handling, observability, robustness, scaling, security, performance, data-safety, and platform categories.
+3. **Watch-mode reliability** (#1124-#1129) — five correctness fixes uncovered after async HNSW rebuild landed in v1.30.0: content-hash-aware drain (#1124, #1142), restore_from_backup pool ordering (#1125, #1144), summary-write coalescing (#1126, #1145), daemon mutex hold-time (#1127, #1146), embedding-cache `purpose` plumbing (#1128, #1129, #1143).
+
+Plus four refactors enabling cleaner extension points (#1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138** registry tables for batch / LLM provider) and 12 dependabot bumps. Schema unchanged from v1.30.0; no reindex required.
+
+**Follow-ups (post-v1.30.1 queue):**
+
+- [#1181](https://github.com/jamie8johnson/cqs/issues/1181) — **general mistrust posture (3-layer).** Default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` constant per JSON response, per-chunk `injection_flags` array (heuristics on every chunk, not just summaries). Frames every cqs response as untrusted-by-default for any consuming agent.
+- [#1182](https://github.com/jamie8johnson/cqs/issues/1182) — **perfect watch mode (3-layer reconciliation).** Closes the missed-event classes (bulk git ops, WSL 9P, external writes) via `.git/hooks/post-{checkout,merge,reset,rebase}` + periodic full-tree fingerprint reconciliation + `cqs status --watch-fresh --wait` API. Promise: "the index is always either fresh or telling you it isn't." Supersedes the CLAUDE.md "always run `cqs index` after branch switches/merges" guidance once landed. **Positioning lever:** *easy to index, hard to keep indexed between turns* — closing the gap promotes freshness to a top-line property alongside semantic search + call graphs. **Prior-art survey 2026-04-28** (in #1182 comment): codeindex.cc has per-query stale flags; Cursor has Merkle-tree sync; CocoIndex has fast incremental updates. None has the blocking `--wait` API + git-hook integration + "between turns" consumer-consistency-model framing. Honest pitch: "the only code search tool that lets your agent **wait** until it's fresh." Marketing claim: closing a known gap with a more complete design, not inventing a new category.
+- **P4 auth bugs** (#1134-#1136) — `cqs serve` correctness fixes from the v1.30.0 audit, deferred from v1.30.1 because they require shaping decisions.
+
+**Deferred indefinitely:**
+
+- **#1139** — `structural_matchers` shared library. Touches 50+ language modules; deferred-friendly per audit.
+- **#1140** — embedder preset extras map. Deferred per audit; revisit when preset count pressures the current hand-rolled match.
+
+## Previous: v1.30.0 (released 2026-04-25)
+
+Four arcs landed since the v1.29.1 tag:
 
 - **Cache+slots infrastructure (#1105)** — `.cqs/embeddings_cache.db` (content_hash, model_id) + `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,prune,compact}` commands. One-shot migration of legacy `.cqs/index.db` → `.cqs/slots/default/`.
 - **Three-way embedder A/B (#1109 #1110)** — fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution.
 - **v1.29.0 audit close-out batch (#1112 #1113 #1114 #1117 #1118 #1119)** — every umbrella finding from #1095 closed: SEC-7 serve auth (#1118), EX-1 command registry (#1114), `cqs watch` HNSW non-blocking (#1113), `ChunkType::human_name` macro (#1117), `forward_bfs_multi` for `suggest_tests` (#1119), thread-local socket scratch buffer (#1119), plus a 5-issue batch (#1112) clearing #1042/#1049/#1091/#1107/#1108.
 - **#956 Phase A scaffolding (#1120)** — `gpu-index` → `cuda-index` cargo feature rename (legacy alias preserved); `ep-coreml` / `ep-rocm` features added as scaffolding markers; `ExecutionProvider` enum gains cfg-gated `CoreML` and `ROCm { device_id }` variants; `detect_provider()` and `create_session()` restructured into per-backend cfg-blocks. CUDA path byte-identical at runtime. Phase B (CoreML, GHA macOS runner) and Phase C (ROCm, AMD hardware) both deferred — issue stays open.
-
-## Unreleased on main (heading toward v1.30.1)
-
-### Indirect-injection threat-model cluster (2026-04-27 / 28)
-
-Filed 5 tracking issues for indirect prompt injection (#1166-#1170) after the v1.30.0 audit pass surfaced that cqs *faithfully relays* every indexed surface — code, comments, summaries, notes, ref content — into agent context with no in-protocol trust signal. Defence had to live partly in cqs's protocol; agent-side is still load-bearing. Threat model documented in SECURITY.md (#1171).
-
-Mitigations landed across 4 PRs:
-
-- **#1177 (closes #1166)** — `cqs index --improve-docs` defaults to **review-gated** (`.cqs/proposed-docs/<rel>.patch` via `git apply`-compatible diff); `--apply` opts back into in-place write with a loud warning. Closes the highest-impact vector: LLM-authored doc comments landing in the working tree without human review.
-- **#1178 (closes #1167 + #1169)** — `trust_level: "user-code" | "reference-code"` and `reference_name` on every chunk-returning JSON output (`search`, `gather`, `task`, `scout`, `onboard`, `read`, `read --focus`, `context`, `similar`). Optional `CQS_TRUST_DELIMITERS=1` wraps `content` in `<<<chunk:{id}>>>...<<</chunk:{id}>>>` markers for downstream injection guards.
-- **#1180 (closes #1168)** — first-encounter shared-notes gate: `cqs index` against a fresh repo with committed `docs/notes.toml` prompts to confirm; acceptance persists at `.cqs/.accepted-shared-notes`. `--accept-shared-notes` flag for CI; non-TTY auto-skips with warning.
-- **#1179 (closes #1170)** — `validate_summary` on every prose summary headed for the `llm_summaries` cache: 1500-char hard cap + leading-directive / code-fence / embedded-URL detection. `CQS_SUMMARY_VALIDATION=strict|loose|off` (default `loose`). Doc-comment generation exempt — has its own review gate (#1166).
-
-**Follow-ups filed:**
-
-- [#1181](https://github.com/jamie8johnson/cqs/issues/1181) — **general mistrust posture (3-layer).** Default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` constant per JSON response, per-chunk `injection_flags` array (heuristics on every chunk, not just summaries). Frames every cqs response as untrusted-by-default for any consuming agent. Blocked on cluster merging.
-- [#1182](https://github.com/jamie8johnson/cqs/issues/1182) — **perfect watch mode (3-layer reconciliation).** Closes the missed-event classes (bulk git ops, WSL 9P, external writes) via `.git/hooks/post-{checkout,merge,reset,rebase}` + periodic full-tree fingerprint reconciliation + `cqs status --watch-fresh --wait` API. Promise: "the index is always either fresh or telling you it isn't." Supersedes the CLAUDE.md "always run `cqs index` after branch switches/merges" guidance once landed. **Positioning lever:** *easy to index, hard to keep indexed between turns* — closing the gap promotes freshness to a top-line property alongside semantic search + call graphs. **Prior-art survey 2026-04-28** (in #1182 comment): codeindex.cc has per-query stale flags; Cursor has Merkle-tree sync; CocoIndex has fast incremental updates. None has the blocking `--wait` API + git-hook integration + "between turns" consumer-consistency-model framing. Honest pitch: "the only code search tool that lets your agent **wait** until it's fresh." Marketing claim: closing a known gap with a more complete design, not inventing a new category.
 
 ## Current: v1.29.1 (v1.29.0 audit close-out)
 
