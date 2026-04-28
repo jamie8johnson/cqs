@@ -308,7 +308,37 @@ pub(super) fn reindex_files(
                     file_chunks
                 }
                 Err(e) => {
-                    tracing::warn!(path = %abs_path.display(), error = %e, "Failed to parse file");
+                    tracing::warn!(
+                        path = %abs_path.display(),
+                        error = %e,
+                        "Failed to parse file — touching mtime to break reconcile loop"
+                    );
+                    // EH-V1.30.1-1: refresh `chunks.source_mtime` for this
+                    // origin so the next `run_daemon_reconcile` pass sees
+                    // `disk == stored` and stops re-queuing the file every
+                    // 30 s (default reconcile cadence). Without this the
+                    // file stays in the divergent set forever — every
+                    // tick triggers a parse, fails, emits a warn, and
+                    // requeues. The mtime touch is the load-bearing
+                    // piece; the file's previous chunks remain visible
+                    // in search until the user fixes the syntax error
+                    // and the next save retriggers a successful re-parse.
+                    if let Ok(meta) = std::fs::metadata(&abs_path) {
+                        if let Ok(disk_mtime) = meta.modified() {
+                            if let Ok(d) = disk_mtime.duration_since(std::time::UNIX_EPOCH) {
+                                let mtime_ms = cqs::duration_to_mtime_millis(d);
+                                if let Err(touch_err) =
+                                    store.touch_source_mtime(rel_path, mtime_ms)
+                                {
+                                    tracing::warn!(
+                                        path = %rel_path.display(),
+                                        error = %touch_err,
+                                        "Failed to touch source_mtime for parse-failed file — reconcile loop may persist"
+                                    );
+                                }
+                            }
+                        }
+                    }
                     vec![]
                 }
             }
@@ -500,12 +530,27 @@ pub(super) fn reindex_files(
     for (file, pairs) in &by_file {
         let mtime = *mtime_cache.entry(file.clone()).or_insert_with(|| {
             let abs_path = root.join(file);
-            abs_path
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
+            // bundle-reconcile-stat: capture the stat error separately so
+            // we can surface it via tracing instead of silently storing
+            // `mtime=None` for the file. A `None` here means reconcile
+            // (`reconcile.rs:124-138`) treats the entry as un-stat-able
+            // and skips it indefinitely, so the operator needs an
+            // observable trail when the cause is a permission flip or
+            // transient-AV-scan.
+            match abs_path.metadata().and_then(|m| m.modified()) {
+                Ok(t) => t
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as i64),
+                Err(e) => {
+                    tracing::debug!(
+                        path = %abs_path.display(),
+                        error = %e,
+                        "Reindex: stat failed, storing mtime=None (file will be left to GC by reconcile)"
+                    );
+                    None
+                }
+            }
         });
         // PERF-4: O(1) lookup per chunk via pre-grouped HashMap instead of linear scan.
         let file_calls: Vec<_> = pairs

@@ -112,7 +112,25 @@ pub(super) fn run_daemon_reconcile(
         // Stored origins are typically relative; normalize to forward
         // slashes for cross-platform matching parity with the rest of the
         // store layer.
-        let origin = rel.to_string_lossy().replace('\\', "/");
+        //
+        // RB-1: explicit `to_str()` instead of `to_string_lossy()`. Non-UTF-8
+        // path bytes get U+FFFD substitution under `to_string_lossy`, and the
+        // indexer's own lossy conversion may emit a different replacement
+        // (or skip the file entirely), so the lookup-key never matches the
+        // stored origin and the file gets requeued forever — every reconcile
+        // pass (default 30 s) wastes a parse + rewarn loop on WSL `/mnt/c/`
+        // mounts where filenames can carry stray bytes from Windows tools.
+        // Skipping with a warn is strictly better than re-queuing.
+        let origin = match rel.to_str() {
+            Some(s) => s.replace('\\', "/"),
+            None => {
+                tracing::warn!(
+                    path = %rel.display(),
+                    "Reconcile: skipping non-UTF-8 path (will not be indexed until renamed)"
+                );
+                continue;
+            }
+        };
         match indexed.get(&origin) {
             None => {
                 // ADDED: no chunks for this file in the index. Queue.
@@ -135,7 +153,24 @@ pub(super) fn run_daemon_reconcile(
                         .duration_since(std::time::UNIX_EPOCH)
                         .ok()
                         .map(cqs::duration_to_mtime_millis),
-                    Err(_) => None,
+                    Err(e) => {
+                        // EH-V1.30.1-7 / TC-ADV-1.30.1-6: surface stat
+                        // failures so an operator can distinguish
+                        // permission-denied or transient-AV-scan files
+                        // from genuinely-missing ones. Debug level keeps
+                        // the journal clean for the common WSL 9P case
+                        // but stays searchable via `journalctl
+                        // --priority=debug`. We still leave the file to
+                        // GC (`(Some(_), None) => false` below) — a
+                        // file we can't stat shouldn't trigger a reindex
+                        // burst.
+                        tracing::debug!(
+                            path = %lookup_path.display(),
+                            error = %e,
+                            "Reconcile: stat failed, leaving file to GC"
+                        );
+                        None
+                    }
                 };
                 // AC-V1.30.1-1: use `!=` not `>` because `git checkout`
                 // restores commit-time mtimes, which can be *older* than

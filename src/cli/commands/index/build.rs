@@ -74,6 +74,25 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     let root = find_project_root();
     let project_cqs_dir = cqs::resolve_index_dir(&root);
 
+    // PB-V1.30.1-7: consume a leftover `.cqs/.dirty` marker.
+    //
+    // On Windows-native there is no `cqs watch --serve` daemon (Unix
+    // domain sockets are the wire), so `cqs hook fire` falls through
+    // to the file-based fallback and writes `.cqs/.dirty`. The Unix
+    // consumer at `cli/watch/mod.rs:608` runs at watch-loop start; on
+    // Windows that path is dead. Reading the marker here lets `cqs
+    // index` (the foreground reindex command Windows users actually
+    // run) clear the marker so the dirty signal isn't permanent and
+    // operators see the marker getting consumed in tracing output.
+    //
+    // Note: this is harmless on Unix too. If the daemon isn't running
+    // and a hook fires, the next `cqs index` clears the marker on
+    // both platforms — the daemon's own consumer just gets there
+    // first when it is running.
+    if project_cqs_dir.exists() && consume_dirty_marker(&project_cqs_dir) {
+        tracing::info!("Consumed .cqs/.dirty marker — reindex triggered by hook");
+    }
+
     // Ensure project `.cqs/` exists before slot resolution / migration so
     // the slot helpers find a real directory to inspect.
     if !project_cqs_dir.exists() {
@@ -1172,6 +1191,44 @@ pub(crate) fn build_hnsw_base_index<M>(
 // NULL-row skipping, which are the two branches that matter here.
 // The HNSW builder itself is covered by `hnsw::build` unit tests.
 
+/// PB-V1.30.1-7: Check `.cqs/.dirty` and consume it (delete) at startup.
+///
+/// On Windows-native there is no `cqs watch --serve` daemon (Unix domain
+/// sockets are the wire), so `cqs hook fire` falls through to the file-based
+/// fallback at `cli/commands/infra/hook.rs:328-332` and writes
+/// `.cqs/.dirty`. The Unix daemon's consumer at `cli/watch/mod.rs:608` is
+/// `#[cfg(unix)]`-gated, so on Windows the marker is written but never
+/// read — Windows users had to know to run `cqs index` after every git
+/// op for the index to keep up.
+///
+/// This helper bridges the gap: `cqs index` (the foreground reindex command
+/// Windows users actually run) clears the marker as evidence that the
+/// requested reindex has occurred. Returns `true` if a marker was present
+/// and removed, `false` otherwise. Both branches are non-fatal — the marker
+/// is best-effort, and a stale marker would only cause one extra info-level
+/// trace line on the next `cqs index`.
+///
+/// Harmless on Unix too: if a hook fires while the daemon is down, the next
+/// `cqs index` clears the marker on both platforms — the daemon's own
+/// consumer just gets there first when it is running.
+pub(crate) fn consume_dirty_marker(cqs_dir: &Path) -> bool {
+    let _span =
+        tracing::debug_span!("consume_dirty_marker", cqs_dir = %cqs_dir.display()).entered();
+    let marker = cqs_dir.join(".dirty");
+    if marker.exists() {
+        if let Err(e) = std::fs::remove_file(&marker) {
+            tracing::warn!(
+                path = %marker.display(),
+                error = %e,
+                "consume_dirty_marker: failed to remove .cqs/.dirty (will retry on next index)"
+            );
+        }
+        true
+    } else {
+        false
+    }
+}
+
 // P2.86: TC-HAP — direct happy-path tests for the two HNSW build helpers
 // invoked by `cmd_index` and the watch loop. Lower-level unit tests cover
 // `embedding_batches` / `embedding_base_batches` and the HNSW builder, but
@@ -1397,6 +1454,41 @@ mentions = []
         assert!(
             !cqs_dir.join(".accepted-shared-notes").exists(),
             "no marker should be written for empty notes file"
+        );
+    }
+
+    // ===== PB-V1.30.1-7: consume_dirty_marker =====
+
+    /// Marker absent → returns false, no side effects. Pinned because the
+    /// Unix daemon path also calls into the same logic via `cli/watch/mod.rs`
+    /// and we don't want a stale-state false positive on first start.
+    #[test]
+    fn consume_dirty_marker_returns_false_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        assert!(!consume_dirty_marker(&cqs_dir));
+        // No marker should appear as a side effect.
+        assert!(!cqs_dir.join(".dirty").exists());
+    }
+
+    /// Marker present → returns true and the file is gone afterwards. This
+    /// is the load-bearing assertion for the Windows-native fix: a Windows
+    /// `cqs hook fire` writes the marker and the next `cqs index` must
+    /// clear it (the Unix daemon's consumer is `#[cfg(unix)]`-gated and
+    /// never runs on Windows-native).
+    #[test]
+    fn consume_dirty_marker_removes_file_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let marker = cqs_dir.join(".dirty");
+        std::fs::write(&marker, b"").unwrap();
+        assert!(marker.exists());
+        assert!(consume_dirty_marker(&cqs_dir));
+        assert!(
+            !marker.exists(),
+            "marker must be removed once consumed so the next index run sees a clean slate"
         );
     }
 }

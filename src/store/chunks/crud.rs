@@ -645,6 +645,48 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Refresh `source_mtime` on every chunk for `origin` without touching
+    /// content.
+    ///
+    /// EH-V1.30.1-1: when the watch loop's `parse_file_all_with_chunk_calls`
+    /// fails (syntax error in the user's code), the watch path emits an empty
+    /// chunk vector for that file. The previous chunks stay as ghosts AND
+    /// `chunks.source_mtime` is never refreshed, so `run_daemon_reconcile`
+    /// keeps classifying the file MODIFIED on every tick (default 30 s) —
+    /// unbounded reindex-fail-warn loop until the user fixes the syntax.
+    ///
+    /// This helper lets the parse-failure path bump stored mtime so reconcile
+    /// sees `disk == stored` and stops re-queuing the file. The chunks are
+    /// intentionally left as-is — they may still serve from the index until
+    /// the next successful re-parse, but that's strictly better than ghost
+    /// chunks plus a hot reindex loop.
+    ///
+    /// Returns the number of chunk rows whose `source_mtime` was updated.
+    /// Callers can log a warn if `rows_affected == 0` (origin format mismatch
+    /// would be the most likely cause), but the typical case is `rows_affected
+    /// > 0` matching the chunk count for that file.
+    pub fn touch_source_mtime(&self, origin: &Path, mtime_ms: i64) -> Result<u32, StoreError> {
+        let _span =
+            tracing::debug_span!("touch_source_mtime", origin = %origin.display(), mtime_ms)
+                .entered();
+        // CRITICAL: the indexer keys chunks by `crate::normalize_path(origin)`
+        // — see `delete_by_origin` above for the canonical pattern. Without
+        // this normalization Windows `\\` vs Unix `/` separator drift makes
+        // the UPDATE silently affect zero rows, defeating the entire fix.
+        let origin_str = crate::normalize_path(origin);
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            let result = sqlx::query("UPDATE chunks SET source_mtime = ?1 WHERE origin = ?2")
+                .bind(mtime_ms)
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok(result.rows_affected() as u32)
+        })
+    }
+
     /// Atomically upsert chunks and their call graph in a single transaction.
     ///
     /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
@@ -995,6 +1037,81 @@ mod tests {
         let count = store.upsert_chunks_batch(&[], Some(100)).unwrap();
         assert_eq!(count, 0);
         assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    // ===== EH-V1.30.1-1: touch_source_mtime =====
+
+    /// Happy path: insert a chunk at one mtime, touch to a new mtime, verify
+    /// `rows_affected > 0` and the stored value advanced. Pinned because the
+    /// helper is the load-bearing piece of the parse-failure reconcile-loop
+    /// fix — silent zero-row updates would defeat the entire fix.
+    #[test]
+    fn test_touch_source_mtime_updates_existing_chunk() {
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk("alpha", "src/a.rs");
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), emb)], Some(100))
+            .unwrap();
+
+        // Touch to a far-future mtime; the row must be affected.
+        let rows = store
+            .touch_source_mtime(&PathBuf::from("src/a.rs"), 9_999_999_999)
+            .unwrap();
+        assert!(
+            rows > 0,
+            "touch_source_mtime must affect at least one row for an indexed origin"
+        );
+
+        // Verify the stored mtime advanced via `indexed_file_origins`, which
+        // is the read path reconcile actually consults.
+        let indexed = store.indexed_file_origins().unwrap();
+        let stored = indexed
+            .get("src/a.rs")
+            .copied()
+            .flatten()
+            .expect("origin must be present in indexed_file_origins");
+        assert_eq!(stored, 9_999_999_999);
+    }
+
+    /// Origin that doesn't exist in the index → zero rows affected, no error.
+    /// Reconcile depends on this graceful path so a touch on a path the
+    /// indexer never saw doesn't crash the watch loop.
+    #[test]
+    fn test_touch_source_mtime_no_match_returns_zero() {
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let rows = store
+            .touch_source_mtime(&PathBuf::from("src/never_indexed.rs"), 12345)
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// CRITICAL invariant: the helper must call `crate::normalize_path()` on
+    /// the origin so a Windows-style backslash path matches the indexer's
+    /// forward-slash key. Pinned via the public API because the bug it
+    /// guards against (zero-row UPDATEs from path format drift) is silent.
+    #[test]
+    fn test_touch_source_mtime_normalizes_separators() {
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        // Indexer always stores with forward slashes (see `normalize_path`).
+        let chunk = make_chunk("beta", "src/b.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        // Caller passes a backslash-laden path (simulates a Windows path
+        // arriving from the watch loop pre-normalization). The helper must
+        // round-trip it through `normalize_path` to match the stored key.
+        let rows = store
+            .touch_source_mtime(&PathBuf::from(r"src\b.rs"), 7777)
+            .unwrap();
+        assert_eq!(
+            rows, 1,
+            "touch_source_mtime must normalize backslashes so the UPDATE matches the indexed origin"
+        );
     }
 
     // ===== TC-8: LLM summary functions =====

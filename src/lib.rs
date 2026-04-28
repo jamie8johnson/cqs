@@ -678,7 +678,27 @@ pub fn enumerate_files(
                     }
                 };
                 if path.starts_with(&root) {
-                    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
+                    // RB-6: `starts_with` and `strip_prefix` can disagree on
+                    // case-insensitive filesystems (NTFS, HFS+) — `Cqs` vs
+                    // `cqs` matches under `starts_with` but `strip_prefix`
+                    // does byte-equal segment compare and refuses. The old
+                    // `unwrap_or(&path).to_path_buf()` then silently leaked
+                    // the absolute path into the relative-path workflow,
+                    // breaking every downstream lookup keyed by relative
+                    // origin. Skipping with a warn surfaces the
+                    // disagreement so the operator can fix the case skew
+                    // (or re-canonicalize the project root).
+                    match path.strip_prefix(&root) {
+                        Ok(rel) => Some(rel.to_path_buf()),
+                        Err(_) => {
+                            tracing::warn!(
+                                path = %path.display(),
+                                root = %root.display(),
+                                "enumerate_files: starts_with passed but strip_prefix failed (case-insensitive filesystem?) — skipping"
+                            );
+                            None
+                        }
+                    }
                 } else {
                     tracing::warn!(path = %e.path().display(), "Skipping path outside project");
                     None
