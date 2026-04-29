@@ -1665,3 +1665,35 @@ mentions = [
     "#1197",
     "#1135",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "v1.30.1 audit P2: 9 of 22 prompts NEEDS FIX (~41%) vs skill expectation of 20%. Common errors: fictional API arities (atomic_replace), wrong function names (save vs save_owned), wrong error types (anyhow vs HnswError), nonexistent constants (error_codes::TIMEOUT). Fix-prompt generation needs tighter source-grounding — recurring across P1/P2/P3 phases of this audit."
+mentions = [
+    "audit-fix-prompts.md",
+    "verification",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Verifier-found NEEDS FIX rate on audit fix-prompts: P1 42%, P2 41%, P3 16%. Audit skill expects ~20%. Common errors: fictional API arities, wrong function names (save vs save_owned), wrong error types (anyhow vs HnswError), nonexistent constants. Source-grounding step in fix-prompt generation needs tightening — generator produces plausible-shaped APIs without grepping for them. Verification agent is essential, not optional."
+mentions = [
+    "audit-fix-prompts.md",
+    "verification",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Worktree-isolation failure mode: 2 of 6 implementer agents (P2-B, P2-F) leaked writes to /mnt/c/Projects/cqs/ instead of their worktree. Both self-corrected: saved diff via git diff > /tmp/X.patch, reverted parent files, applied patch in worktree, re-edited under worktree-rooted paths. Confirms feedback_agent_worktrees memory: every parallel-agent prompt MUST include explicit path-discipline text — isolation: worktree alone is not enough."
+mentions = [
+    "worktree",
+    "implementer",
+]
+
+[[note]]
+sentiment = 0.5
+text = "P2-B agent caught a self-duplicating prompt: DS-V1.30.1-D2 and AC-V1.30.1-1 were tagged P2 in the audit-fix-prompts but had already shipped in #1203 (P1 phase). Caller-side verification (cargo test on existing tests + 7-call-site grep) confirmed wiring was correct, agent dropped that part of the bundle. Lesson: when generating P2 prompts, verify against P1 PRs that shipped during the same audit cycle — not just main HEAD at audit time."
+mentions = [
+    "audit-triage.md",
+    "DS-V1.30.1-D2",
+]
