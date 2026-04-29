@@ -170,10 +170,18 @@ pub fn stripped_model_value(raw: &[String]) -> Option<String> {
 /// bind a mock listener there. The hash is collision-avoidance only (per-
 /// project naming) — not a security property; access control relies on the
 /// filesystem permissions the real daemon sets (0o600).
+///
+/// AC-V1.30.1-9: hashes via [`blake3`] rather than `std::collections::hash_map::DefaultHasher`.
+/// `DefaultHasher` is Rust-version-dependent SipHash; a `cargo update` of
+/// std could change socket names and break systemd `cqs-watch` units that
+/// hardcode a specific path. BLAKE3 is stable across Rust versions and
+/// truncating the digest to 8 bytes keeps the socket name short while
+/// staying collision-safe (~1e-15 for 100 projects). Wire-format change:
+/// operators upgrading from <v1.30.1 must `systemctl --user restart cqs-watch`
+/// once so the daemon binds the new socket name; CLI auto-discovers via
+/// `XDG_RUNTIME_DIR` thereafter.
 #[cfg(unix)]
 pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     use std::path::PathBuf;
 
     let sock_dir = match std::env::var_os("XDG_RUNTIME_DIR") {
@@ -196,12 +204,67 @@ pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
             std::env::temp_dir()
         }
     };
-    let sock_name = format!("cqs-{:x}.sock", {
-        let mut h = DefaultHasher::new();
-        cqs_dir.hash(&mut h);
-        h.finish()
-    });
+    // AC-V1.30.1-9: BLAKE3 is stable across Rust versions — important
+    // because systemd unit files and operator scripts encode the socket
+    // path. Truncate to 8 hex bytes (16 chars) — collision probability
+    // for 100 projects is ~1e-15.
+    let canonical_path_bytes = cqs_dir.as_os_str().as_encoded_bytes();
+    let hash = blake3::hash(canonical_path_bytes);
+    let truncated = &hash.as_bytes()[..8];
+    let mut hex = String::with_capacity(16);
+    for b in truncated {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    let sock_name = format!("cqs-{}.sock", hex);
     sock_dir.join(sock_name)
+}
+
+/// Typed error returned by [`daemon_ping`], [`daemon_status`], and
+/// [`daemon_reconcile`].
+///
+/// API-V1.30.1-5: replaces the previous `Result<T, String>` shape so
+/// callers can distinguish "daemon never ran" (socket file missing) from
+/// "daemon crashed mid-call" (transport failure) from "daemon answered
+/// with garbage" (envelope/JSON parse failure) from "daemon answered
+/// with `status: \"err\"`" (handler-level error). The `wait_for_fresh`
+/// hot path branches on the variant to produce different bail messages
+/// per failure mode rather than collapsing every failure into "no
+/// daemon — start one" advice.
+#[cfg(unix)]
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum DaemonRpcError {
+    /// The daemon socket file does not exist — the daemon never started
+    /// (or was stopped). Operator action: start `cqs watch --serve`.
+    #[error("daemon socket missing: {0}")]
+    SocketMissing(String),
+    /// Connect / read / write / timeout / set_*_timeout failure. The
+    /// socket file exists but the daemon isn't responding. Operator
+    /// action: check `journalctl --user -u cqs-watch` and consider
+    /// restarting the unit.
+    #[error("daemon transport failure: {0}")]
+    Transport(String),
+    /// Envelope JSON parse, missing/non-string `status` field, or the
+    /// dispatch payload deserialize failed. The daemon answered but the
+    /// response is unparseable — most often a CLI/daemon version skew.
+    /// Operator action: rebuild and restart `cqs-watch`.
+    #[error("daemon returned malformed response: {0}")]
+    BadResponse(String),
+    /// The daemon returned `{"status": "err", "message": "..."}` — a
+    /// handler-level error. The `message` is the daemon's own description.
+    #[error("daemon error: {0}")]
+    DaemonError(String),
+}
+
+#[cfg(unix)]
+impl DaemonRpcError {
+    /// Render the daemon error as a stable wire-format string for
+    /// callers that still want to surface it as plain text (eg. the
+    /// `cqs hook fire` fallback that touches `.cqs/.dirty`). Equivalent
+    /// to the previous `Err(String)` payload.
+    pub fn as_message(&self) -> String {
+        self.to_string()
+    }
 }
 
 /// Daemon healthcheck response — the payload returned by `cqs ping`.
@@ -255,10 +318,9 @@ pub struct PingResponse {
 
 /// Connect to the running daemon and request a `PingResponse`.
 ///
-/// Task B2 helper: returns `Ok(PingResponse)` on success, `Err` if the
-/// socket is missing, the connection fails, the daemon returns a non-`ok`
-/// status, or the response payload doesn't deserialize. Errors are explicit
-/// strings the caller can present verbatim.
+/// Task B2 helper: returns `Ok(PingResponse)` on success or a typed
+/// [`DaemonRpcError`] on failure (socket missing, transport/connection
+/// failure, malformed response, or daemon-side error).
 ///
 /// Reusable from Task B1 (`cqs doctor --verbose`) and from any future tool
 /// that wants to ask the daemon "are you alive and serving the right
@@ -268,7 +330,7 @@ pub struct PingResponse {
 /// Note: this function is unix-only because the daemon socket is unix-only.
 /// On non-unix platforms the daemon never starts in the first place.
 #[cfg(unix)]
-pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
+pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, DaemonRpcError> {
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -278,37 +340,45 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
     // multi-project agent loop can disambiguate which daemon failed.
     let _span = tracing::info_span!("daemon_ping", path = %sock_path.display()).entered();
     if !sock_path.exists() {
-        return Err(format!(
+        return Err(DaemonRpcError::SocketMissing(format!(
             "no daemon running (socket {} does not exist)",
             sock_path.display()
-        ));
+        )));
     }
 
     let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
-        tracing::warn!(stage = "connect", error = %e, "daemon_ping failed");
-        format!("connect to {} failed: {e}", sock_path.display())
+        // OB-V1.30.1-8: demoted from warn to debug — `wait_for_fresh`
+        // polls this path during startup and a 250ms info-level cadence
+        // floods journalctl. Final-decision warns live in `wait_for_fresh`
+        // / the eval gate, not here.
+        tracing::debug!(stage = "connect", error = %e, "daemon_ping connect failed");
+        DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
     })?;
 
     // 5s is generous: the ping handler does no I/O — just snapshot reads
     // off atomic counters and a single `metadata()` on `index.db`.
     let timeout = Duration::from_secs(5);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        tracing::warn!(stage = "set_read_timeout", error = %e, "daemon_ping failed");
-        return Err(format!("set_read_timeout failed: {e}"));
+        tracing::debug!(stage = "set_read_timeout", error = %e, "daemon_ping failed");
+        return Err(DaemonRpcError::Transport(format!(
+            "set_read_timeout failed: {e}"
+        )));
     }
     if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        tracing::warn!(stage = "set_write_timeout", error = %e, "daemon_ping failed");
-        return Err(format!("set_write_timeout failed: {e}"));
+        tracing::debug!(stage = "set_write_timeout", error = %e, "daemon_ping failed");
+        return Err(DaemonRpcError::Transport(format!(
+            "set_write_timeout failed: {e}"
+        )));
     }
 
     let request = serde_json::json!({"command": "ping", "args": []});
     writeln!(stream, "{}", request).map_err(|e| {
-        tracing::warn!(stage = "write", error = %e, "daemon_ping failed");
-        format!("write request failed: {e}")
+        tracing::debug!(stage = "write", error = %e, "daemon_ping failed");
+        DaemonRpcError::Transport(format!("write request failed: {e}"))
     })?;
     stream.flush().map_err(|e| {
-        tracing::warn!(stage = "flush", error = %e, "daemon_ping failed");
-        format!("flush failed: {e}")
+        tracing::debug!(stage = "flush", error = %e, "daemon_ping failed");
+        DaemonRpcError::Transport(format!("flush failed: {e}"))
     })?;
 
     // PingResponse is small (<1KB). Cap the read at 64KB to bound memory
@@ -318,13 +388,13 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
     let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
     let mut response_line = String::new();
     reader.read_line(&mut response_line).map_err(|e| {
-        tracing::warn!(stage = "read", error = %e, "daemon_ping failed");
-        format!("read response failed: {e}")
+        tracing::debug!(stage = "read", error = %e, "daemon_ping failed");
+        DaemonRpcError::Transport(format!("read response failed: {e}"))
     })?;
 
     let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
         tracing::warn!(stage = "parse", error = %e, "daemon_ping failed");
-        format!("parse envelope failed: {e}")
+        DaemonRpcError::BadResponse(format!("parse envelope failed: {e}"))
     })?;
 
     let status = envelope
@@ -332,7 +402,7 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             tracing::warn!(stage = "parse", "daemon_ping failed: missing status field");
-            "missing 'status' field in daemon response".to_string()
+            DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
         })?;
     if status != "ok" {
         let msg = envelope
@@ -345,15 +415,17 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
             msg,
             "daemon_ping failed: non-ok status"
         );
-        return Err(format!("daemon error: {msg}"));
+        return Err(DaemonRpcError::DaemonError(msg.to_string()));
     }
 
     let output = envelope.get("output").ok_or_else(|| {
         tracing::warn!(stage = "parse", "daemon_ping failed: missing output field");
-        "missing 'output' field in daemon response".to_string()
+        DaemonRpcError::BadResponse("missing 'output' field in daemon response".to_string())
     })?;
-    let payload = unwrap_dispatch_payload(output, "PingResponse")?;
-    serde_json::from_value(payload).map_err(|e| format!("PingResponse deserialize failed: {e}"))
+    let payload =
+        unwrap_dispatch_payload(output, "PingResponse").map_err(DaemonRpcError::BadResponse)?;
+    serde_json::from_value(payload)
+        .map_err(|e| DaemonRpcError::BadResponse(format!("PingResponse deserialize failed: {e}")))
 }
 
 /// Pull the inner handler payload out of a daemon dispatch response.
@@ -411,9 +483,12 @@ fn unwrap_dispatch_payload(
 /// watch loop publishes from — the CLI-only path returns a default
 /// `unknown` snapshot, which would defeat the purpose.
 ///
-/// Returns explicit `Err(String)` on every failure (no socket, connect
-/// fail, non-`ok` status, malformed payload). Callers can fall back or
-/// surface verbatim.
+/// Returns a typed [`DaemonRpcError`] on failure. Callers can fall back
+/// or surface verbatim. The connect-stage `tracing::warn!` of the prior
+/// implementation was demoted to `tracing::debug!` because [`wait_for_fresh`]
+/// polls this in a tight loop during startup and the warn-cadence floods
+/// the journal at info level (OB-V1.30.1-8). Final-decision warns live
+/// in [`wait_for_fresh`] / the eval gate.
 ///
 /// Unix-only: the daemon socket is unix-only.
 ///
@@ -421,7 +496,7 @@ fn unwrap_dispatch_payload(
 #[cfg(unix)]
 pub fn daemon_status(
     cqs_dir: &std::path::Path,
-) -> Result<crate::watch_status::WatchSnapshot, String> {
+) -> Result<crate::watch_status::WatchSnapshot, DaemonRpcError> {
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -429,49 +504,54 @@ pub fn daemon_status(
     let sock_path = daemon_socket_path(cqs_dir);
     let _span = tracing::info_span!("daemon_status", path = %sock_path.display()).entered();
     if !sock_path.exists() {
-        return Err(format!(
+        return Err(DaemonRpcError::SocketMissing(format!(
             "no daemon running (socket {} does not exist)",
             sock_path.display()
-        ));
+        )));
     }
 
     let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
-        tracing::warn!(stage = "connect", error = %e, "daemon_status failed");
-        format!("connect to {} failed: {e}", sock_path.display())
+        // OB-V1.30.1-8: demoted from warn to debug. See type-level docs.
+        tracing::debug!(stage = "connect", error = %e, "daemon_status connect failed");
+        DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
     })?;
 
     // 5s is generous: the status handler does a single RwLock read + clone.
     let timeout = Duration::from_secs(5);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        tracing::warn!(stage = "set_read_timeout", error = %e, "daemon_status failed");
-        return Err(format!("set_read_timeout failed: {e}"));
+        tracing::debug!(stage = "set_read_timeout", error = %e, "daemon_status failed");
+        return Err(DaemonRpcError::Transport(format!(
+            "set_read_timeout failed: {e}"
+        )));
     }
     if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        tracing::warn!(stage = "set_write_timeout", error = %e, "daemon_status failed");
-        return Err(format!("set_write_timeout failed: {e}"));
+        tracing::debug!(stage = "set_write_timeout", error = %e, "daemon_status failed");
+        return Err(DaemonRpcError::Transport(format!(
+            "set_write_timeout failed: {e}"
+        )));
     }
 
     let request = serde_json::json!({"command": "status", "args": []});
     writeln!(stream, "{}", request).map_err(|e| {
-        tracing::warn!(stage = "write", error = %e, "daemon_status failed");
-        format!("write request failed: {e}")
+        tracing::debug!(stage = "write", error = %e, "daemon_status failed");
+        DaemonRpcError::Transport(format!("write request failed: {e}"))
     })?;
     stream.flush().map_err(|e| {
-        tracing::warn!(stage = "flush", error = %e, "daemon_status failed");
-        format!("flush failed: {e}")
+        tracing::debug!(stage = "flush", error = %e, "daemon_status failed");
+        DaemonRpcError::Transport(format!("flush failed: {e}"))
     })?;
 
     use std::io::Read as _;
     let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
     let mut response_line = String::new();
     reader.read_line(&mut response_line).map_err(|e| {
-        tracing::warn!(stage = "read", error = %e, "daemon_status failed");
-        format!("read response failed: {e}")
+        tracing::debug!(stage = "read", error = %e, "daemon_status failed");
+        DaemonRpcError::Transport(format!("read response failed: {e}"))
     })?;
 
     let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
         tracing::warn!(stage = "parse", error = %e, "daemon_status failed");
-        format!("parse envelope failed: {e}")
+        DaemonRpcError::BadResponse(format!("parse envelope failed: {e}"))
     })?;
 
     let status = envelope
@@ -482,7 +562,7 @@ pub fn daemon_status(
                 stage = "parse",
                 "daemon_status failed: missing status field"
             );
-            "missing 'status' field in daemon response".to_string()
+            DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
         })?;
     if status != "ok" {
         let msg = envelope
@@ -495,7 +575,7 @@ pub fn daemon_status(
             msg,
             "daemon_status failed: non-ok status"
         );
-        return Err(format!("daemon error: {msg}"));
+        return Err(DaemonRpcError::DaemonError(msg.to_string()));
     }
 
     let output = envelope.get("output").ok_or_else(|| {
@@ -503,10 +583,12 @@ pub fn daemon_status(
             stage = "parse",
             "daemon_status failed: missing output field"
         );
-        "missing 'output' field in daemon response".to_string()
+        DaemonRpcError::BadResponse("missing 'output' field in daemon response".to_string())
     })?;
-    let payload = unwrap_dispatch_payload(output, "WatchSnapshot")?;
-    serde_json::from_value(payload).map_err(|e| format!("WatchSnapshot deserialize failed: {e}"))
+    let payload =
+        unwrap_dispatch_payload(output, "WatchSnapshot").map_err(DaemonRpcError::BadResponse)?;
+    serde_json::from_value(payload)
+        .map_err(|e| DaemonRpcError::BadResponse(format!("WatchSnapshot deserialize failed: {e}")))
 }
 
 /// #1182 — Layer 1: response shape for [`daemon_reconcile`]. Mirrors the
@@ -529,16 +611,16 @@ pub struct DaemonReconcileResponse {
 /// #1182 — Layer 1: post a `reconcile` socket message to the running
 /// daemon. Used by the `cqs hook fire` CLI surface.
 ///
-/// Returns the parsed [`DaemonReconcileResponse`] on success, or a
-/// descriptive error on socket / deserialize failure. The CLI surface
-/// downgrades a missing-socket error to the `.cqs/.dirty` fallback;
-/// every other error is surfaced verbatim so hooks fail loudly.
+/// Returns the parsed [`DaemonReconcileResponse`] on success, or a typed
+/// [`DaemonRpcError`] on failure. The CLI surface downgrades the
+/// `SocketMissing` variant to the `.cqs/.dirty` fallback; every other
+/// variant is surfaced verbatim so hooks fail loudly.
 #[cfg(unix)]
 pub fn daemon_reconcile(
     cqs_dir: &std::path::Path,
     hook: Option<&str>,
     args: &[String],
-) -> Result<DaemonReconcileResponse, String> {
+) -> Result<DaemonReconcileResponse, DaemonRpcError> {
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -551,23 +633,27 @@ pub fn daemon_reconcile(
     )
     .entered();
     if !sock_path.exists() {
-        return Err(format!(
+        return Err(DaemonRpcError::SocketMissing(format!(
             "no daemon running (socket {} does not exist)",
             sock_path.display()
-        ));
+        )));
     }
 
     let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
-        tracing::warn!(stage = "connect", error = %e, "daemon_reconcile failed");
-        format!("connect to {} failed: {e}", sock_path.display())
+        tracing::debug!(stage = "connect", error = %e, "daemon_reconcile connect failed");
+        DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
     })?;
 
     let timeout = Duration::from_secs(5);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        return Err(format!("set_read_timeout failed: {e}"));
+        return Err(DaemonRpcError::Transport(format!(
+            "set_read_timeout failed: {e}"
+        )));
     }
     if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        return Err(format!("set_write_timeout failed: {e}"));
+        return Err(DaemonRpcError::Transport(format!(
+            "set_write_timeout failed: {e}"
+        )));
     }
 
     // Build the batch-arg vector: ["--hook", "<name>", "--arg", "v1",
@@ -585,95 +671,169 @@ pub fn daemon_reconcile(
 
     let request = serde_json::json!({"command": "reconcile", "args": batch_args});
     writeln!(stream, "{}", request).map_err(|e| {
-        tracing::warn!(stage = "write", error = %e, "daemon_reconcile failed");
-        format!("write request failed: {e}")
+        tracing::debug!(stage = "write", error = %e, "daemon_reconcile failed");
+        DaemonRpcError::Transport(format!("write request failed: {e}"))
     })?;
-    stream.flush().map_err(|e| format!("flush failed: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| DaemonRpcError::Transport(format!("flush failed: {e}")))?;
 
     use std::io::Read as _;
     let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
     let mut response_line = String::new();
     reader
         .read_line(&mut response_line)
-        .map_err(|e| format!("read response failed: {e}"))?;
+        .map_err(|e| DaemonRpcError::Transport(format!("read response failed: {e}")))?;
 
     let envelope: serde_json::Value = serde_json::from_str(response_line.trim())
-        .map_err(|e| format!("parse envelope failed: {e}"))?;
+        .map_err(|e| DaemonRpcError::BadResponse(format!("parse envelope failed: {e}")))?;
 
     let status = envelope
         .get("status")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing 'status' field in daemon response".to_string())?;
+        .ok_or_else(|| {
+            DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
+        })?;
     if status != "ok" {
         let msg = envelope
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("daemon error");
-        return Err(format!("daemon error: {msg}"));
+        return Err(DaemonRpcError::DaemonError(msg.to_string()));
     }
 
-    let output = envelope
-        .get("output")
-        .ok_or_else(|| "missing 'output' field in daemon response".to_string())?;
-    let payload = unwrap_dispatch_payload(output, "DaemonReconcileResponse")?;
-    serde_json::from_value(payload)
-        .map_err(|e| format!("DaemonReconcileResponse deserialize failed: {e}"))
+    let output = envelope.get("output").ok_or_else(|| {
+        DaemonRpcError::BadResponse("missing 'output' field in daemon response".to_string())
+    })?;
+    let payload = unwrap_dispatch_payload(output, "DaemonReconcileResponse")
+        .map_err(DaemonRpcError::BadResponse)?;
+    serde_json::from_value(payload).map_err(|e| {
+        DaemonRpcError::BadResponse(format!("DaemonReconcileResponse deserialize failed: {e}"))
+    })
 }
 
 /// #1182 — Layer 4: outcome of [`wait_for_fresh`].
 ///
-/// Three cases callers need to distinguish:
+/// Five cases callers need to distinguish so the caller-side advice
+/// matches the actual failure mode (EH-V1.30.1-2):
 /// - `Fresh` — daemon reported `state == fresh` within the budget; safe to
 ///   proceed with the gated work.
 /// - `Timeout` — daemon was reachable but never became fresh in time. The
 ///   final snapshot is attached so callers can surface counters
 ///   (`modified_files`, `pending_notes`) in their error message.
-/// - `NoDaemon` — socket missing or transport error. The eval gate treats
-///   this as a hard fail by default; ceremony commands invoking this helper
-///   should advise the user to either start `cqs watch --serve` or pass
-///   `--no-require-fresh`.
+/// - `NoDaemon` — socket file does not exist. Operator action: start
+///   `cqs watch --serve`.
+/// - `Transport` — socket exists but the daemon isn't responding (connect /
+///   read / write / timeout). Operator action: check the daemon log,
+///   consider restarting the unit.
+/// - `BadResponse` — daemon answered but the response was unparseable.
+///   Most often a CLI/daemon version skew — restart `cqs-watch`.
 #[cfg(unix)]
 #[derive(Debug, Clone)]
 pub enum FreshnessWait {
     Fresh(crate::watch_status::WatchSnapshot),
     Timeout(crate::watch_status::WatchSnapshot),
+    /// Socket file missing — the daemon never started.
     NoDaemon(String),
+    /// Connect/read/write/timeout — daemon is gone or hung.
+    Transport(String),
+    /// Envelope/JSON/parse error — daemon answered but garbled.
+    BadResponse(String),
 }
 
 /// #1182 — Layer 4: shared client-side polling for `state == fresh`.
 ///
 /// Both `cqs status --watch-fresh --wait` and `cqs eval --require-fresh`
-/// route through this. Polls the daemon every 250 ms with a deadline of
-/// `wait_secs` (capped at 600 by the caller's clap default — caller is
-/// authoritative; we honour whatever they pass).
+/// route through this. Polls the daemon with exponential backoff (initial
+/// interval from [`crate::limits::freshness_poll_ms_initial`] doubling up
+/// to a 2 s ceiling) within a deadline of `wait_secs`. RB-2 caps the
+/// budget at 86,400 s (24 h) defensively so a misconfigured caller can't
+/// pass a value that overflows `Instant + Duration::from_secs`.
 ///
 /// The first successful poll that reports `fresh` returns immediately —
-/// callers don't pay 250 ms latency on an already-fresh tree.
+/// callers don't pay any latency on an already-fresh tree.
 ///
-/// Transport errors collapse into [`FreshnessWait::NoDaemon`]. We do not
-/// retry across socket-missing errors because (a) the watch daemon's socket
-/// is created at startup and persists; if it's gone, restarting it is the
-/// fix, not waiting; and (b) silently waiting through an outage masks the
-/// "you forgot to run `cqs watch --serve`" case the eval gate exists to
-/// catch.
+/// EH-V1.30.1-2: errors are surfaced per [`DaemonRpcError`] variant rather
+/// than collapsed into a single `NoDaemon` so the caller-side advice can
+/// distinguish "no daemon at all" (start one), "daemon hung" (restart),
+/// and "daemon answered with garbage" (version skew → restart).
+///
+/// OB-V1.30.1-8: the connect-stage `tracing::warn!` was demoted to debug
+/// at the [`daemon_status`] layer, so a 250 ms poll loop no longer floods
+/// journalctl during startup. Final-decision warns are emitted here, one
+/// per terminal outcome.
 #[cfg(unix)]
 pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWait {
     let _span = tracing::info_span!("wait_for_fresh", wait_secs).entered();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
-    let poll_interval = std::time::Duration::from_millis(250);
+    let start = std::time::Instant::now();
+    // RB-2: defensive cap so a `pub fn` can't panic on
+    // `Instant + Duration::from_secs(u64::MAX)`. Caller should pass a
+    // sane budget but we bound it here regardless.
+    let bounded_secs = wait_secs.min(86_400);
+    let deadline = start + std::time::Duration::from_secs(bounded_secs);
+
+    let mut poll_interval =
+        std::time::Duration::from_millis(crate::limits::freshness_poll_ms_initial());
+    let max_interval = std::time::Duration::from_secs(2);
 
     loop {
+        // RB-9: deadline-first so a slow daemon timeout can't push us
+        // past the user's budget. If the deadline already passed before
+        // we got our first response, return Timeout with the unknown
+        // snapshot — the caller's bail message will explain.
+        if std::time::Instant::now() >= deadline {
+            tracing::info!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "wait_for_fresh: deadline reached before first fresh poll",
+            );
+            return FreshnessWait::Timeout(crate::watch_status::WatchSnapshot::unknown());
+        }
+
         match daemon_status(cqs_dir) {
             Ok(snap) => {
                 if snap.is_fresh() {
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        modified_files = snap.modified_files,
+                        "wait_for_fresh: index reached Fresh",
+                    );
                     return FreshnessWait::Fresh(snap);
                 }
                 if std::time::Instant::now() >= deadline {
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        modified_files = snap.modified_files,
+                        rebuild_in_flight = snap.rebuild_in_flight,
+                        "wait_for_fresh: timeout — index still stale",
+                    );
                     return FreshnessWait::Timeout(snap);
                 }
                 std::thread::sleep(poll_interval);
+                // Exponential backoff with a 2 s ceiling. Linearly
+                // doubling beats fixed cadence on long waits because the
+                // socket budget cost is per round-trip, not per second.
+                poll_interval = (poll_interval * 2).min(max_interval);
             }
-            Err(msg) => return FreshnessWait::NoDaemon(msg),
+            Err(DaemonRpcError::SocketMissing(msg)) => {
+                tracing::info!(error = %msg, "wait_for_fresh: daemon socket missing");
+                return FreshnessWait::NoDaemon(msg);
+            }
+            Err(DaemonRpcError::Transport(msg)) => {
+                tracing::info!(error = %msg, "wait_for_fresh: transport failure");
+                return FreshnessWait::Transport(msg);
+            }
+            Err(DaemonRpcError::BadResponse(msg)) => {
+                tracing::warn!(error = %msg, "wait_for_fresh: malformed daemon response");
+                return FreshnessWait::BadResponse(msg);
+            }
+            Err(DaemonRpcError::DaemonError(msg)) => {
+                // The daemon answered with `status: "err"`. From the
+                // freshness-poll perspective this is the daemon refusing
+                // to provide a snapshot — surface as transport-class so
+                // the caller's message points at the daemon log.
+                tracing::warn!(error = %msg, "wait_for_fresh: daemon-side error");
+                return FreshnessWait::Transport(msg);
+            }
         }
     }
 }
@@ -839,9 +999,15 @@ mod tests {
         let result = daemon_ping(&cqs_dir);
         assert!(result.is_err());
         let err = result.unwrap_err();
+        // API-V1.30.1-5: typed variant — SocketMissing is the no-daemon path.
         assert!(
-            err.contains("no daemon running"),
-            "expected friendly error, got: {err}"
+            matches!(err, DaemonRpcError::SocketMissing(_)),
+            "expected SocketMissing variant, got: {err:?}"
+        );
+        let msg = err.as_message();
+        assert!(
+            msg.contains("no daemon running"),
+            "expected friendly error, got: {msg}"
         );
     }
 
@@ -1086,9 +1252,15 @@ mod tests {
         let result = daemon_status(&cqs_dir);
         assert!(result.is_err());
         let err = result.unwrap_err();
+        // API-V1.30.1-5: typed variant.
         assert!(
-            err.contains("no daemon running"),
-            "expected friendly error, got: {err}"
+            matches!(err, DaemonRpcError::SocketMissing(_)),
+            "expected SocketMissing variant, got: {err:?}"
+        );
+        let msg = err.as_message();
+        assert!(
+            msg.contains("no daemon running"),
+            "expected friendly error, got: {msg}"
         );
     }
 
@@ -1195,9 +1367,15 @@ mod tests {
         let result = daemon_reconcile(&cqs_dir, Some("post-merge"), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
+        // API-V1.30.1-5: typed variant.
         assert!(
-            err.contains("no daemon running"),
-            "expected friendly error, got: {err}"
+            matches!(err, DaemonRpcError::SocketMissing(_)),
+            "expected SocketMissing variant, got: {err:?}"
+        );
+        let msg = err.as_message();
+        assert!(
+            msg.contains("no daemon running"),
+            "expected friendly error, got: {msg}"
         );
     }
 
@@ -1276,17 +1454,16 @@ mod tests {
         }
     }
 
-    /// PR 4 of #1182: `wait_for_fresh` reports `Timeout` when the deadline
-    /// expires while the daemon still reports stale. With `wait_secs = 0`
-    /// the helper polls once and immediately checks the deadline — no
-    /// 250 ms sleep, fast test.
+    /// PR 4 of #1182 (post-RB-9 refactor): `wait_for_fresh` reports
+    /// `Timeout` when the deadline expires before any successful poll.
+    /// With `wait_secs = 0` the deadline-first guard fires immediately,
+    /// returning `Timeout(unknown)` without a wasted round-trip. The
+    /// `unknown` snapshot signals "we never got a real status" so the
+    /// caller's bail message can adapt.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_timeout_when_budget_expires() {
-        use std::io::{BufRead, BufReader, Write};
-        use std::os::unix::net::UnixListener;
-
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
@@ -1297,42 +1474,13 @@ mod tests {
             std::env::set_var("XDG_RUNTIME_DIR", dir.path());
         }
 
+        // A bound socket so the helper sees a daemon socket file. We never
+        // actually accept — the deadline-first guard returns before the
+        // first daemon_status call.
         let sock_path = daemon_socket_path(&cqs_dir);
-        let listener = UnixListener::bind(&sock_path).unwrap();
-
-        let snap = crate::watch_status::WatchSnapshot {
-            state: crate::watch_status::FreshnessState::Stale,
-            modified_files: 7,
-            pending_notes: true,
-            rebuild_in_flight: false,
-            delta_saturated: false,
-            incremental_count: 17,
-            dropped_this_cycle: 0,
-            last_event_unix_secs: 1_734_120_488,
-            last_synced_at: Some(1_734_120_000),
-            snapshot_at: Some(1_734_120_500),
-        };
-        let inner_envelope = serde_json::json!({
-            "data": serde_json::to_value(&snap).unwrap(),
-            "error": null,
-            "version": 1,
-        });
-        let outer_envelope = serde_json::json!({"status": "ok", "output": inner_envelope});
-        let outer_str = outer_envelope.to_string();
-
-        let handle = std::thread::spawn(move || {
-            // wait_secs=0 → exactly one accept before the deadline trips.
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request_line = String::new();
-            BufReader::new(&stream)
-                .read_line(&mut request_line)
-                .unwrap();
-            writeln!(stream, "{outer_str}").unwrap();
-            stream.flush().unwrap();
-        });
+        let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
 
         let result = wait_for_fresh(&cqs_dir, 0);
-        handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
         // SAFETY: see daemon_status_mock_round_trip.
@@ -1345,8 +1493,9 @@ mod tests {
 
         match result {
             FreshnessWait::Timeout(snap) => {
-                assert_eq!(snap.state, crate::watch_status::FreshnessState::Stale);
-                assert_eq!(snap.modified_files, 7);
+                // RB-9 deadline-first: budget=0 means we return without a
+                // round-trip, so the snapshot is the synthetic "unknown".
+                assert_eq!(snap.state, crate::watch_status::FreshnessState::Unknown);
             }
             other => panic!("expected Timeout, got: {other:?}"),
         }
@@ -1354,15 +1503,40 @@ mod tests {
 
     /// PR 4 of #1182: `wait_for_fresh` returns `NoDaemon` without a socket.
     /// No mock listener — the helper short-circuits on `daemon_status`'s
-    /// pre-flight existence check. No serial gate needed because we don't
-    /// touch `XDG_RUNTIME_DIR`.
+    /// pre-flight existence check. Must point XDG at a fresh tempdir so
+    /// the helper sees no socket regardless of any host daemon.
+    ///
+    /// `#[serial]` for the same XDG-race reason as
+    /// `daemon_status_mock_round_trip`.
+    ///
+    /// RB-9 reframe: post-deadline-first, we use `wait_secs = 5` so we
+    /// reach `daemon_status` and get the SocketMissing → NoDaemon path.
+    /// `wait_secs = 0` would short-circuit on the deadline-first guard
+    /// and return `Timeout(unknown)` without ever asking the daemon.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_no_daemon_without_socket() {
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
-        let result = wait_for_fresh(&cqs_dir, 0);
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let result = wait_for_fresh(&cqs_dir, 5);
+
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
         match result {
             FreshnessWait::NoDaemon(msg) => {
                 assert!(
@@ -1372,5 +1546,295 @@ mod tests {
             }
             other => panic!("expected NoDaemon, got: {other:?}"),
         }
+    }
+
+    /// TC-HAP-1.30.1-5: `wait_for_fresh` polls past stale snapshots and
+    /// returns `Fresh` once the daemon flips. Listener accepts three
+    /// connections: stale, stale, fresh. Pins both the polling loop AND
+    /// the exponential backoff (elapsed must be at least the initial
+    /// poll interval × 1 sleep — a fresh-on-first wouldn't sleep at all).
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn wait_for_fresh_returns_fresh_after_two_stale_polls() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: tests run sequentially within a process; this only races
+        // against parallel workers, and the temp_dir is unique per test.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+            // Fast-poll override so the test's two sleeps don't add a
+            // perceptible delay. 25ms is the floor.
+            std::env::set_var("CQS_FRESHNESS_POLL_MS", "25");
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Helper: build the outer envelope wrapping a snapshot.
+        let envelope = |state: crate::watch_status::FreshnessState| -> String {
+            let snap = crate::watch_status::WatchSnapshot {
+                state,
+                modified_files: if matches!(state, crate::watch_status::FreshnessState::Fresh) {
+                    0
+                } else {
+                    3
+                },
+                pending_notes: false,
+                rebuild_in_flight: false,
+                delta_saturated: false,
+                incremental_count: 0,
+                dropped_this_cycle: 0,
+                last_event_unix_secs: 1_734_120_488,
+                last_synced_at: Some(1_734_120_000),
+                snapshot_at: Some(1_734_120_500),
+            };
+            let inner = serde_json::json!({
+                "data": serde_json::to_value(&snap).unwrap(),
+                "error": null,
+                "version": 1,
+            });
+            serde_json::json!({"status": "ok", "output": inner}).to_string()
+        };
+
+        let stale1 = envelope(crate::watch_status::FreshnessState::Stale);
+        let stale2 = envelope(crate::watch_status::FreshnessState::Stale);
+        let fresh = envelope(crate::watch_status::FreshnessState::Fresh);
+
+        let handle = std::thread::spawn(move || {
+            for body in [stale1, stale2, fresh] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut req = String::new();
+                BufReader::new(&stream).read_line(&mut req).unwrap();
+                writeln!(stream, "{body}").unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let start = std::time::Instant::now();
+        let result = wait_for_fresh(&cqs_dir, 5);
+        let elapsed = start.elapsed();
+
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("CQS_FRESHNESS_POLL_MS");
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        match result {
+            FreshnessWait::Fresh(snap) => {
+                assert_eq!(snap.state, crate::watch_status::FreshnessState::Fresh);
+                assert_eq!(snap.modified_files, 0);
+            }
+            other => panic!("expected Fresh after stale polls, got: {other:?}"),
+        }
+        // We slept at least once (after first stale poll). At a 25ms
+        // initial interval the test must take >= 25ms total. Use a loose
+        // 20ms floor to allow scheduler jitter.
+        assert!(
+            elapsed.as_millis() >= 20,
+            "expected at least one sleep cycle, got {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    /// TC-ADV-1.30.1-4: `wait_for_fresh` returns `Transport(_)` (not
+    /// `NoDaemon`) when the daemon socket file exists but the daemon
+    /// process has died — i.e. the listener was bound, accepted one
+    /// connection, then dropped. The socket file persists (until we
+    /// `remove_file`) but `UnixStream::connect` returns ECONNREFUSED
+    /// because no listener is bound to it.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn wait_for_fresh_returns_transport_when_daemon_dies_mid_poll() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see above.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+            std::env::set_var("CQS_FRESHNESS_POLL_MS", "25");
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let stale_envelope = {
+            let snap = crate::watch_status::WatchSnapshot {
+                state: crate::watch_status::FreshnessState::Stale,
+                modified_files: 5,
+                pending_notes: false,
+                rebuild_in_flight: false,
+                delta_saturated: false,
+                incremental_count: 0,
+                dropped_this_cycle: 0,
+                last_event_unix_secs: 1_734_120_488,
+                last_synced_at: Some(1_734_120_000),
+                snapshot_at: Some(1_734_120_500),
+            };
+            let inner = serde_json::json!({
+                "data": serde_json::to_value(&snap).unwrap(),
+                "error": null,
+                "version": 1,
+            });
+            serde_json::json!({"status": "ok", "output": inner}).to_string()
+        };
+
+        // Listener thread: accept once, send Stale, drop listener. The
+        // socket file persists on disk so subsequent connects see the
+        // file but hit ECONNREFUSED (no listener bound) — exercises
+        // Transport, not SocketMissing.
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, "{stale_envelope}").unwrap();
+            stream.flush().unwrap();
+            drop(stream);
+            drop(listener);
+        });
+
+        let result = wait_for_fresh(&cqs_dir, 5);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("CQS_FRESHNESS_POLL_MS");
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        // The socket file existed at every poll, but the daemon was
+        // gone for the second one — must surface as Transport, not
+        // NoDaemon, so the eval gate's advice points at journalctl
+        // rather than at "start the daemon".
+        match result {
+            FreshnessWait::Transport(_) => { /* expected */ }
+            other => panic!("expected Transport after daemon death, got: {other:?}"),
+        }
+    }
+
+    /// TC-ADV-1.30.1-4 (sibling): `daemon_status` distinguishes a
+    /// malformed envelope (`BadResponse`) from a missing socket
+    /// (`SocketMissing`). The mock listener writes a truncated JSON line
+    /// and closes — the helper must classify as BadResponse so callers
+    /// like `wait_for_fresh` can route to "version skew" advice rather
+    /// than "start a daemon".
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn daemon_status_returns_bad_response_on_malformed_envelope() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see above.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            // Truncated envelope — opens an object then closes the line.
+            writeln!(stream, r#"{{"status":"ok","output":"#).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_status(&cqs_dir);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        match result {
+            Err(DaemonRpcError::BadResponse(msg)) => {
+                assert!(
+                    msg.contains("parse")
+                        || msg.contains("envelope")
+                        || msg.contains("missing")
+                        || msg.contains("EOF")
+                        || msg.contains("trailing"),
+                    "expected envelope/parse-class message, got: {msg}"
+                );
+            }
+            other => panic!("expected BadResponse on malformed envelope, got: {other:?}"),
+        }
+    }
+
+    /// AC-V1.30.1-9: `daemon_socket_path` is deterministic across calls
+    /// (BLAKE3 of the cqs_dir bytes). Pin the exact hash for a known
+    /// input so a future drift in the truncation length or hex
+    /// formatting trips this test.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_socket_path_blake3_pinned() {
+        use std::path::Path;
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
+        }
+        let p = daemon_socket_path(Path::new("/tmp/foo"));
+        // Restore env early so a panic doesn't poison neighbour tests.
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        // Compute the expected hex independently so the test pins both
+        // the algorithm choice (BLAKE3) and the truncation length (8 bytes
+        // → 16 hex chars). If anyone swaps to SHA256 / changes the
+        // truncation, this fails immediately.
+        let expected_hash = blake3::hash(b"/tmp/foo");
+        let expected_truncated = &expected_hash.as_bytes()[..8];
+        let mut expected_hex = String::with_capacity(16);
+        for b in expected_truncated {
+            use std::fmt::Write as _;
+            write!(expected_hex, "{:02x}", b).unwrap();
+        }
+        let expected = format!("/tmp/cqs-{expected_hex}.sock");
+        assert_eq!(p.to_string_lossy(), expected);
+        // Sanity: 16-char hex, fixed width — distinguishes from
+        // DefaultHasher's variable-length unpadded output.
+        assert_eq!(expected_hex.len(), 16, "BLAKE3 truncation must be 8 bytes");
     }
 }

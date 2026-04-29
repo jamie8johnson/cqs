@@ -331,7 +331,7 @@ fn do_fire(cqs_dir: &Path, name: &str, args: Vec<String>, try_daemon: bool) -> R
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "daemon_reconcile failed — touching .cqs/.dirty");
-                    report.daemon_error = Some(e);
+                    report.daemon_error = Some(e.as_message());
                 }
             }
         } else {

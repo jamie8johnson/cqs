@@ -70,7 +70,7 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
                     emit_snapshot(&snap, json)?;
                     Ok(())
                 }
-                Err(msg) => emit_no_daemon(&msg, json),
+                Err(err) => emit_no_daemon(&err.as_message(), json),
             };
         }
 
@@ -83,13 +83,35 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
                 Ok(())
             }
             cqs::daemon_translate::FreshnessWait::Timeout(snap) => {
-                emit_snapshot(&snap, json)?;
+                if json {
+                    // API-V1.30.1-1: error envelope so JSON consumers see
+                    // `error.code="timeout"` alongside the non-zero exit
+                    // code. Embedding the snapshot in `data` keeps the
+                    // counter information for callers that surface them.
+                    let payload = serde_json::json!({
+                        "snapshot": snap,
+                        "wait_secs": budget_secs,
+                    });
+                    crate::cli::json_envelope::emit_json_error_with_data(
+                        crate::cli::json_envelope::error_codes::TIMEOUT,
+                        &format!("watch index still stale after {budget_secs}s"),
+                        Some(payload),
+                    )?;
+                } else {
+                    print_text(&snap);
+                    eprintln!("cqs: watch index still stale after {budget_secs}s wait");
+                }
                 // Budget expired before fresh — surface as exit 1
                 // so scripts can distinguish "fresh" from "timed
                 // out still stale".
                 std::process::exit(1);
             }
             cqs::daemon_translate::FreshnessWait::NoDaemon(msg) => emit_no_daemon(&msg, json),
+            // Transport / BadResponse fold into the same exit-1 path as
+            // NoDaemon — the operator-side detail (which class fired) is
+            // in the message verbatim.
+            cqs::daemon_translate::FreshnessWait::Transport(msg)
+            | cqs::daemon_translate::FreshnessWait::BadResponse(msg) => emit_no_daemon(&msg, json),
         }
     }
 
