@@ -338,6 +338,20 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
         );
     }
 
+    // DS-V1.30.1-D4 (#1232): refuse if a daemon is currently serving
+    // this slot. The slots lock above pins out concurrent CLI promote /
+    // remove calls but doesn't bind a long-lived `cqs watch --serve`
+    // process — its `Store::open` against `slots/<name>/index.db`
+    // holds open file descriptors that survive `fs::remove_dir_all`
+    // on Linux, leaving WAL checkpoints persisting into a detached
+    // directory tree that's reaped on daemon exit. Operators see no
+    // error, lose hours of incremental rebuild work, and on WSL or
+    // any non-overlay FS the unlink can partially fail and leave the
+    // slot dir half-removed. Probe the daemon before unlinking; if
+    // it's serving this slot, refuse (or downgrade to a warn under
+    // `--force`).
+    guard_against_active_daemon(project_cqs_dir, name, force)?;
+
     let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
     // P2.21: don't mask `list_slots` failure as "only slot remaining" — that
     // would falsely error on a transient FS hiccup. Surface the real cause so
@@ -379,6 +393,57 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
         if name == active {
             println!("Active slot auto-promoted to '{}'.", all[0]);
         }
+    }
+    Ok(())
+}
+
+/// DS-V1.30.1-D4 (#1232): probe the daemon and refuse if it's serving
+/// the slot the user is about to remove. Mirrors the existing
+/// "this is the active slot" `--force` semantics: refusal becomes a
+/// `tracing::warn!` when `force` is true.
+///
+/// Probe failure (no daemon, transport error, missing slot field) is
+/// treated as "no daemon serving this slot" — the worst case is the
+/// historical behavior, never a false positive. Probe takes ~5 ms when
+/// the daemon is up and ~1 ms when the socket is missing, so the
+/// extra round trip is invisible relative to the index-rebuild path.
+///
+/// Windows has no daemon today (`daemon_status` is unix-gated), so the
+/// guard is a no-op there.
+fn guard_against_active_daemon(project_cqs_dir: &Path, name: &str, force: bool) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let snap = match cqs::daemon_translate::daemon_status(project_cqs_dir) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    "daemon probe failed during slot remove; assuming no daemon serving this slot"
+                );
+                return Ok(());
+            }
+        };
+        if snap.active_slot.as_deref() != Some(name) {
+            return Ok(());
+        }
+        if !force {
+            anyhow::bail!(
+                "daemon is currently serving slot '{name}'. \
+                 Stop it first (e.g. `systemctl --user stop cqs-watch`, or kill the \
+                 `cqs watch --serve` process) and re-run, or pass --force to override."
+            );
+        }
+        tracing::warn!(
+            slot = name,
+            "removing slot while daemon is actively serving it (--force); \
+             daemon will hold open file descriptors against the unlinked slot dir \
+             until it exits — incremental rebuild work persisted after this point \
+             may be silently lost"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (project_cqs_dir, name, force);
     }
     Ok(())
 }
@@ -545,6 +610,189 @@ mod tests {
         slot_remove(&cqs, "b", false, true).unwrap();
         assert_eq!(read_active_slot(&cqs).as_deref(), Some("a"));
         assert!(!slot_dir(&cqs, "b").exists());
+    }
+
+    // DS-V1.30.1-D4 (#1232) — refuse to unlink a slot dir while a daemon
+    // is actively serving it. These tests stand up a `UnixListener` on
+    // the same socket path `daemon_status` probes and respond with a
+    // `WatchSnapshot` whose `active_slot` field decides the outcome.
+    //
+    // The XDG-shared-state warning from `daemon_translate::tests` applies
+    // here too: each test sets `XDG_RUNTIME_DIR` to a unique tempdir,
+    // and the `serial_test::serial(daemon_socket_xdg)` group keeps these
+    // from racing against the production-side mock-round-trip tests.
+
+    #[cfg(unix)]
+    fn make_snapshot_envelope(slot: Option<&str>) -> String {
+        let snap = cqs::watch_status::WatchSnapshot {
+            state: cqs::watch_status::FreshnessState::Fresh,
+            modified_files: 0,
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event_unix_secs: 0,
+            last_synced_at: Some(0),
+            snapshot_at: Some(0),
+            active_slot: slot.map(|s| s.to_string()),
+        };
+        let inner = serde_json::json!({
+            "data": serde_json::to_value(&snap).unwrap(),
+            "error": null,
+            "version": 1,
+        });
+        let outer = serde_json::json!({
+            "status": "ok",
+            "output": inner,
+        });
+        outer.to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn slot_remove_refuses_when_daemon_serves_target() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let _g = ENV_LOCK.lock().unwrap();
+        let xdg = TempDir::new().unwrap();
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: serial_test gates this; only one daemon-mock test runs at a time.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", xdg.path());
+        }
+
+        let tmp = with_slots(&["foo", "bar"]);
+        let cqs = tmp.path().join(".cqs");
+        write_active_slot(&cqs, "bar").unwrap();
+
+        let sock_path = cqs::daemon_translate::daemon_socket_path(&cqs);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        let envelope = make_snapshot_envelope(Some("foo"));
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, "{envelope}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = slot_remove(&cqs, "foo", false, true);
+        handle.join().unwrap();
+        let _ = fs::remove_file(&sock_path);
+
+        // SAFETY: paired with the set above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        let err = result.expect_err("daemon serving 'foo' must block remove");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("daemon is currently serving slot 'foo'"),
+            "error should name the slot and the daemon: {msg}"
+        );
+        assert!(
+            slot_dir(&cqs, "foo").exists(),
+            "slot dir should still exist after refused remove"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn slot_remove_with_force_proceeds_despite_daemon() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let _g = ENV_LOCK.lock().unwrap();
+        let xdg = TempDir::new().unwrap();
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", xdg.path());
+        }
+
+        let tmp = with_slots(&["foo", "bar"]);
+        let cqs = tmp.path().join(".cqs");
+        write_active_slot(&cqs, "bar").unwrap();
+
+        let sock_path = cqs::daemon_translate::daemon_socket_path(&cqs);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        let envelope = make_snapshot_envelope(Some("foo"));
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, "{envelope}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = slot_remove(&cqs, "foo", true, true);
+        handle.join().unwrap();
+        let _ = fs::remove_file(&sock_path);
+
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        result.expect("--force should override daemon guard");
+        assert!(
+            !slot_dir(&cqs, "foo").exists(),
+            "slot dir should be removed under --force"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn slot_remove_allows_when_daemon_serves_different_slot() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let _g = ENV_LOCK.lock().unwrap();
+        let xdg = TempDir::new().unwrap();
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", xdg.path());
+        }
+
+        let tmp = with_slots(&["foo", "bar"]);
+        let cqs = tmp.path().join(".cqs");
+        write_active_slot(&cqs, "bar").unwrap();
+
+        let sock_path = cqs::daemon_translate::daemon_socket_path(&cqs);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        // Daemon claims it's serving "bar"; we want to remove "foo" — should work.
+        let envelope = make_snapshot_envelope(Some("bar"));
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, "{envelope}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = slot_remove(&cqs, "foo", false, true);
+        handle.join().unwrap();
+        let _ = fs::remove_file(&sock_path);
+
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        result.expect("removing a different slot must not be blocked");
+        assert!(!slot_dir(&cqs, "foo").exists());
     }
 
     #[test]

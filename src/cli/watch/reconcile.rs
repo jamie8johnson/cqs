@@ -489,6 +489,7 @@ mod tests {
             dropped_this_cycle: 0,
             last_event: std::time::Instant::now(),
             last_synced_at: None,
+            active_slot: None,
             _marker: PhantomData,
         });
         assert_eq!(snap.state, FreshnessState::Stale);

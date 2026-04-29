@@ -147,6 +147,13 @@ struct WatchState {
     /// throttled stat calls. `None` ⇒ index.db missing or mtime
     /// unreadable on the last stat.
     cached_last_synced_at: Option<i64>,
+    /// DS-V1.30.1-D4 (#1232): slot name resolved at startup. Cloned
+    /// into the watch snapshot every publish so `daemon_status`
+    /// callers (specifically `cqs slot remove`) can know which slot
+    /// the daemon is serving and refuse to unlink it. Owned String
+    /// rather than borrow because `WatchState` outlives the per-tick
+    /// `WatchSnapshotInput`.
+    active_slot: String,
 }
 
 /// PF-V1.30.1-1: how often the watch loop re-stats `index.db` for the
@@ -195,8 +202,8 @@ fn publish_watch_snapshot(
         .as_ref()
         .map(|p| p.delta_saturated)
         .unwrap_or(false);
-    let snap =
-        cqs::watch_status::WatchSnapshot::compute(cqs::watch_status::WatchSnapshotInput::new(
+    let snap = cqs::watch_status::WatchSnapshot::compute(
+        cqs::watch_status::WatchSnapshotInput::new(
             state.pending_files.len(),
             state.pending_notes,
             state.pending_rebuild.is_some(),
@@ -205,7 +212,9 @@ fn publish_watch_snapshot(
             state.dropped_this_cycle,
             state.last_event,
             last_synced_at,
-        ));
+        )
+        .with_active_slot(&state.active_slot),
+    );
     // Poison-recovery: another writer panicking shouldn't silently stop
     // freshness publishing. Recover and overwrite.
     //
@@ -1078,6 +1087,7 @@ pub fn cmd_watch(
             .checked_sub(LAST_SYNCED_REFRESH)
             .unwrap_or_else(std::time::Instant::now),
         cached_last_synced_at: None,
+        active_slot: active_slot.name.clone(),
     };
 
     let mut cycles_since_clear: u32 = 0;

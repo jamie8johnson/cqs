@@ -124,6 +124,16 @@ pub struct WatchSnapshot {
     /// downstream freshness gates. Operators see a once-per-process
     /// warn from `now_unix_secs` when this happens.
     pub snapshot_at: Option<i64>,
+    /// DS-V1.30.1-D4 (#1232): name of the slot the daemon is currently
+    /// serving. Lets `cqs slot remove <name>` refuse to unlink a slot
+    /// directory while a long-lived daemon holds open file descriptors
+    /// against `slots/<name>/index.db` — on Linux the unlink succeeds
+    /// against the held inode and the daemon's WAL checkpoints persist
+    /// into a detached directory tree that gets reaped on daemon exit,
+    /// silently losing hours of incremental rebuild work. `None` ⇒
+    /// daemon hasn't published a snapshot yet (still ramping up).
+    #[serde(default)]
+    pub active_slot: Option<String>,
 }
 
 impl WatchSnapshot {
@@ -143,6 +153,7 @@ impl WatchSnapshot {
             last_event_unix_secs: 0,
             last_synced_at: None,
             snapshot_at: now_unix_secs(),
+            active_slot: None,
         }
     }
 
@@ -204,6 +215,12 @@ pub struct WatchSnapshotInput<'a> {
     pub dropped_this_cycle: usize,
     pub last_event: std::time::Instant,
     pub last_synced_at: Option<i64>,
+    /// DS-V1.30.1-D4 (#1232): borrowed slot name set once at watch
+    /// startup. Cloned into the snapshot's `active_slot: Option<String>`
+    /// each tick so the daemon's status response can name what it's
+    /// currently serving. The lifetime ties this borrow to the watch
+    /// loop's owned `WatchState` field.
+    pub active_slot: Option<&'a str>,
     /// Phantom keeps the API future-proof if we add borrow-only fields
     /// (e.g. last-error string). No-op today.
     pub _marker: std::marker::PhantomData<&'a ()>,
@@ -235,8 +252,19 @@ impl<'a> WatchSnapshotInput<'a> {
             dropped_this_cycle,
             last_event,
             last_synced_at,
+            active_slot: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// DS-V1.30.1-D4 (#1232): builder-style chain for the slot name. The
+    /// watch loop calls `WatchSnapshotInput::new(...).with_active_slot(&s)`
+    /// each tick so the snapshot publishes the slot the daemon is
+    /// serving. Default is `None` to keep existing call sites that
+    /// don't care about slot tracking compiling unchanged.
+    pub fn with_active_slot(mut self, slot: &'a str) -> Self {
+        self.active_slot = Some(slot);
+        self
     }
 }
 
@@ -297,6 +325,7 @@ impl WatchSnapshot {
             last_event_unix_secs,
             last_synced_at: input.last_synced_at,
             snapshot_at: now_unix_secs(),
+            active_slot: input.active_slot.map(|s| s.to_string()),
         }
     }
 }
@@ -327,6 +356,7 @@ mod tests {
             dropped_this_cycle,
             last_event: std::time::Instant::now(),
             last_synced_at: None,
+            active_slot: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -404,6 +434,7 @@ mod tests {
             dropped_this_cycle: 0,
             last_event: std::time::Instant::now(),
             last_synced_at: None,
+            active_slot: None,
             _marker: std::marker::PhantomData,
         });
         assert_eq!(snap.state, FreshnessState::Stale);
@@ -424,6 +455,7 @@ mod tests {
             dropped_this_cycle: 0,
             last_event: std::time::Instant::now(),
             last_synced_at: None,
+            active_slot: None,
             _marker: std::marker::PhantomData,
         });
         assert_eq!(snap.state, FreshnessState::Rebuilding);
