@@ -1135,6 +1135,17 @@ pub fn cmd_watch(
                         // db_id updated below in the DS-9 reopen path
                         state.hnsw_index = None;
                         state.incremental_count = 0;
+                        // DS-V1.30.1-D1: drop in-flight rebuild whose pending
+                        // delta references OLD DB chunk IDs. The rebuild
+                        // thread will tx.send(...) into a dropped receiver
+                        // (no-op per rebuild.rs:289). Force a fresh rebuild
+                        // on the next threshold tick against the new DB.
+                        if state.pending_rebuild.take().is_some() {
+                            tracing::info!(
+                                "discarded in-flight HNSW rebuild after DB replacement; \
+                                 next threshold tick will rebuild against new DB",
+                            );
+                        }
                     }
 
                     if !state.pending_files.is_empty() {

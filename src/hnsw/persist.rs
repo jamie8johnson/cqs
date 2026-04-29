@@ -228,6 +228,31 @@ impl HnswIndex {
             ))
         })?;
 
+        // DS-V1.30.1-D7: refuse to start a new save if a previous rollback
+        // left .bak files behind. The operator must clear them manually
+        // so we don't silently overwrite a known-good index with a stale
+        // .bak on a future rollback. Hoisted from the rename loop below
+        // (was previously line ~421) so the guard runs before any writes.
+        let all_exts = ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+        let stale_baks: Vec<std::path::PathBuf> = all_exts
+            .iter()
+            .filter_map(|ext| {
+                let bak = dir.join(format!("{}.{}.bak", basename, ext));
+                if bak.exists() {
+                    Some(bak)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !stale_baks.is_empty() {
+            return Err(HnswError::Internal(format!(
+                "stale .bak files from prior failed save: {:?}; manual recovery required \
+                 (remove them or rename to current files)",
+                stale_baks,
+            )));
+        }
+
         // Acquire exclusive lock for save
         // NOTE: File locking is advisory only on WSL over 9P.
         // This prevents concurrent cqs processes from corrupting the index,
@@ -418,7 +443,8 @@ impl HnswIndex {
 
         // Atomically rename each file from temp to final location.
         // Track which files were successfully moved so we can roll back on failure.
-        let all_exts = ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+        // DS-V1.30.1-D7: `all_exts` is now hoisted to the top of `save`
+        // so the stale-bak guard can scan with the same list. Reuse it.
         let mut moved_exts: Vec<&str> = Vec::new();
 
         let rename_result: Result<(), HnswError> = (|| {
@@ -512,16 +538,26 @@ impl HnswIndex {
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 let _ = std::fs::remove_file(&final_path);
             }
+            // DS-V1.30.1-D7: track which `.bak` files failed to restore
+            // instead of warning-and-continuing. The unrestored ones are
+            // left in place as recovery breadcrumbs and the operator gets
+            // an actionable error. Pre-fix the partial-rollback state was
+            // silently swallowed: a subsequent save would refuse to start
+            // if any `.bak` survived (now the case under the start-of-save
+            // guard), but until that guard fired, the operator had no
+            // signal that manual recovery was needed.
+            let mut restore_failures: Vec<(String, std::io::Error)> = Vec::new();
             for ext in &all_exts {
                 let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 if bak_path.exists() {
-                    if let Err(e) = std::fs::rename(&bak_path, &final_path) {
+                    if let Err(rename_err) = std::fs::rename(&bak_path, &final_path) {
                         tracing::error!(
                             path = %final_path.display(),
-                            error = %e,
+                            error = %rename_err,
                             "Failed to restore backup during HNSW save rollback"
                         );
+                        restore_failures.push((final_path.display().to_string(), rename_err));
                     }
                 }
             }
@@ -549,6 +585,29 @@ impl HnswIndex {
             }
             tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
             let _ = std::fs::remove_dir_all(&temp_dir);
+
+            // DS-V1.30.1-D7: surface partial-rollback as an actionable
+            // error so the operator can clear the orphaned .bak files.
+            // The next `save` would refuse to start anyway under the
+            // stale-bak guard above; this turns the deferred refusal into
+            // an immediate breadcrumb at the point of failure.
+            if !restore_failures.is_empty() {
+                let detail: String = restore_failures
+                    .iter()
+                    .map(|(p, err)| format!("  {p}: {err}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                tracing::error!(
+                    %detail,
+                    dir = %dir.display(),
+                    "HNSW rollback INCOMPLETE — manual recovery required: \
+                     restore .bak files matching {basename}.*.bak in dir",
+                );
+                return Err(HnswError::Internal(format!(
+                    "HNSW rollback partially failed; .bak files present, \
+                     manual recovery required:\n{detail}"
+                )));
+            }
             return Err(e);
         }
 
@@ -1348,9 +1407,19 @@ mod tests {
             "save MUST surface the backup-rename failure (P2 #30)"
         );
         let err_msg = format!("{}", result.unwrap_err());
+        // DS-V1.30.1-D7: the stale-bak guard now runs before the
+        // backup-rename pass, so a pre-existing `.bak` (whether file or
+        // directory) trips the guard with a "stale .bak files" message
+        // BEFORE the rename failure path runs. Either error path is a
+        // valid surfacing of the underlying scenario: save bails without
+        // touching the original index. Accept both messages so this test
+        // pins the correctness invariant ("save bails before damage")
+        // independent of which guard fires.
         assert!(
-            err_msg.contains("back up") || err_msg.contains("backup"),
-            "error should mention backup failure, got: {}",
+            err_msg.contains("back up")
+                || err_msg.contains("backup")
+                || err_msg.contains("stale .bak files"),
+            "error should mention backup failure or stale-bak guard, got: {}",
             err_msg
         );
 
@@ -1359,6 +1428,85 @@ mod tests {
         assert_eq!(
             post_size, v1_graph_size,
             "original index file must not be touched when save bails on backup failure"
+        );
+    }
+
+    /// DS-V1.30.1-D7: a successful save must leave NO `.bak` files
+    /// behind (cleaned up at line ~609). Pre-fix this was already the
+    /// case; this test pins it so a future refactor of the cleanup loop
+    /// can't silently regress and let the next save trip the new
+    /// stale-bak guard.
+    #[cfg(unix)]
+    #[test]
+    fn test_save_cleans_up_baks_on_success() {
+        let tmp = TempDir::new().unwrap();
+
+        let v1: Vec<(String, crate::embedder::Embedding)> = (1..=3)
+            .map(|i| (format!("vec{}", i), make_embedding(i)))
+            .collect();
+        let v1_idx = HnswIndex::build_with_dim(v1, crate::EMBEDDING_DIM).unwrap();
+        v1_idx.save(tmp.path(), "index").unwrap();
+
+        let v2: Vec<(String, crate::embedder::Embedding)> = (1..=5)
+            .map(|i| (format!("vec{}", i + 10), make_embedding(i + 10)))
+            .collect();
+        let v2_idx = HnswIndex::build_with_dim(v2, crate::EMBEDDING_DIM).unwrap();
+        // Successful overwrite. The save creates `.bak` files mid-flight
+        // and must clean them up before returning Ok.
+        v2_idx.save(tmp.path(), "index").unwrap();
+
+        for ext in ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"] {
+            let bak = tmp.path().join(format!("index.{}.bak", ext));
+            assert!(
+                !bak.exists(),
+                "successful save must remove .bak files; {} still exists",
+                bak.display(),
+            );
+        }
+    }
+
+    /// DS-V1.30.1-D7: stale `.bak` files from a prior failed rollback
+    /// must be detected at save start. Manual recovery is required so
+    /// we don't silently overwrite a known-good index with a stale
+    /// `.bak` on a future rollback. The guard returns
+    /// `HnswError::Internal` with an actionable message naming the
+    /// stale paths.
+    #[cfg(unix)]
+    #[test]
+    fn test_save_refuses_when_stale_bak_present() {
+        let tmp = TempDir::new().unwrap();
+
+        // Plant a stale .bak file (no current index — fresh dir).
+        let stale_bak = tmp.path().join("index.hnsw.graph.bak");
+        std::fs::write(&stale_bak, b"stale-content").unwrap();
+
+        let v: Vec<(String, crate::embedder::Embedding)> = (1..=3)
+            .map(|i| (format!("vec{}", i), make_embedding(i)))
+            .collect();
+        let idx = HnswIndex::build_with_dim(v, crate::EMBEDDING_DIM).unwrap();
+
+        let result = idx.save(tmp.path(), "index");
+        assert!(
+            result.is_err(),
+            "save MUST refuse to start with a stale .bak present"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("stale .bak files"),
+            "error must name the stale-bak guard, got: {}",
+            err_msg,
+        );
+        assert!(
+            err_msg.contains("manual recovery required"),
+            "error must direct operator to manual recovery, got: {}",
+            err_msg,
+        );
+
+        // Stale .bak must still be on disk — the guard does NOT clean
+        // up; it surfaces the breadcrumb for the operator.
+        assert!(
+            stale_bak.exists(),
+            "guard must NOT delete the stale .bak (it's the operator's recovery breadcrumb)"
         );
     }
 

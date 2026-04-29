@@ -263,9 +263,17 @@ fn cmd_uninstall(json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_hook_uninstall", json).entered();
     let root = find_project_root();
     let git_dir = locate_git_hooks_dir(&root)?;
+    let report = do_uninstall(&git_dir)?;
+    emit(&report, json)?;
+    Ok(())
+}
 
+/// TC-HAP-1.30.1-2: path-aware uninstall helper. Body of `cmd_uninstall`
+/// extracted so unit tests can drive a tempdir without the global
+/// `find_project_root` walk.
+fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
     let mut report = UninstallReport {
-        git_dir: git_dir.clone(),
+        git_dir: git_dir.to_path_buf(),
         removed: Vec::new(),
         skipped_foreign: Vec::new(),
         not_present: Vec::new(),
@@ -287,8 +295,7 @@ fn cmd_uninstall(json: bool) -> Result<()> {
         }
     }
 
-    emit(&report, json)?;
-    Ok(())
+    Ok(report)
 }
 
 // ─── fire ─────────────────────────────────────────────────────────────────
@@ -297,9 +304,17 @@ fn cmd_fire(name: String, args: Vec<String>, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_hook_fire", hook = %name).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
+    let report = do_fire(&cqs_dir, &name, args, /*try_daemon=*/ true)?;
+    emit(&report, json)?;
+    Ok(())
+}
 
+/// TC-HAP-1.30.1-2: path-aware fire helper. Tries the daemon socket first
+/// (when `try_daemon` is true and the platform supports unix sockets),
+/// falls back to writing `.cqs/.dirty` atomically (DS-V1.30.1-D5).
+fn do_fire(cqs_dir: &Path, name: &str, args: Vec<String>, try_daemon: bool) -> Result<FireReport> {
     let mut report = FireReport {
-        hook: name.clone(),
+        hook: name.to_string(),
         args: args.clone(),
         sent_to_daemon: false,
         dirty_marker: None,
@@ -308,30 +323,42 @@ fn cmd_fire(name: String, args: Vec<String>, json: bool) -> Result<()> {
 
     #[cfg(unix)]
     {
-        match cqs::daemon_translate::daemon_reconcile(&cqs_dir, Some(&name), &args) {
-            Ok(_resp) => {
-                report.sent_to_daemon = true;
-                emit(&report, json)?;
-                return Ok(());
+        if try_daemon {
+            match cqs::daemon_translate::daemon_reconcile(cqs_dir, Some(name), &args) {
+                Ok(_resp) => {
+                    report.sent_to_daemon = true;
+                    return Ok(report);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "daemon_reconcile failed — touching .cqs/.dirty");
+                    report.daemon_error = Some(e);
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "daemon_reconcile failed — touching .cqs/.dirty");
-                report.daemon_error = Some(e);
-            }
+        } else {
+            report.daemon_error = Some("daemon path skipped (test override)".to_string());
         }
     }
     #[cfg(not(unix))]
     {
+        let _ = try_daemon; // unused on non-unix
         report.daemon_error = Some("hook fire requires unix sockets".to_string());
     }
 
     // Fallback: leave a marker the daemon will pick up on next start.
     let dirty = cqs_dir.join(".dirty");
-    std::fs::create_dir_all(&cqs_dir).with_context(|| format!("create {}", cqs_dir.display()))?;
-    std::fs::write(&dirty, b"").with_context(|| format!("touch {}", dirty.display()))?;
+    std::fs::create_dir_all(cqs_dir).with_context(|| format!("create {}", cqs_dir.display()))?;
+    // DS-V1.30.1-D5: stage to .dirty.tmp then atomic_replace so the
+    // marker survives a power-cut between write and the next directory
+    // sync. atomic_replace fsyncs the tmp before rename and best-effort
+    // fsyncs the parent afterwards. The marker is the *only* signal the
+    // daemon will see post-reboot, so durability matters more than the
+    // empty-file write cost.
+    let tmp = cqs_dir.join(".dirty.tmp");
+    std::fs::write(&tmp, b"").with_context(|| format!("stage {}", tmp.display()))?;
+    cqs::fs::atomic_replace(&tmp, &dirty)
+        .with_context(|| format!("promote {} -> {}", tmp.display(), dirty.display()))?;
     report.dirty_marker = Some(dirty);
-    emit(&report, json)?;
-    Ok(())
+    Ok(report)
 }
 
 // ─── status ───────────────────────────────────────────────────────────────
@@ -342,8 +369,26 @@ fn cmd_status(json: bool) -> Result<()> {
     let git_dir = locate_git_hooks_dir(&root)?;
     let cqs_dir = cqs::resolve_index_dir(&root);
 
+    let mut report = do_hook_status(&git_dir)?;
+    #[cfg(unix)]
+    {
+        report.daemon_up = cqs::daemon_translate::daemon_status(&cqs_dir).is_ok();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cqs_dir; // unused on non-unix
+    }
+
+    emit(&report, json)?;
+    Ok(())
+}
+
+/// TC-HAP-1.30.1-2: path-aware hook-status helper. Pure file-system
+/// classification with no daemon probe — `cmd_status` overlays
+/// `daemon_up` separately.
+fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
     let mut report = StatusReport {
-        git_dir: git_dir.clone(),
+        git_dir: git_dir.to_path_buf(),
         installed: Vec::new(),
         foreign: Vec::new(),
         missing: Vec::new(),
@@ -364,13 +409,7 @@ fn cmd_status(json: bool) -> Result<()> {
         }
     }
 
-    #[cfg(unix)]
-    {
-        report.daemon_up = cqs::daemon_translate::daemon_status(&cqs_dir).is_ok();
-    }
-
-    emit(&report, json)?;
-    Ok(())
+    Ok(report)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -483,5 +522,132 @@ mod tests {
         // the join branch. Either path shape is acceptable as long as
         // the function doesn't blow up.
         assert!(resolved.to_string_lossy().ends_with("hooks"));
+    }
+
+    // ───── TC-HAP-1.30.1-2: cmd_uninstall / cmd_fire / cmd_status ─────────
+    //
+    // These tests drive the path-aware helpers (`do_uninstall`, `do_fire`,
+    // `do_hook_status`) so the body of each cmd_* dispatch is exercised
+    // without the global `find_project_root` walk. Marker-classification
+    // logic uses `HOOK_MARKER_PREFIX` (per line 45) — `HOOK_MARKER_CURRENT`
+    // contains the prefix, so seeding tests with `HOOK_MARKER_CURRENT`
+    // exercises the same code path the installer hits.
+
+    #[test]
+    fn cmd_uninstall_removes_only_marked_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+
+        // Two cqs-marked hooks + one foreign hook + one missing hook.
+        // HOOK_MARKER_CURRENT contains HOOK_MARKER_PREFIX so the
+        // matcher at line ~279 fires for both.
+        std::fs::write(hooks.join("post-checkout"), HOOK_MARKER_CURRENT).unwrap();
+        std::fs::write(hooks.join("post-merge"), HOOK_MARKER_CURRENT).unwrap();
+        std::fs::write(hooks.join("post-rewrite"), "#!/bin/sh\necho user").unwrap();
+
+        let report = do_uninstall(&hooks).unwrap();
+        assert_eq!(
+            report.removed,
+            vec!["post-checkout".to_string(), "post-merge".to_string()],
+            "only cqs-marked hooks should be removed",
+        );
+        assert_eq!(
+            report.skipped_foreign,
+            vec!["post-rewrite".to_string()],
+            "foreign hook (no cqs marker) must be left alone",
+        );
+        assert!(report.not_present.is_empty());
+
+        // Disk reflects the in-memory report.
+        assert!(!hooks.join("post-checkout").exists());
+        assert!(!hooks.join("post-merge").exists());
+        assert!(
+            hooks.join("post-rewrite").exists(),
+            "foreign hook must survive uninstall",
+        );
+    }
+
+    #[test]
+    fn cmd_uninstall_handles_missing_hooks() {
+        // Empty .git/hooks/ — every managed hook should land in not_present
+        // with no errors.
+        let tmp = TempDir::new().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+
+        let report = do_uninstall(&hooks).unwrap();
+        assert!(report.removed.is_empty());
+        assert!(report.skipped_foreign.is_empty());
+        assert_eq!(report.not_present.len(), MANAGED_HOOKS.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cmd_fire_writes_dirty_marker_when_daemon_absent() {
+        // No socket — daemon unreachable. With try_daemon=false the
+        // helper still goes through the fallback path that writes
+        // .cqs/.dirty atomically (DS-V1.30.1-D5).
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+
+        let report = do_fire(
+            &cqs_dir,
+            "post-checkout",
+            vec![],
+            /*try_daemon=*/ false,
+        )
+        .unwrap();
+        assert!(!report.sent_to_daemon);
+        assert_eq!(
+            report.dirty_marker.as_ref().unwrap(),
+            &cqs_dir.join(".dirty"),
+        );
+        assert!(cqs_dir.join(".dirty").exists());
+
+        // DS-V1.30.1-D5: the empty-bytes marker must be exactly 0 bytes.
+        let meta = std::fs::metadata(cqs_dir.join(".dirty")).unwrap();
+        assert_eq!(meta.len(), 0, "marker should be zero-length");
+
+        // atomic_replace consumed the staging tmp file.
+        assert!(
+            !cqs_dir.join(".dirty.tmp").exists(),
+            "staging .dirty.tmp must be cleaned up by the rename",
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn cmd_fire_writes_dirty_marker_on_non_unix() {
+        // On non-unix builds the daemon path is compiled out entirely;
+        // the dirty marker is the only side effect.
+        let tmp = TempDir::new().unwrap();
+        let cqs_dir = tmp.path().join(".cqs");
+
+        let report = do_fire(&cqs_dir, "post-checkout", vec![], true).unwrap();
+        assert!(!report.sent_to_daemon);
+        assert!(cqs_dir.join(".dirty").exists());
+        assert_eq!(std::fs::metadata(cqs_dir.join(".dirty")).unwrap().len(), 0);
+        assert!(!cqs_dir.join(".dirty.tmp").exists());
+    }
+
+    #[test]
+    fn cmd_status_classifies_three_hook_states() {
+        let tmp = TempDir::new().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        // Installed: marker-bearing (HOOK_MARKER_CURRENT contains PREFIX).
+        std::fs::write(hooks.join("post-checkout"), HOOK_MARKER_CURRENT).unwrap();
+        // Foreign: file exists but no cqs marker.
+        std::fs::write(hooks.join("post-merge"), "#!/bin/sh\nuser stuff").unwrap();
+        // Missing: post-rewrite simply isn't on disk.
+
+        let report = do_hook_status(&hooks).unwrap();
+        assert_eq!(report.installed, vec!["post-checkout".to_string()]);
+        assert_eq!(report.foreign, vec!["post-merge".to_string()]);
+        assert_eq!(report.missing, vec!["post-rewrite".to_string()]);
+        // do_hook_status doesn't touch daemon_up — that's cmd_status's
+        // overlay. Pin the default.
+        assert!(!report.daemon_up);
     }
 }
