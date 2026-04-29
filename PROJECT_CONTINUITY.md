@@ -2,6 +2,35 @@
 
 ## Right Now
 
+**v1.30.1 audit P1+P2 done; P3+P4 next (2026-04-29 ~01:15 UTC).** 144 findings from 16 parallel auditors. Tiers: P1=14, P2=31, P3=78, P4=23.
+
+**Status:**
+- **P1 14/14 ✅ merged**: #1199 (lying docs) · #1200 (trust_level wiring) · #1201 (auth surface) · #1202 (freshness gate) · #1203 (embedder/reconcile)
+- **#1205 ✅ merged**: audit artifacts (findings/triage/fix-prompts.md)
+- **P2 31/31 ✅ merged** (six PRs):
+  - #1206 — auth+serve hardening — PB-1, SEC-3/4, OB-10
+  - #1207 — reconcile+path correctness — EH-1/7, RB-1/6, PB-7
+  - #1208 — watch state machine + delta + clock safety — OB-3/9, AC-10, API-10, RB-10, EH-8 (wire-shape break: `idle_secs` → `last_event_unix_secs`)
+  - #1209 — tests+DS papercuts+misc — TC-HAP-2/3, DS-D1/D5/D7, AC-3, PB-3
+  - #1210 — eval gate observability — OB-6, TC-HAP-4/7
+  - #1211 — wait_for_fresh hot path — RB-9, EH-2, OB-8, AC-9 (BLAKE3 socket path replaces DefaultHasher — restart cqs-watch after binary install), API-1, API-5
+- **#1212 filed**: perf wart — `upsert_sparse_vectors` 1M-row DELETE holds SQLite write lock ~8s on bulk reindex. `sparse_vectors.rs` already does DROP/CREATE INDEX + batched ops; this is the inherent cost of the deletes. Follow-up tracker.
+- **Main** at `ade6f5c8` post-#1211 merge. Local binary rebuild in flight (background `b7wf9ik6d`); after it lands, `systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch` (BLAKE3 socket path **requires** the daemon restart; old DefaultHasher socket name will be orphaned).
+
+**Up next:**
+- Tears+triage PR (this commit) → CI green → merge
+- P3 execution (78 findings → ~9 implementer bundles by area: docs / API-papercuts / wait_for_fresh-polish / auth-serve / watch-reconcile / scaling-knobs / refactor / platform / TC-coverage)
+- P4 trivials (23 findings; ~10 doc fixes, rest get tracking issues)
+- `cqs audit-mode off` final cleanup
+
+**Cross-cutting themes** (for context, not action): `delta_saturated` half-wired (fixed #1202), `dropped_this_cycle` reset-before-publish (fixed #1202), `wait_for_fresh` papercuts (in #1211), lying-docs cluster (fixed #1199-#1201), v0.12.1 swallow-error pattern recurrence (P2/P3), three-channel auth gaps (fixed #1201).
+
+**Path-discipline incident this session.** 2 of 6 P2 implementer agents (P2-B, P2-F) leaked writes to absolute parent paths despite running in worktrees. Both self-corrected after coordinator notice (saved diff in worktree, reverted parent, reapplied). Lesson reinforced: every parallel-agent prompt needs explicit "use $(git rev-parse --show-toplevel) prefix, never /mnt/c/Projects/cqs/" text per `feedback_agent_worktrees` memory.
+
+**Audit verification quality.** P1 had 5/12 NEEDS FIX (~42%) and P2 had 9/22 NEEDS FIX (~41%) on first verification pass — vs the audit skill's expected 20%. Pattern is consistent across phases: fictional API arities (atomic_replace), wrong function names (save vs save_owned), nonexistent constants (error_codes::TIMEOUT). Fix-prompt generation needs tighter source-grounding before agents are dispatched.
+
+**GPU load spike root-caused (2026-04-29 ~00:55 UTC).** Watch service held GPU/CPU load for ~1h after 11 sequential P1+P2 PR merges. Each `git pull` triggered a debounced inotify batch → reindex_files{file_count=179} → upsert_sparse_vectors{count=5614} → 1.04M-row DELETE in 7.7s + CREATE INDEX rebuild 7.7s. Legitimate work, but worth filing #1212 for. No watch-tuning knob change needed — this is the steady-state cost of a corpus-wide reindex over WSL NTFS.
+
 **v1.30.1 released 2026-04-28.** Post-release autopilot loop drained the queue across two arcs: #1182 perfect watch mode (Layers 1-4 + acceptance test) and the P4 auth-hardening cluster (#1197 closes #1134/#1135/#1136). Skipped #1139 / #1140 per autopilot directive.
 
 **Just landed (post-v1.30.1):**

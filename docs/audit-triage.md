@@ -38,37 +38,37 @@ Categorization: P1 14, P2 32, P3 78, P4 23 (duplicate entries cross-referenced r
 
 | ID | Title | Category | Location | Effort | Status |
 |----|-------|----------|----------|--------|--------|
-| EH-V1.30.1-1 | Parse failure leaves stale chunks AND no mtime update — reconciles forever | Error Handling | `src/cli/watch/reindex.rs:255-314` | medium | pending |
-| EH-V1.30.1-2 | `wait_for_fresh` collapses transport AND parse errors into `NoDaemon` — wrong advice | Error Handling | `src/daemon_translate.rs:660-678` | easy | pending |
-| EH-V1.30.1-7 | Reconcile mtime-stat error swallowed — file may oscillate as "always stale" | Error Handling | `src/cli/watch/reconcile.rs:116-127` + `reindex.rs:501-509` | medium | pending |
-| EH-V1.30.1-8 | `try_init_embedder` Err path strands HNSW dirty flag without observability | Error Handling | `src/cli/watch/events.rs:154-185` | medium | pending |
-| RB-1 | `to_string_lossy()` on path keys silently mangles non-UTF-8 paths into permanent reindex storms | Robustness | `src/cli/watch/reconcile.rs:99` + `staleness.rs:627-637` | medium | pending |
-| RB-9 | `wait_for_fresh` infinite poll loop on slow daemon — no exp backoff, 2400 socket connects/600s | Robustness | `src/daemon_translate.rs:665-678` | medium | pending |
-| RB-10 | `now_unix_secs()` swallows clock-before-epoch error as `0` — masks systemic bad-clock | Robustness | `src/watch_status.rs:226-231` | easy | pending |
-| RB-6 | `enumerate_files` `unwrap_or(&path)` on canonicalize-mismatch leaks abs paths into rel workflow | Robustness | `src/lib.rs:680-685` | medium | pending |
-| AC-V1.30.1-3 | BFS `bfs_expand` cap check skips score-bump for already-visited neighbors at boundary | Algorithm Correctness | `src/gather.rs:357-381` | medium | pending |
-| AC-V1.30.1-9 | `daemon_socket_path` uses `DefaultHasher` — Rust-version-dependent, breaks systemd unit naming | Algorithm Correctness | `src/daemon_translate.rs:174-200` | medium | pending |
-| AC-V1.30.1-10 | `incremental_count = 0` reset on idle-clear loses delta context — late HNSW rebuilds | Algorithm Correctness | `src/cli/watch/mod.rs:1180` | medium | pending |
-| API-V1.30.1-1 | `cqs status --wait` emits success envelope but exits 1 on timeout — contradicts contract | API Design | `src/cli/commands/infra/status.rs:85-90` | easy | pending |
-| API-V1.30.1-5 | `daemon_ping`/`status`/`reconcile` return `Result<T, String>` — stringly-typed errors on public API | API Design | `src/daemon_translate.rs:271,422,541` | medium | pending |
-| API-V1.30.1-10 | `WatchSnapshot.idle_secs` frozen at compute time — wire shape lies once snapshot served later | API Design | `src/watch_status.rs:101,219` | medium | pending |
-| OB-V1.30.1-3 | `WatchSnapshot` state transitions silent — Fresh↔Stale↔Rebuilding flips have no journal trail | Observability | `src/cli/watch/mod.rs:149-185`, `watch_status.rs:195-224` | medium | pending |
-| OB-V1.30.1-6 | `require_fresh_gate` lacks entry span + final-decision info — eval gate decisions invisible | Observability | `src/cli/commands/eval/mod.rs:219-275` | easy | pending |
-| OB-V1.30.1-8 | `daemon_status` connect-failure warns every 250 ms during startup race — 2400 lines/600s wait | Observability | `src/daemon_translate.rs:438-441` | medium | pending |
-| OB-V1.30.1-9 | `process_file_changes` uses `println!` in non-quiet — bypasses tracing infrastructure | Observability | `src/cli/watch/events.rs:147-152` | easy | pending |
-| OB-V1.30.1-10 | `serve::search` info logs full query at info — bypasses TraceLayer redaction | Observability | `src/serve/handlers.rs:189-232` | easy | pending |
-| PB-V1.30.1-1 | `cmd_serve` `--no-auth` warning misses `0.0.0.0` and `::` wildcard binds — most-exposed configs | Platform Behavior | `src/cli/commands/serve.rs:27` | easy | pending |
-| PB-V1.30.1-3 | `process_exists` (Windows) substring-matches `INFO:` against localized `tasklist` output | Platform Behavior | `src/cli/files.rs:59-72` | medium | pending |
-| PB-V1.30.1-7 | `cqs hook fire` on Windows-native: `.cqs/.dirty` written but no consumer ever reads it | Platform Behavior | `src/cli/commands/infra/hook.rs:309-335` | medium | pending |
-| SEC-V1.30.1-3 | `callgraph-3d.js` interpolates `e.message` into `innerHTML` without `escapeHtml` — XSS gap | Security | `src/serve/assets/views/callgraph-3d.js:55` | easy | pending |
-| SEC-V1.30.1-4 | `tag_user_code_trust_level` shape-coupled — silently no-ops on unknown JSON shapes | Security | `src/cli/commands/mod.rs:216-257` | medium | pending |
-| DS-V1.30.1-D1 | `cqs index --force` reopen leaves stale `pending_rebuild` against orphaned store handle | Data Safety | `src/cli/watch/mod.rs:1102-1122` | medium | pending |
-| DS-V1.30.1-D5 | `.cqs/.dirty` fallback marker write not atomic — crash drops the only signal daemon will see | Data Safety | `src/cli/commands/infra/hook.rs:329-332` | easy | pending |
-| DS-V1.30.1-D7 | HNSW rollback path leaves `.bak` files orphaned when restore-rename fails | Data Safety | `src/hnsw/persist.rs:509-553` | medium | pending |
-| TC-HAP-1.30.1-2 | `cmd_uninstall`, `cmd_fire`, `cmd_hook_status` — three CLI commands ship with zero tests | Test Coverage (happy) | `src/cli/commands/infra/hook.rs:262-373` | medium | pending |
-| TC-HAP-1.30.1-3 | `cmd_status` — 6-row behavior matrix promised, zero outcomes pinned | Test Coverage (happy) | `src/cli/commands/infra/status.rs:38-103` | medium | pending |
-| TC-HAP-1.30.1-4 | `require_fresh_gate` — function never called by any test; bypass logic re-implemented inline | Test Coverage (happy) | `src/cli/commands/eval/mod.rs:219-275` | easy | pending |
-| TC-HAP-1.30.1-7 | Eval freshness gate untested end-to-end — every test sets `CQS_EVAL_REQUIRE_FRESH=0` bypass | Test Coverage (happy) | `tests/eval_subcommand_test.rs:88-93` | medium | pending |
+| EH-V1.30.1-1 | Parse failure leaves stale chunks AND no mtime update — reconciles forever | Error Handling | `src/cli/watch/reindex.rs:255-314` | medium | ✅ PR #1207 |
+| EH-V1.30.1-2 | `wait_for_fresh` collapses transport AND parse errors into `NoDaemon` — wrong advice | Error Handling | `src/daemon_translate.rs:660-678` | easy | ⏳ PR #1211 |
+| EH-V1.30.1-7 | Reconcile mtime-stat error swallowed — file may oscillate as "always stale" | Error Handling | `src/cli/watch/reconcile.rs:116-127` + `reindex.rs:501-509` | medium | ✅ PR #1207 |
+| EH-V1.30.1-8 | `try_init_embedder` Err path strands HNSW dirty flag without observability | Error Handling | `src/cli/watch/events.rs:154-185` | medium | ✅ PR #1208 |
+| RB-1 | `to_string_lossy()` on path keys silently mangles non-UTF-8 paths into permanent reindex storms | Robustness | `src/cli/watch/reconcile.rs:99` + `staleness.rs:627-637` | medium | ✅ PR #1207 |
+| RB-9 | `wait_for_fresh` infinite poll loop on slow daemon — no exp backoff, 2400 socket connects/600s | Robustness | `src/daemon_translate.rs:665-678` | medium | ⏳ PR #1211 |
+| RB-10 | `now_unix_secs()` swallows clock-before-epoch error as `0` — masks systemic bad-clock | Robustness | `src/watch_status.rs:226-231` | easy | ✅ PR #1208 |
+| RB-6 | `enumerate_files` `unwrap_or(&path)` on canonicalize-mismatch leaks abs paths into rel workflow | Robustness | `src/lib.rs:680-685` | medium | ✅ PR #1207 |
+| AC-V1.30.1-3 | BFS `bfs_expand` cap check skips score-bump for already-visited neighbors at boundary | Algorithm Correctness | `src/gather.rs:357-381` | medium | ✅ PR #1209 |
+| AC-V1.30.1-9 | `daemon_socket_path` uses `DefaultHasher` — Rust-version-dependent, breaks systemd unit naming | Algorithm Correctness | `src/daemon_translate.rs:174-200` | medium | ⏳ PR #1211 |
+| AC-V1.30.1-10 | `incremental_count = 0` reset on idle-clear loses delta context — late HNSW rebuilds | Algorithm Correctness | `src/cli/watch/mod.rs:1180` | medium | ✅ PR #1208 |
+| API-V1.30.1-1 | `cqs status --wait` emits success envelope but exits 1 on timeout — contradicts contract | API Design | `src/cli/commands/infra/status.rs:85-90` | easy | ⏳ PR #1211 |
+| API-V1.30.1-5 | `daemon_ping`/`status`/`reconcile` return `Result<T, String>` — stringly-typed errors on public API | API Design | `src/daemon_translate.rs:271,422,541` | medium | ⏳ PR #1211 |
+| API-V1.30.1-10 | `WatchSnapshot.idle_secs` frozen at compute time — wire shape lies once snapshot served later | API Design | `src/watch_status.rs:101,219` | medium | ✅ PR #1208 |
+| OB-V1.30.1-3 | `WatchSnapshot` state transitions silent — Fresh↔Stale↔Rebuilding flips have no journal trail | Observability | `src/cli/watch/mod.rs:149-185`, `watch_status.rs:195-224` | medium | ✅ PR #1208 |
+| OB-V1.30.1-6 | `require_fresh_gate` lacks entry span + final-decision info — eval gate decisions invisible | Observability | `src/cli/commands/eval/mod.rs:219-275` | easy | ✅ PR #1210 |
+| OB-V1.30.1-8 | `daemon_status` connect-failure warns every 250 ms during startup race — 2400 lines/600s wait | Observability | `src/daemon_translate.rs:438-441` | medium | ⏳ PR #1211 |
+| OB-V1.30.1-9 | `process_file_changes` uses `println!` in non-quiet — bypasses tracing infrastructure | Observability | `src/cli/watch/events.rs:147-152` | easy | ✅ PR #1208 |
+| OB-V1.30.1-10 | `serve::search` info logs full query at info — bypasses TraceLayer redaction | Observability | `src/serve/handlers.rs:189-232` | easy | ✅ PR #1206 |
+| PB-V1.30.1-1 | `cmd_serve` `--no-auth` warning misses `0.0.0.0` and `::` wildcard binds — most-exposed configs | Platform Behavior | `src/cli/commands/serve.rs:27` | easy | ✅ PR #1206 |
+| PB-V1.30.1-3 | `process_exists` (Windows) substring-matches `INFO:` against localized `tasklist` output | Platform Behavior | `src/cli/files.rs:59-72` | medium | ✅ PR #1209 |
+| PB-V1.30.1-7 | `cqs hook fire` on Windows-native: `.cqs/.dirty` written but no consumer ever reads it | Platform Behavior | `src/cli/commands/infra/hook.rs:309-335` | medium | ✅ PR #1207 |
+| SEC-V1.30.1-3 | `callgraph-3d.js` interpolates `e.message` into `innerHTML` without `escapeHtml` — XSS gap | Security | `src/serve/assets/views/callgraph-3d.js:55` | easy | ✅ PR #1206 |
+| SEC-V1.30.1-4 | `tag_user_code_trust_level` shape-coupled — silently no-ops on unknown JSON shapes | Security | `src/cli/commands/mod.rs:216-257` | medium | ✅ PR #1206 |
+| DS-V1.30.1-D1 | `cqs index --force` reopen leaves stale `pending_rebuild` against orphaned store handle | Data Safety | `src/cli/watch/mod.rs:1102-1122` | medium | ✅ PR #1209 |
+| DS-V1.30.1-D5 | `.cqs/.dirty` fallback marker write not atomic — crash drops the only signal daemon will see | Data Safety | `src/cli/commands/infra/hook.rs:329-332` | easy | ✅ PR #1209 |
+| DS-V1.30.1-D7 | HNSW rollback path leaves `.bak` files orphaned when restore-rename fails | Data Safety | `src/hnsw/persist.rs:509-553` | medium | ✅ PR #1209 |
+| TC-HAP-1.30.1-2 | `cmd_uninstall`, `cmd_fire`, `cmd_hook_status` — three CLI commands ship with zero tests | Test Coverage (happy) | `src/cli/commands/infra/hook.rs:262-373` | medium | ✅ PR #1209 |
+| TC-HAP-1.30.1-3 | `cmd_status` — 6-row behavior matrix promised, zero outcomes pinned | Test Coverage (happy) | `src/cli/commands/infra/status.rs:38-103` | medium | ✅ PR #1209 |
+| TC-HAP-1.30.1-4 | `require_fresh_gate` — function never called by any test; bypass logic re-implemented inline | Test Coverage (happy) | `src/cli/commands/eval/mod.rs:219-275` | easy | ✅ PR #1210 |
+| TC-HAP-1.30.1-7 | Eval freshness gate untested end-to-end — every test sets `CQS_EVAL_REQUIRE_FRESH=0` bypass | Test Coverage (happy) | `tests/eval_subcommand_test.rs:88-93` | medium | ✅ PR #1210 |
 
 ## P3 — Easy + low impact (fix if time)
 
