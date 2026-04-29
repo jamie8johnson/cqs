@@ -94,12 +94,19 @@ pub enum RerankerError {
     InvalidArguments(String),
 }
 
-/// Convert any ort error to [`RerankerError::Inference`] via `.to_string()`.
-///
-/// Function instead of `From` impl — see [`crate::embedder::ort_err`] for rationale.
-fn ort_err<T>(e: ort::Error<T>) -> RerankerError {
-    RerankerError::Inference(e.to_string())
+/// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
+/// [`Inference`](RerankerError::Inference) so the shared
+/// [`crate::ort_helpers::ort_err`] helper can hand back the right
+/// variant for reranker call sites. Sealed trait, not `From<String>`,
+/// so `.map_err(ort_err)` type inference isn't ambiguous against the
+/// reflexive `From<T> for T` impl.
+impl crate::ort_helpers::FromOrtMessage for RerankerError {
+    fn from_ort_message(msg: String) -> Self {
+        Self::Inference(msg)
+    }
 }
+
+use crate::ort_helpers::ort_err;
 
 /// Cross-encoder reranker for second-pass scoring
 ///

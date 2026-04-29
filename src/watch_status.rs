@@ -59,6 +59,17 @@ impl FreshnessState {
     }
 }
 
+/// API-V1.30.1-9: implement `Display` so `tracing::info!(state = %snap.state)`
+/// works without callers having to reach for `.as_str()` everywhere. Delegates
+/// to `as_str()` so the wire-shape lowercase strings stay the single source of
+/// truth — JSON consumers, structured logs, and human-readable text all see
+/// the same spelling.
+impl std::fmt::Display for FreshnessState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Snapshot of the watch loop's view of "how fresh is the index?". The
 /// wire shape returned by `cqs status --watch-fresh --json`.
 ///
@@ -197,6 +208,37 @@ pub struct WatchSnapshotInput<'a> {
     /// Phantom keeps the API future-proof if we add borrow-only fields
     /// (e.g. last-error string). No-op today.
     pub _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> WatchSnapshotInput<'a> {
+    /// API-V1.30.1-7: named-field constructor so callers don't have to
+    /// remember to set `_marker: PhantomData` themselves. The lifetime
+    /// parameter remains in case future additions take borrowed fields
+    /// (e.g. `last_error: Option<&str>`); today the marker is the only
+    /// reason `'a` exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        pending_files_count: usize,
+        pending_notes: bool,
+        rebuild_in_flight: bool,
+        delta_saturated: bool,
+        incremental_count: usize,
+        dropped_this_cycle: usize,
+        last_event: std::time::Instant,
+        last_synced_at: Option<i64>,
+    ) -> Self {
+        Self {
+            pending_files_count,
+            pending_notes,
+            rebuild_in_flight,
+            delta_saturated,
+            incremental_count,
+            dropped_this_cycle,
+            last_event,
+            last_synced_at,
+            _marker: std::marker::PhantomData,
+        }
+    }
 }
 
 impl WatchSnapshot {

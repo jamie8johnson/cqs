@@ -107,6 +107,7 @@ pub(crate) mod limits;
 pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod onboard;
+pub(crate) mod ort_helpers;
 pub(crate) mod project;
 pub(crate) mod related;
 pub(crate) mod review;
@@ -273,6 +274,26 @@ pub fn resolve_index_db(project_cqs_dir: &Path) -> PathBuf {
 /// Use `Embedder::embedding_dim()` for the runtime value.
 /// Derived from `ModelConfig::default_model().dim`.
 pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
+
+/// EX-V1.30.1-7 (P3-EX-2): test whether a string is one of the canonical
+/// "off" tokens the cqs CLI accepts in `CQS_*` env vars.
+///
+/// Mirrors the dispatch the audit found duplicated across ~30 sites:
+/// `"0"`, `"false"`, `"no"`, `"off"` — case-insensitive, whitespace-trimmed.
+/// Centralised here so the next migration pass can swap a hand-rolled
+/// match for a single call without re-debating the spelling list.
+///
+/// Companion `env_truthy` is intentionally not added today — the audit's
+/// 30-site backlog only matters once we start migrating the rest, and
+/// the truthy spelling list (e.g. should `"y"` work?) deserves its own
+/// pass.
+#[inline]
+pub fn env_falsy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
 
 /// DS2-10: Convert a [`std::time::Duration`] to milliseconds as `i64` for
 /// storage in SQLite `INTEGER` mtime columns.

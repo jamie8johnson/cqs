@@ -41,7 +41,11 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
     if !watch_fresh {
         // Reserve room for future sibling modes by gating the entire
         // command on at least one explicit "what to report" flag.
-        let msg = "cqs status: pass --watch-fresh to query daemon freshness";
+        // API-V1.30.1-8: nudge the user toward the canonical no-flag combo
+        // (`--watch-fresh --wait`) instead of just naming the flag they
+        // missed — agents and operators who hit the bare `cqs status`
+        // probably want to wait for fresh, not poll once.
+        let msg = "cqs status: hint: try --watch-fresh --wait";
         if json {
             crate::cli::json_envelope::emit_json_error(
                 crate::cli::json_envelope::error_codes::INVALID_INPUT,

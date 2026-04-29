@@ -228,7 +228,23 @@ impl BoundedScoreHeap {
         // eviction boundary we break score ties on id ascending so the
         // surviving set is deterministic.
         if let Some(Reverse((OrderedFloat(worst_score), Reverse(worst_id)))) = self.heap.peek() {
-            let better = score > *worst_score || (score == *worst_score && id < *worst_id);
+            // AC-V1.30.1-7 (P3-AC-3): use `total_cmp` instead of `==` /
+            // `>` on raw `f32`. `==` is incorrect for NaN (panics on
+            // some payloads via the wrapping `OrderedFloat`'s ordering
+            // contract), and the upstream non-finite filter at the top
+            // of this function should already have rejected NaN/Inf;
+            // pin that invariant with a debug assertion. `total_cmp` is
+            // a total order so the eviction decision is well-defined
+            // for every finite-or-NaN bit pattern that could leak past.
+            debug_assert!(
+                score.is_finite(),
+                "BoundedScoreHeap::push: non-finite scores must be filtered above"
+            );
+            let better = match score.total_cmp(worst_score) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Equal => id < *worst_id,
+                std::cmp::Ordering::Less => false,
+            };
             if better {
                 self.heap.pop();
                 self.heap.push(Reverse((OrderedFloat(score), Reverse(id))));

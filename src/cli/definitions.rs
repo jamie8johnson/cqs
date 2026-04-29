@@ -789,6 +789,9 @@ pub(super) enum Commands {
         wait: bool,
         /// Maximum seconds `--wait` polls before giving up. Capped at 600
         /// so a runaway agent loop can't pin the daemon socket forever.
+        ///
+        /// Note: `cqs eval --require-fresh-secs` has the same semantics;
+        /// default differs by use case (eval default = 600, status = 30).
         #[arg(long, default_value_t = 30)]
         wait_secs: u64,
     },

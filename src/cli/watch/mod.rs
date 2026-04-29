@@ -161,17 +161,17 @@ fn publish_watch_snapshot(
         .as_ref()
         .map(|p| p.delta_saturated)
         .unwrap_or(false);
-    let snap = cqs::watch_status::WatchSnapshot::compute(cqs::watch_status::WatchSnapshotInput {
-        pending_files_count: state.pending_files.len(),
-        pending_notes: state.pending_notes,
-        rebuild_in_flight: state.pending_rebuild.is_some(),
-        delta_saturated,
-        incremental_count: state.incremental_count,
-        dropped_this_cycle: state.dropped_this_cycle,
-        last_event: state.last_event,
-        last_synced_at,
-        _marker: std::marker::PhantomData,
-    });
+    let snap =
+        cqs::watch_status::WatchSnapshot::compute(cqs::watch_status::WatchSnapshotInput::new(
+            state.pending_files.len(),
+            state.pending_notes,
+            state.pending_rebuild.is_some(),
+            delta_saturated,
+            state.incremental_count,
+            state.dropped_this_cycle,
+            state.last_event,
+            last_synced_at,
+        ));
     // Poison-recovery: another writer panicking shouldn't silently stop
     // freshness publishing. Recover and overwrite.
     //

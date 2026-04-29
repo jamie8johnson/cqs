@@ -22,11 +22,7 @@ use thiserror::Error;
 use crate::aux_model::{self, AuxModelKind};
 use crate::config::AuxModelSection;
 use crate::embedder::{create_session, select_provider};
-
-/// Convert ORT errors to SpladeError
-fn ort_err(e: ort::Error) -> SpladeError {
-    SpladeError::InferenceFailed(e.to_string())
-}
+use crate::ort_helpers::ort_err;
 
 /// RB-V1.29-9: Convert an ORT-reported tensor dimension (`i64`) to `usize`
 /// with a negative-value guard. ORT shape entries are nominally
@@ -73,6 +69,18 @@ pub enum SpladeError {
         tokenizer_vocab: usize,
         model_vocab: usize,
     },
+}
+
+/// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
+/// [`InferenceFailed`](SpladeError::InferenceFailed) so the shared
+/// [`crate::ort_helpers::ort_err`] helper can hand back the right
+/// variant for SPLADE call sites. Sealed trait, not `From<String>`,
+/// so `.map_err(ort_err)` type inference isn't ambiguous against the
+/// reflexive `From<T> for T` impl.
+impl crate::ort_helpers::FromOrtMessage for SpladeError {
+    fn from_ort_message(msg: String) -> Self {
+        Self::InferenceFailed(msg)
+    }
 }
 
 /// SPLADE encoder using ONNX Runtime.

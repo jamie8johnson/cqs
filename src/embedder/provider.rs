@@ -9,11 +9,7 @@ use ort::session::Session;
 use std::path::{Path, PathBuf};
 
 use super::{EmbedderError, ExecutionProvider};
-
-/// Convert any ort error to [`EmbedderError::InferenceFailed`] via `.to_string()`.
-pub(super) fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
-    EmbedderError::InferenceFailed(e.to_string())
-}
+use crate::ort_helpers::ort_err;
 
 /// Ensure ORT CUDA provider libraries are findable (Unix only)
 /// ORT's C++ runtime resolves provider paths via `dladdr` -> `argv[0]`.
