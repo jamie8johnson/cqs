@@ -359,6 +359,7 @@ async fn run_migration(
         (19, 20) => migrate_v19_to_v20(conn).await,
         (20, 21) => migrate_v20_to_v21(conn).await,
         (21, 22) => migrate_v21_to_v22(conn).await,
+        (22, 23) => migrate_v22_to_v23(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -825,6 +826,28 @@ async fn migrate_v21_to_v22(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v22 → v23: Add `source_size` (INTEGER) + `source_content_hash` (BLOB)
+/// columns on `chunks` to power the reconcile fingerprint (issue #1219 /
+/// EX-V1.30.1-6). Both nullable: pre-v23 rows stay valid; first re-embed
+/// populates them. Reconcile uses these as tiebreakers when mtimes are
+/// identical (FAT32/NTFS/HFS+/SMB ≥1s mtime resolution) or when mtime
+/// changed but content didn't (`git checkout`, formatter passes).
+async fn migrate_v22_to_v23(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v22_to_v23").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN source_size INTEGER")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("ALTER TABLE chunks ADD COLUMN source_content_hash BLOB")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v23: source_size + source_content_hash columns on chunks (reconcile fingerprint, #1219)"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,7 +880,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 22);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 23);
     }
 
     #[test]
@@ -3106,6 +3129,140 @@ mod tests {
                         .unwrap();
                 assert_eq!(rx, x, "umap_x round-trip for {id}");
                 assert_eq!(ry, y, "umap_y round-trip for {id}");
+            }
+        });
+    }
+
+    /// v22 → v23: ALTER TABLE chunks ADD source_size INTEGER + source_content_hash BLOB
+    /// (both nullable). Round-trip: pre-migration v22 chunk gets NULL fingerprint;
+    /// post-migration v23 INSERT can stamp arbitrary size + 32-byte hash and read
+    /// them back. Reconcile fingerprint can decide divergence using mtime, size, or
+    /// content_hash interchangeably (issue #1219 / EX-V1.30.1-6).
+    #[test]
+    fn test_migrate_v22_to_v23_adds_fingerprint_columns() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v22 schema — same shape as v21 plus umap_x/umap_y.
+            // Notably no source_size/source_content_hash columns — that's what v23 adds.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0,
+                    parser_version INTEGER NOT NULL DEFAULT 0,
+                    umap_x REAL,
+                    umap_y REAL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '22')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Seed a pre-migration v22 chunk.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('pre_v23', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v23', \
+                 '', '', 'h', 1, 10, X'00', '2026-04-29', '2026-04-29')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run v22 → v23 migration.
+            let pool = migrate(pool, &db_path, 22, 23).await.unwrap();
+
+            // Schema version bumped.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "23");
+
+            // Pre-migration row has NULL fingerprint (no DEFAULT — populated on
+            // first re-embed of the file).
+            let (pre_size, pre_hash): (Option<i64>, Option<Vec<u8>>) = sqlx::query_as(
+                "SELECT source_size, source_content_hash FROM chunks WHERE id = 'pre_v23'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(pre_size.is_none(), "pre-migration source_size must be NULL");
+            assert!(
+                pre_hash.is_none(),
+                "pre-migration source_content_hash must be NULL"
+            );
+
+            // Round-trip representative fingerprints: zero size, large size, all-zero
+            // hash, BLAKE3-shaped 32-byte hash.
+            let cases: &[(&str, i64, Vec<u8>)] = &[
+                ("post_v23_empty", 0_i64, vec![0u8; 32]),
+                ("post_v23_typical", 4096_i64, (0u8..32).collect::<Vec<u8>>()),
+                ("post_v23_huge", 10_485_760_i64, vec![0xffu8; 32]),
+            ];
+            for (id, size, hash) in cases {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                     signature, content, content_hash, line_start, line_end, embedding, \
+                     created_at, updated_at, source_size, source_content_hash) \
+                     VALUES (?, 'file:lib.rs', 'file', 'rust', 'function', 'post_v23', \
+                     '', '', 'h', 1, 10, X'00', '2026-04-29', '2026-04-29', ?, ?)",
+                )
+                .bind(id)
+                .bind(*size)
+                .bind(hash)
+                .execute(&pool)
+                .await
+                .unwrap();
+                let (rsize, rhash): (i64, Vec<u8>) = sqlx::query_as(
+                    "SELECT source_size, source_content_hash FROM chunks WHERE id = ?",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                assert_eq!(rsize, *size, "source_size round-trip for {id}");
+                assert_eq!(&rhash, hash, "source_content_hash round-trip for {id}");
             }
         });
     }

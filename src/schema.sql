@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     enrichment_version INTEGER NOT NULL DEFAULT 0,  -- RT-DATA-2: idempotency marker for enrichment passes
     parser_version INTEGER NOT NULL DEFAULT 0,  -- v21: parser stamp for content-hash-stable doc enrichment refresh (P2 #29)
     umap_x REAL,                              -- v22: 2D projection X coord (NULL until `cqs index --umap` runs)
-    umap_y REAL                               -- v22: 2D projection Y coord (NULL until `cqs index --umap` runs)
+    umap_y REAL,                              -- v22: 2D projection Y coord (NULL until `cqs index --umap` runs)
+    source_size INTEGER,                      -- v23: file size in bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
+    source_content_hash BLOB                  -- v23: BLAKE3 hash of file bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);

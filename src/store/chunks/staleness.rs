@@ -9,6 +9,169 @@ use std::path::{Path, PathBuf};
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::{ReadWrite, Store};
 
+/// Per-file fingerprint stored alongside each chunk for the reconcile path
+/// (issue #1219 / EX-V1.30.1-6).
+///
+/// All three fields are nullable for back-compat with pre-schema-v23 rows
+/// whose `source_size` and `source_content_hash` columns are `NULL` until
+/// first re-embed populates them. `mtime` may also be `None` for legacy
+/// rows where `source_mtime` was stored as `NULL` (FS without modification
+/// time).
+///
+/// Comparison policy lives in [`FingerprintPolicy`]; see [`Self::matches`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileFingerprint {
+    /// Modification time in milliseconds since the Unix epoch (matches
+    /// `cqs::duration_to_mtime_millis`).
+    pub mtime: Option<i64>,
+    /// File size in bytes from `metadata().len()`.
+    pub size: Option<u64>,
+    /// BLAKE3 hash of the file's bytes (32 bytes).
+    pub content_hash: Option<[u8; 32]>,
+}
+
+/// Policy that decides which fields participate in [`FileFingerprint::matches`].
+///
+/// Default for the watch-loop reconcile path is [`Self::MtimeOrHash`]: stay
+/// fast on the common case (mtime+size both match → file unchanged) but
+/// fall through to `content_hash` when mtime/size disagrees. This catches
+/// the two well-known reconcile bugs (issue #1219):
+///
+/// - **Content-identical-mtime-bumped.** `git checkout`, formatter passes,
+///   and `touch` all bump mtime without changing content. A pure mtime
+///   compare would re-embed ~3-5k chunks per branch flip needlessly; the
+///   hash tiebreak skips them.
+/// - **Coarse-mtime collisions.** WSL DrvFS / NTFS / HFS+ / SMB mount
+///   points have ≥1 s mtime resolution. Two saves within one second
+///   collide on identical mtimes; size+hash detect the divergence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FingerprintPolicy {
+    /// Compare mtime only — pre-v23 behavior. Cheap; misses both bug
+    /// classes above. Useful for tests that explicitly want the legacy
+    /// shape and for environments where reading every divergent file is
+    /// prohibitive.
+    MtimeOnly,
+    /// Default. mtime+size for the fast path; hash on tiebreak. Disk-side
+    /// hash is only computed when mtime/size disagree, so the hot path
+    /// (no changes since last walk) stays stat-only.
+    MtimeOrHash,
+    /// Compare size+hash, ignore mtime entirely. Safest under coarse-mtime
+    /// FSes where every walked file's mtime is unreliable. Costs one
+    /// `read_to_end` + BLAKE3 per file per walk; intended for opt-in
+    /// `cqs index --strict` mode rather than the default 30 s reconcile
+    /// cadence.
+    HashOnly,
+}
+
+impl FileFingerprint {
+    /// Decide whether `self` (typically the stored fingerprint) matches
+    /// `disk` (the just-read disk fingerprint) under `policy`.
+    ///
+    /// Returns `true` iff the file is treated as unchanged (skip reindex).
+    /// The semantics are not symmetric in spirit — `disk` should be the
+    /// freshly-read side — but the implementation only does field
+    /// comparisons so swapping arguments produces the same boolean.
+    pub fn matches(&self, disk: &Self, policy: FingerprintPolicy) -> bool {
+        match policy {
+            FingerprintPolicy::MtimeOnly => self.mtime == disk.mtime,
+            FingerprintPolicy::HashOnly => {
+                // Both sides need a hash to make a strict-content decision.
+                // Pre-v23 rows have `content_hash = None`; treat as "no
+                // information, assume divergent" — the next reindex will
+                // populate the hash and subsequent walks will be quick.
+                match (&self.content_hash, &disk.content_hash) {
+                    (Some(a), Some(b)) => a == b && self.size == disk.size,
+                    _ => false,
+                }
+            }
+            FingerprintPolicy::MtimeOrHash => {
+                // Pre-v23 fallback: if the stored fingerprint has only
+                // mtime — `source_size` and `source_content_hash` were not
+                // recorded yet — fall back to mtime equality. Without this,
+                // every legacy chunk row would be classified divergent on
+                // every reconcile pass until first re-embed populated the
+                // new columns, drowning the watch queue. Once the row has
+                // a fingerprint (even one field populated), we use the
+                // strict comparison below.
+                if self.size.is_none() && self.content_hash.is_none() {
+                    return self.mtime == disk.mtime;
+                }
+                // Fast path: mtime+size both match → unchanged. Most files
+                // on most walks; this is the steady-state common case.
+                if self.mtime == disk.mtime && self.size == disk.size {
+                    return true;
+                }
+                // mtime or size disagrees. Fall through to content_hash if
+                // both sides have one; otherwise treat as divergent.
+                match (&self.content_hash, &disk.content_hash) {
+                    (Some(stored), Some(disk_h)) => stored == disk_h,
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    /// Read a disk-side fingerprint at the granularity demanded by `policy`,
+    /// using `stored` to decide whether the (relatively expensive) hash
+    /// step is needed. mtime+size always populate; `content_hash` only
+    /// when:
+    ///
+    /// - `policy == HashOnly` (always hash),
+    /// - `policy == MtimeOrHash` AND mtime+size disagree with `stored`
+    ///   (tiebreak needed),
+    /// - never under `MtimeOnly`.
+    ///
+    /// Returns `None` only if the file can't be `metadata()`'d (deleted,
+    /// permission-denied, transient AV scan). Hash-read failures populate
+    /// the mtime+size fields but leave `content_hash` as `None`, which
+    /// `matches` treats as "no information" → queue for reindex.
+    pub fn read_disk(
+        path: &Path,
+        stored: &FileFingerprint,
+        policy: FingerprintPolicy,
+    ) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(crate::duration_to_mtime_millis);
+        let size = Some(meta.len());
+
+        let needs_hash = match policy {
+            FingerprintPolicy::MtimeOnly => false,
+            FingerprintPolicy::HashOnly => true,
+            FingerprintPolicy::MtimeOrHash => {
+                // Legacy row (pre-v23): stored has only mtime, so `matches`
+                // uses mtime equality — no hash needed. Skipping the hash
+                // here matters: every reconcile walk for a legacy index
+                // would otherwise BLAKE3 the entire tree on the first
+                // size-mismatch (stored=None vs disk=Some(N)) until first
+                // re-embed.
+                if stored.size.is_none() && stored.content_hash.is_none() {
+                    false
+                } else {
+                    stored.mtime != mtime || stored.size != size
+                }
+            }
+        };
+
+        let content_hash = if needs_hash {
+            std::fs::read(path)
+                .ok()
+                .map(|bytes| *blake3::hash(&bytes).as_bytes())
+        } else {
+            None
+        };
+
+        Some(FileFingerprint {
+            mtime,
+            size,
+            content_hash,
+        })
+    }
+}
+
 /// Decide whether a chunk origin refers to a file the indexer still owns.
 ///
 /// Used by all four staleness helpers in this module. The check is: does
@@ -624,15 +787,54 @@ impl<Mode> Store<Mode> {
     /// with ~3k unique source files this is sub-50 ms. Filter
     /// `source_type='file'` is critical — notes and other sources have
     /// their own mtime semantics.
-    pub fn indexed_file_origins(&self) -> Result<HashMap<String, Option<i64>>, StoreError> {
+    pub fn indexed_file_origins(&self) -> Result<HashMap<String, FileFingerprint>, StoreError> {
         let _span = tracing::debug_span!("indexed_file_origins").entered();
         self.rt.block_on(async {
-            let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
-                "SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'",
+            // GROUP BY origin (one row per file). PF-V1.30.1-8 / #1227: the
+            // previous `SELECT DISTINCT origin, source_mtime` returned one
+            // row per *distinct (origin, mtime) pair*, which over-counted
+            // when an in-flight reindex briefly held two mtimes for the
+            // same file. `MAX(source_mtime)` deterministically picks the
+            // newer fingerprint; ties are deduped to one row per origin.
+            //
+            // The fingerprint columns (`source_size`, `source_content_hash`)
+            // were added in schema v23 (#1219) and are nullable on
+            // pre-migration rows. `MAX` over a NULL column yields NULL,
+            // which `read_disk` and `matches` already treat as "no
+            // information, assume divergent" — first re-embed populates
+            // them and subsequent walks short-circuit on size match.
+            // Tuple shape: (origin, mtime, size, content_hash) — all nullable
+            // except origin since v23 columns lag pre-migration rows.
+            type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
+            let rows: Vec<FpRow> = sqlx::query_as(
+                "SELECT origin, \
+                        MAX(source_mtime) AS mtime, \
+                        MAX(source_size) AS size, \
+                        MAX(source_content_hash) AS content_hash \
+                 FROM chunks \
+                 WHERE source_type = 'file' \
+                 GROUP BY origin",
             )
             .fetch_all(&self.pool)
             .await?;
-            Ok(rows.into_iter().collect())
+            Ok(rows
+                .into_iter()
+                .map(|(origin, mtime, size, hash)| {
+                    let content_hash = hash.and_then(|bytes| {
+                        // Defensive: any pre-migration row with a non-32-byte
+                        // BLOB drops to None rather than truncating silently.
+                        // Should never happen — we only ever insert 32-byte
+                        // BLAKE3 — but the schema declares BLOB so be strict.
+                        <[u8; 32]>::try_from(bytes.as_slice()).ok()
+                    });
+                    let fingerprint = FileFingerprint {
+                        mtime,
+                        size: size.and_then(|s| u64::try_from(s).ok()),
+                        content_hash,
+                    };
+                    (origin, fingerprint)
+                })
+                .collect())
         })
     }
 
@@ -1061,7 +1263,7 @@ mod tests {
         assert!(keys.iter().any(|k| k.ends_with("beta.rs")));
         // All entries pin the bound mtime.
         for v in map.values() {
-            assert_eq!(v, &Some(1_700_000_000_000));
+            assert_eq!(v.mtime, Some(1_700_000_000_000));
         }
     }
 

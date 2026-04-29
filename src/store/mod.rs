@@ -143,6 +143,12 @@ pub use helpers::score_name_match_pre_lower;
 /// Result of atomic GC prune (all 4 operations in one transaction).
 pub use chunks::PruneAllResult;
 
+/// Per-file reconcile fingerprint stored alongside each chunk (#1219).
+/// `mtime + size + content_hash`, used by `run_daemon_reconcile` to detect
+/// disk/index divergence under coarse-mtime FSes and content-identical mtime
+/// flips.
+pub use chunks::staleness::{FileFingerprint, FingerprintPolicy};
+
 /// Statistics about call graph entries (chunk-level calls table).
 pub use calls::CallStats;
 
