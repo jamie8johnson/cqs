@@ -49,6 +49,7 @@ Append to `docs/audit-findings.md`:
 - Read archived triage files (`docs/audit-triage-v*.md`) — skip anything already triaged
 - Use cqs tools for exploration, not just raw file reads
 - Report findings, do NOT fix them
+- **Worktree leakage guard (#1254)**: if any `cqs` command errors with "No cqs index found", you are likely in a git worktree without a local `.cqs/`. Do NOT fall back to absolute paths under `/mnt/c/Projects/cqs/...` — that's the documented leakage path. Restrict findings to relative paths under CWD, or refuse the task with a note that the worktree needs `cqs index` first.
 
 ## Stop conditions
 

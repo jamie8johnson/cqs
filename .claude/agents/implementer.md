@@ -53,6 +53,7 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 - Use `--features cuda-index` for ALL cargo commands
 - **NEVER run the full test suite** (`cargo test --features cuda-index` with no filter). It takes 14 minutes and blocks other agents via cargo's target-dir lock. Always use `-- test_name` to run only relevant tests. The orchestrator runs the full suite after collecting all changes.
 - **Path discipline in worktrees**: if cwd contains `.claude/worktrees/`, use paths relative to project root in tool calls — worktree isolation is soft and absolute paths leak into the parent index.
+- **Worktree leakage guard (#1254)**: if any `cqs` command errors with "No cqs index found", you are in a git worktree without a local `.cqs/`. Do NOT fall back to absolute paths under `/mnt/c/Projects/cqs/...` — those reflect main's branch state, not the worktree's, and Edit calls on those paths land in the parent tree. Either restrict edits to relative paths under CWD, or refuse the task with a note that the worktree needs `cqs index` first. The cqs-side fix is tracked in #1254; until it ships, this guard is the agent-side workaround.
 
 ## Output
 

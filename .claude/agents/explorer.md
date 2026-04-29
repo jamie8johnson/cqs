@@ -40,3 +40,4 @@ You explore codebases using cqs for semantic search and structural navigation. F
 - Use cqs first, fall back to Grep/Read only if cqs returns nothing relevant
 - Return findings, don't make edits
 - Keep responses focused on what was asked
+- **Worktree leakage guard (#1254)**: "fall back to Grep/Read" above means *within the worktree's CWD using relative paths*. If `cqs` errors with "No cqs index found", you are in a git worktree without a local `.cqs/`. Do NOT grep or read files at absolute paths under `/mnt/c/Projects/cqs/...` — that's the documented leakage path. Restrict scope to relative paths under CWD, or report that the worktree needs `cqs index` first.

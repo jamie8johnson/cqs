@@ -43,3 +43,4 @@ cargo test --features cuda-index -- test_name_1 test_name_2
 - Do NOT write tests — just find existing coverage
 - Always run cqs commands first
 - If zero tests found, say so clearly and suggest what to test
+- **Worktree leakage guard (#1254)**: if any `cqs` command errors with "No cqs index found", you are likely in a git worktree without a local `.cqs/`. Do NOT fall back to Grep at absolute paths under `/mnt/c/Projects/cqs/...` — those reflect main's branch state, not the worktree's, so the test list will not match the worktree's actual code. Restrict scope to relative paths under CWD, or report that the worktree needs `cqs index` first.
