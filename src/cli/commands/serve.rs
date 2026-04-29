@@ -58,9 +58,18 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
         );
     }
 
-    let bind_addr: SocketAddr = format!("{bind}:{port}")
+    // PB-V1.30.1-2: resolve "localhost" to 127.0.0.1 before parse, since
+    // `SocketAddr::parse` only accepts numeric IPs. The CLI docs (and the
+    // loopback warning above) treat "localhost" as a valid bind value;
+    // without this resolution the literal hostname would always fail.
+    let bind_str: &str = if bind == "localhost" {
+        "127.0.0.1"
+    } else {
+        bind.as_str()
+    };
+    let bind_addr: SocketAddr = format!("{bind_str}:{port}")
         .parse()
-        .with_context(|| format!("Failed to parse {bind}:{port} as a SocketAddr"))?;
+        .with_context(|| format!("Failed to parse {bind_str}:{port} as a SocketAddr"))?;
 
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
