@@ -1,68 +1,33 @@
 # Roadmap
 
-## Current: v1.30.1 (released 2026-04-28)
+## Current: v1.30.2 (released 2026-04-29)
 
-Tag `v1.30.1` pushed; `cqs 1.30.1` published to crates.io; GitHub Release workflow building prebuilt binaries. Patch release — three themes:
+Tag `v1.30.2` pushed; `cqs 1.30.2` published to crates.io; GitHub Release workflow building prebuilt binaries. Three themes:
 
-1. **Indirect-prompt-injection hardening** (cluster #1166-#1170 + threat model #1171). Six in-protocol surfaces now have explicit mitigations: trust labelling on chunk JSON (#1167, #1169), `CQS_TRUST_DELIMITERS` opt-in for downstream injection guards (#1167), first-encounter shared-notes prompt on `cqs index` (#1168), `CQS_SUMMARY_VALIDATION` for prose summaries before caching (#1170), `--improve-docs` review-gated by default (#1166), and a documented threat model in `SECURITY.md` (#1171).
-2. **v1.30.0 audit-fix wave** (#1141 — 152 of 170 findings, P1+P2+P3). Single-PR omnibus across error-handling, observability, robustness, scaling, security, performance, data-safety, and platform categories.
-3. **Watch-mode reliability** (#1124-#1129) — five correctness fixes uncovered after async HNSW rebuild landed in v1.30.0: content-hash-aware drain (#1124, #1142), restore_from_backup pool ordering (#1125, #1144), summary-write coalescing (#1126, #1145), daemon mutex hold-time (#1127, #1146), embedding-cache `purpose` plumbing (#1128, #1129, #1143).
+1. **#1181 mistrust posture** — default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` constant on every JSON response, per-chunk `injection_flags` heuristic. Frames every cqs response as untrusted-by-default for any consuming agent.
+2. **#1182 perfect watch mode** — Layers 1-4 closed: freshness API (#1189), periodic reconciliation (#1191), git hooks (#1193), eval `--require-fresh` (#1194); 47-file bulk-delta acceptance test (#1196). The "easy to index, hard to keep indexed between turns" gap is closed: `cqs status --watch-fresh --wait` exposes a freshness contract — agents can either trust `fresh` or block.
+3. **Audit-fix wave** — P1+P2+P3+P4 from the v1.30.1 audit drained.
 
-Plus four refactors enabling cleaner extension points (#1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138** registry tables for batch / LLM provider) and 12 dependabot bumps. Schema unchanged from v1.30.0; no reindex required.
+**Post-v1.30.2 bug drain (2026-04-29):**
 
-**Follow-ups (post-v1.30.1 queue):**
+| Bundle | Issue(s) | PR | Theme |
+|---|---|---|---|
+| 1 | #1219 #1245 #1231 #1227 | #1248 ✅ | reconcile cluster (v22→v23 schema bump for `source_size` + `source_content_hash`) |
+| 2 | #1212 | #1249 ✅ | sparse-upsert chunked (`CQS_SPARSE_CHUNKS_PER_TX`) |
+| 3 | #1224 #1225 | #1250 (CI pending) | coarse-mtime FS handling + WSL browser opener |
+| 4 | #1223 #1222 | #1251 ✅ | reqwest same-origin redirect policy + `cqs ref add --source` symlink-redirect warning |
+| 5 | #1232 | #1252 (CI pending) | `cqs slot remove` daemon-active guard |
+| 6 | #1044 | #1253 (CI pending) | Native Windows `cqs watch` shutdown via `ctrlc` termination feature |
+| guard | #1254 | #1255 (CI pending) | agent-defs worktree-leakage warning bullet |
+| log | embedder candidates | #1256 (CI pending) | EmbeddingGemma-300m + Qwen3-Embedding-8B + NV-Embed-v2 added to embedder A/B queue |
 
-- [#1181](https://github.com/jamie8johnson/cqs/issues/1181) — **general mistrust posture (3-layer).** Default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` constant per JSON response, per-chunk `injection_flags` array (heuristics on every chunk, not just summaries). Frames every cqs response as untrusted-by-default for any consuming agent.
-- [#1182](https://github.com/jamie8johnson/cqs/issues/1182) — **perfect watch mode (3-layer reconciliation).** Closes the missed-event classes (bulk git ops, WSL 9P, external writes) via `.git/hooks/post-{checkout,merge,rewrite}` + periodic full-tree fingerprint reconciliation + `cqs status --watch-fresh --wait` API. Promise: "the index is always either fresh or telling you it isn't." Supersedes the CLAUDE.md "always run `cqs index` after branch switches/merges" guidance. **Positioning lever:** *easy to index, hard to keep indexed between turns* — closing the gap promotes freshness to a top-line property alongside semantic search + call graphs. **Prior-art survey 2026-04-28** (in #1182 comment): codeindex.cc has per-query stale flags; Cursor has Merkle-tree sync; CocoIndex has fast incremental updates. None has the blocking `--wait` API + git-hook integration + "between turns" consumer-consistency-model framing. Honest pitch: "the only code search tool that lets your agent **wait** until it's fresh." Marketing claim: closing a known gap with a more complete design, not inventing a new category. **Status (2026-04-28):** Layers 1-4 shipped (#1189 freshness API, #1191 periodic reconciliation, #1193 git hooks, #1194 eval `--require-fresh`); 47-file bulk-delta acceptance test landed in #1196. #1182 fully closed.
-- **P4 auth bugs** (#1134-#1136) — `cqs serve` correctness fixes from the v1.30.0 audit, deferred from v1.30.1 because they require shaping decisions.
+**#1254 worktree leakage** — `git worktree add` doesn't create `.cqs/`; cqs errors; agents fall back to absolute paths under main's tree → edits leak into parent tree. Agent-side guard shipped via #1255; cqs-side fix (`.git/commondir` auto-discovery + `worktree_stale: bool` JSON envelope flag) deferred.
 
 **Deferred indefinitely:**
 
-- **#1139** — `structural_matchers` shared library. Touches 50+ language modules; deferred-friendly per audit.
-- **#1140** — embedder preset extras map. Deferred per audit; revisit when preset count pressures the current hand-rolled match.
-
-## Previous: v1.30.0 (released 2026-04-25)
-
-Four arcs landed since the v1.29.1 tag:
-
-- **Cache+slots infrastructure (#1105)** — `.cqs/embeddings_cache.db` (content_hash, model_id) + `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,clear,prune,compact}` commands. One-shot migration of legacy `.cqs/index.db` → `.cqs/slots/default/`.
-- **Three-way embedder A/B (#1109 #1110)** — fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution.
-- **v1.29.0 audit close-out batch (#1112 #1113 #1114 #1117 #1118 #1119)** — every umbrella finding from #1095 closed: SEC-7 serve auth (#1118), EX-1 command registry (#1114), `cqs watch` HNSW non-blocking (#1113), `ChunkType::human_name` macro (#1117), `forward_bfs_multi` for `suggest_tests` (#1119), thread-local socket scratch buffer (#1119), plus a 5-issue batch (#1112) clearing #1042/#1049/#1091/#1107/#1108.
-- **#956 Phase A scaffolding (#1120)** — `gpu-index` → `cuda-index` cargo feature rename (legacy alias preserved); `ep-coreml` / `ep-rocm` features added as scaffolding markers; `ExecutionProvider` enum gains cfg-gated `CoreML` and `ROCm { device_id }` variants; `detect_provider()` and `create_session()` restructured into per-backend cfg-blocks. CUDA path byte-identical at runtime. Phase B (CoreML, GHA macOS runner) and Phase C (ROCm, AMD hardware) both deferred — issue stays open.
-
-## Current: v1.29.1 (v1.29.0 audit close-out)
-
-54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing — re-swept against R@5 in v1.28.3 (was R@1-tuned). **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). Schema v22 (umap_x/umap_y, opt-in via `cqs index --umap`). MSRV 1.95.
-
-**v1.29.1** shipped 2026-04-24: patch release — v1.29.0 audit close-out. 147 findings triaged; 142 fixed. No new commands, no schema bump, no reindex. Cagra SIGSEGV root-caused (missing `Drop` on `GpuState`) + fixed; `cqs serve` security hardened (host allowlist, SQL caps, HTML escape, loopback `--open`); transaction integrity fixes (staleness / metadata / cache / HNSW persist); 13 new `CQS_*` env var knobs for thresholds (additive); `rustls-webpki` GHSA-high patch; reranker + daemon-socket + cross-project test coverage. Remaining 5 audit items (SEC-7 serve auth, EX-1 Commands trait, EX-3 LlmProvider trait, PF-9 suggest_tests BFS, RM-10 socket BufReader) split to issues #1096/#1097/#1098 + umbrella #1095. Full detail in `CHANGELOG.md`.
-
-**v1.29.0** shipped 2026-04-23: feature release bundling three arcs.
-
-- **`cqs serve` web UI** with four interactive views (2D / 3D / hierarchy / embedding cluster). Spec `docs/plans/2026-04-22-cqs-serve-3d-progressive.md`. Perf pass took first paint from ~60s → ~3-4s on the cqs corpus (SQL-side `max_nodes` cap, default 300 nodes, `cose` layout, gzip middleware, lazy 3D bundle). Cluster view requires `cqs index --umap` to populate UMAP coordinates (Python umap-learn, embedded `scripts/run_umap.py`).
-- **`.cqsignore` mechanism** — cqs-specific exclusions on top of `.gitignore`. Drops the cqs corpus from 18,954 → 15,488 chunks (vendor minified JS + eval JSON), zero "Dropped oversized" parser warnings.
-- **Slow-tests cron eliminated** — 5 of 16 subprocess CLI test binaries (113 tests, ~130 min nightly) converted to in-process `InProcessFixture`-based tests + 15-test `cli_surface_test.rs` for things that genuinely need a binary spawn. Net: ~2 min added to every PR instead of ~130 min nightly. `slow-tests.yml` workflow deleted; `slow-tests` Cargo feature kept for the 11 remaining stragglers (convert opportunistically).
-
-Plus 2 Dependabot security bumps (openssl 0.10.78, rand 0.8.6).
-
-**v1.28.3** shipped 2026-04-20: per-category SPLADE α re-sweep targeting R@5 (the 2026-04-15 sweep optimized R@1 — different optima in many categories). Two alpha changes ship — `behavioral` 0.00 → 0.80, `multi_step` 1.00 → 0.10 — both essentially flipping a category from one extreme to the other. Production net: test R@5 +0.9pp, dev R@5 ±0, no regressions. The per-category sweep predicted +14pp held-out lift; ~8× dilution from classifier accuracy explains the gap (full analysis in `~/training-data/research/models.md`). Plus README cleanup (PR #1065).
-
-**v1.28.2** shipped 2026-04-20: four correctness fixes from the Reranker V2 retrain arc — windowing fix (`chunks.content` was lossy WordPiece-decoded text for 7228/15616 chunks; PR #1060), `cqs index --force` fail-fast vs running daemon (#1061), `cqs notes list` daemon dispatch (#1062), `cli_review_test` `--format` → `--json` migration miss (#1063, fixes 2-day-red slow-tests nightly). Plus: reranker pool cap default 100→20, centroid classifier flipped default-on after isolated A/B (test R@5 +3.7pp), `notes_boost_factor` measured (zero impact, default unchanged). Reindex required to refresh stored content from raw source.
-
-### Eval baselines on v3.v2 (post-v1.28.3, 2026-04-20)
-
-| Split | R@1 | R@5 | R@20 | Notes |
-|---|---|---|---|---|
-| **test (n=109), v1.28.3 stage-1 + classifier ON** | 40.4% | **64.2%** | 82.6% | 16,026-chunk corpus, post-incremental-drift |
-| test (n=109), v1.28.2 reverted alphas (same corpus) | 40.4% | 63.3% | 82.6% | A/B baseline |
-| **dev (n=109), v1.28.3 stage-1 + classifier ON** | 40.4% | 73.4% | 87.2% | same corpus |
-| dev (n=109), v1.28.2 reverted alphas (same corpus) | 41.3% | 73.4% | 87.2% | A/B baseline |
-| canonical (v1.27.0 shipping) test / dev R@5 | – | 63.3% / 74.3% | 80.7% / 86.2% | for delta reference |
-
-Net v1.28.3 Δ vs canonical: test R@5 **+0.9pp** (smaller than v1.28.2 morning baseline of 67.0% because of incremental index drift; see "Per-Category SPLADE Alpha Re-Sweep — Target R@5" in `models.md`), dev R@5 −0.9pp (drift, not config). The v1.28.3 alpha changes are net-positive on test, neutral on dev when measured on the same drifted corpus.
-
-### Per-category R@5 sweep — what didn't ship and why
-
-The R@5 re-sweep also surfaced direction-stable but small-magnitude moves on `cross_language` (0.10 → 0.40, n=11 per held-out split — small N + the current 0.10 is already well-placed by the prior R@1 sweep). And inconsistent / noisy optima on `identifier_lookup`, `conceptual`, `negation`, `structural`, `type_filtered`. None of those clear the cross-split-agreement + magnitude bar that `behavioral` and `multi_step` did. The dilution analysis (sweep gain × classifier accuracy) suggests per-category α tuning is now bottlenecked by classifier accuracy, not the alpha grid — future R@5 work should target classifier accuracy first.
+- **#1134-#1136** — `cqs serve` P4 auth bugs from the v1.30.0 audit. Need shaping decisions; not blocking.
+- **#1139** — `structural_matchers` shared library. Touches 50+ language modules.
+- **#1140** — embedder preset extras map. Revisit when preset count pressures the current hand-rolled match.
 
 ---
 
@@ -183,20 +148,14 @@ Historical split (2026-04-09, 16,731 invocations): **main conversation** uses `s
 
 ## Open Issues
 
-Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlog is now empty** — every numbered finding (1042/1047/1048/1049/1091/1107/1108) closed via PRs #1112, #1117, #1119 (the latter two from the post-v1.29.1 audit close-out batch). Remaining 9 open issues split into "small / opportunistic", "Windows-specific (need test env)", and "external-blocked".
-
-**Small / opportunistic:**
-
-| # | Finding | Notes |
-|---|---------|-------|
-| [#1102](https://github.com/jamie8johnson/cqs/issues/1102) | llm: batch.rs log says "Claude API" regardless of provider | cosmetic wording fix |
+Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlog is now empty** — every numbered finding (1042/1047/1048/1049/1091/1107/1108) closed via PRs #1112, #1117, #1119 (the latter two from the post-v1.29.1 audit close-out batch). Remaining open issues split into "Windows-specific (need test env)" and "external-blocked".
 
 **Windows-specific (need Windows test environment):**
 
 | # | Finding | Blocker |
 |---|---------|---------|
 | [#1043](https://github.com/jamie8johnson/cqs/issues/1043) | `is_slow_mmap_fs` ignores Windows network drives + reparse points | Linux/WSL unaffected; needs Windows runner |
-| [#1044](https://github.com/jamie8johnson/cqs/issues/1044) | Native Windows `cqs watch` cannot stop cleanly — DB corruption risk | Windows signal-handling edge case |
+| [#1044](https://github.com/jamie8johnson/cqs/issues/1044) | Native Windows `cqs watch` cannot stop cleanly — DB corruption risk | Closing via PR #1253 (`ctrlc` termination feature) |
 
 **Tier 2 / 3 (external-blocked or scaffolding-only):**
 
@@ -232,7 +191,12 @@ Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlo
 
 | Version | Highlights |
 |---------|-----------|
+| v1.30.1 | **Indirect-prompt-injection hardening + v1.30.0 audit-fix wave + watch-mode reliability.** Cluster #1166-#1170 + threat model #1171: trust labelling on chunk JSON, `CQS_TRUST_DELIMITERS` opt-in, first-encounter shared-notes prompt on `cqs index`, `CQS_SUMMARY_VALIDATION` for prose summaries before caching, `--improve-docs` review-gated by default, threat model in `SECURITY.md`. Audit-fix omnibus #1141 (152 of 170 P1+P2+P3 findings). Five watch-mode correctness fixes (#1124-#1129): content-hash-aware drain, restore_from_backup pool ordering, summary-write coalescing, daemon mutex hold-time, embedding-cache `purpose` plumbing. Plus four refactors enabling cleaner extension points (#1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138** registry tables for batch / LLM provider) and 12 dependabot bumps. Schema unchanged from v1.30.0; no reindex required. |
+| v1.30.0 | **Cache+slots + three-way embedder A/B + v1.29.0 audit close-out + #956 Phase A scaffolding.** Cache+slots infra (#1105): `.cqs/embeddings_cache.db` keyed on (content_hash, model_id) + project-level `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,clear,prune,compact}` commands. Three-way embedder A/B (#1109 #1110): fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution. v1.29.0 audit close-out batch (#1112 #1113 #1114 #1117 #1118 #1119): every umbrella finding from #1095 closed. #956 Phase A scaffolding (#1120): `gpu-index` → `cuda-index` cargo feature rename (legacy alias preserved); `ep-coreml` / `ep-rocm` features added; `ExecutionProvider` enum gains cfg-gated `CoreML` and `ROCm { device_id }` variants. CUDA path byte-identical at runtime. |
+| v1.29.1 | **v1.29.0 audit close-out** (147 findings triaged; 142 fixed). No new commands, no schema bump, no reindex. CAGRA SIGSEGV root-caused (missing `Drop` on `GpuState`) + fixed; `cqs serve` security hardened (host allowlist, SQL caps, HTML escape, loopback `--open`); transaction integrity fixes (staleness / metadata / cache / HNSW persist); 13 new `CQS_*` env var knobs for thresholds (additive); `rustls-webpki` GHSA-high patch. Remaining 5 audit items split to issues #1095/#1096/#1097/#1098. |
 | v1.29.0 | **`cqs serve` + `.cqsignore` + slow-tests cron killed.** Interactive web UI for the call graph with 4 views — 2D Cytoscape, 3D force-directed, hierarchy (Y axis = BFS depth), embedding cluster (X/Z = UMAP, Y = caller count). Schema bumps v21→v22 for `umap_x`/`umap_y` columns; opt-in via `cqs index --umap` (Python umap-learn). Serve perf pass: ~60s → ~3-4s first paint (SQL-side max_nodes cap, default 300 nodes, `cose` layout, gzip, lazy 3D bundle). New `.cqsignore` mechanism layered on `.gitignore` (drops 18,954 → 15,488 indexed chunks on the cqs corpus, all noise). 5 of 16 slow-test binaries converted to in-process `InProcessFixture`-based tests; nightly `slow-tests.yml` cron deleted. Two Dependabot security bumps (openssl 0.10.78, rand 0.8.6). |
+| v1.28.3 | **Per-category SPLADE α re-sweep targeting R@5** (the 2026-04-15 sweep optimized R@1 — different optima in many categories). Two alpha changes ship: `behavioral` 0.00 → 0.80, `multi_step` 1.00 → 0.10. Production net: test R@5 +0.9pp, dev R@5 ±0, no regressions. |
+| v1.28.2 | **Reranker V2 retrain follow-ups.** Windowing fix (`chunks.content` was lossy WordPiece-decoded text for 7228/15616 chunks; PR #1060), `cqs index --force` fail-fast vs running daemon (#1061), `cqs notes list` daemon dispatch (#1062), `cli_review_test` `--format` → `--json` migration miss (#1063, fixes 2-day-red slow-tests nightly). Plus reranker pool cap default 100→20, centroid classifier flipped default-on after isolated A/B (test R@5 +3.7pp), `notes_boost_factor` measured (zero impact). Reindex required. |
 | v1.28.0 | **Post-audit release.** Closes the post-v1.27.0 16-category audit: 150 findings landed across PRs #1041 (P1, 26) / #1045 (P2, 47) / #1046 (P3, 69); 6 deferred items filed as issues #1042-#1044, #1047-#1049. **BREAKING:** uniform JSON envelope across CLI/batch/daemon-socket (PR #1038). Schema v21 adds `parser_version` column on chunks (PR #1040 + P2 #29). 17 new env-var knobs. Daemon defaults tuned. Eval bumps: PR #1040 chunker doc fallback for short chunks → test R@5 63.3% → 67.0% (vs canonical). PR #1037 ColBERT 2-stage eval tool (default OFF, marginal/inconsistent gain). PR #1039 rustls-webpki CVE bumps. |
 | v1.26.0 | **Watch + SPLADE hardening + Wave D–F audit batch.** `cqs watch` respects `.gitignore` (#1002, PR #1006). Incremental SPLADE in watch (#1004, PR #1007) — 100% coverage stays. Per-category α re-fit on clean 14,882-chunk index (PR #1005, +1.8pp R@1 on v2). `--splade` CLI flag respects router (PR #1008). `Store::open_readonly_after_init` replaces unsafe `into_readonly` (#986, PR #998). **Refactor lane** #946–#950 all closed (PRs #981–#985): Store typestate, Commands/BatchCmd unification, `cqs::fs::atomic_replace` helper, embedder model abstraction, CAGRA persistence. **Quick-wins lane**: WSL 9P/NTFS mmap auto-detect + CAGRA itopk envs + reranker batch chunking (#961/#962/#963, PR #979). **Wave D–F batch**: Aho-Corasick language_names (#964, PR #992), dispatch_search content tests (#973, PR #997), shared `Arc<Runtime>` (#968, PR #1000), migration fs-backup (#953, PR #996), NameMatcher ASCII fast path (#965, PR #990), `open_readonly_small` (#970, PR #993), reindex drain-owned chunks (#967, PR #991), `INDEX_DB_FILENAME` constant (#923, PR #994), CAGRA sentinel `INVALID_DISTANCE` (#952, PR #995), daemon `try_daemon_query` test scaffold (#972, PR #999). **Eval expansion**: v3 consensus dataset (544 dual-judge queries, train/dev/test 326/109/109, every category N≥23). |
 | v1.25.0 | **11th full audit** (16 categories, 236 findings). Per-category SPLADE α defaults from clean 21-point sweep. Multi_step router fix (`"how does"` → not Behavioral, +0.7pp). Eval output to `~/.cache/cqs/evals/` (#943, root cause of 2 days of eval drift). Notes daemon-bypass routing (#945). Determinism fixes across 15+ sort sites + GC suffix-match bug (81% chunks orphaned, root cause of v1.24.0 → v1.25.0 R@1 inflation). |
