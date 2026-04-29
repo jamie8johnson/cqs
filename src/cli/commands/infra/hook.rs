@@ -511,6 +511,71 @@ mod tests {
         assert!(cqs_hook.contains(HOOK_MARKER_PREFIX));
     }
 
+    /// TC-HAP-1.30.1-1: a pre-existing v0-marker hook gets upgraded to the
+    /// current marker on a re-install. Drives the lower-level
+    /// `write_hook_script` directly because `cmd_install` would resolve the
+    /// project root from the workspace, not the temp dir.
+    #[test]
+    fn install_upgrade_replaces_v0_marker_with_current() {
+        let tmp = TempDir::new().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let path = hooks.join("post-checkout");
+        // Seed a v0-marker hook (legacy install). The version part of
+        // HOOK_MARKER_CURRENT differs but HOOK_MARKER_PREFIX matches both.
+        std::fs::write(&path, "#!/bin/sh\n# cqs:hook v0\n").unwrap();
+        let pre = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            pre.contains(HOOK_MARKER_PREFIX),
+            "v0 marker must match the prefix"
+        );
+        assert!(
+            !pre.contains(HOOK_MARKER_CURRENT),
+            "seed must not already be on the current marker"
+        );
+
+        // Simulate the upgrade path inside `cmd_install`'s `Some(content)`
+        // arm: when an existing file contains the marker prefix, rewrite
+        // it with the current template.
+        write_hook_script(&path, "post-checkout").unwrap();
+
+        let post = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            post.contains(HOOK_MARKER_CURRENT),
+            "upgrade must land the current marker, got: {post}"
+        );
+        // Old marker must be gone — the entire body is rewritten.
+        assert!(
+            !post.contains("# cqs:hook v0\n"),
+            "v0-marker line must be replaced, got: {post}"
+        );
+    }
+
+    /// TC-HAP-1.30.1-1: idempotency — a second `write_hook_script` call on
+    /// an already-current hook leaves the file with exactly one marker.
+    #[test]
+    fn install_idempotent_second_run_keeps_marker() {
+        let tmp = TempDir::new().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let path = hooks.join("post-merge");
+
+        write_hook_script(&path, "post-merge").unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        write_hook_script(&path, "post-merge").unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+
+        // The second call replaces the file body, not appends — exactly
+        // one marker survives.
+        let count = second.matches(HOOK_MARKER_CURRENT).count();
+        assert_eq!(
+            count, 1,
+            "idempotent install must keep exactly one marker, got {count}: {second}"
+        );
+        // Bodies must be byte-identical (template is deterministic).
+        assert_eq!(first, second, "hook body must be deterministic");
+    }
+
     #[test]
     fn locate_git_hooks_dir_falls_back_to_dot_git() {
         // No `git` binary in PATH for this test (or the cmd fails for

@@ -325,6 +325,22 @@ mod tests {
         assert!(snap.rebuild_in_flight);
     }
 
+    /// TC-HAP-1.30.1-8: zero pending + zero saturation + rebuild in flight
+    /// is the canonical "Rebuilding" path — operator sees a clean rebuild
+    /// without any backlog. `is_fresh()` must be false because a rebuild is
+    /// in flight (the daemon hasn't published the new chunks yet).
+    #[test]
+    fn compute_with_rebuild_in_flight_zero_pending_returns_rebuilding() {
+        let snap = WatchSnapshot::compute(input(0, true, false, 0));
+        assert_eq!(snap.state, FreshnessState::Rebuilding);
+        assert!(!snap.is_fresh(), "Rebuilding must not be considered fresh");
+        assert_eq!(snap.modified_files, 0);
+        assert!(!snap.pending_notes);
+        assert!(snap.rebuild_in_flight);
+        assert_eq!(snap.dropped_this_cycle, 0);
+        assert!(!snap.delta_saturated);
+    }
+
     #[test]
     fn dropped_events_mark_stale() {
         // dropped_this_cycle > 0 means the daemon lost events to the
