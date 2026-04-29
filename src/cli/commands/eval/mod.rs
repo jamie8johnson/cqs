@@ -66,7 +66,10 @@ pub(crate) struct EvalCmdArgs {
     #[arg(long, default_value = "1.0")]
     pub tolerance: f64,
 
-    /// Skip the watch-mode freshness gate that otherwise blocks the run
+    /// Off-switch for the default-on `--require-fresh` gate. Set
+    /// `CQS_EVAL_REQUIRE_FRESH=0` for the env equivalent.
+    ///
+    /// Skips the watch-mode freshness gate that otherwise blocks the run
     /// until the running `cqs watch --serve` daemon reports
     /// `state == fresh`. (#1182 — Layer 4)
     ///
@@ -74,8 +77,7 @@ pub(crate) struct EvalCmdArgs {
     /// indistinguishable from a regression — a 5-25pp R@K shift from
     /// fixture-line drift is identical in shape to a real model degradation.
     /// Pass `--no-require-fresh` for offline runs (no daemon, hand-built
-    /// index) where the stale check is noise. `CQS_EVAL_REQUIRE_FRESH=0`
-    /// in the environment has the same effect for shells that pre-set it.
+    /// index) where the stale check is noise.
     #[arg(long = "no-require-fresh", action = clap::ArgAction::SetTrue)]
     pub no_require_fresh: bool,
 
@@ -246,7 +248,25 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
         use cqs::daemon_translate::FreshnessWait;
         let root = crate::cli::find_project_root();
         let cqs_dir = cqs::resolve_index_dir(&root);
-        let budget_secs = wait_secs.min(600);
+        // SHL-V1.30-3: silent capping was the bug — warn when the clamp
+        // engages so an operator who passed `--require-fresh-secs 1800`
+        // sees that their long budget got truncated. The cap itself stays
+        // in place (the `wait_for_fresh` defense-in-depth at 86_400 s is
+        // still way over this), but we no longer hide the truncation.
+        let budget_secs = if wait_secs > 600 {
+            tracing::warn!(
+                requested = wait_secs,
+                capped = 600u64,
+                "--require-fresh-secs capped at 600 s (built-in eval ceiling)",
+            );
+            eprintln!(
+                "[eval] --require-fresh-secs={wait_secs} capped at 600 s (built-in ceiling); \
+                 continuing with 600 s budget"
+            );
+            600
+        } else {
+            wait_secs
+        };
 
         // Friendly heads-up on stderr so a long wait doesn't look like a hang.
         // Mirrors the ergonomic of `cargo build` printing "Compiling ..." —
@@ -276,11 +296,14 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                 );
                 anyhow::bail!(
                     "watch index is still stale after {budget_secs}s wait \
-                     (modified_files={}, pending_notes={}, rebuild_in_flight={}); \
+                     (modified_files={}, pending_notes={}, rebuild_in_flight={}, \
+                     dropped_this_cycle={}, delta_saturated={}); \
                      wait longer with --require-fresh-secs N or skip with --no-require-fresh",
                     snap.modified_files,
                     snap.pending_notes,
                     snap.rebuild_in_flight,
+                    snap.dropped_this_cycle,
+                    snap.delta_saturated,
                 )
             }
             FreshnessWait::NoDaemon(msg) => {
@@ -373,44 +396,78 @@ fn env_disables_freshness_gate() -> bool {
 ///
 /// Format mirrors the spec exactly so a user comparing old python output
 /// against `cqs eval` output can eyeball the same shape.
+///
+/// RB-8: refuse to emit the report when the fixture has zero queries with
+/// `gold_chunk`. Without this guard, `pct(0.0)` (which is what runner emits
+/// for the empty case) prints `"  0.0%"` for every metric — looks like a
+/// real result, but it's a structural zero, not a signal. Exits 2 so a
+/// downstream `cqs eval | grep R@5` chain notices.
 fn print_text_report(report: &EvalReport) {
-    println!(
+    if report.overall.n == 0 {
+        eprintln!(
+            "[eval] no queries with gold_chunk in {}; refusing to emit report \
+             (skipped={}, total queries seen={})",
+            report.query_file, report.skipped, report.query_count,
+        );
+        std::process::exit(2);
+    }
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    // Stdout failures during a CLI tool's print step are unrecoverable;
+    // surface as a panic so the operator sees the broken pipe / disk-full
+    // condition rather than a silent zero-byte report.
+    write_text_report(&mut handle, report)
+        .expect("write_text_report must not fail on stdout — broken pipe / disk full?");
+}
+
+/// TC-HAP-1.30.1-9: writable-sink variant of `print_text_report` so a unit
+/// test can pin the exact format without capturing process stdout. Caller
+/// is responsible for the empty-fixture guard — this writer assumes the
+/// report is publishable (`overall.n > 0`).
+fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalReport) -> std::io::Result<()> {
+    writeln!(
+        w,
         "=== eval results: {} (N={}) ===",
         report.query_file, report.overall.n
-    );
-    println!(
+    )?;
+    writeln!(
+        w,
         "OVERALL: R@1={}  R@5={}  R@20={}",
         pct(report.overall.r_at_1),
         pct(report.overall.r_at_5),
         pct(report.overall.r_at_20)
-    );
+    )?;
     if report.skipped > 0 {
-        println!("(skipped {} queries with no gold_chunk)", report.skipped);
+        writeln!(w, "(skipped {} queries with no gold_chunk)", report.skipped)?;
     }
-    println!();
+    writeln!(w)?;
 
     if !report.by_category.is_empty() {
-        println!(
+        writeln!(
+            w,
             "{:<24} {:>5} {:>7} {:>7} {:>7}",
             "category", "N", "R@1", "R@5", "R@20"
-        );
+        )?;
         for (cat, stats) in &report.by_category {
-            println!(
+            writeln!(
+                w,
                 "{:<24} {:>5} {:>7} {:>7} {:>7}",
                 cat,
                 stats.n,
                 pct(stats.r_at_1),
                 pct(stats.r_at_5),
                 pct(stats.r_at_20),
-            );
+            )?;
         }
-        println!();
+        writeln!(w)?;
     }
 
-    println!(
+    writeln!(
+        w,
         "(eval took {:.1}s, {:.1} queries/sec, model={})",
         report.elapsed_secs, report.queries_per_sec, report.index_model
-    );
+    )?;
+    Ok(())
 }
 
 /// Format a fraction in [0.0, 1.0] as a percentage with one decimal place,
@@ -479,11 +536,16 @@ mod tests {
         assert_eq!(w.args.require_fresh_secs, 30);
     }
 
-    /// PR 4 of #1182 / TC-HAP-1.30.1-4: env-var falsy values disable the
-    /// gate. Drives the actual `env_disables_freshness_gate` helper so the
-    /// helper's `matches!` pattern is what gets covered — earlier
-    /// versions of this test re-implemented the logic inline, which left
-    /// the function itself untested and bypass drift invisible.
+    /// PR 4 of #1182 / TC-HAP-1.30.1-4 / TC-ADV-1.30.1-7: env-var falsy
+    /// values disable the gate. Drives the actual
+    /// `env_disables_freshness_gate` helper so the helper's `matches!`
+    /// pattern is what gets covered — earlier versions of this test
+    /// re-implemented the logic inline, which left the function itself
+    /// untested and bypass drift invisible.
+    ///
+    /// Coverage extends to whitespace-trimming, unset (= gate stays on),
+    /// and unknown / garbage values (= gate stays on by default — only
+    /// the canonical `0|false|no|off` shutoffs are honored).
     ///
     /// `#[serial_test::serial]` is required: this test mutates the
     /// process-wide `CQS_EVAL_REQUIRE_FRESH` env var, and parallel tests
@@ -493,16 +555,36 @@ mod tests {
     fn env_disables_freshness_gate_recognises_falsy_strings() {
         let saved = std::env::var("CQS_EVAL_REQUIRE_FRESH").ok();
 
+        // Unset: gate stays on.
+        // SAFETY: serial_test guards env mutation; no other thread is
+        // touching CQS_EVAL_REQUIRE_FRESH while this test runs.
+        unsafe {
+            std::env::remove_var("CQS_EVAL_REQUIRE_FRESH");
+        }
+        assert!(
+            !env_disables_freshness_gate(),
+            "unset CQS_EVAL_REQUIRE_FRESH must leave the gate on"
+        );
+
         let cases: &[(&str, bool)] = &[
+            // Canonical falsy spellings.
             ("0", true),
             ("false", true),
             ("FALSE", true),
             ("no", true),
             ("off", true),
+            // Whitespace trimming covered by the helper.
+            ("  off  ", true),
+            ("\toff\n", true),
+            // Truthy spellings keep the gate on.
             ("1", false),
             ("true", false),
             ("yes", false),
+            // Empty / unknown / garbage all leave the gate on.
             ("", false),
+            ("garbage", false),
+            ("maybe", false),
+            ("2", false),
         ];
         for (input, expected) in cases {
             // SAFETY: serial_test guards env mutation; no other thread is
@@ -598,5 +680,79 @@ mod tests {
         // every other flag.
         assert!(!w.args.no_require_fresh);
         assert_eq!(w.args.require_fresh_secs, 600);
+    }
+
+    /// TC-HAP-1.30.1-9: pin the canonical row-by-row format so a
+    /// downstream regex-based parser doesn't break silently when someone
+    /// reorders columns or drops a label. Builds a deterministic report
+    /// with two queries (1 hit at R@1, both at R@5) and asserts every
+    /// expected substring on the output.
+    #[test]
+    fn print_text_report_renders_canonical_header_and_metrics() {
+        use super::runner::{CategoryStats, EvalReport, Overall};
+        use std::collections::BTreeMap;
+
+        let mut by_category = BTreeMap::new();
+        by_category.insert(
+            "structural_search".to_string(),
+            CategoryStats {
+                n: 2,
+                r_at_1: 0.5,
+                r_at_5: 1.0,
+                r_at_20: 1.0,
+            },
+        );
+
+        let report = EvalReport {
+            query_count: 2,
+            skipped: 0,
+            elapsed_secs: 1.5,
+            queries_per_sec: 1.33,
+            overall: Overall {
+                n: 2,
+                r_at_1: 0.5,
+                r_at_5: 1.0,
+                r_at_20: 1.0,
+            },
+            by_category,
+            index_model: "BAAI/bge-large-en-v1.5".to_string(),
+            cqs_version: "1.30.1".to_string(),
+            query_file: "fixture.json".to_string(),
+            limit: 20,
+            category_filter: None,
+        };
+
+        let mut buf = Vec::new();
+        write_text_report(&mut buf, &report).expect("write_text_report");
+        let out = String::from_utf8(buf).expect("UTF-8");
+
+        // Header row carries the fixture name and N.
+        assert!(
+            out.contains("=== eval results: fixture.json (N=2) ==="),
+            "header row missing or reformatted: {out}"
+        );
+        // OVERALL line — pct() formats with leading space and one decimal.
+        assert!(
+            out.contains("OVERALL: R@1= 50.0%  R@5=100.0%  R@20=100.0%"),
+            "OVERALL line missing or reformatted: {out}"
+        );
+        // Per-category table header row.
+        assert!(
+            out.contains("category"),
+            "category column header missing: {out}"
+        );
+        assert!(out.contains("R@1"), "R@1 column header missing: {out}");
+        assert!(out.contains("R@5"), "R@5 column header missing: {out}");
+        assert!(out.contains("R@20"), "R@20 column header missing: {out}");
+        // Category row.
+        assert!(
+            out.contains("structural_search"),
+            "category row missing: {out}"
+        );
+        // Footer with elapsed + qps + model.
+        assert!(
+            out.contains("(eval took 1.5s, 1.3 queries/sec, model=BAAI/bge-large-en-v1.5)"),
+            "footer line missing or reformatted: {out}"
+        );
     }
 }

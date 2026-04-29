@@ -557,8 +557,9 @@ pub(in crate::cli::batch) fn dispatch_reconcile(
         was_pending,
         "Reconcile requested"
     );
+    // API-V1.30.1-6: `queued: true` was always-true noise — `Ok(...)`
+    // already conveys "accepted by daemon". Dropped from the wire.
     Ok(serde_json::json!({
-        "queued": true,
         "was_pending": was_pending,
         "hook": hook,
         "args": args,
@@ -676,7 +677,11 @@ mod tests {
             vec!["abc".to_string(), "def".to_string(), "1".to_string()],
         )
         .expect("dispatch_reconcile #1");
-        assert_eq!(json.get("queued").and_then(|v| v.as_bool()), Some(true));
+        // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
+        assert!(
+            json.get("queued").is_none(),
+            "queued field should be removed"
+        );
         assert_eq!(
             json.get("was_pending").and_then(|v| v.as_bool()),
             Some(false),
@@ -706,7 +711,11 @@ mod tests {
         // sessions skip it.
         let (_dir, _ctx, view) = empty_view();
         let json = dispatch_reconcile(&view, None, Vec::new()).expect("dispatch_reconcile");
-        assert_eq!(json.get("queued").and_then(|v| v.as_bool()), Some(true));
+        // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
+        assert!(
+            json.get("queued").is_none(),
+            "queued field should be removed"
+        );
         assert!(json.get("hook").is_some_and(|v| v.is_null()));
     }
 

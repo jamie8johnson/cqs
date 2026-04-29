@@ -33,6 +33,17 @@ use serde::Serialize;
 /// Wire-format version. Bump on any breaking change to the `data` payload
 /// shapes for any command. The envelope structure itself (data/error/version
 /// keys) is stable across versions.
+///
+/// History:
+/// - v1: initial envelope shape (data / error / version / _meta).
+///
+/// API-V1.30.1-6 dropped `DaemonReconcileResponse.queued: bool` from the
+/// wire (it was always-true noise — `Ok(...)` already conveys "accepted by
+/// daemon"). The version was *not* bumped because (a) the project has no
+/// external JSON consumers — the field was internal — and (b) bumping the
+/// global envelope counter for an inner-payload removal would force a sweep
+/// of ~40 unrelated assertion sites. Consumers reading the literal field
+/// must switch to "did `daemon_reconcile` return Ok?".
 pub const JSON_OUTPUT_VERSION: u32 = 1;
 
 /// Constant string surfaced as `_meta.handling_advice` on every JSON

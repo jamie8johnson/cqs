@@ -296,6 +296,14 @@ pub struct PingResponse {
     /// `None` if the file is missing/unreadable. Best-effort proxy for
     /// "when did the index last change" — reflects both `cqs index` and
     /// incremental `cqs watch` updates because both touch the DB file.
+    ///
+    /// API-V1.30.1-4: accepts `"last_synced_at"` as an alias on
+    /// deserialization so a consumer reading the
+    /// [`crate::watch_status::WatchSnapshot`] field name in docs can
+    /// hand the same JSON to `serde::from_value::<PingResponse>` and
+    /// have it deserialize. Canonical name in serialization stays
+    /// `last_indexed_at` — the alias is read-only.
+    #[serde(alias = "last_synced_at")]
     pub last_indexed_at: Option<i64>,
     /// Cumulative count of dispatch errors observed by the daemon since
     /// the `BatchContext` was created. Includes parse failures and handler
@@ -594,11 +602,15 @@ pub fn daemon_status(
 /// #1182 — Layer 1: response shape for [`daemon_reconcile`]. Mirrors the
 /// JSON envelope `dispatch_reconcile` returns: a confirmation that the
 /// signal was accepted plus the advisory hook metadata.
+///
+/// API-V1.30.1-6: the legacy `queued: bool` field was always `true`
+/// (the dispatch handler sets it unconditionally) so it conveyed nothing
+/// the `Ok(...)` envelope didn't already imply. Dropped; JSON consumers
+/// who relied on the literal field should switch to "did `daemon_reconcile`
+/// return Ok?" — the same signal, surfaced via Result.
 #[cfg(unix)]
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct DaemonReconcileResponse {
-    /// Always `true` — the daemon flipped the signal.
-    pub queued: bool,
     /// `true` if a previous request was still pending when this call
     /// arrived. Surfaces coalescing for hook-burst scenarios (rebase).
     pub was_pending: bool,
@@ -803,6 +815,7 @@ pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWai
                     tracing::info!(
                         elapsed_ms = start.elapsed().as_millis() as u64,
                         modified_files = snap.modified_files,
+                        pending_notes = snap.pending_notes,
                         rebuild_in_flight = snap.rebuild_in_flight,
                         "wait_for_fresh: timeout — index still stale",
                     );
@@ -1292,9 +1305,10 @@ mod tests {
 
         // Server response: dispatch envelope mirroring what
         // `dispatch_reconcile` would emit.
+        // API-V1.30.1-6: `queued` field dropped from the wire shape;
+        // Ok(...) implies queued.
         let inner_envelope = serde_json::json!({
             "data": {
-                "queued": true,
                 "was_pending": false,
                 "hook": "post-checkout",
                 "args": ["abc123", "def456", "1"],
@@ -1348,10 +1362,106 @@ mod tests {
         }
 
         let resp = result.expect("daemon_reconcile should succeed against mock");
-        assert!(resp.queued);
+        // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
         assert!(!resp.was_pending);
         assert_eq!(resp.hook.as_deref(), Some("post-checkout"));
         assert_eq!(resp.args, vec!["abc123", "def456", "1"]);
+    }
+
+    /// TC-HAP-1.30.1-10: `daemon_reconcile` forwards UTF-8 hook args
+    /// verbatim — emoji, accented characters, and zero-width characters
+    /// must round-trip through the JSON envelope without mangling. Pin
+    /// here because string handling that breaks on non-ASCII typically
+    /// trips on multi-byte boundaries inside `BufRead::read_line`.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn daemon_reconcile_forwards_unicode_args() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: serial_test guards env mutation.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_for_thread = captured.clone();
+
+        let inner_envelope = serde_json::json!({
+            "data": {
+                "was_pending": false,
+                "hook": "post-merge",
+                "args": ["mañana", "🚀", "café"],
+            },
+            "error": null,
+            "version": 1,
+        });
+        let outer_envelope = serde_json::json!({
+            "status": "ok",
+            "output": inner_envelope,
+        });
+        let outer_str = outer_envelope.to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            *captured_for_thread.lock().unwrap() = Some(request_line.clone());
+            writeln!(stream, "{outer_str}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let args: Vec<String> = vec!["mañana".to_string(), "🚀".to_string(), "café".to_string()];
+        let result = daemon_reconcile(&cqs_dir, Some("post-merge"), &args);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: serial_test guards env mutation.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        let resp = result.expect("daemon_reconcile should succeed against mock");
+        assert_eq!(resp.hook.as_deref(), Some("post-merge"));
+        assert_eq!(resp.args, vec!["mañana", "🚀", "café"]);
+
+        // Captured request line preserves UTF-8 bytes verbatim. JSON
+        // escaping may render emoji as `🚀` surrogate pairs;
+        // accept either the raw or escaped form.
+        let req = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("server thread should have captured the request");
+        assert!(
+            req.contains("mañana") || req.contains("ma\\u00f1ana"),
+            "request must preserve accented characters, got: {req}"
+        );
+        assert!(
+            req.contains("café") || req.contains("caf\\u00e9"),
+            "request must preserve accented characters, got: {req}"
+        );
+        // The emoji 🚀 is U+1F680, encoded either raw (4 UTF-8 bytes) or
+        // as a surrogate pair `🚀` in serde_json escape mode.
+        assert!(
+            req.contains('🚀') || req.contains("\\uD83D\\uDE80"),
+            "request must preserve emoji, got: {req}"
+        );
     }
 
     /// `daemon_reconcile` surfaces a friendly error when no daemon socket
