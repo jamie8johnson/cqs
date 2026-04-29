@@ -161,9 +161,11 @@ src/
       search/     - query, gather, similar, related, where_cmd, scout, onboard, neighbors
       graph/      - callers, deps, explain, impact, impact_diff, test_map, trace
       review/     - diff_review, ci, dead, health, suggest, affected
-      index/      - build, gc, stale, stats
+      index/      - build, gc, stale, stats, umap
       io/         - blame, brief, context, diff, drift, notes, read, reconstruct
-      infra/      - audit_mode, cache_cmd, convert, doctor, init, project, reference, telemetry_cmd
+      infra/      - audit_mode, cache_cmd, convert, doctor, hook, init, model, ping, project, reference, slot, status, telemetry_cmd
+      eval/       - eval fixture runner: mod.rs (cmd_eval, require_fresh_gate), schema.rs (EvalReport, EvalEntry)
+      serve.rs   - cmd_serve (auth-gated read-only HTTP UI launcher)
       train/      - export_model, plan, task, train_data, train_pairs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
@@ -192,9 +194,15 @@ src/
       gc.rs     - Daemon startup/periodic GC sweeps + last_indexed_mtime prune
       events.rs - collect_events + process_file_changes + process_note_changes
       reindex.rs - reindex_files + reindex_notes + SPLADE encoder helpers
+      reconcile.rs - Layer 2 periodic full-tree reconciliation (#1182)
       daemon.rs - spawn_daemon_thread (the --serve accept-loop closure body)
       tests.rs  - watch unit-test bench (#[cfg(test)])
       adversarial_socket_tests.rs - adversarial coverage for handle_socket_client (#[cfg(all(test, unix))])
+  watch_status.rs - WatchSnapshot state machine + Arc<RwLock<...>> shared between watch writer and daemon reader (#1182, #1208)
+  daemon_translate.rs - Daemon RPC client + wait_for_fresh helper + DaemonRpcError typed enum (#1211)
+  fs.rs        - atomic_replace and other FS helpers
+  limits.rs    - Tunable env-var-backed limits and defaults
+  aux_model.rs - Auxiliary (small) model paths used by the LLM-summary pipeline
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
     languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions

@@ -108,8 +108,8 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `<project>/.cqs/embeddings_cache.db` | Per-project embedding cache (PR #1105, primary; legacy global cache at `~/.cache/cqs/embeddings.db` is fallback) | `cqs index`, search |
-| `~/.cache/cqs/embeddings.db` | Global embedding cache (content-addressed, capped at 1 GB) | Index and search |
-| `~/.cache/cqs/query_cache.db` | Recent query embedding cache (size-capped at `CQS_QUERY_CACHE_MAX_SIZE`, 100 MiB default) | Search |
+| `~/.cache/cqs/embeddings.db` | Global embedding cache (content-addressed, capped at 1 GB). Linux path; on macOS resolves to `~/Library/Caches/cqs/embeddings.db`, on Windows to `%LOCALAPPDATA%\cqs\embeddings.db` | Index and search |
+| `~/.cache/cqs/query_cache.db` | Recent query embedding cache (size-capped at `CQS_QUERY_CACHE_MAX_SIZE`, 100 MiB default). Linux path; macOS `~/Library/Caches/cqs/query_cache.db`; Windows `%LOCALAPPDATA%\cqs\query_cache.db` | Search |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
 | `$CQS_ONNX_DIR/` | Local ONNX model directory | When `CQS_ONNX_DIR` is set |
 | `~/.local/share/cqs/refs/*/` | Reference indexes (read-only copies) | Search operations |
@@ -131,9 +131,9 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 | `<project>/.cqs/embeddings_cache.db` | Per-project embedding cache writes (primary; PR #1105) | `cqs index`, search |
-| `~/.cache/cqs/embeddings.db` | Global embedding cache writes (legacy fallback) | `cqs index` |
-| `~/.cache/cqs/query_cache.db` | Recent query embedding cache writes | Search (cache miss) |
-| `~/.cache/cqs/query_log.jsonl` | Local query log (append-only) | `cqs chat` / `cqs batch` (search, gather, onboard, scout, where, task) |
+| `~/.cache/cqs/embeddings.db` | Global embedding cache writes (legacy fallback). Linux path; macOS `~/Library/Caches/cqs/embeddings.db`; Windows `%LOCALAPPDATA%\cqs\embeddings.db` | `cqs index` |
+| `~/.cache/cqs/query_cache.db` | Recent query embedding cache writes. Linux path; macOS `~/Library/Caches/cqs/query_cache.db`; Windows `%LOCALAPPDATA%\cqs\query_cache.db` | Search (cache miss) |
+| `~/.cache/cqs/query_log.jsonl` | Local query log (append-only). Linux path; macOS `~/Library/Caches/cqs/query_log.jsonl`; Windows `%LOCALAPPDATA%\cqs\query_log.jsonl` | `cqs chat` / `cqs batch` (search, gather, onboard, scout, where, task) |
 | Project source files | Doc comment insertion | `cqs index --llm-summaries --improve-docs` |
 | `<output>/` directory | ONNX model files + model.toml | `cqs export-model` |
 

@@ -15,11 +15,11 @@ When you run `cqs index`, the following is stored under `.cqs/`:
 - `.cqs/slots/<name>/index.db` — code chunks, embedding vectors (dim depends on configured model; 1024 for BGE-large default, 768 for E5-base / nomic-coderank presets), file paths, line numbers, modification times. Per-named-slot, side-by-side (#1105). Pre-migration projects may still see a legacy single-slot path at `.cqs/index.db`.
 - `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_fingerprint, purpose)` (#1105, #1128). Skips re-embedding chunks that haven't changed across reindexes / model swaps; the `purpose` discriminator (`embedding` for the post-enrichment vector served by HNSW, `embedding_base` for the raw NL vector served by the dual-index "base" graph) prevents the two streams from overwriting each other when the same chunk produces both.
 
-A legacy global cache may also exist from older versions:
+A legacy global cache may also exist from older versions. The legacy cache root resolves per platform: Linux `$XDG_CACHE_HOME/cqs/` or `~/.cache/cqs/`; macOS `~/Library/Caches/cqs/`; Windows `%LOCALAPPDATA%\cqs\`. The three files below live under that root.
 
-- `~/.cache/cqs/embeddings.db` — pre-#1105 cross-project embedding cache, capped at 1 GB by default (`CQS_CACHE_MAX_SIZE`). Still consulted when the per-project cache misses.
-- `~/.cache/cqs/query_cache.db` — recent query embeddings, evicted oldest-first when the DB exceeds `CQS_QUERY_CACHE_MAX_SIZE` (100 MiB default). Prune older entries with `cqs cache prune <DAYS>`. Speeds up repeated searches.
-- `~/.cache/cqs/query_log.jsonl` — local query log written by every `cqs chat` / `cqs batch` invocation (search/gather/onboard/scout/where/task). Append-only JSONL. Delete the file to disable; `cqs cache clear` does not remove it. Stays local.
+- `embeddings.db` — pre-#1105 cross-project embedding cache, capped at 1 GB by default (`CQS_CACHE_MAX_SIZE`). Still consulted when the per-project cache misses.
+- `query_cache.db` — recent query embeddings, evicted oldest-first when the DB exceeds `CQS_QUERY_CACHE_MAX_SIZE` (100 MiB default). Prune older entries with `cqs cache prune <DAYS>`. Speeds up repeated searches.
+- `query_log.jsonl` — local query log written by every `cqs chat` / `cqs batch` invocation (search/gather/onboard/scout/where/task). Append-only JSONL. Delete the file to disable; `cqs cache clear` does not remove it. Stays local.
 
 This data never leaves your machine.
 
@@ -56,6 +56,8 @@ rm -rf ~/.config/cqs/projects.toml    # Project registry
 rm -f ~/.config/cqs/config.toml       # User configuration
 rm -f .cqs.toml                       # Project config
 rm -f docs/notes.toml                 # Project notes
-rm -rf ~/.cache/cqs/                  # Embedding + query caches, query log
+rm -rf ~/.cache/cqs/                  # (Linux) embedding + query caches, query log
+rm -rf "$HOME/Library/Caches/cqs/"    # (macOS) embedding + query caches, query log
+# Windows: rmdir /s /q "%LOCALAPPDATA%\cqs"
 rm -rf ~/.cache/huggingface/          # Downloaded model
 ```
