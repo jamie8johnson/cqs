@@ -114,6 +114,27 @@ impl Store<ReadWrite> {
     /// rebuilds the index in one O(n log n) batch instead of N O(log n) per-row
     /// updates, and the read-time SPLADE search path is unaffected because
     /// the index is back in place by the time the function returns.
+    ///
+    /// **Lock-hold contract (#1212):** the bulk DELETE+INSERT loop runs in
+    /// chunked sub-transactions of `CHUNKS_PER_TX` chunks each, releasing
+    /// `WRITE_LOCK` (and SQLite's WAL writer lock) between batches. Before
+    /// the chunking pass, a single 5614-chunk reindex held the in-process
+    /// write lock for ~16 s (8 s DELETE + 8 s CREATE INDEX rebuild),
+    /// stalling concurrent daemon RPCs (notes add, audit-mode toggle,
+    /// `cqs serve` cluster queries). Now each sub-tx covers ~50 chunks ≈
+    /// 50k sparse rows, committing in ~250 ms; the daemon interleaves RPC
+    /// work between batches. The CREATE INDEX rebuild remains in its own
+    /// short tx at the end (still ~8 s on 1M rows but now bracketed by
+    /// short txs), so a daemon RPC arriving mid-rebuild waits at most one
+    /// CREATE INDEX call instead of the full 16 s window.
+    ///
+    /// **Crash safety:** every sub-tx bumps `splade_generation`, so a
+    /// crash mid-bulk forces splade.index.bin rebuild on next load
+    /// against whatever sparse_vectors actually persisted. Re-running the
+    /// upsert with the same `(chunk_id, vec)` pairs is idempotent: each
+    /// chunk's old rows get DELETE-then-INSERT'd identically. The
+    /// secondary index is `CREATE INDEX IF NOT EXISTS`, so the recreate
+    /// pass is also a no-op-on-retry.
     pub fn upsert_sparse_vectors(
         &self,
         vectors: &[(String, SparseVector)],
@@ -123,127 +144,139 @@ impl Store<ReadWrite> {
             return Ok(0);
         }
         self.rt.block_on(async {
-            // DS2-9: Wrap the write transaction in an inner async block so any
-            // `?`-propagated error lands in the outer `match`. On error we bump
-            // the SPLADE generation outside the (now rolled-back) transaction
-            // to invalidate any on-disk `splade.index.bin` that might still be
-            // cached from a prior state — the DROP/CREATE INDEX DDL and partial
-            // row inserts are all reverted by rollback, but a standalone bump
-            // is the cheapest belt-and-suspenders against stale on-disk caches
-            // and concurrent daemons.
-            let inner_result: Result<usize, StoreError> = async {
-                let (_guard, mut tx) = self.begin_write().await?;
-                let mut total = 0usize;
+            use crate::store::helpers::sql::max_rows_per_statement;
+            // Each row binds 3 vars (chunk_id, token_id, weight). With
+            // ~1000 tokens/chunk for SPLADE-Code 0.6B, ROWS_PER_INSERT
+            // accommodates ~10 chunks worth of rows per INSERT statement.
+            const ROWS_PER_INSERT: usize = max_rows_per_statement(3);
+            // CHUNKS_PER_TX caps how long each sub-transaction holds the
+            // write lock. ~50 chunks × ~1000 tokens ≈ 50k rows ≈ ~250 ms
+            // commit on WAL throughput, which is the right tradeoff
+            // between BEGIN/COMMIT round-trips (overhead per tx) and
+            // lock-hold time (latency for concurrent writers). Operators
+            // can tune via `CQS_SPARSE_CHUNKS_PER_TX` if their workload
+            // (e.g. very dense sparse vectors, slower disks) wants
+            // smaller batches. See #1212.
+            let chunks_per_tx: usize = std::env::var("CQS_SPARSE_CHUNKS_PER_TX")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|n: &usize| *n > 0)
+                .unwrap_or(50);
 
-                // Drop the secondary token_id index before the bulk insert.
-                // The PRIMARY KEY index (chunk_id, token_id) cannot be dropped
-                // without recreating the table, so we leave it in place; that
-                // single B-tree is unavoidable. The secondary token_id index
-                // is purely for read-time SPLADE search lookups and can be
-                // safely dropped+recreated around any write batch. The recreate
-                // at the end of this function restores it before any reader
-                // can observe the missing-index state.
+            // Step 1: drop the secondary token_id index in its own short
+            // transaction. The PRIMARY KEY index (chunk_id, token_id) is
+            // unavoidable; the secondary is purely for read-time SPLADE
+            // search lookups and can be safely dropped+recreated around
+            // any write batch. We bump `splade_generation` here too so a
+            // crash anywhere after this tx commits forces splade.index.bin
+            // rebuild on next load — even if the bulk loop never starts,
+            // the on-disk index file is invalidated.
+            {
+                let (_guard, mut tx) = self.begin_write().await?;
                 tracing::debug!("Dropping idx_sparse_token before bulk insert");
                 sqlx::query("DROP INDEX IF EXISTS idx_sparse_token")
                     .execute(&mut *tx)
                     .await?;
+                bump_splade_generation_tx(&mut tx).await?;
+                tx.commit().await?;
+            }
 
-                // Batched DELETE for all chunk IDs, sized to the SQLite variable
-                // limit (not the pre-3.32 999). Previously `chunks(333)` — audit
-                // finding SHL-31: PR #891 fixed the sibling INSERT loop but left
-                // the DELETE on the old constant, paying ~30x the statement
-                // count. One bind variable per chunk_id, minus the safety margin.
-                use crate::store::helpers::sql::max_rows_per_statement;
-                const DELETE_BATCH: usize = max_rows_per_statement(1);
-                let chunk_ids: Vec<&str> = vectors.iter().map(|(id, _)| id.as_str()).collect();
-                for batch in chunk_ids.chunks(DELETE_BATCH) {
+            // Step 2: chunked DELETE+INSERT loop. Each iteration takes a
+            // fresh `begin_write()` so `WRITE_LOCK` is released between
+            // batches, letting other in-process writers (daemon RPC
+            // threads) interleave. SQLite-side WAL writer lock is also
+            // released on `tx.commit()`.
+            let inner_result: Result<usize, StoreError> = async {
+                let mut total = 0usize;
+                for chunk_batch in vectors.chunks(chunks_per_tx) {
+                    let (_guard, mut tx) = self.begin_write().await?;
+
+                    // DELETE chunk_ids in this batch. Bound by
+                    // `chunks_per_tx`, well under the SQLite variable
+                    // limit (32766) so the batch fits one statement.
                     let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
                         sqlx::QueryBuilder::new("DELETE FROM sparse_vectors WHERE chunk_id IN (");
                     let mut sep = qb.separated(", ");
-                    for id in batch {
-                        sep.push_bind(*id);
+                    for (id, _) in chunk_batch {
+                        sep.push_bind(id.as_str());
                     }
                     sep.push_unseparated(")");
                     qb.build().execute(&mut *tx).await?;
-                }
 
-                // Insert in batches sized to the SQLite variable limit.
-                //
-                // SQLite caps the number of bind variables per statement.
-                // SQLITE_MAX_VARIABLE_NUMBER was 999 before v3.32 (2020) and
-                // is 32766 in current SQLite. The previous BATCH_SIZE constant
-                // was tuned for the old 999 limit and produced ~10x more INSERT
-                // statements than necessary with the modern limit. With
-                // SPLADE-Code 0.6B's denser sparse vectors (~1000+ tokens per
-                // chunk vs ~134 for BERT 110M), the per-statement sqlx overhead
-                // compounded into 30+ minute upserts that looked like a hang.
-                //
-                // The new batch size is derived from the constraint, not picked:
-                // each row uses VARS_PER_ROW bind variables, the maximum rows
-                // per statement is therefore (limit / VARS_PER_ROW), and we
-                // leave a safety margin for any future schema addition that
-                // adds another bound column to the row tuple. The SAFETY_MARGIN
-                // is a generic headroom, not sized to absorb a full extra column
-                // (SHL-41 audit: adding a new bind column requires increasing
-                // VARS_PER_ROW, not this margin).
-                //
-                // Iterate across chunks AND rows together so each batch fills
-                // close to capacity, instead of starting a fresh batch per chunk
-                // and producing tiny INSERTs for chunks with few tokens.
-                const ROWS_PER_INSERT: usize = max_rows_per_statement(3);
-                let mut pending: Vec<(&str, u32, f32)> = Vec::with_capacity(ROWS_PER_INSERT);
-                for (chunk_id, sparse) in vectors {
-                    for &(token_id, weight) in sparse {
-                        pending.push((chunk_id.as_str(), token_id, weight));
-                        if pending.len() >= ROWS_PER_INSERT {
-                            let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
-                                sqlx::QueryBuilder::new(
-                                    "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
-                                );
-                            qb.push_values(pending.iter(), |mut b, &(cid, tid, w)| {
-                                b.push_bind(cid).push_bind(tid as i64).push_bind(w);
-                            });
-                            qb.build().execute(&mut *tx).await?;
-                            total += pending.len();
-                            pending.clear();
+                    // INSERT rows for chunks in this batch, packed across
+                    // chunks so each statement fills close to capacity.
+                    let mut pending: Vec<(&str, u32, f32)> = Vec::with_capacity(ROWS_PER_INSERT);
+                    for (chunk_id, sparse) in chunk_batch {
+                        for &(token_id, weight) in sparse {
+                            pending.push((chunk_id.as_str(), token_id, weight));
+                            if pending.len() >= ROWS_PER_INSERT {
+                                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
+                                    sqlx::QueryBuilder::new(
+                                        "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
+                                    );
+                                qb.push_values(pending.iter(), |mut b, &(cid, tid, w)| {
+                                    b.push_bind(cid).push_bind(tid as i64).push_bind(w);
+                                });
+                                qb.build().execute(&mut *tx).await?;
+                                total += pending.len();
+                                pending.clear();
+                            }
                         }
                     }
+                    if !pending.is_empty() {
+                        let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                            "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
+                        );
+                        qb.push_values(pending.iter(), |mut b, &(cid, tid, w)| {
+                            b.push_bind(cid).push_bind(tid as i64).push_bind(w);
+                        });
+                        qb.build().execute(&mut *tx).await?;
+                        total += pending.len();
+                    }
+
+                    // Bump generation in EVERY sub-tx so a partial bulk
+                    // forces index rebuild on next load. Cheap (one
+                    // SELECT + one UPSERT on metadata).
+                    bump_splade_generation_tx(&mut tx).await?;
+                    tx.commit().await?;
                 }
-                // Flush remaining rows
-                if !pending.is_empty() {
-                    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                        "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
-                    );
-                    qb.push_values(pending.iter(), |mut b, &(cid, tid, w)| {
-                        b.push_bind(cid).push_bind(tid as i64).push_bind(w);
-                    });
-                    qb.build().execute(&mut *tx).await?;
-                    total += pending.len();
-                }
-
-                // Recreate the secondary index. SQLite builds the index in one
-                // O(n log n) batch from the populated table, which is far cheaper
-                // than maintaining the index per-row through the bulk insert.
-                tracing::debug!("Recreating idx_sparse_token after bulk insert");
-                sqlx::query(
-                    "CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_vectors(token_id)",
-                )
-                .execute(&mut *tx)
-                .await?;
-
-                // Centralized generation bump — one call site for the invariant
-                // (audit API-14). Prior to v19 this was inlined here AND in
-                // `prune_orphan_sparse_vectors`; the duplication was a footgun
-                // because every new write path would need to remember the bump.
-                bump_splade_generation_tx(&mut tx).await?;
-
-                tx.commit().await?;
                 Ok(total)
             }
             .await;
 
+            // Step 3: recreate the secondary index in its own tx. SQLite
+            // builds the index in one O(n log n) pass from the now-fully-
+            // populated table — far cheaper than maintaining the index
+            // per-row through the bulk insert. Even on partial-bulk
+            // failure we attempt the recreate so subsequent reads keep
+            // their indexed lookup path.
             match inner_result {
                 Ok(total) => {
+                    let recreate_result: Result<(), StoreError> = async {
+                        let (_guard, mut tx) = self.begin_write().await?;
+                        tracing::debug!("Recreating idx_sparse_token after bulk insert");
+                        sqlx::query(
+                            "CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_vectors(token_id)",
+                        )
+                        .execute(&mut *tx)
+                        .await?;
+                        bump_splade_generation_tx(&mut tx).await?;
+                        tx.commit().await?;
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(e) = recreate_result {
+                        // The bulk data committed successfully; only the
+                        // CREATE INDEX failed. Surface as the call's
+                        // overall error so the caller can retry — the
+                        // next upsert will attempt the recreate again.
+                        tracing::warn!(
+                            error = %e,
+                            "upsert_sparse_vectors: bulk committed but CREATE INDEX failed; \
+                             search path will fall back to full table scan until next upsert"
+                        );
+                        return Err(e);
+                    }
                     tracing::info!(
                         entries = total,
                         chunks = vectors.len(),
@@ -252,16 +285,14 @@ impl Store<ReadWrite> {
                     Ok(total)
                 }
                 Err(e) => {
-                    // DS2-9: The inner transaction rolled back cleanly. Bump
-                    // the generation in a fresh micro-transaction so any
-                    // on-disk `splade.index.bin` built from a previous
-                    // successful state is forced to rebuild at next load —
-                    // a bump failure here is logged but non-fatal; the
-                    // original upsert error is the one the caller cares
-                    // about.
+                    // Step 1 already bumped the generation, and every
+                    // committed sub-tx in Step 2 also bumped — so any
+                    // on-disk splade.index.bin is already invalidated.
+                    // Run one more standalone bump as belt-and-suspenders
+                    // in case Step 1 itself was the failure point.
                     tracing::warn!(
                         error = %e,
-                        "upsert_sparse_vectors failed — bumping SPLADE generation to invalidate on-disk cache"
+                        "upsert_sparse_vectors failed mid-bulk — bumping SPLADE generation to invalidate on-disk cache"
                     );
                     if let Err(bump_err) = bump_splade_generation_standalone(&self.pool).await {
                         tracing::warn!(
@@ -816,5 +847,138 @@ mod tests {
         assert_eq!(c1.1.len(), 3, "c1 should have 3 tokens");
         assert_eq!(c2.1.len(), 4, "c2 should have 4 tokens");
         assert_eq!(c3.1.len(), 3, "c3 should have 3 tokens");
+    }
+
+    /// Mutex serializing tests that mutate `CQS_SPARSE_CHUNKS_PER_TX` —
+    /// `std::env::set_var` is process-global and `cargo test` runs lib
+    /// tests in parallel by default, so without serialization these
+    /// tests race each other (a sibling test resets the var mid-call).
+    /// Scope is deliberately just these tests; other tests don't touch
+    /// this var.
+    static ENV_CHUNKS_PER_TX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Helper: run `f` with `CQS_SPARSE_CHUNKS_PER_TX` set to `value`,
+    /// restoring the prior value (or absence) afterward. Holds
+    /// `ENV_CHUNKS_PER_TX_LOCK` for the duration so concurrent tests
+    /// don't see a transient mid-mutation env state.
+    fn with_chunks_per_tx<R>(value: &str, f: impl FnOnce() -> R) -> R {
+        let _g = ENV_CHUNKS_PER_TX_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("CQS_SPARSE_CHUNKS_PER_TX").ok();
+        // SAFETY: the mutex above ensures no concurrent test in this binary
+        // is reading or writing this env var while we mutate it.
+        unsafe { std::env::set_var("CQS_SPARSE_CHUNKS_PER_TX", value) };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CQS_SPARSE_CHUNKS_PER_TX", v),
+                None => std::env::remove_var("CQS_SPARSE_CHUNKS_PER_TX"),
+            }
+        }
+        match result {
+            Ok(r) => r,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// #1212: chunked sub-transactions bump `splade_generation` per
+    /// committed batch so a partial-bulk crash forces `splade.index.bin`
+    /// rebuild on next load. With `CQS_SPARSE_CHUNKS_PER_TX=1`, a 4-chunk
+    /// upsert produces 1 (DROP step) + 4 (per-chunk bulk) + 1 (CREATE
+    /// step) = 6 generation bumps. The lower-bound check pins "one bump
+    /// per committed batch tx" without coupling to internal restructuring.
+    #[test]
+    fn test_upsert_sparse_vectors_bumps_generation_per_chunked_tx() {
+        with_chunks_per_tx("1", || {
+            let (store, _dir) = setup_store();
+            insert_test_chunk(&store, "c1");
+            insert_test_chunk(&store, "c2");
+            insert_test_chunk(&store, "c3");
+            insert_test_chunk(&store, "c4");
+
+            let before = store.splade_generation().unwrap();
+            store
+                .upsert_sparse_vectors(&[
+                    ("c1".to_string(), vec![(1u32, 0.1f32)]),
+                    ("c2".to_string(), vec![(2u32, 0.2f32)]),
+                    ("c3".to_string(), vec![(3u32, 0.3f32)]),
+                    ("c4".to_string(), vec![(4u32, 0.4f32)]),
+                ])
+                .unwrap();
+            let after = store.splade_generation().unwrap();
+            // 1 (DROP) + 4 (bulk sub-txs) + 1 (CREATE) = 6 bumps minimum.
+            assert!(
+                after >= before + 6,
+                "expected at least 6 bumps for 1+4+1 sub-txs (got before={before} after={after})"
+            );
+        });
+    }
+
+    /// #1212: `CQS_SPARSE_CHUNKS_PER_TX` invalid values fall back to the
+    /// default. Guards against a typo in the env var silently producing
+    /// either zero-sized batches (panic in `chunks(0)`) or non-numeric
+    /// strings (parse error swallowed and ignored).
+    #[test]
+    fn test_upsert_sparse_vectors_env_fallback_on_invalid_value() {
+        for bad_value in &["", "0", "not-a-number", "-5"] {
+            with_chunks_per_tx(bad_value, || {
+                let (store, _dir) = setup_store();
+                insert_test_chunk(&store, "c1");
+                store
+                    .upsert_sparse_vectors(&[("c1".to_string(), vec![(1u32, 0.5f32)])])
+                    .unwrap_or_else(|e| panic!("upsert failed for bad_value={bad_value:?}: {e}"));
+                let loaded = store.load_all_sparse_vectors().unwrap();
+                assert_eq!(loaded.len(), 1, "bad_value={bad_value:?} produced no rows");
+            });
+        }
+    }
+
+    /// #1212: the chunked path correctly handles batches that straddle
+    /// CHUNKS_PER_TX boundaries — the second batch's DELETE must not
+    /// affect the first batch's freshly-committed rows. Pin via:
+    /// pre-seed v1 vectors for c1+c2; upsert v2 for c1+c2 with
+    /// CHUNKS_PER_TX=1 (so c1 commits first, then c2). Final state must
+    /// be v2 for both, not a mix.
+    #[test]
+    fn test_upsert_sparse_vectors_chunked_tx_preserves_atomicity_per_chunk() {
+        with_chunks_per_tx("1", || {
+            let (store, _dir) = setup_store();
+            insert_test_chunk(&store, "c1");
+            insert_test_chunk(&store, "c2");
+
+            // Seed v1.
+            store
+                .upsert_sparse_vectors(&[
+                    ("c1".to_string(), vec![(1u32, 0.1f32)]),
+                    ("c2".to_string(), vec![(2u32, 0.2f32)]),
+                ])
+                .unwrap();
+
+            // Replace with v2 (different tokens to make the swap visible).
+            store
+                .upsert_sparse_vectors(&[
+                    ("c1".to_string(), vec![(11u32, 0.11f32), (12, 0.12)]),
+                    ("c2".to_string(), vec![(21u32, 0.21f32)]),
+                ])
+                .unwrap();
+
+            let loaded = store.load_all_sparse_vectors().unwrap();
+            let c1 = loaded.iter().find(|(id, _)| id == "c1").unwrap();
+            let c2 = loaded.iter().find(|(id, _)| id == "c2").unwrap();
+            assert_eq!(c1.1.len(), 2, "c1 must hold v2's two tokens");
+            assert!(
+                c1.1.iter().any(|(t, _)| *t == 11),
+                "c1 must contain new token 11 (v2)"
+            );
+            assert!(
+                !c1.1.iter().any(|(t, _)| *t == 1),
+                "c1 must NOT retain v1 token 1"
+            );
+            assert_eq!(c2.1.len(), 1, "c2 must hold v2's single token");
+            assert_eq!(c2.1[0].0, 21, "c2 must contain new token 21 (v2)");
+        });
     }
 }
