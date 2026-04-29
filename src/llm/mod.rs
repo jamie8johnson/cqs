@@ -19,6 +19,7 @@ mod hyde;
 pub mod local;
 mod prompts;
 pub mod provider;
+pub mod redirect;
 mod summary;
 pub mod validation;
 
