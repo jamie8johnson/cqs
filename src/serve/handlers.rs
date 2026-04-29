@@ -190,7 +190,18 @@ pub(crate) async fn search(
     State(state): State<AppState>,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, ServeError> {
-    tracing::info!(query = %params.q, limit = params.limit, "serve::search");
+    // OB-V1.30.1-10: log only metadata at info; full query at debug
+    // so it's available for local debugging but not journal-retained
+    // by default. The TraceLayer span already has the redacted URI;
+    // this used to emit `query = <full text>` at info, which bypassed
+    // that redaction and would persist a credential pasted as a
+    // search query straight into the journal.
+    tracing::debug!(query = %params.q, "serve::search query received");
+    tracing::info!(
+        q_len = params.q.len(),
+        limit = params.limit,
+        "serve::search"
+    );
 
     if params.q.trim().is_empty() {
         return Ok(Json(SearchResponse {
