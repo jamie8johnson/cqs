@@ -156,25 +156,25 @@ Categorization: P1 14, P2 32, P3 78, P4 23 (duplicate entries cross-referenced r
 
 | ID | Title | Category | Location | Effort | Status |
 |----|-------|----------|----------|--------|--------|
-| EX-V1.30.1-1 | `daemon_ping`/`status`/`reconcile` are three near-identical 80-LOC copies — refactor target | Extensibility | `src/daemon_translate.rs:271-621` | medium | pending |
-| EX-V1.30.1-2 | `BatchCmd` dispatch is 130-line hand-routed match; macro escape hatch already proven | Extensibility | `src/cli/batch/commands.rs:503-636` | medium | pending |
-| EX-V1.30.1-4 | `write_slot_model` clobbers all non-`[embedding]` keys — adding any per-slot field is breaking | Extensibility | `src/slot/mod.rs:307-351` | medium | pending |
-| EX-V1.30.1-5 | `check_request` is hardcoded three-channel ladder — fourth auth channel needs trait + registry | Extensibility | `src/serve/auth.rs:269-321, 246-260, 323-332` | medium | pending |
-| EX-V1.30.1-6 | Reconcile fingerprint is `(path, mtime)` only — content-hash/size detection needs schema migration | Extensibility | `src/cli/watch/reconcile.rs:84-134` | hard | pending |
-| EX-V1.30.1-8 | `Reranker` is concrete struct with hardcoded ONNX assumptions — no trait, blocks ablations | Extensibility | `src/reranker.rs:108-211` | hard | pending |
-| SEC-V1.30.1-5 | Search results emit `trust_level: "user-code"` for vendored third-party content in project tree | Security | `src/store/helpers/types.rs:172-196` | hard | pending |
-| SEC-V1.30.1-6 | `cqs ref add` accepts symlinked source path with no audit — references can index outside source root | Security | `src/cli/commands/infra/reference.rs:130-150` | medium | pending |
-| SEC-V1.30.1-7 | `LocalProvider` follows up to 2 redirects on `Authorization`-bearing requests — bearer leak risk | Security | `src/llm/local.rs:124-129, 435-437` | medium | pending |
-| PB-V1.30.1-4 | `open_browser` on WSL launches Linux browser via `xdg-open` instead of Windows default | Platform Behavior | `src/cli/commands/serve.rs:99-132` | medium | pending |
-| PB-V1.30.1-5 | `events.rs` mtime-equality skip wrong on macOS HFS+ — only `is_wsl_drvfs_path` triggers strict `<` | Platform Behavior | `src/cli/watch/events.rs:85-102` | medium | pending |
-| PF-V1.30.1-2 | `wait_for_fresh` polls daemon every 250 ms with fresh socket connect + JSON round-trip | Performance | `src/daemon_translate.rs:660-679, 422-510` | medium | pending. Notes: covered by RB-9 + RM-2. |
-| PF-V1.30.1-3 | Periodic GC and reconcile each call `enumerate_files` independently — back-to-back tree walks | Performance | `src/cli/watch/mod.rs:1198-1283`, `gc.rs:209`, `reconcile.rs:74` | medium | pending |
-| PF-V1.30.1-8 | `indexed_file_origins` returns `HashMap<String, Option<i64>>` from `SELECT DISTINCT` overwrites silently | Performance | `src/store/chunks/staleness.rs:627-637` | medium | pending |
-| RM-2 | `wait_for_fresh` opens fresh socket connect+disconnect every 250ms for up to 600s | Resource Management | `src/daemon_translate.rs:660-679, 438` | medium | pending |
-| RM-5 | Reconcile pass holds entire repo's filename set + index origins simultaneously every 30s | Resource Management | `src/cli/watch/reconcile.rs:74-90`, `lib.rs:618` | medium | pending |
-| TC-HAP-1.30.1-6 | `process_file_changes` — central watch-loop reindex function has zero direct tests | Test Coverage (happy) | `src/cli/watch/events.rs:131-300+` | hard | pending |
-| DS-V1.30.1-D3 | Periodic reconcile reads through stale `store` handle on `cqs index --force` race | Data Safety | `src/cli/watch/mod.rs:1262-1283` | medium | pending |
-| DS-V1.30.1-D4 | `slot remove` does not check whether daemon is actively serving the slot it deletes | Data Safety | `src/cli/commands/infra/slot.rs:322-369` | medium | pending |
-| DS-V1.30.1-D6 | `WatchSnapshot.delta_saturated` ignored by `compute()` — duplicate of CQ-V1.30.1-2 | Data Safety | `src/watch_status.rs:199-209` | easy | pending. Notes: covered by CQ-V1.30.1-2 (P1). |
-| DS-V1.30.1-D8 | `dropped_this_cycle` reset before snapshot publish — duplicate of CQ-V1.30.1-1 | Data Safety | `src/cli/watch/events.rs:139-146` | easy | pending. Notes: covered by CQ-V1.30.1-1 (P1). |
-| DOC-V1.30.1-8 | CONTRIBUTING test count + file count out of date — folded into DOC-V1.30.1-3 | Documentation | `CONTRIBUTING.md` | easy | pending. Notes: subsumed by DOC-V1.30.1-3. |
+| EX-V1.30.1-1 | `daemon_ping`/`status`/`reconcile` are three near-identical 80-LOC copies — refactor target | Extensibility | `src/daemon_translate.rs:271-621` | medium | 📌 #1215 |
+| EX-V1.30.1-2 | `BatchCmd` dispatch is 130-line hand-routed match; macro escape hatch already proven | Extensibility | `src/cli/batch/commands.rs:503-636` | medium | 📌 #1216 |
+| EX-V1.30.1-4 | `write_slot_model` clobbers all non-`[embedding]` keys — adding any per-slot field is breaking | Extensibility | `src/slot/mod.rs:307-351` | medium | 📌 #1217 |
+| EX-V1.30.1-5 | `check_request` is hardcoded three-channel ladder — fourth auth channel needs trait + registry | Extensibility | `src/serve/auth.rs:269-321, 246-260, 323-332` | medium | 📌 #1218 |
+| EX-V1.30.1-6 | Reconcile fingerprint is `(path, mtime)` only — content-hash/size detection needs schema migration | Extensibility | `src/cli/watch/reconcile.rs:84-134` | hard | 📌 #1219 |
+| EX-V1.30.1-8 | `Reranker` is concrete struct with hardcoded ONNX assumptions — no trait, blocks ablations | Extensibility | `src/reranker.rs:108-211` | hard | 📌 #1220 |
+| SEC-V1.30.1-5 | Search results emit `trust_level: "user-code"` for vendored third-party content in project tree | Security | `src/store/helpers/types.rs:172-196` | hard | 📌 #1221 (proper fix); doc clarification still pending inline |
+| SEC-V1.30.1-6 | `cqs ref add` accepts symlinked source path with no audit — references can index outside source root | Security | `src/cli/commands/infra/reference.rs:130-150` | medium | 📌 #1222 |
+| SEC-V1.30.1-7 | `LocalProvider` follows up to 2 redirects on `Authorization`-bearing requests — bearer leak risk | Security | `src/llm/local.rs:124-129, 435-437` | medium | 📌 #1223 |
+| PB-V1.30.1-4 | `open_browser` on WSL launches Linux browser via `xdg-open` instead of Windows default | Platform Behavior | `src/cli/commands/serve.rs:99-132` | medium | 📌 #1224 |
+| PB-V1.30.1-5 | `events.rs` mtime-equality skip wrong on macOS HFS+ — only `is_wsl_drvfs_path` triggers strict `<` | Platform Behavior | `src/cli/watch/events.rs:85-102` | medium | 📌 #1225 |
+| PF-V1.30.1-2 | `wait_for_fresh` polls daemon every 250 ms with fresh socket connect + JSON round-trip | Performance | `src/daemon_translate.rs:660-679, 422-510` | medium | ✅ subsumed (RB-9 #1211 + RM-2 #1228) |
+| PF-V1.30.1-3 | Periodic GC and reconcile each call `enumerate_files` independently — back-to-back tree walks | Performance | `src/cli/watch/mod.rs:1198-1283`, `gc.rs:209`, `reconcile.rs:74` | medium | 📌 #1226 |
+| PF-V1.30.1-8 | `indexed_file_origins` returns `HashMap<String, Option<i64>>` from `SELECT DISTINCT` overwrites silently | Performance | `src/store/chunks/staleness.rs:627-637` | medium | 📌 #1227 |
+| RM-2 | `wait_for_fresh` opens fresh socket connect+disconnect every 250ms for up to 600s | Resource Management | `src/daemon_translate.rs:660-679, 438` | medium | 📌 #1228 |
+| RM-5 | Reconcile pass holds entire repo's filename set + index origins simultaneously every 30s | Resource Management | `src/cli/watch/reconcile.rs:74-90`, `lib.rs:618` | medium | 📌 #1229 |
+| TC-HAP-1.30.1-6 | `process_file_changes` — central watch-loop reindex function has zero direct tests | Test Coverage (happy) | `src/cli/watch/events.rs:131-300+` | hard | 📌 #1230 |
+| DS-V1.30.1-D3 | Periodic reconcile reads through stale `store` handle on `cqs index --force` race | Data Safety | `src/cli/watch/mod.rs:1262-1283` | medium | 📌 #1231 |
+| DS-V1.30.1-D4 | `slot remove` does not check whether daemon is actively serving the slot it deletes | Data Safety | `src/cli/commands/infra/slot.rs:322-369` | medium | 📌 #1232 |
+| DS-V1.30.1-D6 | `WatchSnapshot.delta_saturated` ignored by `compute()` — duplicate of CQ-V1.30.1-2 | Data Safety | `src/watch_status.rs:199-209` | easy | ✅ subsumed by CQ-V1.30.1-2 (P1 #1202) |
+| DS-V1.30.1-D8 | `dropped_this_cycle` reset before snapshot publish — duplicate of CQ-V1.30.1-1 | Data Safety | `src/cli/watch/events.rs:139-146` | easy | ✅ subsumed by CQ-V1.30.1-1 (P1 #1202) |
+| DOC-V1.30.1-8 | CONTRIBUTING test count + file count out of date — folded into DOC-V1.30.1-3 | Documentation | `CONTRIBUTING.md` | easy | ✅ subsumed by DOC-V1.30.1-3 (PR #1214) |
