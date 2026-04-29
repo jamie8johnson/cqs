@@ -193,6 +193,19 @@ cqs watch --debounce 1000  # Custom debounce (ms)
 
 Watch mode respects `.gitignore` by default. Use `--no-ignore` to index ignored files.
 
+### Stopping `cqs watch` cleanly
+
+| Platform | Signal | Sender |
+|----------|--------|--------|
+| Linux / macOS / WSL | SIGINT | `Ctrl+C` from launching console |
+| Linux / macOS / WSL | SIGTERM | `systemctl --user stop cqs-watch`, `kill <pid>` |
+| Native Windows | `CTRL_C_EVENT` | `Ctrl+C` from launching console |
+| Native Windows | `CTRL_BREAK_EVENT` | `Stop-Process -Name cqs`, `taskkill /B` |
+| Native Windows | `CTRL_CLOSE_EVENT` | Console window closed |
+| Native Windows | `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT` | User logout / system shutdown |
+
+Each of these triggers a clean drain — pending writes flush, the SQLite WAL checkpoints, and the daemon socket is removed. Avoid `taskkill /F` (`TerminateProcess`) on Windows or `kill -9` on Unix: those bypass the drain and risk leaving the index DB in a state that requires `cqs index --force` to recover.
+
 ### Three-layer reconciliation (#1182)
 
 `cqs watch --serve` is **always-recoverable, always-detectable** stale: any working-tree change is reflected within seconds, and you can synchronously query "is the index fresh?" before trusting it.
