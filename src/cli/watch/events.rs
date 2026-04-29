@@ -82,22 +82,34 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
 
         // Convert to relative path
         if let Ok(rel) = path.strip_prefix(cfg.root) {
-            // P2.56: dedup WSL/NTFS events. NTFS keeps 100 ns mtime resolution,
-            // but FAT32 mounts have a 2-second granularity floor — two saves
-            // within 2 s collide on the *same* mtime, so a strict `mtime <=
-            // last` check would skip the second save. On WSL drvfs
-            // (`/mnt/<letter>/`, where the drive may well be FAT32-formatted)
-            // we treat ties as "not stale" — i.e. only skip when `mtime` is
-            // strictly older than the cached `last`. On Linux/macOS we keep
-            // the original `<=` because sub-second mtimes there are reliable
-            // and equality genuinely means "same content, no reindex needed".
+            // PB-V1.30.1-5 / #1225: mtime-equality skip is gated on the
+            // filesystem's actual mtime resolution, not just WSL drvfs.
+            //
+            // - `mtime < last`: rewind (e.g. `git checkout` restoring a
+            //   commit-time mtime). Historical behavior: skip — the
+            //   inotify path is for real save events; a rewound mtime
+            //   without a matching save is treated as already-indexed.
+            // - `mtime == last`: ambiguous on coarse FS (two saves
+            //   inside the same resolution window collide on identical
+            //   mtimes), unambiguous on fine FS (nanosecond equality
+            //   means the same save). Skip iff `resolution.is_zero()`.
+            // - `mtime > last`: a real save advanced the mtime → not
+            //   stale, regardless of FS resolution.
+            //
+            // P2.56: this was previously WSL-drvfs-only via the
+            // `is_wsl_drvfs_path` check. Superseded by
+            // `coarse_fs_resolution` so HFS+ / NFS / SMB / FAT32 on
+            // plain Linux + macOS also stop silently dropping rapid
+            // re-saves.
             if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-                let coarse_fs = cqs::config::is_wsl_drvfs_path(&path);
+                let resolution = cqs::config::coarse_fs_resolution(&path);
                 let stale = state.last_indexed_mtime.get(rel).is_some_and(|last| {
-                    if coarse_fs {
-                        mtime < *last
+                    if mtime < *last {
+                        true
+                    } else if mtime == *last {
+                        resolution.is_zero()
                     } else {
-                        mtime <= *last
+                        false
                     }
                 });
                 if stale {

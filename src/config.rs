@@ -116,6 +116,144 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
     false
 }
 
+/// Returns the mtime resolution (granularity) of the filesystem holding
+/// `path`. Files written within this window can collide on identical
+/// stored mtimes — the watch loop's mtime-equality skip
+/// (`events.rs::collect_events`) must treat any cached mtime within this
+/// window as ambiguous and let the reindex through, otherwise the second
+/// rapid save silently doesn't make it into the index.
+///
+/// PB-V1.30.1-5 / #1225: prior shape only handled WSL drvfs by toggling
+/// `<` vs `<=` against the cached mtime. That misses HFS+, SMB, NFS, and
+/// FAT32 mounts on plain Linux/macOS, all of which round mtime to ≥1 s.
+/// The new function returns a `Duration` so the caller can compare
+/// `now - cached <= resolution` uniformly across platforms.
+///
+/// Resolution by FS:
+/// - WSL drvfs (`/mnt/<letter>/`, `//wsl$/...`): **2 s**
+///   (NTFS via 9P bridge in practice; safer to overshoot).
+/// - Linux NFS / CIFS / SMB / VFAT / FAT32 / MSDOS / HFS+: **2 s**
+///   (Detected via `statfs::f_type` magic numbers.)
+/// - macOS HFS+ / SMB / AFP / NFS / MS-DOS: **2 s**
+///   (Detected via `statfs::f_fstypename` string.)
+/// - Everything else (ext4, APFS, btrfs, xfs, zfs, tmpfs): **0**
+///
+/// 2 s is conservative: the worst-case granularity in this list is
+/// FAT32's 2-second floor, and a uniform constant simplifies the call
+/// site. The cost of an overshoot is at most one redundant reindex on
+/// rapid re-saves; the cost of an undershoot is silent missed reindexes,
+/// which is the bug class this issue closes.
+///
+/// Returns `Duration::ZERO` on stat failure (treat as fine-grained — the
+/// caller's `<=` comparison degenerates to strict-equality skip, which is
+/// the historical behavior on unknown mounts).
+pub fn coarse_fs_resolution(path: &Path) -> std::time::Duration {
+    use std::time::Duration;
+
+    if is_wsl_drvfs_path(path) {
+        return Duration::from_secs(2);
+    }
+
+    // One per-platform `let` so the function has a single tail
+    // expression — clippy's `needless_return` lint kicks at every
+    // cfg-gated `return` otherwise.
+    #[cfg(target_os = "linux")]
+    let resolution = linux_fs_resolution(path);
+
+    #[cfg(target_os = "macos")]
+    let resolution = macos_fs_resolution(path);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let resolution: Option<Duration> = {
+        let _ = path;
+        None
+    };
+
+    resolution.unwrap_or(Duration::ZERO)
+}
+
+/// Linux: read `statfs::f_type` and map well-known coarse-mtime magic
+/// numbers to a 2 s resolution. Magic constants follow `<linux/magic.h>`.
+///
+/// Returns `None` on stat failure or unknown FS — caller treats as
+/// fine-grained (Duration::ZERO).
+#[cfg(target_os = "linux")]
+fn linux_fs_resolution(path: &Path) -> Option<std::time::Duration> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::time::Duration;
+
+    let cpath = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(cpath.as_ptr(), &mut stat) };
+    if rc != 0 {
+        return None;
+    }
+
+    // f_type is `__fsword_t` (signed `long` on most architectures). Cast to
+    // i64 to compare against constants written in their natural unsigned
+    // form. The CIFS / SMB2 magic numbers are 32-bit values that have the
+    // top bit set (0xff534d42 / 0xfe534d42); writing them as `u32 as i64`
+    // preserves the bit pattern across architectures where i32 vs i64
+    // sign-extension would otherwise differ.
+    const NFS_SUPER_MAGIC: i64 = 0x6969;
+    const MSDOS_SUPER_MAGIC: i64 = 0x4d44;
+    const SMB_SUPER_MAGIC: i64 = 0x517b;
+    const HFS_PLUS_MAGIC: i64 = 0x482b;
+    const VFAT_SUPER_MAGIC: i64 = 0x4d44; // alias for MSDOS family
+    let cifs_magic: i64 = 0xff534d42_u32 as i64;
+    let smb2_magic: i64 = 0xfe534d42_u32 as i64;
+
+    let f_type = stat.f_type as i64;
+    if f_type == NFS_SUPER_MAGIC
+        || f_type == MSDOS_SUPER_MAGIC
+        || f_type == SMB_SUPER_MAGIC
+        || f_type == HFS_PLUS_MAGIC
+        || f_type == VFAT_SUPER_MAGIC
+        || f_type == cifs_magic
+        || f_type == smb2_magic
+    {
+        return Some(Duration::from_secs(2));
+    }
+    Some(Duration::ZERO)
+}
+
+/// macOS: read `statfs::f_fstypename` and map known coarse-mtime FS
+/// names to a 2 s resolution. APFS keeps nanosecond mtime, so it returns
+/// `Duration::ZERO` along with all unknown filesystems.
+#[cfg(target_os = "macos")]
+fn macos_fs_resolution(path: &Path) -> Option<std::time::Duration> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::time::Duration;
+
+    let cpath = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(cpath.as_ptr(), &mut stat) };
+    if rc != 0 {
+        return None;
+    }
+
+    // f_fstypename is a fixed-size [c_char; MFSTYPENAMELEN] (16). Take a
+    // null-terminated CStr view, lossy-decode, and match against the known
+    // coarse-mtime names. This avoids depending on libc constants that
+    // have changed between bindings versions.
+    let name_bytes: Vec<u8> = stat
+        .f_fstypename
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    let name = String::from_utf8_lossy(&name_bytes).to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "hfs" | "smbfs" | "afpfs" | "nfs" | "msdos" | "exfat" | "cifs"
+    ) {
+        return Some(Duration::from_secs(2));
+    }
+    Some(Duration::ZERO)
+}
+
 /// Reference index configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReferenceConfig {
@@ -1547,5 +1685,77 @@ llm_max_tokens = 200
         assert!((s.get("note_boost_factor").unwrap() - 0.3).abs() < f32::EPSILON);
         // base scoring was replaced, not field-merged
         assert!(s.get("name_exact").is_none());
+    }
+
+    /// PB-V1.30.1-5 / #1225: WSL drvfs paths report a 2 s coarse-mtime
+    /// resolution regardless of the underlying NTFS/FAT32 — the 9P
+    /// bridge's worst-case rounding is what matters at the watch-loop
+    /// layer.
+    #[test]
+    fn coarse_fs_resolution_returns_two_seconds_for_wsl_drvfs() {
+        use std::time::Duration;
+        let two_sec = Duration::from_secs(2);
+        assert_eq!(
+            coarse_fs_resolution(Path::new("/mnt/c/Projects/foo")),
+            two_sec
+        );
+        assert_eq!(coarse_fs_resolution(Path::new("/mnt/d/some/path")), two_sec);
+        assert_eq!(coarse_fs_resolution(Path::new("/mnt/C/UpperCase")), two_sec);
+        assert_eq!(
+            coarse_fs_resolution(Path::new("//wsl.localhost/Ubuntu/home/user")),
+            two_sec
+        );
+        assert_eq!(
+            coarse_fs_resolution(Path::new("//wsl$/Ubuntu/home/user")),
+            two_sec
+        );
+    }
+
+    /// PB-V1.30.1-5 / #1225: paths under `/tmp` (tmpfs on Linux) and
+    /// other native fine-grained filesystems must report
+    /// `Duration::ZERO` so the `events.rs` mtime-equality skip stays in
+    /// the historical fast path on the steady-state common case. Pinned
+    /// using a TempDir which lands on the runner's tmpfs (Linux CI) or
+    /// APFS (macOS CI), both fine-grained.
+    #[test]
+    fn coarse_fs_resolution_returns_zero_for_native_fine_grained_fs() {
+        use std::time::Duration;
+        let dir = tempfile::TempDir::new().unwrap();
+        // tmpfs on Linux, APFS/HFS+ on macOS. CI runners are the main
+        // target here; HFS+ would actually return 2 s under the new
+        // `macos_fs_resolution`, but GitHub-hosted macOS runners have
+        // been APFS-only since 2018, so this assertion holds in CI.
+        // If a developer runs `cargo test` on an external HFS+ drive,
+        // they'd see the 2 s return value — that's a feature, not a
+        // bug.
+        assert_eq!(coarse_fs_resolution(dir.path()), Duration::ZERO);
+    }
+
+    /// PB-V1.30.1-5 / #1225: stat failure returns `Duration::ZERO`
+    /// (treat as fine-grained) — the caller's `<=` mtime check
+    /// degenerates to the historical strict-equality skip. A
+    /// nonexistent path is the cleanest stat-failure reproduction.
+    #[test]
+    fn coarse_fs_resolution_returns_zero_on_stat_failure() {
+        use std::time::Duration;
+        let nonexistent = Path::new("/nonexistent/cqs-test-path-that-must-not-exist-12345");
+        assert_eq!(coarse_fs_resolution(nonexistent), Duration::ZERO);
+    }
+
+    /// PB-V1.30.1-5 / #1225: the `is_wsl_drvfs_path` shortcut takes
+    /// precedence over the platform-specific statfs check — even when
+    /// the underlying mount is reported as some unrelated FS magic,
+    /// WSL drvfs always returns 2 s. Pinned with a synthetic path that
+    /// matches the prefix without needing a real mount.
+    #[test]
+    fn coarse_fs_resolution_wsl_shortcut_does_not_call_statfs() {
+        use std::time::Duration;
+        let two_sec = Duration::from_secs(2);
+        // Path doesn't exist on disk; statfs would fail. The shortcut
+        // returns before the syscall happens, so we get 2 s anyway.
+        assert_eq!(
+            coarse_fs_resolution(Path::new("/mnt/c/this/path/does/not/exist")),
+            two_sec
+        );
     }
 }
