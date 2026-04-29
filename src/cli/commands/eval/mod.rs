@@ -82,6 +82,9 @@ pub(crate) struct EvalCmdArgs {
     /// How long `--require-fresh` waits for the daemon to reach
     /// `state == fresh` before erroring out. Capped at 600 (10 min)
     /// inside the wait helper so a runaway agent can't pin the socket.
+    ///
+    /// Note: `cqs status --wait-secs` has the same semantics; default
+    /// differs by use case (eval default = 600, status = 30).
     #[arg(long = "require-fresh-secs", default_value_t = 600u64)]
     pub require_fresh_secs: u64,
 }
@@ -356,14 +359,14 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
 /// of falsy strings mirrors the convention used by other env-var knobs
 /// (`CQS_NO_DAEMON`, etc.) so an operator who knows one knob's spelling
 /// gets the other for free.
+///
+/// EX-V1.30.1-7 (P3-EX-2): falsy-string parsing now lives in
+/// [`cqs::env_falsy`] so the next migration pass can move the other
+/// ~30 hand-rolled call sites without re-debating the spelling list.
 fn env_disables_freshness_gate() -> bool {
-    match std::env::var("CQS_EVAL_REQUIRE_FRESH") {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        ),
-        Err(_) => false,
-    }
+    std::env::var("CQS_EVAL_REQUIRE_FRESH")
+        .map(|v| cqs::env_falsy(&v))
+        .unwrap_or(false)
 }
 
 /// Print the eval report in human-readable text.

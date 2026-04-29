@@ -16,7 +16,7 @@ pub const DEFAULT_DIM: usize = ModelConfig::DEFAULT_DIM;
 /// want a `&'static str` rather than `default_model().repo` (a `String`).
 pub const DEFAULT_MODEL_REPO: &str = ModelConfig::DEFAULT_REPO;
 
-use provider::ort_err;
+use crate::ort_helpers::ort_err;
 pub(crate) use provider::{create_session, select_provider};
 
 use lru::LruCache;
@@ -59,7 +59,17 @@ pub enum EmbedderError {
     HfHub(String),
 }
 
-// `ort_err` is defined in `provider.rs` (pub(super)) and imported above.
+/// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
+/// [`InferenceFailed`](EmbedderError::InferenceFailed) so the shared
+/// [`crate::ort_helpers::ort_err`] helper can hand back the right
+/// variant for embedder call sites. Sealed trait, not `From<String>`,
+/// so `.map_err(ort_err)` type inference isn't ambiguous against the
+/// reflexive `From<T> for T` impl.
+impl crate::ort_helpers::FromOrtMessage for EmbedderError {
+    fn from_ort_message(msg: String) -> Self {
+        Self::InferenceFailed(msg)
+    }
+}
 
 /// An L2-normalized embedding vector.
 ///

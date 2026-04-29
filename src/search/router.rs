@@ -466,7 +466,11 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
             if alpha.is_finite() {
                 let alpha = alpha.clamp(0.0, 1.0);
-                tracing::info!(
+                // OB-V1.30.1-1 / P3-OB-1: per-search routing fires on every
+                // query — keep the entry `info_span!` for traceability and
+                // demote the inner event to debug so the operator default
+                // log level isn't flooded.
+                tracing::debug!(
                     category = %category,
                     alpha,
                     source = "per_cat_env",
@@ -488,7 +492,8 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
             if alpha.is_finite() {
                 let alpha = alpha.clamp(0.0, 1.0);
-                tracing::info!(
+                // OB-V1.30.1-1 / P3-OB-1: see comment above on per-cat env.
+                tracing::debug!(
                     category = %category,
                     alpha,
                     source = "global_env",
@@ -546,7 +551,9 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     // no longer slip through under a `_ => 1.0` catch-all.
     let alpha = category.default_alpha();
 
-    tracing::info!(
+    // OB-V1.30.1-1 / P3-OB-1: demote per-search routing to debug — see
+    // top of `resolve_splade_alpha` for the rationale.
+    tracing::debug!(
         category = %category,
         alpha,
         source = "default",
@@ -804,6 +811,14 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
 /// keyword at end-of-query silently misrouted to Conceptual α=0.70 instead
 /// of Structural α=0.90.
 fn is_structural_query(query: &str) -> bool {
+    // AC-V1.30.1-2 (P3-AC-1): line 643 already passes `&query_lower`, but
+    // the other call sites (lines 900, 1265, 1275-1276) pass raw query
+    // strings, so a query like `"Class Foo"` would miss the `class`
+    // keyword match. Lowercase here once so every caller is correct
+    // without per-site discipline; the AC pattern set is keyed on
+    // lowercase forms anyway.
+    let query_lower = query.to_ascii_lowercase();
+    let query = query_lower.as_str();
     // Structural patterns like "functions that return"
     if STRUCTURAL_PATTERNS_AC.is_match(query) {
         return true;
@@ -1143,7 +1158,10 @@ pub fn reclassify_with_centroid(
     let classifier = CENTROID_CLASSIFIER.get_or_init(CentroidClassifier::load);
     if let Some(cls) = classifier {
         if let Some((cat, margin)) = cls.classify(embedding) {
-            tracing::info!(
+            // OB-V1.30.1-2 / P3-OB-1: per-search event — demote to debug
+            // so the operator default log level isn't flooded; the
+            // surrounding `info_span!`s still carry the trace context.
+            tracing::debug!(
                 centroid_category = %cat,
                 margin = format!("{margin:.4}"),
                 "centroid filled Unknown gap"
@@ -1274,6 +1292,24 @@ mod tests {
     fn test_p2_44_structural_keyword_as_substring_does_not_match() {
         assert!(!is_structural_query("training pipeline"));
         assert!(!is_structural_query("classifier"));
+    }
+
+    /// AC-V1.30.1-2 (P3-AC-1) regression-pin: case-folding inside
+    /// `is_structural_query` so callers that pass raw queries (line 900
+    /// in `is_conceptual_query`, the centroid path, and external test
+    /// callers) classify uppercase or mixed-case structural keywords
+    /// correctly. The pre-fix path only worked when callers had already
+    /// lowercased — `"Class Foo"` and `"FIND ALL STRUCT"` would miss.
+    /// Note: `STRUCTURAL_KEYWORDS` is singular-only (`struct`, not
+    /// `structs`); the case-fold pin tracks the uppercase axis only.
+    #[test]
+    fn test_ac_v1_30_1_2_is_structural_query_case_folds() {
+        assert!(is_structural_query("Class Foo"));
+        assert!(is_structural_query("Trait Iterator"));
+        assert!(is_structural_query("FIND ALL STRUCT"));
+        assert!(is_structural_query("Find Every Enum"));
+        // negative pin: substring + uppercase still must not false-fire
+        assert!(!is_structural_query("Training Pipeline"));
     }
 
     #[test]

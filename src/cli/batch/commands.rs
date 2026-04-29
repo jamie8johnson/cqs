@@ -448,6 +448,55 @@ for_each_batch_cmd_pipeability!(gen_is_pipeable_impl);
 
 // ─── Query logging ───────────────────────────────────────────────────────────
 
+/// Per-variant table for the eval-capture query log.
+///
+/// EX-V1.30.1-3 (P3-EX-1): the `log_query("search", &args.query)` calls
+/// used to live at six hand-sprinkled sites in `dispatch`. Each site had
+/// to remember the right command-name string and the right field name
+/// (`args.query` vs `args.description` vs ...). Centralised here so
+/// adding a new logged variant is one row in this table instead of a
+/// new sprinkled call inside `dispatch`.
+///
+/// The `gen_log_query_dispatch` emitter expands the table into one
+/// `log_query_for(cmd: &BatchCmd)` function that pattern-matches the
+/// variant and pulls the field by name. Variants that aren't listed
+/// here fall through (no log line emitted) — most batch commands take
+/// a function name or a path, not a query, and those don't go in the
+/// eval-replay log.
+macro_rules! for_each_logged_batch_cmd {
+    ($emit:ident) => {
+        $emit! {
+            // (BatchCmd variant, log-name, field accessor on the variant's `args`)
+            (Search,  "search",  query)
+            (Gather,  "gather",  query)
+            (Onboard, "onboard", query)
+            (Scout,   "scout",   query)
+            (Where,   "where",   description)
+            (Task,    "task",    description)
+        }
+    };
+}
+
+/// Emit `fn log_query_for(cmd: &BatchCmd)` from the table above.
+///
+/// Each row produces a `BatchCmd::$variant { args, .. } => log_query(...)`
+/// arm; a final `_ => {}` arm covers the un-logged variants. Adding a
+/// new logged variant is one new row in `for_each_logged_batch_cmd!`.
+macro_rules! gen_log_query_dispatch {
+    ( $( ($var:ident, $log_name:literal, $field:ident) )* ) => {
+        fn log_query_for(cmd: &BatchCmd) {
+            match cmd {
+                $(
+                    BatchCmd::$var { args, .. } => log_query($log_name, &args.$field),
+                )*
+                _ => {}
+            }
+        }
+    };
+}
+
+for_each_logged_batch_cmd!(gen_log_query_dispatch);
+
 /// Append a query to the query log for eval workflow capture.
 /// Best-effort: failures are silently ignored (never blocks batch mode).
 fn log_query(command: &str, query: &str) {
@@ -495,6 +544,11 @@ fn log_query(command: &str, query: &str) {
 /// dispatch, so concurrent reads no longer serialize through one lock.
 pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Value> {
     let _span = tracing::debug_span!("batch_dispatch").entered();
+    // EX-V1.30.1-3 (P3-EX-1): single table-driven query-log call replaces
+    // six hand-sprinkled `log_query(...)` invocations inside the match arms.
+    // The `for_each_logged_batch_cmd!` table at the top of this module
+    // owns the variant → log-name + field-accessor mapping.
+    log_query_for(&cmd);
     // Task #8: every variant now also carries `output` (TextJsonArgs or
     // OutputArgs) for CLI flag parity, but batch always emits JSON via the
     // socket framer / stdout JSONL — the output field is intentionally
@@ -504,10 +558,7 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
         BatchCmd::Blame { args, .. } => {
             handlers::dispatch_blame(ctx, &args.name, args.commits, args.callers)
         }
-        BatchCmd::Search { args, .. } => {
-            log_query("search", &args.query);
-            handlers::dispatch_search(ctx, &args)
-        }
+        BatchCmd::Search { args, .. } => handlers::dispatch_search(ctx, &args),
         BatchCmd::Deps { args, .. } => handlers::dispatch_deps(
             ctx,
             &args.name,
@@ -527,10 +578,7 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
         BatchCmd::Similar { args, .. } => {
             handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
         }
-        BatchCmd::Gather { args, .. } => {
-            log_query("gather", &args.query);
-            handlers::dispatch_gather(ctx, &args)
-        }
+        BatchCmd::Gather { args, .. } => handlers::dispatch_gather(ctx, &args),
         BatchCmd::Impact { args, .. } => handlers::dispatch_impact(
             ctx,
             &args.name,
@@ -563,22 +611,17 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
             handlers::dispatch_context(ctx, &args.path, args.summary, args.compact, args.tokens)
         }
         BatchCmd::Stats { .. } => handlers::dispatch_stats(ctx),
-        BatchCmd::Onboard { args, .. } => {
-            log_query("onboard", &args.query);
-            handlers::dispatch_onboard(
-                ctx,
-                &args.query,
-                args.depth,
-                args.limit_arg.limit,
-                args.tokens,
-            )
-        }
+        BatchCmd::Onboard { args, .. } => handlers::dispatch_onboard(
+            ctx,
+            &args.query,
+            args.depth,
+            args.limit_arg.limit,
+            args.tokens,
+        ),
         BatchCmd::Scout { args, .. } => {
-            log_query("scout", &args.query);
             handlers::dispatch_scout(ctx, &args.query, args.limit, args.tokens)
         }
         BatchCmd::Where { args, .. } => {
-            log_query("where", &args.description);
             handlers::dispatch_where(ctx, &args.description, args.limit)
         }
         BatchCmd::Read { args, .. } => {
@@ -600,7 +643,6 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
             handlers::dispatch_notes(ctx, args.warnings, args.patterns, args.check)
         }
         BatchCmd::Task { args, .. } => {
-            log_query("task", &args.description);
             handlers::dispatch_task(ctx, &args.description, args.limit, args.tokens)
         }
         BatchCmd::Review { args, .. } => {
