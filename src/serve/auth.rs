@@ -275,13 +275,42 @@ fn strip_token_param(uri: &Uri) -> String {
     }
 }
 
+/// Low-cardinality classification for a 401 rejection. Surfaced on the
+/// `enforce_auth` rejection warn (OB-V1.30.1-5) so operators can
+/// distinguish "client sent nothing" from "client sent a stale or
+/// wrong-channel credential" without logging the actual material.
+///
+/// Cardinality is fixed at four — the variants cover every channel
+/// `check_request` inspects, so the journal's reason-cardinality stays
+/// bounded regardless of traffic shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnauthorizedReason {
+    /// No `Authorization`, no cookie, no `?token=…` query param. The
+    /// request sent zero auth channels — most often a fresh tab hitting
+    /// the bind address with no token.
+    MissingAll,
+    /// `Authorization: Bearer <…>` header present but the value didn't
+    /// match (after the strict `"Bearer "` prefix strip).
+    BearerMismatch,
+    /// `Cookie: cqs_token_<port>=<…>` present but the value didn't
+    /// match. Typically a stale cookie from a previous launch — the
+    /// per-launch token rotates on every `cqs serve` restart.
+    CookieMismatch,
+    /// `?token=<…>` query param present but the value didn't match.
+    QueryParamMismatch,
+}
+
 /// Extract the token from one of three channels — header, cookie,
 /// or query string — and constant-time-compare against the launched
 /// token. AC-V1.30.1-5: even when Bearer or cookie matches, if a
 /// `token=` query param is also present, return `OkViaQueryParam` so
 /// the caller redirects to the clean URL — leaving a stale `?token=`
 /// in the URL bar is the exact SEC-7 leakage path the redirect closes.
-fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> AuthOutcome {
+///
+/// PF-V1.30.1-6: `cookie_lookup_needle` is the pre-built `cqs_token_<port>=`
+/// string from [`AuthMiddlewareState`]. Passed in by reference so the
+/// happy path doesn't `format!()` per request.
+fn check_request(req: &Request, expected: &AuthToken, cookie_lookup_needle: &str) -> AuthOutcome {
     // Sniff for any `?token=…` first — if present, we want to redirect
     // even when another channel also matches. Validity of the query
     // value isn't required for the redirect; the redirect's only job
@@ -292,6 +321,13 @@ fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> Auth
         .is_some_and(|q| q.split('&').any(pair_key_is_token));
 
     // 1. Authorization: Bearer …
+    // OB-V1.30.1-5: track presence + match separately so the 401 path
+    // can attribute the failure to the specific channel the client used.
+    let bearer_attempted = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("Bearer "));
     let bearer_ok = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -303,16 +339,25 @@ fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> Auth
     // pairs separated by `; `. We don't bother with quoted values —
     // the server only ever sets this cookie itself and never quotes
     // it. Cookie name is per-port (#1135) so two cqs serve instances
-    // on the same host don't collide in the browser jar.
-    let cookie_ok = req
+    // on the same host don't collide in the browser jar. PF-V1.30.1-6:
+    // `cookie_lookup_needle` is pre-built (`cqs_token_<port>=`) so the
+    // scan never allocates.
+    let cookie_header_str = req
         .headers()
         .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.to_str().ok());
+    let cookie_attempted = cookie_header_str
         .map(|cookie_header| {
-            let needle = format!("{cookie_name}=");
+            cookie_header
+                .split(';')
+                .any(|pair| pair.trim().starts_with(cookie_lookup_needle))
+        })
+        .unwrap_or(false);
+    let cookie_ok = cookie_header_str
+        .map(|cookie_header| {
             cookie_header.split(';').any(|pair| {
                 pair.trim()
-                    .strip_prefix(&needle)
+                    .strip_prefix(cookie_lookup_needle)
                     .is_some_and(|value| ct_eq(value, expected.as_str()))
             })
         })
@@ -332,7 +377,23 @@ fn check_request(req: &Request, expected: &AuthToken, cookie_name: &str) -> Auth
     });
 
     if !(bearer_ok || cookie_ok || query_ok) {
-        return AuthOutcome::Unauthorized;
+        // OB-V1.30.1-5: pick the most-specific reason. Priority: if
+        // *any* channel was attempted, attribute to the strongest one
+        // first (Bearer > Cookie > Query) — operators chasing a
+        // misconfigured automation client see the channel they were
+        // pointing at. If no channel was attempted, fall through to
+        // MissingAll so the journal distinguishes "fresh tab without
+        // token" from "client sent stale credentials".
+        let reason = if bearer_attempted {
+            UnauthorizedReason::BearerMismatch
+        } else if cookie_attempted {
+            UnauthorizedReason::CookieMismatch
+        } else if query_has_token_param {
+            UnauthorizedReason::QueryParamMismatch
+        } else {
+            UnauthorizedReason::MissingAll
+        };
+        return AuthOutcome::Unauthorized(reason);
     }
 
     // AC-V1.30.1-5: presence of `?token=…` (any case-folded form) on a
@@ -355,17 +416,49 @@ enum AuthOutcome {
     /// 302-redirect to the same URL with the token stripped.
     OkViaQueryParam,
     /// No token matched. Reject with 401.
-    Unauthorized,
+    /// OB-V1.30.1-5: carries a reason classification so the rejection
+    /// warn can distinguish "no auth at all" from "stale credential" /
+    /// "wrong channel" without logging the material itself.
+    Unauthorized(UnauthorizedReason),
 }
 
 /// State plumbed into the auth middleware. Holds the per-launch
-/// [`AuthToken`] **and** the bind port so the cookie name can be
-/// scoped per-instance (#1135). Cloned cheaply on every request —
-/// `AuthToken` is `Arc<String>` and `u16` is plain stack data.
+/// [`AuthToken`] and the pre-built cookie strings. Cloned cheaply on
+/// every request — `AuthToken` is `Arc<String>` and the cookie strings
+/// are `Arc<str>`.
+///
+/// PF-V1.30.1-6 (subsumes RM-6, RM-7): pre-build the cookie name
+/// (`cqs_token_<port>`) and the lookup needle (`cqs_token_<port>=`)
+/// at construction time. The auth happy path on every request is
+/// then zero-allocation — both forms are borrowed out of the state.
+/// `cookie_port` was dropped from the struct because it's only needed
+/// at construction time; persisting it forced [`enforce_auth`] to
+/// re-derive the cookie name on every request.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthMiddlewareState {
     pub(crate) token: AuthToken,
-    pub(crate) cookie_port: u16,
+    /// Full cookie name, computed once: `cqs_token_<port>`.
+    pub(crate) cookie_name: Arc<str>,
+    /// Lookup needle, computed once: `cqs_token_<port>=`. Used by
+    /// [`check_request`] when scanning the `Cookie:` header for the
+    /// per-launch entry. Pre-formatted so the per-request hot path
+    /// doesn't allocate.
+    pub(crate) cookie_lookup_needle: Arc<str>,
+}
+
+impl AuthMiddlewareState {
+    /// Construct from a launched token + bind port. Builds the cookie
+    /// name and lookup needle once, so the per-request middleware path
+    /// is allocation-free.
+    pub(crate) fn new(token: AuthToken, cookie_port: u16) -> Self {
+        let cookie_name = cookie_name_for_port(cookie_port);
+        let cookie_lookup_needle = format!("{cookie_name}=");
+        Self {
+            token,
+            cookie_name: Arc::from(cookie_name.as_str()),
+            cookie_lookup_needle: Arc::from(cookie_lookup_needle.as_str()),
+        }
+    }
 }
 
 /// axum middleware: enforce per-launch token on every request.
@@ -381,8 +474,7 @@ pub(crate) async fn enforce_auth(
     req: Request,
     next: Next,
 ) -> Response<Body> {
-    let cookie_name = cookie_name_for_port(state.cookie_port);
-    match check_request(&req, &state.token, &cookie_name) {
+    match check_request(&req, &state.token, &state.cookie_lookup_needle) {
         AuthOutcome::Ok => next.run(req).await,
         AuthOutcome::OkViaQueryParam => {
             let clean_uri = strip_token_param(req.uri());
@@ -396,7 +488,8 @@ pub(crate) async fn enforce_auth(
             // from sticking, defeating the handoff. Cookie name is
             // per-port (#1135) so concurrent instances don't collide.
             let cookie = format!(
-                "{cookie_name}={}; Path=/; HttpOnly; SameSite=Strict",
+                "{}={}; Path=/; HttpOnly; SameSite=Strict",
+                state.cookie_name,
                 state.token.as_str()
             );
             // The token alphabet is enforced at construction time
@@ -413,15 +506,17 @@ pub(crate) async fn enforce_auth(
             resp.headers_mut().insert(header::SET_COOKIE, value);
             resp
         }
-        AuthOutcome::Unauthorized => {
+        AuthOutcome::Unauthorized(reason) => {
             // Body intentionally minimal: no debug data, no token-
             // length leak. Tracing emits method + path (NOT query
-            // string — that may carry `?token=` candidates) so
-            // operators get a journal trail for 401s without
-            // logging token material. (P1.21 / OB-V1.30-2.)
+            // string — that may carry `?token=` candidates) plus the
+            // low-cardinality `reason` (OB-V1.30.1-5) so operators get
+            // a journal trail for 401s without logging token material.
+            // (P1.21 / OB-V1.30-2.)
             tracing::warn!(
                 method = %req.method(),
                 path = %req.uri().path(),
+                reason = ?reason,
                 "serve: rejected unauthenticated request",
             );
             (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
@@ -665,9 +760,11 @@ mod tests {
             .uri("/api/graph?Token=secretvalue")
             .body(axum::body::Body::empty())
             .unwrap();
-        match check_request(&req, &token, &cookie_name_for_port(8080)) {
+        // PF-V1.30.1-6: tests pass the pre-built lookup needle directly.
+        let needle = format!("{}=", cookie_name_for_port(8080));
+        match check_request(&req, &token, &needle) {
             AuthOutcome::OkViaQueryParam => {}
-            AuthOutcome::Ok | AuthOutcome::Unauthorized => {
+            AuthOutcome::Ok | AuthOutcome::Unauthorized(_) => {
                 panic!(
                     "post-fix expectation: case-folded `Token=` matches and the redirect path fires"
                 );
@@ -686,7 +783,222 @@ mod tests {
             .header(header::COOKIE, format!("{cookie_name}={}", token.as_str()))
             .body(axum::body::Body::empty())
             .unwrap();
-        let outcome = check_request(&req, &token, cookie_name);
+        // PF-V1.30.1-6: `check_request` takes the pre-built lookup needle
+        // (`<cookie_name>=`) instead of `cookie_name` itself.
+        let needle = format!("{cookie_name}=");
+        let outcome = check_request(&req, &token, &needle);
         assert!(matches!(outcome, AuthOutcome::OkViaQueryParam));
+    }
+
+    // ===== TC-ADV-1.30.1: adversarial pins for `try_from_string` length,
+    // cookie/query interaction, duplicate-cookie handling, and Bearer
+    // grammar strictness. Each test pins CURRENT behavior — the
+    // `*_today` suffix marks tests that should invert when the audit
+    // finding is closed.
+
+    /// TC-ADV-1.30.1-1: `try_from_string` accepts a 10K-char alphabet input
+    /// today. No `MAX_TOKEN_LEN` cap exists. Pin so a future cap addition
+    /// trips the test (then invert to expect `Err`).
+    #[test]
+    fn try_from_string_accepts_long_alphabet_input_today() {
+        let long = "a".repeat(10_240);
+        assert!(
+            AuthToken::try_from_string(long).is_ok(),
+            "no MAX_TOKEN_LEN cap exists today; long alphabet inputs accepted"
+        );
+    }
+
+    /// TC-ADV-1.30.1-2: when a `?token=…` query param is present alongside
+    /// a valid cookie, AC-V1.30.1-5 forces the redirect path (cookie does
+    /// NOT win — the redirect's job is to scrub the URL bar). Pin current
+    /// behavior. The prompt name in the audit fixture asserted the OLD
+    /// "cookie wins" semantics; the actual landed fix is "any `?token=`
+    /// triggers redirect", so the test name reflects the real shape.
+    #[test]
+    fn auth_query_present_cookie_right_redirects_to_scrub_url_bar() {
+        // Right cookie value, garbage `?token=…` value: still redirects.
+        // The redirect is the only path that strips the URL-bar token.
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        let req = Request::builder()
+            .uri("/api/graph?token=wrong")
+            .header(header::COOKIE, format!("{cookie_name}={}", token.as_str()))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token, &needle) {
+            AuthOutcome::OkViaQueryParam => { /* expected: redirect path */ }
+            AuthOutcome::Ok => panic!(
+                "expected OkViaQueryParam (any `?token=` triggers redirect, AC-V1.30.1-5), \
+                 got Ok"
+            ),
+            AuthOutcome::Unauthorized(reason) => {
+                panic!("expected OkViaQueryParam, got Unauthorized({reason:?})")
+            }
+        }
+    }
+
+    /// TC-ADV-1.30.1-3: wrong cookie value + right query token → redirect
+    /// (cookie value mismatch is irrelevant — the query channel
+    /// authenticates and the redirect overwrites the cookie). Pins
+    /// current behavior; if a future fix routes wrong-cookie+right-query
+    /// to a 401 (e.g. fail-closed instead of fail-into-redirect), this
+    /// test inverts.
+    #[test]
+    fn auth_query_right_cookie_wrong_redirects_and_overwrites_cookie() {
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        let req = Request::builder()
+            .uri(format!("/api/graph?token={}", token.as_str()))
+            .header(header::COOKIE, format!("{cookie_name}=wrongvalue"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let outcome = check_request(&req, &token, &needle);
+        assert!(
+            matches!(outcome, AuthOutcome::OkViaQueryParam),
+            "right-query overrides wrong-cookie + redirects to scrub the URL bar"
+        );
+    }
+
+    /// TC-ADV-1.30.1-4: two cookies with the same name in one `Cookie:`
+    /// header. RFC 6265 says order is arbitrary; current code uses
+    /// `.any(...)`, so ANY matching pair authenticates regardless of
+    /// position. Pin actual behavior — the prompt's "first-wins"
+    /// framing was inverted.
+    #[test]
+    fn auth_two_cookies_with_same_name_any_match_authenticates() {
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        // Wrong-then-right ordering: `.any(...)` returns true on the
+        // second pair → request authenticates.
+        let req = Request::builder()
+            .uri("/api/graph")
+            .header(
+                header::COOKIE,
+                format!("{cookie_name}=wrong; {cookie_name}={}", token.as_str()),
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token, &needle) {
+            AuthOutcome::Ok => { /* any-match wins */ }
+            AuthOutcome::OkViaQueryParam => panic!(
+                "expected Ok — any matching duplicate cookie authenticates, got OkViaQueryParam"
+            ),
+            AuthOutcome::Unauthorized(reason) => {
+                panic!("expected Ok, got Unauthorized({reason:?})")
+            }
+        }
+        // Symmetric: right-then-wrong also authenticates (first pair wins).
+        let req = Request::builder()
+            .uri("/api/graph")
+            .header(
+                header::COOKIE,
+                format!("{cookie_name}={}; {cookie_name}=wrong", token.as_str()),
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(
+            matches!(check_request(&req, &token, &needle), AuthOutcome::Ok),
+            "right-then-wrong duplicate cookies still authenticate via the right one"
+        );
+    }
+
+    /// TC-ADV-1.30.1-5: lowercase `bearer` scheme returns 401 today.
+    /// RFC 6750 §2.1 says the scheme is case-insensitive; current code
+    /// is strict (`strip_prefix("Bearer ")`). Pin current 401 behavior;
+    /// invert when the grammar is relaxed.
+    #[test]
+    fn bearer_lowercase_scheme_returns_401_today() {
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        let req = Request::builder()
+            .uri("/api/graph")
+            .header(header::AUTHORIZATION, format!("bearer {}", token.as_str()))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token, &needle) {
+            AuthOutcome::Unauthorized(reason) => {
+                // OB-V1.30.1-5: lowercase scheme means `starts_with("Bearer ")`
+                // is false, so `bearer_attempted` is false too — falls
+                // through to MissingAll. Pin that.
+                assert_eq!(
+                    reason,
+                    UnauthorizedReason::MissingAll,
+                    "lowercase 'bearer ' fails the strict prefix check entirely; \
+                     pinning MissingAll today (when grammar is relaxed, this should \
+                     become BearerMismatch on a typo, or Bearer-success)",
+                );
+            }
+            AuthOutcome::Ok => panic!("expected Unauthorized today, got Ok"),
+            AuthOutcome::OkViaQueryParam => {
+                panic!("expected Unauthorized today, got OkViaQueryParam")
+            }
+        }
+    }
+
+    /// TC-ADV-1.30.1-6: `Authorization: Bearer  <token>` (double space)
+    /// returns 401 today. Strict separator check; the second space gets
+    /// included as the leading byte of the value, breaking ct_eq. Pin
+    /// current behavior so a future grammar relaxation has a clear
+    /// inversion target.
+    #[test]
+    fn bearer_double_space_returns_401_today() {
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        let req = Request::builder()
+            .uri("/api/graph")
+            .header(header::AUTHORIZATION, format!("Bearer  {}", token.as_str()))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token, &needle) {
+            AuthOutcome::Unauthorized(reason) => {
+                // `starts_with("Bearer ")` matches (one space prefix succeeds),
+                // so `bearer_attempted` IS true. The value starts with " "
+                // which mismatches → BearerMismatch.
+                assert_eq!(
+                    reason,
+                    UnauthorizedReason::BearerMismatch,
+                    "double-space 'Bearer  …' is bearer_attempted but value-mismatch",
+                );
+            }
+            AuthOutcome::Ok => panic!("expected Unauthorized today, got Ok"),
+            AuthOutcome::OkViaQueryParam => {
+                panic!("expected Unauthorized today, got OkViaQueryParam")
+            }
+        }
+    }
+
+    /// TC-ADV-1.30.1-7: `Authorization: Bearer<token>` (no separator)
+    /// returns 401 today. `starts_with("Bearer ")` requires the trailing
+    /// space; without it the prefix check fails and `bearer_attempted`
+    /// is false → MissingAll. Pin current behavior.
+    #[test]
+    fn bearer_no_separator_returns_401_today() {
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        let req = Request::builder()
+            .uri("/api/graph")
+            .header(header::AUTHORIZATION, format!("Bearer{}", token.as_str()))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token, &needle) {
+            AuthOutcome::Unauthorized(reason) => {
+                assert_eq!(
+                    reason,
+                    UnauthorizedReason::MissingAll,
+                    "no-separator 'Bearer<token>' fails starts_with(\"Bearer \"); \
+                     bearer_attempted is false → MissingAll today",
+                );
+            }
+            AuthOutcome::Ok => panic!("expected Unauthorized today, got Ok"),
+            AuthOutcome::OkViaQueryParam => {
+                panic!("expected Unauthorized today, got OkViaQueryParam")
+            }
+        }
     }
 }

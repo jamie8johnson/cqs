@@ -131,7 +131,14 @@ fn cmd_ref_add(
     let source = dunce::canonicalize(source)
         .map_err(|e| anyhow::anyhow!("Source path '{}' not found: {}", source.display(), e))?;
 
-    // Create reference directory with restrictive permissions
+    // Create reference directory with restrictive permissions.
+    // SEC-V1.30.1-9: walk every parent that `create_dir_all` may have
+    // freshly created and chmod each to 0o700. Without this, the
+    // `~/.local/share/cqs/refs/` chain inherits the user's umask
+    // (typically 0o022 → 0o755), so `~/.local/share/cqs/refs/` itself
+    // is world-readable and a co-located user can `ls` the names of
+    // every reference index. The leaf `ref_dir` was already chmod-ed;
+    // this extends the same guarantee one level up.
     let ref_dir = reference::ref_path(name)
         .ok_or_else(|| anyhow::anyhow!("Could not determine reference storage directory"))?;
     std::fs::create_dir_all(&ref_dir)
@@ -141,6 +148,20 @@ fn cmd_ref_add(
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(&ref_dir, std::fs::Permissions::from_mode(0o700)) {
             tracing::debug!(path = %ref_dir.display(), error = %e, "Failed to set file permissions");
+        }
+        // SEC-V1.30.1-9: also chmod `~/.local/share/cqs/refs/` so the
+        // index *names* (one per ref subdir) aren't readable by other
+        // users on a multi-user host.
+        if let Some(refs_root) = ref_dir.parent() {
+            if let Err(e) =
+                std::fs::set_permissions(refs_root, std::fs::Permissions::from_mode(0o700))
+            {
+                tracing::debug!(
+                    path = %refs_root.display(),
+                    error = %e,
+                    "Failed to chmod refs root to 0o700",
+                );
+            }
         }
     }
     let db_path = ref_dir.join(cqs::INDEX_DB_FILENAME);
@@ -185,6 +206,34 @@ fn cmd_ref_add(
     if let Some(count) = build_hnsw_index(&store, &ref_dir)? {
         if !cli.quiet && !json {
             println!("  HNSW: {} vectors", count);
+        }
+    }
+
+    // SEC-V1.30.1-10: chmod 0o600 on every file in `ref_dir` (DB, WAL,
+    // SHM, HNSW snapshot). Mirrors the `cqs export-model` pattern for
+    // `model.toml`. Without this, the per-user umask leaks the index
+    // contents to other users on a multi-user host. Best-effort —
+    // failures are logged at debug, not surfaced; the directory is
+    // already 0o700 from the parent block, so file-mode failures
+    // can't widen exposure beyond the per-user default.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for entry in std::fs::read_dir(&ref_dir).into_iter().flatten().flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    let path = entry.path();
+                    if let Err(e) =
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    {
+                        tracing::debug!(
+                            path = %path.display(),
+                            error = %e,
+                            "Failed to chmod reference file to 0o600",
+                        );
+                    }
+                }
+            }
         }
     }
 

@@ -1947,4 +1947,167 @@ mod tests {
         // DefaultHasher's variable-length unpadded output.
         assert_eq!(expected_hex.len(), 16, "BLAKE3 truncation must be 8 bytes");
     }
+
+    // ===== TC-ADV-1.30.1: daemon-side adversarial pins =====
+    //
+    // Each test pins CURRENT behavior so a future fix produces a clear
+    // inversion target. The two `daemon_status_handles_err_envelope_*`
+    // tests pin the somewhat-ugly "daemon error: daemon error" doubled
+    // string that today's fallback produces; future work should
+    // surface the raw envelope in the error message.
+
+    /// TC-ADV-1.30.1-8: `{"status":"err"}` with no `message` field. The
+    /// fallback path uses the literal `"daemon error"` string for the
+    /// missing message, then thiserror's `Display` prefixes with
+    /// `"daemon error: "` — yielding the awkward doubled
+    /// `"daemon error: daemon error"`. Pin so a future fix that
+    /// surfaces the raw envelope (or a less-confusing fallback) trips
+    /// this test.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn daemon_status_handles_err_envelope_with_no_message() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            // Err envelope with no `message` field at all.
+            writeln!(stream, r#"{{"status":"err"}}"#).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_status(&cqs_dir);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        match result {
+            Err(DaemonRpcError::DaemonError(msg)) => {
+                // CURRENT behavior: bare "daemon error" placeholder.
+                assert_eq!(
+                    msg, "daemon error",
+                    "today's fallback uses the literal placeholder; future fix should \
+                     surface the raw envelope or upgrade to a BadResponse variant",
+                );
+                // The full as_message() string today is the doubled form.
+                let rendered = DaemonRpcError::DaemonError(msg).as_message();
+                assert_eq!(
+                    rendered, "daemon error: daemon error",
+                    "today's wire-format string is the doubled fallback — \
+                     future fix should produce a less-confusing rendering",
+                );
+            }
+            other => panic!("expected DaemonError(\"daemon error\") today, got: {other:?}",),
+        }
+    }
+
+    /// TC-ADV-1.30.1-9: `{"status":"err","message": 42}` (non-string
+    /// message). `as_str()` returns None → falls back to the same
+    /// `"daemon error"` placeholder as the no-message case. Pin both
+    /// the variant and the fact that the integer payload is silently
+    /// dropped, so future work that surfaces the type mismatch
+    /// has a clear inversion target.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_socket_xdg)]
+    fn daemon_status_handles_err_envelope_with_non_string_message() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: see daemon_status_mock_round_trip.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            // Non-string message: integer 42.
+            writeln!(stream, r#"{{"status":"err","message":42}}"#).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_status(&cqs_dir);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        match result {
+            Err(DaemonRpcError::DaemonError(msg)) => {
+                // CURRENT behavior: silent fallback. The 42 is dropped.
+                assert_eq!(
+                    msg, "daemon error",
+                    "non-string message payload is silently dropped by `as_str()`; \
+                     future fix should surface the shape mismatch as a BadResponse",
+                );
+            }
+            other => panic!("expected DaemonError(\"daemon error\") today, got: {other:?}",),
+        }
+    }
+
+    /// TC-ADV-1.30.1-10: `unwrap_dispatch_payload` does NOT distinguish
+    /// envelope-with-`data:null`-and-error from a bare-payload null. The
+    /// current code only checks for the *presence* of a `data` key and
+    /// returns whatever it finds, so an envelope advertising
+    /// `{"data": null, "error": "internal"}` round-trips as
+    /// `Ok(Value::Null)` rather than surfacing the `error` field. Pin
+    /// today's behavior — future work that propagates `error` from the
+    /// envelope has a clear inversion target.
+    #[test]
+    fn unwrap_dispatch_payload_distinguishes_envelope_no_data_from_bare_form() {
+        let v = serde_json::json!({"data": null, "error": "internal", "version": 1});
+        let result = unwrap_dispatch_payload(&v, "TestType");
+        // CURRENT behavior: returns Ok(Null), silently dropping `error`.
+        // The future fix should surface `error` as `Err(_)` — when it
+        // lands, this assertion inverts to `assert!(result.is_err())`.
+        assert!(
+            result.is_ok(),
+            "today's helper passes through `data: null` even when an `error` field \
+             is present alongside; future fix should surface that as Err",
+        );
+        assert_eq!(
+            result.unwrap(),
+            serde_json::Value::Null,
+            "the data:null payload is returned verbatim; the error field is dropped",
+        );
+    }
 }

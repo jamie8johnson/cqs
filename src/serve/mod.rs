@@ -214,7 +214,10 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
     // and traced).
     match auth {
         AuthMode::Required { token, cookie_port } => {
-            let middleware_state = auth::AuthMiddlewareState { token, cookie_port };
+            // PF-V1.30.1-6: `new()` pre-builds the cookie name and lookup
+            // needle once so the per-request middleware path doesn't
+            // allocate.
+            let middleware_state = auth::AuthMiddlewareState::new(token, cookie_port);
             app = app.layer(from_fn_with_state(middleware_state, auth::enforce_auth));
         }
         AuthMode::Disabled(_ack) => {
