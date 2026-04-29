@@ -137,7 +137,7 @@ blake3 = "1"
 bytemuck = { version = "1", features = ["derive"] }
 ignore = "0.4"
 notify = { version = "8", features = ["serde"] }
-ctrlc = "3"
+ctrlc = { version = "3", features = ["termination"] }
 rayon = "1"
 crossbeam-channel = "0.5"
 chrono = "0.4"

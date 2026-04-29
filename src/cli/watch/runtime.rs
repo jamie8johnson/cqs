@@ -11,9 +11,15 @@ use std::sync::Arc;
 
 /// RM-V1.25-9: Set on SIGTERM so the watch loop drains and exits
 /// cleanly instead of being hard-killed mid-write when systemd
-/// sends `stop`. `ctrlc` without the `termination` feature only
-/// traps SIGINT, and we don't want to grow a dep just for this
-/// one unix-only hook.
+/// sends `stop`. The cross-platform `ctrlc::set_handler` (with the
+/// `termination` feature, since #1044 / DS-V1.30.2-D5) also raises
+/// SIGTERM into our `INTERRUPTED` flag — we keep this dedicated
+/// libc::signal path because the daemon socket accept loop polls
+/// `daemon_should_exit` (the OR of `SHUTDOWN_REQUESTED` and
+/// `INTERRUPTED`) and the SIGTERM handler must be async-signal-safe
+/// in the strict POSIX sense; the `ctrlc` path runs the closure on
+/// a separate thread, which the daemon-shutdown protocol can't rely
+/// on for ordering.
 #[cfg(unix)]
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
