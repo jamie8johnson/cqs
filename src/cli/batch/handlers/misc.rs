@@ -638,6 +638,17 @@ mod tests {
             obj.contains_key("snapshot_at"),
             "snapshot must carry `snapshot_at` timestamp"
         );
+        // RB-10: snapshot_at is `Option<i64>` — serializes to a JSON number
+        // on a healthy clock, JSON null on a clock-before-epoch system. CI
+        // and dev workstations pass the healthy-clock path, so pin
+        // `is_number()` to catch a regression that flips the wire shape.
+        assert!(
+            obj.get("snapshot_at")
+                .map(|v| v.is_number())
+                .unwrap_or(false),
+            "snapshot_at must be a JSON number on a healthy clock; got: {:?}",
+            obj.get("snapshot_at")
+        );
     }
 
     /// #1182 — Layer 1: `dispatch_reconcile` flips the shared

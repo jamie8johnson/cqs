@@ -95,18 +95,25 @@ pub struct WatchSnapshot {
     /// next reconciliation pass) — non-zero is always cause for
     /// attention.
     pub dropped_this_cycle: u64,
-    /// Seconds since the watch loop last observed *any* filesystem
-    /// event. Useful for telling whether the daemon is genuinely idle
-    /// vs. mid-burst.
-    pub idle_secs: u64,
+    /// Unix timestamp (UTC seconds) when the watch loop last observed
+    /// *any* filesystem event. Lets clients compute fresh idle on
+    /// demand (`now - last_event_unix_secs`) without retransacting
+    /// through the daemon — the previous `idle_secs` field was frozen
+    /// at snapshot-publish time and lied once read N seconds later
+    /// (API-V1.30.1-10).
+    pub last_event_unix_secs: i64,
     /// Unix timestamp (UTC seconds) of the last completed reindex —
     /// the mtime of `index.db` after the most recent write. `None`
     /// when the file is missing or unreadable.
     pub last_synced_at: Option<i64>,
     /// Unix timestamp (UTC seconds) when this snapshot was published.
     /// Lets clients tell how stale the *snapshot itself* is (stale
-    /// snapshot ⇒ daemon hasn't ticked recently). Always populated.
-    pub snapshot_at: i64,
+    /// snapshot ⇒ daemon hasn't ticked recently). `None` only on a
+    /// clock-before-epoch system error (RB-10) — formerly silently `0`,
+    /// which made every snapshot look "56 years stale" and tripped
+    /// downstream freshness gates. Operators see a once-per-process
+    /// warn from `now_unix_secs` when this happens.
+    pub snapshot_at: Option<i64>,
 }
 
 impl WatchSnapshot {
@@ -123,7 +130,7 @@ impl WatchSnapshot {
             delta_saturated: false,
             incremental_count: 0,
             dropped_this_cycle: 0,
-            idle_secs: 0,
+            last_event_unix_secs: 0,
             last_synced_at: None,
             snapshot_at: now_unix_secs(),
         }
@@ -214,6 +221,21 @@ impl WatchSnapshot {
             FreshnessState::Fresh
         };
 
+        // API-V1.30.1-10: anchor the last-event timestamp to wall-clock so
+        // consumers can compute fresh idle (`now - last_event_unix_secs`)
+        // on read. `WatchState.last_event` is an `Instant` (monotonic, no
+        // wall-clock conversion), so reconstruct the wall-clock value as
+        // "now minus elapsed". Saturating arithmetic handles the (in
+        // practice unreachable) clock-before-epoch case symmetrically with
+        // `now_unix_secs`.
+        let last_event_unix_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .map(|d| {
+                (d.as_secs() as i64).saturating_sub(input.last_event.elapsed().as_secs() as i64)
+            })
+            .unwrap_or(0);
+
         Self {
             state,
             modified_files: input.pending_files_count as u64,
@@ -222,18 +244,32 @@ impl WatchSnapshot {
             delta_saturated: input.delta_saturated,
             incremental_count: input.incremental_count as u64,
             dropped_this_cycle: input.dropped_this_cycle as u64,
-            idle_secs: input.last_event.elapsed().as_secs(),
+            last_event_unix_secs,
             last_synced_at: input.last_synced_at,
             snapshot_at: now_unix_secs(),
         }
     }
 }
 
-fn now_unix_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+fn now_unix_secs() -> Option<i64> {
+    use std::sync::OnceLock;
+    static WARNED_BAD_CLOCK: OnceLock<()> = OnceLock::new();
+
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(e) => {
+            // RB-10: surface the bad-clock condition once per process so
+            // journalctl operators can correlate stale snapshots with
+            // NTP-pre-sync boot.
+            WARNED_BAD_CLOCK.get_or_init(|| {
+                tracing::warn!(
+                    error = %e,
+                    "system clock is before UNIX_EPOCH — snapshot_at will be None until NTP sync; check `timedatectl` / `chronyc tracking`",
+                );
+            });
+            None
+        }
+    }
 }
 
 #[cfg(test)]
