@@ -1209,6 +1209,7 @@ mod tests {
             last_event_unix_secs: 1_734_120_488,
             last_synced_at: Some(1_734_120_000),
             snapshot_at: Some(1_734_120_500),
+            active_slot: None,
         };
         let inner_envelope = serde_json::json!({
             "data": serde_json::to_value(&snap).unwrap(),
@@ -1523,6 +1524,7 @@ mod tests {
             last_event_unix_secs: 1_734_120_470,
             last_synced_at: Some(1_734_120_000),
             snapshot_at: Some(1_734_120_500),
+            active_slot: None,
         };
         let inner_envelope = serde_json::json!({
             "data": serde_json::to_value(&snap).unwrap(),
@@ -1704,6 +1706,7 @@ mod tests {
                 last_event_unix_secs: 1_734_120_488,
                 last_synced_at: Some(1_734_120_000),
                 snapshot_at: Some(1_734_120_500),
+                active_slot: None,
             };
             let inner = serde_json::json!({
                 "data": serde_json::to_value(&snap).unwrap(),
@@ -1799,6 +1802,7 @@ mod tests {
                 last_event_unix_secs: 1_734_120_488,
                 last_synced_at: Some(1_734_120_000),
                 snapshot_at: Some(1_734_120_500),
+                active_slot: None,
             };
             let inner = serde_json::json!({
                 "data": serde_json::to_value(&snap).unwrap(),

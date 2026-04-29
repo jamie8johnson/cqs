@@ -104,6 +104,7 @@ fn test_watch_state() -> WatchState {
             .checked_sub(std::time::Duration::from_secs(60))
             .unwrap_or_else(std::time::Instant::now),
         cached_last_synced_at: None,
+        active_slot: cqs::slot::DEFAULT_SLOT.to_string(),
     }
 }
 
