@@ -216,8 +216,8 @@ Ceremony commands (eval, A/B comparisons, anything that must trust the index) ga
 ```bash
 cqs status --watch-fresh                 # one-shot text summary
 cqs status --watch-fresh --json          # full WatchSnapshot
-cqs status --watch-fresh --wait           # block until state == fresh (250 ms poll, capped at 600 s)
-cqs status --watch-fresh --wait --wait-secs 30  # custom budget
+cqs status --watch-fresh --wait                     # block until fresh (default 30 s budget, 250 ms poll, capped at 600 s)
+cqs status --watch-fresh --wait --wait-secs 600     # extend up to the 600 s cap
 ```
 
 `cqs eval` consumes the API automatically: `--require-fresh` is on by default, so a stale index can never silently produce a 5-25 pp R@K shift that looks like a real regression. Escape hatches for offline runs:
@@ -566,6 +566,8 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs serve [--bind ADDR]` - launch the read-only web UI (graph, hierarchy, cluster, chunk-detail). Per-launch auth token; banner prints the URL
 - `cqs refresh` - invalidate daemon caches and re-open the Store. Alias `cqs invalidate`. No-op when no daemon is running
 - `cqs doctor` - check model, index, hardware (execution provider, CAGRA availability)
+- `cqs hook install/uninstall/status/fire` - manage `.git/hooks/post-{checkout,merge,rewrite}` for watch-mode reconciliation. Idempotent; respects third-party hooks via marker check (#1182)
+- `cqs status --watch-fresh [--wait [--wait-secs N]]` - report watch-loop freshness; `--wait` blocks until `state == fresh` (default 30 s, capped at 600 s) (#1182)
 - `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
