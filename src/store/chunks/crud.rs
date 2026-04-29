@@ -687,6 +687,56 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Refresh the full reconcile fingerprint (`source_mtime`, `source_size`,
+    /// `source_content_hash`) on every chunk for `origin`.
+    ///
+    /// Issue #1219 / EX-V1.30.1-6: schema v23 added the `source_size` and
+    /// `source_content_hash` columns so Layer 2 reconciliation
+    /// (`run_daemon_reconcile`) can fall back to BLAKE3 when mtime/size alone
+    /// is unreliable (coarse-mtime FAT32/NTFS/HFS+/SMB; `git checkout` and
+    /// formatter passes that bump mtime without changing content). Both
+    /// production write paths (`cli/pipeline/upsert.rs` and
+    /// `cli/watch/reindex.rs`) call this helper after their chunk upsert so
+    /// the next reconcile pass sees a populated fingerprint.
+    ///
+    /// `None` fields stay NULL; callers that can't read disk pass a
+    /// fingerprint with all three set to `None` and get the legacy
+    /// mtime-only behavior. `read_disk` always populates mtime+size; only
+    /// the hash is conditional on policy.
+    ///
+    /// Returns the number of chunk rows updated for telemetry; `0` typically
+    /// means the origin path didn't match the canonicalized form stored in
+    /// the chunks table (Windows `\\` vs Unix `/` drift) — same diagnostic
+    /// shape as `touch_source_mtime`.
+    pub fn set_file_fingerprint(
+        &self,
+        origin: &Path,
+        fp: &crate::store::chunks::staleness::FileFingerprint,
+    ) -> Result<u32, StoreError> {
+        let _span =
+            tracing::debug_span!("set_file_fingerprint", origin = %origin.display()).entered();
+        let origin_str = crate::normalize_path(origin);
+        let size_i64: Option<i64> = fp.size.and_then(|s| i64::try_from(s).ok());
+        let hash_blob: Option<Vec<u8>> = fp.content_hash.map(|h| h.to_vec());
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            let result = sqlx::query(
+                "UPDATE chunks \
+                 SET source_mtime = ?1, source_size = ?2, source_content_hash = ?3 \
+                 WHERE origin = ?4",
+            )
+            .bind(fp.mtime)
+            .bind(size_i64)
+            .bind(hash_blob)
+            .bind(&origin_str)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(result.rows_affected() as u32)
+        })
+    }
+
     /// Atomically upsert chunks and their call graph in a single transaction.
     ///
     /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
@@ -1069,10 +1119,8 @@ mod tests {
         let indexed = store.indexed_file_origins().unwrap();
         let stored = indexed
             .get("src/a.rs")
-            .copied()
-            .flatten()
             .expect("origin must be present in indexed_file_origins");
-        assert_eq!(stored, 9_999_999_999);
+        assert_eq!(stored.mtime, Some(9_999_999_999));
     }
 
     /// Origin that doesn't exist in the index → zero rows affected, no error.
@@ -1086,6 +1134,87 @@ mod tests {
             .touch_source_mtime(&PathBuf::from("src/never_indexed.rs"), 12345)
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    /// #1219: `set_file_fingerprint` round-trips mtime+size+hash so the
+    /// next `indexed_file_origins()` read sees a fully-populated
+    /// `FileFingerprint`. Pre-test: rows have legacy NULLs because the
+    /// upsert path doesn't bind the v23 columns. Calling the helper
+    /// upgrades them in place.
+    #[test]
+    fn test_set_file_fingerprint_round_trips_all_three_fields() {
+        use crate::store::chunks::staleness::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk("alpha", "src/alpha.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        // Pre-state: legacy row (only mtime), v23 columns NULL.
+        let pre = store.indexed_file_origins().unwrap();
+        let pre_fp = pre
+            .get("src/alpha.rs")
+            .expect("origin must be present after upsert");
+        assert_eq!(pre_fp.mtime, Some(100));
+        assert_eq!(pre_fp.size, None);
+        assert_eq!(pre_fp.content_hash, None);
+
+        // Write a full fingerprint (mtime + size + 32-byte BLAKE3 hash).
+        let fp = FileFingerprint {
+            mtime: Some(9_999),
+            size: Some(123),
+            content_hash: Some(*blake3::hash(b"abc").as_bytes()),
+        };
+        let rows = store
+            .set_file_fingerprint(&PathBuf::from("src/alpha.rs"), &fp)
+            .unwrap();
+        assert!(
+            rows > 0,
+            "set_file_fingerprint must affect at least one row for an indexed origin"
+        );
+
+        // Post-state: all three fields populated.
+        let post = store.indexed_file_origins().unwrap();
+        let post_fp = post
+            .get("src/alpha.rs")
+            .expect("origin must still be present");
+        assert_eq!(post_fp.mtime, Some(9_999));
+        assert_eq!(post_fp.size, Some(123));
+        assert_eq!(post_fp.content_hash, fp.content_hash);
+    }
+
+    /// #1219: separator normalization mirrors `touch_source_mtime`. A
+    /// Windows-style backslash origin must round-trip through
+    /// `normalize_path` so the UPDATE matches the slash-form indexer key.
+    /// Without this the v23 fingerprint columns silently stay NULL on
+    /// Windows tools that emit `\\` separators.
+    #[test]
+    fn test_set_file_fingerprint_normalizes_separators() {
+        use crate::store::chunks::staleness::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk("beta", "src/b.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        let fp = FileFingerprint {
+            mtime: Some(5_000),
+            size: Some(11),
+            content_hash: Some(*blake3::hash(b"fn b() {}").as_bytes()),
+        };
+        let rows = store
+            .set_file_fingerprint(&PathBuf::from(r"src\b.rs"), &fp)
+            .unwrap();
+        assert_eq!(
+            rows, 1,
+            "set_file_fingerprint must normalize backslashes so the UPDATE matches the indexed origin"
+        );
+        let map = store.indexed_file_origins().unwrap();
+        let stored = map.get("src/b.rs").expect("origin still slash-form");
+        assert_eq!(stored.size, Some(11));
+        assert_eq!(stored.content_hash, fp.content_hash);
     }
 
     /// CRITICAL invariant: the helper must call `crate::normalize_path()` on

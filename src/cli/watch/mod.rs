@@ -1369,22 +1369,56 @@ pub fn cmd_watch(
                         && last_reconcile.elapsed()
                             >= Duration::from_secs(super::limits::daemon_reconcile_interval_secs())
                     {
-                        let queued = run_daemon_reconcile(
-                            &store,
-                            &root,
-                            &parser,
-                            no_ignore,
-                            &mut state.pending_files,
-                            max_pending_files(),
-                        );
-                        if queued > 0 {
-                            // Reset `last_event` so `process_file_changes`
-                            // observes the synthetic pending entries on
-                            // the very next debounce tick (otherwise the
-                            // idle threshold would still hold).
-                            state.last_event = std::time::Instant::now();
+                        // #1231: detect a `cqs index --force` rotation that
+                        // happened between idle ticks — the inotify branch
+                        // at line 1191 only fires on actual filesystem
+                        // events, and a long quiet period followed by a
+                        // forced reindex would land us here with `store`
+                        // pointing at the orphaned inode. Reopen on
+                        // mismatch and skip this tick; the next interval
+                        // will reconcile against the fresh DB.
+                        let current_id = db_file_identity(&index_path);
+                        if current_id != db_id {
+                            info!(
+                                "index.db replaced before reconcile tick — reopening store and \
+                                 skipping this pass; next interval will fire against fresh DB"
+                            );
+                            drop(store);
+                            store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+                                .with_context(|| {
+                                format!(
+                                    "Failed to re-open store at {} after DB replacement",
+                                    index_path.display()
+                                )
+                            })?;
+                            db_id = current_id;
+                            state.hnsw_index = None;
+                            state.incremental_count = 0;
+                            if state.pending_rebuild.take().is_some() {
+                                tracing::info!(
+                                    "discarded in-flight HNSW rebuild after DB replacement \
+                                     observed at reconcile tick"
+                                );
+                            }
+                            last_reconcile = std::time::Instant::now();
+                        } else {
+                            let queued = run_daemon_reconcile(
+                                &store,
+                                &root,
+                                &parser,
+                                no_ignore,
+                                &mut state.pending_files,
+                                max_pending_files(),
+                            );
+                            if queued > 0 {
+                                // Reset `last_event` so `process_file_changes`
+                                // observes the synthetic pending entries on
+                                // the very next debounce tick (otherwise the
+                                // idle threshold would still hold).
+                                state.last_event = std::time::Instant::now();
+                            }
+                            last_reconcile = std::time::Instant::now();
                         }
-                        last_reconcile = std::time::Instant::now();
                     }
                 }
 

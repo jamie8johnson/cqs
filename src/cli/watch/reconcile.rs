@@ -46,7 +46,23 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use cqs::parser::Parser as CqParser;
-use cqs::store::Store;
+use cqs::store::{FileFingerprint, FingerprintPolicy, Store};
+
+/// Normalize a relative path to forward slashes before insertion into the
+/// `pending_files` queue (#1245). The chunks table stores origins via
+/// `crate::normalize_path` (slash-only), and the inotify path emits
+/// `PathBuf` with whatever separators the OS produces — Windows file
+/// events come back with `\\`. Without this normalization a single file
+/// edited from a Windows tool then walked by reconcile is double-queued
+/// under two separators, and the `process_file_changes` drain reindexes
+/// the same chunk twice in a single tick. On Linux/WSL/macOS the path is
+/// already clean.
+pub(super) fn normalize_pending_path(p: &Path) -> PathBuf {
+    match p.to_str() {
+        Some(s) if s.contains('\\') => PathBuf::from(s.replace('\\', "/")),
+        _ => p.to_path_buf(),
+    }
+}
 
 /// Walk the project tree and queue any files that diverge from the
 /// indexed state into `pending_files`. Returns the count of files queued
@@ -144,61 +160,51 @@ pub(super) fn run_daemon_reconcile(
         match indexed.get(origin.as_ref()) {
             None => {
                 // ADDED: no chunks for this file in the index. Queue.
-                if pending_files.insert(rel.clone()) {
+                // PF-V1.30.1-9 / #1245: keep the queue keyed by the same
+                // slash-normalized form the chunks table uses, so a
+                // Windows-side reconcile and a WSL-side watcher don't
+                // double-queue the same file under both separators.
+                let normalized = normalize_pending_path(&rel);
+                if pending_files.insert(normalized) {
                     added += 1;
                     queued += 1;
                 }
             }
-            Some(stored_mtime) => {
+            Some(stored_fp) => {
                 // MODIFIED: same path indexed, but disk content may have
-                // diverged. `None` stored mtime → treat as stale (legacy
-                // schema).
+                // diverged. Use the v23 reconcile fingerprint (mtime+size
+                // fast path; BLAKE3 tiebreak on coarse-mtime FSes or
+                // content-identical-mtime-bumped flips). #1219.
                 let lookup_path: PathBuf = if rel.is_absolute() {
                     rel.clone()
                 } else {
                     root.join(&rel)
                 };
-                let disk_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
-                    Ok(t) => t
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()
-                        .map(cqs::duration_to_mtime_millis),
-                    Err(e) => {
-                        // EH-V1.30.1-7 / TC-ADV-1.30.1-6: surface stat
-                        // failures so an operator can distinguish
-                        // permission-denied or transient-AV-scan files
-                        // from genuinely-missing ones. Debug level keeps
-                        // the journal clean for the common WSL 9P case
-                        // but stays searchable via `journalctl
-                        // --priority=debug`. We still leave the file to
-                        // GC (`(Some(_), None) => false` below) — a
-                        // file we can't stat shouldn't trigger a reindex
-                        // burst.
+                let needs_reindex = match FileFingerprint::read_disk(
+                    &lookup_path,
+                    stored_fp,
+                    FingerprintPolicy::MtimeOrHash,
+                ) {
+                    // EH-V1.30.1-7 / TC-ADV-1.30.1-6: stat failures
+                    // (permission flip, transient AV scan, deleted-since-
+                    // walk) leave the file to the GC pass — we don't want
+                    // to trigger a reindex burst on a file we can't even
+                    // read.
+                    None => {
                         tracing::debug!(
                             path = %lookup_path.display(),
-                            error = %e,
-                            "Reconcile: stat failed, leaving file to GC"
+                            "Reconcile: read_disk returned None, leaving file to GC"
                         );
-                        None
+                        false
                     }
+                    Some(disk_fp) => !stored_fp.matches(&disk_fp, FingerprintPolicy::MtimeOrHash),
                 };
-                // AC-V1.30.1-1: use `!=` not `>` because `git checkout`
-                // restores commit-time mtimes, which can be *older* than
-                // the indexed `source_mtime`. The inotify path's
-                // `mtime <= last` mtime-equality skip is correct for
-                // single-file edits (where mtime always advances), but
-                // reconcile exists *specifically* for bulk git ops where
-                // mtime is non-monotonic. Any disk/stored mismatch is
-                // a queue trigger; the reindex itself is content-hashed
-                // so a no-op rewrite costs only the parse + cache-hit.
-                let needs_reindex = match (stored_mtime, disk_mtime) {
-                    (Some(stored), Some(disk)) => disk != *stored,
-                    (None, _) => true,        // legacy/null stored mtime
-                    (Some(_), None) => false, // can't read disk mtime → leave to GC
-                };
-                if needs_reindex && pending_files.insert(rel.clone()) {
-                    modified += 1;
-                    queued += 1;
+                if needs_reindex {
+                    let normalized = normalize_pending_path(&rel);
+                    if pending_files.insert(normalized) {
+                        modified += 1;
+                        queued += 1;
+                    }
                 }
             }
         }
@@ -687,5 +693,313 @@ mod tests {
 
         assert_eq!(queued, 1, "older-mtime divergent file must be queued");
         assert!(pending.contains(&PathBuf::from(rel)));
+    }
+
+    /// #1219: BLAKE3 tiebreak avoids unnecessary re-embed when mtime
+    /// bumped but content is identical — `git checkout`, formatter
+    /// passes, and `touch` all push mtime forward without changing
+    /// bytes. Pre-v23 reconcile saw `disk_mtime != stored_mtime` and
+    /// re-queued every chunk in the file (3-5k chunks per branch flip).
+    /// The v23 fingerprint reads `source_size` and `source_content_hash`
+    /// and the MtimeOrHash policy falls through to BLAKE3 when
+    /// mtime/size disagrees; matching hashes keep the file out of the
+    /// queue.
+    ///
+    /// This is the load-bearing optimization case: the test pins that a
+    /// formatter-pass-style mtime bump on otherwise-identical content
+    /// does NOT requeue the file once v23 fingerprints are stamped.
+    #[test]
+    fn run_daemon_reconcile_blake3_skips_mtime_only_bump_with_identical_content() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::FileFingerprint;
+        use std::time::{Duration, SystemTime};
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        let rel = "src/touched.rs";
+        let abs = dir.path().join(rel);
+        let bytes = b"fn touched() {}";
+        fs::write(&abs, bytes).unwrap();
+
+        // Seed the index with a stored mtime *behind* the disk: simulates
+        // an indexed-then-`git-checkout` flip that bumps mtime without
+        // changing content. Then bump disk mtime forward by setting it
+        // explicitly (so we know exactly what reconcile will read).
+        let stored_mtime_ms = cqs::duration_to_mtime_millis(
+            (SystemTime::now() - Duration::from_secs(60))
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let chunk_content = "fn touched() {}".to_string();
+        let hash_str = blake3::hash(chunk_content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash_str[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "touched".to_string(),
+            signature: "fn touched()".to_string(),
+            content: chunk_content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash_str,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(
+                &[(chunk, placeholder_embedding(0.0))],
+                Some(stored_mtime_ms),
+            )
+            .expect("seed chunk at older stored mtime");
+        // Stamp v23 fingerprint with the same content the file currently
+        // holds — the mtime is older, but size + hash match disk.
+        let content_hash_bytes = *blake3::hash(bytes).as_bytes();
+        let stored_fp = FileFingerprint {
+            mtime: Some(stored_mtime_ms),
+            size: Some(bytes.len() as u64),
+            content_hash: Some(content_hash_bytes),
+        };
+        store
+            .set_file_fingerprint(&PathBuf::from(rel), &stored_fp)
+            .expect("stamp v23 fingerprint");
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+        assert_eq!(
+            queued, 0,
+            "mtime-only bump with identical content must not requeue under v23 fingerprint"
+        );
+        assert!(pending.is_empty());
+    }
+
+    /// #1219: BLAKE3 tiebreak catches genuine divergence when mtime
+    /// disagrees AND content differs. Mirror of the mtime-only-bump
+    /// optimization above: same mtime+size match short-circuit avoidance,
+    /// but disk content actually differs from stored hash → must queue.
+    #[test]
+    fn run_daemon_reconcile_blake3_queues_when_hash_diverges() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::FileFingerprint;
+        use std::time::{Duration, SystemTime};
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // Disk holds the new content. Stored hash is for OLD content
+        // (different bytes), and stored mtime is older than disk — the
+        // mtime mismatch already triggers the divergence check; the hash
+        // tiebreak confirms we should still queue.
+        let rel = "src/changed.rs";
+        let abs = dir.path().join(rel);
+        let new_bytes = b"fn after_change() {}";
+        fs::write(&abs, new_bytes).unwrap();
+        let stored_mtime_ms = cqs::duration_to_mtime_millis(
+            (SystemTime::now() - Duration::from_secs(60))
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let old_bytes: &[u8] = b"fn before_change() {}"; // different bytes, different size
+        let chunk_content = "fn after_change() {}".to_string();
+        let hash_str = blake3::hash(chunk_content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash_str[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "after_change".to_string(),
+            signature: "fn after_change()".to_string(),
+            content: chunk_content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash_str,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(
+                &[(chunk, placeholder_embedding(0.0))],
+                Some(stored_mtime_ms),
+            )
+            .expect("seed chunk at older stored mtime");
+        let stored_fp = FileFingerprint {
+            mtime: Some(stored_mtime_ms),
+            size: Some(old_bytes.len() as u64),
+            content_hash: Some(*blake3::hash(old_bytes).as_bytes()),
+        };
+        store
+            .set_file_fingerprint(&PathBuf::from(rel), &stored_fp)
+            .expect("stamp v23 fingerprint");
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+        assert_eq!(
+            queued, 1,
+            "real divergence must queue (got queued={queued})"
+        );
+        assert!(pending.contains(&PathBuf::from(rel)));
+    }
+
+    /// #1219: identical mtime+size+hash → reconcile must keep the file
+    /// out of the queue. The fast-path short-circuit (mtime+size both
+    /// match → unchanged, no hash read needed) is the steady-state
+    /// optimization that keeps reconcile near-free on quiet repos.
+    #[test]
+    fn run_daemon_reconcile_blake3_match_skips_unchanged() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::FileFingerprint;
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        let rel = "src/quiet.rs";
+        let abs = dir.path().join(rel);
+        let bytes = b"fn quiet() {}";
+        fs::write(&abs, bytes).unwrap();
+        let disk_mtime_ms = cqs::duration_to_mtime_millis(
+            abs.metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+
+        let chunk_content = "fn quiet() {}".to_string();
+        let hash_str = blake3::hash(chunk_content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash_str[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "quiet".to_string(),
+            signature: "fn quiet()".to_string(),
+            content: chunk_content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash_str,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(&[(chunk, placeholder_embedding(0.0))], Some(disk_mtime_ms))
+            .expect("seed chunk");
+        let stored_fp = FileFingerprint {
+            mtime: Some(disk_mtime_ms),
+            size: Some(bytes.len() as u64),
+            content_hash: Some(*blake3::hash(bytes).as_bytes()),
+        };
+        store
+            .set_file_fingerprint(&PathBuf::from(rel), &stored_fp)
+            .expect("stamp v23 fingerprint");
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+        assert_eq!(
+            queued, 0,
+            "matching v23 fingerprint must keep the file out of the queue"
+        );
+        assert!(pending.is_empty());
+    }
+
+    /// #1245: separator dedup. Pre-seeding the queue with a backslash
+    /// path (simulating a Windows event source) must NOT cause reconcile
+    /// to insert the slash-form sibling as a separate entry on the same
+    /// pass. The chunks table stores origins via `normalize_path`
+    /// (slash-only), so reconcile must key its queue insertions on the
+    /// same form.
+    #[test]
+    fn run_daemon_reconcile_dedups_against_backslash_pending_entry() {
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("dup.rs"), b"fn dup() {}").unwrap();
+
+        let store = open_store(&cqs_dir);
+        let mut pending = HashSet::new();
+        // Pre-seed with the slash form already normalized — what a Windows
+        // event source would push after #1245's events.rs change.
+        pending.insert(PathBuf::from("src/dup.rs"));
+
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+        assert_eq!(
+            queued, 0,
+            "reconcile must dedup against the existing slash-form entry"
+        );
+        assert_eq!(pending.len(), 1, "queue must contain exactly one entry");
+    }
+
+    /// #1245: `normalize_pending_path` directly — backslashes get rewritten,
+    /// already-clean paths pass through. Pin the path-mangling rules so a
+    /// future tweak doesn't silently change behavior.
+    #[test]
+    fn normalize_pending_path_rewrites_backslashes() {
+        assert_eq!(
+            normalize_pending_path(Path::new(r"src\foo.rs")),
+            PathBuf::from("src/foo.rs"),
+        );
+        assert_eq!(
+            normalize_pending_path(Path::new("src/foo.rs")),
+            PathBuf::from("src/foo.rs"),
+        );
+        assert_eq!(
+            normalize_pending_path(Path::new(r"a\b\c\d.rs")),
+            PathBuf::from("a/b/c/d.rs"),
+        );
     }
 }

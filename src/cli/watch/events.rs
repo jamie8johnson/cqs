@@ -106,7 +106,13 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
                 }
             }
             if state.pending_files.len() < max_pending_files() {
-                state.pending_files.insert(rel.to_path_buf());
+                // PF-V1.30.1-9 / #1245: keep the queue keyed on
+                // slash-normalized paths so a Windows-side edit and a
+                // reconcile-side walk can't double-queue the same file
+                // under two separators.
+                state
+                    .pending_files
+                    .insert(super::reconcile::normalize_pending_path(rel));
             } else {
                 // RM-V1.25-23: log per-event at debug (spammy on bulk
                 // drops) and accumulate a counter; the once-per-cycle

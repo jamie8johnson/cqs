@@ -56,6 +56,15 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
+/// - v23: source_size INTEGER + source_content_hash BLOB columns on chunks for
+///   the reconcile fingerprint (issue #1219 / EX-V1.30.1-6). Layer 2 periodic
+///   reconciliation previously diverged on `disk_mtime != stored_mtime` only,
+///   which (a) misses content-identical-but-mtime-bumped files (`git checkout`,
+///   formatter passes) — every flip re-embeds ~3-5k chunks unnecessarily — and
+///   (b) misses coarse-mtime collisions on FAT32/NTFS/HFS+/SMB where two saves
+///   inside one second produce identical mtimes. Both columns are nullable so
+///   pre-v23 rows stay valid until first re-embed populates them; the
+///   `MtimeOrHash` policy uses hash as a tiebreaker on mtime equality.
 /// - v22: umap_x / umap_y REAL columns on chunks for the `cqs serve` cluster
 ///   view (step 3 of `docs/plans/2026-04-22-cqs-serve-3d-progressive.md`).
 ///   Both nullable — the columns stay NULL until `cqs index --umap` runs and
@@ -89,7 +98,7 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 22;
+pub const CURRENT_SCHEMA_VERSION: i32 = 23;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

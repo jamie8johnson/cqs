@@ -585,6 +585,44 @@ pub(super) fn reindex_files(
             Some(file.as_path()),
             &live_ids,
         )?;
+
+        // #1219: populate the v23 reconcile fingerprint columns
+        // (`source_size`, `source_content_hash`) so the next
+        // `run_daemon_reconcile` pass can fall back to BLAKE3 when
+        // mtime/size alone is unreliable (coarse-mtime FAT32/NTFS/HFS+/SMB
+        // mounts; `git checkout` and formatter passes that bump mtime
+        // without changing content). Compute size+hash on the same file
+        // bytes we just parsed; the fingerprint UPDATE rides outside the
+        // upsert transaction (best-effort), so a stat or read failure
+        // here only forfeits the BLAKE3 tiebreak — the next save fires
+        // the same path.
+        let abs_path = root.join(file);
+        let fp = match std::fs::read(&abs_path) {
+            Ok(bytes) => cqs::store::FileFingerprint {
+                mtime,
+                size: u64::try_from(bytes.len()).ok(),
+                content_hash: Some(*blake3::hash(&bytes).as_bytes()),
+            },
+            Err(e) => {
+                tracing::debug!(
+                    path = %abs_path.display(),
+                    error = %e,
+                    "Reindex: read failed, leaving fingerprint partial (mtime only)"
+                );
+                cqs::store::FileFingerprint {
+                    mtime,
+                    size: None,
+                    content_hash: None,
+                }
+            }
+        };
+        if let Err(e) = store.set_file_fingerprint(file, &fp) {
+            tracing::warn!(
+                path = %file.display(),
+                error = %e,
+                "Reindex: failed to set v23 fingerprint columns; reconcile will use mtime fallback"
+            );
+        }
     }
 
     // Upsert type edges from the earlier parse_file_all() results.

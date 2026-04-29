@@ -11,7 +11,7 @@ mod async_helpers;
 mod crud;
 mod embeddings;
 mod query;
-mod staleness;
+pub mod staleness;
 
 pub use staleness::PruneAllResult;
 
