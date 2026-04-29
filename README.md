@@ -711,7 +711,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 
 - **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
-- **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
+- **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_SPARSE_CHUNKS_PER_TX`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
 - **Daemon, watch, batch** — `CQS_NO_DAEMON`, `CQS_DAEMON_*`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_BATCH_*IDLE_MINUTES`, `CQS_REFS_LRU_SIZE`, `CQS_WATCH_*`, `CQS_CHAT_HISTORY`
 - **Graph & impact** — `CQS_CALL_GRAPH_MAX_EDGES`, `CQS_TYPE_GRAPH_MAX_EDGES`, `CQS_GATHER_MAX_NODES`, `CQS_IMPACT_MAX_*`, `CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`
 - **SQLite storage** — `CQS_BUSY_TIMEOUT_MS`, `CQS_IDLE_TIMEOUT_SECS`, `CQS_MAX_CONNECTIONS`, `CQS_MMAP_SIZE`, `CQS_SQLITE_CACHE_SIZE`, `CQS_CACHE_MAX_SIZE`, `CQS_INTEGRITY_CHECK`, `CQS_SKIP_INTEGRITY_CHECK`, `CQS_MIGRATE_REQUIRE_BACKUP`
@@ -851,6 +851,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_CACHE_MAX_BYTES` | (unset) | Soft cap; emits `tracing::warn!` when the embeddings cache DB exceeds this many bytes. Does NOT auto-prune — use `cqs cache prune` / `cqs cache compact`. |
 | `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
 | `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
+| `CQS_SPARSE_CHUNKS_PER_TX` | `50` | Chunks per sub-transaction during `upsert_sparse_vectors`. Each sub-tx commits independently and bumps `splade_generation`, so a long-running incremental SPLADE upsert never holds `WRITE_LOCK` long enough to starve queries. Lower = more frequent commits / less lock pressure / more I/O; raise on fast NVMe to amortize commit overhead. |
 | `CQS_SPLADE_ALPHA` | (per-category default) | Global SPLADE fusion alpha override (0.0 = pure sparse, 1.0 = pure dense) |
 | `CQS_SPLADE_ALPHA_{CATEGORY}` | (per-category default) | Per-category SPLADE alpha override (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL`); takes precedence over `CQS_SPLADE_ALPHA` |
 | `CQS_SPLADE_BATCH` | `32` | Initial chunk batch size for SPLADE encoding during indexing |
