@@ -228,6 +228,8 @@ When the user passes a path on the command line, cqs canonicalizes it (`dunce::c
 | `cqs read link` where `link → /etc/passwd` | Blocked (target outside project) |
 | `cqs read link` where `link → ../sibling/file` | Blocked (target outside project) |
 
+**`cqs ref add --source <path>` redirect surfacing (since v1.30.2, [#1222](https://github.com/jamie8johnson/cqs/issues/1222))**: when the user-supplied `--source` path resolves through a symlink to a different filesystem location, `cmd_ref_add` emits a `tracing::warn!` (and a `WARN:` line on stderr in non-`--quiet` text mode) naming both the user-supplied and resolved paths. JSON output gains a `warnings: ["source path '<input>' resolved via symlink to '<target>'"]` field. The reference is still indexed at the resolved path — the warning exists so an operator who ran `cqs ref add foo vendored-monorepo-pull/` against a symlink to `~/work/customer-A-private/` can see what they actually pulled in. Lexical normalization (`..`, `.`, repeated separators) is applied before comparison so purely syntactic differences in the input don't trigger false positives.
+
 **TOCTOU consideration**: A symlink could theoretically be changed between canonicalization and read. This is a standard filesystem race condition that affects all programs. Mitigation would require `O_NOFOLLOW` or similar, which would break legitimate symlink use cases on `cqs read`.
 
 **Recommendation**: If you don't trust symlinks in your project, remove them. The directory-walk path is already conservative.

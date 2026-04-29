@@ -128,8 +128,45 @@ fn cmd_ref_add(
     }
 
     // Validate source
+    let source_input = source.to_path_buf();
     let source = dunce::canonicalize(source)
         .map_err(|e| anyhow::anyhow!("Source path '{}' not found: {}", source.display(), e))?;
+
+    // SEC-V1.30.1-6 (#1222): if `dunce::canonicalize` redirected the
+    // user-supplied path through a symlink, surface it. The submitted
+    // index will live at the *resolved* path; an operator who
+    // symlinks `vendored-monorepo-pull/` → `~/work/customer-A-private/`
+    // and runs `cqs ref add foo vendored-monorepo-pull/` deserves a
+    // loud notice that they just indexed customer-A-private content.
+    //
+    // Comparison strategy: lexically normalize the absolute form of
+    // the user input (resolve `..`, `.`, repeated separators without
+    // touching the filesystem) and compare to the canonical path. A
+    // mismatch means a symlink was followed somewhere in the chain.
+    // Lexical normalization is intentionally cheap and conservative
+    // — false positives are acceptable (the warning is informational)
+    // but false negatives (silent symlink redirect) are not.
+    let symlink_warning = match symlink_redirect_warning(&source_input, &source) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::debug!(
+                source = %source_input.display(),
+                error = %e,
+                "Could not compute absolute form of --source; skipping symlink-redirect check"
+            );
+            None
+        }
+    };
+    if let Some(ref msg) = symlink_warning {
+        tracing::warn!(
+            user_source = %source_input.display(),
+            resolved = %source.display(),
+            "Source path resolved via symlink"
+        );
+        if !json && !cli.quiet {
+            eprintln!("WARN: {msg}");
+        }
+    }
 
     // Create reference directory with restrictive permissions.
     // SEC-V1.30.1-9: walk every parent that `create_dir_all` may have
@@ -248,15 +285,72 @@ fn cmd_ref_add(
     add_reference_to_config(&config_path, &ref_config)?;
 
     if json {
-        crate::cli::json_envelope::emit_json(&serde_json::json!({
+        let mut payload = serde_json::json!({
             "status": "added",
             "name": name,
             "weight": weight,
-        }))?;
+        });
+        if let Some(msg) = symlink_warning {
+            payload
+                .as_object_mut()
+                .expect("payload is an object literal above")
+                .insert("warnings".to_string(), serde_json::json!([msg]));
+        }
+        crate::cli::json_envelope::emit_json(&payload)?;
     } else if !cli.quiet {
         println!("Reference '{}' added.", name);
     }
     Ok(())
+}
+
+/// SEC-V1.30.1-6 (#1222): detect whether `dunce::canonicalize` redirected
+/// `source_input` through a symlink. Returns `Ok(Some(message))` on
+/// redirect, `Ok(None)` when the input lexically matches the canonical
+/// path, and `Err` only when the absolute form of `source_input` cannot
+/// be computed.
+///
+/// The lexical-normalize step resolves `..`, `.`, and duplicate
+/// separators without touching the filesystem so that user input like
+/// `/home/me/../me/projects/foo` doesn't trip a false positive. Symlink
+/// resolution still happens via `dunce::canonicalize` upstream — this
+/// helper only compares the result.
+fn symlink_redirect_warning(
+    source_input: &std::path::Path,
+    canonical: &std::path::Path,
+) -> std::io::Result<Option<String>> {
+    let absolute = std::path::absolute(source_input)?;
+    let normalized = lexical_normalize(&absolute);
+    if normalized == canonical {
+        Ok(None)
+    } else {
+        Ok(Some(format!(
+            "source path '{}' resolved via symlink to '{}'",
+            normalized.display(),
+            canonical.display()
+        )))
+    }
+}
+
+/// Lexically normalize a path by resolving `..` and `.` components
+/// without consulting the filesystem. Used by the symlink-redirect
+/// check so that purely-syntactic differences in the user's input
+/// (e.g. `./foo`, `bar/../foo`) do not look like symlink redirects.
+fn lexical_normalize(p: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for component in p.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                // Pop only if the result already has a non-root tail;
+                // popping at root keeps the path well-formed.
+                if !out.pop() {
+                    out.push(component);
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
@@ -590,5 +684,80 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("source").is_none());
         assert_eq!(json["chunks"], 0);
+    }
+
+    // SEC-V1.30.1-6 (#1222) — symlink-redirect detection.
+
+    #[test]
+    fn lexical_normalize_resolves_dot_and_dotdot() {
+        let cases = [
+            ("/a/b/./c", "/a/b/c"),
+            ("/a/b/../c", "/a/c"),
+            ("/a/./b/../c", "/a/c"),
+            ("/a/b/c/../..", "/a"),
+            ("/a", "/a"),
+            ("/", "/"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                lexical_normalize(std::path::Path::new(input)),
+                std::path::PathBuf::from(expected),
+                "lexical_normalize({input}) should be {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn symlink_redirect_warning_returns_none_for_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).expect("mkdir real");
+        let canonical = dunce::canonicalize(&real).expect("canonicalize real");
+
+        // User passed the real path; no redirect.
+        let warning = symlink_redirect_warning(&real, &canonical).expect("warn ok");
+        assert!(
+            warning.is_none(),
+            "no symlink → no warning, got {warning:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_redirect_warning_fires_on_symlinked_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).expect("mkdir real");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let canonical = dunce::canonicalize(&link).expect("canonicalize link");
+        let warning = symlink_redirect_warning(&link, &canonical).expect("warn ok");
+        let msg = warning.expect("symlink should produce a warning");
+        assert!(
+            msg.contains("symlink"),
+            "warning text should mention symlink: {msg}"
+        );
+        assert!(
+            msg.contains(real.to_str().unwrap()),
+            "warning should name the resolved target: {msg}"
+        );
+    }
+
+    #[test]
+    fn symlink_redirect_warning_ignores_purely_syntactic_dotdot() {
+        // User typed `<dir>/sub/../sub/` — lexically equivalent to
+        // `<dir>/sub`, no symlink involved. This must not warn.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("sub");
+        std::fs::create_dir(&real).expect("mkdir sub");
+        let weird_input = dir.path().join("sub").join("..").join("sub");
+        let canonical = dunce::canonicalize(&weird_input).expect("canonicalize");
+
+        let warning = symlink_redirect_warning(&weird_input, &canonical).expect("warn ok");
+        assert!(
+            warning.is_none(),
+            "purely syntactic `..` must not look like a symlink, got {warning:?}"
+        );
     }
 }

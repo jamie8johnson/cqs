@@ -111,10 +111,17 @@ impl LocalProvider {
             .ok()
             .filter(|s| !s.is_empty());
 
-        // P2.36: align production redirect policy with the doctor probe
-        // (`Policy::limited(2)`). Same-origin HTTP→HTTPS redirects on
-        // bind-localhost are benign; a strict `none()` here disagreed
-        // with what doctor reported reachable, surprising operators.
+        // SEC-V1.30.1-7 (#1223): same-origin redirect policy. Submit
+        // requests carry `Authorization: Bearer <key>` when
+        // CQS_LLM_API_KEY is set. The historical `Policy::limited(2)`
+        // followed redirects to *any* origin — a misconfigured load
+        // balancer that 302s `internal-llm/` → `attacker-host/v1/...`
+        // would surface as a silent 401 loop on the redirect target
+        // (because reqwest 0.12 strips Authorization cross-origin) but
+        // the strip is silent and depends on a default that could
+        // shift across versions. `same_origin_redirect_policy(2)`
+        // refuses cross-origin hops outright with a `tracing::warn!`,
+        // so the failure is loud and the bearer never travels.
         //
         // P3.48: cap idle pool to `concurrency` per-host with a 30s idle
         // timeout. The default reqwest pool is unbounded with a 90s idle
@@ -123,7 +130,7 @@ impl LocalProvider {
         // matching outbound traffic spike.
         let http = Client::builder()
             .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::limited(2))
+            .redirect(crate::llm::redirect::same_origin_redirect_policy(2))
             .pool_max_idle_per_host(concurrency)
             .pool_idle_timeout(Duration::from_secs(30))
             .build()?;

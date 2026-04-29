@@ -573,9 +573,15 @@ fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut 
     // timeout. We don't want doctor to hang if the user typo'd a URL.
     let base = api_base.unwrap();
     let probe_url = format!("{}/models", base.trim_end_matches('/'));
+    // SEC-V1.30.1-7 (#1223): same-origin policy matches the production
+    // submit path so doctor and the real `LocalProvider` agree on what
+    // counts as a "reachable" endpoint. The probe doesn't carry a
+    // bearer today, but pinning the same policy means a future probe
+    // that adds auth doesn't silently regain cross-origin redirect
+    // following.
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::limited(2))
+        .redirect(cqs::llm::redirect::same_origin_redirect_policy(2))
         .build()
     {
         Ok(c) => c,
