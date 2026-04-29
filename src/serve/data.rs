@@ -1102,27 +1102,28 @@ pub(crate) fn build_cluster(
 
 /// Pull richer stats than the `Store::base_embedding_count` shortcut.
 /// One query for total chunks + files + call edges + type edges.
+///
+/// PF-V1.30.1-5: collapsed from four sequential `fetch_one` round-trips
+/// into a single SELECT with subqueries. SQLite plans these as parallel
+/// COUNT scans and we save three pool round-trips per `/stats` request.
 pub(crate) fn build_stats(store: &Store<ReadOnly>) -> Result<StatsResponse, StoreError> {
     let _span = tracing::info_span!("build_stats").entered();
 
     store.rt.block_on(async {
-        let chunks_row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
-            .fetch_one(&store.pool)
-            .await?;
-        let files_row: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT origin) FROM chunks")
-            .fetch_one(&store.pool)
-            .await?;
-        let call_row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM function_calls")
-            .fetch_one(&store.pool)
-            .await?;
-        let type_row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM type_edges")
-            .fetch_one(&store.pool)
-            .await?;
+        let row: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+                (SELECT COUNT(*) FROM chunks), \
+                (SELECT COUNT(DISTINCT origin) FROM chunks), \
+                (SELECT COUNT(*) FROM function_calls), \
+                (SELECT COUNT(*) FROM type_edges)",
+        )
+        .fetch_one(&store.pool)
+        .await?;
         Ok(StatsResponse {
-            total_chunks: chunks_row.0.max(0) as u64,
-            total_files: files_row.0.max(0) as u64,
-            call_edges: call_row.0.max(0) as u64,
-            type_edges: type_row.0.max(0) as u64,
+            total_chunks: row.0.max(0) as u64,
+            total_files: row.1.max(0) as u64,
+            call_edges: row.2.max(0) as u64,
+            type_edges: row.3.max(0) as u64,
         })
     })
 }

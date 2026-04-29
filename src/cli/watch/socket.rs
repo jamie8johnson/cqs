@@ -10,7 +10,6 @@
 
 #![cfg(unix)]
 
-use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -88,15 +87,14 @@ pub(super) fn handle_socket_client(
         );
     }
 
-    // RM-V1.29-10 (#1116): per-thread scratch buffer for the request line.
-    // `handle_socket_client` runs on a Tokio blocking-pool thread that
-    // services many connections in succession. Allocating a fresh `String`
-    // (and its grow-during-`read_line` churn) per accept is ~80% of the
-    // allocator pressure on this path under high-QPS agent workloads. The
-    // 8 KiB initial capacity covers typical JSON requests in one allocation.
-    thread_local! {
-        static REQ_LINE: RefCell<String> = RefCell::new(String::with_capacity(8192));
-    }
+    // RM-1 (post-v1.30.1 audit): the original thread_local! REQ_LINE
+    // was a no-op. The accept loop in `daemon.rs:189-205` spawns a
+    // fresh `cqs-daemon-client` thread per connection, not a Tokio
+    // blocking-pool worker — so the thread_local never gets reused
+    // across calls and the "amortize the buffer" rationale was wrong.
+    // A plain stack-local `String::with_capacity(8192)` has the same
+    // single-allocation cost without the dead amortization story.
+    let mut line = String::with_capacity(8192);
 
     // Read request (max 1MB). Wrap reader in .take() so allocation is
     // bounded *before* we accept a giant line — the post-hoc size check
@@ -111,18 +109,15 @@ pub(super) fn handle_socket_client(
         IoError(String),
         JsonError(String),
     }
-    let parse_outcome = REQ_LINE.with_borrow_mut(|line| {
-        line.clear();
-        match std::io::BufRead::read_line(&mut reader, line) {
-            Ok(0) => ParseOutcome::Empty,
-            Ok(n) if n > 1_048_576 => ParseOutcome::TooLarge,
-            Err(e) => ParseOutcome::IoError(e.to_string()),
-            Ok(_) => match serde_json::from_str(line.trim()) {
-                Ok(v) => ParseOutcome::Ok(v),
-                Err(e) => ParseOutcome::JsonError(e.to_string()),
-            },
-        }
-    });
+    let parse_outcome = match std::io::BufRead::read_line(&mut reader, &mut line) {
+        Ok(0) => ParseOutcome::Empty,
+        Ok(n) if n > 1_048_576 => ParseOutcome::TooLarge,
+        Err(e) => ParseOutcome::IoError(e.to_string()),
+        Ok(_) => match serde_json::from_str(line.trim()) {
+            Ok(v) => ParseOutcome::Ok(v),
+            Err(e) => ParseOutcome::JsonError(e.to_string()),
+        },
+    };
     let request: serde_json::Value = match parse_outcome {
         ParseOutcome::Ok(v) => v,
         ParseOutcome::Empty => return,

@@ -87,6 +87,14 @@ pub fn atomic_replace(tmp_path: &Path, final_path: &Path) -> io::Result<()> {
     // Step 3: fsync the parent directory so the rename is durable. Best
     // effort — some filesystems do not support opening a directory for
     // fsync; we log at debug and continue.
+    //
+    // PB-V1.30.1-6: skip on Windows. NTFS journals the rename as part of
+    // its own metadata update, and `File::open(directory)` always fails
+    // on Windows (different file model — directories aren't opened the
+    // same way). The doc comment at the top of this fn already promises
+    // this is a no-op on Windows; this `cfg` makes that promise real
+    // instead of generating a debug log on every persisted file.
+    #[cfg(unix)]
     if let Some(parent) = final_path.parent() {
         match std::fs::File::open(parent) {
             Ok(dir) => {

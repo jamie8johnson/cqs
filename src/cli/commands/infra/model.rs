@@ -707,32 +707,95 @@ fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
     }
     #[cfg(target_os = "linux")]
     {
-        let status = std::process::Command::new("systemctl")
-            .args(["--user", "start", "cqs-watch"])
+        // PB-V1.30.1-10: probe whether the systemd user unit is loaded
+        // before invoking `systemctl --user start`. On distros without
+        // systemd-user (or on hosts where the user never ran the
+        // installer), the unit doesn't exist and `start` returns a
+        // confusing "Failed to start cqs-watch.service: Unit not found"
+        // error. Fall back to spawning `cqs watch --serve` directly,
+        // mirroring the macOS branch below.
+        let probe = std::process::Command::new("systemctl")
+            .args(["--user", "is-enabled", "cqs-watch"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
-        match status {
-            Ok(s) if s.success() => {
-                if !quiet {
-                    eprintln!("restarted cqs-watch daemon");
+        let unit_loaded = matches!(&probe, Ok(s) if s.success());
+        if unit_loaded {
+            let status = std::process::Command::new("systemctl")
+                .args(["--user", "start", "cqs-watch"])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    if !quiet {
+                        eprintln!("restarted cqs-watch daemon");
+                    }
+                }
+                Ok(s) => {
+                    tracing::warn!(code = ?s.code(), "systemctl --user start cqs-watch returned non-zero");
+                    if !quiet {
+                        eprintln!(
+                            "warning: failed to restart cqs-watch daemon (systemctl exited {:?}). \
+                             Run `systemctl --user start cqs-watch` manually.",
+                            s.code()
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to invoke systemctl on restart");
+                    if !quiet {
+                        eprintln!(
+                            "warning: failed to restart cqs-watch daemon ({e}). \
+                             Run `systemctl --user start cqs-watch` manually."
+                        );
+                    }
                 }
             }
-            Ok(s) => {
-                tracing::warn!(code = ?s.code(), "systemctl --user start cqs-watch returned non-zero");
-                if !quiet {
-                    eprintln!(
-                        "warning: failed to restart cqs-watch daemon (systemctl exited {:?}). \
-                         Run `systemctl --user start cqs-watch` manually.",
-                        s.code()
-                    );
+        } else {
+            // No systemd unit — spawn `cqs watch --serve` directly,
+            // mirroring the macOS branch. SEC-V1.25-7: resolve our own
+            // binary path so a malicious `cqs` earlier in PATH can't
+            // hijack the restart.
+            tracing::info!("cqs-watch.service not loaded; spawning `cqs watch --serve` directly");
+            match std::env::current_exe() {
+                Ok(cqs_path) => {
+                    let spawn_result = std::process::Command::new(&cqs_path)
+                        .args(["watch", "--serve"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    match spawn_result {
+                        Ok(child) => {
+                            tracing::info!(
+                                pid = child.id(),
+                                "Restarted cqs watch --serve on Linux (no systemd unit)"
+                            );
+                            if !quiet {
+                                eprintln!("restarted cqs-watch daemon (pid {})", child.id());
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to spawn cqs watch --serve");
+                            if !quiet {
+                                eprintln!(
+                                    "warning: failed to restart cqs-watch daemon ({e}). \
+                                     Run `cqs watch --serve &` manually."
+                                );
+                            }
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to invoke systemctl on restart");
-                if !quiet {
-                    eprintln!(
-                        "warning: failed to restart cqs-watch daemon ({e}). \
-                         Run `systemctl --user start cqs-watch` manually."
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "current_exe() failed; cannot restart daemon"
                     );
+                    if !quiet {
+                        eprintln!(
+                            "warning: failed to resolve cqs binary path ({e}). \
+                             Run `cqs watch --serve &` manually."
+                        );
+                    }
                 }
             }
         }
