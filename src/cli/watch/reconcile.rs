@@ -75,6 +75,10 @@ pub(super) fn run_daemon_reconcile(
     max_pending: usize,
 ) -> usize {
     let _span = tracing::info_span!("daemon_reconcile", max_pending).entered();
+    // OB-V1.30.1-7: capture elapsed time for the terminal log lines so
+    // operators can correlate reconcile cadence with GC overhead in
+    // journalctl. Pattern matches the HNSW build sites already in tree.
+    let start = std::time::Instant::now();
 
     // Walk disk → set of relative paths visible to indexing.
     let exts = parser.supported_extensions();
@@ -121,8 +125,14 @@ pub(super) fn run_daemon_reconcile(
         // pass (default 30 s) wastes a parse + rewarn loop on WSL `/mnt/c/`
         // mounts where filenames can carry stray bytes from Windows tools.
         // Skipping with a warn is strictly better than re-queuing.
-        let origin = match rel.to_str() {
-            Some(s) => s.replace('\\', "/"),
+        //
+        // PF-V1.30.1-4: skip the `replace('\\', "/")` allocation on POSIX
+        // paths (the common case on Linux/WSL/macOS). Backslashes only
+        // appear on native Windows; on Linux the path is already clean.
+        // Use `Cow::Borrowed` to reuse `&str` for the `HashMap` lookup.
+        let origin: std::borrow::Cow<'_, str> = match rel.to_str() {
+            Some(s) if s.contains('\\') => std::borrow::Cow::Owned(s.replace('\\', "/")),
+            Some(s) => std::borrow::Cow::Borrowed(s),
             None => {
                 tracing::warn!(
                     path = %rel.display(),
@@ -131,7 +141,7 @@ pub(super) fn run_daemon_reconcile(
                 continue;
             }
         };
-        match indexed.get(&origin) {
+        match indexed.get(origin.as_ref()) {
             None => {
                 // ADDED: no chunks for this file in the index. Queue.
                 if pending_files.insert(rel.clone()) {
@@ -194,11 +204,13 @@ pub(super) fn run_daemon_reconcile(
         }
     }
 
+    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     if skipped_at_cap > 0 {
         tracing::warn!(
             queued,
             skipped_at_cap,
             cap = max_pending,
+            elapsed_ms,
             "Reconcile: hit pending-files cap; skipped files will be picked up on next reconcile pass"
         );
     } else if queued > 0 {
@@ -206,10 +218,11 @@ pub(super) fn run_daemon_reconcile(
             queued,
             added,
             modified,
+            elapsed_ms,
             "Reconcile: queued divergent files for reindex"
         );
     } else {
-        tracing::debug!("Reconcile: no divergence detected");
+        tracing::debug!(elapsed_ms, "Reconcile: no divergence detected");
     }
 
     queued

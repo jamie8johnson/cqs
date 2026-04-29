@@ -95,9 +95,14 @@ pub(crate) enum HookCommand {
     },
 }
 
+// PB-V1.30.1-8: `git_dir` and `dirty_marker` carry forward-slash-normalized
+// strings, not raw `PathBuf`s, so JSON output matches the rest of the
+// surface (per `src/store/types.rs:220`). Backslashes on Windows would
+// otherwise leak into reports and break tooling that grep-matches on
+// canonical relative paths.
 #[derive(Debug, Serialize)]
 struct InstallReport {
-    git_dir: PathBuf,
+    git_dir: String,
     installed: Vec<String>,
     upgraded: Vec<String>,
     skipped_existing: Vec<String>,
@@ -106,7 +111,7 @@ struct InstallReport {
 
 #[derive(Debug, Serialize)]
 struct UninstallReport {
-    git_dir: PathBuf,
+    git_dir: String,
     removed: Vec<String>,
     skipped_foreign: Vec<String>,
     not_present: Vec<String>,
@@ -114,7 +119,7 @@ struct UninstallReport {
 
 #[derive(Debug, Serialize)]
 struct StatusReport {
-    git_dir: PathBuf,
+    git_dir: String,
     installed: Vec<String>,
     foreign: Vec<String>,
     missing: Vec<String>,
@@ -127,8 +132,8 @@ struct FireReport {
     args: Vec<String>,
     sent_to_daemon: bool,
     /// Set when the daemon was unreachable. The path of the touched
-    /// fallback marker.
-    dirty_marker: Option<PathBuf>,
+    /// fallback marker. Normalized to forward-slashes for JSON output.
+    dirty_marker: Option<String>,
     /// Daemon error text (if any). Surfaces a connect failure without
     /// failing the hook — the dirty marker is the recovery path.
     daemon_error: Option<String>,
@@ -153,7 +158,7 @@ fn cmd_install(no_overwrite: bool, json: bool) -> Result<()> {
     std::fs::create_dir_all(&git_dir).with_context(|| format!("create {}", git_dir.display()))?;
 
     let mut report = InstallReport {
-        git_dir: git_dir.clone(),
+        git_dir: cqs::normalize_path(&git_dir),
         installed: Vec::new(),
         upgraded: Vec::new(),
         skipped_existing: Vec::new(),
@@ -273,7 +278,7 @@ fn cmd_uninstall(json: bool) -> Result<()> {
 /// `find_project_root` walk.
 fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
     let mut report = UninstallReport {
-        git_dir: git_dir.to_path_buf(),
+        git_dir: cqs::normalize_path(git_dir),
         removed: Vec::new(),
         skipped_foreign: Vec::new(),
         not_present: Vec::new(),
@@ -357,7 +362,7 @@ fn do_fire(cqs_dir: &Path, name: &str, args: Vec<String>, try_daemon: bool) -> R
     std::fs::write(&tmp, b"").with_context(|| format!("stage {}", tmp.display()))?;
     cqs::fs::atomic_replace(&tmp, &dirty)
         .with_context(|| format!("promote {} -> {}", tmp.display(), dirty.display()))?;
-    report.dirty_marker = Some(dirty);
+    report.dirty_marker = Some(cqs::normalize_path(&dirty));
     Ok(report)
 }
 
@@ -388,7 +393,7 @@ fn cmd_status(json: bool) -> Result<()> {
 /// `daemon_up` separately.
 fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
     let mut report = StatusReport {
-        git_dir: git_dir.to_path_buf(),
+        git_dir: cqs::normalize_path(git_dir),
         installed: Vec::new(),
         foreign: Vec::new(),
         missing: Vec::new(),
@@ -599,9 +604,10 @@ mod tests {
         )
         .unwrap();
         assert!(!report.sent_to_daemon);
+        // PB-V1.30.1-8: `dirty_marker` is a normalized String now, not PathBuf.
         assert_eq!(
             report.dirty_marker.as_ref().unwrap(),
-            &cqs_dir.join(".dirty"),
+            &cqs::normalize_path(&cqs_dir.join(".dirty")),
         );
         assert!(cqs_dir.join(".dirty").exists());
 

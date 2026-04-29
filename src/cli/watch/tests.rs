@@ -96,6 +96,14 @@ fn test_watch_state() -> WatchState {
         incremental_count: 0,
         dropped_this_cycle: 0,
         pending_rebuild: None,
+        // PF-V1.30.1-1: throttle seed — tests that drive
+        // `publish_watch_snapshot` directly want the very first call to
+        // re-stat (the cache starts empty). Tests that don't touch the
+        // publish path don't care about these fields' specific values.
+        last_metadata_check: std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now),
+        cached_last_synced_at: None,
     }
 }
 

@@ -136,7 +136,24 @@ struct WatchState {
     /// into the rebuilt Owned index before the swap. `None` while no
     /// rebuild is in flight.
     pending_rebuild: Option<PendingRebuild>,
+    /// PF-V1.30.1-1: throttle the per-tick `fs::metadata(index_path)` call
+    /// in [`publish_watch_snapshot`]. Snapshots fire every ~100 ms, and
+    /// `last_synced_at` is whole-second resolution anyway — restating
+    /// every tick burns a `stat()` syscall (and on WSL 9P, ~ms latency).
+    /// Cache the most-recent reading and only re-stat after this throttle
+    /// window elapses.
+    last_metadata_check: std::time::Instant,
+    /// PF-V1.30.1-1: cached `last_synced_at` value reused between
+    /// throttled stat calls. `None` ⇒ index.db missing or mtime
+    /// unreadable on the last stat.
+    cached_last_synced_at: Option<i64>,
 }
+
+/// PF-V1.30.1-1: how often the watch loop re-stats `index.db` for the
+/// `last_synced_at` field on `WatchSnapshot`. 10 s matches the whole-second
+/// wire resolution; tighter than this would re-stat without giving
+/// observers any new bits.
+const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// #1182: publish a fresh `WatchSnapshot` into the shared `Arc<RwLock<...>>`
 /// the daemon thread reads through. Called once per outer watch-loop tick.
@@ -145,17 +162,34 @@ struct WatchState {
 /// `index.db`'s mtime as a best-effort `last_synced_at`, computes the
 /// state-machine value, and replaces the snapshot under a brief write lock.
 /// The lock is held only for the move; readers never block on real work.
+///
+/// PF-V1.30.1-1: takes `&mut WatchState` so the `last_synced_at` stat call
+/// can be throttled via the cache. Without throttling this fires every
+/// ~100 ms tick, paying a syscall (ms-scale on WSL 9P) for whole-second
+/// wire data — wasted budget.
 fn publish_watch_snapshot(
     handle: &cqs::watch_status::SharedWatchSnapshot,
-    state: &WatchState,
+    state: &mut WatchState,
     index_path: &std::path::Path,
 ) {
-    // Best-effort: missing/unreadable index.db → None.
-    let last_synced_at = std::fs::metadata(index_path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64);
+    // PF-V1.30.1-1: only re-stat when the cache has expired. Snapshots
+    // fire every ~100 ms but `last_synced_at` is whole-second resolution
+    // — re-stating every tick burns a syscall for no observer-visible
+    // change. The cache is invalidated after `LAST_SYNCED_REFRESH`.
+    // RB-3: surface overflow as None (treated same as "missing mtime")
+    // instead of silently wrapping past `i64::MAX`.
+    let last_synced_at = if state.last_metadata_check.elapsed() >= LAST_SYNCED_REFRESH {
+        let fresh = std::fs::metadata(index_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_secs()).ok());
+        state.cached_last_synced_at = fresh;
+        state.last_metadata_check = std::time::Instant::now();
+        fresh
+    } else {
+        state.cached_last_synced_at
+    };
     let delta_saturated = state
         .pending_rebuild
         .as_ref()
@@ -1033,6 +1067,17 @@ pub fn cmd_watch(
         incremental_count,
         dropped_this_cycle: 0,
         pending_rebuild,
+        // PF-V1.30.1-1: seed throttle so the very first publish tick does
+        // re-stat `index.db` (the cache starts empty). After that the
+        // cadence is `LAST_SYNCED_REFRESH` between calls. `checked_sub`
+        // guards against the (theoretical) freshly-booted-machine case
+        // where `Instant::now()` is < `LAST_SYNCED_REFRESH` since boot —
+        // falling back to `Instant::now()` just means the *second* tick
+        // is the one that reads, not the first.
+        last_metadata_check: std::time::Instant::now()
+            .checked_sub(LAST_SYNCED_REFRESH)
+            .unwrap_or_else(std::time::Instant::now),
+        cached_last_synced_at: None,
     };
 
     let mut cycles_since_clear: u32 = 0;
@@ -1360,7 +1405,7 @@ pub fn cmd_watch(
         // tick old. The `RwLock` on `watch_snapshot_handle` is acquired
         // for the duration of a struct-move; readers (daemon clients)
         // never wait more than that.
-        publish_watch_snapshot(&watch_snapshot_handle, &state, &index_path);
+        publish_watch_snapshot(&watch_snapshot_handle, &mut state, &index_path);
 
         if check_interrupted() {
             println!("\nStopping watch...");

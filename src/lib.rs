@@ -291,6 +291,30 @@ pub fn duration_to_mtime_millis(d: std::time::Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
 }
 
+/// RB-3 / RB-10: Defensive `SystemTime::now() → Unix seconds as i64`.
+///
+/// Returns `None` when the clock is before epoch (RTC mis-set, hypervisor
+/// pause, NTP-pre-sync boot) and emits a `tracing::warn!` once per process
+/// so journalctl operators can correlate stale snapshots / timestamps with
+/// bad-clock conditions. Use everywhere instead of bare
+/// `SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64)`
+/// which silently returns `None` on overflow and `0` on epoch errors.
+pub fn unix_secs_i64() -> Option<i64> {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    match std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(_) => {
+            WARNED.get_or_init(|| {
+                tracing::warn!(
+                    "system clock is before UNIX_EPOCH — timestamps will be None until NTP sync; check `timedatectl` / `chronyc tracking`",
+                );
+            });
+            None
+        }
+    }
+}
+
 // # Batch Size Constants (#683)
 //
 // ~25 `const BATCH_SIZE` definitions across store/pipeline/search modules.

@@ -880,11 +880,32 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // is informational and many callers tee stdout/stderr; only the
     // *final* shape matters for the JSON contract.
     if want_json {
-        let model_name = cli
-            .try_model_config()
-            .map(|c| c.name.clone())
-            .unwrap_or_default();
-        let chunk_count = store.chunk_count().unwrap_or(0);
+        // EH-V1.30.1-5: surface model-config and chunk-count failures via
+        // tracing instead of `.unwrap_or_default()` / `.unwrap_or(0)`. The
+        // JSON envelope is the agent-facing contract — silently emitting
+        // "" for model_name or 0 for chunk_count under a real failure
+        // makes downstream tooling believe the index is healthy when it
+        // isn't.
+        let model_name = match cli.try_model_config() {
+            Ok(c) => c.name.clone(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "index --json: model config resolution failed — emitting empty model name"
+                );
+                String::new()
+            }
+        };
+        let chunk_count = match store.chunk_count() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "index --json: chunk_count() failed — emitting 0"
+                );
+                0
+            }
+        };
         let obj = serde_json::json!({
             "indexed_files": existing_files.len(),
             "indexed_chunks": chunk_count,

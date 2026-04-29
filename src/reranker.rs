@@ -520,8 +520,22 @@ impl Reranker {
                     if !TOKENIZER_BLAKE3.is_empty() {
                         verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
                     }
-                    // Write marker after successful verification
-                    let _ = std::fs::write(&marker, &expected_marker);
+                    // Write marker after successful verification.
+                    //
+                    // EH-V1.30.1-6: surface marker write failures via tracing.
+                    // Silently dropping `let _ = ...` means a permission flip
+                    // (or a full disk) costs every subsequent launch a
+                    // re-checksum of large model files. The verification
+                    // itself succeeded, so this is a best-effort cache write
+                    // — keep it warn, not error.
+                    if let Err(e) = std::fs::write(&marker, &expected_marker) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %marker.display(),
+                            "Failed to write reranker verification marker — \
+                             next launch will re-verify checksums"
+                        );
+                    }
                 }
             }
 

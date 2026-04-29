@@ -772,11 +772,14 @@ impl BatchContext {
     /// missing file or unreadable metadata yields `None` rather than
     /// failing the whole ping.
     pub(crate) fn ping_snapshot(&self) -> cqs::daemon_translate::PingResponse {
+        // RB-3: surface overflow as None (treated same as "missing mtime")
+        // instead of silently wrapping past `i64::MAX`. Different shape from
+        // `unix_secs_i64()` — reads file mtime, not wall-clock.
         let last_indexed_at = std::fs::metadata(self.cqs_dir.join(cqs::INDEX_DB_FILENAME))
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64);
+            .and_then(|d| i64::try_from(d.as_secs()).ok());
         // SPLADE encoder slot is `OnceLock<Option<...>>`: only "loaded" if
         // the inner Option is Some. A user with no SPLADE model configured
         // populates the OnceLock with None on first sparse query; that's
@@ -1981,11 +1984,14 @@ impl BatchView {
     /// Mirrors `BatchContext::ping_snapshot` but reads through the shared
     /// Arc handles in the view.
     pub fn ping_snapshot(&self) -> cqs::daemon_translate::PingResponse {
+        // RB-3: surface overflow as None (treated same as "missing mtime")
+        // instead of silently wrapping past `i64::MAX`. Different shape from
+        // `unix_secs_i64()` — reads file mtime, not wall-clock.
         let last_indexed_at = std::fs::metadata(self.cqs_dir.join(cqs::INDEX_DB_FILENAME))
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64);
+            .and_then(|d| i64::try_from(d.as_secs()).ok());
         let splade_loaded = self
             .splade_encoder_slot
             .get()

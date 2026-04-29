@@ -204,7 +204,24 @@ fn run_with_dispatch(
     // slot 1 inside `resolve` (still beating env/config) without needing a new
     // resolve signature.
     let slot_model_intent = if cli.model.is_none() {
-        let resolved_slot = cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir).ok();
+        // EH-V1.30.1-3: surface slot-resolution failures via tracing instead
+        // of `.ok()` swallowing them. A bad slot pointer or read error here
+        // means the persisted model intent gets silently ignored — the
+        // operator sees the wrong model resolve and has zero observability
+        // on why.
+        let resolved_slot = match cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir)
+        {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    slot = ?cli.slot,
+                    "slot resolution failed when looking up persisted model intent — \
+                     falling back to default model resolution"
+                );
+                None
+            }
+        };
         resolved_slot.and_then(|s| cqs::slot::read_slot_model(project_cqs_dir, &s.name))
     } else {
         None

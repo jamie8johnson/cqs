@@ -21,7 +21,6 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -228,22 +227,31 @@ impl WatchSnapshot {
         // "now minus elapsed". Saturating arithmetic handles the (in
         // practice unreachable) clock-before-epoch case symmetrically with
         // `now_unix_secs`.
-        let last_event_unix_secs = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .ok()
-            .map(|d| {
-                (d.as_secs() as i64).saturating_sub(input.last_event.elapsed().as_secs() as i64)
+        // RB-3: defensive bad-clock handling via `unix_secs_i64()` — falls
+        // back to 0 on epoch errors with a once-per-process warn upstream.
+        let last_event_unix_secs = crate::unix_secs_i64()
+            .map(|now| {
+                let elapsed_i64 =
+                    i64::try_from(input.last_event.elapsed().as_secs()).unwrap_or(i64::MAX);
+                now.saturating_sub(elapsed_i64)
             })
             .unwrap_or(0);
 
         Self {
             state,
-            modified_files: input.pending_files_count as u64,
+            // RB-7: saturating `usize → u64`. On 64-bit platforms `as u64`
+            // is total, but on 32-bit (still supported via `cargo install`
+            // crates.io) the cast is also total — the saturating shape
+            // costs nothing and keeps the wire surface uniform with the
+            // RB-V1.30-3 pattern. Defense-in-depth against future caller
+            // shapes (e.g. a usize that happens to come from a wrapping
+            // counter elsewhere).
+            modified_files: u64::try_from(input.pending_files_count).unwrap_or(u64::MAX),
             pending_notes: input.pending_notes,
             rebuild_in_flight: input.rebuild_in_flight,
             delta_saturated: input.delta_saturated,
-            incremental_count: input.incremental_count as u64,
-            dropped_this_cycle: input.dropped_this_cycle as u64,
+            incremental_count: u64::try_from(input.incremental_count).unwrap_or(u64::MAX),
+            dropped_this_cycle: u64::try_from(input.dropped_this_cycle).unwrap_or(u64::MAX),
             last_event_unix_secs,
             last_synced_at: input.last_synced_at,
             snapshot_at: now_unix_secs(),
@@ -251,25 +259,11 @@ impl WatchSnapshot {
     }
 }
 
+/// RB-3 / RB-10: thin delegator to the central [`crate::unix_secs_i64`]
+/// helper. Watch-status snapshots prefer `Option<i64>` so the bad-clock
+/// case can surface as JSON `null` (versus a silent `0` lie).
 fn now_unix_secs() -> Option<i64> {
-    use std::sync::OnceLock;
-    static WARNED_BAD_CLOCK: OnceLock<()> = OnceLock::new();
-
-    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_secs()).ok(),
-        Err(e) => {
-            // RB-10: surface the bad-clock condition once per process so
-            // journalctl operators can correlate stale snapshots with
-            // NTP-pre-sync boot.
-            WARNED_BAD_CLOCK.get_or_init(|| {
-                tracing::warn!(
-                    error = %e,
-                    "system clock is before UNIX_EPOCH — snapshot_at will be None until NTP sync; check `timedatectl` / `chronyc tracking`",
-                );
-            });
-            None
-        }
-    }
+    crate::unix_secs_i64()
 }
 
 #[cfg(test)]
