@@ -57,7 +57,7 @@ use rebuild::{RebuildOutcome, RebuildResult};
 mod gc;
 use gc::{prune_last_indexed_mtime, run_daemon_periodic_gc, run_daemon_startup_gc};
 #[cfg(test)]
-use gc::{LAST_INDEXED_PRUNE_AGE_SECS, LAST_INDEXED_PRUNE_SIZE_THRESHOLD};
+use gc::{LAST_INDEXED_PRUNE_AGE_SECS, LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT};
 
 mod reconcile;
 use reconcile::{reconcile_enabled, run_daemon_reconcile};

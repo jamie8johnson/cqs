@@ -660,7 +660,7 @@ fn collect_events_skips_unchanged_mtime() {
 
 /// #969: recency prune drops entries older than `LAST_INDEXED_PRUNE_AGE_SECS`,
 /// keeps fresh entries, and only triggers once the map exceeds
-/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD`. This replaces the old per-entry
+/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT`. This replaces the old per-entry
 /// `Path::exists()` loop that stalled the watch thread on WSL 9P mounts.
 #[test]
 fn test_last_indexed_mtime_recency_prune() {
@@ -693,7 +693,7 @@ fn test_last_indexed_mtime_recency_prune() {
     // entries plus a handful of fresh sentinels so we can check both
     // that old entries are removed and fresh ones survive.
     let mut large: HashMap<PathBuf, SystemTime> = HashMap::new();
-    for i in 0..=LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
+    for i in 0..=LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT {
         large.insert(PathBuf::from(format!("old_{}.rs", i)), old);
     }
     large.insert(PathBuf::from("fresh_1.rs"), fresh);
@@ -704,7 +704,7 @@ fn test_last_indexed_mtime_recency_prune() {
     // Every "old" entry (two days stale) should be gone.
     assert_eq!(
         pruned_large,
-        LAST_INDEXED_PRUNE_SIZE_THRESHOLD + 1,
+        LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT + 1,
         "Expected all old entries pruned (total_before={}, remaining={})",
         total_before,
         large.len()
@@ -734,7 +734,7 @@ fn test_last_indexed_mtime_recency_prune() {
         .checked_sub(Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS - 1))
         .unwrap();
     let mut boundary: HashMap<PathBuf, SystemTime> = HashMap::new();
-    for i in 0..=LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
+    for i in 0..=LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT {
         boundary.insert(PathBuf::from(format!("stale_{}.rs", i)), old);
     }
     boundary.insert(PathBuf::from("just_inside.rs"), just_inside);

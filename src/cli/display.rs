@@ -56,14 +56,27 @@ pub fn read_context_lines(
             );
         }
     }
-    let content = std::fs::read_to_string(file)
-        .with_context(|| format!("Failed to read {}", file.display()))?;
-    // .lines() handles \r\n, but trim trailing \r for bare-CR edge cases
-    let lines: Vec<&str> = content.lines().map(|l| l.trim_end_matches('\r')).collect();
-
-    // Normalize: treat 0 as 1, ensure end >= start
+    // Normalize: treat 0 as 1, ensure end >= start. Done up front so the
+    // RM-3 bounded read knows how many lines to actually pull off disk.
     let line_start = line_start.max(1);
     let line_end = line_end.max(line_start);
+
+    // RM-3: bounded read. Previously `read_to_string` slurped the whole file
+    // into RAM even when only ~5 lines around the chunk were needed. Compute
+    // the upper bound from `line_end + context + 1` so we only walk the
+    // BufReader that far. The downstream indexing logic still handles short
+    // files gracefully because `lines.len()` reflects what was actually read.
+    use std::io::{BufRead, BufReader};
+    let f =
+        std::fs::File::open(file).with_context(|| format!("Failed to read {}", file.display()))?;
+    let limit = (line_end as usize)
+        .saturating_add(context)
+        .saturating_add(1);
+    let lines: Vec<String> = BufReader::new(f)
+        .lines()
+        .take(limit)
+        .map(|l| l.unwrap_or_default().trim_end_matches('\r').to_string())
+        .collect();
 
     // Convert 1-indexed lines to 0-indexed array indices, clamped to valid range.
     // For an empty file (lines.len() == 0), both indices will be 0.
@@ -74,10 +87,7 @@ pub fn read_context_lines(
     // Context before
     let context_start = start_idx.saturating_sub(context);
     let before: Vec<String> = if start_idx <= lines.len() {
-        lines[context_start..start_idx]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        lines[context_start..start_idx].to_vec()
     } else {
         vec![]
     };
@@ -88,10 +98,7 @@ pub fn read_context_lines(
         .saturating_add(1)
         .min(lines.len());
     let after: Vec<String> = if end_idx + 1 < lines.len() {
-        lines[(end_idx + 1)..context_end]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        lines[(end_idx + 1)..context_end].to_vec()
     } else {
         vec![]
     };
@@ -480,26 +487,33 @@ mod tests {
     }
 
     /// Read context lines bypassing the path guard (for unit tests with temp files).
+    /// RM-3: mirror the production `read_context_lines` BufReader-based bounded read
+    /// so the test's edge-case coverage stays representative.
     fn read_context_lines_test(
         file: &Path,
         line_start: u32,
         line_end: u32,
         context: usize,
     ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
-        let content = std::fs::read_to_string(file)
-            .with_context(|| format!("Failed to read {}", file.display()))?;
-        let lines: Vec<&str> = content.lines().map(|l| l.trim_end_matches('\r')).collect();
         let line_start = line_start.max(1);
         let line_end = line_end.max(line_start);
+        use std::io::{BufRead, BufReader};
+        let f = std::fs::File::open(file)
+            .with_context(|| format!("Failed to read {}", file.display()))?;
+        let limit = (line_end as usize)
+            .saturating_add(context)
+            .saturating_add(1);
+        let lines: Vec<String> = BufReader::new(f)
+            .lines()
+            .take(limit)
+            .map(|l| l.unwrap_or_default().trim_end_matches('\r').to_string())
+            .collect();
         let max_idx = lines.len().saturating_sub(1);
         let start_idx = (line_start as usize).saturating_sub(1).min(max_idx);
         let end_idx = (line_end as usize).saturating_sub(1).min(max_idx);
         let context_start = start_idx.saturating_sub(context);
         let before: Vec<String> = if start_idx <= lines.len() {
-            lines[context_start..start_idx]
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
+            lines[context_start..start_idx].to_vec()
         } else {
             vec![]
         };
@@ -508,10 +522,7 @@ mod tests {
             .saturating_add(1)
             .min(lines.len());
         let after: Vec<String> = if end_idx + 1 < lines.len() {
-            lines[(end_idx + 1)..context_end]
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
+            lines[(end_idx + 1)..context_end].to_vec()
         } else {
             vec![]
         };

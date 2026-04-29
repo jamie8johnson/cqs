@@ -48,7 +48,9 @@ pub(crate) fn enrichment_pass(
     // Step 3: Iterate chunks in pages, collect those needing enrichment
     let mut enriched_count = 0usize;
     let mut cursor = 0i64;
-    const ENRICHMENT_PAGE_SIZE: usize = 500;
+    // SHL-V1.30-8: env override `CQS_ENRICHMENT_PAGE_SIZE` (default 500). Larger
+    // pages mean fewer SQLite round-trips at the cost of higher per-batch RAM.
+    let page_size = enrichment_page_size();
 
     // Track name frequency — ambiguous names (appearing in multiple files)
     // are skipped to avoid merging callers from different functions. (RB-B1)
@@ -131,7 +133,7 @@ pub(crate) fn enrichment_pass(
     let result: Result<usize> = (|| {
         loop {
             let (chunks, next_cursor) = store
-                .chunks_paged(cursor, ENRICHMENT_PAGE_SIZE)
+                .chunks_paged(cursor, page_size)
                 .context("Failed to page chunks")?;
             if chunks.is_empty() {
                 break;
@@ -265,6 +267,20 @@ pub(crate) fn enrichment_pass(
 }
 
 /// RB-6 / #966: normalize whitespace so LLM-generated strings with
+/// SHL-V1.30-8: env override `CQS_ENRICHMENT_PAGE_SIZE` (default 500).
+///
+/// Controls how many chunks `enrichment_pass` pulls per `chunks_paged` call.
+/// Larger pages mean fewer SQLite round-trips, smaller pages bound the per-batch
+/// RAM held by `callers_map`/`callees_map` while a page is in flight.
+/// Documented in README.md.
+fn enrichment_page_size() -> usize {
+    std::env::var("CQS_ENRICHMENT_PAGE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(500)
+}
+
 /// non-deterministic leading/trailing/internal whitespace collapse to the
 /// same canonical form before hashing.
 ///

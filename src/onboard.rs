@@ -27,10 +27,32 @@ pub const DEFAULT_ONBOARD_DEPTH: usize = 3;
 
 /// Maximum callees to fetch content for. BFS may discover more, but we only
 /// load content for the top entries by depth/score to cap memory usage.
-const MAX_CALLEE_FETCH: usize = 30;
+///
+/// SHL-V1.30-5: env override `CQS_ONBOARD_CALLEE_FETCH`. Documented in README.
+const MAX_CALLEE_FETCH_DEFAULT: usize = 30;
 
 /// Maximum callers to fetch content for.
-const MAX_CALLER_FETCH: usize = 15;
+///
+/// SHL-V1.30-5: env override `CQS_ONBOARD_CALLER_FETCH`. Documented in README.
+const MAX_CALLER_FETCH_DEFAULT: usize = 15;
+
+/// SHL-V1.30-5: resolve `CQS_ONBOARD_CALLEE_FETCH`, default 30.
+fn max_callee_fetch() -> usize {
+    std::env::var("CQS_ONBOARD_CALLEE_FETCH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_CALLEE_FETCH_DEFAULT)
+}
+
+/// SHL-V1.30-5: resolve `CQS_ONBOARD_CALLER_FETCH`, default 15.
+fn max_caller_fetch() -> usize {
+    std::env::var("CQS_ONBOARD_CALLER_FETCH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_CALLER_FETCH_DEFAULT)
+}
 
 // Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.
 
@@ -85,6 +107,22 @@ pub struct OnboardSummary {
     pub files_covered: usize,
     pub callee_depth: usize,
     pub tests_found: usize,
+    /// SHL-V1.30-5: callees discovered by BFS but dropped because they exceeded
+    /// `CQS_ONBOARD_CALLEE_FETCH`. Zero when no truncation happened. Surfaces
+    /// the cap to consumers so a user can lift it intentionally rather than
+    /// silently wonder where their callees went.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub callees_truncated: usize,
+    /// SHL-V1.30-5: callers truncated to `CQS_ONBOARD_CALLER_FETCH`. See
+    /// `callees_truncated`.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub callers_truncated: usize,
+}
+
+/// Helper used by `OnboardSummary` `skip_serializing_if` to elide zero-valued
+/// truncation counters from the JSON wire shape (keeps the common case clean).
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Produce a guided tour of a concept in the codebase.
@@ -171,8 +209,29 @@ pub fn onboard<Mode>(
 
     // 6. Cap score maps to avoid fetching content we'll discard (RM-24).
     //    BFS may discover 100 callees, but we only load content for the top N.
-    let callee_scores = cap_scores(callee_scores, MAX_CALLEE_FETCH, |(_s, d)| *d);
-    let caller_scores = cap_scores(caller_scores, MAX_CALLER_FETCH, |(score, _)| {
+    //    SHL-V1.30-5: env-overridable via CQS_ONBOARD_CALLEE_FETCH /
+    //    CQS_ONBOARD_CALLER_FETCH.  Track pre-cap counts so the caller can see
+    //    truncation in `OnboardSummary`.
+    let callee_fetch_cap = max_callee_fetch();
+    let caller_fetch_cap = max_caller_fetch();
+    let callees_truncated = callee_scores.len().saturating_sub(callee_fetch_cap);
+    let callers_truncated = caller_scores.len().saturating_sub(caller_fetch_cap);
+    if callees_truncated > 0 {
+        tracing::warn!(
+            dropped = callees_truncated,
+            cap = callee_fetch_cap,
+            "Onboard: callees truncated to CQS_ONBOARD_CALLEE_FETCH"
+        );
+    }
+    if callers_truncated > 0 {
+        tracing::warn!(
+            dropped = callers_truncated,
+            cap = caller_fetch_cap,
+            "Onboard: callers truncated to CQS_ONBOARD_CALLER_FETCH"
+        );
+    }
+    let callee_scores = cap_scores(callee_scores, callee_fetch_cap, |(_s, d)| *d);
+    let caller_scores = cap_scores(caller_scores, caller_fetch_cap, |(score, _)| {
         // Keep highest scores: Reverse makes ascending sort = descending by score.
         let safe = if score.is_finite() && *score > 0.0 {
             *score
@@ -254,6 +313,8 @@ pub fn onboard<Mode>(
         files_covered: all_files.len(),
         callee_depth: max_callee_depth,
         tests_found: tests.len(),
+        callees_truncated,
+        callers_truncated,
     };
 
     tracing::info!(
