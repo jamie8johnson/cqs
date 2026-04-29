@@ -707,7 +707,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 
 ## Environment Variables
 
-109 knobs total. Quick index by domain (everything is searchable in the table below):
+118 knobs total. Quick index by domain (everything is searchable in the table below):
 
 - **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
@@ -803,6 +803,15 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_LOCAL_LLM_MAX_BODY_BYTES` | `4194304` (4 MiB) | Max response body bytes accepted from a `CQS_LLM_PROVIDER=local` server. Larger bodies are a sign of a misbehaving or hostile endpoint and abort with a clear error rather than OOMing the daemon. Must be > 0. |
 | `CQS_LOCAL_LLM_TIMEOUT_SECS` | `120` | Per-request timeout (seconds) for `CQS_LLM_PROVIDER=local`. Local inference can be slow, so the default is 2× the Anthropic 60s ceiling. |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
+| `CQS_MAX_REFERENCES` | `20` | Max number of reference indexes loaded from `[references]` blocks. Each reference holds a separate SQLite DB + HNSW index (~50-100 MB RAM each). Hit on a `cqs ref`-heavy workspace? Bump it; `0`/garbage falls back to default. SHL-V1.30-6. |
+| `CQS_GATHER_DEPTH` | `1` (`gather` default) | BFS expansion depth for the shared `gather` pipeline. Honored as a fallback by `task` when `CQS_TASK_GATHER_DEPTH` is unset. SHL-V1.30-4. |
+| `CQS_TASK_GATHER_DEPTH` | `2` | BFS expansion depth used inside `cqs task` (number of call-graph hops from each modify target). Takes precedence over `CQS_GATHER_DEPTH` for the task pipeline only. SHL-V1.30-4. |
+| `CQS_ONBOARD_CALLEE_FETCH` | `30` | Max callees `cqs onboard` fetches content for after BFS. Excess callees are surfaced as `summary.callees_truncated` in JSON and a `tracing::warn!`. SHL-V1.30-5. |
+| `CQS_ONBOARD_CALLER_FETCH` | `15` | Max callers `cqs onboard` fetches content for. Truncation surfaces as `summary.callers_truncated`. SHL-V1.30-5. |
+| `CQS_NOTES_MAX_FILE_SIZE` | `10485760` (10 MiB) | Max size of `notes.toml` accepted by both read and rewrite paths. A larger file is rejected with `InvalidData`. Bump on workspaces with very large note collections. SHL-V1.30-7. |
+| `CQS_NOTES_MAX_ENTRIES` | `10000` | Max number of notes parsed from a single `notes.toml`. Excess entries are dropped with a `tracing::warn!` (previously silent). SHL-V1.30-7. |
+| `CQS_ENRICHMENT_PAGE_SIZE` | `500` | Chunks per page during the second-pass enrichment loop. Smaller = lower per-batch RAM (callers/callees maps), larger = fewer SQLite round-trips. SHL-V1.30-8. |
+| `CQS_WATCH_PRUNE_SIZE_THRESHOLD` | `5000` | Size threshold that triggers the watch loop's `last_indexed_mtime` recency prune. Larger maps (e.g. `cqs ref`-heavy projects) need this lifted to keep dedup working past the default. SHL-V1.30-9. |
 | `CQS_BATCH_MAX_LINE_LEN` | `52428800` (50 MiB) | Max bytes per batch-mode line (`cqs batch` stdin and the daemon socket request). Aligned with `CQS_MAX_DIFF_BYTES` so batch-routed diffs aren't capped 50× sooner than the CLI path. |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
 | `CQS_MAX_DIFF_BYTES` | `52428800` (50 MiB) | Max bytes accepted on stdin (`cqs review --stdin`, `cqs impact --diff`) and from `git diff` subprocess. Long-running feature branches with multi-MB diffs need this lifted. |

@@ -17,7 +17,36 @@ pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
 
 /// Maximum number of notes to parse from a single file.
 /// Prevents memory exhaustion from malicious or corrupted note files.
-const MAX_NOTES: usize = 10_000;
+///
+/// SHL-V1.30-7: env override `CQS_NOTES_MAX_ENTRIES`. Documented in README.md.
+const MAX_NOTES_DEFAULT: usize = 10_000;
+
+/// Maximum size of `notes.toml` (in bytes) before reads/writes refuse to load
+/// the file. Both the read-only `parse_notes` path and the read-modify-write
+/// `rewrite_notes_file` path enforce the same cap so a truncated/corrupt
+/// rewrite can't exceed it either.
+///
+/// SHL-V1.30-7: hoisted from per-call-site duplicate `const` declarations to
+/// module scope. Env override `CQS_NOTES_MAX_FILE_SIZE`. Default 10 MiB.
+const MAX_NOTES_FILE_SIZE_DEFAULT: u64 = 10 * 1024 * 1024;
+
+/// SHL-V1.30-7: resolve `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB).
+fn max_notes_file_size() -> u64 {
+    std::env::var("CQS_NOTES_MAX_FILE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_NOTES_FILE_SIZE_DEFAULT)
+}
+
+/// SHL-V1.30-7: resolve `CQS_NOTES_MAX_ENTRIES` (default 10_000).
+fn max_notes() -> usize {
+    std::env::var("CQS_NOTES_MAX_ENTRIES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_NOTES_DEFAULT)
+}
 
 /// Errors that can occur when parsing notes
 #[derive(Error, Debug)]
@@ -165,17 +194,18 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
         ))
     })?;
 
-    // Size guard: notes.toml should be well under 10MB
-    const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    // Size guard: notes.toml should be well under 10MB. SHL-V1.30-7: env-overridable
+    // via CQS_NOTES_MAX_FILE_SIZE, single source of truth at module scope.
+    let max_size = max_notes_file_size();
     if let Ok(meta) = data_file.metadata() {
-        if meta.len() > MAX_NOTES_FILE_SIZE {
+        if meta.len() > max_size {
             return Err(NoteError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "{}: file too large ({}MB, limit {}MB)",
                     path.display(),
                     meta.len() / (1024 * 1024),
-                    MAX_NOTES_FILE_SIZE / (1024 * 1024)
+                    max_size / (1024 * 1024)
                 ),
             )));
         }
@@ -241,17 +271,17 @@ pub fn rewrite_notes_file(
             ))
         })?;
 
-    // Size guard (same limit as read path)
-    const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    // Size guard (same limit as read path). SHL-V1.30-7: shared resolver.
+    let max_size = max_notes_file_size();
     if let Ok(meta) = data_file.metadata() {
-        if meta.len() > MAX_NOTES_FILE_SIZE {
+        if meta.len() > max_size {
             return Err(NoteError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "{}: file too large ({}MB, limit {}MB)",
                     notes_path.display(),
                     meta.len() / (1024 * 1024),
-                    MAX_NOTES_FILE_SIZE / (1024 * 1024)
+                    max_size / (1024 * 1024)
                 ),
             )));
         }
@@ -321,14 +351,28 @@ pub fn rewrite_notes_file(
 /// Note IDs are generated from a hash of the text content (first 16 hex chars = 64 bits).
 /// This ensures IDs are stable when notes are reordered in the file.
 /// With 16 hex chars, collision probability is ~0.003% at 10k notes (birthday paradox).
-/// Limited to MAX_NOTES (10k) to prevent memory exhaustion.
+/// Limited to `CQS_NOTES_MAX_ENTRIES` (default 10k) to prevent memory exhaustion.
 pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     let file: NoteFile = toml::from_str(content)?;
+
+    // SHL-V1.30-7: surface truncation rather than silently dropping entries.
+    // Previously `.take(MAX_NOTES)` ate the surplus with no signal; now we warn so
+    // users see they need to lift the cap (or split the file).
+    let cap = max_notes();
+    let total = file.note.len();
+    if total > cap {
+        tracing::warn!(
+            total,
+            cap,
+            dropped = total - cap,
+            "parse_notes_str: note count exceeds CQS_NOTES_MAX_ENTRIES; truncating"
+        );
+    }
 
     let notes = file
         .note
         .into_iter()
-        .take(MAX_NOTES)
+        .take(cap)
         .map(|entry| {
             // Use content hash for stable IDs (reordering notes won't break references)
             // 16 hex chars = 64 bits, collision probability ~0.003% at 10k notes

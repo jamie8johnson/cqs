@@ -317,6 +317,25 @@ impl std::fmt::Debug for Config {
 /// Clamp f32 config value to valid range and warn if out of bounds.
 /// TC-48: Also catches NaN (which silently passes all comparisons as false)
 /// and clamps it to `min`, preventing silent data loss in downstream filters.
+/// SHL-V1.30-6: Resolve `CQS_MAX_REFERENCES` (default 20).
+///
+/// Memoized via `OnceLock` so the env-var read happens once at first
+/// `validate()` call rather than on every load. The value is documented in
+/// `README.md`'s env-var table. Each reference is ~50-100 MB, so the default
+/// keeps a worst-case load under ~1-2 GB; bump on machines that can afford
+/// it. Zero / non-numeric values fall back to the default.
+fn max_references() -> usize {
+    static CACHE: OnceLock<usize> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        const DEFAULT: usize = 20;
+        std::env::var("CQS_MAX_REFERENCES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT)
+    })
+}
+
 fn clamp_config_f32(value: &mut f32, name: &str, min: f32, max: f32) {
     if value.is_nan() {
         tracing::warn!(field = name, "Config value is NaN, clamping to min");
@@ -384,24 +403,25 @@ impl Config {
     /// Adding a new field? Add its clamping here — this is the single
     /// validation choke point.
     fn validate(&mut self) {
-        // SHL-28: Cap reference count. Each reference opens a separate SQLite DB +
-        // HNSW index, consuming ~50-100MB RAM. 20 references = ~1-2GB baseline memory.
-        // If you need more, consider consolidating related libraries into fewer indexes.
-        const MAX_REFERENCES: usize = 20;
-        if self.references.len() > MAX_REFERENCES {
+        // SHL-28 / SHL-V1.30-6: Cap reference count. Each reference opens a separate
+        // SQLite DB + HNSW index, consuming ~50-100MB RAM. 20 references = ~1-2GB
+        // baseline memory. If you need more, consider consolidating related libraries
+        // into fewer indexes — or override via `CQS_MAX_REFERENCES`.
+        let max_references = max_references();
+        if self.references.len() > max_references {
             eprintln!(
                 "Warning: {} references configured, exceeding limit of {}. \
                  Only the first {} will be loaded. Each reference consumes ~50-100MB RAM.",
                 self.references.len(),
-                MAX_REFERENCES,
-                MAX_REFERENCES
+                max_references,
+                max_references
             );
             tracing::warn!(
                 count = self.references.len(),
-                max = MAX_REFERENCES,
+                max = max_references,
                 "Too many references configured, truncating"
             );
-            self.references.truncate(MAX_REFERENCES);
+            self.references.truncate(max_references);
         }
 
         // Clamp reference weights to [0.0, 1.0]

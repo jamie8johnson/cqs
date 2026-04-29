@@ -811,6 +811,8 @@ mod tests {
                 files_covered: 3,
                 callee_depth: 1,
                 tests_found: 0,
+                callees_truncated: 0,
+                callers_truncated: 0,
             },
         };
 
@@ -901,6 +903,8 @@ mod tests {
                 files_covered: 5,
                 callee_depth: 3,
                 tests_found: 0,
+                callees_truncated: 0,
+                callers_truncated: 0,
             },
         };
 

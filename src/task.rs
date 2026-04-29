@@ -16,13 +16,42 @@ use crate::where_to_add::FileSuggestion;
 use crate::{AnalysisError, Embedder, Store};
 
 /// BFS expansion depth for gather phase (how many call-graph hops from modify targets).
-const TASK_GATHER_DEPTH: usize = 2;
-
-/// Maximum BFS-expanded nodes in gather phase (prevents blowup on hub functions).
-const TASK_GATHER_MAX_NODES: usize = 100;
+///
+/// SHL-V1.30-4: `CQS_TASK_GATHER_DEPTH` env override per-task; falls back to this
+/// constant when unset. Also honors `CQS_GATHER_DEPTH` as a cross-cutting default
+/// for any caller that wants to set both `gather` and `task` depth in one place.
+const TASK_GATHER_DEPTH_DEFAULT: usize = 2;
 
 /// Multiplier applied to `limit` for gather phase truncation.
 const TASK_GATHER_LIMIT_MULTIPLIER: usize = 3;
+
+/// SHL-V1.30-4: Resolve gather depth for the task pipeline.
+///
+/// Precedence:
+/// 1. `CQS_TASK_GATHER_DEPTH` (per-task override)
+/// 2. `CQS_GATHER_DEPTH` (shared default with `cqs gather`)
+/// 3. `TASK_GATHER_DEPTH_DEFAULT` (= 2)
+///
+/// Reading on each call (vs `OnceLock`) is a single `getenv` per `task` invocation,
+/// which keeps `systemctl set-environment` and per-test overrides effective without
+/// process restart. Documented in README.md.
+fn task_gather_depth() -> usize {
+    if let Ok(v) = std::env::var("CQS_TASK_GATHER_DEPTH") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    if let Ok(v) = std::env::var("CQS_GATHER_DEPTH") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    TASK_GATHER_DEPTH_DEFAULT
+}
 
 /// Per-function risk assessment from impact analysis.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -136,13 +165,16 @@ pub fn task_with_resources<Mode>(
         let mut name_scores: HashMap<String, (f32, usize)> =
             targets.iter().map(|n| (n.to_string(), (1.0, 0))).collect();
 
+        // SHL-V1.30-4: drop the hardcoded `with_max_expanded_nodes(100)` override
+        // so `CQS_GATHER_MAX_NODES` (resolved by `GatherOptions::default()`) flows
+        // through. Depth is `CQS_TASK_GATHER_DEPTH` / `CQS_GATHER_DEPTH` overridable
+        // via `task_gather_depth()`.
         bfs_expand(
             &mut name_scores,
             graph,
             &GatherOptions::default()
-                .with_expand_depth(TASK_GATHER_DEPTH)
-                .with_direction(GatherDirection::Both)
-                .with_max_expanded_nodes(TASK_GATHER_MAX_NODES),
+                .with_expand_depth(task_gather_depth())
+                .with_direction(GatherDirection::Both),
         );
 
         let (mut chunks, _degraded) = fetch_and_assemble(store, &name_scores, root);

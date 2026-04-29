@@ -21,7 +21,7 @@ use cqs::store::Store;
 /// #969: recency threshold for pruning `last_indexed_mtime`.
 ///
 /// Entries older than this are dropped when the map grows past
-/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD`. 1 day is long enough to survive an
+/// `last_indexed_prune_size_threshold()`. 1 day is long enough to survive an
 /// overnight idle (the map skips duplicate events on re-indexed files) but
 /// short enough that stale entries from deleted/moved files age out without
 /// a per-entry `stat()` syscall. Previously the prune called `Path::exists()`
@@ -29,17 +29,25 @@ use cqs::store::Store;
 /// serial syscalls). The map's `SystemTime` values make the recency check a
 /// pure in-memory comparison.
 ///
-/// Tunable by editing this constant; intentionally not an env var to avoid
-/// knob proliferation. Re-adding a file on its next watch event is a trivial
-/// insert — this threshold is a cache-size safety valve, not a correctness
-/// invariant.
+/// Tunable by editing this constant.
 pub(super) const LAST_INDEXED_PRUNE_AGE_SECS: u64 = 86_400;
 
-/// #969: size threshold that triggers the `last_indexed_mtime` prune.
+/// #969: default size threshold that triggers the `last_indexed_mtime` prune.
 ///
-/// Lowered from 10K to 5K in RM-4 because the map only needs to span one
-/// debounce cycle's worth of dedup signal.
-pub(super) const LAST_INDEXED_PRUNE_SIZE_THRESHOLD: usize = 5_000;
+/// SHL-V1.30-9: env override `CQS_WATCH_PRUNE_SIZE_THRESHOLD`. The audit found
+/// that `cqs ref` index sizes can exceed 5_000 entries, so the previous
+/// "intentionally not an env var" stance was too restrictive. Documented in
+/// README.md.
+pub(super) const LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT: usize = 5_000;
+
+/// SHL-V1.30-9: resolve `CQS_WATCH_PRUNE_SIZE_THRESHOLD` (default 5_000).
+fn last_indexed_prune_size_threshold() -> usize {
+    std::env::var("CQS_WATCH_PRUNE_SIZE_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT)
+}
 
 /// #969: O(n) in-memory prune of `last_indexed_mtime` by recency.
 ///
@@ -50,7 +58,7 @@ pub(super) const LAST_INDEXED_PRUNE_SIZE_THRESHOLD: usize = 5_000;
 ///
 /// Returns the number of entries removed (useful for tracing and tests).
 pub(super) fn prune_last_indexed_mtime(map: &mut HashMap<PathBuf, SystemTime>) -> usize {
-    if map.len() <= LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
+    if map.len() <= last_indexed_prune_size_threshold() {
         return 0;
     }
     let before = map.len();
@@ -73,16 +81,19 @@ const DAEMON_PERIODIC_GC_CAP_DEFAULT: usize = 1000;
 // `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` / `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`,
 // matching the sibling `daemon_periodic_gc_cap()` resolver pattern below.
 
-/// #1024: Read `CQS_DAEMON_PERIODIC_GC_CAP` once and cache. Keeps the
-/// hot path free of repeated env lookups on every tick.
+/// #1024 / SHL-V1.30-10: Resolve `CQS_DAEMON_PERIODIC_GC_CAP` on every call.
+///
+/// Previously cached in a `OnceLock`, which made `systemctl set-environment`
+/// and `systemctl --user reload-or-restart cqs-watch` ineffective at retuning
+/// the cap mid-process. One `getenv` per GC tick is microseconds; ticks are
+/// minutes apart (see `daemon_periodic_gc_interval_secs()`). Matches
+/// `reconcile_enabled()` semantics, where the env var is read each call.
 fn daemon_periodic_gc_cap() -> usize {
-    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHE.get_or_init(|| {
-        std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
-    })
+    std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
 }
 
 /// #1024: Run the daemon's startup GC sweep — Pass 1 (drop chunks for
