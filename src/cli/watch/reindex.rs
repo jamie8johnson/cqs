@@ -441,10 +441,13 @@ pub(super) fn reindex_files(
     // Collect content hashes of NEWLY EMBEDDED chunks only (for incremental HNSW).
     // Unchanged chunks (cache hits) are already in the HNSW index from a prior cycle,
     // so re-inserting them would create duplicates (hnsw_rs has no dedup).
-    let content_hashes: Vec<String> = to_embed
-        .iter()
-        .map(|(_, c)| c.content_hash.clone())
-        .collect();
+    //
+    // PF-V1.30.1-7: pre-allocate to skip the `Vec` resize cost on the hot
+    // reindex path. Real fix is changing the downstream HNSW insert API
+    // to take `&[&str]` so the per-element clone disappears entirely; the
+    // pre-allocation is the immediate cheap win.
+    let mut content_hashes: Vec<String> = Vec::with_capacity(to_embed.len());
+    content_hashes.extend(to_embed.iter().map(|(_, c)| c.content_hash.clone()));
 
     // Only embed chunks that don't have cached embeddings
     let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
@@ -541,7 +544,12 @@ pub(super) fn reindex_files(
                 Ok(t) => t
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()
-                    .map(|d| d.as_millis() as i64),
+                    // RB-4: surface overflow as None (treated same as
+                    // missing mtime) instead of silently wrapping past
+                    // `i64::MAX` (~292M years). Real mtimes are nowhere
+                    // near the cap, so the saturation is functionally
+                    // equivalent on every valid input.
+                    .and_then(|d| i64::try_from(d.as_millis()).ok()),
                 Err(e) => {
                     tracing::debug!(
                         path = %abs_path.display(),

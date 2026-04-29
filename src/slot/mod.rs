@@ -653,7 +653,22 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
     // files (if any) had already moved — see the failure-arm `fs::write` below.
     let sentinel = project_cqs_dir.join(MIGRATION_SENTINEL_FILE);
     if sentinel.exists() {
-        let detail = fs::read_to_string(&sentinel).unwrap_or_default();
+        // RB-5: cap the sentinel read at 64 KiB. The sentinel is written
+        // by the failure-arm `fs::write` below as a tiny key=value blurb;
+        // anything larger means corruption (or a hostile tree). Reading
+        // GiB-scale "sentinel" files into memory would OOM the process.
+        const SENTINEL_MAX_BYTES: u64 = 64 * 1024;
+        let detail = {
+            let mut buf = String::new();
+            fs::File::open(&sentinel)
+                .and_then(|f| {
+                    f.take(SENTINEL_MAX_BYTES)
+                        .read_to_string(&mut buf)
+                        .map(|_| ())
+                })
+                .map(|_| buf)
+                .unwrap_or_default()
+        };
         return Err(SlotError::Migration(format!(
             "previous migration failed (see {}). Manually recover then `rm {}`. \
              Sentinel contents:\n{}",

@@ -117,10 +117,10 @@ fn format_unix_utc(ts: i64) -> String {
 /// loaded: splade=yes reranker=no
 /// ```
 fn print_text(resp: &cqs::daemon_translate::PingResponse) {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    // RB-3: defensive bad-clock handling via central helper. `unwrap_or(0)`
+    // here is intentional — text-mode `last indexed` formatting prefers a
+    // benign sentinel over a None branch in the relative-time fallback.
+    let now_secs = cqs::unix_secs_i64().unwrap_or(0);
     println!("daemon: running");
     println!("uptime: {}", format_uptime(resp.uptime_secs));
     println!("model: {} ({}-dim)", resp.model, resp.dim);

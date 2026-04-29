@@ -118,6 +118,10 @@ pub(super) fn run_daemon_startup_gc(
     matcher: Option<&ignore::gitignore::Gitignore>,
 ) {
     let _span = tracing::info_span!("daemon_startup_gc").entered();
+    // OB-V1.30.1-7: capture elapsed time for the terminal log line so
+    // operators can correlate startup-GC cost with daemon boot time in
+    // journalctl.
+    let start = std::time::Instant::now();
 
     if std::env::var("CQS_DAEMON_STARTUP_GC").as_deref() == Ok("0") {
         tracing::info!("CQS_DAEMON_STARTUP_GC=0 — daemon startup GC disabled");
@@ -182,6 +186,7 @@ pub(super) fn run_daemon_startup_gc(
 
     let pruned_missing = before.saturating_sub(after_missing);
     let pruned_ignored = after_missing.saturating_sub(after);
+    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     tracing::info!(
         before,
@@ -189,6 +194,7 @@ pub(super) fn run_daemon_startup_gc(
         after,
         pruned_missing,
         pruned_ignored,
+        elapsed_ms,
         "Daemon startup GC complete"
     );
 }
@@ -210,6 +216,10 @@ pub(super) fn run_daemon_periodic_gc(
     matcher: Option<&ignore::gitignore::Gitignore>,
 ) {
     let _span = tracing::info_span!("daemon_periodic_gc").entered();
+    // OB-V1.30.1-7: capture elapsed time so operators can spot a
+    // periodic-GC tick that wedges on a slow filesystem (WSL 9P, network
+    // mount). The terminal log line was previously bare.
+    let start = std::time::Instant::now();
 
     let cap = daemon_periodic_gc_cap();
 
@@ -253,4 +263,11 @@ pub(super) fn run_daemon_periodic_gc(
             }
         }
     }
+
+    // OB-V1.30.1-7: terminal info line so journalctl shows a single
+    // "tick complete" entry per cadence. Per-pass success lines stay at
+    // info; no-op passes log nothing — this line gives the operator a
+    // heartbeat regardless.
+    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::info!(elapsed_ms, cap, "Daemon periodic GC tick complete");
 }

@@ -900,6 +900,13 @@ pub(crate) struct SlotsSection {
     pub active_slot_source: String,
     pub active_slot_file: String,
     pub slots: Vec<SlotsRow>,
+    /// EH-V1.30.1-4: surfaces the underlying error string when
+    /// [`cqs::slot::list_slots`] fails. The whole point of `cqs doctor` is
+    /// to expose silent failures — `.unwrap_or_default()` turned a
+    /// permission-denied-on-`.cqs/slots/` into an empty list with no
+    /// signal whatsoever.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot_listing_error: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -920,7 +927,18 @@ fn collect_slots_section(project_cqs_dir: &Path) -> SlotsSection {
             }
         }
     };
-    let names = cqs::slot::list_slots(project_cqs_dir).unwrap_or_default();
+    // EH-V1.30.1-4: surface `list_slots` failure via tracing AND the JSON
+    // envelope. The whole point of `cqs doctor` is to expose silent
+    // failures — `.unwrap_or_default()` turned a permission-denied (or a
+    // corrupt `.cqs/slots/`) into a perfectly empty list, leaving the
+    // operator with zero hint about why.
+    let (names, slot_listing_error) = match cqs::slot::list_slots(project_cqs_dir) {
+        Ok(n) => (n, None),
+        Err(e) => {
+            tracing::warn!(error = %e, "doctor: list_slots failed — surfacing in JSON envelope");
+            (Vec::new(), Some(e.to_string()))
+        }
+    };
     let rows = names
         .into_iter()
         .map(|n| {
@@ -940,6 +958,7 @@ fn collect_slots_section(project_cqs_dir: &Path) -> SlotsSection {
             .display()
             .to_string(),
         slots: rows,
+        slot_listing_error,
     }
 }
 
