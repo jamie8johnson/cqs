@@ -2,34 +2,35 @@
 
 ## Right Now
 
-**v1.30.1 audit P1+P2 done; P3+P4 next (2026-04-29 ~01:15 UTC).** 144 findings from 16 parallel auditors. Tiers: P1=14, P2=31, P3=78, P4=23.
+**v1.30.1 audit drained (2026-04-29 ~03:15 UTC).** 144 findings → 121 fixed across 19 PRs, 18 hard P4s tracked as issues, 5 trivial P4s done inline.
 
-**Status:**
-- **P1 14/14 ✅ merged**: #1199 (lying docs) · #1200 (trust_level wiring) · #1201 (auth surface) · #1202 (freshness gate) · #1203 (embedder/reconcile)
-- **#1205 ✅ merged**: audit artifacts (findings/triage/fix-prompts.md)
-- **P2 31/31 ✅ merged** (six PRs):
-  - #1206 — auth+serve hardening — PB-1, SEC-3/4, OB-10
-  - #1207 — reconcile+path correctness — EH-1/7, RB-1/6, PB-7
-  - #1208 — watch state machine + delta + clock safety — OB-3/9, AC-10, API-10, RB-10, EH-8 (wire-shape break: `idle_secs` → `last_event_unix_secs`)
-  - #1209 — tests+DS papercuts+misc — TC-HAP-2/3, DS-D1/D5/D7, AC-3, PB-3
-  - #1210 — eval gate observability — OB-6, TC-HAP-4/7
-  - #1211 — wait_for_fresh hot path — RB-9, EH-2, OB-8, AC-9 (BLAKE3 socket path replaces DefaultHasher — restart cqs-watch after binary install), API-1, API-5
-- **#1212 filed**: perf wart — `upsert_sparse_vectors` 1M-row DELETE holds SQLite write lock ~8s on bulk reindex. `sparse_vectors.rs` already does DROP/CREATE INDEX + batched ops; this is the inherent cost of the deletes. Follow-up tracker.
-- **Main** at `ade6f5c8` post-#1211 merge. Local binary rebuild in flight (background `b7wf9ik6d`); after it lands, `systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch` (BLAKE3 socket path **requires** the daemon restart; old DefaultHasher socket name will be orphaned).
+**Tier roll-up:**
+- **P1 14/14 ✅** — #1199 (lying docs) · #1200 (trust_level wiring) · #1201 (auth surface) · #1202 (freshness gate) · #1203 (embedder/reconcile)
+- **P2 31/31 ✅** — #1206 (auth+serve) · #1207 (reconcile+path) · #1208 (watch state machine; wire break `idle_secs`→`last_event_unix_secs`) · #1209 (tests+DS+misc) · #1210 (eval-gate obs) · #1211 (wait_for_fresh; BLAKE3 socket path replaces DefaultHasher)
+- **P3 24/24 ✅** — #1214 (Bundle-1 docs) · #1233 (Bundle-7 platform) · #1235 (Bundle-5 freshness polish) · #1236 (Bundle-6 scaling knobs) · #1237 (Bundle-3 auth+serve) · #1238 (Bundle-4 watch+casts) · #1239 (Bundle-2 API+quality). Drive-by: `JSON_OUTPUT_VERSION` stays at 1 — internal-only field removal (`DaemonReconcileResponse.queued`) didn't justify churning 39 test assertions per "no external users" memory rule.
+- **P4 5/5 trivial done; 18 hard tracked** — #1215-#1232 filed. Notable: SEC-V1.30.1-5 (vendored chunks tagged `user-code`) needs path-prefix denylist + `vendored: bool` schema bump (#1221); EX umbrella (`daemon_request<T>`, BatchCmd macro table, AuthChannel trait, Reranker trait); DS umbrella (`db_file_identity` check, refuse slot remove if daemon serving).
+- **Tears/artifacts** — #1205 (audit findings/triage/fix-prompts) · #1213 (P2 status pass) · #1234 (P4 issues filed)
+
+**State:**
+- Main at `6775a2f8`. Binary rebuilt + cqs-watch restarted. Working tree clean except `.claude/scheduled_tasks.lock` (per-session artifact).
+- Disk cleanup: 176 GB recovered (118 GB main debug dir + 58 GB cqs-p3-b{2..7} per-bundle scratch dirs + 5 empty orphan worktree dirs). `/dev/sdd` 45% → 27%.
+- All 12 P2/P3 worktrees removed; all branches deleted local + remote.
+- No open PRs. P4 issues #1212 (sparse_vectors DELETE perf wart) + #1215-#1232 are the public follow-up queue.
 
 **Up next:**
-- Tears+triage PR (this commit) → CI green → merge
-- P3 execution (78 findings → ~9 implementer bundles by area: docs / API-papercuts / wait_for_fresh-polish / auth-serve / watch-reconcile / scaling-knobs / refactor / platform / TC-coverage)
-- P4 trivials (23 findings; ~10 doc fixes, rest get tracking issues)
-- `cqs audit-mode off` final cleanup
+- `cqs audit-mode off` (auto-expires, but explicit clear is cleaner)
+- Final tears + triage status pass to commit (audit-triage.md still has many P3 rows marked `pending` — agent dispatched to map them to closing PRs)
+- v1.30.2 release decision: 19 PRs of audit close-out is a meaningful surface for a patch release. CHANGELOG entries already inline in each PR; bundle into v1.30.2 release notes.
+- After release: pick from #1212 (perf wart, fresh issue) or P4 hard items (#1215-#1232) or strategic features (#1130/#1176 SPLADE phase 2, #1133 NoteEntry taxonomy).
 
-**Cross-cutting themes** (for context, not action): `delta_saturated` half-wired (fixed #1202), `dropped_this_cycle` reset-before-publish (fixed #1202), `wait_for_fresh` papercuts (in #1211), lying-docs cluster (fixed #1199-#1201), v0.12.1 swallow-error pattern recurrence (P2/P3), three-channel auth gaps (fixed #1201).
+**Cross-cutting themes that drove this audit:** `delta_saturated` half-wired (CQ-V1.30.1-2, fixed #1202) · `dropped_this_cycle` reset-before-publish (CQ-V1.30.1-1, fixed #1202) · `wait_for_fresh` papercuts (#1211) · lying-docs cluster (#1199-#1201) · v0.12.1 swallow-error pattern recurrence (P2/P3) · three-channel auth gaps (#1201).
 
-**Path-discipline incident this session.** 2 of 6 P2 implementer agents (P2-B, P2-F) leaked writes to absolute parent paths despite running in worktrees. Both self-corrected after coordinator notice (saved diff in worktree, reverted parent, reapplied). Lesson reinforced: every parallel-agent prompt needs explicit "use $(git rev-parse --show-toplevel) prefix, never /mnt/c/Projects/cqs/" text per `feedback_agent_worktrees` memory.
-
-**Audit verification quality.** P1 had 5/12 NEEDS FIX (~42%) and P2 had 9/22 NEEDS FIX (~41%) on first verification pass — vs the audit skill's expected 20%. Pattern is consistent across phases: fictional API arities (atomic_replace), wrong function names (save vs save_owned), nonexistent constants (error_codes::TIMEOUT). Fix-prompt generation needs tighter source-grounding before agents are dispatched.
-
-**GPU load spike root-caused (2026-04-29 ~00:55 UTC).** Watch service held GPU/CPU load for ~1h after 11 sequential P1+P2 PR merges. Each `git pull` triggered a debounced inotify batch → reindex_files{file_count=179} → upsert_sparse_vectors{count=5614} → 1.04M-row DELETE in 7.7s + CREATE INDEX rebuild 7.7s. Legitimate work, but worth filing #1212 for. No watch-tuning knob change needed — this is the steady-state cost of a corpus-wide reindex over WSL NTFS.
+**Process notes from this audit cycle:**
+- *Path-discipline.* 2 of 6 P2 implementer agents leaked writes to absolute parent paths despite running in worktrees. Lesson reinforced into `feedback_agent_worktrees` memory: every parallel-agent prompt needs explicit "use $(git rev-parse --show-toplevel) prefix" text.
+- *Fix-prompt verification quality.* P1 5/12 NEEDS FIX (42%), P2 9/22 (41%) — vs audit-skill expected 20%. Pattern: fictional API arities, wrong function names, nonexistent constants. Future audits should source-ground fix prompts more tightly before agent dispatch.
+- *CI runner duration.* P3 wave's `test` job ran 35-43 min vs typical 25-30 min — runner saturation when 7 PRs queue together. Wakeup-scheduling outpaced Monitor-polling for that workload.
+- *Squash-merge `--delete-branch` behavior.* When a worktree holds the branch, `gh pr merge --delete-branch` errors at the *local* delete step but the *server-side* merge succeeds and the remote branch IS deleted. Result here: 7 of 7 P3 PRs reported "failed", all 7 actually merged cleanly.
+- *GPU load spike.* Watch service held GPU/CPU for ~1h after 11 sequential merges. `git pull` → debounced inotify batch → reindex_files{count=179} → upsert_sparse_vectors{count=5614} → 1.04M-row DELETE in 7.7s + CREATE INDEX rebuild 7.7s. Legitimate steady-state cost over WSL NTFS; #1212 tracks the inherent perf wart.
 
 **v1.30.1 released 2026-04-28.** Post-release autopilot loop drained the queue across two arcs: #1182 perfect watch mode (Layers 1-4 + acceptance test) and the P4 auth-hardening cluster (#1197 closes #1134/#1135/#1136). Skipped #1139 / #1140 per autopilot directive.
 
@@ -42,13 +43,16 @@
 - **#1196** — Layer 0 acceptance test (47-file bulk-modify burst). `reconcile_detects_bulk_modify_burst` validates that `WatchSnapshot::compute` ends in `Stale` with `modified_files == 47`; `reconcile_skips_unchanged_files` is the false-positive guard.
 - **#1197** — P4 auth hardening, bundled. #1134 (`AuthToken::try_from_string` alphabet enforcement, `InvalidTokenAlphabet` typed error), #1135 (port-scoped cookie name `cqs_token_<port>` to prevent cross-instance collisions), #1136 (`AuthMode::{Required, Disabled}` enum + `NoAuthAcknowledgement` proof-of-intent type — silent no-auth no longer expressible). 5 new auth.rs unit tests + 3 wire tests in serve/tests.rs. All 71 serve tests pass.
 
-**Up next:** queue per autopilot directive is drained. #1139 (structural_matchers shared library) + #1140 (Embedder preset extras map) explicitly skipped. Available leftovers if the user redirects:
+## Parked
+
+Strategic frontier candidates if the user redirects:
 - **#1130 / #1176** — phase 2 SPLADE → `rrf_fuse_n` (eval-required A/B)
 - **#1133** — `NoteEntry` kind/tag taxonomy
 - **#1131 follow-on** — wire USearch / SIMD brute-force as `IndexBackend` candidates (trait scaffolding from #1131 already in)
-- **Indexed-content trust** — #1181 general mistrust posture (default-on delimiters + `_meta.handling_advice` + per-chunk `injection_flags`) was filed 2026-04-28 and is the current strategic frontier on the security side; check whether it's already merged before starting fresh work.
+- **#1212** — bulk `upsert_sparse_vectors` DELETE perf wart (1M-row delete holds SQLite write lock ~8s on bulk reindex)
+- P4 hard items #1215-#1232 — extensibility umbrellas (BatchCmd macro table, AuthChannel trait, Reranker trait, daemon_request<T> dedup) + data-safety (db_file_identity, schema v23 fingerprint with content_hash+size) + security (vendored chunks denylist + `vendored: bool` schema bump).
 
-**Local state:** working tree clean on `main` at `8decd9ea`. Release binary rebuild in flight (background task `bh0nm7txz`); after it lands, `systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`. Issues #1134/#1135/#1136 closed via `gh issue close --reason completed`.
+#1139 (structural_matchers shared library) + #1140 (Embedder preset extras map) explicitly skipped per autopilot directive.
 
 **Landed since v1.30.0 release:**
 - **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.
@@ -69,17 +73,6 @@
 
 **#1171** documents the threat model — adds top-level `## Indirect Prompt Injection / Supply-Chain Risks from Indexed Content` section to SECURITY.md with surface table, mitigations, and tracked-improvements list. CI in flight.
 
-**Up next — v1.30.0 audit P2 scoring cluster (#1132 done):** 
-
-- ~~**#1132** (eval-neutral) — done in #1165~~
-- **#1131** (P2.89: Vector index backend selection is hand-coded; needs `IndexBackend` trait) — eval-neutral. Next. Lands the trait scaffolding for USearch + SIMD brute-force later.
-- **#1130** (P2.88: Adding third score signal requires touching two fusion paths) — eval-required A/B; blocked by #1131.
-
-Plan order: **#1131 → #1130**. The first cleanly factors without changing retrieval behavior; the second becomes a localized RRF/scoring change once the foundation lands.
-
-After P2: #1133 (P2.91 NoteEntry taxonomy), four P3 ergonomics issues (#1137-#1140), three P4 auth/serve bugs (#1134-#1136), or the new indirect-injection cluster (#1166-#1170), or the queued roadmap items (USearch / SIMD brute-force / watch-mode improvements).
-
-**Local state:** working tree clean post-#1165 merge; release binary rebuild in flight (need `cargo build --release --features cuda-index` then stop watch / cp / start watch). Index at 18,760 chunks. `cqs-watch` daemon still running v1.30.0 + dep-bumps binary; will refresh once #1171 merges (no schema change → no reindex needed).
 
 ### v1.30.0 release session (2026-04-25) — what landed
 
