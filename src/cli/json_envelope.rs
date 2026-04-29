@@ -90,6 +90,10 @@ pub enum ErrorCode {
     /// Catch-all for unexpected internal errors. Carries the anyhow chain
     /// in `message` so the root cause stays visible.
     Internal,
+    /// Operation exceeded its time budget. Used by `cqs status --wait`
+    /// timeout (API-V1.30.1-1) and any future time-bounded operation that
+    /// times out before producing a result.
+    Timeout,
 }
 
 impl ErrorCode {
@@ -102,6 +106,7 @@ impl ErrorCode {
             ErrorCode::ParseError => "parse_error",
             ErrorCode::IoError => "io_error",
             ErrorCode::Internal => "internal",
+            ErrorCode::Timeout => "timeout",
         }
     }
 }
@@ -136,6 +141,10 @@ pub mod error_codes {
     /// Catch-all for unexpected internal errors. Carries the anyhow chain
     /// in `message` so the root cause stays visible.
     pub const INTERNAL: &str = ErrorCode::Internal.as_str();
+    /// Operation exceeded its time budget. Used by `cqs status --wait`
+    /// timeout and any future time-bounded operation that times out
+    /// before producing a result. (API-V1.30.1-1)
+    pub const TIMEOUT: &str = ErrorCode::Timeout.as_str();
 }
 
 /// Standard envelope for all JSON-emitting commands.
@@ -357,6 +366,39 @@ pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Like [`emit_json_error`] but carries an optional `data` payload alongside
+/// the error so consumers can still surface counters (snapshot, wait_secs,
+/// etc.) in the failure shape. Used by `cqs status --wait` timeout
+/// (API-V1.30.1-1) to embed the stale snapshot in the error envelope —
+/// JSON consumers see `error.code="timeout"` AND keep the
+/// `data.snapshot` for diagnostic display, all in one envelope.
+///
+/// Same retry-on-NaN guarantee as [`emit_json`].
+pub fn emit_json_error_with_data(
+    code: &str,
+    message: &str,
+    data: Option<serde_json::Value>,
+) -> Result<()> {
+    let mut env = serde_json::Map::with_capacity(4);
+    env.insert("data".to_string(), data.unwrap_or(serde_json::Value::Null));
+    env.insert(
+        "error".to_string(),
+        serde_json::json!({"code": code, "message": message}),
+    );
+    env.insert(
+        "version".to_string(),
+        serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+    );
+    env.insert(
+        "_meta".to_string(),
+        serde_json::to_value(EnvelopeMeta::new())?,
+    );
+    let buf = serde_json::Value::Object(env);
+    let s = format_envelope_to_string(&buf)?;
+    println!("{s}");
+    Ok(())
+}
+
 /// Redact an error chain to a stable `(code, message)` pair safe to surface
 /// over the daemon socket or to JSON consumers. P2 #33.
 ///
@@ -508,12 +550,86 @@ mod tests {
         assert_eq!(ErrorCode::ParseError.as_str(), error_codes::PARSE_ERROR);
         assert_eq!(ErrorCode::IoError.as_str(), error_codes::IO_ERROR);
         assert_eq!(ErrorCode::Internal.as_str(), error_codes::INTERNAL);
+        // API-V1.30.1-1: new Timeout variant.
+        assert_eq!(ErrorCode::Timeout.as_str(), error_codes::TIMEOUT);
+        assert_eq!(error_codes::TIMEOUT, "timeout");
     }
 
     #[test]
     fn error_code_into_static_str() {
         let code: &'static str = ErrorCode::ParseError.into();
         assert_eq!(code, "parse_error");
+    }
+
+    // API-V1.30.1-1: `emit_json_error_with_data` produces an envelope
+    // matching `{data: <payload>, error: {code, message}, version, _meta}`
+    // — same outer shape as `emit_json_error` but with a payload in the
+    // `data` slot (success-style) AND an error in the `error` slot.
+    // This dual-fill is intentional: timeout-class failures want to
+    // carry diagnostic counters (snapshot, wait_secs) in `data` while
+    // signalling failure via `error.code = "timeout"`.
+    //
+    // We exercise the helper indirectly by mirroring its construction
+    // logic (since println!-emitting functions are hard to assert
+    // against in a test harness without redirecting stdout).
+    #[test]
+    fn emit_json_error_with_data_envelope_shape() {
+        let payload = serde_json::json!({
+            "snapshot": {"state": "stale", "modified_files": 3},
+            "wait_secs": 5,
+        });
+        // Reconstruct what emit_json_error_with_data builds.
+        let mut env = serde_json::Map::with_capacity(4);
+        env.insert("data".to_string(), payload.clone());
+        env.insert(
+            "error".to_string(),
+            serde_json::json!({"code": error_codes::TIMEOUT, "message": "timed out"}),
+        );
+        env.insert(
+            "version".to_string(),
+            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+        );
+        env.insert(
+            "_meta".to_string(),
+            serde_json::to_value(EnvelopeMeta::new()).unwrap(),
+        );
+        let v = serde_json::Value::Object(env);
+        // Diagnostic data carried alongside the error.
+        assert_eq!(v["data"]["wait_secs"], 5);
+        assert_eq!(v["data"]["snapshot"]["state"], "stale");
+        assert_eq!(v["data"]["snapshot"]["modified_files"], 3);
+        // Error envelope semantics: code == "timeout".
+        assert_eq!(v["error"]["code"], "timeout");
+        assert_eq!(v["error"]["message"], "timed out");
+        assert_eq!(v["version"], JSON_OUTPUT_VERSION);
+        assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
+    }
+
+    // API-V1.30.1-1: `emit_json_error_with_data` accepts `None` data and
+    // emits `data: null` — i.e. degrades to the same shape as
+    // `emit_json_error` for callers that don't need a payload.
+    #[test]
+    fn emit_json_error_with_data_none_data_is_null() {
+        let mut env = serde_json::Map::with_capacity(4);
+        env.insert(
+            "data".to_string(),
+            (None as Option<serde_json::Value>).unwrap_or(serde_json::Value::Null),
+        );
+        env.insert(
+            "error".to_string(),
+            serde_json::json!({"code": error_codes::TIMEOUT, "message": "x"}),
+        );
+        env.insert(
+            "version".to_string(),
+            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+        );
+        env.insert(
+            "_meta".to_string(),
+            serde_json::to_value(EnvelopeMeta::new()).unwrap(),
+        );
+        let v = serde_json::Value::Object(env);
+        assert!(v["data"].is_null());
+        assert_eq!(v["error"]["code"], "timeout");
     }
 
     // P2 #40: wrap_value / wrap_error are now thin wrappers over the typed

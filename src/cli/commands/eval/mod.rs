@@ -292,7 +292,45 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                      Eval --require-fresh requires a running `cqs watch --serve`. Either:\n  \
                        - start the daemon (`systemctl --user start cqs-watch` or `cqs watch --serve`)\n  \
                        - rerun with `--no-require-fresh` for an offline check\n  \
-                       - export `CQS_EVAL_REQUIRE_FRESH=0` to disable the gate for this shell"
+                       - export `CQS_EVAL_REQUIRE_FRESH=0` to disable the gate for this shell\n\n\
+                     NOTE: if you upgraded from <v1.30.1, the daemon socket name changed (BLAKE3); \
+                     run `systemctl --user restart cqs-watch` so the daemon binds the new path."
+                )
+            }
+            // EH-V1.30.1-2: Transport — socket exists but daemon isn't
+            // responding (hung, crashed mid-call, or set_*_timeout failed).
+            FreshnessWait::Transport(msg) => {
+                tracing::info!(
+                    outcome = "transport",
+                    elapsed_ms,
+                    "require_fresh_gate: resolved",
+                );
+                anyhow::bail!(
+                    "watch daemon transport error: {msg}\n\
+                     \n\
+                     The daemon socket exists but isn't responding. The daemon may be \
+                     hung or crashed mid-call. Try:\n  \
+                       - check the daemon log (`journalctl --user -u cqs-watch -n 50`)\n  \
+                       - restart the daemon (`systemctl --user restart cqs-watch`)\n  \
+                       - rerun with `--no-require-fresh` to skip the gate"
+                )
+            }
+            // EH-V1.30.1-2: BadResponse — daemon replied but the envelope
+            // was unparseable. Most often a CLI/daemon version skew.
+            FreshnessWait::BadResponse(msg) => {
+                tracing::info!(
+                    outcome = "bad_response",
+                    elapsed_ms,
+                    "require_fresh_gate: resolved",
+                );
+                anyhow::bail!(
+                    "watch daemon returned a malformed response: {msg}\n\
+                     \n\
+                     The daemon answered but the response was unparseable — likely a \
+                     CLI/daemon version skew. Restart the daemon after rebuilding so it \
+                     speaks the same protocol as this CLI:\n  \
+                       - `systemctl --user stop cqs-watch && cargo install --path . && systemctl --user start cqs-watch`\n  \
+                       - rerun with `--no-require-fresh` to skip the gate"
                 )
             }
         }

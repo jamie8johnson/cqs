@@ -241,13 +241,20 @@ fn setup_project() -> (TempDir, PathBuf) {
 /// Mirror `cqs::daemon_translate::daemon_socket_path` but with an explicit
 /// runtime-dir override so the test doesn't need to mutate env vars in the
 /// current process. The mutation happens on the spawned CLI only.
+///
+/// AC-V1.30.1-9: must stay byte-equivalent to the production helper —
+/// production switched from `std::collections::hash_map::DefaultHasher`
+/// (Rust-version-dependent SipHash) to `blake3` truncated to 8 bytes.
 fn daemon_socket_path_with_runtime_dir(cqs_dir: &Path, runtime_dir: &Path) -> PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut h = DefaultHasher::new();
-    cqs_dir.hash(&mut h);
-    let sock_name = format!("cqs-{:x}.sock", h.finish());
+    let canonical_path_bytes = cqs_dir.as_os_str().as_encoded_bytes();
+    let hash = blake3::hash(canonical_path_bytes);
+    let truncated = &hash.as_bytes()[..8];
+    let mut hex = String::with_capacity(16);
+    for b in truncated {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    let sock_name = format!("cqs-{}.sock", hex);
     runtime_dir.join(sock_name)
 }
 
