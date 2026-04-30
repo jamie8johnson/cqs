@@ -84,6 +84,7 @@ fn insert_note(store: &TestStore, id: &str, text: &str, sentiment: f32) {
         text: text.to_string(),
         sentiment,
         mentions: vec![],
+        kind: None,
     };
     store
         .upsert_notes_batch(&[note], &PathBuf::from("notes.toml"), 12345)

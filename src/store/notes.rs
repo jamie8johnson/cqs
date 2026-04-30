@@ -52,12 +52,12 @@ async fn insert_notes_with_fts_batched(
         .collect::<Result<Vec<_>, _>>()?;
     let fts_text: Vec<String> = notes.iter().map(|n| normalize_for_fts(&n.text)).collect();
 
-    // Step 1: INSERT OR REPLACE INTO notes (9 cols per row).
-    const NOTES_BATCH: usize = max_rows_per_statement(9);
+    // Step 1: INSERT OR REPLACE INTO notes (10 cols per row — v25 / #1133 added kind).
+    const NOTES_BATCH: usize = max_rows_per_statement(10);
     for (batch_idx, batch) in notes.chunks(NOTES_BATCH).enumerate() {
         let row_offset = batch_idx * NOTES_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)",
+            "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at, kind)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, note)| {
             b.push_bind(&note.id)
@@ -68,7 +68,8 @@ async fn insert_notes_with_fts_batched(
                 .push_bind(source_str)
                 .push_bind(file_mtime)
                 .push_bind(now)
-                .push_bind(now);
+                .push_bind(now)
+                .push_bind(&note.kind);
         });
         qb.build().execute(&mut **tx).await?;
     }
@@ -252,10 +253,11 @@ impl<Mode> Store<Mode> {
     pub fn list_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
         let _span = tracing::debug_span!("list_notes_summaries").entered();
         self.rt.block_on(async {
-            let rows: Vec<_> =
-                sqlx::query("SELECT id, text, sentiment, mentions FROM notes ORDER BY created_at")
-                    .fetch_all(&self.pool)
-                    .await?;
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, text, sentiment, mentions, kind FROM notes ORDER BY created_at",
+            )
+            .fetch_all(&self.pool)
+            .await?;
 
             Ok(rows
                 .into_iter()
@@ -264,6 +266,7 @@ impl<Mode> Store<Mode> {
                     let text: String = row.get(1);
                     let sentiment: f64 = row.get(2);
                     let mentions_json: String = row.get(3);
+                    let kind: Option<String> = row.try_get(4).unwrap_or(None);
                     let mentions: Vec<String> =
                         serde_json::from_str(&mentions_json).unwrap_or_else(|e| {
                             tracing::warn!(note_id = %id, error = %e, "Failed to deserialize note mentions");
@@ -274,6 +277,7 @@ impl<Mode> Store<Mode> {
                         text,
                         sentiment: sentiment as f32,
                         mentions,
+                        kind,
                     }
                 })
                 .collect())
@@ -300,6 +304,7 @@ mod tests {
             text: text.to_string(),
             sentiment,
             mentions: vec![],
+            kind: None,
         }
     }
     /// Verifies that sentiment thresholds are positioned correctly between discrete sentiment values to ensure proper classification boundaries.
@@ -519,6 +524,7 @@ mod tests {
             text: "note with no mentions".to_string(),
             sentiment: 0.5,
             mentions: vec![],
+            kind: None,
         }];
         store.upsert_notes_batch(&notes, source, 100).unwrap();
 

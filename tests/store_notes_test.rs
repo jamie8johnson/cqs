@@ -15,6 +15,7 @@ fn test_note(id: &str, text: &str, sentiment: f32) -> Note {
         text: text.to_string(),
         sentiment,
         mentions: vec![],
+        kind: None,
     }
 }
 
@@ -45,12 +46,14 @@ fn test_note_round_trip() {
             "src/indexer.rs".to_string(),
             "Store::upsert_chunk".to_string(),
         ],
+        kind: None,
     };
     let note2 = Note {
         id: "rt2".to_string(),
         text: "BFS expansion pattern works well for gather".to_string(),
         sentiment: 0.5,
         mentions: vec!["src/gather.rs".to_string()],
+        kind: None,
     };
 
     let count = store

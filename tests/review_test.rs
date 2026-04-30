@@ -331,6 +331,7 @@ fn test_review_diff_with_relevant_notes() {
         text: "math.rs compute function has known precision issues".to_string(),
         sentiment: -0.5,
         mentions: vec!["math.rs".to_string()],
+        kind: None,
     };
     store
         .upsert_notes_batch(&[note], std::path::Path::new("notes.toml"), 12345)

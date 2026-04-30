@@ -76,6 +76,18 @@ pub struct NoteEntry {
     /// Code paths/functions mentioned (for linking)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
+    /// v25 / #1133: free-form kind tag (`todo`, `design-decision`,
+    /// `deprecation`, `known-bug`, …). When present, takes precedence
+    /// over `sentiment`'s implicit "Warning:"/"Pattern:" mapping for
+    /// the embedding-text prefix; the structural field also enables
+    /// `cqs notes list --kind <kind>` filtering.
+    ///
+    /// Free-string by design: a closed enum would force a coordinated
+    /// edit every time someone wants a new tag. The cqs convention is
+    /// kebab-case lowercase; `cqs notes add --kind` does not validate
+    /// the value beyond rejecting empty strings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// TOML file structure (round-trippable via serde)
@@ -96,15 +108,33 @@ pub struct Note {
     pub sentiment: f32,
     /// Code paths/functions mentioned
     pub mentions: Vec<String>,
+    /// v25 / #1133: optional structured kind tag (see [`NoteEntry::kind`]).
+    /// Drives the embedding-text prefix when present; serialized to JSON
+    /// only when set so the existing wire shape stays backward-compatible
+    /// for kind-less notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl Note {
-    /// Generate embedding text for this note
-    /// Adds a prefix based on sentiment to help with retrieval:
-    /// - Negative sentiment: "Warning: "
-    /// - Positive sentiment: "Pattern: "
-    /// - Neutral: no prefix
+    /// Generate embedding text for this note.
+    ///
+    /// Prefix priority (#1133):
+    /// 1. `kind` is set: `"<Kind>: "` — capitalized, kind takes
+    ///    precedence over the sentiment-based fallback so structured
+    ///    notes get a structured retrieval signal.
+    /// 2. `kind` is None, sentiment < -0.3: `"Warning: "`.
+    /// 3. `kind` is None, sentiment > +0.3: `"Pattern: "`.
+    /// 4. `kind` is None, sentiment in [-0.3, +0.3]: no prefix.
+    ///
+    /// Capitalisation: kebab-case kinds (`design-decision`) become
+    /// title-case prefixes (`Design-Decision: `) so the embedder sees
+    /// readable English. Bare lowercase kinds (`todo`) become
+    /// `Todo: `.
     pub fn embedding_text(&self) -> String {
+        if let Some(kind) = self.kind.as_deref() {
+            return format!("{}: {}", capitalize_kind_for_prefix(kind), self.text);
+        }
         let prefix = if self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD {
             "Warning: "
         } else if self.sentiment > SENTIMENT_POSITIVE_THRESHOLD {
@@ -384,11 +414,44 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
                 text: entry.text.trim().to_string(),
                 sentiment: entry.sentiment.clamp(-1.0, 1.0),
                 mentions: entry.mentions,
+                kind: entry.kind.and_then(normalize_kind),
             }
         })
         .collect();
 
     Ok(notes)
+}
+
+/// Normalize a `kind` value: trim whitespace, lowercase, reject empty.
+/// Returns `None` when the input was effectively empty so absent /
+/// blank kinds round-trip as None.
+///
+/// We don't enforce a closed taxonomy — kebab-case lowercase is the
+/// convention, but `cqs notes add --kind WeirdValue` is allowed.
+fn normalize_kind(raw: String) -> Option<String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Capitalize a kebab-case kind for embedding-text prefix display.
+/// `"design-decision"` → `"Design-Decision"`. Each `-`-separated
+/// segment is title-cased; a bare `"todo"` becomes `"Todo"`. The
+/// trailing `": "` separator is added by the caller.
+fn capitalize_kind_for_prefix(kind: &str) -> String {
+    kind.split('-')
+        .map(|seg| {
+            let mut chars = seg.chars();
+            match chars.next() {
+                Some(c) => format!("{}{}", c.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Normalize `path` for slash-matching without allocating when possible.
@@ -834,5 +897,112 @@ text = "first note"
             notes[0].text, "\0",
             "NUL-only text survives trim — it is not ASCII whitespace"
         );
+    }
+
+    /// #1133: kind round-trips through TOML parse. Lower-cased, trimmed,
+    /// with empty-string normalized to `None`.
+    #[test]
+    fn test_parse_notes_str_with_kind() {
+        let toml = r#"
+[[note]]
+text = "Add caching layer for embeddings"
+sentiment = 0
+kind = "todo"
+
+[[note]]
+text = "BGE-large beats E5 on v3.v2"
+sentiment = 1
+kind = "Design-Decision"
+
+[[note]]
+text = "neutral observation"
+sentiment = 0
+
+[[note]]
+text = "blank kind reads as none"
+sentiment = 0
+kind = ""
+"#;
+        let notes = parse_notes_str(toml).unwrap();
+        assert_eq!(notes.len(), 4);
+        assert_eq!(notes[0].kind.as_deref(), Some("todo"));
+        // Mixed-case input is normalized to lowercase by `normalize_kind`.
+        assert_eq!(notes[1].kind.as_deref(), Some("design-decision"));
+        // Sentiment-only note: kind is None.
+        assert_eq!(notes[2].kind, None);
+        // Explicit empty kind is normalized to None — same as absent.
+        assert_eq!(notes[3].kind, None);
+    }
+
+    /// #1133: `embedding_text()` prefix priority. Kind wins over
+    /// sentiment when set; sentiment-based prefixes still apply when
+    /// kind is None.
+    #[test]
+    fn test_embedding_text_prefix_priority() {
+        // Kind set → kind prefix (capitalized).
+        let n = Note {
+            id: "x".into(),
+            text: "Investigate dim mismatch".into(),
+            sentiment: -1.0,
+            mentions: vec![],
+            kind: Some("known-bug".into()),
+        };
+        assert_eq!(
+            n.embedding_text(),
+            "Known-Bug: Investigate dim mismatch",
+            "kind prefix wins over negative-sentiment Warning prefix"
+        );
+
+        // No kind, negative sentiment → "Warning:".
+        let n = Note {
+            id: "y".into(),
+            text: "Index lock not released".into(),
+            sentiment: -1.0,
+            mentions: vec![],
+            kind: None,
+        };
+        assert_eq!(n.embedding_text(), "Warning: Index lock not released");
+
+        // No kind, positive sentiment → "Pattern:".
+        let n = Note {
+            id: "z".into(),
+            text: "BGE-large is the production embedder".into(),
+            sentiment: 1.0,
+            mentions: vec![],
+            kind: None,
+        };
+        assert_eq!(
+            n.embedding_text(),
+            "Pattern: BGE-large is the production embedder"
+        );
+
+        // Kind="todo" + neutral sentiment → "Todo:" (single-segment).
+        let n = Note {
+            id: "w".into(),
+            text: "Review the eval fixture".into(),
+            sentiment: 0.0,
+            mentions: vec![],
+            kind: Some("todo".into()),
+        };
+        assert_eq!(n.embedding_text(), "Todo: Review the eval fixture");
+    }
+
+    /// #1133: `capitalize_kind_for_prefix` handles single + multi-segment
+    /// kebab-case strings. Pinning the formatting protects against a
+    /// future refactor that passes raw lowercase to the embedder (the
+    /// embedder treats `Design-Decision` as more meaningful English
+    /// than `design-decision`).
+    #[test]
+    fn test_capitalize_kind_for_prefix() {
+        assert_eq!(capitalize_kind_for_prefix("todo"), "Todo");
+        assert_eq!(
+            capitalize_kind_for_prefix("design-decision"),
+            "Design-Decision"
+        );
+        assert_eq!(capitalize_kind_for_prefix("known-bug"), "Known-Bug");
+        // Three-segment kebab-case stays consistent.
+        assert_eq!(capitalize_kind_for_prefix("a-b-c"), "A-B-C");
+        // Single empty segment falls through cleanly.
+        assert_eq!(capitalize_kind_for_prefix(""), "");
     }
 }
