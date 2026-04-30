@@ -2,46 +2,39 @@
 
 ## Right Now
 
-**v1.30.1 audit drained (2026-04-29 ~03:15 UTC).** 144 findings → 121 fixed across 19 PRs, 18 hard P4s tracked as issues, 5 trivial P4s done inline.
+**v1.31.0 released 2026-04-30.** Tag `v1.31.0` pushed (`5e86df89`); `cqs 1.31.0` published to crates.io; release.yml workflow building prebuilt binaries.
 
-**Tier roll-up:**
-- **P1 14/14 ✅** — #1199 (lying docs) · #1200 (trust_level wiring) · #1201 (auth surface) · #1202 (freshness gate) · #1203 (embedder/reconcile)
-- **P2 31/31 ✅** — #1206 (auth+serve) · #1207 (reconcile+path) · #1208 (watch state machine; wire break `idle_secs`→`last_event_unix_secs`) · #1209 (tests+DS+misc) · #1210 (eval-gate obs) · #1211 (wait_for_fresh; BLAKE3 socket path replaces DefaultHasher)
-- **P3 24/24 ✅** — #1214 (Bundle-1 docs) · #1233 (Bundle-7 platform) · #1235 (Bundle-5 freshness polish) · #1236 (Bundle-6 scaling knobs) · #1237 (Bundle-3 auth+serve) · #1238 (Bundle-4 watch+casts) · #1239 (Bundle-2 API+quality). Drive-by: `JSON_OUTPUT_VERSION` stays at 1 — internal-only field removal (`DaemonReconcileResponse.queued`) didn't justify churning 39 test assertions per "no external users" memory rule.
-- **P4 5/5 trivial done; 18 hard tracked** — #1215-#1232 filed. Notable: SEC-V1.30.1-5 (vendored chunks tagged `user-code`) needs path-prefix denylist + `vendored: bool` schema bump (#1221); EX umbrella (`daemon_request<T>`, BatchCmd macro table, AuthChannel trait, Reranker trait); DS umbrella (`db_file_identity` check, refuse slot remove if daemon serving).
-- **Tears/artifacts** — #1205 (audit findings/triage/fix-prompts) · #1213 (P2 status pass) · #1234 (P4 issues filed)
+**Theme:** post-v1.30.2 bug-drain across watch reconcile, sparse-vector index, LLM redirect policy, slot lifecycle, native-Windows shutdown, coarse-mtime filesystems. Minor bump because of the **schema v22 → v23 migration** (auto-migrating; new `source_size` + `source_content_hash` columns on `FileFingerprint`).
+
+**Bundle table (all merged):**
+
+| PR | Closes | Theme |
+|---|---|---|
+| #1248 | #1219 #1245 #1231 #1227 | watch reconcile cluster — content-hash fingerprint + path dedup + force-rotation guard. **Schema v22→v23.** |
+| #1249 | #1212 | sparse-upsert chunked sub-transactions (`CQS_SPARSE_CHUNKS_PER_TX`, default 5000). |
+| #1250 | #1224 #1225 | coarse-mtime FS handling (HFS+, SMB, NFS, CIFS, FAT32 on plain Linux/macOS) + WSL `cqs serve --open` browser opener. |
+| #1251 | #1222 #1223 | reqwest same-origin redirect policy + `cqs ref add --source` symlink-redirect warning. |
+| #1252 | #1232 | `cqs slot remove` refuses if daemon is serving (probes `daemon_status`, matches `WatchSnapshot.active_slot`). |
+| #1253 | #1044 | native-Windows `cqs watch` clean shutdown via `ctrlc` termination feature. |
+| #1255 | (tracks #1254) | agent definitions: worktree-leakage warning bullet across all 6 `.claude/agents/*.md` files. |
+| #1256 #1257 | — | roadmap docs cleanup (EmbeddingGemma + Qwen3-8B + NV-Embed-v2 added; v1.30.x long-form blocks collapsed). |
+| #1258 | — | release. |
 
 **State:**
-- Main at `6775a2f8`. Binary rebuilt + cqs-watch restarted. Working tree clean except `.claude/scheduled_tasks.lock` (per-session artifact).
-- Disk cleanup: 176 GB recovered (118 GB main debug dir + 58 GB cqs-p3-b{2..7} per-bundle scratch dirs + 5 empty orphan worktree dirs). `/dev/sdd` 45% → 27%.
-- All 12 P2/P3 worktrees removed; all branches deleted local + remote.
-- No open PRs. P4 issues #1212 (sparse_vectors DELETE perf wart) + #1215-#1232 are the public follow-up queue.
+- Main at `5e86df89`. Local at the same SHA. Working tree clean except `.claude/scheduled_tasks.lock` (per-session artifact).
+- v1.31.0 published to crates.io ✅. Release workflow run `25148555289` building prebuilts (in_progress).
+- No open PRs.
+- Cross-slot `llm_summaries` copy by content_hash works as expected — no v1.31.0 reindex needed; v22→v23 auto-migration is a one-shot ALTER TABLE on first daemon start.
 
 **Up next:**
-- `cqs audit-mode off` (auto-expires, but explicit clear is cleaner)
-- Final tears + triage status pass to commit (audit-triage.md still has many P3 rows marked `pending` — agent dispatched to map them to closing PRs)
-- v1.30.2 release decision: 19 PRs of audit close-out is a meaningful surface for a patch release. CHANGELOG entries already inline in each PR; bundle into v1.30.2 release notes.
-- After release: pick from #1212 (perf wart, fresh issue) or P4 hard items (#1215-#1232) or strategic features (#1130/#1176 SPLADE phase 2, #1133 NoteEntry taxonomy).
+- Verify release.yml prebuilds completed.
+- Rebuild and install local binary: `cargo build --release --features cuda-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`.
+- v1.31.0 audit eligible (16-category audit) once daemon stable on the new binary.
+- Strategic frontier still open: #1212 perf wart (now closed by #1249), Phase 3 EmbeddingGemma A/B, ceiling probes (Qwen3-8B, NV-Embed-v2). User said "let's get all the bugs out before that" earlier — bugs out now, embedder eval queue is the next strategic question.
 
-**Cross-cutting themes that drove this audit:** `delta_saturated` half-wired (CQ-V1.30.1-2, fixed #1202) · `dropped_this_cycle` reset-before-publish (CQ-V1.30.1-1, fixed #1202) · `wait_for_fresh` papercuts (#1211) · lying-docs cluster (#1199-#1201) · v0.12.1 swallow-error pattern recurrence (P2/P3) · three-channel auth gaps (#1201).
+**Worktree leakage (#1254) status:** agent-side workaround shipped via #1255. cqs-side fix (`.git/commondir` auto-discovery + `worktree_stale: bool` JSON envelope flag) deferred — not blocking.
 
-**Process notes from this audit cycle:**
-- *Path-discipline.* 2 of 6 P2 implementer agents leaked writes to absolute parent paths despite running in worktrees. Lesson reinforced into `feedback_agent_worktrees` memory: every parallel-agent prompt needs explicit "use $(git rev-parse --show-toplevel) prefix" text.
-- *Fix-prompt verification quality.* P1 5/12 NEEDS FIX (42%), P2 9/22 (41%) — vs audit-skill expected 20%. Pattern: fictional API arities, wrong function names, nonexistent constants. Future audits should source-ground fix prompts more tightly before agent dispatch.
-- *CI runner duration.* P3 wave's `test` job ran 35-43 min vs typical 25-30 min — runner saturation when 7 PRs queue together. Wakeup-scheduling outpaced Monitor-polling for that workload.
-- *Squash-merge `--delete-branch` behavior.* When a worktree holds the branch, `gh pr merge --delete-branch` errors at the *local* delete step but the *server-side* merge succeeds and the remote branch IS deleted. Result here: 7 of 7 P3 PRs reported "failed", all 7 actually merged cleanly.
-- *GPU load spike.* Watch service held GPU/CPU for ~1h after 11 sequential merges. `git pull` → debounced inotify batch → reindex_files{count=179} → upsert_sparse_vectors{count=5614} → 1.04M-row DELETE in 7.7s + CREATE INDEX rebuild 7.7s. Legitimate steady-state cost over WSL NTFS; #1212 tracks the inherent perf wart.
-
-**v1.30.1 released 2026-04-28.** Post-release autopilot loop drained the queue across two arcs: #1182 perfect watch mode (Layers 1-4 + acceptance test) and the P4 auth-hardening cluster (#1197 closes #1134/#1135/#1136). Skipped #1139 / #1140 per autopilot directive.
-
-**Just landed (post-v1.30.1):**
-- **#1189** — Layer 3 freshness API. `cqs::watch_status::WatchSnapshot` state machine + `Arc<RwLock<...>>` shared between watch writer and daemon reader. `BatchCmd::Status` + `cqs status --watch-fresh [--json] [--wait [--wait-secs N]]`. Drive-by: fixed pre-existing `cqs ping` envelope-vs-payload deserialization bug.
-- **#1191** — Layer 2 periodic full-tree reconciliation (`src/cli/watch/reconcile.rs`). Gitignore-respecting walk → `(path, mtime, size)` fingerprint → divergence → queue for reindex. Wired alongside `run_daemon_periodic_gc`.
-- **#1193** — Layer 1 git hooks. `cqs hook install` + `post-{checkout,merge,rewrite}` + `reconcile` socket message + `.cqs/.dirty` fallback when daemon's down.
-- **#1194** — Layer 4 eval gate. `cqs eval --require-fresh` (default on, `--no-require-fresh` opt-out, `CQS_EVAL_REQUIRE_FRESH=0` env). `daemon_translate::wait_for_fresh()` shared helper between `cqs status` and `cqs eval`.
-- **#1195** — README + ROADMAP docs for the watch-mode landing. ROADMAP marks #1182 `[x]`. Three-layer table, hook examples, freshness API, eval-gate env var.
-- **#1196** — Layer 0 acceptance test (47-file bulk-modify burst). `reconcile_detects_bulk_modify_burst` validates that `WatchSnapshot::compute` ends in `Stale` with `modified_files == 47`; `reconcile_skips_unchanged_files` is the false-positive guard.
-- **#1197** — P4 auth hardening, bundled. #1134 (`AuthToken::try_from_string` alphabet enforcement, `InvalidTokenAlphabet` typed error), #1135 (port-scoped cookie name `cqs_token_<port>` to prevent cross-instance collisions), #1136 (`AuthMode::{Required, Disabled}` enum + `NoAuthAcknowledgement` proof-of-intent type — silent no-auth no longer expressible). 5 new auth.rs unit tests + 3 wire tests in serve/tests.rs. All 71 serve tests pass.
+**Open Issues (post-v1.31.0):** #1043 (Windows network-drive `is_slow_mmap_fs`, blocked on Windows test env). All other v1.30.0/v1.30.1 audit follow-ups closed or filed against future work.
 
 ## Parked
 
