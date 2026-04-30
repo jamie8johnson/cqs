@@ -379,6 +379,11 @@ pub struct NoteSummary {
     pub sentiment: f32,
     /// Mentioned code paths/functions
     pub mentions: Vec<String>,
+    /// v25 / #1133: structured kind tag (`todo`, `design-decision`, …).
+    /// `None` for notes without an explicit kind (the pre-v25 default
+    /// and the bare-sentiment path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// A note search result with similarity score

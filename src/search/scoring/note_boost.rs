@@ -258,6 +258,7 @@ mod tests {
             text: "test note".to_string(),
             sentiment,
             mentions: mentions.iter().map(|s| s.to_string()).collect(),
+            kind: None,
         }
     }
 
@@ -349,6 +350,7 @@ mod tests {
             text: "good pattern".into(),
             sentiment: 0.5,
             mentions: vec!["my_fn".into()],
+            kind: None,
         }];
         let index = NoteBoostIndex::new(&notes);
         let boost = index.boost("src/lib.rs", "my_fn");
@@ -366,6 +368,7 @@ mod tests {
             text: "buggy code".into(),
             sentiment: -1.0,
             mentions: vec!["broken_fn".into()],
+            kind: None,
         }];
         let index = NoteBoostIndex::new(&notes);
         let boost = index.boost("src/lib.rs", "broken_fn");
@@ -383,6 +386,7 @@ mod tests {
             text: "important file".into(),
             sentiment: 0.5,
             mentions: vec!["src/search.rs".into()],
+            kind: None,
         }];
         let index = NoteBoostIndex::new(&notes);
 
@@ -406,12 +410,14 @@ mod tests {
                 text: "mildly good".into(),
                 sentiment: 0.5,
                 mentions: vec!["my_fn".into()],
+                kind: None,
             },
             NoteSummary {
                 id: "2".into(),
                 text: "very bad".into(),
                 sentiment: -1.0,
                 mentions: vec!["my_fn".into()],
+                kind: None,
             },
         ];
         let index = NoteBoostIndex::new(&notes);
@@ -433,6 +439,7 @@ mod tests {
             text: "note".into(),
             sentiment: 0.5,
             mentions: vec!["my_fn".into(), "search.rs".into()],
+            kind: None,
         }];
         let index = NoteBoostIndex::new(&notes);
 
@@ -449,6 +456,7 @@ mod tests {
             text: "specific note".into(),
             sentiment: 1.0,
             mentions: vec!["other_fn".into()],
+            kind: None,
         }];
         let index = NoteBoostIndex::new(&notes);
         assert_eq!(index.boost("src/lib.rs", "my_fn"), 1.0);

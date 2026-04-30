@@ -633,6 +633,7 @@ mod tests {
             text: "first note".to_string(),
             sentiment: 0.0,
             mentions: vec![],
+            kind: None,
         };
         store.upsert_notes_batch(&[note1], &source, 100).unwrap();
 
@@ -647,6 +648,7 @@ mod tests {
             text: "replaced note".to_string(),
             sentiment: 0.5,
             mentions: vec!["src/lib.rs".to_string()],
+            kind: None,
         };
         store
             .replace_notes_for_file(&[note2], &source, 200)

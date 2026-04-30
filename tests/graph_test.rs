@@ -383,6 +383,7 @@ fn notes_add_then_list_then_remove() {
             sentiment: 0.5,
             text: "test note for in-process".to_string(),
             mentions: vec!["lib.rs".to_string()],
+            kind: None,
         });
         Ok(())
     })
@@ -425,11 +426,13 @@ fn notes_warnings_filter_picks_negative_sentiment() {
             sentiment: -0.5,
             text: "this is a warning".to_string(),
             mentions: vec![],
+            kind: None,
         });
         entries.push(NoteEntry {
             sentiment: 0.5,
             text: "this is a pattern".to_string(),
             mentions: vec![],
+            kind: None,
         });
         Ok(())
     })
