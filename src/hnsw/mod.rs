@@ -181,9 +181,20 @@ pub struct HnswIndex {
     pub(crate) ef_search: usize,
     /// Embedding dimension of vectors in this index
     pub(crate) dim: usize,
-    /// Shared lock held for the lifetime of a disk-loaded index (DS-NEW-1).
-    /// Prevents concurrent `save()` from overwriting files while this index is in use.
-    /// `None` for in-memory-only indexes that were never loaded from disk.
+    /// Vestigial. Always `None`.
+    ///
+    /// Pre-fix this held a shared `flock(2)` for the lifetime of a
+    /// disk-loaded index, intended to block concurrent `save()` from
+    /// overwriting files while this index was in use. In practice the
+    /// lifetime-held shared lock self-deadlocked the daemon's rebuild
+    /// thread on its next `save()` (Linux flock's exclusive lock waits
+    /// for *all* shared holders, including ones held by the same
+    /// process via a different open description). The lock is now
+    /// released at the end of `load_with_dim` after the data is in
+    /// memory; this field is kept on the struct so existing call sites
+    /// (in-memory-built indexes via `build.rs`) continue to compile
+    /// without churn, and so a future per-process-aware locking
+    /// strategy can repopulate it without re-introducing the field.
     pub(crate) _lock_file: Option<std::fs::File>,
 }
 
