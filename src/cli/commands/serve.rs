@@ -119,6 +119,29 @@ fn open_browser(url: &str) -> Result<()> {
         return Ok(());
     }
 
+    // PB-V1.30.1-4 / #1224: under WSL, the Linux side has no default
+    // browser — `xdg-open` either fails outright or pops a "no
+    // application registered" dialog. The user expects the URL to
+    // open in their Windows-side default browser the way every
+    // other WSL-aware tool does it. Hand off to `cmd.exe /C start
+    // "" "<url>"` via the WSL interop so the browser launch goes
+    // through the same Win32 protocol-handler path as the native
+    // Windows branch above.
+    #[cfg(target_os = "linux")]
+    {
+        if cqs::config::is_wsl() {
+            std::process::Command::new("cmd.exe")
+                .args(["/C", "start", "", url])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .with_context(|| {
+                    format!("Failed to spawn cmd.exe /C start \"\" {url} (WSL interop)")
+                })?;
+            return Ok(());
+        }
+    }
+
     #[cfg(target_os = "linux")]
     let cmd = "xdg-open";
     #[cfg(target_os = "macos")]
