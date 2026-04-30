@@ -679,10 +679,29 @@ impl HnswIndex {
             return Err(HnswError::NotFound(dir.display().to_string()));
         }
 
-        // Acquire shared lock for load (allows concurrent reads)
-        // NOTE: File locking is advisory only on WSL over 9P.
-        // This prevents concurrent cqs processes from corrupting the index,
-        // but cannot protect against external Windows process modifications.
+        // Acquire shared lock for the read phase only (released before
+        // return). Protects the on-disk graph/data/ids/checksum files
+        // from being overwritten by a concurrent `save()` while this
+        // function is reading them — once the data is in memory the
+        // copy is independent and the lock is no longer needed.
+        //
+        // NOTE: File locking is advisory only on WSL over 9P. The lock
+        // is best-effort cross-process; an external Windows tool can
+        // still modify the files.
+        //
+        // **Why the lock must NOT outlive the read phase**: prior to
+        // this PR, `_lock_file: Some(lock_file)` was stored on the
+        // returned `HnswIndex`, keeping the shared lock alive for the
+        // index's entire lifetime. The same daemon process's HNSW
+        // rebuild thread then called `save()` from a *second* file
+        // descriptor on the same lock path; Linux `flock(2)`'s
+        // exclusive-waits-for-shared-even-self semantics deadlocked
+        // the rebuild thread permanently. With the lock dropped at
+        // the bottom of this function, the load and save paths use
+        // disjoint open descriptions and the in-process self-deadlock
+        // can't form. Cross-process exclusion during runtime was
+        // theoretical anyway — concurrent writers race on the SQLite
+        // writer lock first.
         let lock_path = dir.join(format!("{}.hnsw.lock", basename));
         let lock_file = std::fs::OpenOptions::new()
             .read(true)
@@ -692,7 +711,7 @@ impl HnswIndex {
             .open(&lock_path)?;
         lock_file.lock_shared().map_err(HnswError::Io)?;
         warn_wsl_advisory_locking(dir);
-        tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared)");
+        tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared, released after read)");
 
         tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
         verify_hnsw_checksums(dir, basename)?;
@@ -829,12 +848,22 @@ impl HnswIndex {
 
         tracing::info!(count = id_map.len(), "HNSW index loaded");
 
+        // Release the load-phase shared lock before returning. The
+        // in-memory `Loaded(...)` variant is fully self-contained
+        // (vectors copied into rust-allocated buffers via `bincode`,
+        // not mmap'd), so the on-disk file can be modified or removed
+        // without affecting this instance. Keeping the lock alive
+        // across the return would self-deadlock the daemon's rebuild
+        // thread on its next `save()` (Linux flock; see comment at the
+        // lock acquisition site above).
+        drop(lock_file);
+
         Ok(Self {
             inner: HnswInner::Loaded(loaded),
             id_map,
             ef_search: super::ef_search(),
             dim,
-            _lock_file: Some(lock_file),
+            _lock_file: None,
         })
     }
 
@@ -1189,6 +1218,86 @@ mod tests {
         let loaded2 = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).unwrap();
         assert_eq!(loaded1.len(), 2);
         assert_eq!(loaded2.len(), 2);
+    }
+
+    /// Regression for the in-process flock self-deadlock between
+    /// `load_with_dim`'s shared lock and a subsequent `save()`'s
+    /// exclusive lock. Pre-fix the load held a `shared` flock for the
+    /// entire lifetime of the returned `HnswIndex` via the
+    /// `_lock_file` field; the daemon's HNSW rebuild thread then opened
+    /// a *second* fd on the same lock path inside `save()` and called
+    /// `lock()` (exclusive), which blocks forever on Linux because
+    /// `flock(2)` exclusive-waits for *all* shared holders, including
+    /// ones held by the same process via a different open description.
+    /// In production this manifested as a permanently `state == rebuilding`
+    /// daemon with one `cqs-hnsw-rebuild` thread parked in
+    /// `locks_lock_inode_wait`.
+    ///
+    /// The fix releases the load lock at the end of `load_with_dim`
+    /// (the in-memory `Loaded(...)` is independent of the on-disk
+    /// files), so a same-process `save()` after a `load()` can proceed.
+    /// We model this by loading the on-disk index, then saving a *fresh*
+    /// `HnswIndex` (built in memory) to the same directory while the
+    /// loaded handle is still alive — pre-fix this hangs indefinitely.
+    /// We bound the save in a worker thread with a 5-second timeout so
+    /// the test fails fast on regression instead of hanging the suite.
+    #[test]
+    fn load_does_not_block_subsequent_save_in_same_process() {
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::time::Duration;
+
+        let tmp = TempDir::new().unwrap();
+        let basename = "deadlock_repro";
+
+        let initial = HnswIndex::build_with_dim(
+            vec![
+                ("chunk1".to_string(), make_embedding(1)),
+                ("chunk2".to_string(), make_embedding(2)),
+            ],
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
+        initial.save(tmp.path(), basename).unwrap();
+
+        // Step 2: load the on-disk HNSW. Pre-fix this stashes a shared
+        // flock in `_lock_file` that lives until `_loaded` drops at the
+        // end of the test scope.
+        let _loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+            .expect("load should succeed");
+
+        // Step 3: build a fresh HnswIndex in memory and save it to the
+        // same directory while the loaded handle is still alive. This
+        // re-enters `save()`, which opens a second fd on the same lock
+        // path and calls `lock()` (exclusive). Pre-fix this deadlocks.
+        let dir = tmp.path().to_path_buf();
+        let basename_owned = basename.to_string();
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let new_index = HnswIndex::build_with_dim(
+                vec![("chunk3".to_string(), make_embedding(3))],
+                crate::EMBEDDING_DIM,
+            )
+            .unwrap();
+            // Save into a NEW basename so we don't trip the
+            // stale-`.bak` guard from a partial first save; the lock
+            // path is keyed on basename so we keep the original to
+            // exercise the deadlock surface.
+            let result = new_index.save(&dir, &basename_owned);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => { /* save completed cleanly — fix is in place */ }
+            Ok(Err(e)) => panic!("save failed: {e:?}"),
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "save deadlocked — regression: load's shared flock is still held while save \
+                 tries to acquire exclusive. Verify `load_with_dim` drops `lock_file` before \
+                 returning."
+            ),
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("save thread panicked without sending a result")
+            }
+        }
     }
 
     #[test]
