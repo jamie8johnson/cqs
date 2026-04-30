@@ -166,6 +166,38 @@ fn ensure_ort_provider_libs() {
     );
 }
 
+/// Resolve the on-disk cache directory for TensorRT engine binaries +
+/// timing tactic results, or return `None` when caching is opted out.
+///
+/// TRT compiles each ONNX graph into a hardware-specific engine on
+/// first use — 4-5 s for SPLADE-Code (33M params), 30-90 s for
+/// BGE-large (340M). Without persistent caching the daemon pays the
+/// compile cost on every restart. With caching, the engine is reused
+/// until any identity input (model bytes, GPU SM, TRT version) changes,
+/// at which point TRT silently re-compiles and overwrites the cached
+/// blob.
+///
+/// Cache layout under `~/.cache/cqs/trt-engine-cache/`:
+/// - `TensorrtExecutionProvider_TRTKernel_*.engine` — compiled engines
+/// - `TensorrtExecutionProvider.cache` — timing tactic results
+///
+/// Both are safe to delete; missing files cause TRT to re-compile
+/// transparently. Cache directory is created on demand.
+///
+/// Set `CQS_TRT_ENGINE_CACHE=0` to disable persistence — the helper
+/// returns `None` and `create_session` falls through to a no-cache
+/// TensorRT builder. Useful when validating that a driver upgrade
+/// invalidated the cache, or to force a clean compile after a known
+/// regression.
+fn trt_cache_dir() -> Option<PathBuf> {
+    if std::env::var("CQS_TRT_ENGINE_CACHE").as_deref() == Ok("0") {
+        return None;
+    }
+    let dir = dirs::cache_dir()?.join("cqs").join("trt-engine-cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
 /// Cached GPU provider detection result
 static CACHED_PROVIDER: OnceCell<ExecutionProvider> = OnceCell::new();
 
@@ -275,9 +307,29 @@ pub(crate) fn create_session(
             .commit_from_file(model_path)
             .map_err(ort_err)?,
         ExecutionProvider::TensorRT { device_id } => {
+            // TRT compiles each ONNX model into an engine on first use,
+            // taking 5 s for SPLADE-Code (33M params) and 30-90 s for
+            // BGE-large (340M). Persisting the compiled engine + the
+            // optimization tactic timing cache to disk amortizes that
+            // cost to once-per-(model, GPU, TRT version) instead of
+            // once-per-daemon-restart. Cache is invalidated automatically
+            // when any of those identity inputs change.
+            //
+            // Set `CQS_TRT_ENGINE_CACHE=0` to opt out (forces re-compile
+            // every session — useful when validating that a driver
+            // upgrade did invalidate the cache).
+            let mut tensorrt = TensorRT::default().with_device_id(device_id);
+            if let Some(cache_dir) = trt_cache_dir() {
+                let cache_str = cache_dir.to_string_lossy().into_owned();
+                tensorrt = tensorrt
+                    .with_engine_cache(true)
+                    .with_engine_cache_path(cache_str.clone())
+                    .with_timing_cache(true)
+                    .with_timing_cache_path(cache_str);
+            }
             builder
                 .with_execution_providers([
-                    TensorRT::default().with_device_id(device_id).build(),
+                    tensorrt.build(),
                     // Fallback to CUDA for unsupported ops
                     CUDA::default().with_device_id(device_id).build(),
                 ])
@@ -320,6 +372,13 @@ mod tests {
     //! splits — pin them here.
     use super::*;
 
+    /// Shared mutex for tests that mutate process-global env vars
+    /// (`LD_LIBRARY_PATH`, `CQS_TRT_ENGINE_CACHE`). Each env-mutating
+    /// test takes this lock before any `env::set_var` / `env::remove_var`
+    /// and releases it after restoring the prior value, guaranteeing
+    /// linearization across parallel test threads.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// `select_provider` must be idempotent: subsequent calls return the
     /// same `ExecutionProvider` value (OnceCell semantics). Hardware-agnostic;
     /// only checks consistency, not which provider was selected.
@@ -345,9 +404,7 @@ mod tests {
     #[test]
     fn find_ld_library_dir_skips_empty_entries() {
         use std::env;
-        // Env-mutating tests must serialize: reuse a module-local mutex.
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = env::var_os("LD_LIBRARY_PATH");
         // SAFETY: this test holds ENV_LOCK; no other test in this module
         // touches LD_LIBRARY_PATH concurrently.
@@ -374,8 +431,7 @@ mod tests {
     #[test]
     fn find_ld_library_dir_handles_unset() {
         use std::env;
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = env::var_os("LD_LIBRARY_PATH");
         unsafe {
             env::remove_var("LD_LIBRARY_PATH");
@@ -430,5 +486,66 @@ mod tests {
         let p2 = p; // exercises Copy
         let _ = format!("{p:?}");
         let _ = format!("{p2:?}");
+    }
+
+    /// `trt_cache_dir` resolves to a writable directory under the user
+    /// cache root and creates it on demand. A `None` return would
+    /// silently disable engine caching — the helper guarantees `Some`
+    /// on a normal system, so pinning the contract here protects against
+    /// a future refactor that fails-open and erases the once-per-restart
+    /// compile-cost amortization.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trt_cache_dir_creates_directory_under_user_cache() {
+        // Env-mutating tests serialize via the module-local mutex.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("CQS_TRT_ENGINE_CACHE").ok();
+        // SAFETY: tests run sequentially within this guard; restored below.
+        unsafe { std::env::remove_var("CQS_TRT_ENGINE_CACHE") };
+
+        let path = trt_cache_dir().expect("trt_cache_dir must resolve on a normal system");
+        let is_dir = path.is_dir();
+        let suffix_ok = path.ends_with("cqs/trt-engine-cache");
+
+        // SAFETY: see above.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CQS_TRT_ENGINE_CACHE", v),
+                None => std::env::remove_var("CQS_TRT_ENGINE_CACHE"),
+            }
+        }
+
+        assert!(is_dir, "expected directory at {}", path.display());
+        assert!(
+            suffix_ok,
+            "expected path to end with cqs/trt-engine-cache, got {}",
+            path.display()
+        );
+    }
+
+    /// `CQS_TRT_ENGINE_CACHE=0` opts out of engine caching. The helper
+    /// must return `None`, and `create_session` short-circuits to the
+    /// no-cache TRT builder. Pinning the opt-out path protects the
+    /// "force re-compile after driver upgrade" workflow from a
+    /// regression that would silently keep using the stale cache.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trt_cache_dir_returns_none_when_opted_out() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("CQS_TRT_ENGINE_CACHE").ok();
+        // SAFETY: tests run sequentially within this guard; restored below.
+        unsafe { std::env::set_var("CQS_TRT_ENGINE_CACHE", "0") };
+
+        let result = trt_cache_dir();
+
+        // SAFETY: see above.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CQS_TRT_ENGINE_CACHE", v),
+                None => std::env::remove_var("CQS_TRT_ENGINE_CACHE"),
+            }
+        }
+
+        assert!(result.is_none(), "opt-out must yield None");
     }
 }
