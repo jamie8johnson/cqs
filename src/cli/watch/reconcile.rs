@@ -985,6 +985,102 @@ mod tests {
         assert_eq!(pending.len(), 1, "queue must contain exactly one entry");
     }
 
+    /// TC-ADV-1.30.1-5 / #1242: clock skew that lands `stored_mtime`
+    /// ahead of disk mtime (NTP step backward, system-clock change, VM
+    /// drift, file restored from a backup taken on a host with a
+    /// different clock) must NOT trigger a reindex storm when content
+    /// is unchanged. Pre-v23, the `disk_mtime != stored_mtime`
+    /// predicate would re-queue every file in the index until disk
+    /// caught up. The v23 BLAKE3 tiebreak under `MtimeOrHash` policy
+    /// short-circuits when the hash matches — regardless of which
+    /// side of the tie the mtime is on.
+    ///
+    /// Pinning this case alongside
+    /// `run_daemon_reconcile_blake3_skips_mtime_only_bump_with_identical_content`
+    /// (which tests the *forward* skew direction) protects against a
+    /// regression where someone reverts the predicate to `disk > stored`
+    /// — that would silently skip future-stored-mtime files even when
+    /// their content actually changed (different bug, same family).
+    #[test]
+    fn run_daemon_reconcile_blake3_skips_future_stored_mtime_with_identical_content() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::FileFingerprint;
+        use std::time::{Duration, SystemTime};
+
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        let rel = "src/skewed.rs";
+        let abs = dir.path().join(rel);
+        let bytes = b"fn skewed() {}";
+        fs::write(&abs, bytes).unwrap();
+
+        // Stored mtime is 24 h in the FUTURE (clock skewed backward —
+        // index was written when system clock was a day ahead, then
+        // NTP step pulled it back). Current disk mtime is "now"; stored
+        // is now+24h. Both directions of skew should land on the same
+        // BLAKE3-tiebreak path because `MtimeOrHash` keys off `!=`, not
+        // `<` or `>`.
+        let stored_mtime_ms = cqs::duration_to_mtime_millis(
+            (SystemTime::now() + Duration::from_secs(24 * 60 * 60))
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let chunk_content = "fn skewed() {}".to_string();
+        let hash_str = blake3::hash(chunk_content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("{rel}:1:{}", &hash_str[..8]),
+            file: PathBuf::from(rel),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "skewed".to_string(),
+            signature: "fn skewed()".to_string(),
+            content: chunk_content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash_str,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let store = open_store(&cqs_dir);
+        store
+            .upsert_chunks_batch(
+                &[(chunk, placeholder_embedding(0.0))],
+                Some(stored_mtime_ms),
+            )
+            .expect("seed chunk at future stored mtime");
+        let stored_fp = FileFingerprint {
+            mtime: Some(stored_mtime_ms),
+            size: Some(bytes.len() as u64),
+            content_hash: Some(*blake3::hash(bytes).as_bytes()),
+        };
+        store
+            .set_file_fingerprint(&PathBuf::from(rel), &stored_fp)
+            .expect("stamp v23 fingerprint with future mtime");
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+        );
+        assert_eq!(
+            queued, 0,
+            "future stored mtime + matching hash must keep the file out of the queue (clock-skew safety)"
+        );
+        assert!(pending.is_empty());
+    }
+
     /// #1245: `normalize_pending_path` directly — backslashes get rewritten,
     /// already-clean paths pass through. Pin the path-mangling rules so a
     /// future tweak doesn't silently change behavior.

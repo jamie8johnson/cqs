@@ -2015,4 +2015,37 @@ mod tests {
         let stats = store.stats().unwrap();
         assert_eq!(stats.total_chunks, 1);
     }
+
+    /// TC-ADV-1.30.1-6 / #1243: `FileFingerprint::read_disk` returns
+    /// `None` when `metadata()` fails. The `reconcile.rs:188` "leave
+    /// to GC" branch is keyed on this contract: if `metadata()` errs
+    /// (deleted-since-walk, permission flip on the parent dir,
+    /// transient AV scan), reconcile must skip the file rather than
+    /// queue it for reindex — otherwise every unreadable file would
+    /// re-queue every reconcile pass (default 30 s) until external
+    /// state changed.
+    ///
+    /// A nonexistent path is the cleanest reproduction of the failure
+    /// mode: deleted-since-walk, permission-denied on parent, and the
+    /// transient AV-scan window all surface the same way at line 133's
+    /// `metadata().ok()? -> None`. Pinning the contract here protects
+    /// against a future "helpful" refactor that defaults the
+    /// fingerprint fields and silently re-queues unreadable files.
+    #[test]
+    fn test_read_disk_returns_none_on_metadata_err() {
+        use crate::store::{FileFingerprint, FingerprintPolicy};
+        use std::path::PathBuf;
+        let nonexistent = PathBuf::from("/nonexistent/cqs-test-path-must-not-exist-87a4f1ec");
+        let stored = FileFingerprint {
+            mtime: Some(0),
+            size: Some(0),
+            content_hash: None,
+        };
+        let result =
+            FileFingerprint::read_disk(&nonexistent, &stored, FingerprintPolicy::MtimeOrHash);
+        assert!(
+            result.is_none(),
+            "metadata() failure must surface as None — the leave-to-GC signal that reconcile.rs:188 relies on"
+        );
+    }
 }
