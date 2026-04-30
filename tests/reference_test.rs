@@ -31,6 +31,7 @@ fn make_code_result(name: &str, score: f32) -> SearchResult {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         },
         score,
     }

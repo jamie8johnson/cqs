@@ -59,6 +59,10 @@ pub(crate) struct ChunkRow {
     /// Parser logic stamp (P2 #29). 0 means either pre-v21 or never written;
     /// `try_get` keeps existing SELECTs that omit the column working.
     pub parser_version: u32,
+    /// v24: true if origin matched a vendored-path prefix at index time
+    /// (#1221). `try_get` so pre-v24 SELECTs that omit the column still
+    /// construct a valid row (defaults to false).
+    pub vendored: bool,
 }
 
 impl ChunkRow {
@@ -88,6 +92,10 @@ impl ChunkRow {
                 .try_get::<i64, _>("parser_version")
                 .map(|v| v.max(0).min(u32::MAX as i64) as u32)
                 .unwrap_or(0),
+            vendored: row
+                .try_get::<i64, _>("vendored")
+                .map(|v| v != 0)
+                .unwrap_or(false),
         }
     }
 
@@ -114,6 +122,10 @@ impl ChunkRow {
             parent_id: row.get("parent_id"),
             parent_type_name: row.get("parent_type_name"),
             parser_version: 0,
+            vendored: row
+                .try_get::<i64, _>("vendored")
+                .map(|v| v != 0)
+                .unwrap_or(false),
         }
     }
 
@@ -142,6 +154,7 @@ impl ChunkRow {
             parent_id: None,
             parent_type_name: None,
             parser_version: 0,
+            vendored: false,
         }
     }
 }

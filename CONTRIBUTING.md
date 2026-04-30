@@ -306,6 +306,7 @@ src/
   health.rs     - Codebase quality snapshot (dead code, staleness, hotspots)
   suggest.rs    - Auto-suggest notes from code patterns
   config.rs     - Configuration file support
+  vendored.rs   - Vendored-content detection (#1221): default prefix list (`vendor`, `node_modules`, `third_party`, `.cargo`, `target`, `dist`, `build`) + path-segment matcher used at index time to flag chunks for the `trust_level: "vendored-code"` downgrade. Override via `[index].vendored_paths` in `.cqs.toml`.
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
     mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), provider.rs (BatchProvider trait, BatchSubmitItem, LlmProvider), summary.rs (find_contrastive_neighbors)

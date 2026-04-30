@@ -859,6 +859,23 @@ pub fn cmd_watch(
     let mut store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
+    // v24 / #1221: resolve the vendored-path prefix list once at daemon
+    // startup so all subsequent inserts (incremental + reconcile-driven)
+    // get correct `vendored` flags. Reads `[index].vendored_paths` from
+    // `.cqs.toml`; falls back to the built-in default list when absent.
+    // Captured into a local `Vec<String>` so the DB-replaced reopen
+    // paths below can re-stamp the freshly-opened Store without
+    // re-reading the config file.
+    let vendored_prefixes_for_store: Vec<String> = {
+        let cfg = cqs::config::Config::load(&root);
+        let vendored_override = cfg
+            .index
+            .as_ref()
+            .and_then(|ic| ic.vendored_paths.as_deref());
+        cqs::vendored::effective_prefixes(vendored_override)
+    };
+    store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
+
     // DS-W5: Track the database file identity so we detect when `cqs index --force`
     // replaces it. Without this check, watch's Store handle would point at the
     // orphaned (renamed) inode and writes would silently vanish.
@@ -1212,6 +1229,12 @@ pub fn cmd_watch(
                                     index_path.display()
                                 )
                             })?;
+                        // v24 / #1221: re-stamp the vendored prefix list on
+                        // the fresh Store — the OnceLock is per-instance and
+                        // a brand-new Store starts empty. Use the cached
+                        // resolution from startup so we don't re-read
+                        // .cqs.toml mid-watch.
+                        store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
                         // db_id updated below in the DS-9 reopen path
                         state.hnsw_index = None;
                         state.incremental_count = 0;
@@ -1401,6 +1424,9 @@ pub fn cmd_watch(
                                     index_path.display()
                                 )
                             })?;
+                            // v24 / #1221: re-stamp vendored prefixes on
+                            // the fresh Store — OnceLock is per-instance.
+                            store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
                             db_id = current_id;
                             state.hnsw_index = None;
                             state.incremental_count = 0;

@@ -402,6 +402,31 @@ pub struct Config {
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
+    /// Index-pipeline configuration (`[index]` section).
+    /// Currently exposes only `vendored_paths` (#1221) — extend here if
+    /// future index-time knobs land.
+    #[serde(default)]
+    pub index: Option<IndexConfig>,
+}
+
+/// `[index]` section of `.cqs.toml`. Drives index-pipeline behaviour
+/// that doesn't fit cleanly under the existing top-level fields.
+///
+/// Currently a single knob (#1221): override the vendored-path prefix
+/// list used to flag chunks for the `trust_level: "vendored-code"`
+/// downgrade. `None` (the field absent in TOML) → cqs's default list
+/// (`vendor`, `node_modules`, `third_party`, `.cargo`, `target`,
+/// `dist`, `build`); `Some(empty)` → vendored detection disabled;
+/// `Some(non_empty)` → use exactly those segment names.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IndexConfig {
+    /// Override list of bare directory-segment names that flag a chunk
+    /// as vendored at index time. Match is path-segment-based: an entry
+    /// `"vendor"` matches `vendor/foo.rs` and `nested/vendor/bar.rs`
+    /// but not `myvendor/baz.rs`. See `crate::vendored` for the
+    /// matching algorithm + default list.
+    #[serde(default)]
+    pub vendored_paths: Option<Vec<String>>,
 }
 
 /// SEC-3: Redact a URL for logging — masks credentials (user:pass@host) and
@@ -743,6 +768,7 @@ impl Config {
             splade: other.splade.or(self.splade),
             reranker: other.reranker.or(self.reranker),
             references: refs,
+            index: other.index.or(self.index),
         }
     }
 }

@@ -82,6 +82,7 @@ pub mod reference;
 pub mod splade;
 pub mod store;
 pub mod train_data;
+pub mod vendored;
 
 pub mod ci;
 pub mod eval;

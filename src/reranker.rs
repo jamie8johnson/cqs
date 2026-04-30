@@ -799,6 +799,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            vendored: false,
         };
         SearchResult { chunk, score: 0.0 }
     }

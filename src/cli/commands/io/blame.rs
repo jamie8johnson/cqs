@@ -392,6 +392,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
             commits: vec![BlameEntry {
                 hash: "abc1234".to_string(),
@@ -440,6 +441,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
             commits: vec![],
             callers: vec![],

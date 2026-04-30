@@ -224,11 +224,34 @@ impl Store<ReadWrite> {
             .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // v24 / #1221: compute the vendored bit per chunk from the
+        // store's configured vendored-path prefixes. Empty prefix list
+        // → all-false (the pre-#1221 default and what unwired callers
+        // see). Origin path is normalised to forward-slash form via
+        // `crate::normalize_path` to match `is_vendored_origin`'s
+        // path-segment matcher.
+        let prefixes = self.vendored_prefixes_slice();
+        let vendored_per_chunk: Vec<bool> = chunks
+            .iter()
+            .map(|(chunk, _)| {
+                let origin = crate::normalize_path(&chunk.file);
+                crate::vendored::is_vendored_origin(&origin, prefixes)
+            })
+            .collect();
+
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
             let now = chrono::Utc::now().to_rfc3339();
-            batch_insert_chunks(&mut tx, chunks, &embedding_bytes, source_mtime, &now).await?;
+            batch_insert_chunks(
+                &mut tx,
+                chunks,
+                &embedding_bytes,
+                &vendored_per_chunk,
+                source_mtime,
+                &now,
+            )
+            .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
             tx.commit().await?;
             Ok(chunks.len())
@@ -796,11 +819,30 @@ impl Store<ReadWrite> {
             .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // v24 / #1221: same vendored pre-compute as the simpler
+        // `upsert_chunks_batch` path.
+        let prefixes = self.vendored_prefixes_slice();
+        let vendored_per_chunk: Vec<bool> = chunks
+            .iter()
+            .map(|(chunk, _)| {
+                let origin = crate::normalize_path(&chunk.file);
+                crate::vendored::is_vendored_origin(&origin, prefixes)
+            })
+            .collect();
+
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
             let now = chrono::Utc::now().to_rfc3339();
-            batch_insert_chunks(&mut tx, chunks, &embedding_bytes, source_mtime, &now).await?;
+            batch_insert_chunks(
+                &mut tx,
+                chunks,
+                &embedding_bytes,
+                &vendored_per_chunk,
+                source_mtime,
+                &now,
+            )
+            .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
 
             // Upsert calls: delete old calls for these chunk IDs, insert new ones
@@ -1087,6 +1129,98 @@ mod tests {
         let count = store.upsert_chunks_batch(&[], Some(100)).unwrap();
         assert_eq!(count, 0);
         assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    /// #1221: end-to-end vendored-flag round-trip. With the default
+    /// prefix list configured on the store, a chunk whose origin
+    /// passes through `vendor/` is upserted with `vendored = 1` and
+    /// retrieves as `ChunkSummary { vendored: true, .. }`; a sibling
+    /// chunk under `src/` retrieves as `vendored: false`. The
+    /// downstream JSON-emitter test on `SearchResult::to_json_with_origin`
+    /// covers the trust_level wire shape; this test covers the
+    /// upsert→SELECT round-trip that feeds it.
+    #[test]
+    fn test_upsert_round_trips_vendored_flag_under_default_prefixes() {
+        use crate::store::ChunkSummary;
+        let (store, _dir) = setup_store();
+
+        // Apply the default prefix list (`vendor`, `node_modules`,
+        // `third_party`, …) — this mirrors what `cmd_index` and
+        // `cmd_watch` do at startup.
+        store.set_vendored_prefixes(crate::vendored::effective_prefixes(None));
+
+        let c_vend = make_chunk("oss_fn", "vendor/oss-lib/oss.rs");
+        let c_user = make_chunk("user_fn", "src/main.rs");
+        store
+            .upsert_chunks_batch(
+                &[
+                    (c_vend.clone(), mock_embedding(1.0)),
+                    (c_user.clone(), mock_embedding(1.0)),
+                ],
+                Some(100),
+            )
+            .expect("upsert");
+
+        // Reach into the store via the same SELECT path search uses
+        // (`fetch_chunks_by_ids_async` → `ChunkRow::from_row` → `ChunkSummary`).
+        let map: std::collections::HashMap<String, ChunkSummary> = store
+            .rt
+            .block_on(async {
+                store
+                    .fetch_chunks_by_ids_async(&[c_vend.id.as_str(), c_user.id.as_str()])
+                    .await
+            })
+            .expect("fetch")
+            .into_iter()
+            .map(|(id, row)| (id, ChunkSummary::from(row)))
+            .collect();
+
+        let vend_summary = map
+            .get(&c_vend.id)
+            .expect("vendored chunk round-trips through SELECT");
+        let user_summary = map
+            .get(&c_user.id)
+            .expect("user chunk round-trips through SELECT");
+        assert!(
+            vend_summary.vendored,
+            "vendor/-prefixed chunk must be flagged vendored after upsert+SELECT"
+        );
+        assert!(
+            !user_summary.vendored,
+            "src/-prefixed chunk must remain not-vendored"
+        );
+    }
+
+    /// #1221: an empty prefix list (operator opt-out via
+    /// `[index].vendored_paths = []` in `.cqs.toml`) disables vendored
+    /// detection — even chunks under `vendor/` are stored with
+    /// `vendored = 0`.
+    #[test]
+    fn test_upsert_round_trips_unvendored_when_prefix_list_empty() {
+        use crate::store::ChunkSummary;
+        let (store, _dir) = setup_store();
+
+        // Explicit empty list: detection disabled.
+        store.set_vendored_prefixes(crate::vendored::effective_prefixes(Some(&[])));
+
+        let c = make_chunk("oss_fn_again", "vendor/oss-lib/oss.rs");
+        store
+            .upsert_chunks_batch(&[(c.clone(), mock_embedding(1.0))], Some(100))
+            .expect("upsert");
+
+        let map: std::collections::HashMap<String, ChunkSummary> = store
+            .rt
+            .block_on(async { store.fetch_chunks_by_ids_async(&[c.id.as_str()]).await })
+            .expect("fetch")
+            .into_iter()
+            .map(|(id, row)| (id, ChunkSummary::from(row)))
+            .collect();
+
+        let summary = map.get(&c.id).expect("chunk round-trips");
+        assert!(
+            !summary.vendored,
+            "explicit empty prefix list must disable vendored detection"
+        );
     }
 
     // ===== EH-V1.30.1-1: touch_source_mtime =====
