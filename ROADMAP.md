@@ -1,25 +1,20 @@
 # Roadmap
 
-## Current: v1.30.2 (released 2026-04-29)
+## Current: v1.31.0 (released 2026-04-30)
 
-Tag `v1.30.2` pushed; `cqs 1.30.2` published to crates.io; GitHub Release workflow building prebuilt binaries. Three themes:
+Tag `v1.31.0` pushed; `cqs 1.31.0` published to crates.io; GitHub Release workflow building prebuilt binaries. Minor bump because of the **schema v22 → v23 migration** (auto-migrating; new `source_size` + `source_content_hash` columns on `FileFingerprint` for the reconcile cluster fix). Theme: post-v1.30.2 bug drain across watch reconcile, sparse-vector index, LLM redirect policy, slot lifecycle, native-Windows shutdown, and coarse-mtime filesystems. Reindex not required, but the v23 binary will refuse to open a v22 index until the auto-migration step runs on first start.
 
-1. **#1181 mistrust posture** — default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` constant on every JSON response, per-chunk `injection_flags` heuristic. Frames every cqs response as untrusted-by-default for any consuming agent.
-2. **#1182 perfect watch mode** — Layers 1-4 closed: freshness API (#1189), periodic reconciliation (#1191), git hooks (#1193), eval `--require-fresh` (#1194); 47-file bulk-delta acceptance test (#1196). The "easy to index, hard to keep indexed between turns" gap is closed: `cqs status --watch-fresh --wait` exposes a freshness contract — agents can either trust `fresh` or block.
-3. **Audit-fix wave** — P1+P2+P3+P4 from the v1.30.1 audit drained.
+**Bundle table:**
 
-**Post-v1.30.2 bug drain (2026-04-29):**
-
-| Bundle | Issue(s) | PR | Theme |
-|---|---|---|---|
-| 1 | #1219 #1245 #1231 #1227 | #1248 ✅ | reconcile cluster (v22→v23 schema bump for `source_size` + `source_content_hash`) |
-| 2 | #1212 | #1249 ✅ | sparse-upsert chunked (`CQS_SPARSE_CHUNKS_PER_TX`) |
-| 3 | #1224 #1225 | #1250 (CI pending) | coarse-mtime FS handling + WSL browser opener |
-| 4 | #1223 #1222 | #1251 ✅ | reqwest same-origin redirect policy + `cqs ref add --source` symlink-redirect warning |
-| 5 | #1232 | #1252 (CI pending) | `cqs slot remove` daemon-active guard |
-| 6 | #1044 | #1253 (CI pending) | Native Windows `cqs watch` shutdown via `ctrlc` termination feature |
-| guard | #1254 | #1255 (CI pending) | agent-defs worktree-leakage warning bullet |
-| log | embedder candidates | #1256 (CI pending) | EmbeddingGemma-300m + Qwen3-Embedding-8B + NV-Embed-v2 added to embedder A/B queue |
+| PR | Closes | Theme |
+|---|---|---|
+| #1248 | #1219 #1245 #1231 #1227 | watch reconcile cluster — content-hash fingerprint + path dedup + force-rotation guard. **Schema v22→v23.** |
+| #1249 | #1212 | sparse-upsert chunked sub-transactions (`CQS_SPARSE_CHUNKS_PER_TX`, default 5000). |
+| #1250 | #1224 #1225 | coarse-mtime FS handling (HFS+, SMB, NFS, CIFS, FAT32 on plain Linux/macOS) + WSL `cqs serve --open` browser opener. |
+| #1251 | #1222 #1223 | reqwest same-origin redirect policy + `cqs ref add --source` symlink-redirect warning. |
+| #1252 | #1232 | `cqs slot remove` refuses if daemon is serving (probes `daemon_status`, matches `WatchSnapshot.active_slot`). |
+| #1253 | #1044 | native-Windows `cqs watch` clean shutdown via `ctrlc` termination feature. |
+| #1255 | tracks #1254 | agent definitions: worktree-leakage warning bullet across all 6 `.claude/agents/*.md` files. |
 
 **#1254 worktree leakage** — `git worktree add` doesn't create `.cqs/`; cqs errors; agents fall back to absolute paths under main's tree → edits leak into parent tree. Agent-side guard shipped via #1255; cqs-side fix (`.git/commondir` auto-discovery + `worktree_stale: bool` JSON envelope flag) deferred.
 
@@ -191,6 +186,7 @@ Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlo
 
 | Version | Highlights |
 |---------|-----------|
+| v1.30.2 | **#1181 mistrust posture + #1182 perfect watch mode + v1.30.1 audit-fix wave.** Default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` on every JSON envelope, per-chunk `injection_flags`. Watch-mode Layers 1-4 closed: `cqs hook install` git hooks, periodic full-tree reconciliation, `cqs status --watch-fresh --wait` API, `cqs eval --require-fresh` gate. v1.30.1 audit-fix omnibus across 19 PRs (P1+P2+P3+P4 trivials, 121 of 144 findings; 18 hard P4s tracked). |
 | v1.30.1 | **Indirect-prompt-injection hardening + v1.30.0 audit-fix wave + watch-mode reliability.** Cluster #1166-#1170 + threat model #1171: trust labelling on chunk JSON, `CQS_TRUST_DELIMITERS` opt-in, first-encounter shared-notes prompt on `cqs index`, `CQS_SUMMARY_VALIDATION` for prose summaries before caching, `--improve-docs` review-gated by default, threat model in `SECURITY.md`. Audit-fix omnibus #1141 (152 of 170 P1+P2+P3 findings). Five watch-mode correctness fixes (#1124-#1129): content-hash-aware drain, restore_from_backup pool ordering, summary-write coalescing, daemon mutex hold-time, embedding-cache `purpose` plumbing. Plus four refactors enabling cleaner extension points (#1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138** registry tables for batch / LLM provider) and 12 dependabot bumps. Schema unchanged from v1.30.0; no reindex required. |
 | v1.30.0 | **Cache+slots + three-way embedder A/B + v1.29.0 audit close-out + #956 Phase A scaffolding.** Cache+slots infra (#1105): `.cqs/embeddings_cache.db` keyed on (content_hash, model_id) + project-level `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,clear,prune,compact}` commands. Three-way embedder A/B (#1109 #1110): fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution. v1.29.0 audit close-out batch (#1112 #1113 #1114 #1117 #1118 #1119): every umbrella finding from #1095 closed. #956 Phase A scaffolding (#1120): `gpu-index` → `cuda-index` cargo feature rename (legacy alias preserved); `ep-coreml` / `ep-rocm` features added; `ExecutionProvider` enum gains cfg-gated `CoreML` and `ROCm { device_id }` variants. CUDA path byte-identical at runtime. |
 | v1.29.1 | **v1.29.0 audit close-out** (147 findings triaged; 142 fixed). No new commands, no schema bump, no reindex. CAGRA SIGSEGV root-caused (missing `Drop` on `GpuState`) + fixed; `cqs serve` security hardened (host allowlist, SQL caps, HTML escape, loopback `--open`); transaction integrity fixes (staleness / metadata / cache / HNSW persist); 13 new `CQS_*` env var knobs for thresholds (additive); `rustls-webpki` GHSA-high patch. Remaining 5 audit items split to issues #1095/#1096/#1097/#1098. |
