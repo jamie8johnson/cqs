@@ -1656,3 +1656,44 @@ fn dropped_this_cycle_resets_after_successful_drain() {
          snapshot reflects fresh state"
     );
 }
+
+/// TC-HAP-1.30.1-6 (#1230): empty `pending_files` plus a blocked embedder
+/// backoff is a no-op — no panic, no state mutation, no embedder init.
+/// This is the smallest possible exercise of `process_file_changes` and
+/// pins the contract that the function tolerates the "nothing to do"
+/// case even when the embedder is currently unavailable. Companion to
+/// `dropped_this_cycle_survives_embedder_init_early_return` (which seeds
+/// `pending_files` and `dropped_this_cycle` to test the early-return
+/// path's preservation guarantee).
+#[test]
+fn process_file_changes_zero_files_is_noop_when_embedder_blocked() {
+    let fix = drain_test_fixture(4);
+    let cfg = test_watch_config(
+        fix.tmp.path(),
+        fix.tmp.path(),
+        &fix.notes_path,
+        &fix.supported_ext,
+    );
+
+    let mut state = test_watch_state();
+    // Block embedder retry without loading any model. Mirrors the trick
+    // from `dropped_this_cycle_survives_embedder_init_early_return`:
+    // `record_failure()` advances `next_retry` to ~2 s in the future,
+    // which is well past this test's runtime.
+    state.embedder_backoff.record_failure();
+    assert!(
+        !state.embedder_backoff.should_retry(),
+        "test setup: backoff must block retry so try_init_embedder returns None"
+    );
+    assert!(state.pending_files.is_empty());
+    assert_eq!(state.dropped_this_cycle, 0);
+
+    // Should not panic, should not mutate state.
+    process_file_changes(&cfg, &fix.store, &mut state);
+
+    assert!(state.pending_files.is_empty(), "still empty after no-op");
+    assert_eq!(
+        state.dropped_this_cycle, 0,
+        "no work was attempted, no counter to clear or preserve"
+    );
+}
