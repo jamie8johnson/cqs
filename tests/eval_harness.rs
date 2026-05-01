@@ -118,7 +118,7 @@ fn eval_single_query<Mode>(
     query: &EvalQuery,
     store: &cqs::Store<Mode>,
     embedder: &cqs::Embedder,
-    reranker: Option<&cqs::Reranker>,
+    reranker: Option<&dyn cqs::Reranker>,
     config: &EvalConfig,
     run_id: &str,
 ) -> EvalQueryResult {
@@ -524,14 +524,20 @@ fn test_eval_matrix() {
         // Init reranker if needed
         let reranker = match config.reranker {
             RerankerMode::None => None,
-            RerankerMode::MiniLmV1 => Some(cqs::Reranker::new().expect("Failed to init reranker")),
+            RerankerMode::MiniLmV1 => Some(cqs::OnnxReranker::new().expect("Failed to init reranker")),
         };
 
         let mut config_results: Vec<EvalQueryResult> = Vec::new();
 
         for query in &train_queries {
-            let result =
-                eval_single_query(query, &store, &embedder, reranker.as_ref(), config, &run_id);
+            let result = eval_single_query(
+                query,
+                &store,
+                &embedder,
+                reranker.as_ref().map(|r| r as &dyn cqs::Reranker),
+                config,
+                &run_id,
+            );
 
             let rank_str = result
                 .rank_of_correct
