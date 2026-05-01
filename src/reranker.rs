@@ -108,11 +108,59 @@ impl crate::ort_helpers::FromOrtMessage for RerankerError {
 
 use crate::ort_helpers::ort_err;
 
-/// Cross-encoder reranker for second-pass scoring
+/// EX-V1.30.1-8 (#1220): pluggable second-pass scoring trait.
+///
+/// Holders should keep rerankers as `Arc<dyn Reranker>` so any of the
+/// shipped impls (`OnnxReranker`, `NoopReranker`, `LlmReranker`) can
+/// drop in without touching the production search path. Adding a
+/// fourth impl (BM25 baseline, dot-product over a different embedder,
+/// API-served scoring service) is one new struct + one `impl Reranker`
+/// block + one wire-up at the construction site.
+///
+/// Concurrency: the production hot path uses `Arc<dyn Reranker>`, so
+/// the trait requires `Send + Sync`. `OnnxReranker` is internally
+/// thread-safe via `Mutex` around the ONNX session; the trait surface
+/// borrows `&self` so callers don't need to lock the holder.
+pub trait Reranker: Send + Sync {
+    /// Re-rank `results` in place, scoring each via this reranker's
+    /// `(query, content)` model. Default contract: writes scores onto
+    /// each result, sorts descending, truncates to `limit`.
+    /// `results.len() <= 1` is a no-op.
+    fn rerank(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        limit: usize,
+    ) -> Result<(), RerankerError>;
+
+    /// Re-rank scoring `(query, passages[i])` instead of
+    /// `(query, results[i].chunk.content)`. `passages.len() ==
+    /// results.len()` is a hard requirement; impls return
+    /// `RerankerError::InvalidArguments` on mismatch.
+    fn rerank_with_passages(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        passages: &[&str],
+        limit: usize,
+    ) -> Result<(), RerankerError>;
+
+    /// Drop any cached state (model session, tokenizer, network handles)
+    /// so memory returns to the OS. Called from idle-eviction loops in
+    /// the watch/serve daemons. Default: no-op (trait impls without
+    /// resident state get this for free).
+    fn clear_session(&self) {}
+}
+
+/// Cross-encoder reranker for second-pass scoring (the ONNX implementation).
 ///
 /// Lazy-loads the model on first use, same pattern as [`crate::Embedder`].
 /// Scores (query, passage) pairs with a cross-encoder, then re-sorts results.
-pub struct Reranker {
+///
+/// EX-V1.30.1-8 (#1220): renamed from `Reranker` to `OnnxReranker` when the
+/// trait was extracted. The trait is the new `Reranker`; concrete callers
+/// that need ONNX specifically construct via `OnnxReranker::with_section`.
+pub struct OnnxReranker {
     session: Mutex<Option<Session>>,
     /// Lazy-loaded tokenizer.
     ///
@@ -134,7 +182,7 @@ pub struct Reranker {
     section: Option<AuxModelSection>,
 }
 
-impl Reranker {
+impl OnnxReranker {
     /// Create a new reranker with lazy model loading (config-less; CLI/env only).
     pub fn new() -> Result<Self, RerankerError> {
         Self::with_section(None)
@@ -170,90 +218,6 @@ impl Reranker {
             expects_token_type_ids: Mutex::new(None),
             section,
         })
-    }
-
-    /// Re-rank search results using cross-encoder scoring
-    ///
-    /// Scores each (query, result.content) pair, re-sorts by score descending,
-    /// and truncates to `limit`. No-op for 0 or 1 results.
-    pub fn rerank(
-        &self,
-        query: &str,
-        results: &mut Vec<SearchResult>,
-        limit: usize,
-    ) -> Result<(), RerankerError> {
-        // OB-V1.29-1: entry span parity with `rerank_with_passages` so the
-        // CLI `rerank` path shows up in `cqs trace`-style captures with the
-        // same tag and fields.
-        let _span = tracing::info_span!(
-            "rerank",
-            count = results.len(),
-            limit,
-            query_len = query.len()
-        )
-        .entered();
-        // PF-V1.25-5: borrow passages from results directly instead of
-        // cloning content strings. The previous impl did
-        // `results.iter().map(|r| r.chunk.content.clone()).collect()`,
-        // allocating a fresh String per candidate (N allocations × content
-        // length bytes each) only to feed them to `rerank_with_passages`.
-        // Score computation happens in a scoped borrow so the subsequent
-        // `&mut results` write back is valid.
-        //
-        // We inline the compute-score-then-apply pattern rather than
-        // reusing `rerank_with_passages`, because passages that borrow
-        // from `results` conflict with `&mut results` at the call site.
-        let scores = {
-            let passages: Vec<&str> = results.iter().map(|r| r.chunk.content.as_str()).collect();
-            self.compute_scores(query, &passages)?
-        };
-        apply_rerank_scores(results, scores, limit);
-        Ok(())
-    }
-
-    /// Re-rank search results using custom passage text per result.
-    ///
-    /// Like [`rerank`](Self::rerank) but scores `(query, passages[i])` instead of
-    /// `(query, result.content)`. Useful for reranking on NL descriptions or
-    /// other derived text. `passages` must have the same length as `results`.
-    pub fn rerank_with_passages(
-        &self,
-        query: &str,
-        results: &mut Vec<SearchResult>,
-        passages: &[&str],
-        limit: usize,
-    ) -> Result<(), RerankerError> {
-        let _span = tracing::info_span!(
-            "rerank",
-            count = results.len(),
-            limit,
-            query_len = query.len()
-        )
-        .entered();
-        if results.len() <= 1 {
-            return Ok(());
-        }
-        if results.len() != passages.len() {
-            // P3.11: structured warn so operators see the mismatch in journal,
-            // and surface `InvalidArguments` instead of `Inference` so callers
-            // can match on the caller-bug case distinctly from model errors.
-            tracing::warn!(
-                passages = passages.len(),
-                results = results.len(),
-                "rerank_with_passages: length mismatch — caller bug, refusing to score",
-            );
-            return Err(RerankerError::InvalidArguments(format!(
-                "passages length ({}) must match results length ({})",
-                passages.len(),
-                results.len()
-            )));
-        }
-
-        let Some(scores) = self.compute_scores_opt(query, passages)? else {
-            return Ok(());
-        };
-        apply_rerank_scores(results, scores, limit);
-        Ok(())
     }
 
     /// Compute cross-encoder scores for (query, passage) pairs.
@@ -579,28 +543,6 @@ impl Reranker {
         Ok(guard)
     }
 
-    /// Clear the ONNX session to free memory (~91MB model).
-    ///
-    /// Session re-initializes lazily on next `rerank()` call.
-    /// Use this during idle periods in long-running processes.
-    pub fn clear_session(&self) {
-        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = None;
-        // Reset the input-shape probe so the next session re-detects
-        // the loaded model's token_type_ids contract.
-        *self
-            .expects_token_type_ids
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
-        // RM-V1.25-15: Drop the tokenizer too (~20MB for ms-marco MiniLM).
-        // In-flight rerank() calls that grabbed an Arc clone before this
-        // call keep their own copy; the slot is cleared and lazy-reloads
-        // on next tokenizer() access.
-        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
-        *tok = None;
-        tracing::info!("Reranker session and tokenizer cleared");
-    }
-
     /// Get or initialize the tokenizer.
     ///
     /// RM-V1.25-15: Returns `Arc<Tokenizer>` so callers drop the mutex
@@ -625,6 +567,243 @@ impl Reranker {
         }
         *guard = Some(Arc::clone(&loaded));
         Ok(loaded)
+    }
+}
+
+impl Reranker for OnnxReranker {
+    /// Re-rank search results using cross-encoder scoring.
+    ///
+    /// Scores each (query, result.content) pair, re-sorts by score descending,
+    /// and truncates to `limit`. No-op for 0 or 1 results.
+    fn rerank(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        limit: usize,
+    ) -> Result<(), RerankerError> {
+        // OB-V1.29-1: entry span parity with `rerank_with_passages` so the
+        // CLI `rerank` path shows up in `cqs trace`-style captures with the
+        // same tag and fields.
+        let _span = tracing::info_span!(
+            "rerank",
+            count = results.len(),
+            limit,
+            query_len = query.len()
+        )
+        .entered();
+        // PF-V1.25-5: borrow passages from results directly instead of
+        // cloning content strings. The previous impl did
+        // `results.iter().map(|r| r.chunk.content.clone()).collect()`,
+        // allocating a fresh String per candidate (N allocations × content
+        // length bytes each) only to feed them to `rerank_with_passages`.
+        // Score computation happens in a scoped borrow so the subsequent
+        // `&mut results` write back is valid.
+        //
+        // We inline the compute-score-then-apply pattern rather than
+        // reusing `rerank_with_passages`, because passages that borrow
+        // from `results` conflict with `&mut results` at the call site.
+        let scores = {
+            let passages: Vec<&str> = results.iter().map(|r| r.chunk.content.as_str()).collect();
+            self.compute_scores(query, &passages)?
+        };
+        apply_rerank_scores(results, scores, limit);
+        Ok(())
+    }
+
+    /// Re-rank search results using custom passage text per result.
+    ///
+    /// Like [`rerank`](Reranker::rerank) but scores `(query, passages[i])` instead of
+    /// `(query, result.content)`. Useful for reranking on NL descriptions or
+    /// other derived text. `passages` must have the same length as `results`.
+    fn rerank_with_passages(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        passages: &[&str],
+        limit: usize,
+    ) -> Result<(), RerankerError> {
+        let _span = tracing::info_span!(
+            "rerank",
+            count = results.len(),
+            limit,
+            query_len = query.len()
+        )
+        .entered();
+        if results.len() <= 1 {
+            return Ok(());
+        }
+        if results.len() != passages.len() {
+            // P3.11: structured warn so operators see the mismatch in journal,
+            // and surface `InvalidArguments` instead of `Inference` so callers
+            // can match on the caller-bug case distinctly from model errors.
+            tracing::warn!(
+                passages = passages.len(),
+                results = results.len(),
+                "rerank_with_passages: length mismatch — caller bug, refusing to score",
+            );
+            return Err(RerankerError::InvalidArguments(format!(
+                "passages length ({}) must match results length ({})",
+                passages.len(),
+                results.len()
+            )));
+        }
+
+        let Some(scores) = self.compute_scores_opt(query, passages)? else {
+            return Ok(());
+        };
+        apply_rerank_scores(results, scores, limit);
+        Ok(())
+    }
+
+    /// Clear the ONNX session to free memory (~91MB model).
+    ///
+    /// Session re-initializes lazily on next `rerank()` call.
+    /// Use this during idle periods in long-running processes.
+    fn clear_session(&self) {
+        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = None;
+        // Reset the input-shape probe so the next session re-detects
+        // the loaded model's token_type_ids contract.
+        *self
+            .expects_token_type_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        // RM-V1.25-15: Drop the tokenizer too (~20MB for ms-marco MiniLM).
+        // In-flight rerank() calls that grabbed an Arc clone before this
+        // call keep their own copy; the slot is cleared and lazy-reloads
+        // on next tokenizer() access.
+        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        *tok = None;
+        tracing::info!("Reranker session and tokenizer cleared");
+    }
+}
+
+/// EX-V1.30.1-8 (#1220): no-op pass-through reranker.
+///
+/// Returns `Ok(())` from every method — the input results are left
+/// alone (their existing scores keep them ordered as they came in).
+/// Used by the eval harness for ablation A/B (`--reranker none|onnx`)
+/// to instantly compare the dense+SPLADE result quality against the
+/// reranked version without a model load. Cheap to construct, no
+/// model state, `clear_session` is a default no-op.
+pub struct NoopReranker;
+
+impl NoopReranker {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for NoopReranker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Reranker for NoopReranker {
+    fn rerank(
+        &self,
+        _query: &str,
+        results: &mut Vec<SearchResult>,
+        limit: usize,
+    ) -> Result<(), RerankerError> {
+        // The contract of `rerank` is "score, sort, truncate". A
+        // no-op skips the score+sort but should still truncate so
+        // callers get the documented `len() <= limit` shape — same
+        // way `OnnxReranker::rerank` ends with `apply_rerank_scores`
+        // → `truncate`. Keep the existing input order: the dense leg
+        // already sorted by cosine descending, so truncating after
+        // gives the unranked baseline the eval harness wants to
+        // compare against.
+        if results.len() > limit {
+            results.truncate(limit);
+        }
+        Ok(())
+    }
+
+    fn rerank_with_passages(
+        &self,
+        _query: &str,
+        results: &mut Vec<SearchResult>,
+        passages: &[&str],
+        limit: usize,
+    ) -> Result<(), RerankerError> {
+        // Same length contract as the ONNX path: surface a length
+        // mismatch loudly so a caller bug doesn't get masked by the
+        // no-op shortcut.
+        if results.len() != passages.len() {
+            return Err(RerankerError::InvalidArguments(format!(
+                "passages length ({}) must match results length ({})",
+                passages.len(),
+                results.len()
+            )));
+        }
+        if results.len() > limit {
+            results.truncate(limit);
+        }
+        Ok(())
+    }
+}
+
+/// EX-V1.30.1-8 (#1220): LLM-judge reranker skeleton.
+///
+/// Holds an `Arc<dyn LlmRerankProvider>` so a future production deployment
+/// can plug in a Claude / GPT / Gemini scorer without touching the search
+/// path. **The current shipped impl is a skeleton** — it returns
+/// `RerankerError::Inference("LlmReranker not yet implemented")` from
+/// every score-producing call. The point is to prove the trait surface
+/// supports an LLM-shaped impl: an `LlmRerankProvider` produces relevance
+/// scores asynchronously via the existing `cqs::llm::BatchProvider`-style
+/// trait, and the `Reranker` shim turns that into the synchronous
+/// `rerank` shape the search path expects.
+///
+/// Wiring the production version is a follow-up: the `score` method
+/// becomes a `tokio::block_on` of a batch-call to the LLM provider with
+/// `(query, passage)` pairs, parses scores from the response, and feeds
+/// them through `apply_rerank_scores`. The trait surface here doesn't
+/// change.
+pub struct LlmReranker;
+
+impl LlmReranker {
+    /// Construct a skeleton instance. The skeleton returns
+    /// `RerankerError::Inference` on every score call so an integration
+    /// test against the production search path can verify the trait
+    /// hooks without LLM-credential setup.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for LlmReranker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Reranker for LlmReranker {
+    fn rerank(
+        &self,
+        _query: &str,
+        _results: &mut Vec<SearchResult>,
+        _limit: usize,
+    ) -> Result<(), RerankerError> {
+        Err(RerankerError::Inference(
+            "LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)"
+                .to_string(),
+        ))
+    }
+
+    fn rerank_with_passages(
+        &self,
+        _query: &str,
+        _results: &mut Vec<SearchResult>,
+        _passages: &[&str],
+        _limit: usize,
+    ) -> Result<(), RerankerError> {
+        Err(RerankerError::Inference(
+            "LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)"
+                .to_string(),
+        ))
     }
 }
 
@@ -750,13 +929,13 @@ mod tests {
     #[test]
     fn test_reranker_new() {
         // Construction should succeed (no model download yet — lazy)
-        let reranker = Reranker::new();
+        let reranker = OnnxReranker::new();
         assert!(reranker.is_ok());
     }
 
     #[test]
     fn test_rerank_empty_results() {
-        let reranker = Reranker::new().unwrap();
+        let reranker = OnnxReranker::new().unwrap();
         let mut results = Vec::new();
         let result = reranker.rerank("test query", &mut results, 10);
         assert!(result.is_ok());
@@ -811,7 +990,7 @@ mod tests {
     #[test]
     #[ignore = "loads cross-encoder model; run with --ignored"]
     fn test_rerank_reorders_by_relevance() {
-        let reranker = Reranker::new().expect("reranker new");
+        let reranker = OnnxReranker::new().expect("reranker new");
         // Order at input is intentionally NOT relevance order — we want to
         // see that the reranker does the work, not that it preserves input
         // ordering by accident.
@@ -862,7 +1041,7 @@ mod tests {
     /// load, so this test runs without the ONNX session.
     #[test]
     fn test_rerank_empty_input_returns_empty() {
-        let reranker = Reranker::new().expect("reranker new");
+        let reranker = OnnxReranker::new().expect("reranker new");
         let mut results: Vec<SearchResult> = Vec::new();
         let passages: Vec<&str> = Vec::new();
         reranker
@@ -871,6 +1050,77 @@ mod tests {
         assert!(
             results.is_empty(),
             "empty input → empty output (no-op shortcut)"
+        );
+    }
+
+    /// EX-V1.30.1-8 (#1220): `NoopReranker::rerank` truncates to `limit`
+    /// and preserves input order otherwise. Pins the contract that the
+    /// eval-harness ablation switch (`--reranker none`) gives an
+    /// apples-to-apples baseline against the ONNX path: both end with
+    /// `results.len() <= limit`, only the order differs.
+    #[test]
+    fn noop_reranker_truncates_but_preserves_order() {
+        let reranker = NoopReranker::new();
+        let mut results = vec![
+            stub_result("a", "first"),
+            stub_result("b", "second"),
+            stub_result("c", "third"),
+            stub_result("d", "fourth"),
+        ];
+        // Set distinct scores so we can detect any unwanted re-sort.
+        for (i, r) in results.iter_mut().enumerate() {
+            r.score = (i as f32) * 0.25; // 0.0, 0.25, 0.5, 0.75
+        }
+
+        reranker
+            .rerank("any query", &mut results, 2)
+            .expect("noop rerank");
+
+        assert_eq!(results.len(), 2, "truncated to limit");
+        assert_eq!(
+            results[0].chunk.id, "a",
+            "no re-sort: first input position survives"
+        );
+        assert_eq!(
+            results[1].chunk.id, "b",
+            "no re-sort: second input position survives"
+        );
+    }
+
+    /// `NoopReranker::rerank_with_passages` enforces the same length
+    /// contract as the ONNX path so a caller bug doesn't get masked by
+    /// the no-op shortcut.
+    #[test]
+    fn noop_reranker_rejects_passage_length_mismatch() {
+        let reranker = NoopReranker::new();
+        let mut results = vec![stub_result("a", "x"), stub_result("b", "y")];
+        let passages = ["only one"];
+        let err = reranker
+            .rerank_with_passages("q", &mut results, &passages, 10)
+            .unwrap_err();
+        assert!(
+            matches!(err, RerankerError::InvalidArguments(_)),
+            "expected InvalidArguments on length mismatch, got {err:?}"
+        );
+    }
+
+    /// `LlmReranker` is a skeleton — every score-producing call returns
+    /// `RerankerError::Inference` so an integration test against the
+    /// production search path can verify trait wiring without any
+    /// live LLM credentials. Pins that contract: any future production
+    /// `LlmReranker` impl must NOT silently no-op when the provider is
+    /// unconfigured.
+    #[test]
+    fn llm_reranker_skeleton_returns_inference_error() {
+        let reranker = LlmReranker::new();
+        let mut results = vec![stub_result("a", "x"), stub_result("b", "y")];
+        let err = reranker.rerank("q", &mut results, 10).unwrap_err();
+        let RerankerError::Inference(msg) = err else {
+            panic!("expected Inference variant, got {err:?}");
+        };
+        assert!(
+            msg.contains("skeleton"),
+            "skeleton error must self-identify; got: {msg}"
         );
     }
 }

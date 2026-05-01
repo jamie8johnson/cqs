@@ -255,9 +255,11 @@ pub(crate) struct BatchContext {
     /// a sub-ms file read; cost is negligible per query.
     config: RefCell<Option<CachedReload<cqs::config::Config>>>,
     /// #1127: `Arc<OnceLock<...>>` so views share one slot with the
-    /// BatchContext. The `Reranker` itself does not need to be Arc-wrapped
-    /// inside the OnceLock because every accessor returns `&Reranker`.
-    reranker: Arc<OnceLock<cqs::Reranker>>,
+    /// BatchContext. EX-V1.30.1-8 (#1220): inner type is now
+    /// `Arc<dyn cqs::Reranker>` so the trait object can be swapped at
+    /// construction time (NoopReranker for ablation, future LlmReranker
+    /// for batch eval, etc.) without touching the cache surface.
+    reranker: Arc<OnceLock<Arc<dyn cqs::Reranker>>>,
     /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<AuditMode>>>`
     /// so the documented 30-min audit auto-expire actually fires while the
     /// daemon is up — previously the OnceLock cached the boot-time state
@@ -1321,21 +1323,24 @@ impl BatchContext {
     }
 
     /// Get or create the reranker (cached for session). (RM-18)
-    pub(super) fn reranker(&self) -> Result<&cqs::Reranker> {
+    ///
+    /// EX-V1.30.1-8 (#1220): returns the trait object so callers don't
+    /// pin to `OnnxReranker` — a future `--reranker` flag can swap impls
+    /// at construction time without touching the consumer.
+    pub(super) fn reranker(&self) -> Result<Arc<dyn cqs::Reranker>> {
         if let Some(r) = self.reranker.get() {
-            return Ok(r);
+            return Ok(Arc::clone(r));
         }
         let _span = tracing::info_span!("batch_reranker_init").entered();
         // P1.7: thread the `[reranker]` config section so .cqs.toml preset/
         // model_path is honoured instead of silently defaulting to ms-marco.
         let config = self.config();
-        let r = cqs::Reranker::with_section(config.reranker.clone())
-            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
-        let _ = self.reranker.set(r);
-        Ok(self
-            .reranker
-            .get()
-            .expect("reranker OnceLock populated by set() above"))
+        let r: Arc<dyn cqs::Reranker> = Arc::new(
+            cqs::OnnxReranker::with_section(config.reranker.clone())
+                .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?,
+        );
+        let _ = self.reranker.set(Arc::clone(&r));
+        Ok(r)
     }
 
     /// #1127: take the BatchContext store mutex briefly, clone the inner Arc,
@@ -1676,7 +1681,7 @@ pub(crate) struct BatchView {
     /// from the view propagates to the BatchContext (and any other view
     /// holding the same Arc).
     embedder_slot: Arc<OnceLock<Arc<Embedder>>>,
-    reranker_slot: Arc<OnceLock<cqs::Reranker>>,
+    reranker_slot: Arc<OnceLock<Arc<dyn cqs::Reranker>>>,
     splade_encoder_slot: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
     /// Shared refs LRU.
     refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
@@ -1759,18 +1764,17 @@ impl BatchView {
             .expect("embedder OnceLock populated by set() above"))
     }
 
-    pub fn reranker(&self) -> Result<&cqs::Reranker> {
+    pub fn reranker(&self) -> Result<Arc<dyn cqs::Reranker>> {
         if let Some(r) = self.reranker_slot.get() {
-            return Ok(r);
+            return Ok(Arc::clone(r));
         }
         let _span = tracing::info_span!("batch_view_reranker_init").entered();
-        let r = cqs::Reranker::with_section(self.config.reranker.clone())
-            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
-        let _ = self.reranker_slot.set(r);
-        Ok(self
-            .reranker_slot
-            .get()
-            .expect("reranker OnceLock populated by set() above"))
+        let r: Arc<dyn cqs::Reranker> = Arc::new(
+            cqs::OnnxReranker::with_section(self.config.reranker.clone())
+                .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?,
+        );
+        let _ = self.reranker_slot.set(Arc::clone(&r));
+        Ok(r)
     }
 
     pub fn splade_encoder(&self) -> Option<&cqs::splade::SpladeEncoder> {
