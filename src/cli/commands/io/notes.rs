@@ -38,6 +38,8 @@ struct NoteListEntry {
     sentiment: f32,
     #[serde(rename = "type")]
     note_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
     text: String,
     mentions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +150,7 @@ pub(crate) fn cmd_notes(
                 ctx,
                 list.warnings,
                 list.patterns,
+                list.kind.as_deref(),
                 cli.json || output.json,
                 list.check,
             )
@@ -557,6 +560,7 @@ fn cmd_notes_list(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     warnings_only: bool,
     patterns_only: bool,
+    kind_filter: Option<&str>,
     json: bool,
     check: bool,
 ) -> Result<()> {
@@ -583,17 +587,30 @@ fn cmd_notes_list(
         std::collections::HashMap::new()
     };
 
-    // Filter
+    // Filter — kind ANDs with sentiment filter (warnings/patterns).
+    let kind_norm = kind_filter.and_then(|k| {
+        let trimmed = k.trim().to_lowercase();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
     let filtered: Vec<_> = notes
         .iter()
         .filter(|n| {
-            if warnings_only {
+            let sentiment_ok = if warnings_only {
                 n.is_warning()
             } else if patterns_only {
                 n.is_pattern()
             } else {
                 true
-            }
+            };
+            let kind_ok = match &kind_norm {
+                Some(k) => n.kind.as_deref() == Some(k.as_str()),
+                None => true,
+            };
+            sentiment_ok && kind_ok
         })
         .collect();
 
@@ -617,6 +634,7 @@ fn cmd_notes_list(
                     id: n.id.clone(),
                     sentiment: n.sentiment,
                     note_type: note_type.into(),
+                    kind: n.kind.clone(),
                     text: n.text.clone(),
                     mentions: n.mentions.clone(),
                     stale_mentions,
@@ -640,6 +658,11 @@ fn cmd_notes_list(
 
     for note in &filtered {
         let sentiment_marker = format!("[{:+.1}]", note.sentiment);
+        let kind_marker = note
+            .kind
+            .as_deref()
+            .map(|k| format!(" [{}]", k))
+            .unwrap_or_default();
 
         // Truncate text for display (char-safe)
         let preview = if note.text.chars().count() > 120 {
@@ -660,7 +683,7 @@ fn cmd_notes_list(
             format!("  mentions: {}", note.mentions.join(", "))
         };
 
-        print!("  {} {}", sentiment_marker, preview);
+        print!("  {}{} {}", sentiment_marker, kind_marker, preview);
         if check {
             if let Some(stale) = staleness.get(&note.text) {
                 print!("  [STALE: {}]", stale.join(", "));
@@ -730,6 +753,7 @@ mod tests {
             id: "note:0".into(),
             sentiment: -1.0,
             note_type: "warning".into(),
+            kind: Some("known-bug".into()),
             text: "This is broken".into(),
             mentions: vec!["search.rs".into()],
             stale_mentions: Some(vec!["old_file.rs".into()]),
@@ -737,6 +761,7 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["id"], "note:0");
         assert_eq!(json["type"], "warning");
+        assert_eq!(json["kind"], "known-bug");
         assert_eq!(json["sentiment"], -1.0);
         assert_eq!(json["mentions"][0], "search.rs");
         assert_eq!(json["stale_mentions"][0], "old_file.rs");
@@ -748,11 +773,13 @@ mod tests {
             id: "note:1".into(),
             sentiment: 0.0,
             note_type: "neutral".into(),
+            kind: None,
             text: "just an observation".into(),
             mentions: vec![],
             stale_mentions: None,
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("stale_mentions").is_none());
+        assert!(json.get("kind").is_none());
     }
 }

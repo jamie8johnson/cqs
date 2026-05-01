@@ -561,6 +561,11 @@ pub(crate) struct NotesListArgs {
     /// Show only patterns (positive sentiment)
     #[arg(long)]
     pub patterns: bool,
+    /// Filter by kind tag (e.g. `todo`, `design-decision`, `known-bug`).
+    /// Matches against the v25 `notes.kind` column (kebab-case lowercase).
+    /// ANDs with `--warnings` / `--patterns` when combined.
+    #[arg(long)]
+    pub kind: Option<String>,
     /// Check mentions for staleness (verifies files exist and symbols are in index)
     #[arg(long)]
     pub check: bool,

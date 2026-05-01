@@ -102,9 +102,10 @@ pub(in crate::cli::batch) fn dispatch_notes(
     ctx: &BatchView,
     warnings: bool,
     patterns: bool,
+    kind: Option<&str>,
     check: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_notes", warnings, patterns, check).entered();
+    let _span = tracing::info_span!("batch_notes", warnings, patterns, kind, check).entered();
 
     let notes = ctx.notes();
 
@@ -118,22 +119,37 @@ pub(in crate::cli::batch) fn dispatch_notes(
         std::collections::HashMap::new()
     };
 
+    let kind_norm = kind.and_then(|k| {
+        let trimmed = k.trim().to_lowercase();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
     let filtered: Vec<_> = notes
         .iter()
         .filter(|n| {
-            if warnings {
+            let sentiment_ok = if warnings {
                 n.is_warning()
             } else if patterns {
                 n.is_pattern()
             } else {
                 true
-            }
+            };
+            let kind_ok = match &kind_norm {
+                Some(k) => n.kind.as_deref() == Some(k.as_str()),
+                None => true,
+            };
+            sentiment_ok && kind_ok
         })
         .map(|n| {
             let mut entry = serde_json::json!({
                 "text": n.text,
                 "sentiment": n.sentiment,
                 "sentiment_label": n.sentiment_label(),
+                "kind": n.kind,
                 "mentions": n.mentions,
             });
             if check {
