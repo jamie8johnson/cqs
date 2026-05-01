@@ -385,6 +385,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         }];
         let hints = compute_hints_with_graph(&graph, &test_chunks, "target", None);
         assert_eq!(hints.test_count, 0, "Unreachable test should not count");
@@ -448,6 +449,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         }];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::Low);
@@ -499,6 +501,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
             crate::store::ChunkSummary {
                 id: "t2".to_string(),
@@ -516,6 +519,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
             crate::store::ChunkSummary {
                 id: "t3".to_string(),
@@ -533,6 +537,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
         ];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
@@ -612,6 +617,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         }];
 
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
@@ -711,6 +717,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         }];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::Low);

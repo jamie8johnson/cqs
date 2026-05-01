@@ -320,6 +320,18 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
         store
     };
+    // v24 / #1221: stamp the vendored-path prefix list before any
+    // chunk upsert so new rows get correct `vendored` flags. Reads
+    // `[index].vendored_paths` from `.cqs.toml`; falls back to the
+    // built-in default list when absent. Idempotent setter — safe to
+    // call regardless of which branch above produced `store`.
+    let cfg_for_vendored = cqs::config::Config::load(&root);
+    let vendored_override = cfg_for_vendored
+        .index
+        .as_ref()
+        .and_then(|ic| ic.vendored_paths.as_deref());
+    store.set_vendored_prefixes(cqs::vendored::effective_prefixes(vendored_override));
+
     let store = Arc::new(store);
 
     if !cli.quiet {

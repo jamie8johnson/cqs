@@ -98,7 +98,7 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 23;
+pub const CURRENT_SCHEMA_VERSION: i32 = 24;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

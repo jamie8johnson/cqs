@@ -192,6 +192,7 @@ mod tests {
             content_hash: format!("hash_{}", name),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         }
     }
 

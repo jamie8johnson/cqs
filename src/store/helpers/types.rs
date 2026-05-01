@@ -50,11 +50,23 @@ pub struct ChunkSummary {
     /// didn't include the column or when the row predates v21.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub parser_version: u32,
+    /// v24: true if origin matched a vendored-path prefix at index time
+    /// (#1221). Drives the `trust_level: "vendored-code"` downgrade in
+    /// `to_json_with_origin` / `to_json_relative_with_origin`. Defaults
+    /// to false when the loading SELECT omits the column or the row
+    /// predates v24.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vendored: bool,
 }
 
 #[inline]
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
+}
+
+#[inline]
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl From<&ChunkSummary> for Chunk {
@@ -116,6 +128,7 @@ impl From<ChunkRow> for ChunkSummary {
             parent_id: row.parent_id,
             parent_type_name: row.parent_type_name,
             parser_version: row.parser_version,
+            vendored: row.vendored,
         }
     }
 }
@@ -164,14 +177,24 @@ impl SearchResult {
 
     /// Serialize to JSON, tagging the result with its trust origin.
     ///
-    /// `ref_name = None` ⇒ `trust_level: "user-code"`, `reference_name` omitted.
-    /// `ref_name = Some(name)` ⇒ `trust_level: "reference-code"`,
-    /// `reference_name: <name>`. Closes #1167 and #1169 — agents consuming the
-    /// JSON now have an explicit, in-protocol signal distinguishing content
-    /// from the user's own project from third-party reference content.
+    /// Three-tier `trust_level`:
+    /// - `ref_name = Some(name)` ⇒ `"reference-code"`, plus `reference_name: <name>`.
+    ///   Wins regardless of `chunk.vendored`: a `cqs ref` reference is already
+    ///   labelled third-party at the index level.
+    /// - `ref_name = None`, `chunk.vendored = true` ⇒ `"vendored-code"`.
+    ///   Origin matched an `[index].vendored_paths` prefix at index time
+    ///   (defaults: `vendor/`, `node_modules/`, `third_party/`, …). Closes
+    ///   #1221 — vendored content is the indirect-prompt-injection surface
+    ///   SECURITY.md flags, and now has a structural signal distinct from
+    ///   user-authored project code.
+    /// - `ref_name = None`, `chunk.vendored = false` ⇒ `"user-code"`.
+    ///
+    /// Closes #1167, #1169, #1221.
     pub fn to_json_with_origin(&self, ref_name: Option<&str>) -> serde_json::Value {
         let trust_level = if ref_name.is_some() {
             "reference-code"
+        } else if self.chunk.vendored {
+            "vendored-code"
         } else {
             "user-code"
         };
@@ -211,6 +234,8 @@ impl SearchResult {
     ) -> serde_json::Value {
         let trust_level = if ref_name.is_some() {
             "reference-code"
+        } else if self.chunk.vendored {
+            "vendored-code"
         } else {
             "user-code"
         };
@@ -513,6 +538,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            vendored: false,
         }
     }
 
@@ -579,6 +605,7 @@ mod tests {
                 content_hash: "abc123".to_string(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
             score: 0.9375,
         }
@@ -864,6 +891,53 @@ mod tests {
         let json = result.to_json_with_origin(Some("rust-stdlib"));
         assert_eq!(json["trust_level"], "reference-code");
         assert_eq!(json["reference_name"], "rust-stdlib");
+    }
+
+    /// #1221: `chunk.vendored = true` with no `ref_name` emits the
+    /// new `vendored-code` tier — the structural signal that the chunk
+    /// came from the project store but matched a vendored-path prefix
+    /// at index time. Pinning this protects the SECURITY.md promise
+    /// that consuming agents can distinguish authored from vendored
+    /// content.
+    #[test]
+    fn test_to_json_vendored_chunk_emits_vendored_code() {
+        let mut chunk = make_chunk("foo", None);
+        chunk.vendored = true;
+        let result = SearchResult { chunk, score: 0.7 };
+        let json = result.to_json();
+        assert_eq!(json["trust_level"], "vendored-code");
+        assert!(
+            json.get("reference_name").is_none(),
+            "vendored chunks aren't reference-code; reference_name must be absent"
+        );
+    }
+
+    /// #1221: `ref_name = Some(_)` wins over `chunk.vendored = true`.
+    /// A chunk that's both inside a `cqs ref` reference index AND
+    /// happens to live under `vendor/` should be tagged
+    /// `reference-code` — the per-reference name is the more useful
+    /// signal for consuming agents (they already know references are
+    /// third-party).
+    #[test]
+    fn test_to_json_reference_code_wins_over_vendored() {
+        let mut chunk = make_chunk("foo", None);
+        chunk.vendored = true;
+        let result = SearchResult { chunk, score: 0.7 };
+        let json = result.to_json_with_origin(Some("rust-stdlib"));
+        assert_eq!(json["trust_level"], "reference-code");
+        assert_eq!(json["reference_name"], "rust-stdlib");
+    }
+
+    /// #1221: same three-tier semantic on the relative-path emitter.
+    #[test]
+    fn test_to_json_relative_with_origin_vendored_code() {
+        let root = std::path::Path::new("src");
+        let mut chunk = make_chunk("foo", None);
+        chunk.vendored = true;
+        let result = SearchResult { chunk, score: 0.7 };
+        let json = result.to_json_relative_with_origin(root, None);
+        assert_eq!(json["trust_level"], "vendored-code");
+        assert!(json.get("reference_name").is_none());
     }
 
     #[test]

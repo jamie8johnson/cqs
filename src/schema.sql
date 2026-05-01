@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     umap_x REAL,                              -- v22: 2D projection X coord (NULL until `cqs index --umap` runs)
     umap_y REAL,                              -- v22: 2D projection Y coord (NULL until `cqs index --umap` runs)
     source_size INTEGER,                      -- v23: file size in bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
-    source_content_hash BLOB                  -- v23: BLAKE3 hash of file bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
+    source_content_hash BLOB,                 -- v23: BLAKE3 hash of file bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
+    vendored INTEGER NOT NULL DEFAULT 0       -- v24: 1 if origin matches a vendored-path prefix at index time (#1221); search emits trust_level="vendored-code" for these
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);

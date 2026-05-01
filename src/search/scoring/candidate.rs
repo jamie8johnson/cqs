@@ -466,6 +466,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                vendored: false,
             },
             score,
         }

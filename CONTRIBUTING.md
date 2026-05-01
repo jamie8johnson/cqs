@@ -306,6 +306,7 @@ src/
   health.rs     - Codebase quality snapshot (dead code, staleness, hotspots)
   suggest.rs    - Auto-suggest notes from code patterns
   config.rs     - Configuration file support
+  vendored.rs   - Vendored-content detection (#1221): default prefix list (`vendor`, `node_modules`, `third_party`, `.cargo`, `target`, `dist`, `build`) + path-segment matcher used at index time to flag chunks for the `trust_level: "vendored-code"` downgrade. Override via `[index].vendored_paths` in `.cqs.toml`.
   worktree.rs   - Git-worktree → main-project-`.cqs/` discovery (#1254). When `cqs` runs from inside a worktree without its own `.cqs/`, `resolve_index_dir` parses the worktree's `.git` file, follows `commondir` to the main project, and serves queries from main's index. Every JSON envelope from that process gets `_meta.worktree_stale: true` so consuming agents know the served snapshot is from main's branch.
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API

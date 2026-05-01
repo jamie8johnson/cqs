@@ -360,6 +360,7 @@ async fn run_migration(
         (20, 21) => migrate_v20_to_v21(conn).await,
         (21, 22) => migrate_v21_to_v22(conn).await,
         (22, 23) => migrate_v22_to_v23(conn).await,
+        (23, 24) => migrate_v23_to_v24(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -848,6 +849,29 @@ async fn migrate_v22_to_v23(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v23 → v24: Add `vendored` (INTEGER NOT NULL DEFAULT 0) column on
+/// `chunks` to power the third-party-content trust-level downgrade
+/// (issue #1221 / SEC-V1.30.1-5). Pre-migration rows default to
+/// `vendored = 0` (treated as user-code); the next reindex flags chunks
+/// whose `origin` matches a configured vendored-path prefix
+/// (`vendor/`, `node_modules/`, etc.). Search/scout/onboard JSON output
+/// then emits `trust_level: "vendored-code"` for those chunks instead
+/// of the bare `user-code` claim — the structural fix the SEC-V1.30.1-5
+/// doc-only stop-gap acknowledged was needed.
+async fn migrate_v23_to_v24(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v23_to_v24").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN vendored INTEGER NOT NULL DEFAULT 0")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v24: vendored column on chunks (trust-level downgrade for vendored content, #1221). \
+         Existing rows default to vendored=0; reindex to flag chunks under configured vendored-path prefixes."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,7 +904,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 23);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
     }
 
     #[test]

@@ -251,6 +251,7 @@ fn test_compute_risk_and_tests_integration() {
         content_hash: String::new(),
         window_idx: None,
         parser_version: 0,
+        vendored: false,
     }];
 
     let (scores, tests) =

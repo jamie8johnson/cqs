@@ -322,6 +322,13 @@ pub struct Store<Mode = ReadWrite> {
     /// dead weight, vs. plumbing a separate optional field through every
     /// constructor.
     pub(crate) summary_queue: Arc<summary_queue::PendingSummaryQueue>,
+    /// v24 / #1221: vendored-path prefix list for the trust-level
+    /// downgrade. Set once at index/daemon startup via
+    /// `set_vendored_prefixes`; on `None` the upsert pipeline treats no
+    /// chunks as vendored. Wrapped in `OnceLock` so the field can be
+    /// populated through a shared `&Store` (e.g. `Arc<Store>` in the
+    /// daemon) without `&mut` plumbing.
+    pub(crate) vendored_prefixes: std::sync::OnceLock<Vec<String>>,
     /// Typestate marker — `ReadOnly` or `ReadWrite`. Zero-sized.
     _mode: PhantomData<Mode>,
 }
@@ -1087,6 +1094,7 @@ fn open_with_config_impl<Mode>(
         test_chunks_cache: std::sync::OnceLock::new(),
         chunk_type_map_cache: std::sync::OnceLock::new(),
         summary_queue,
+        vendored_prefixes: std::sync::OnceLock::new(),
         _mode: PhantomData,
     };
 
@@ -1096,6 +1104,19 @@ fn open_with_config_impl<Mode>(
     store.check_cq_version();
 
     Ok(store)
+}
+
+impl<Mode> Store<Mode> {
+    /// Borrow the vendored-path prefix list set by
+    /// [`Store::set_vendored_prefixes`], or an empty slice when nothing
+    /// was set. See `crate::vendored::is_vendored_origin` for matching
+    /// semantics.
+    pub(crate) fn vendored_prefixes_slice(&self) -> &[String] {
+        self.vendored_prefixes
+            .get()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }
 
 impl Store<ReadWrite> {
@@ -1124,6 +1145,16 @@ impl Store<ReadWrite> {
         let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tx = self.pool.begin().await?;
         Ok((guard, tx))
+    }
+
+    /// Set the vendored-path prefix list for this store. Idempotent —
+    /// repeat calls are silently ignored (the daemon and `cqs index`
+    /// both call this at startup; the second call is a no-op). Pass
+    /// an empty `Vec` to disable vendored detection entirely; pass
+    /// [`crate::vendored::effective_prefixes`]'s resolved output to
+    /// apply config-with-fallback-to-defaults. See #1221.
+    pub fn set_vendored_prefixes(&self, prefixes: Vec<String>) {
+        let _ = self.vendored_prefixes.set(prefixes);
     }
 
     /// Create a new index

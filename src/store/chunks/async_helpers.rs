@@ -32,7 +32,7 @@ impl<Mode> Store<Mode> {
         for batch in ids.chunks(BATCH_SIZE) {
             let placeholders = crate::store::helpers::make_placeholders(batch.len());
             let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name, vendored
                  FROM chunks WHERE id IN ({})",
                 placeholders
             );
@@ -132,7 +132,7 @@ impl<Mode> Store<Mode> {
 
         let placeholders = crate::store::helpers::make_placeholders(ids.len());
         let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name, embedding
+            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name, embedding, vendored
              FROM chunks WHERE id IN ({})",
             placeholders
         );
@@ -317,16 +317,22 @@ pub(super) async fn batch_insert_chunks(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
     embedding_bytes: &[Vec<u8>],
+    vendored_per_chunk: &[bool],
     source_mtime: Option<i64>,
     now: &str,
 ) -> Result<(), StoreError> {
     use crate::store::helpers::sql::max_rows_per_statement;
-    // 21 binds per row (P2 #29: parser_version added).
-    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(21);
+    // 22 binds per row (v24 / #1221: vendored added after parser_version).
+    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(22);
+    debug_assert_eq!(
+        chunks.len(),
+        vendored_per_chunk.len(),
+        "vendored_per_chunk must align 1:1 with chunks"
+    );
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version)",
+            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -355,7 +361,14 @@ pub(super) async fn batch_insert_chunks(
                 .push_bind(&chunk.parent_type_name)
                 // P2 #29: stamp the parser version emitted with this chunk so
                 // a parser-logic bump (without source change) still refreshes.
-                .push_bind(chunk.parser_version as i64);
+                .push_bind(chunk.parser_version as i64)
+                // v24 / #1221: vendored bit precomputed by `upsert_chunks_batch`
+                // from the chunk's origin and the store's configured prefix list.
+                .push_bind(if vendored_per_chunk[emb_offset + i] {
+                    1_i64
+                } else {
+                    0_i64
+                });
         });
         // DS-2: ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
         //
@@ -392,12 +405,14 @@ pub(super) async fn batch_insert_chunks(
              window_idx=excluded.window_idx, \
              parent_type_name=excluded.parent_type_name, \
              parser_version=excluded.parser_version, \
+             vendored=excluded.vendored, \
              umap_x=CASE WHEN chunks.content_hash != excluded.content_hash \
                          THEN NULL ELSE chunks.umap_x END, \
              umap_y=CASE WHEN chunks.content_hash != excluded.content_hash \
                          THEN NULL ELSE chunks.umap_y END \
              WHERE chunks.content_hash != excluded.content_hash \
-                OR chunks.parser_version != excluded.parser_version",
+                OR chunks.parser_version != excluded.parser_version \
+                OR chunks.vendored != excluded.vendored",
         );
         qb.build().execute(&mut **tx).await?;
     }
