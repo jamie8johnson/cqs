@@ -109,6 +109,11 @@ pub(crate) enum NotesCommand {
         /// New mentions (replaces all, comma-separated)
         #[arg(long, value_delimiter = ',')]
         new_mentions: Option<Vec<String>>,
+        /// New kind tag (#1133 follow-up). Pass an empty string to clear
+        /// the kind; the trim+lowercase normalization matches `notes add`.
+        /// When unset, the existing kind is preserved.
+        #[arg(long)]
+        new_kind: Option<String>,
         /// Skip re-indexing after update
         #[arg(long)]
         no_reindex: bool,
@@ -175,6 +180,7 @@ pub(crate) fn cmd_notes(
             new_text,
             new_sentiment,
             new_mentions,
+            new_kind,
             no_reindex,
         } => cmd_notes_update(
             cli,
@@ -183,6 +189,7 @@ pub(crate) fn cmd_notes(
             new_text.as_deref(),
             *new_sentiment,
             new_mentions.as_deref(),
+            new_kind.as_deref(),
             *no_reindex,
         ),
         NotesCommand::Remove { text, no_reindex } => cmd_notes_remove(cli, ctx, text, *no_reindex),
@@ -364,7 +371,14 @@ fn cmd_notes_add(
     Ok(())
 }
 
-/// Update a note: match by text, apply new text/sentiment/mentions, optionally reindex.
+/// Update a note: match by text, apply new text/sentiment/mentions/kind, optionally reindex.
+///
+/// 8 args is one over clippy's default `too_many_arguments` threshold.
+/// Bundling into a struct would be more shape than the call site warrants —
+/// the dispatcher at `cmd_notes` already destructures the same fields, and a
+/// helper struct just round-trips them through one extra hop. Allow the
+/// width here; if a 9th arg lands, that's the right time to factor.
+#[allow(clippy::too_many_arguments)]
 fn cmd_notes_update(
     cli: &Cli,
     ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
@@ -372,6 +386,7 @@ fn cmd_notes_update(
     new_text: Option<&str>,
     new_sentiment: Option<f32>,
     new_mentions: Option<&[String]>,
+    new_kind: Option<&str>,
     no_reindex: bool,
 ) -> Result<()> {
     // P3 #92: per-subhandler span — see `cmd_notes_add`.
@@ -380,14 +395,19 @@ fn cmd_notes_update(
         text_len = text.len(),
         new_text_len = new_text.map(str::len),
         new_sentiment,
+        new_kind,
         no_reindex
     )
     .entered();
     if text.is_empty() {
         bail!("Note text cannot be empty");
     }
-    if new_text.is_none() && new_sentiment.is_none() && new_mentions.is_none() {
-        bail!("At least one of --new-text, --new-sentiment, or --new-mentions must be provided");
+    if new_text.is_none() && new_sentiment.is_none() && new_mentions.is_none() && new_kind.is_none()
+    {
+        bail!(
+            "At least one of --new-text, --new-sentiment, --new-mentions, or --new-kind \
+             must be provided"
+        );
     }
     if let Some(t) = new_text {
         if t.is_empty() {
@@ -413,6 +433,19 @@ fn cmd_notes_update(
             .cloned()
             .collect::<Vec<_>>()
     });
+    // Apply the same normalization `notes add --kind` uses: trim,
+    // lowercase, empty → None. `Some(None)` means "the user passed
+    // `--new-kind` with an empty/whitespace value, intending to
+    // clear the field"; `None` means "the flag wasn't passed, leave
+    // existing kind alone."
+    let new_kind_norm: Option<Option<String>> = new_kind.map(|k| {
+        let trimmed = k.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
 
     rewrite_notes_file(&notes_path, |entries| {
         let entry = entries
@@ -433,6 +466,9 @@ fn cmd_notes_update(
         }
         if let Some(ref m) = new_mentions_owned {
             entry.mentions = m.clone();
+        }
+        if let Some(ref k) = new_kind_norm {
+            entry.kind = k.clone();
         }
         Ok(())
     })
