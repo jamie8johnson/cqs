@@ -371,7 +371,14 @@ fn cmd_notes_add(
     Ok(())
 }
 
-/// Update a note: match by text, apply new text/sentiment/mentions, optionally reindex.
+/// Update a note: match by text, apply new text/sentiment/mentions/kind, optionally reindex.
+///
+/// 8 args is one over clippy's default `too_many_arguments` threshold.
+/// Bundling into a struct would be more shape than the call site warrants —
+/// the dispatcher at `cmd_notes` already destructures the same fields, and a
+/// helper struct just round-trips them through one extra hop. Allow the
+/// width here; if a 9th arg lands, that's the right time to factor.
+#[allow(clippy::too_many_arguments)]
 fn cmd_notes_update(
     cli: &Cli,
     ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
