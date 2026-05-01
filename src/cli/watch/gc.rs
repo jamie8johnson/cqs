@@ -208,12 +208,19 @@ pub(super) fn run_daemon_startup_gc(
 /// than necessary. The cap means a deeply-polluted index converges over
 /// many ticks rather than one big stop-the-world prune.
 ///
+/// PF-V1.30.1-3 (#1226): when the caller has already enumerated the
+/// working tree (e.g. because reconcile is also firing on the same
+/// idle tick), pass `disk_files: Some(&shared_set)` to skip the
+/// internal walk. `disk_files: None` falls back to the original
+/// `cqs::enumerate_files` call.
+///
 /// Disable with `CQS_DAEMON_PERIODIC_GC=0`.
 pub(super) fn run_daemon_periodic_gc(
     store: &Store,
     root: &Path,
     parser: &CqParser,
     matcher: Option<&ignore::gitignore::Gitignore>,
+    disk_files: Option<&std::collections::HashSet<PathBuf>>,
 ) {
     let _span = tracing::info_span!("daemon_periodic_gc").entered();
     // OB-V1.30.1-7: capture elapsed time so operators can spot a
@@ -226,22 +233,35 @@ pub(super) fn run_daemon_periodic_gc(
     // Pass 1: missing-file prune. `enumerate_files` is the heavier call
     // here (one full walk of the tree); running it on idle is fine —
     // by definition there is no contention.
+    //
+    // PF-V1.30.1-3 (#1226): reuse the caller-supplied walk when present,
+    // so a tick that fires both gc and reconcile only walks the tree
+    // once. The fallback path keeps the function self-contained for
+    // callers that haven't pre-walked (today: no one in production —
+    // mod.rs always pre-walks when either gate fires — but the option
+    // keeps the function testable in isolation).
     let exts = parser.supported_extensions();
-    match cqs::enumerate_files(root, &exts, false) {
-        Ok(files) => {
-            let file_set: std::collections::HashSet<_> = files.into_iter().collect();
-            match store.prune_missing(&file_set, root) {
-                Ok(n) if n > 0 => {
-                    tracing::info!(pruned = n, "Periodic GC: pruned missing-file chunks");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "Periodic GC: prune_missing failed");
-                }
+    let walked: Option<std::collections::HashSet<PathBuf>> = if disk_files.is_none() {
+        match cqs::enumerate_files(root, &exts, false) {
+            Ok(files) => Some(files.into_iter().collect()),
+            Err(e) => {
+                tracing::warn!(error = %e, "Periodic GC: enumerate_files failed");
+                None
             }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "Periodic GC: enumerate_files failed");
+    } else {
+        None
+    };
+    let file_set: Option<&std::collections::HashSet<PathBuf>> = disk_files.or(walked.as_ref());
+    if let Some(file_set) = file_set {
+        match store.prune_missing(file_set, root) {
+            Ok(n) if n > 0 => {
+                tracing::info!(pruned = n, "Periodic GC: pruned missing-file chunks");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Periodic GC: prune_missing failed");
+            }
         }
     }
 

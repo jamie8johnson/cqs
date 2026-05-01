@@ -1328,16 +1328,45 @@ pub fn cmd_watch(
                     // The bounded sweep (cap = daemon_periodic_gc_cap()) keeps
                     // each tick's write transaction short.
                     //
+                    // PF-V1.30.1-3 (#1226): when both gc and reconcile gates
+                    // fire on the same idle tick, do one disk walk and pass
+                    // it to both consumers. The two intervals share the
+                    // idle gate (`daemon_periodic_gc_idle_secs`), so on
+                    // long-quiet ticks at the gc cadence boundary, both
+                    // would otherwise walk the tree back-to-back.
+                    let gc_due = periodic_gc_enabled
+                        && state.last_event.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
+                        && last_periodic_gc.elapsed()
+                            >= Duration::from_secs(
+                                super::limits::daemon_periodic_gc_interval_secs(),
+                            );
+                    let reconcile_due = reconcile_enabled_flag
+                        && state.last_event.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
+                        && last_reconcile.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_reconcile_interval_secs());
+                    let shared_disk_files: Option<HashSet<PathBuf>> = if gc_due && reconcile_due {
+                        let exts = parser.supported_extensions();
+                        match cqs::enumerate_files(&root, &exts, no_ignore) {
+                            Ok(v) => Some(v.into_iter().collect()),
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Shared idle-tick walk failed; gc and reconcile fall back to per-callsite walks",
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     // Acquires the same `acquire_index_lock` semantics by
                     // calling `try_acquire_index_lock` — if `cqs index` or
                     // `cqs gc` is running, the GC tick skips and tries again
                     // on the next interval.
-                    if periodic_gc_enabled
-                        && state.last_event.elapsed()
-                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
-                        && last_periodic_gc.elapsed()
-                            >= Duration::from_secs(super::limits::daemon_periodic_gc_interval_secs())
-                    {
+                    if gc_due {
                         match try_acquire_index_lock(&cqs_dir) {
                             Ok(Some(gc_lock)) => {
                                 // EH-V1.29-8: Same poison-recovery as startup
@@ -1355,7 +1384,13 @@ pub fn cmd_watch(
                                     }
                                 };
                                 let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
-                                run_daemon_periodic_gc(&store, &root, &parser, matcher_ref);
+                                run_daemon_periodic_gc(
+                                    &store,
+                                    &root,
+                                    &parser,
+                                    matcher_ref,
+                                    shared_disk_files.as_ref(),
+                                );
                                 drop(matcher_guard);
                                 drop(gc_lock);
                                 // Clear caches so the next query observes the pruned rows.
@@ -1396,12 +1431,7 @@ pub fn cmd_watch(
                     // Reads only — no write transaction, no index lock
                     // needed. The `process_file_changes` drain on the next
                     // tick takes its own lock per its existing contract.
-                    if reconcile_enabled_flag
-                        && state.last_event.elapsed()
-                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
-                        && last_reconcile.elapsed()
-                            >= Duration::from_secs(super::limits::daemon_reconcile_interval_secs())
-                    {
+                    if reconcile_due {
                         // #1231: detect a `cqs index --force` rotation that
                         // happened between idle ticks — the inotify branch
                         // at line 1191 only fires on actual filesystem
@@ -1438,13 +1468,14 @@ pub fn cmd_watch(
                             }
                             last_reconcile = std::time::Instant::now();
                         } else {
-                            let queued = run_daemon_reconcile(
+                            let queued = reconcile::run_daemon_reconcile_with_walk(
                                 &store,
                                 &root,
                                 &parser,
                                 no_ignore,
                                 &mut state.pending_files,
                                 max_pending_files(),
+                                shared_disk_files.as_ref(),
                             );
                             if queued > 0 {
                                 // Reset `last_event` so `process_file_changes`
