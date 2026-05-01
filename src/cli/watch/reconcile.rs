@@ -90,21 +90,60 @@ pub(super) fn run_daemon_reconcile(
     pending_files: &mut HashSet<PathBuf>,
     max_pending: usize,
 ) -> usize {
+    run_daemon_reconcile_with_walk(
+        store,
+        root,
+        parser,
+        no_ignore,
+        pending_files,
+        max_pending,
+        None,
+    )
+}
+
+/// PF-V1.30.1-3 (#1226): reconcile variant that accepts a pre-computed
+/// disk walk. When the caller has already enumerated the tree (e.g.
+/// because periodic GC is also firing on the same idle tick),
+/// `disk_files: Some(&shared_set)` skips the internal walk.
+/// `disk_files: None` falls back to the original `enumerate_files`
+/// call. The legacy [`run_daemon_reconcile`] entry point delegates here
+/// with `None` for backward compatibility with existing call sites
+/// (the daemon idle-tick path is the one site that pre-walks).
+pub(super) fn run_daemon_reconcile_with_walk(
+    store: &Store,
+    root: &Path,
+    parser: &CqParser,
+    no_ignore: bool,
+    pending_files: &mut HashSet<PathBuf>,
+    max_pending: usize,
+    disk_files: Option<&HashSet<PathBuf>>,
+) -> usize {
     let _span = tracing::info_span!("daemon_reconcile", max_pending).entered();
     // OB-V1.30.1-7: capture elapsed time for the terminal log lines so
     // operators can correlate reconcile cadence with GC overhead in
     // journalctl. Pattern matches the HNSW build sites already in tree.
     let start = std::time::Instant::now();
 
-    // Walk disk → set of relative paths visible to indexing.
+    // Walk disk → set of relative paths visible to indexing. PF-V1.30.1-3:
+    // reuse the caller-supplied walk when present (saves one full
+    // `enumerate_files` pass on ticks that fire both gc and reconcile).
     let exts = parser.supported_extensions();
-    let disk_files = match cqs::enumerate_files(root, &exts, no_ignore) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "Reconcile: enumerate_files failed");
-            return 0;
+    let walked: Option<HashSet<PathBuf>> = if disk_files.is_none() {
+        match cqs::enumerate_files(root, &exts, no_ignore) {
+            Ok(v) => Some(v.into_iter().collect()),
+            Err(e) => {
+                tracing::warn!(error = %e, "Reconcile: enumerate_files failed");
+                return 0;
+            }
         }
+    } else {
+        None
     };
+    let disk_files: &HashSet<PathBuf> = disk_files.unwrap_or_else(|| {
+        walked
+            .as_ref()
+            .expect("walked is Some when disk_files was None and walk succeeded")
+    });
 
     // One SELECT pulls every indexed source-file origin + its stored
     // mtime. Map keyed by origin string for cheap lookups in the loop.
@@ -164,7 +203,7 @@ pub(super) fn run_daemon_reconcile(
                 // slash-normalized form the chunks table uses, so a
                 // Windows-side reconcile and a WSL-side watcher don't
                 // double-queue the same file under both separators.
-                let normalized = normalize_pending_path(&rel);
+                let normalized = normalize_pending_path(rel);
                 if pending_files.insert(normalized) {
                     added += 1;
                     queued += 1;
@@ -178,7 +217,7 @@ pub(super) fn run_daemon_reconcile(
                 let lookup_path: PathBuf = if rel.is_absolute() {
                     rel.clone()
                 } else {
-                    root.join(&rel)
+                    root.join(rel)
                 };
                 let needs_reindex = match FileFingerprint::read_disk(
                     &lookup_path,
@@ -200,7 +239,7 @@ pub(super) fn run_daemon_reconcile(
                     Some(disk_fp) => !stored_fp.matches(&disk_fp, FingerprintPolicy::MtimeOrHash),
                 };
                 if needs_reindex {
-                    let normalized = normalize_pending_path(&rel);
+                    let normalized = normalize_pending_path(rel);
                     if pending_files.insert(normalized) {
                         modified += 1;
                         queued += 1;
@@ -583,6 +622,57 @@ mod tests {
     /// git-checkout doesn't drown the next process_file_changes
     /// cycle. Tests the strict pre-queue clamp: files we'd otherwise
     /// queue are skipped once `pending_files.len() >= max_pending`.
+    /// PF-V1.30.1-3 (#1226): when the caller supplies `disk_files`,
+    /// reconcile uses that set verbatim instead of walking the tree.
+    /// Verify by passing a `disk_files` that doesn't match what's on
+    /// disk: a non-existent path. If reconcile honored the supplied
+    /// set, it queues that path (the index doesn't have it). If it
+    /// silently fell back to its own walk, the supplied path would be
+    /// skipped and the actual files would be queued instead.
+    #[test]
+    fn run_daemon_reconcile_with_walk_uses_supplied_disk_files() {
+        let dir = TempDir::new().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs_dir).unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        // Real disk file that the *internal* walk would discover.
+        fs::write(src_dir.join("on_disk.rs"), "fn a() {}").unwrap();
+
+        let store = open_store(&cqs_dir);
+
+        // Synthetic disk_files set that does NOT include `on_disk.rs`.
+        // If reconcile honors this set, only `synthetic.rs` is queued;
+        // if it falls back to its own walk, `on_disk.rs` is queued
+        // instead (and the synthetic path is missed entirely).
+        let mut supplied: HashSet<PathBuf> = HashSet::new();
+        supplied.insert(PathBuf::from("src/synthetic.rs"));
+
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let queued = run_daemon_reconcile_with_walk(
+            &store,
+            dir.path(),
+            &parser(),
+            false,
+            &mut pending,
+            usize::MAX,
+            Some(&supplied),
+        );
+        assert_eq!(queued, 1, "supplied set has one entry → one queued");
+        let pending_strs: Vec<String> = pending
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            pending_strs.iter().any(|s| s.contains("synthetic.rs")),
+            "must queue the supplied path, not the real disk file. got: {pending_strs:?}"
+        );
+        assert!(
+            !pending_strs.iter().any(|s| s.contains("on_disk.rs")),
+            "must NOT walk the real tree when disk_files was supplied. got: {pending_strs:?}"
+        );
+    }
+
     #[test]
     fn run_daemon_reconcile_respects_max_pending_cap() {
         let dir = TempDir::new().unwrap();
