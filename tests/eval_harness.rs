@@ -524,7 +524,9 @@ fn test_eval_matrix() {
         // Init reranker if needed
         let reranker = match config.reranker {
             RerankerMode::None => None,
-            RerankerMode::MiniLmV1 => Some(cqs::OnnxReranker::new().expect("Failed to init reranker")),
+            RerankerMode::MiniLmV1 => {
+                Some(cqs::OnnxReranker::new().expect("Failed to init reranker"))
+            }
         };
 
         let mut config_results: Vec<EvalQueryResult> = Vec::new();
