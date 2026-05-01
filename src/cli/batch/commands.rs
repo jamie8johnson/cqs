@@ -640,7 +640,13 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
         BatchCmd::Notes { args, .. } => {
             // API-V1.29-4: pass `check` through so the daemon path matches
             // `cqs notes list --check` when routed via the socket.
-            handlers::dispatch_notes(ctx, args.warnings, args.patterns, args.check)
+            handlers::dispatch_notes(
+                ctx,
+                args.warnings,
+                args.patterns,
+                args.kind.as_deref(),
+                args.check,
+            )
         }
         BatchCmd::Task { args, .. } => {
             handlers::dispatch_task(ctx, &args.description, args.limit, args.tokens)
@@ -937,6 +943,17 @@ mod tests {
             BatchCmd::Notes { ref args, .. } => {
                 assert!(!args.warnings);
                 assert!(args.patterns);
+            }
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_notes_kind() {
+        let input = BatchInput::try_parse_from(["notes", "--kind", "todo"]).unwrap();
+        match input.cmd {
+            BatchCmd::Notes { ref args, .. } => {
+                assert_eq!(args.kind.as_deref(), Some("todo"));
             }
             _ => panic!("Expected Notes command"),
         }

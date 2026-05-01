@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cqs notes list --kind <kind>`** filter — column-level filter against the v25 `notes.kind` column (kebab-case lowercase, normalized). ANDs with `--warnings` / `--patterns`. CLI prints the kind tag inline (`[+0.5] [todo] note text…`); JSON adds `kind` field to every list entry, omitted on null. Same flag wired into the daemon batch path (`BatchCmd::Notes`) so `--kind` works through the socket too. Companion to the v25 schema landed in #1265 (#1133 follow-up).
+
 ## [1.32.0] - 2026-05-01
 
 Minor release. Schema bumps **v23 → v25** (chained auto-migration: v23→v24 adds `chunks.vendored`, v24→v25 adds `notes.kind`). Five themes:
