@@ -878,6 +878,33 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                 }
             }
         }
+
+        // Issue #1282: invalidate any pre-existing CAGRA index file. cqs
+        // index rebuilds HNSW above but has no parallel CAGRA save path —
+        // CAGRA is built lazily on first search via cagra_build_from_store.
+        // If `index.cagra` exists from a prior run, the lazy path doesn't
+        // fire (cagra_load returns the stale file), and search at chunk
+        // count ≥ CQS_CAGRA_THRESHOLD silently returns pre-rebuild results
+        // because the backend selector prefers CAGRA. Removing the file
+        // forces a fresh build on the next search. The cost is one CAGRA
+        // build per `cqs index` (~seconds to tens-of-seconds depending on
+        // corpus size), paid by the next searcher.
+        let cagra_path = cqs_dir.join("index.cagra");
+        if cagra_path.exists() {
+            if let Err(e) = std::fs::remove_file(&cagra_path) {
+                tracing::warn!(
+                    error = %e,
+                    path = %cagra_path.display(),
+                    "Failed to invalidate stale CAGRA index — first search will need to manually delete or rebuild"
+                );
+            } else {
+                tracing::info!(
+                    "Invalidated stale index.cagra; lazy rebuild will fire on first search"
+                );
+            }
+            // Best-effort meta cleanup — ignore errors, file is opaque metadata.
+            let _ = std::fs::remove_file(cqs_dir.join("index.cagra.meta"));
+        }
     }
 
     // Clean up backup from --force (rebuild succeeded)

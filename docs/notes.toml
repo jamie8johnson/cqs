@@ -1705,3 +1705,12 @@ mentions = [
     "docs/audit-triage.md",
     "PROJECT_CONTINUITY.md",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "SPLADE phase 2 (#1176, 2026-05-01): RRF on dense+sparse trails linear-α by ~1pp R@5/R@20 on test, ~4-5pp on dev R@1/R@5. Closed without merging; entry in research/models.md. Linear-α with min-max normalization is the right blend for SPLADE on cqs queries given current model+corpus."
+mentions = [
+    "src/search/query.rs",
+    "research/models.md",
+    "SPLADE",
+]

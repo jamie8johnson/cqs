@@ -207,15 +207,24 @@ pub(super) fn store_stage(
     }
 
     // Final flush: insert any remaining deferred items now that all chunks are in the DB.
+    // Issue #1281: only credit `total_calls` on a successful insert. The
+    // upsert is a single transaction — one bad FK rolls back the whole
+    // batch, so an Err means *zero* rows landed, not "we tried." Counting
+    // the attempt anyway makes the "Pipeline indexing complete
+    // total_calls=N" log lie about graph completeness.
     if !deferred_chunk_calls.is_empty() {
-        if let Err(e) = store.upsert_calls_batch(&deferred_chunk_calls) {
-            tracing::warn!(
-                count = deferred_chunk_calls.len(),
-                error = %e,
-                "Failed to store deferred chunk calls"
-            );
+        match store.upsert_calls_batch(&deferred_chunk_calls) {
+            Ok(()) => {
+                total_calls += deferred_chunk_calls.len();
+            }
+            Err(e) => {
+                tracing::warn!(
+                    count = deferred_chunk_calls.len(),
+                    error = %e,
+                    "Failed to store deferred chunk calls — call graph is incomplete by this many rows"
+                );
+            }
         }
-        total_calls += deferred_chunk_calls.len();
     }
 
     // PERF-26: Single transaction for all remaining files instead of per-file transactions.

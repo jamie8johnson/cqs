@@ -347,15 +347,28 @@ fn search_for_rank(
     };
 
     // Find gold rank (1-indexed). Match on (file == origin) AND
-    // (name == gold.name) AND (line_start == gold.line_start).
+    // (name == gold.name).
+    //
+    // We deliberately *don't* check `line_start`. The fixture's line numbers
+    // are frozen at the moment it was generated/refreshed, but every audit
+    // wave shifts function definitions up or down by a few lines as code
+    // moves around. Including `line_start` in the match key means a 1-line
+    // shift in the source turns a correct retrieval into a counted miss —
+    // an artifact of fixture staleness, not a real search regression. PR
+    // #1109 (2026-04-25) re-pinned the fixture to absorb the v1.29.x
+    // drift; weeks later the same drift had re-accumulated and reproduced
+    // a 24pp R@5 phantom-regression. Matching on `(file, name)` is loose
+    // enough to be drift-resilient, strict enough that retrieval has to
+    // surface the right function in the right file. Where a file has
+    // multiple chunks with the same name (overloads, windowed sub-chunks
+    // of the same section), the first ranked match wins — that's the most
+    // generous interpretation of "did search find this," which is what
+    // R@K is asking.
     let target_file = gold.origin.as_str();
     for (i, r) in results.iter().enumerate() {
         let UnifiedResult::Code(sr) = r;
         let file_str = cqs::normalize_path(&sr.chunk.file);
-        if file_str == target_file
-            && sr.chunk.name == gold.name
-            && sr.chunk.line_start == gold.line_start
-        {
+        if file_str == target_file && sr.chunk.name == gold.name {
             return Ok(Some(i + 1));
         }
     }
