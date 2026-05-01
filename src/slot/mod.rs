@@ -296,10 +296,19 @@ pub fn read_slot_model(project_cqs_dir: &Path, slot_name: &str) -> Option<String
 
 /// Write `model` into `.cqs/slots/<name>/slot.toml [embedding].model`.
 ///
+/// Read-modify-write: parses the existing slot.toml (if any) into a
+/// structured `SlotConfigFile`, sets `[embedding].model`, serializes
+/// the whole struct back through `toml::to_string`, and atomically
+/// replaces the file. Any additional top-level sections present on disk
+/// (e.g. a future `[reranker]` or a hand-added `[notes]`) are preserved
+/// verbatim via the `#[serde(flatten)] extra: toml::Table` catch-all on
+/// `SlotConfigFile` — adding a new typed section to the struct in the
+/// future requires zero changes to this function (#1217). Comments are
+/// not preserved; the toml crate does not retain them across a
+/// deserialize/serialize round-trip.
+///
 /// Atomic via temp+rename + parent-dir fsync (`crate::fs::atomic_replace`).
-/// Creates the slot dir if missing (idempotent). Existing TOML keys outside
-/// `[embedding]` are not preserved — slot.toml is owned by cqs; users should
-/// not hand-edit it.
+/// Creates the slot dir if missing (idempotent).
 ///
 /// P3.39: routes through `crate::fs::atomic_replace` so the parent directory
 /// is fsynced after the rename — matches the durability contract of
@@ -318,12 +327,47 @@ pub fn write_slot_model(
         })?;
     }
     let final_path = slot_config_path(project_cqs_dir, slot_name);
-    let tmp_path = dir.join(format!("{}.tmp", SLOT_CONFIG_FILE));
 
-    // Hand-write the body so unrelated TOML keys (if a user added some) don't
-    // get clobbered through serde round-tripping. With only one section this
-    // is simpler than a Document-preserving edit.
-    let body = format!("[embedding]\nmodel = {}\n", toml_quote(model));
+    // Read existing config (if any) into a typed struct, mutate the
+    // model field, write the full struct back. Unknown sections survive
+    // via the flatten catch-all on `SlotConfigFile`. A malformed TOML on
+    // disk is treated as "default" rather than a hard error so a
+    // corrupted slot.toml still recovers on the next write — matches the
+    // tolerance pattern in `read_slot_model` (warn + None) and means
+    // `cqs slot promote` can't deadlock on a hand-broken config.
+    let mut config: SlotConfigFile = if final_path.exists() {
+        match fs::read_to_string(&final_path) {
+            Ok(raw) => toml::from_str(&raw).unwrap_or_else(|e| {
+                tracing::warn!(
+                    path = %final_path.display(),
+                    error = %e,
+                    "Existing slot.toml is malformed; rewriting from default"
+                );
+                SlotConfigFile::default()
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    path = %final_path.display(),
+                    error = %e,
+                    "Failed to read slot.toml for round-trip; rewriting from default"
+                );
+                SlotConfigFile::default()
+            }
+        }
+    } else {
+        SlotConfigFile::default()
+    };
+    let embedding = config
+        .embedding
+        .get_or_insert_with(SlotEmbeddingSection::default);
+    embedding.model = Some(model.to_string());
+
+    let body = toml::to_string(&config).map_err(|e| SlotError::Io {
+        slot: slot_name.to_string(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+    })?;
+
+    let tmp_path = dir.join(format!("{}.tmp", SLOT_CONFIG_FILE));
     {
         let mut f = fs::File::create(&tmp_path).map_err(|source| SlotError::Io {
             slot: slot_name.to_string(),
@@ -350,36 +394,27 @@ pub fn write_slot_model(
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
+/// Serde shape for `slot.toml`.
+///
+/// `extra` captures unknown top-level keys via `#[serde(flatten)]` so a
+/// hand-added `[notes].project_id = "foo"` (or a future typed section
+/// not yet promoted to a struct field) survives a round-trip through
+/// `write_slot_model`. When a new typed section lands (e.g. `reranker:
+/// Option<SlotRerankerSection>`), it can be lifted from `extra` into a
+/// dedicated field with no migration — TOML parsing puts new fields
+/// into named slots first, leftovers into `extra`.
+#[derive(Default, serde::Deserialize, serde::Serialize)]
 struct SlotConfigFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<SlotEmbeddingSection>,
+    #[serde(default, flatten, skip_serializing_if = "toml::Table::is_empty")]
+    extra: toml::Table,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize, serde::Serialize)]
 struct SlotEmbeddingSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
-}
-
-/// Quote a value for use as a TOML basic string. Escapes the bare minimum
-/// (`\`, `"`, control chars) so a preset name like `BAAI/bge-large-en-v1.5`
-/// round-trips cleanly. Slot names are pre-validated (a-z, 0-9, _, -) so the
-/// only risky characters live in the model value.
-fn toml_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// Path of `.cqs/active_slot` pointer file.
@@ -1302,6 +1337,73 @@ mod tests {
         write_slot_model(&cqs, "x", "bge-large").unwrap();
         write_slot_model(&cqs, "x", "e5-base").unwrap();
         assert_eq!(read_slot_model(&cqs, "x").as_deref(), Some("e5-base"));
+    }
+
+    /// EX-V1.30.1-4 (#1217): the round-trip preserves unrelated top-level
+    /// sections. Pre-fix the function clobbered the file with a single
+    /// `[embedding]\nmodel = …` block, so any user-added or future-typed
+    /// section disappeared on the next `cqs slot promote`. With the
+    /// `#[serde(flatten)] extra: toml::Table` catch-all the unknown
+    /// section survives verbatim.
+    #[test]
+    fn write_slot_model_preserves_unrelated_sections() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot = "rounds";
+        // Hand-write a slot.toml with an embedding model AND a section the
+        // current code knows nothing about. Mirrors the issue's example
+        // (`[notes].project_id = "foo"`).
+        let cfg_path = slot_config_path(&cqs, slot);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        let initial =
+            "[embedding]\nmodel = \"bge-large\"\n\n[notes]\nproject_id = \"foo\"\nrelease = 7\n";
+        fs::write(&cfg_path, initial).unwrap();
+
+        // Mutate via the public API.
+        write_slot_model(&cqs, slot, "nomic-coderank").unwrap();
+
+        // Verify: model swapped, notes section still present.
+        assert_eq!(
+            read_slot_model(&cqs, slot).as_deref(),
+            Some("nomic-coderank"),
+            "embedding.model was rewritten"
+        );
+        let raw = fs::read_to_string(&cfg_path).unwrap();
+        assert!(
+            raw.contains("[notes]"),
+            "[notes] section should survive the round-trip; got:\n{raw}"
+        );
+        assert!(
+            raw.contains("project_id"),
+            "[notes].project_id should survive; got:\n{raw}"
+        );
+        assert!(
+            raw.contains("release"),
+            "[notes].release should survive; got:\n{raw}"
+        );
+    }
+
+    /// EX-V1.30.1-4 (#1217): malformed slot.toml on disk recovers via
+    /// rewrite-from-default rather than erroring the write path. Means a
+    /// hand-broken slot.toml can't deadlock `cqs slot promote` — pinning
+    /// the tolerance contract documented in the function's doc comment.
+    #[test]
+    fn write_slot_model_recovers_from_malformed_existing() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot = "broken";
+        let cfg_path = slot_config_path(&cqs, slot);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        // Not valid TOML — unclosed string, dangling bracket.
+        fs::write(&cfg_path, "[embedding\nmodel = \"oops").unwrap();
+
+        // Should succeed (warn + fall back to default).
+        write_slot_model(&cqs, slot, "e5-base").unwrap();
+        assert_eq!(
+            read_slot_model(&cqs, slot).as_deref(),
+            Some("e5-base"),
+            "rewrite-from-default produced a valid file"
+        );
     }
 
     #[test]
