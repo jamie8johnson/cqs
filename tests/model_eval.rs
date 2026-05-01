@@ -1315,7 +1315,7 @@ fn test_hard_model_comparison() {
 #[ignore] // Slow - downloads models. Run with: cargo test reranker -- --ignored --nocapture
 fn test_hard_reranker_comparison() {
     use cqs::parser::ChunkType;
-    use cqs::reranker::Reranker;
+    use cqs::reranker::{OnnxReranker, Reranker};
     use cqs::store::SearchResult;
     use std::path::PathBuf;
 
@@ -1414,7 +1414,7 @@ fn test_hard_reranker_comparison() {
 
     // Load reranker
     eprintln!("\n--- Loading reranker ---");
-    let reranker = Reranker::new().expect("Failed to create reranker");
+    let reranker = OnnxReranker::new().expect("Failed to create reranker");
 
     const CANDIDATE_K: usize = 20;
 

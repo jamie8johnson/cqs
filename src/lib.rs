@@ -152,7 +152,7 @@ pub use note::{
     NOTES_HEADER,
 };
 pub use parser::{Chunk, Parser};
-pub use reranker::Reranker;
+pub use reranker::{LlmReranker, NoopReranker, OnnxReranker, Reranker};
 pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API

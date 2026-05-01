@@ -173,7 +173,7 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     /// their tracing fields and `--json` envelopes without re-resolving.
     #[allow(dead_code)] // wired into doctor + handlers progressively
     pub slot_name: String,
-    reranker: OnceLock<cqs::Reranker>,
+    reranker: OnceLock<std::sync::Arc<dyn cqs::Reranker>>,
     embedder: OnceLock<cqs::Embedder>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
     splade_index: OnceLock<Option<cqs::splade::index::SpladeIndex>>,
@@ -268,22 +268,23 @@ impl<'a, Mode> CommandContext<'a, Mode> {
     /// Get or lazily create the cross-encoder reranker.
     ///
     /// The ONNX session (~91MB) is created on first call and reused for
-    /// all subsequent reranking within this CLI invocation.
-    pub fn reranker(&self) -> Result<&cqs::Reranker> {
+    /// all subsequent reranking within this CLI invocation. Returns the
+    /// trait object so a future config-driven `--reranker llm|noop|onnx`
+    /// switch (#1220) can swap impls without touching this signature.
+    pub fn reranker(&self) -> Result<std::sync::Arc<dyn cqs::Reranker>> {
         if let Some(r) = self.reranker.get() {
-            return Ok(r);
+            return Ok(std::sync::Arc::clone(r));
         }
         let _span = tracing::info_span!("command_context_reranker_init").entered();
         // P1.7: thread the `[reranker]` config section so .cqs.toml preset/
         // model_path is honoured instead of silently defaulting to ms-marco.
         let config = cqs::config::Config::load(&self.root);
-        let r = cqs::Reranker::with_section(config.reranker.clone())
-            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
-        let _ = self.reranker.set(r);
-        Ok(self
-            .reranker
-            .get()
-            .expect("reranker OnceLock populated by set() above"))
+        let r: std::sync::Arc<dyn cqs::Reranker> = std::sync::Arc::new(
+            cqs::OnnxReranker::with_section(config.reranker.clone())
+                .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?,
+        );
+        let _ = self.reranker.set(std::sync::Arc::clone(&r));
+        Ok(r)
     }
 
     /// Get or lazily create the embedder.

@@ -255,7 +255,7 @@ pub(crate) fn cmd_query(
                 filter: &filter,
                 root,
                 embedder,
-                reranker,
+                reranker: reranker.as_deref(),
             },
             ref_name,
         );
@@ -287,7 +287,7 @@ pub(crate) fn cmd_query(
         root,
         embedder,
         effective_limit,
-        reranker,
+        reranker: reranker.as_deref(),
         splade_query,
         splade_index,
         routed_strategy: classification.as_ref().map(|c| c.strategy),
@@ -305,7 +305,7 @@ struct QueryContext<'a> {
     root: &'a std::path::Path,
     embedder: &'a Embedder,
     effective_limit: usize,
-    reranker: Option<&'a cqs::Reranker>,
+    reranker: Option<&'a dyn cqs::Reranker>,
     splade_query: Option<cqs::splade::SparseVector>,
     splade_index: Option<&'a cqs::splade::index::SpladeIndex>,
     /// Phase 5: strategy picked by the classifier (if adaptive routing ran).
@@ -594,7 +594,7 @@ fn unified_score(r: &UnifiedResult) -> f32 {
 
 /// Re-rank unified results using cross-encoder scoring.
 fn rerank_unified(
-    reranker: &cqs::Reranker,
+    reranker: &dyn cqs::Reranker,
     query: &str,
     results: Vec<UnifiedResult>,
     limit: usize,
@@ -680,7 +680,7 @@ struct RefQueryContext<'a> {
     filter: &'a SearchFilter,
     root: &'a std::path::Path,
     embedder: &'a Embedder,
-    reranker: Option<&'a cqs::Reranker>,
+    reranker: Option<&'a dyn cqs::Reranker>,
 }
 
 /// Ref-scoped semantic search: search only the named reference, no project index
