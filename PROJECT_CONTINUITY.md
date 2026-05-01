@@ -33,6 +33,9 @@
 | #1271 | #1230 | `process_file_changes_zero_files_is_noop_when_embedder_blocked` test in `cli/watch/tests.rs` — pins the smallest no-op contract using the existing blocked-backoff trick from `dropped_this_cycle_survives_embedder_init_early_return`. |
 | #1272 | #1217 | `write_slot_model` now reads + round-trips through `SlotConfigFile` with `#[serde(flatten)] extra: toml::Table`, preserving unrelated top-level sections (e.g. hand-added `[notes].project_id`). Comments still lost (toml crate limitation); user-keys-survive contract delivered. |
 | #1273 | #1215 | Extract `daemon_request<T: DeserializeOwned>` helper from `daemon_translate.rs`; `daemon_ping`/`status`/`reconcile` collapse to thin shims. -110 net lines, single span carrying `command` field. |
+| #1274 | — | Continuity update for the post-v1.32.0 sweep itself. |
+| #1275 | #1218 | `AuthChannel` trait + `BearerHeaderChannel` / `CookieChannel<'a>` / `QueryParamChannel` impls for `cqs serve` auth. `check_request` collapses to a 3-channel registry walk. New `channel_priority_is_bearer_cookie_query` test pins the priority ordering. Adding mTLS / API-key / JWT / SSO becomes one new impl. |
+| #1276 | #1220 | `Reranker` trait + `OnnxReranker` (renamed from struct), `NoopReranker` (eval ablation), `LlmReranker` (BatchProvider skeleton). Holders switched from `OnceLock<Reranker>` to `OnceLock<Arc<dyn Reranker>>` at 3 sites. |
 
 **Up next:**
 - Verify release.yml prebuilds completed for all three targets (Linux x86_64, Windows x86_64, macOS aarch64).
@@ -42,10 +45,12 @@
 **Outstanding follow-ups (still small, no PRs yet):**
 - `cqs notes update --kind` flag (#1269 only added `add` and `list`; update path still needs the field).
 - #1107 (`cqs slot create --model` not persisted) — now a one-line `write_slot_model` call thanks to #1272.
+- `cqs eval --reranker none|onnx` flag (`NoopReranker` is in place from #1276; eval-runner construction site needs a one-line dispatch).
+- `LlmReranker` production wiring against `BatchProvider` (skeleton in `src/reranker.rs` from #1276).
 - Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
 - cuvs crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
 
-**Open Issues (post-v1.32.0 + this sweep):** ~13 remain. All P1/P2 closed. Highest-priority candidates: #106 (ort RC, blocks on upstream), #1244 / #1228 / #1226 (perf RM+PF), #1218 / #1216 / #1220 (refactors). #1043 (Windows network-drive `is_slow_mmap_fs`, needs Windows test env) still open. #1139 / #1140 explicitly skipped.
+**Open Issues (post-v1.32.0 + this sweep):** ~11 remain. All P1/P2 closed. Refactor frontier (#1218 / #1215 / #1220) cleared. Remaining: #106 (ort RC, blocks on upstream), perf cluster #1244 / #1228 / #1229 / #1226 (RM/PF) which all have small wins per the audit but mostly need careful eval, #1216 (BatchCmd dispatch macro — 33-handler refactor), #1043 (needs Windows env), #916/#717 (mmap perf, eval-required), #255 (pre-built reference packages, feature). #1139 / #1140 explicitly skipped per autopilot directive.
 
 ## Parked
 
