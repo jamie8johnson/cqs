@@ -64,7 +64,7 @@ The phase 1 primitive (`rrf_fuse_n`) stays — it is still the right shape for f
 
 **Closing:** issue #1176 closed without merging the fusion swap. The branch `feat/splade-rrf-fusion` carried the change for the eval and is being thrown away. Eval JSONs at `/tmp/eval-{baseline,rrf}-{test,dev}.json` (local — not checked in; numbers above are the canonical record).
 
-**Caveat (added 2026-05-01):** the absolute numbers above were collected under a buggy eval matcher that required strict `(file, name, line_start)` for gold-chunk matching. After 5 days of audit-driven line-shift drift, ~38% of gold chunks were "invisible" to the matcher even when search returned them — see the next section. The relative comparison (linear-α vs RRF) probably holds, since both arms ate the same drift, but reproducing the experiment under the loosened matcher would tighten the conclusion. Open as a follow-up if the question becomes load-bearing again.
+**Caveat (added 2026-05-01):** the absolute numbers above were collected under a buggy eval matcher that required strict `(file, name, line_start)` for gold-chunk matching. After 5 days of audit-driven line-shift drift, ~38% of gold chunks were "invisible" to the matcher even when search returned them — see the matcher-loosen entry below. The relative comparison (linear-α vs RRF) was redone under the corrected matcher in the third entry below ("SPLADE phase 2 redo"); verdict is the same — linear-α wins — with even more decisive numbers (test R@5 gap grew from 0.9pp to 3.6pp; dev R@5 gap grew from 4.5pp to 6.4pp).
 
 ---
 
@@ -146,3 +146,67 @@ Where multiple chunks share `(file, name)` (overloaded names, sub-chunks of wind
 - **#1283** — chunks table accumulates ~2% orphan rows because per-file delete-before-insert keys on literal chunk IDs, and chunker ID format has changed several times. Filed as separate issue; not fixed here.
 
 **Closing:** matcher fix lands as PR #TBD. v9-200k un-retired in ROADMAP. EmbeddingGemma preset (Identity pooling + `CQS_DISABLE_TENSORRT` env knob for TRT-incompatible graphs) kept as a separate follow-up PR.
+
+---
+
+## 2026-05-01 — SPLADE phase 2 redo: RRF vs. linear-α under the corrected matcher
+
+**Issue:** redo of #1176 (SPLADE phase 2) under the eval matcher loosening from the previous entry. The original phase 2 was run on 2026-04-30 against an eval matcher that mis-counted ~38% of gold chunks as misses due to v1.30.x line-start drift. The relative comparison (linear-α vs RRF) probably held — both arms ate the same drift — but the user pushed back: "if a benchmark number drops by 25pp overnight, that's bug-shaped, not model-shaped" applies just as much to negative results. Re-run cleanly, confirm or refute, document.
+
+**Change tested:** identical to phase 1 of #1176 — drop the linear-α + min-max blend on dense/sparse score maps in `search_hybrid` (`src/search/query.rs:548-636`) and replace with `Self::rrf_fuse_n(&[&dense_ids, &sparse_ids], candidate_count)`. Same primitive `search_filtered_with_index` already uses for semantic + FTS. ~80 lines net deletion (`splade_alpha`, the `alpha <= 0` P2.53 dampening, the manual min-max normalization all collapse into the rank-only RRF path).
+
+**Eval setup:**
+- Fixture: `evals/queries/v3_test.v2.json` (109, gating) + `evals/queries/v3_dev.v2.json` (109, advisory)
+- Model: BAAI/bge-large-en-v1.5 (default, 1024-dim) — same default slot as the matcher-loosen entry above
+- Index: schema v25, post-#1175, post-PR #1284 (matcher loosen + CAGRA delete-on-rebuild + total_calls fix already in branch)
+- Both arms back-to-back on the same index state, no enrichment between, `--no-require-fresh`, `CQS_NO_DAEMON=1`, n=20 limit
+- Matcher: loose `(file, name)` per the previous entry — gold-chunk drift can't contaminate the comparison
+
+**Headline numbers:**
+
+| split | fusion    |   R@1 |   R@5 |  R@20 |
+|-------|-----------|------:|------:|------:|
+| test  | linear-α  | 43.1% | **69.7%** | **83.5%** |
+| test  | RRF       | **45.0%** | 66.1% | 78.0% |
+|       | Δ         | +1.9  | **-3.6**  | **-5.5**  |
+| dev   | linear-α  | **45.9%** | **75.2%** | **88.1%** |
+| dev   | RRF       | 41.3% | 68.8% | 87.2% |
+|       | Δ         | -4.6  | **-6.4**  | -0.9  |
+
+(Bold = fusion winner per row. Eval JSONs at `/tmp/eval-splade-{linalpha,rrf}-{test,dev}.json`.)
+
+**Comparison to the original phase 2 (broken-matcher) numbers:**
+
+| metric         | original (broken matcher) | redo (corrected matcher) |
+|----------------|--------------------------:|--------------------------:|
+| test R@5 Δ     | -0.9pp (linear wins)      | -3.6pp (linear wins)      |
+| dev R@5 Δ      | -4.5pp (linear wins)      | -6.4pp (linear wins)      |
+
+The relative direction is unchanged — linear-α wins R@5 on both splits in both versions. **But the gap *grew* under the corrected matcher** (test 0.9→3.6, dev 4.5→6.4). The original write-up framed test R@5 as "tied within ±3pp tolerance" — under the corrected matcher it's clearly outside the noise floor on test, and was always outside on dev. Linear-α isn't just "slightly preferred"; it's the right call.
+
+**Why linear-α's edge grew under the corrected matcher:** when 38% of gold chunks were mis-matched, both arms were credited with the same artificial misses and the ranking-level differences were attenuated by the high baseline noise. Cleaning the matcher exposed the true difference between fusion strategies.
+
+**Per-category test R@5 delta (RRF minus linear-α, sample of larger swings):**
+
+| category            | n  | linear-α R@5 | RRF R@5 | Δ      |
+|---------------------|---:|-------------:|--------:|-------:|
+| identifier_lookup   | 18 | 66.7%        | 50.0%   | -16.7  |
+| type_filtered       | 13 | 69.2%        | 53.8%   | -15.4  |
+| negation            | 16 | 56.2%        | 50.0%   | -6.2   |
+| structural_search   |  8 | 75.0%        | 75.0%   |   0.0  |
+| conceptual_search   | 13 | 76.9%        | 76.9%   |   0.0  |
+| behavioral_search   | 16 | 75.0%        | 75.0%   |   0.0  |
+| cross_language      | 11 | 81.8%        | 81.8%   |   0.0  |
+| multi_step          | 14 | 64.3%        | 78.6%   | +14.3  |
+
+(Hand-computed from `/tmp/eval-splade-{linalpha,rrf}-test.json` per-category sections; numbers above are the rounded eval output.)
+
+The shape is consistent with the original phase 2 finding: lexical-heavy categories (`identifier_lookup`, `type_filtered`, `negation`) lose recall under RRF, while categories where dense and sparse converge gain or break even. **Multi-step** swings the other way under the corrected matcher (+14.3pp under RRF), which is interesting — multi-step queries combine multiple constraints, which is exactly where rank-fusion's "rewards overlap" property should help. But the negative magnitude on identifier_lookup + type_filtered swamps the gain.
+
+**Verdict — same as original, with stronger evidence: don't ship RRF for SPLADE blending.** Linear-α with min-max normalization on the sparse leg keeps the score-weighted dampening that lets a high-confidence dense match dominate noisy sparse votes. Pure rank fusion drops that signal on the floor.
+
+**Why the rank-only fusion loses on identifier_lookup (worst category):** identifier_lookup is exactly where SPLADE's top-1 sparse score is high-confidence (the literal token matches the chunk's name). Linear-α weights that signal by its normalized score, so a 0.95 dense + 0.99 sparse dominates a 0.05 dense + 0.001 sparse. RRF only sees ranks: a dense top-1 with cosine 0.05 contributes 1/61 = 0.0164, and a SPLADE top-1 with sparse 0.001 also contributes 1/61. The high-confidence SPLADE match doesn't get to swamp the weak dense one in RRF. That's the exact "score-weighted dampening" the linear-α path encodes.
+
+**Closing:** code change reverted; this branch carries only the docs update. The branch `research/splade-rrf-redo` carried the change for the eval and is being thrown away (same as the original phase 2 branch was). Issue #1176 stays closed. The phase 2 entry above is updated with this caveat-note pointing at this entry; the absolute numbers in the original entry are now superseded by the corrected-matcher numbers here.
+
+**Lesson — meta:** when a relative comparison feels "barely in tolerance," check the harness before accepting "tie within noise." The 0.9pp test R@5 gap in the original phase 2 was real — it was just compressed by matcher noise. A 3.6pp gap on the corrected matcher would have been an obvious "linear-α wins" without any "barely" caveat. Compressed-by-noise differences are a known pitfall of small benchmarks; loosening the matcher made the eval's resolution match what the underlying question deserved.
