@@ -325,11 +325,18 @@ mod tests {
         let _ = SummaryValidationMode::Loose;
     }
 
+    /// Shared mutex for env-mutating tests in this module. Per-test
+    /// `static ENV_LOCK` declarations are independent Mutex instances
+    /// and don't actually serialize against each other — same race
+    /// trap fixed in `src/embedder/provider.rs::tests` via #1260. CI
+    /// caught the flake on v1.32.0 release commit when
+    /// `from_env_strict` raced with `from_env_unknown_falls_back_to_loose`
+    /// and read each other's `CQS_SUMMARY_VALIDATION` writes.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn from_env_strict() {
-        use std::sync::Mutex;
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_SUMMARY_VALIDATION", "strict");
         let mode = SummaryValidationMode::from_env();
         std::env::remove_var("CQS_SUMMARY_VALIDATION");
@@ -338,9 +345,7 @@ mod tests {
 
     #[test]
     fn from_env_unknown_falls_back_to_loose() {
-        use std::sync::Mutex;
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_SUMMARY_VALIDATION", "extreme");
         let mode = SummaryValidationMode::from_env();
         std::env::remove_var("CQS_SUMMARY_VALIDATION");
