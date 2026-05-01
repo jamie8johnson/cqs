@@ -51,15 +51,37 @@ pub const fn max_rows_per_statement(vars_per_row: usize) -> usize {
 /// cost ~1-2MB at startup in exchange for zero-alloc on the hot path.
 const PLACEHOLDER_CACHE_MAX: usize = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS;
 
-/// Pre-built placeholder strings for n = 1..=PLACEHOLDER_CACHE_MAX.
-/// Index 0 is unused; index n holds the string for n placeholders.
-static PLACEHOLDER_CACHE: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    let mut cache = vec![String::new()]; // index 0 unused
-    for n in 1..=PLACEHOLDER_CACHE_MAX {
-        cache.push(build_placeholders(n));
-    }
-    cache
-});
+/// Lazy per-size placeholder cache. Each slot holds a [`std::sync::OnceLock`]
+/// that builds its specific placeholder string on first access — so a
+/// session that uses batches of size 500 and 8116 only ever builds two
+/// strings, not 32,466.
+///
+/// **The earlier eager design was a 30-second startup tax.** Pre-building
+/// every string from 1..=32,466 in `LazyLock::new` is O(n²) total chars —
+/// `sum(6n for n in 1..=32466) ≈ 3 × 10⁹` chars — which on Linux /tmp
+/// took ~30 s on the first call to [`make_placeholders`]. It looked like a
+/// connection-pool hang because the trigger was the first DB write
+/// (snapshot_content_hashes happens to be the first call site). Tests
+/// that did one upsert spent 30 s here without realising. Production
+/// `cqs index --force` paid the same tax once but it was buried in a
+/// 6-minute reindex run, so it never surfaced as user-visible.
+///
+/// The lazy `Vec<OnceLock<String>>` keeps the original O(1) lookup (index
+/// into the Vec) and zero-alloc-on-hit semantics (`Cow::Borrowed` from the
+/// owned `String` inside the `OnceLock`), without paying for sizes never
+/// used.
+///
+/// Memory: `Vec<OnceLock<String>>` of length 32,467 ≈ 520 KB of metadata
+/// upfront — microseconds to allocate.
+static PLACEHOLDER_CACHE: std::sync::LazyLock<Vec<std::sync::OnceLock<String>>> =
+    std::sync::LazyLock::new(|| {
+        // `Vec::with_capacity` + `resize_with` is the cheapest way to get a
+        // fixed-size Vec of distinct OnceLock instances (`vec![item; N]`
+        // requires Clone, which OnceLock isn't).
+        let mut v = Vec::with_capacity(PLACEHOLDER_CACHE_MAX + 1);
+        v.resize_with(PLACEHOLDER_CACHE_MAX + 1, std::sync::OnceLock::new);
+        v
+    });
 
 /// Build a placeholder string without caching (used by both cache init and large n).
 fn build_placeholders(n: usize) -> String {
@@ -86,9 +108,10 @@ fn build_placeholders(n: usize) -> String {
 /// Build a comma-separated list of numbered SQL placeholders: "?1,?2,...,?N".
 ///
 /// Batch sizes up to [`PLACEHOLDER_CACHE_MAX`] are served from a static
-/// cache as `Cow::Borrowed(&'static str)`; larger values build a fresh
-/// `String` on demand and return `Cow::Owned`. The cache covers the full
-/// caller-facing range — no production call site should fall off it.
+/// per-size [`std::sync::OnceLock`] cache as `Cow::Borrowed(&'static str)`;
+/// larger values build a fresh `String` on demand and return `Cow::Owned`.
+/// The cache covers the full caller-facing range — no production call site
+/// should fall off it.
 ///
 /// PF-V1.25-7: previously returned `String` via `PLACEHOLDER_CACHE[n].clone()`,
 /// which re-allocated the full placeholder string on every cache hit. A 500-id
@@ -98,13 +121,20 @@ fn build_placeholders(n: usize) -> String {
 ///
 /// SHL-V1.25-14: `PLACEHOLDER_CACHE_MAX` is bound to `SQLITE_MAX_VARIABLES -
 /// SAFETY_MARGIN_VARS` so large batches don't miss the cache.
+///
+/// Each entry is built lazily (per-size [`OnceLock`]); see
+/// [`PLACEHOLDER_CACHE`] for why eager build was a 30-second startup tax.
 pub(crate) fn make_placeholders(n: usize) -> std::borrow::Cow<'static, str> {
     assert!(
         n <= 100_000,
         "make_placeholders called with unreasonable n={n}"
     );
     if n <= PLACEHOLDER_CACHE_MAX {
-        std::borrow::Cow::Borrowed(PLACEHOLDER_CACHE[n].as_str())
+        std::borrow::Cow::Borrowed(
+            PLACEHOLDER_CACHE[n]
+                .get_or_init(|| build_placeholders(n))
+                .as_str(),
+        )
     } else {
         std::borrow::Cow::Owned(build_placeholders(n))
     }
