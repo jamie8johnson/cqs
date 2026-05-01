@@ -23,19 +23,29 @@
 - v23 → v24 → v25 migration verified clean on local daemon: both `Migrated to v24: vendored column on chunks` and `Migrated to v25: kind column on notes` log lines fired without panic.
 - HNSW flock fix (#1261) verified in production: post-restart daemon transitions out of `rebuilding` cleanly; no `cqs-hnsw-rebuild` thread parks in `locks_lock_inode_wait`.
 
+**Post-v1.32.0 follow-up sweep (2026-05-01, all merged on main):**
+
+| PR | Closes | Theme |
+|---|---|---|
+| #1268 | — | Fix flaky `llm::validation::tests::from_env_strict` race on main (ENV_LOCK hoisted to module level). Restored main green after v1.32.0 release. |
+| #1269 | — | `cqs notes list --kind <kind>` filter (#1133 follow-up; column-level filter using v25 `notes.kind` + `idx_notes_kind`). ANDs with `--warnings`/`--patterns`; daemon batch path wired too. |
+| #1270 | #1176 | SPLADE phase 2 A/B writeup: RRF on dense+sparse trails linear-α blend by ~1pp R@5/R@20 on test, ~4-5pp R@1/R@5 on dev. Closed without merging the impl swap. New file `research/models.md` is the inaugural retrieval-research log entry. |
+| #1271 | #1230 | `process_file_changes_zero_files_is_noop_when_embedder_blocked` test in `cli/watch/tests.rs` — pins the smallest no-op contract using the existing blocked-backoff trick from `dropped_this_cycle_survives_embedder_init_early_return`. |
+| #1272 | #1217 | `write_slot_model` now reads + round-trips through `SlotConfigFile` with `#[serde(flatten)] extra: toml::Table`, preserving unrelated top-level sections (e.g. hand-added `[notes].project_id`). Comments still lost (toml crate limitation); user-keys-survive contract delivered. |
+| #1273 | #1215 | Extract `daemon_request<T: DeserializeOwned>` helper from `daemon_translate.rs`; `daemon_ping`/`status`/`reconcile` collapse to thin shims. -110 net lines, single span carrying `command` field. |
+
 **Up next:**
 - Verify release.yml prebuilds completed for all three targets (Linux x86_64, Windows x86_64, macOS aarch64).
 - v1.32.0 audit eligible (16-category audit).
-- Tier B strategic work: #1176 SPLADE phase 2 → `rrf_fuse_n` (eval-required A/B on v3.v2 fixture).
 - Embedder eval queue: Phase 3 EmbeddingGemma-300m, ceiling probes Qwen3-Embedding-8B + NV-Embed-v2 — all queued in ROADMAP, all eval-required.
 
-**Outstanding follow-ups:**
-- `cqs notes list --kind <kind>` filter (column index ready in v25; one-line WHERE follow-up).
-- `cqs notes update --kind` flag.
+**Outstanding follow-ups (still small, no PRs yet):**
+- `cqs notes update --kind` flag (#1269 only added `add` and `list`; update path still needs the field).
+- #1107 (`cqs slot create --model` not persisted) — now a one-line `write_slot_model` call thanks to #1272.
 - Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
 - cuvs crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
 
-**Open Issues (post-v1.32.0):** #1043 (Windows network-drive `is_slow_mmap_fs`, needs Windows test env). All Tier S items closed.
+**Open Issues (post-v1.32.0 + this sweep):** ~13 remain. All P1/P2 closed. Highest-priority candidates: #106 (ort RC, blocks on upstream), #1244 / #1228 / #1226 (perf RM+PF), #1218 / #1216 / #1220 (refactors). #1043 (Windows network-drive `is_slow_mmap_fs`, needs Windows test env) still open. #1139 / #1140 explicitly skipped.
 
 ## Parked
 
