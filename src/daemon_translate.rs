@@ -339,14 +339,56 @@ pub struct PingResponse {
 /// On non-unix platforms the daemon never starts in the first place.
 #[cfg(unix)]
 pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, DaemonRpcError> {
-    use std::io::{BufRead, Write};
+    daemon_request(cqs_dir, "ping", serde_json::json!([]), "PingResponse")
+}
+
+/// Generic socket round-trip helper for daemon RPCs that follow the
+/// `{"status":"ok","output":<dispatch envelope>}` wire shape. Centralises
+/// the connect → set_timeouts → write → read → parse → unwrap_dispatch
+/// pipeline so [`daemon_ping`], [`daemon_status`], [`daemon_reconcile`],
+/// and any future RPC sit on the same well-tested transport (#1215).
+///
+/// Inputs:
+/// - `command`: the wire-level command name (`"ping"`, `"status"`, etc.)
+/// - `args`: JSON value used as the request's `args` field. `json!([])`
+///   for arg-less RPCs; `json!(["--hook", "post-checkout", ...])` for
+///   the `reconcile` arg-vector shape.
+/// - `payload_label`: type name used in error messages and the
+///   `unwrap_dispatch_payload` warn arm. Conventionally the deserialised
+///   type's bare name (`"PingResponse"`, `"WatchSnapshot"`).
+///
+/// All connect / set_timeout / read / write failures emit a
+/// `tracing::debug!(stage=…, command=…)` line so a multi-project agent
+/// loop polling several daemons can correlate by `command` field. Parse
+/// / non-ok-status failures emit `tracing::warn!` because they signal a
+/// real wire-format break, not a transient socket condition. The 5s
+/// timeout and 64 KiB read cap match what every individual RPC carried
+/// before the extraction.
+///
+/// `T` must implement `serde::Deserialize` for the inner payload (the
+/// `"data"` field of the dispatch envelope, or the bare value in the
+/// legacy mock-test path — see [`unwrap_dispatch_payload`]).
+#[cfg(unix)]
+fn daemon_request<T: serde::de::DeserializeOwned>(
+    cqs_dir: &std::path::Path,
+    command: &str,
+    args: serde_json::Value,
+    payload_label: &str,
+) -> Result<T, DaemonRpcError> {
+    use std::io::{BufRead, Read as _, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
     let sock_path = daemon_socket_path(cqs_dir);
-    // P3 #99: span ties every warn below to the same socket path so a
-    // multi-project agent loop can disambiguate which daemon failed.
-    let _span = tracing::info_span!("daemon_ping", path = %sock_path.display()).entered();
+    // P3 #99 / #1215: single span for every daemon RPC, with the wire
+    // `command` as a structured field so a multi-project loop can grep
+    // by command without per-function span proliferation.
+    let _span = tracing::info_span!(
+        "daemon_request",
+        command = command,
+        path = %sock_path.display()
+    )
+    .entered();
     if !sock_path.exists() {
         return Err(DaemonRpcError::SocketMissing(format!(
             "no daemon running (socket {} does not exist)",
@@ -355,53 +397,53 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, DaemonRpcE
     }
 
     let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
-        // OB-V1.30.1-8: demoted from warn to debug — `wait_for_fresh`
-        // polls this path during startup and a 250ms info-level cadence
-        // floods journalctl. Final-decision warns live in `wait_for_fresh`
-        // / the eval gate, not here.
-        tracing::debug!(stage = "connect", error = %e, "daemon_ping connect failed");
+        // OB-V1.30.1-8: connect failures are debug, not warn. The
+        // `wait_for_fresh` polling loop hits this path repeatedly during
+        // daemon startup; warn-level here would flood journalctl.
+        // Final-decision warns live in `wait_for_fresh` / the eval gate.
+        tracing::debug!(stage = "connect", error = %e, command, "daemon request failed");
         DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
     })?;
 
-    // 5s is generous: the ping handler does no I/O — just snapshot reads
-    // off atomic counters and a single `metadata()` on `index.db`.
+    // 5s is generous: every daemon RPC's handler does at most a single
+    // RwLock read + clone + a `metadata()` syscall. No real I/O on the
+    // daemon side.
     let timeout = Duration::from_secs(5);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        tracing::debug!(stage = "set_read_timeout", error = %e, "daemon_ping failed");
+        tracing::debug!(stage = "set_read_timeout", error = %e, command, "daemon request failed");
         return Err(DaemonRpcError::Transport(format!(
             "set_read_timeout failed: {e}"
         )));
     }
     if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        tracing::debug!(stage = "set_write_timeout", error = %e, "daemon_ping failed");
+        tracing::debug!(stage = "set_write_timeout", error = %e, command, "daemon request failed");
         return Err(DaemonRpcError::Transport(format!(
             "set_write_timeout failed: {e}"
         )));
     }
 
-    let request = serde_json::json!({"command": "ping", "args": []});
+    let request = serde_json::json!({"command": command, "args": args});
     writeln!(stream, "{}", request).map_err(|e| {
-        tracing::debug!(stage = "write", error = %e, "daemon_ping failed");
+        tracing::debug!(stage = "write", error = %e, command, "daemon request failed");
         DaemonRpcError::Transport(format!("write request failed: {e}"))
     })?;
     stream.flush().map_err(|e| {
-        tracing::debug!(stage = "flush", error = %e, "daemon_ping failed");
+        tracing::debug!(stage = "flush", error = %e, command, "daemon request failed");
         DaemonRpcError::Transport(format!("flush failed: {e}"))
     })?;
 
-    // PingResponse is small (<1KB). Cap the read at 64KB to bound memory
-    // even if a buggy daemon ever writes a huge response — same defensive
-    // posture as the main `try_daemon_query` 16 MiB cap.
-    use std::io::Read as _;
+    // 64 KiB matches the per-call cap each RPC used pre-extraction.
+    // Responses are small (<1 KB for ping, ~few KB for status); the cap
+    // is a defensive ceiling against a buggy daemon, not a sizing knob.
     let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
     let mut response_line = String::new();
     reader.read_line(&mut response_line).map_err(|e| {
-        tracing::debug!(stage = "read", error = %e, "daemon_ping failed");
+        tracing::debug!(stage = "read", error = %e, command, "daemon request failed");
         DaemonRpcError::Transport(format!("read response failed: {e}"))
     })?;
 
     let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
-        tracing::warn!(stage = "parse", error = %e, "daemon_ping failed");
+        tracing::warn!(stage = "parse", error = %e, command, "daemon request failed");
         DaemonRpcError::BadResponse(format!("parse envelope failed: {e}"))
     })?;
 
@@ -409,7 +451,11 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, DaemonRpcE
         .get("status")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            tracing::warn!(stage = "parse", "daemon_ping failed: missing status field");
+            tracing::warn!(
+                stage = "parse",
+                command,
+                "daemon request failed: missing status field"
+            );
             DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
         })?;
     if status != "ok" {
@@ -421,19 +467,25 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, DaemonRpcE
             stage = "parse",
             status,
             msg,
-            "daemon_ping failed: non-ok status"
+            command,
+            "daemon request failed: non-ok status"
         );
         return Err(DaemonRpcError::DaemonError(msg.to_string()));
     }
 
     let output = envelope.get("output").ok_or_else(|| {
-        tracing::warn!(stage = "parse", "daemon_ping failed: missing output field");
+        tracing::warn!(
+            stage = "parse",
+            command,
+            "daemon request failed: missing output field"
+        );
         DaemonRpcError::BadResponse("missing 'output' field in daemon response".to_string())
     })?;
     let payload =
-        unwrap_dispatch_payload(output, "PingResponse").map_err(DaemonRpcError::BadResponse)?;
-    serde_json::from_value(payload)
-        .map_err(|e| DaemonRpcError::BadResponse(format!("PingResponse deserialize failed: {e}")))
+        unwrap_dispatch_payload(output, payload_label).map_err(DaemonRpcError::BadResponse)?;
+    serde_json::from_value::<T>(payload).map_err(|e| {
+        DaemonRpcError::BadResponse(format!("{payload_label} deserialize failed: {e}"))
+    })
 }
 
 /// Pull the inner handler payload out of a daemon dispatch response.
@@ -505,98 +557,7 @@ fn unwrap_dispatch_payload(
 pub fn daemon_status(
     cqs_dir: &std::path::Path,
 ) -> Result<crate::watch_status::WatchSnapshot, DaemonRpcError> {
-    use std::io::{BufRead, Write};
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
-
-    let sock_path = daemon_socket_path(cqs_dir);
-    let _span = tracing::info_span!("daemon_status", path = %sock_path.display()).entered();
-    if !sock_path.exists() {
-        return Err(DaemonRpcError::SocketMissing(format!(
-            "no daemon running (socket {} does not exist)",
-            sock_path.display()
-        )));
-    }
-
-    let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
-        // OB-V1.30.1-8: demoted from warn to debug. See type-level docs.
-        tracing::debug!(stage = "connect", error = %e, "daemon_status connect failed");
-        DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
-    })?;
-
-    // 5s is generous: the status handler does a single RwLock read + clone.
-    let timeout = Duration::from_secs(5);
-    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        tracing::debug!(stage = "set_read_timeout", error = %e, "daemon_status failed");
-        return Err(DaemonRpcError::Transport(format!(
-            "set_read_timeout failed: {e}"
-        )));
-    }
-    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        tracing::debug!(stage = "set_write_timeout", error = %e, "daemon_status failed");
-        return Err(DaemonRpcError::Transport(format!(
-            "set_write_timeout failed: {e}"
-        )));
-    }
-
-    let request = serde_json::json!({"command": "status", "args": []});
-    writeln!(stream, "{}", request).map_err(|e| {
-        tracing::debug!(stage = "write", error = %e, "daemon_status failed");
-        DaemonRpcError::Transport(format!("write request failed: {e}"))
-    })?;
-    stream.flush().map_err(|e| {
-        tracing::debug!(stage = "flush", error = %e, "daemon_status failed");
-        DaemonRpcError::Transport(format!("flush failed: {e}"))
-    })?;
-
-    use std::io::Read as _;
-    let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line).map_err(|e| {
-        tracing::debug!(stage = "read", error = %e, "daemon_status failed");
-        DaemonRpcError::Transport(format!("read response failed: {e}"))
-    })?;
-
-    let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
-        tracing::warn!(stage = "parse", error = %e, "daemon_status failed");
-        DaemonRpcError::BadResponse(format!("parse envelope failed: {e}"))
-    })?;
-
-    let status = envelope
-        .get("status")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            tracing::warn!(
-                stage = "parse",
-                "daemon_status failed: missing status field"
-            );
-            DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
-        })?;
-    if status != "ok" {
-        let msg = envelope
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("daemon error");
-        tracing::warn!(
-            stage = "parse",
-            status,
-            msg,
-            "daemon_status failed: non-ok status"
-        );
-        return Err(DaemonRpcError::DaemonError(msg.to_string()));
-    }
-
-    let output = envelope.get("output").ok_or_else(|| {
-        tracing::warn!(
-            stage = "parse",
-            "daemon_status failed: missing output field"
-        );
-        DaemonRpcError::BadResponse("missing 'output' field in daemon response".to_string())
-    })?;
-    let payload =
-        unwrap_dispatch_payload(output, "WatchSnapshot").map_err(DaemonRpcError::BadResponse)?;
-    serde_json::from_value(payload)
-        .map_err(|e| DaemonRpcError::BadResponse(format!("WatchSnapshot deserialize failed: {e}")))
+    daemon_request(cqs_dir, "status", serde_json::json!([]), "WatchSnapshot")
 }
 
 /// #1182 — Layer 1: response shape for [`daemon_reconcile`]. Mirrors the
@@ -633,41 +594,6 @@ pub fn daemon_reconcile(
     hook: Option<&str>,
     args: &[String],
 ) -> Result<DaemonReconcileResponse, DaemonRpcError> {
-    use std::io::{BufRead, Write};
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
-
-    let sock_path = daemon_socket_path(cqs_dir);
-    let _span = tracing::info_span!(
-        "daemon_reconcile",
-        path = %sock_path.display(),
-        hook = hook.unwrap_or("(unknown)")
-    )
-    .entered();
-    if !sock_path.exists() {
-        return Err(DaemonRpcError::SocketMissing(format!(
-            "no daemon running (socket {} does not exist)",
-            sock_path.display()
-        )));
-    }
-
-    let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
-        tracing::debug!(stage = "connect", error = %e, "daemon_reconcile connect failed");
-        DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
-    })?;
-
-    let timeout = Duration::from_secs(5);
-    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        return Err(DaemonRpcError::Transport(format!(
-            "set_read_timeout failed: {e}"
-        )));
-    }
-    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        return Err(DaemonRpcError::Transport(format!(
-            "set_write_timeout failed: {e}"
-        )));
-    }
-
     // Build the batch-arg vector: ["--hook", "<name>", "--arg", "v1",
     // "--arg", "v2", ...]. The batch parser accepts `--arg` repeated
     // for `Vec<String>` fields.
@@ -680,48 +606,12 @@ pub fn daemon_reconcile(
         batch_args.push("--arg".to_string());
         batch_args.push(a.clone());
     }
-
-    let request = serde_json::json!({"command": "reconcile", "args": batch_args});
-    writeln!(stream, "{}", request).map_err(|e| {
-        tracing::debug!(stage = "write", error = %e, "daemon_reconcile failed");
-        DaemonRpcError::Transport(format!("write request failed: {e}"))
-    })?;
-    stream
-        .flush()
-        .map_err(|e| DaemonRpcError::Transport(format!("flush failed: {e}")))?;
-
-    use std::io::Read as _;
-    let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
-    let mut response_line = String::new();
-    reader
-        .read_line(&mut response_line)
-        .map_err(|e| DaemonRpcError::Transport(format!("read response failed: {e}")))?;
-
-    let envelope: serde_json::Value = serde_json::from_str(response_line.trim())
-        .map_err(|e| DaemonRpcError::BadResponse(format!("parse envelope failed: {e}")))?;
-
-    let status = envelope
-        .get("status")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
-        })?;
-    if status != "ok" {
-        let msg = envelope
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("daemon error");
-        return Err(DaemonRpcError::DaemonError(msg.to_string()));
-    }
-
-    let output = envelope.get("output").ok_or_else(|| {
-        DaemonRpcError::BadResponse("missing 'output' field in daemon response".to_string())
-    })?;
-    let payload = unwrap_dispatch_payload(output, "DaemonReconcileResponse")
-        .map_err(DaemonRpcError::BadResponse)?;
-    serde_json::from_value(payload).map_err(|e| {
-        DaemonRpcError::BadResponse(format!("DaemonReconcileResponse deserialize failed: {e}"))
-    })
+    daemon_request(
+        cqs_dir,
+        "reconcile",
+        serde_json::json!(batch_args),
+        "DaemonReconcileResponse",
+    )
 }
 
 /// #1182 — Layer 4: outcome of [`wait_for_fresh`].
