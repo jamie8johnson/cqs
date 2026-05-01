@@ -12,29 +12,24 @@ Tag `v1.32.0` pushed; `cqs 1.32.0` published to crates.io. Five themes:
 
 Schema v23 → v25 (chained, both additive `ALTER TABLE … ADD COLUMN`). No reindex required.
 
-## Previous: v1.31.0 (released 2026-04-30)
+### Post-v1.32.0 follow-up sweep (2026-05-01)
 
-Tag `v1.31.0` pushed; `cqs 1.31.0` published to crates.io; GitHub Release workflow building prebuilt binaries. Minor bump because of the **schema v22 → v23 migration** (auto-migrating; new `source_size` + `source_content_hash` columns on `FileFingerprint` for the reconcile cluster fix). Theme: post-v1.30.2 bug drain across watch reconcile, sparse-vector index, LLM redirect policy, slot lifecycle, native-Windows shutdown, and coarse-mtime filesystems. Reindex not required, but the v23 binary will refuse to open a v22 index until the auto-migration step runs on first start.
+13 PRs landed on top of v1.32.0 across two work blocks. Eight issues closed (#1133, #1176, #1217, #1218, #1220, #1226, #1230, #1215). Highlights:
 
-**Bundle table:**
+- **#1268** flaky `ENV_LOCK` test (restored main green post-release).
+- **#1269 + #1278** complete the `notes.kind` taxonomy (add/list/update lifecycle, closes #1133 follow-up).
+- **#1270** SPLADE phase 2 negative-result writeup; new `research/models.md` retrieval-research log.
+- **#1272** `write_slot_model` round-trips via `SlotConfigFile` flatten extras (#1217).
+- **#1273** `daemon_request<T>` helper extraction (#1215).
+- **#1275** `AuthChannel` trait + 3-impl registry (#1218).
+- **#1276** `Reranker` trait + Onnx/Noop/Llm impls (#1220).
+- **#1279** share `enumerate_files` walk between gc + reconcile when both ticks coincide (#1226).
 
-| PR | Closes | Theme |
-|---|---|---|
-| #1248 | #1219 #1245 #1231 #1227 | watch reconcile cluster — content-hash fingerprint + path dedup + force-rotation guard. **Schema v22→v23.** |
-| #1249 | #1212 | sparse-upsert chunked sub-transactions (`CQS_SPARSE_CHUNKS_PER_TX`, default 5000). |
-| #1250 | #1224 #1225 | coarse-mtime FS handling (HFS+, SMB, NFS, CIFS, FAT32 on plain Linux/macOS) + WSL `cqs serve --open` browser opener. |
-| #1251 | #1222 #1223 | reqwest same-origin redirect policy + `cqs ref add --source` symlink-redirect warning. |
-| #1252 | #1232 | `cqs slot remove` refuses if daemon is serving (probes `daemon_status`, matches `WatchSnapshot.active_slot`). |
-| #1253 | #1044 | native-Windows `cqs watch` clean shutdown via `ctrlc` termination feature. |
-| #1255 | tracks #1254 | agent definitions: worktree-leakage warning bullet across all 6 `.claude/agents/*.md` files. |
+No release tag yet for the sweep — these are unreleased increments on `main` past `v1.32.0` (`5a577a30`).
 
-**#1254 worktree leakage** — `git worktree add` doesn't create `.cqs/`; cqs errors; agents fall back to absolute paths under main's tree → edits leak into parent tree. Agent-side guard shipped via #1255; cqs-side fix (`.git/commondir` auto-discovery + `worktree_stale: bool` JSON envelope flag) deferred.
+**Skipped per autopilot directive:** #1139 (structural_matchers shared library) + #1140 (embedder preset extras map).
 
-**Deferred indefinitely:**
-
-- **#1134-#1136** — `cqs serve` P4 auth bugs from the v1.30.0 audit. Need shaping decisions; not blocking.
-- **#1139** — `structural_matchers` shared library. Touches 50+ language modules.
-- **#1140** — embedder preset extras map. Revisit when preset count pressures the current hand-rolled match.
+(Older release detail is in the Done table at the bottom + CHANGELOG.md.)
 
 ---
 
@@ -108,7 +103,7 @@ Core finding: R@5 is alpha-insensitive on this corpus state across [0, 1]. The O
 - [ ] **NV-Embed-v2 ceiling probe (NVIDIA, Aug 2024) — research, not production.** Companion to the Qwen3 ceiling probe. [`nvidia/NV-Embed-v2`](https://huggingface.co/nvidia/NV-Embed-v2) was MTEB #1 at release with **72.31 across 56 tasks** and **62.65 on the 15 retrieval tasks** — a hair above Qwen3-Embedding-8B's 70.58 on a different snapshot. 8B params, base = Mistral-7B-v0.1, 4096-dim, 32K context. Two caveats vs Qwen3 that change the engineering profile: (1) **non-standard Latent-Attention pooling head** — cqs's ONNX path assumes mean / CLS / EOS pooling, so wiring NV-Embed-v2 needs a custom pooling implementation OR running via PyTorch outside cqs and importing the per-chunk embeddings as a stored vector; (2) **no community ONNX exists** — would need our own `optimum-cli` export. License is **CC-BY-NC-4.0** which is a commercial-use blocker if cqs ever ships it as a default — not a problem for a measurement-only run on the local A6000 (the user has confirmed eval-only use is fine, since this never ships). The retrieval-specialized sibling [`nvidia/NV-Retriever-v1`](https://huggingface.co/nvidia/NV-Retriever-v1) (60.9 retrieval) and the multimodal [`nvidia/omni-embed-nemotron-3b`](https://huggingface.co/nvidia/omni-embed-nemotron-3b) (3B, vision+audio+text) are noted but lower priority — pick NV-Embed-v2 first since it's the strongest text-only scorer. Smaller commercial-OK NeMo Retriever option for the production lane: [`nvidia/llama-3.2-nv-embedqa-1b-v2`](https://huggingface.co/nvidia/llama-3.2-nv-embedqa-1b-v2) (1B, Matryoshka 384–2048-dim, 8K context, 26 langs, NVIDIA Open Model License + Llama 3.2 license, commercial-OK) — a plausible alternative to EmbeddingGemma if Phase 3 surfaces interesting tradeoffs.
 
 **Daemon:**
-- [ ] **Daemon: full CLI parity** — subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification.
+- [x] **Daemon: full CLI parity** — closed via [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification (shipped in v1.30.x).
 
 **Watch mode:**
 
@@ -155,24 +150,38 @@ Historical split (2026-04-09, 16,731 invocations): **main conversation** uses `s
 
 ## Open Issues
 
-Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlog is now empty** — every numbered finding (1042/1047/1048/1049/1091/1107/1108) closed via PRs #1112, #1117, #1119 (the latter two from the post-v1.29.1 audit close-out batch). Remaining open issues split into "Windows-specific (need test env)" and "external-blocked".
+Re-audited 2026-05-01 post-v1.32.0 follow-up sweep. **All P1/P2/P3 audit backlogs from v1.29.0 / v1.30.0 / v1.30.1 are now empty.** The v1.30.1 refactor frontier (#1215, #1217, #1218, #1220, #1226) cleared in the sweep. Remaining 11 issues split into perf tier-3, blocked-on-external, blocked-on-Windows, and explicitly-skipped.
 
-**Windows-specific (need Windows test environment):**
+**Perf tier-3 (real wins, but each ≥1hr):**
+
+| # | Finding | Status |
+|---|---------|--------|
+| [#1244](https://github.com/jamie8johnson/cqs/issues/1244) | RM-4: Reduce build_hnsw_index_owned 17 MB content_hash snapshot | Audit's "240×" claim assumed nonexistent u32 chunk_ids; actual win ~1 MB via `[u8; 32]` repr |
+| [#1229](https://github.com/jamie8johnson/cqs/issues/1229) | RM-5: Stream enumerate_files walk + per-file SQL lookup | Real win at 1M-file repos; needs `enumerate_files_iter` API + batched 1k-row SQL |
+| [#1228](https://github.com/jamie8johnson/cqs/issues/1228) | RM-2: wait_for_fresh persistent connection | Daemon-side reads one request per connection — option (a) needs daemon-side loop change too |
+| [#916](https://github.com/jamie8johnson/cqs/issues/916) | perf: mmap SPLADE body (PF-11) | Audit-deprioritized — 59 MB peak transient, dominated by parse-side allocations |
+| [#717](https://github.com/jamie8johnson/cqs/issues/717) | perf: HNSW fully loaded into RAM (RM-40) | Needs lib swap to hnswlib-rs (nightly-only) |
+
+**Refactor tier-3 (architectural debt, no user-visible impact):**
+
+| # | Finding | Status |
+|---|---------|--------|
+| [#1216](https://github.com/jamie8johnson/cqs/issues/1216) | EX: Drive BatchCmd dispatch from macro table (33-arm match) | Current dispatch already exhaustive; win is hypothetical-future-regression-prevention |
+| [#1140](https://github.com/jamie8johnson/cqs/issues/1140) | EX: Embedder preset extras map | Explicitly skipped per autopilot directive |
+| [#1139](https://github.com/jamie8johnson/cqs/issues/1139) | EX: structural_matchers shared library | Touches 50+ language modules; explicitly skipped |
+
+**Blocked on Windows test env or upstream:**
 
 | # | Finding | Blocker |
 |---|---------|---------|
 | [#1043](https://github.com/jamie8johnson/cqs/issues/1043) | `is_slow_mmap_fs` ignores Windows network drives + reparse points | Linux/WSL unaffected; needs Windows runner |
-| [#1044](https://github.com/jamie8johnson/cqs/issues/1044) | Native Windows `cqs watch` cannot stop cleanly — DB corruption risk | Closing via PR #1253 (`ctrlc` termination feature) |
+| [#106](https://github.com/jamie8johnson/cqs/issues/106) | ort 2.0-rc.12 stable release | Blocked upstream (pykeio); no stable release yet |
 
-**Tier 2 / 3 (external-blocked or scaffolding-only):**
+**Feature scaffolding deferred:**
 
 | # | Finding | Status |
 |---|---------|--------|
-| [#956](https://github.com/jamie8johnson/cqs/issues/956) | ExecutionProvider: CoreML/ROCm decouple | **Phase A in PR #1120** (cargo feature split + cfg-gated enum variants + restructured probe) — Phase B (CoreML, GHA macOS runner) and Phase C (ROCm, AMD hardware) both deferred to contributors with the matching test environment |
-| [#916](https://github.com/jamie8johnson/cqs/issues/916) | mmap SPLADE body (PF-11) | smaller win than originally claimed |
-| [#717](https://github.com/jamie8johnson/cqs/issues/717) | HNSW mmap (RM-40) | needs lib swap to hnswlib-rs (nightly-only) |
-| [#255](https://github.com/jamie8johnson/cqs/issues/255) | Pre-built reference packages | signing/registry design (infra, not code) |
-| [#106](https://github.com/jamie8johnson/cqs/issues/106) | ort 2.0-rc.12 stable release | blocked upstream (pykeio) |
+| [#255](https://github.com/jamie8johnson/cqs/issues/255) | Pre-built reference packages | Signing/registry design (infra, not code) |
 
 ---
 
@@ -198,6 +207,8 @@ Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlo
 
 | Version | Highlights |
 |---------|-----------|
+| v1.32.0 | **HNSW load-phase flock self-deadlock fix + structural-trust + watch-correctness bundle.** Schema v23→v25 (chained, additive). Five themes: #1261 watch-mode flock fix, #1221 three-tier `trust_level: vendored-code`, #1254 worktree → main-index discovery, #1133 note kind taxonomy, #1260 TC-ADV reconcile coverage + persistent TRT engine cache. Post-release sweep landed 13 PRs closing 8 issues — refactor frontier (#1215/#1217/#1218/#1220/#1226) cleared, kind taxonomy fully wired (add/list/update). |
+| v1.31.0 | **Schema v22→v23 + watch reconcile cluster + post-v1.30.2 bug drain.** Bundle: #1248 reconcile content-hash fingerprint + path dedup + force-rotation guard, #1249 sparse-upsert chunked sub-transactions, #1250 coarse-mtime FS handling + WSL `cqs serve --open` browser opener, #1251 reqwest same-origin redirect policy, #1252 `cqs slot remove` daemon-aware, #1253 native-Windows `cqs watch` clean shutdown via `ctrlc`, #1255 agent worktree-leakage guard. |
 | v1.30.2 | **#1181 mistrust posture + #1182 perfect watch mode + v1.30.1 audit-fix wave.** Default-on `CQS_TRUST_DELIMITERS`, `_meta.handling_advice` on every JSON envelope, per-chunk `injection_flags`. Watch-mode Layers 1-4 closed: `cqs hook install` git hooks, periodic full-tree reconciliation, `cqs status --watch-fresh --wait` API, `cqs eval --require-fresh` gate. v1.30.1 audit-fix omnibus across 19 PRs (P1+P2+P3+P4 trivials, 121 of 144 findings; 18 hard P4s tracked). |
 | v1.30.1 | **Indirect-prompt-injection hardening + v1.30.0 audit-fix wave + watch-mode reliability.** Cluster #1166-#1170 + threat model #1171: trust labelling on chunk JSON, `CQS_TRUST_DELIMITERS` opt-in, first-encounter shared-notes prompt on `cqs index`, `CQS_SUMMARY_VALIDATION` for prose summaries before caching, `--improve-docs` review-gated by default, threat model in `SECURITY.md`. Audit-fix omnibus #1141 (152 of 170 P1+P2+P3 findings). Five watch-mode correctness fixes (#1124-#1129): content-hash-aware drain, restore_from_backup pool ordering, summary-write coalescing, daemon mutex hold-time, embedding-cache `purpose` plumbing. Plus four refactors enabling cleaner extension points (#1130 RRF generalize, #1131 IndexBackend trait, #1132 scoring-knob resolver, **#1137 + #1138** registry tables for batch / LLM provider) and 12 dependabot bumps. Schema unchanged from v1.30.0; no reindex required. |
 | v1.30.0 | **Cache+slots + three-way embedder A/B + v1.29.0 audit close-out + #956 Phase A scaffolding.** Cache+slots infra (#1105): `.cqs/embeddings_cache.db` keyed on (content_hash, model_id) + project-level `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,clear,prune,compact}` commands. Three-way embedder A/B (#1109 #1110): fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution. v1.29.0 audit close-out batch (#1112 #1113 #1114 #1117 #1118 #1119): every umbrella finding from #1095 closed. #956 Phase A scaffolding (#1120): `gpu-index` → `cuda-index` cargo feature rename (legacy alias preserved); `ep-coreml` / `ep-rocm` features added; `ExecutionProvider` enum gains cfg-gated `CoreML` and `ROCm { device_id }` variants. CUDA path byte-identical at runtime. |
