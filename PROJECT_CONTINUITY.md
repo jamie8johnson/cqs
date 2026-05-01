@@ -2,39 +2,40 @@
 
 ## Right Now
 
-**v1.31.0 released 2026-04-30.** Tag `v1.31.0` pushed (`5e86df89`); `cqs 1.31.0` published to crates.io; release.yml workflow building prebuilt binaries.
+**v1.32.0 released 2026-05-01.** Tag `v1.32.0` pushed (`5a577a30`); `cqs 1.32.0` published to crates.io; release.yml building prebuilt binaries.
 
-**Theme:** post-v1.30.2 bug-drain across watch reconcile, sparse-vector index, LLM redirect policy, slot lifecycle, native-Windows shutdown, coarse-mtime filesystems. Minor bump because of the **schema v22 → v23 migration** (auto-migrating; new `source_size` + `source_content_hash` columns on `FileFingerprint`).
+**Theme:** post-v1.31.0 structural-trust + watch-correctness bundle. **Schema v23 → v25** (chained auto-migration: v23→v24 adds `chunks.vendored`, v24→v25 adds `notes.kind`). Reindex not required; both migrations are additive `ALTER TABLE … ADD COLUMN`.
 
 **Bundle table (all merged):**
 
 | PR | Closes | Theme |
 |---|---|---|
-| #1248 | #1219 #1245 #1231 #1227 | watch reconcile cluster — content-hash fingerprint + path dedup + force-rotation guard. **Schema v22→v23.** |
-| #1249 | #1212 | sparse-upsert chunked sub-transactions (`CQS_SPARSE_CHUNKS_PER_TX`, default 5000). |
-| #1250 | #1224 #1225 | coarse-mtime FS handling (HFS+, SMB, NFS, CIFS, FAT32 on plain Linux/macOS) + WSL `cqs serve --open` browser opener. |
-| #1251 | #1222 #1223 | reqwest same-origin redirect policy + `cqs ref add --source` symlink-redirect warning. |
-| #1252 | #1232 | `cqs slot remove` refuses if daemon is serving (probes `daemon_status`, matches `WatchSnapshot.active_slot`). |
-| #1253 | #1044 | native-Windows `cqs watch` clean shutdown via `ctrlc` termination feature. |
-| #1255 | (tracks #1254) | agent definitions: worktree-leakage warning bullet across all 6 `.claude/agents/*.md` files. |
-| #1256 #1257 | — | roadmap docs cleanup (EmbeddingGemma + Qwen3-8B + NV-Embed-v2 added; v1.30.x long-form blocks collapsed). |
-| #1258 | — | release. |
+| #1260 | #1242 #1243 | TC-ADV reconcile clock-skew + read_disk metadata-Err tests + persistent TRT engine cache (`~/.cache/cqs/trt-engine-cache/`, gated on `CQS_TRT_ENGINE_CACHE`). |
+| #1261 | — | **HNSW load-phase flock self-deadlock fix** (the urgent watch-mode correctness fix). Drop `_lock_file` after the read phase so the rebuild thread's `save()` doesn't park forever. Regression test pinned. |
+| #1262 | #1221 | Three-tier `trust_level: vendored-code` for chunks under `vendor/`, `node_modules/`, `third_party/`, `.cargo/`, `target/`, `dist/`, `build/` (default; override via `[index].vendored_paths`). **Schema v23→v24.** |
+| #1263 | #1254 | Worktree → main-`.cqs/` discovery via `.git/commondir`. Every JSON envelope from a worktree-without-own-`.cqs/` process carries `_meta.worktree_stale: true` + `_meta.worktree_name`. |
+| #1265 | #1133 | Note `kind` taxonomy (audit P2.91). `cqs notes add --kind <kind>`, structured tag column, `idx_notes_kind`. **Schema v24→v25.** |
+| #1266 | — | release. |
 
 **State:**
-- Main at `5e86df89`. Local at the same SHA. Working tree clean except `.claude/scheduled_tasks.lock` (per-session artifact).
-- v1.31.0 published to crates.io ✅. Release workflow run `25148555289` building prebuilts (in_progress).
-- No open PRs.
-- Cross-slot `llm_summaries` copy by content_hash works as expected — no v1.31.0 reindex needed; v22→v23 auto-migration is a one-shot ALTER TABLE on first daemon start.
+- Main at `5a577a30`. Local at the same SHA.
+- v1.32.0 published to crates.io ✅. Release workflow run building prebuilts.
+- v23 → v24 → v25 migration verified clean on local daemon: both `Migrated to v24: vendored column on chunks` and `Migrated to v25: kind column on notes` log lines fired without panic.
+- HNSW flock fix (#1261) verified in production: post-restart daemon transitions out of `rebuilding` cleanly; no `cqs-hnsw-rebuild` thread parks in `locks_lock_inode_wait`.
 
 **Up next:**
-- Verify release.yml prebuilds completed.
-- Rebuild and install local binary: `cargo build --release --features cuda-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`.
-- v1.31.0 audit eligible (16-category audit) once daemon stable on the new binary.
-- Strategic frontier still open: #1212 perf wart (now closed by #1249), Phase 3 EmbeddingGemma A/B, ceiling probes (Qwen3-8B, NV-Embed-v2). User said "let's get all the bugs out before that" earlier — bugs out now, embedder eval queue is the next strategic question.
+- Verify release.yml prebuilds completed for all three targets (Linux x86_64, Windows x86_64, macOS aarch64).
+- v1.32.0 audit eligible (16-category audit).
+- Tier B strategic work: #1176 SPLADE phase 2 → `rrf_fuse_n` (eval-required A/B on v3.v2 fixture).
+- Embedder eval queue: Phase 3 EmbeddingGemma-300m, ceiling probes Qwen3-Embedding-8B + NV-Embed-v2 — all queued in ROADMAP, all eval-required.
 
-**Worktree leakage (#1254) status:** agent-side workaround shipped via #1255. cqs-side fix (`.git/commondir` auto-discovery + `worktree_stale: bool` JSON envelope flag) deferred — not blocking.
+**Outstanding follow-ups:**
+- `cqs notes list --kind <kind>` filter (column index ready in v25; one-line WHERE follow-up).
+- `cqs notes update --kind` flag.
+- Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
+- cuvs crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
 
-**Open Issues (post-v1.31.0):** #1043 (Windows network-drive `is_slow_mmap_fs`, blocked on Windows test env). All other v1.30.0/v1.30.1 audit follow-ups closed or filed against future work.
+**Open Issues (post-v1.32.0):** #1043 (Windows network-drive `is_slow_mmap_fs`, needs Windows test env). All Tier S items closed.
 
 ## Parked
 

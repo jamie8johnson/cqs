@@ -1,6 +1,18 @@
 # Roadmap
 
-## Current: v1.31.0 (released 2026-04-30)
+## Current: v1.32.0 (released 2026-05-01)
+
+Tag `v1.32.0` pushed; `cqs 1.32.0` published to crates.io. Five themes:
+
+1. **HNSW load-phase flock self-deadlock fix** (#1261, urgent watch-mode correctness). `HnswIndex.load_with_dim` no longer keeps the load-phase shared `flock(2)` alive for the loaded index's lifetime — rebuild thread's `save()` from a second fd no longer parks forever in `locks_lock_inode_wait`.
+2. **Three-tier `trust_level: vendored-code`** (#1221, schema v24). Chunks under `vendor/`, `node_modules/`, `third_party/`, `.cargo/`, `target/`, `dist/`, `build/` ship with `trust_level: "vendored-code"` instead of the bare `"user-code"` claim. Override the prefix list via `[index].vendored_paths` in `.cqs.toml`.
+3. **Worktree → main-index discovery** (#1254). `cqs` from inside a `git worktree` without its own `.cqs/` auto-discovers main's index via `.git/commondir`; JSON envelopes tag `_meta.worktree_stale: true` + `_meta.worktree_name`.
+4. **Note kind taxonomy** (#1133, schema v25). `cqs notes add --kind <kind>` + structured `kind` column + `idx_notes_kind` for future filtering.
+5. **TC-ADV reconcile coverage + persistent TRT engine cache** (#1260). Clock-skew + `read_disk` metadata-Err tests; `~/.cache/cqs/trt-engine-cache/` so daemon restarts don't re-pay BGE-large compile cost.
+
+Schema v23 → v25 (chained, both additive `ALTER TABLE … ADD COLUMN`). No reindex required.
+
+## Previous: v1.31.0 (released 2026-04-30)
 
 Tag `v1.31.0` pushed; `cqs 1.31.0` published to crates.io; GitHub Release workflow building prebuilt binaries. Minor bump because of the **schema v22 → v23 migration** (auto-migrating; new `source_size` + `source_content_hash` columns on `FileFingerprint` for the reconcile cluster fix). Theme: post-v1.30.2 bug drain across watch reconcile, sparse-vector index, LLM redirect policy, slot lifecycle, native-Windows shutdown, and coarse-mtime filesystems. Reindex not required, but the v23 binary will refuse to open a v22 index until the auto-migration step runs on first start.
 
