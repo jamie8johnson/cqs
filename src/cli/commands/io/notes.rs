@@ -77,6 +77,15 @@ pub(crate) enum NotesCommand {
         /// File paths or concepts this note relates to (comma-separated)
         #[arg(long, value_delimiter = ',')]
         mentions: Option<Vec<String>>,
+        /// v25 / #1133: optional structured kind tag — `todo`,
+        /// `design-decision`, `deprecation`, `known-bug`, etc. Free-string
+        /// (kebab-case lowercase by convention). When set, takes
+        /// precedence over `--sentiment`'s implicit
+        /// "Warning:"/"Pattern:" prefix in embedding text, and enables
+        /// `cqs notes list --kind <kind>` filtering. Empty string is
+        /// rejected as if absent.
+        #[arg(long)]
+        kind: Option<String>,
         /// Skip re-indexing after adding (useful for batch operations)
         #[arg(long)]
         no_reindex: bool,
@@ -147,8 +156,17 @@ pub(crate) fn cmd_notes(
             text,
             sentiment,
             mentions,
+            kind,
             no_reindex,
-        } => cmd_notes_add(cli, ctx, text, *sentiment, mentions.as_deref(), *no_reindex),
+        } => cmd_notes_add(
+            cli,
+            ctx,
+            text,
+            *sentiment,
+            mentions.as_deref(),
+            kind.as_deref(),
+            *no_reindex,
+        ),
         NotesCommand::Update {
             text,
             new_text,
@@ -232,6 +250,7 @@ fn cmd_notes_add(
     text: &str,
     sentiment: f32,
     mentions: Option<&[String]>,
+    kind: Option<&str>,
     no_reindex: bool,
 ) -> Result<()> {
     // P3 #92: per-subhandler span so the shared "Note operation warning"
@@ -242,6 +261,7 @@ fn cmd_notes_add(
         "cmd_notes_add",
         text_len = text.len(),
         sentiment,
+        kind = kind.unwrap_or(""),
         no_reindex
     )
     .entered();
@@ -259,11 +279,23 @@ fn cmd_notes_add(
         .filter(|s| !s.is_empty())
         .cloned()
         .collect();
+    // #1133: normalize kind (trim + lowercase + reject empty). Mirrors
+    // the parser's `normalize_kind` semantics so add and parse stay in
+    // sync — `--kind ""` is silently absent, not stored as Some("").
+    let kind: Option<String> = kind.and_then(|raw| {
+        let trimmed = raw.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
 
     let note_entry = NoteEntry {
         sentiment,
         text: text.to_string(),
         mentions,
+        kind,
     };
 
     let root = resolve_root(ctx);

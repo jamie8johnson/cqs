@@ -360,6 +360,7 @@ mod tests {
                 text: "test note".to_string(),
                 sentiment: 0.5,
                 mentions: vec!["src/lib.rs".to_string()],
+                kind: None,
             }],
             summary: ScoutSummary {
                 total_files: 1,

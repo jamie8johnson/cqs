@@ -130,10 +130,12 @@ CREATE TABLE IF NOT EXISTS notes (
     source_file TEXT NOT NULL,     -- path to notes.toml
     file_mtime INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    kind TEXT                      -- v25 / #1133: optional structured kind tag (`todo`, `design-decision`, …); NULL on pre-v25 rows + sentiment-only notes
 );
 
 CREATE INDEX IF NOT EXISTS idx_notes_sentiment ON notes(sentiment);
+CREATE INDEX IF NOT EXISTS idx_notes_kind ON notes(kind);
 
 -- FTS5 for note keyword search
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(

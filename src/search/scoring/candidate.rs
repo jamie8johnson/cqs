@@ -661,6 +661,7 @@ mod tests {
             text: "test note".to_string(),
             sentiment,
             mentions: mentions.iter().map(|s| s.to_string()).collect(),
+            kind: None,
         }
     }
 

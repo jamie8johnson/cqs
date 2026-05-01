@@ -1001,12 +1001,14 @@ mentions = ["store.rs"]
                 text: "Always use RRF search, not raw embedding".to_string(),
                 sentiment: -0.5,
                 mentions: vec!["search.rs".to_string()],
+                kind: None,
             },
             note::Note {
                 id: "note:1".to_string(),
                 text: "Batch queries are fast".to_string(),
                 sentiment: 0.5,
                 mentions: vec!["store.rs".to_string()],
+                kind: None,
             },
         ];
 
@@ -1034,6 +1036,7 @@ mentions = ["store.rs"]
             text: "Serious issue with error handling".to_string(),
             sentiment: -1.0,
             mentions: vec!["lib.rs".to_string()],
+            kind: None,
         }];
 
         let count = index_notes(&notes, &notes_path, &store).unwrap();

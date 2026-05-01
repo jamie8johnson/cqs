@@ -143,6 +143,7 @@ fn apply_suggestions(
             sentiment: s.sentiment,
             text: s.text.clone(),
             mentions: s.mentions.clone(),
+            kind: None,
         })
         .collect();
     cqs::rewrite_notes_file(&notes_path, |notes| {

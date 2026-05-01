@@ -361,6 +361,7 @@ async fn run_migration(
         (21, 22) => migrate_v21_to_v22(conn).await,
         (22, 23) => migrate_v22_to_v23(conn).await,
         (23, 24) => migrate_v23_to_v24(conn).await,
+        (24, 25) => migrate_v24_to_v25(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -872,6 +873,34 @@ async fn migrate_v23_to_v24(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v24 → v25: Add `kind` (TEXT, nullable) column on `notes` to enable
+/// the kind/tag taxonomy that #1133 (audit P2.91) tracked. Pre-v25
+/// rows stay valid with `kind = NULL`; the parser's
+/// `sentiment_to_prefix` mapping continues to drive embedding-text
+/// prefixes when `kind = None`. New notes added via
+/// `cqs notes add --kind <kind>` populate the column at insert time
+/// and take precedence over the sentiment-based prefix.
+///
+/// An index on `notes(kind)` powers the future `cqs notes list --kind`
+/// filter — created at the same migration step rather than separately
+/// to keep v25 a single self-contained schema bump.
+async fn migrate_v24_to_v25(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v24_to_v25").entered();
+
+    sqlx::query("ALTER TABLE notes ADD COLUMN kind TEXT")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_notes_kind ON notes(kind)")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v25: kind column on notes (structured tag taxonomy, #1133). \
+         Existing rows default to kind=NULL; new notes via `cqs notes add --kind <kind>` populate it."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,7 +933,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
     }
 
     #[test]
