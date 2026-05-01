@@ -83,6 +83,7 @@ pub mod splade;
 pub mod store;
 pub mod train_data;
 pub mod vendored;
+pub mod worktree;
 
 pub mod ci;
 pub mod eval;
@@ -222,6 +223,19 @@ const LEGACY_INDEX_DIR: &str = ".cq";
 ///
 /// If the legacy `.cq/` exists and `.cqs/` does not, renames it automatically.
 /// Falls back gracefully if the rename fails (e.g., permissions).
+///
+/// **Worktree fallback (#1254):** when neither `<project_root>/.cqs/` nor
+/// the legacy `<project_root>/.cq/` exists AND `project_root` is a git
+/// worktree (per [`crate::worktree::resolve_main_project_dir`]), this
+/// function returns the main project's `.cqs/` if that one exists, and
+/// records the redirect via [`crate::worktree::record_worktree_stale`].
+/// JSON envelope writers consult [`crate::worktree::is_worktree_stale`]
+/// and add `worktree_stale: true` + `worktree_name` to `_meta` so
+/// consuming agents know the served index reflects main's branch, not
+/// uncommitted edits in this worktree. When the main project is also
+/// uninitialised the function returns `<project_root>/.cqs/` unchanged
+/// so the caller's "no index found" error message points at the
+/// expected layout.
 pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     let new_dir = project_root.join(INDEX_DIR);
     let old_dir = project_root.join(LEGACY_INDEX_DIR);
@@ -231,12 +245,60 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     }
 
     if new_dir.exists() {
-        new_dir
-    } else if old_dir.exists() {
-        old_dir
-    } else {
-        new_dir
+        return new_dir;
     }
+    if old_dir.exists() {
+        return old_dir;
+    }
+
+    // #1254: worktree fallback. `git worktree add` doesn't copy
+    // `.cqs/`; pre-fix this returned the empty path and every cqs
+    // command in the worktree errored, which led agents to fall back
+    // to absolute paths under main's tree.
+    match crate::worktree::lookup_main_cqs_dir(project_root) {
+        crate::worktree::MainIndexLookup::WorktreeUseMain {
+            worktree_root,
+            main_cqs,
+            ..
+        } => {
+            crate::worktree::record_worktree_stale(&worktree_root);
+            tracing::info!(
+                worktree = %worktree_root.display(),
+                main_cqs = %main_cqs.display(),
+                "Worktree has no .cqs/; serving from main's index (responses tagged worktree_stale=true)"
+            );
+            return main_cqs;
+        }
+        crate::worktree::MainIndexLookup::WorktreeMainEmpty {
+            worktree_root,
+            main_root,
+        } => {
+            // Both the worktree and main are uninitialised. The
+            // caller will error with "no index found" against the
+            // returned (worktree) path; the warn here makes both
+            // candidate paths visible in the journal so the operator
+            // knows running `cqs index` in main also fixes the
+            // worktree.
+            tracing::warn!(
+                worktree = %worktree_root.display(),
+                main = %main_root.display(),
+                worktree_cqs = %new_dir.display(),
+                main_cqs = %main_root.join(INDEX_DIR).display(),
+                "No cqs index found in worktree OR in its main project — \
+                 run `cqs index` in either to populate (main is preferred since \
+                 worktrees pick up its index automatically)"
+            );
+        }
+        crate::worktree::MainIndexLookup::OwnIndex { .. }
+        | crate::worktree::MainIndexLookup::NotWorktree => {
+            // OwnIndex is unreachable here (we only entered this
+            // branch because new_dir didn't exist, which contradicts
+            // OwnIndex). NotWorktree is the regular case — fall
+            // through to return new_dir below.
+        }
+    }
+
+    new_dir
 }
 
 /// Compute the slot directory path: `<project_cqs_dir>/slots/<slot_name>/`.
