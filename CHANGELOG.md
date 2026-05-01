@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-05-01
+
+Minor release. Schema bumps **v23 → v25** (chained auto-migration: v23→v24 adds `chunks.vendored`, v24→v25 adds `notes.kind`). Five themes:
+
+1. **Watch-mode self-deadlock fix** (the urgent one) — `HnswIndex.load_with_dim` no longer keeps the load-phase shared `flock(2)` alive for the loaded index's lifetime. Pre-fix, the rebuild thread's `save()` opened a second fd on `index.hnsw.lock` and called exclusive `lock()`; Linux flock waits for ALL shared holders, including the same process via a different open description, so the rebuild thread parked permanently in `locks_lock_inode_wait`. Diagnosis hit the exact reproduction in production: daemon stuck in `state == rebuilding` with delta queue accumulating until `delta_saturated` latched the recovery path.
+2. **Three-tier `trust_level`** (#1221, schema v24) — vendored content (`vendor/`, `node_modules/`, `third_party/`, `.cargo/`, `target/`, `dist/`, `build/` by default; override via `[index].vendored_paths`) gets `"vendored-code"` instead of the bare `"user-code"` claim. Closes the SEC-V1.30.1-5 doc-only stop-gap.
+3. **Worktree → main-index discovery** (#1254) — `cqs` running inside a `git worktree` without its own `.cqs/` auto-discovers main's index via `.git/commondir`. Every JSON envelope from that process carries `_meta.worktree_stale: true` + `_meta.worktree_name: "<name>"` so consuming agents know to fall back to absolute worktree paths for files they're about to edit. Closes the worktree-leakage class of bugs documented in `feedback_agent_worktrees.md`.
+4. **Note kind taxonomy** (#1133, schema v25) — `NoteEntry.kind: Option<String>` + TOML roundtrip + `cqs notes add --kind <kind>` flag + structured `kind` column + path-prefix index. Embedding-text prefix priority chain: kind > sentiment-Warning > sentiment-Pattern > no-prefix. Closes audit P2.91.
+5. **TC-ADV reconcile coverage + TRT engine cache** (#1260) — clock-skew test + read_disk metadata-Err test + persistent TRT engine cache at `~/.cache/cqs/trt-engine-cache/` (gated on `CQS_TRT_ENGINE_CACHE`, default on) so daemon restarts don't re-pay the 30-90s BGE-large compile cost.
+
+### Added
+
+- **`chunks.vendored INTEGER NOT NULL DEFAULT 0`** (#1221, schema v24). Index-pipeline path-segment matcher (`crate::vendored::is_vendored_origin`) + `Store::set_vendored_prefixes` + `cmd_index` / `cmd_watch` startup wiring. Override the default prefix list via `[index].vendored_paths` in `.cqs.toml`. Three-tier `trust_level` in `to_json_with_origin`: `reference-code` > `vendored-code` > `user-code`.
+- **`notes.kind TEXT`** (#1133, schema v25). `NoteEntry.kind` / `Note.kind` / `NoteSummary.kind`; TOML round-trip with serde-skip-when-default; CLI `cqs notes add --kind <kind>`; `idx_notes_kind` for future `--kind` filter. `embedding_text` honours kind prefix when set.
+- **`_meta.worktree_stale: bool` + `_meta.worktree_name: Option<String>`** on every JSON envelope (#1254). Skipped when not stale so the wire shape only grows for affected processes.
+- **`crate::worktree::resolve_main_project_dir`** + `lookup_main_cqs_dir` + `record_worktree_stale` / `is_worktree_stale` / `current_worktree_name`. Process-wide stale flag via `OnceLock`. Robust to malformed `.git` files — every failure mode returns `None` rather than panicking.
+- **`CQS_TRT_ENGINE_CACHE`** (#1260, default on). Persistent TRT engine + timing cache at `~/.cache/cqs/trt-engine-cache/`. Set to `0` to opt out.
+- **TC-ADV-1.30.1-5 / TC-ADV-1.30.1-6 tests** (#1260) — clock-skew (stored mtime in future, hash tiebreak) + `read_disk` metadata-Err (None-on-stat-failure contract).
+
+### Fixed
+
+- **HNSW load-phase shared flock self-deadlock** (#1261). `load_with_dim` drops the lock immediately after the read phase; constructor sets `_lock_file: None`. Regression test (`load_does_not_block_subsequent_save_in_same_process`) verified by reverting just the fix lines — fails at 5.05s timeout, passes in <100ms with the fix. Daemon's HNSW rebuild thread no longer parks indefinitely on `save()`.
+
+### Changed
+
+- **`EnvelopeMeta::new()` → `EnvelopeMeta::current()`** (no longer `const`). Reads process-wide worktree state at envelope-emit time. `meta_value()` and `meta_json_fragment()` rebuild on every call so streamed batch output gets correct flags. (#1254)
+
+### Internal
+
+- **`ENV_LOCK` hoisted to module-level** in `src/embedder/provider.rs::tests` so env-mutating tests actually serialize against each other (the previous per-test `static` pattern provided no real serialization). (#1260)
+- Schema migration framework gains `migrate_v23_to_v24` (chunks.vendored) and `migrate_v24_to_v25` (notes.kind). Both additive ALTER-only — fast, no row rewrite.
+
 ## [1.31.0] - 2026-04-30
 
 Minor release. Post-v1.30.2 bug drain across watch reconcile, sparse-vector index, LLM redirect policy, slot lifecycle, native-Windows shutdown, and coarse-mtime filesystems. Schema bumps v22 → v23 (auto-migrating; `source_size` + `source_content_hash` columns added to `FileFingerprint`). Reindex not required, but the v23 binary will refuse to open a v22 index until the auto-migration step runs on first start.
