@@ -300,111 +300,252 @@ pub(crate) enum UnauthorizedReason {
     QueryParamMismatch,
 }
 
-/// Extract the token from one of three channels — header, cookie,
-/// or query string — and constant-time-compare against the launched
-/// token. AC-V1.30.1-5: even when Bearer or cookie matches, if a
-/// `token=` query param is also present, return `OkViaQueryParam` so
-/// the caller redirects to the clean URL — leaving a stale `?token=`
-/// in the URL bar is the exact SEC-7 leakage path the redirect closes.
+/// Per-channel decision for one `(request, expected_token)` pair.
+///
+/// The channel is responsible only for "did *this* channel pass". Whether the
+/// overall request authenticates and which `UnauthorizedReason` to surface
+/// is decided by [`check_request`] from the combination of channel outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelOutcome {
+    /// Channel observed a credential and it matched — request authenticated
+    /// via this channel.
+    Authenticated,
+    /// Channel observed a credential but it did NOT match (e.g. stale
+    /// Bearer header, expired cookie, wrong `?token=…`). Counts as an
+    /// attempt for `UnauthorizedReason` classification.
+    Mismatch,
+    /// Channel did not observe a credential on this request. Skip silently.
+    NotPresent,
+}
+
+/// EX-V1.30.1-5 (#1218): one auth channel — Bearer header, cookie, query
+/// param, or any future addition (mTLS client cert, API key, JWT, SSO).
+///
+/// Adding a new channel becomes:
+/// 1. New `impl AuthChannel for MyChannel` block.
+/// 2. New row in [`UnauthorizedReason`] (so 401 telemetry stays specific).
+/// 3. One line in [`check_request`]'s channel array, in the desired
+///    priority position.
+///
+/// `check_request` walks the channels in priority order on every request.
+/// Priority is (header > cookie > query) today and is documented at the
+/// channel array's construction site, not implicit in the trait.
+trait AuthChannel {
+    /// Stable short name. Used only for tracing today; an
+    /// observability follow-up could log the matched channel here.
+    #[allow(
+        dead_code,
+        reason = "reserved for the audit-logging follow-up flagged in #1218"
+    )]
+    fn name(&self) -> &'static str;
+
+    /// Inspect the request for this channel's credential and compare
+    /// constant-time against `expected`. Returns
+    /// [`ChannelOutcome::Authenticated`] / `Mismatch` / `NotPresent`.
+    fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome;
+
+    /// `UnauthorizedReason` to surface on the 401 telemetry warn when
+    /// *this* channel was the most-specific channel that attempted
+    /// (i.e. `Mismatch`). The aggregator picks the highest-priority
+    /// channel that returned `Mismatch`, then asks it for this reason.
+    fn unauthorized_reason(&self) -> UnauthorizedReason;
+
+    /// AC-V1.30.1-5: whether the request shape this channel sees
+    /// requires post-auth URL strip + redirect (the SEC-7 leakage
+    /// scrub for `?token=…` even when another channel matched). Default
+    /// is `false` for channels that don't carry leakable state in the
+    /// URL; `QueryParamChannel` overrides to `true` when the URL has
+    /// any `?token=` shape (case-folded, percent-decoded). The
+    /// aggregator ORs across channels, so the redirect fires whenever
+    /// *any* channel sees a leaky URL — even when the cookie/header
+    /// is what authenticated.
+    fn needs_url_strip(&self, _req: &Request) -> bool {
+        false
+    }
+}
+
+/// `Authorization: Bearer <token>` header channel. Highest priority — API
+/// clients and anything that can set headers should use this.
+struct BearerHeaderChannel;
+
+impl AuthChannel for BearerHeaderChannel {
+    fn name(&self) -> &'static str {
+        "bearer"
+    }
+
+    fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome {
+        let bearer = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| v.starts_with("Bearer "));
+        match bearer {
+            Some(value) => {
+                let stripped = value.strip_prefix("Bearer ").unwrap_or("");
+                if ct_eq(stripped, expected.as_str()) {
+                    ChannelOutcome::Authenticated
+                } else {
+                    ChannelOutcome::Mismatch
+                }
+            }
+            None => ChannelOutcome::NotPresent,
+        }
+    }
+
+    fn unauthorized_reason(&self) -> UnauthorizedReason {
+        UnauthorizedReason::BearerMismatch
+    }
+}
+
+/// `cqs_token_<port>` cookie channel. Lifetime ties to the per-server
+/// `AuthMiddlewareState` that owns the lookup needle string — see
+/// PF-V1.30.1-6 for the pre-built-needle rationale.
+///
+/// Cookie name is per-port (#1135) so two `cqs serve` instances on the
+/// same host don't collide in the browser jar. RFC 6265 syntax: name=value
+/// pairs separated by `; `; quoted values are not used by this server.
+struct CookieChannel<'a> {
+    needle: &'a str,
+}
+
+impl AuthChannel for CookieChannel<'_> {
+    fn name(&self) -> &'static str {
+        "cookie"
+    }
+
+    fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome {
+        let cookie_header = req
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok());
+        let Some(cookie_header) = cookie_header else {
+            return ChannelOutcome::NotPresent;
+        };
+        let mut attempted = false;
+        for pair in cookie_header.split(';').map(str::trim) {
+            if let Some(value) = pair.strip_prefix(self.needle) {
+                attempted = true;
+                if ct_eq(value, expected.as_str()) {
+                    return ChannelOutcome::Authenticated;
+                }
+            }
+        }
+        if attempted {
+            ChannelOutcome::Mismatch
+        } else {
+            ChannelOutcome::NotPresent
+        }
+    }
+
+    fn unauthorized_reason(&self) -> UnauthorizedReason {
+        UnauthorizedReason::CookieMismatch
+    }
+}
+
+/// `?token=<token>` query-param channel. Lowest priority of the three;
+/// always pairs with [`needs_url_strip`](AuthChannel::needs_url_strip)
+/// to scrub the URL bar after the handoff (SEC-7 leakage closure,
+/// CQ-V1.30.1-4: case-folded `Token=` and percent-decoded `%74oken=`
+/// both count as `?token=` for the strip test).
+struct QueryParamChannel;
+
+impl AuthChannel for QueryParamChannel {
+    fn name(&self) -> &'static str {
+        "query"
+    }
+
+    fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome {
+        let Some(query) = req.uri().query() else {
+            return ChannelOutcome::NotPresent;
+        };
+        let mut attempted = false;
+        for pair in query.split('&').filter(|p| pair_key_is_token(p)) {
+            attempted = true;
+            let value = pair.split_once('=').map(|(_, v)| v).unwrap_or("");
+            if ct_eq(value, expected.as_str()) {
+                return ChannelOutcome::Authenticated;
+            }
+        }
+        if attempted {
+            ChannelOutcome::Mismatch
+        } else {
+            ChannelOutcome::NotPresent
+        }
+    }
+
+    fn unauthorized_reason(&self) -> UnauthorizedReason {
+        UnauthorizedReason::QueryParamMismatch
+    }
+
+    fn needs_url_strip(&self, req: &Request) -> bool {
+        // AC-V1.30.1-5: any case-folded `?token=…` form needs the
+        // post-auth scrub, even when authentication came from another
+        // channel. The check here is intentionally `Token=` /
+        // `%74oken=` aware (via `pair_key_is_token`) because the
+        // strip uses the same predicate; mismatches between detection
+        // and stripping would re-introduce the SEC-7 leakage.
+        req.uri()
+            .query()
+            .is_some_and(|q| q.split('&').any(pair_key_is_token))
+    }
+}
+
+/// Walk the auth-channel registry in priority order and combine outcomes.
+///
+/// Priority today: header > cookie > query. The order is encoded at the
+/// channels-array construction below; rearranging is the supported way to
+/// change priority. EX-V1.30.1-5 (#1218): each channel is a trait impl
+/// (`BearerHeaderChannel`, `CookieChannel`, `QueryParamChannel`) so adding
+/// a fourth (mTLS, API key, JWT, SSO) is a new impl plus one line here.
+///
+/// AC-V1.30.1-5: even when a higher-priority channel matches, a `?token=…`
+/// in the URL must trigger the redirect so the URL bar is scrubbed —
+/// `needs_url_strip` is OR'd across channels for that reason.
 ///
 /// PF-V1.30.1-6: `cookie_lookup_needle` is the pre-built `cqs_token_<port>=`
 /// string from [`AuthMiddlewareState`]. Passed in by reference so the
 /// happy path doesn't `format!()` per request.
 fn check_request(req: &Request, expected: &AuthToken, cookie_lookup_needle: &str) -> AuthOutcome {
-    // Sniff for any `?token=…` first — if present, we want to redirect
-    // even when another channel also matches. Validity of the query
-    // value isn't required for the redirect; the redirect's only job
-    // is to scrub the URL bar.
-    let query_has_token_param = req
-        .uri()
-        .query()
-        .is_some_and(|q| q.split('&').any(pair_key_is_token));
+    // Priority order: header > cookie > query. Documented + asserted
+    // by `test_channel_priority_is_header_cookie_query` below.
+    let bearer = BearerHeaderChannel;
+    let cookie = CookieChannel {
+        needle: cookie_lookup_needle,
+    };
+    let query = QueryParamChannel;
+    let channels: [&dyn AuthChannel; 3] = [&bearer, &cookie, &query];
 
-    // 1. Authorization: Bearer …
-    // OB-V1.30.1-5: track presence + match separately so the 401 path
-    // can attribute the failure to the specific channel the client used.
-    let bearer_attempted = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.starts_with("Bearer "));
-    let bearer_ok = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|bearer| ct_eq(bearer, expected.as_str()));
-
-    // 2. cqs_token_<port> cookie. RFC 6265 cookie syntax is name=value
-    // pairs separated by `; `. We don't bother with quoted values —
-    // the server only ever sets this cookie itself and never quotes
-    // it. Cookie name is per-port (#1135) so two cqs serve instances
-    // on the same host don't collide in the browser jar. PF-V1.30.1-6:
-    // `cookie_lookup_needle` is pre-built (`cqs_token_<port>=`) so the
-    // scan never allocates.
-    let cookie_header_str = req
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok());
-    let cookie_attempted = cookie_header_str
-        .map(|cookie_header| {
-            cookie_header
-                .split(';')
-                .any(|pair| pair.trim().starts_with(cookie_lookup_needle))
-        })
-        .unwrap_or(false);
-    let cookie_ok = cookie_header_str
-        .map(|cookie_header| {
-            cookie_header.split(';').any(|pair| {
-                pair.trim()
-                    .strip_prefix(cookie_lookup_needle)
-                    .is_some_and(|value| ct_eq(value, expected.as_str()))
-            })
-        })
-        .unwrap_or(false);
-
-    // 3. ?token=… query param. axum's `Query` extractor only deserializes
-    // a typed struct; we want raw access without forcing every request
-    // path through a fixed type, so we parse the URI's `query()` directly.
-    let query_ok = req.uri().query().is_some_and(|query| {
-        query
-            .split('&')
-            .filter(|pair| pair_key_is_token(pair))
-            .any(|pair| {
-                let value = pair.split_once('=').map(|(_, v)| v).unwrap_or("");
-                ct_eq(value, expected.as_str())
-            })
-    });
-
-    if !(bearer_ok || cookie_ok || query_ok) {
-        // OB-V1.30.1-5: pick the most-specific reason. Priority: if
-        // *any* channel was attempted, attribute to the strongest one
-        // first (Bearer > Cookie > Query) — operators chasing a
-        // misconfigured automation client see the channel they were
-        // pointing at. If no channel was attempted, fall through to
-        // MissingAll so the journal distinguishes "fresh tab without
-        // token" from "client sent stale credentials".
-        let reason = if bearer_attempted {
-            UnauthorizedReason::BearerMismatch
-        } else if cookie_attempted {
-            UnauthorizedReason::CookieMismatch
-        } else if query_has_token_param {
-            UnauthorizedReason::QueryParamMismatch
-        } else {
-            UnauthorizedReason::MissingAll
-        };
-        return AuthOutcome::Unauthorized(reason);
+    let mut authenticated = false;
+    // OB-V1.30.1-5: pick the highest-priority channel that *attempted*
+    // (returned `Mismatch`). Walking in priority order means the first
+    // mismatch we hit is the most-specific reason.
+    let mut first_mismatch: Option<UnauthorizedReason> = None;
+    let mut needs_url_strip = false;
+    for ch in &channels {
+        match ch.check(req, expected) {
+            ChannelOutcome::Authenticated => {
+                authenticated = true;
+            }
+            ChannelOutcome::Mismatch => {
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(ch.unauthorized_reason());
+                }
+            }
+            ChannelOutcome::NotPresent => {}
+        }
+        if ch.needs_url_strip(req) {
+            needs_url_strip = true;
+        }
     }
 
-    // AC-V1.30.1-5: presence of `?token=…` (any case-folded form) on a
-    // request that authenticates by ANY channel must trigger the
-    // redirect — otherwise the token sits in the URL bar permanently
-    // after a bookmarked-URL reload, even when the cookie is what
-    // matched.
-    if query_has_token_param {
-        AuthOutcome::OkViaQueryParam
+    if authenticated {
+        if needs_url_strip {
+            AuthOutcome::OkViaQueryParam
+        } else {
+            AuthOutcome::Ok
+        }
     } else {
-        AuthOutcome::Ok
+        AuthOutcome::Unauthorized(first_mismatch.unwrap_or(UnauthorizedReason::MissingAll))
     }
 }
 
@@ -998,6 +1139,80 @@ mod tests {
             AuthOutcome::Ok => panic!("expected Unauthorized today, got Ok"),
             AuthOutcome::OkViaQueryParam => {
                 panic!("expected Unauthorized today, got OkViaQueryParam")
+            }
+        }
+    }
+
+    /// EX-V1.30.1-5 (#1218): pin the channel priority order as
+    /// `Bearer > Cookie > QueryParam`. With ALL three channels
+    /// presenting mismatching credentials simultaneously, the 401's
+    /// `UnauthorizedReason` must be `BearerMismatch` — the
+    /// highest-priority channel that attempted. If a future refactor
+    /// reorders the channels array in `check_request` (or routes via a
+    /// config-driven registry), this test flips loudly so the
+    /// telemetry-cardinality contract documented in
+    /// [`UnauthorizedReason`] doesn't drift silently.
+    #[test]
+    fn channel_priority_is_bearer_cookie_query() {
+        let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
+        let cookie_name = "cqs_token_8080";
+        let needle = format!("{cookie_name}=");
+        let req = Request::builder()
+            .uri("/api/graph?token=wrongquery")
+            .header(header::AUTHORIZATION, "Bearer wrongbearer")
+            .header(header::COOKIE, format!("{cookie_name}=wrongcookie"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token, &needle) {
+            AuthOutcome::Unauthorized(reason) => {
+                assert_eq!(
+                    reason,
+                    UnauthorizedReason::BearerMismatch,
+                    "Bearer must win priority over Cookie and QueryParam when all three mismatch"
+                );
+            }
+            AuthOutcome::Ok => panic!("expected Unauthorized(BearerMismatch), got Ok"),
+            AuthOutcome::OkViaQueryParam => {
+                panic!("expected Unauthorized(BearerMismatch), got OkViaQueryParam")
+            }
+        }
+
+        // No bearer → cookie wins next-priority.
+        let req2 = Request::builder()
+            .uri("/api/graph?token=wrongquery")
+            .header(header::COOKIE, format!("{cookie_name}=wrongcookie"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req2, &token, &needle) {
+            AuthOutcome::Unauthorized(reason) => {
+                assert_eq!(
+                    reason,
+                    UnauthorizedReason::CookieMismatch,
+                    "Cookie wins when Bearer is absent"
+                );
+            }
+            AuthOutcome::Ok => panic!("expected Unauthorized(CookieMismatch), got Ok"),
+            AuthOutcome::OkViaQueryParam => {
+                panic!("expected Unauthorized(CookieMismatch), got OkViaQueryParam")
+            }
+        }
+
+        // Only query → query wins.
+        let req3 = Request::builder()
+            .uri("/api/graph?token=wrongquery")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req3, &token, &needle) {
+            AuthOutcome::Unauthorized(reason) => {
+                assert_eq!(
+                    reason,
+                    UnauthorizedReason::QueryParamMismatch,
+                    "QueryParam wins when nothing else attempts"
+                );
+            }
+            AuthOutcome::Ok => panic!("expected Unauthorized(QueryParamMismatch), got Ok"),
+            AuthOutcome::OkViaQueryParam => {
+                panic!("expected Unauthorized(QueryParamMismatch), got OkViaQueryParam")
             }
         }
     }
