@@ -83,17 +83,17 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P2-1 | Observability | `serve` axum `http_request` span has no `request_id` field | medium | ⬜ |
 | P2-2 | Observability | `WatchSnapshot::compute` and `now_unix_secs` lack tracing on freshness state machine | medium | ⬜ |
 | P2-3 | Error Handling | `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides cache keys | medium | ✅ #1364 |
-| P2-4 | Error Handling | `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror | medium | ⬜ |
+| P2-4 | Error Handling | `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror | medium | 🎫 #1374 |
 | P2-5 | Error Handling | Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure | medium | ✅ #1379 |
 | P2-6 | Error Handling | Reference path canonicalize-failure in `Config::validate` skips SEC-4 + SEC-NEW-1 check | medium | ⬜ |
 | P2-7 | Robustness | L5X parser line arithmetic uses unchecked u32+u32 — overflow panics in debug | medium | ✅ #1379 |
-| P2-8 | Code Quality | `serve` async handlers duplicate 15-20 LOC of permit + spawn_blocking + span ×6 | medium | ⬜ |
-| P2-9 | Scaling | HNSW M/ef defaults static, don't auto-scale with corpus | medium | ⬜ |
+| P2-8 | Code Quality | `serve` async handlers duplicate 15-20 LOC of permit + spawn_blocking + span ×6 | medium | 🎫 #1376 |
+| P2-9 | Scaling | HNSW M/ef defaults static, don't auto-scale with corpus | medium | 🎫 #1370 |
 | P2-10 | TC Adversarial | `enumerate_files` symlink-skip / oversized-skip / non-UTF8-path branches untested | medium | ⬜ |
 | P2-11 | TC Adversarial | `CqParser::parse_file` non-UTF8 and oversized-file skip branches untested | medium | ⬜ |
 | P2-12 | TC Adversarial | `update_umap_coords_batch` accepts NaN/Inf coords; serializes as bare JSON `NaN` | medium | ⬜ |
-| P2-13 | API Design | Same `--depth` flag means four different defaults across five commands | medium | ⬜ |
-| P2-14 | API Design | `--rerank` (bool) on search vs `--reranker <mode>` (enum) on eval | medium | ⬜ |
+| P2-13 | API Design | Same `--depth` flag means four different defaults across five commands | medium | 🎫 #1373 |
+| P2-14 | API Design | `--rerank` (bool) on search vs `--reranker <mode>` (enum) on eval | medium | 🎫 #1372 |
 | P2-15 | Algorithm Correctness | `apply_rerank_scores` partial overwrite when `scores.len() != results.len()` | medium | ✅ #1364 |
 | P2-16 | Algorithm Correctness | SPLADE hybrid fusion truncates+re-collects into HashMap, scrambles ordering | medium | ✅ #1364 |
 | P2-17 | Algorithm Correctness | BM25 IDF formula uses non-standard `+1.0` (Atire) without docs; mismatches FTS5 | medium | ✅ #1364 |
@@ -115,8 +115,8 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P2-33 | Resource Management | `ProjectRegistry::load` reads file *then* checks size — full alloc before cap | easy | ⬜ |
 | P2-34 | Resource Management | `parse_wsl_automount_root`/`is_slow_mmap_filesystem` read system files unbounded | easy | ⬜ |
 | P2-35 | Resource Management | Centroid classifier file loaded with no size guard | easy | ⬜ |
-| P2-36 | Performance | `cache.rs::read_batch` decodes f32 blobs via `chunks_exact(4).map` — bytemuck zero-copy | easy | ⬜ |
-| P2-37 | Performance | SQLite `chunks` missing composite index on `(source_type, origin)` | medium | ⬜ |
+| P2-36 | Performance | `cache.rs::read_batch` decodes f32 blobs via `chunks_exact(4).map` — bytemuck zero-copy | easy | 🎫 #1377 |
+| P2-37 | Performance | SQLite `chunks` missing composite index on `(source_type, origin)` | medium | 🎫 #1371 |
 | P2-38 | Platform Behavior | SEC-4 reference-path containment uses `std::fs::canonicalize`, breaking on Windows | easy | ⬜ |
 | P2-39 | Platform Behavior | `train_data::git::validate_git_repo` uses raw `canonicalize()` on Windows | easy | ⬜ |
 | P2-40 | Platform Behavior | `worktree::resolve_main_project_dir` uses `std::fs::canonicalize` on `.git/` | easy | ⬜ |
@@ -136,7 +136,7 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-6 | Observability | `cli/registry.rs:133` `println!` for Refresh "no daemon running" bypasses tracing | easy | ⬜ |
 | P3-7 | Observability | `Embedder::warm` no span, no log — silent ~250 MB+ session init at startup | easy | ⬜ |
 | P3-8 | Observability | `LocalProvider` worker threads lack worker-id field on completion | easy | ⬜ |
-| P3-9 | Robustness | `set_on_item_complete` lock().unwrap() — duplicate of EH-V1.33-2 | easy | ⬜ |
+| P3-9 | Robustness | `set_on_item_complete` lock().unwrap() — duplicate of EH-V1.33-2 | easy | ✅ #1329 (duplicate) |
 | P3-10 | Code Quality | `check_model_version()` wrapper dead in production | easy | ⬜ |
 | P3-11 | Code Quality | `is_false`/`is_zero_usize` trivial helpers duplicated 3+2 times across modules | easy | ⬜ |
 | P3-12 | Code Quality | `search_unified_with_index` is `pub` 6-line wrapper post-SQ-9 | easy | ✅ |
@@ -179,11 +179,11 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-49 | Extensibility | Adding any new top-level CLI command needs three coordinated edits | easy | ⬜ |
 | P3-50 | Platform Behavior | Daemon error/operator hints hardcode `systemctl --user` — broken UX for macOS | easy | ⬜ |
 | P3-51 | Platform Behavior | `process_exists` (Windows) uses PATH lookup for `tasklist` | easy | ⬜ |
-| P3-52 | API Design | Wildcard `pub use diff::* / gather::* / impact::* / scout::* / task::*` in lib.rs | medium | ⬜ |
-| P3-53 | Performance | `Store::load_all_sparse_vectors` allocates fresh `String` per row | medium | ⬜ |
-| P3-54 | Performance | `Embedder::embed_batch`/`Reranker::run_chunk` allocate three Vec<Vec<i64>> per batch | medium | ⬜ |
-| P3-55 | Performance | `reverse_bfs`/`build_test_map` re-allocate String keys despite Arc<str> interning | medium | ⬜ |
-| P3-56 | TC Happy | `cmd_trace` (CLI handler) has no direct test — suite reimplements BFS inline | medium | ⬜ |
+| P3-52 | API Design | Wildcard `pub use diff::* / gather::* / impact::* / scout::* / task::*` in lib.rs | medium | 🎫 #1375 |
+| P3-53 | Performance | `Store::load_all_sparse_vectors` allocates fresh `String` per row | medium | 🎫 #1377 |
+| P3-54 | Performance | `Embedder::embed_batch`/`Reranker::run_chunk` allocate three Vec<Vec<i64>> per batch | medium | 🎫 #1377 |
+| P3-55 | Performance | `reverse_bfs`/`build_test_map` re-allocate String keys despite Arc<str> interning | medium | 🎫 #1377 |
+| P3-56 | TC Happy | `cmd_trace` (CLI handler) has no direct test — suite reimplements BFS inline | medium | ✅ #1333 (TC-HAP-V1.33-4) |
 
 ## P4 — Issues / Inline Trivial
 
