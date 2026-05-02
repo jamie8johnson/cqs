@@ -30,23 +30,34 @@ Five themes (full detail in CHANGELOG.md):
 
 **Eight issues closed by this sweep:** #1133 (already), #1176, #1217, #1218, #1220, #1226, #1230, #1215.
 
-**State:** main at `da4b79ff` (post-#1279). Local at the same SHA. Daemon up to date (rebuilt + reinstalled after each merge).
+**State:** main at `a83b5b2b` (post-#1303). Local in sync. Daemon needs a rebuild + restart to pick up the eval `--reranker` flag (still serves prior code until then).
 
 **Conda/pip cleanup pass (2026-05-01):** safe-tier upgrades across base, cqs-train, onnx-export, vllm-serve. Bumped: `anthropic` 0.86→0.97 (used by SQ-6), `onnxruntime` 1.24.4→1.25.1, `onnx` 1.20→1.21, `sentence-transformers` 5.1→5.4, `peft` 0.18→0.19, `datasets` 4.8.4→4.8.5, `pip` 26.0.1→26.1, plus ~15 utility minors per env. Held: `transformers` 4→5, `protobuf` 6→7, `cudnn` 9.19→9.21, `cuda-version` 13.1→13.2, `vllm` 0.19→0.20, `torch` 2.9→2.11, all `nvidia-*` (torch-pinned). Rolled back: `mpmath` (sympy cap), `setuptools` (torch cap), `fsspec` (datasets cap), `flashinfer-cubin/python`/`lark` (vllm exact pins). Pre-existing latent conflicts surfaced (not caused by upgrades): `pylate` pins `st==5.1.1`/`ujson==5.10.0` in base; `optimum-onnx` pins `transformers<4.58` in cqs-train; `vllm 0.19` pins `transformers<5` but env has 5.6.0.dev0; `coir-eval` missing `faiss-cpu`.
 
+### Post-v1.33.0 follow-up sweep (2026-05-02)
+
+| PR | Closes | Theme |
+|---|---|---|
+| #1300 | — | ROADMAP cleanup (header v1.32.0→v1.33.0; folded "Post-v1.32.0 sweep" into v1.33.0 row). |
+| #1301 | — | EmbeddingGemma-300m preset (`PoolingStrategy::Identity` for projection-head pooling, `CQS_DISABLE_TENSORRT` knob). Stash from earlier session shipped. |
+| #1302 | — | #1286 Phase 2 — gate `onboard_test` (~6.6 min) + `eval_subcommand_test` (~5.3 min) behind `slow-tests`; new `slow-tests-feature` job in `ci-slow.yml`. ~12 min off PR-time CI. |
+| #1303 | — | `cqs eval --reranker <none\|onnx\|llm>` — wires #1276's Reranker trait into the eval harness. Default `none` preserves baselines. |
+| HF dataset README | #1290 | Fixed HF viewer CastError (sidecar `processing_manifest.jsonl` was being ingested as data; added `configs` block scoping train split to the dataset file only). |
+
+**Issue closure:** #1290 (HF dataset viewer); #1286 Phase 2 fully addressed (Phase 3 deferred per user direction).
+
 **Up next (no active task — user-direct):**
-- Verify release.yml prebuilds completed for all three targets.
 - v1.32.0 audit eligible (16-category audit).
-- Embedder eval queue: Phase 3 EmbeddingGemma-300m, ceiling probes Qwen3-Embedding-8B + NV-Embed-v2.
+- Embedder eval queue: ceiling probes Qwen3-Embedding-8B + NV-Embed-v2.
+- `LlmReranker` production wiring against `BatchProvider` (skeleton in `src/reranker.rs`; eval flag now consumes it from `cqs::LlmReranker::new()` so the wire-up is the only missing piece).
 
 ### Outstanding follow-ups (small, optional)
 
-- `cqs eval --reranker none|onnx` flag (`NoopReranker` infrastructure ready from #1276; eval-runner needs a one-line dispatch).
-- `LlmReranker` production wiring against `BatchProvider` (skeleton in `src/reranker.rs`).
 - Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
 - `cuvs` crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
+- ci-slow.yml `slow-tests-feature` job's first run is the next nightly cron (06:00 UTC) — verify it actually exercises the 9 newly-gated tests rather than failing at compile or a path issue. Trigger via `gh workflow run ci-slow.yml` to sanity-check before then if convenient.
 
-## Open issues (11 total)
+## Open issues (12 total)
 
 All P1/P2 closed. Refactor frontier (#1215, #1217, #1218, #1220, #1226) cleared. Remaining are tier-3 or have specific blockers.
 
@@ -63,6 +74,7 @@ All P1/P2 closed. Refactor frontier (#1215, #1217, #1218, #1220, #1226) cleared.
 | 1228 | RM-2: wait_for_fresh persistent connection | Daemon side reads one request per connection — option (a) is bigger than the issue's "30-line" estimate |
 | 1229 | RM-5: stream enumerate_files walk | Real win at 1M-file repos; needs `enumerate_files_iter` API + batched SQL lookup |
 | 1244 | RM-4: HNSW snapshot 17 MB | Audit's "240×" claim assumed nonexistent u32 chunk_ids; actual win ~1 MB via `[u8; 32]` repr |
+| 1286 | Overnight CI workflow Phase 3 | Phase 1 (#1293) + Phase 2 (#1302) shipped; Phase 3 (CLI subprocess test binary collapse) lower priority after #1288's PR-time CI win |
 
 ## Parked
 
