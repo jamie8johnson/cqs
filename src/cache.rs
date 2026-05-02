@@ -902,7 +902,10 @@ impl EmbeddingCache {
         let hashes: Vec<&str> = items.iter().map(&hash_fn).collect();
         let hits = self.read_batch(&hashes, model_id, purpose, expected_dim)?;
         let mut cached = Vec::with_capacity(hits.len());
-        let mut missed = Vec::with_capacity(items.len() - hits.len());
+        // RB-V1.33-5: saturating_sub prevents usize underflow if read_batch
+        // ever returns more entries than items (hash collision, SQL bug,
+        // future schema change). Over-allocation is bounded by items.len().
+        let mut missed = Vec::with_capacity(items.len().saturating_sub(hits.len()));
         for item in items {
             let h = hash_fn(item);
             if let Some(emb) = hits.get(h) {

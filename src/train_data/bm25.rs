@@ -75,11 +75,19 @@ impl Bm25Index {
                 let dl = tf_map.values().sum::<f32>();
                 let mut score = 0.0f32;
 
+                // RB-V1.33-1: guard against avg_dl == 0 (empty corpus or
+                // every doc tokenizes to zero terms) so dl/avg_dl can't
+                // produce inf/NaN that escapes via partial_cmp.
+                let dl_ratio = if self.avg_dl > 0.0 {
+                    dl / self.avg_dl
+                } else {
+                    0.0
+                };
                 for qt in &query_terms {
                     if let Some(&idf_val) = self.idf.get(qt) {
                         let tf = tf_map.get(qt).copied().unwrap_or(0.0);
                         let numerator = tf * (K1 + 1.0);
-                        let denominator = tf + K1 * (1.0 - B + B * dl / self.avg_dl);
+                        let denominator = tf + K1 * (1.0 - B + B * dl_ratio);
                         score += idf_val * numerator / denominator;
                     }
                 }
@@ -90,12 +98,10 @@ impl Bm25Index {
 
         // Secondary sort on doc hash keeps equal-score documents
         // deterministically ordered across process invocations (the
-        // upstream HashMap iterates in random order).
-        scores.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
+        // upstream HashMap iterates in random order). RB-V1.33-1: use
+        // total_cmp so any NaN that survives the avg_dl guard sorts
+        // deterministically (matches search/query.rs:642 pattern).
+        scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         scores
     }
 
@@ -229,6 +235,29 @@ mod tests {
             negs.is_empty(),
             "Empty corpus should return empty negatives"
         );
+    }
+
+    // RB-V1.33-1: A corpus where every doc tokenizes to zero terms (pure
+    // whitespace, after a content rewrite that strips everything, etc.)
+    // produces avg_dl == 0. score() must not divide by zero / leak NaN.
+    #[test]
+    fn score_zero_token_corpus_produces_finite_scores() {
+        let docs = vec![
+            ("h1".into(), "   ".into()),
+            ("h2".into(), "\t\n".into()),
+            ("h3".into(), "".into()),
+        ];
+        let index = Bm25Index::build(&docs);
+        // avg_dl is 0 here — every doc tokenizes to zero tokens.
+        assert_eq!(index.avg_dl, 0.0);
+        let results = index.score("anything");
+        assert_eq!(results.len(), 3);
+        for (_, s) in &results {
+            assert!(
+                s.is_finite(),
+                "score {s} must be finite even when avg_dl == 0"
+            );
+        }
     }
 
     // TC-28: Verify that when the positive hash doesn't exist in the index,

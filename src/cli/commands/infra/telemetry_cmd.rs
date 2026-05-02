@@ -428,6 +428,21 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
     Ok(())
 }
 
+/// Format the "Sessions:" line, guarding against divide-by-zero when
+/// `sessions == 0` (RB-V1.33-6: a telemetry log can record session-id rows
+/// before any command event lands).
+fn format_sessions_line(sessions: usize, total: usize) -> String {
+    if sessions > 0 {
+        format!(
+            "Sessions: {} (avg {:.0} events/session)",
+            sessions,
+            total as f64 / sessions as f64,
+        )
+    } else {
+        "Sessions: 0".to_string()
+    }
+}
+
 /// Render telemetry as human-readable text with bar charts.
 fn print_telemetry_text(output: &TelemetryOutput) {
     let total = output.events;
@@ -493,11 +508,7 @@ fn print_telemetry_text(output: &TelemetryOutput) {
 
     // Sessions
     if let Some(sessions) = output.sessions {
-        println!(
-            "Sessions: {} (avg {:.0} events/session)",
-            sessions,
-            total as f64 / sessions as f64,
-        );
+        println!("{}", format_sessions_line(sessions, total));
     }
 
     // Top queries
@@ -925,6 +936,28 @@ mod tests {
     #[test]
     fn test_count_sessions_empty() {
         assert_eq!(count_sessions(&[]), 0);
+    }
+
+    // RB-V1.33-6: format_sessions_line must not produce inf/NaN strings
+    // when sessions == 0 (or sessions > 0 but total > 0 — normal case).
+    #[test]
+    fn test_format_sessions_line_zero_sessions() {
+        // Both zero — the corner case the audit flagged.
+        let line = format_sessions_line(0, 0);
+        assert_eq!(line, "Sessions: 0");
+        assert!(!line.contains("NaN"));
+        assert!(!line.contains("inf"));
+
+        // Sessions == 0 but total > 0 (telemetry log with session-id rows
+        // before any command event lands).
+        let line = format_sessions_line(0, 5);
+        assert_eq!(line, "Sessions: 0");
+    }
+
+    #[test]
+    fn test_format_sessions_line_normal() {
+        let line = format_sessions_line(3, 12);
+        assert_eq!(line, "Sessions: 3 (avg 4 events/session)");
     }
 
     // RB-9: resets before any command should not inflate session count
