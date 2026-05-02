@@ -80,8 +80,8 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 
 | ID | Category | Title | Difficulty | Status |
 |----|----------|-------|------------|--------|
-| P2-1 | Observability | `serve` axum `http_request` span has no `request_id` field | medium | ⬜ |
-| P2-2 | Observability | `WatchSnapshot::compute` and `now_unix_secs` lack tracing on freshness state machine | medium | ⬜ |
+| P2-1 | Observability | `serve` axum `http_request` span has no `request_id` field | medium | ✅ #1362 |
+| P2-2 | Observability | `WatchSnapshot::compute` and `now_unix_secs` lack tracing on freshness state machine | medium | ✅ #1362 |
 | P2-3 | Error Handling | `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides cache keys | medium | ⬜ |
 | P2-4 | Error Handling | `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror | medium | ⬜ |
 | P2-5 | Error Handling | Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure | medium | ⬜ |
@@ -128,14 +128,14 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 
 | ID | Category | Title | Difficulty | Status |
 |----|----------|-------|------------|--------|
-| P3-1 | Observability | `Reranker::run_chunk` per-batch ONNX call has no tracing span | easy | ⬜ |
-| P3-2 | Observability | `SpladeEncoder::encode` debug-span lacks completion event with elapsed_ms | easy | ⬜ |
-| P3-3 | Observability | `Embedder::embed_query` cache-hit/miss completion event missing elapsed_ms | easy | ⬜ |
-| P3-4 | Observability | `notify` watcher errors swallow ErrorKind + paths fields | easy | ⬜ |
-| P3-5 | Observability | `cli/watch/events.rs:23` `collect_events` has no entry span | easy | ⬜ |
-| P3-6 | Observability | `cli/registry.rs:133` `println!` for Refresh "no daemon running" bypasses tracing | easy | ⬜ |
-| P3-7 | Observability | `Embedder::warm` no span, no log — silent ~250 MB+ session init at startup | easy | ⬜ |
-| P3-8 | Observability | `LocalProvider` worker threads lack worker-id field on completion | easy | ⬜ |
+| P3-1 | Observability | `Reranker::run_chunk` per-batch ONNX call has no tracing span | easy | ✅ #1362 |
+| P3-2 | Observability | `SpladeEncoder::encode` debug-span lacks completion event with elapsed_ms | easy | ✅ #1362 |
+| P3-3 | Observability | `Embedder::embed_query` cache-hit/miss completion event missing elapsed_ms | easy | ✅ #1362 |
+| P3-4 | Observability | `notify` watcher errors swallow ErrorKind + paths fields | easy | ✅ #1362 |
+| P3-5 | Observability | `cli/watch/events.rs:23` `collect_events` has no entry span | easy | ✅ #1362 |
+| P3-6 | Observability | `cli/registry.rs:133` `println!` for Refresh "no daemon running" bypasses tracing | easy | ✅ #1362 |
+| P3-7 | Observability | `Embedder::warm` no span, no log — silent ~250 MB+ session init at startup | easy | ✅ #1362 |
+| P3-8 | Observability | `LocalProvider` worker threads lack worker-id field on completion | easy | ✅ #1362 |
 | P3-9 | Robustness | `set_on_item_complete` lock().unwrap() — duplicate of EH-V1.33-2 | easy | ⬜ |
 | P3-10 | Code Quality | `check_model_version()` wrapper dead in production | easy | ⬜ |
 | P3-11 | Code Quality | `is_false`/`is_zero_usize` trivial helpers duplicated 3+2 times across modules | easy | ⬜ |
