@@ -123,10 +123,11 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::store::{ModelInfo, Store};
-    use std::sync::Mutex;
 
-    /// Env-touching tests must serialize: `std::env::set_var` is process-global.
-    static HYDE_ENV_LOCK: Mutex<()> = Mutex::new(());
+    // #1312 / #1305: HYDE_ENV_LOCK was a file-local Mutex; replaced by the
+    // module-wide `crate::llm::LLM_ENV_LOCK` so this test serializes
+    // against `doc_comments::tests` and any other future caller that
+    // mutates the shared `CQS_LLM_*` env vars.
 
     /// Build an empty store with the canonical `ModelInfo::default()` so
     /// `init` succeeds and the dim/model metadata is in place. Returns
@@ -144,7 +145,9 @@ mod tests {
     /// Local-provider config so no real API key / network is touched.
     #[test]
     fn hyde_query_pass_returns_zero_for_empty_store() {
-        let _g = HYDE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // Save / restore env so we don't poison sibling tests.
         let prev_provider = std::env::var("CQS_LLM_PROVIDER").ok();

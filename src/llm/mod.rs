@@ -23,6 +23,29 @@ pub mod redirect;
 mod summary;
 pub mod validation;
 
+/// Module-wide test mutex for serializing access to the `CQS_LLM_*` family of
+/// process-global env vars. Each test that mutates any of `CQS_LLM_PROVIDER`,
+/// `CQS_LLM_API_BASE`, `CQS_LLM_MODEL`, `CQS_LLM_API_KEY`, or
+/// `CQS_LLM_ALLOW_INSECURE` must acquire this lock before its set_var calls
+/// and hold it through the read-back so a sibling test can't see partial
+/// state.
+///
+/// Submodules used to declare their own per-file `Mutex<()>` (`HYDE_ENV_LOCK`,
+/// `DOC_ENV_LOCK`, etc.). Those are independent instances and don't actually
+/// serialize across files — `hyde::tests::hyde_query_pass_returns_zero_for_empty_store`
+/// would race against `doc_comments::tests` under `cargo test --release` /
+/// the ci-slow.yml full-suite job and pick up a different `CQS_LLM_API_BASE`
+/// than the one it had set, panicking on the read-back. (#1305 / #1312)
+///
+/// Intentionally public-to-the-crate (`pub(crate)`) and `#[cfg(test)]`-gated
+/// rather than scoped to a `tests` submodule so submodules can `use
+/// crate::llm::LLM_ENV_LOCK` directly. Same shape as the test-helper
+/// pattern in `embedder/provider.rs::tests` (#1260) — that fix used a
+/// per-file lock since only one file mutated `CQS_EMBED_*`; here multiple
+/// files mutate `CQS_LLM_*` so the lock must be at the parent module.
+#[cfg(test)]
+pub(crate) static LLM_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -636,11 +659,11 @@ pub struct SummaryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// Mutex to serialize tests that manipulate CQS_LLM_* env vars.
-    /// Env vars are process-global — concurrent test threads race on set/remove.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    // ENV_MUTEX hoisted to module-wide `LLM_ENV_LOCK` (#1312 / #1305) so
+    // these tests serialize against `hyde::tests`, `doc_comments::tests`, and
+    // `local::tests` — all four were independent Mutex instances pre-fix and
+    // raced under cargo's parallel test runner.
 
     type SavedEnv = [Option<String>; 4];
 
@@ -691,7 +714,9 @@ mod tests {
 
     #[test]
     fn llm_config_defaults_from_empty_config() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_llm_env_vars();
         std::env::remove_var("CQS_LLM_MODEL");
         std::env::remove_var("CQS_API_BASE");
@@ -710,7 +735,9 @@ mod tests {
 
     #[test]
     fn llm_config_from_config_file_fields() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = crate::config::Config {
             llm_model: Some("claude-sonnet-4-20250514".to_string()),
             llm_api_base: Some("https://custom.api/v1".to_string()),
@@ -725,7 +752,9 @@ mod tests {
 
     #[test]
     fn llm_config_env_overrides_config_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = crate::config::Config {
             llm_model: Some("from-config".to_string()),
             llm_api_base: Some("https://from-config/v1".to_string()),
@@ -754,7 +783,9 @@ mod tests {
     // AD-32: CQS_LLM_API_BASE takes priority over CQS_API_BASE
     #[test]
     fn llm_config_llm_api_base_takes_precedence() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Save all env vars that LlmConfig::resolve reads
         let saved = save_llm_env_vars();
 
@@ -777,7 +808,9 @@ mod tests {
     // AD-32: CQS_API_BASE still works as fallback
     #[test]
     fn llm_config_api_base_fallback_still_works() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_llm_env_vars();
 
         std::env::remove_var("CQS_LLM_API_BASE");
@@ -799,7 +832,9 @@ mod tests {
     // SEC-V1.25-13: http:// is rejected unless CQS_LLM_ALLOW_INSECURE=1 is also set.
     #[test]
     fn llm_config_rejects_http_without_allow_insecure() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_llm_env_vars();
         let saved_allow = std::env::var("CQS_LLM_ALLOW_INSECURE").ok();
 
@@ -833,7 +868,9 @@ mod tests {
     // SEC-V1.25-13: With CQS_LLM_ALLOW_INSECURE=1 the http:// override is allowed.
     #[test]
     fn llm_config_allows_http_with_allow_insecure() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_llm_env_vars();
         let saved_allow = std::env::var("CQS_LLM_ALLOW_INSECURE").ok();
 
@@ -861,7 +898,9 @@ mod tests {
 
     #[test]
     fn llm_config_invalid_max_tokens_env_falls_through() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = crate::config::Config {
             llm_max_tokens: Some(300),
             ..Default::default()
@@ -1113,7 +1152,9 @@ mod tests {
     /// `create_client` returns an actionable error before any HTTP traffic.
     #[test]
     fn local_provider_missing_api_base_errors() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_local_env();
 
         std::env::set_var("CQS_LLM_PROVIDER", "local");
@@ -1147,7 +1188,9 @@ mod tests {
     /// actionable error.
     #[test]
     fn local_provider_missing_model_errors() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_local_env();
 
         std::env::set_var("CQS_LLM_PROVIDER", "local");
@@ -1180,7 +1223,9 @@ mod tests {
     /// rejection — opt-in required for cleartext bases.
     #[test]
     fn local_provider_rejects_http_without_allow_insecure() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_local_env();
 
         std::env::set_var("CQS_LLM_PROVIDER", "local");
@@ -1208,7 +1253,9 @@ mod tests {
     /// Provider resolution: `CQS_LLM_PROVIDER=local` actually sets the variant.
     #[test]
     fn provider_resolves_local() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_local_env();
 
         std::env::set_var("CQS_LLM_PROVIDER", "local");
@@ -1228,7 +1275,9 @@ mod tests {
     /// not a hand-coded match.
     #[test]
     fn provider_unknown_falls_back_to_default() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = save_local_env();
 
         std::env::set_var("CQS_LLM_PROVIDER", "definitely-not-a-real-provider");
