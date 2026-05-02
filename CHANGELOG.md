@@ -5,22 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.34.0] - 2026-05-02
 
-### Changed
+Minor release. No schema bump. Bundles the post-v1.33.0-audit close-out: 12th full audit (16 categories, 167 findings) was run against the freshly-released v1.33.0 binary. **129 audit findings closed across 24 fix PRs** plus 25 medium-effort items filed as tracking issues (#1337-#1377). Plus pre-audit feature work: EmbeddingGemma-300m preset, `cqs eval --reranker`, slow-tests gating Phase 2, and the ci-slow.yml stabilization series.
 
-- **`onboard_test` and `eval_subcommand_test` gated behind `slow-tests`** (#1286 Phase 2). The two heaviest e2e binaries — 6.6 min + 5.3 min ≈ 12 min, 35% of regular-CI test job time on workflow `25227697806` — now only run via `cargo test --features slow-tests` or the new nightly `slow-tests-feature` job in `.github/workflows/ci-slow.yml`. Both shell out to the cqs binary per test (full index pipeline / `cqs eval` cold start), which is where the wall time goes.
+### Headline
+
+- **Daemon-aware `cqs index`** (#1334). Without `--force`, forwards to `daemon_reconcile` instead of bailing when a watch daemon is running. Closed 98% of the visible CLI error rate per telemetry (166 of 170 `cqs index` failures over 5 days were the "stop the daemon" bail). `--force` still bails because it needs to invalidate the daemon's in-memory HNSW.
+- **SQLite legacy batch sizes → modern variable limit** (#1324). Five pre-2020 `INSERT_BATCH=249` / `BATCH_SIZE=500` / `HASH_BATCH=500` constants in `src/store/chunks/*` and `src/store/types.rs` migrated to `max_rows_per_statement(N)` against the 32766-variable ceiling. 30-65× fewer SQL round-trips on hot indexing paths.
+- **Refreshed Retrieval Quality with v3.v2 numbers across 5 presets** (#1381). Closes #1369. New per-preset table replaces the stale 296-query Fixture table (the fixture is no longer in the repo). BGE-large default at 73.9% agg R@5; embeddinggemma-300m beats BGE-large on agg R@1 by 1.4pp.
 
 ### Added
 
-- **`slow-tests-feature` job** in `.github/workflows/ci-slow.yml` (#1286 Phase 2). Runs `cargo test --release --features slow-tests` nightly. Self-contained — no HuggingFace model download dependency, in contrast to the existing `full-suite` job's `--include-ignored` path. Hosts the 11 subprocess-spawning `cli_*_test` binaries that have been gated since v1.29.0 plus the two new e2e additions above. Could later graduate to PR-time CI if wall time stays under budget.
-- **`cqs eval --reranker <none|onnx|llm>`** wires the v1.32.0 `Reranker` trait (#1276) into the eval harness. Default `none` keeps the historical retrieval-only pipeline so existing baselines stay comparable. `onnx` runs the cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL` and over-retrieves to `rerank_pool_size(limit)` (mirrors `cqs <q> --rerank`) before stage 2 truncates to `limit`. `llm` resolves to `cqs::LlmReranker` (skeleton — errors on first call) so the flag absorbs that wiring without a breaking API change later. Listed under "Outstanding follow-ups (small, optional)" in PROJECT_CONTINUITY.md.
-- **`embeddinggemma-300m` embedder preset + `CQS_DISABLE_TENSORRT` knob** (#1301). New 308M-param Google EmbeddingGemma preset (`CQS_EMBEDDING_MODEL=embeddinggemma-300m`) and an opt-out for TensorRT EP when the engine cache thrashes (`CQS_DISABLE_TENSORRT=1`). Enumerated in `README.md` env-var table.
-- **`cqs notes update --new-kind <kind>`** (#1278). In-place kind edits without re-adding; symmetric with `--new-text` and `--new-sentiment`. Same v25 normalization as `cqs notes add`.
+- **`embeddinggemma-300m` embedder preset + `CQS_DISABLE_TENSORRT` knob** (#1301). New 308M-param Google EmbeddingGemma preset (`CQS_EMBEDDING_MODEL=embeddinggemma-300m`) and an opt-out for TensorRT EP when the engine cache thrashes (`CQS_DISABLE_TENSORRT=1`).
+- **`cqs eval --reranker <none|onnx|llm>`** (#1303) wires the v1.32.0 `Reranker` trait (#1276) into the eval harness. Default `none` keeps the historical retrieval-only pipeline so existing baselines stay comparable.
+- **`cqs notes update --new-kind <kind>`** (#1278). In-place kind edits without re-adding; symmetric with `--new-text` and `--new-sentiment`.
+- **`slow-tests-feature` job** in `.github/workflows/ci-slow.yml` (#1286 Phase 2). Runs `cargo test --release --features slow-tests` nightly.
+- **17 new tests** closing v1.33.0 audit test-coverage gaps (#1333) — 10 adversarial (boundary inputs to `search_filtered`/`HnswIndex::search`/`SpladeIndex::search`/etc.) and 7 happy-path (`cqs convert`, `cqs slot`, `cmd_trace`, `cmd_explain`, etc.).
+- **5 new env vars** added by audit fix PRs:
+  - `CQS_TRAIN_BM25_K1`, `CQS_TRAIN_BM25_B` (#1363) — BM25 tuning for training-data hard-negative mining.
+  - `CQS_CAGRA_STREAM_BATCH_SIZE` (#1363) — CAGRA index-build streaming batch size.
+  - `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES` (#1361) — caps `git diff-tree` subprocess output during training-data extraction.
+  - `CQS_WAL_AUTOCHECKPOINT_PAGES` (#1367) — SQLite `wal_autocheckpoint` ceiling on every connection.
 
-### Fixed
+### Changed
 
-- **ci-slow.yml stabilization series** (#1305 family — #1307, #1308, #1310, #1311, #1313, #1314, #1315, #1316, #1317, #1318, #1319, #1320, #1321). Closed all 14 surfaced bug classes after the first ci-slow.yml run. One real production correctness fix (#1310: `cqs::resolve_index_db` on the resolve path); the rest were test isolation, slot-path drift, soft-skip on missing HF cache, env-var lock consolidation, doctest visibility, and CHANGELOG/metadata cleanup. Daily 06:00 UTC cron re-enabled — first fully green run is `25256531515`.
+- **`onboard_test` and `eval_subcommand_test` gated behind `slow-tests`** (#1286 Phase 2). The two heaviest e2e binaries (~12 min, 35% of regular-CI test job time) now only run via `cargo test --features slow-tests` or the nightly `slow-tests-feature` job.
+- **EmbeddingGemma-300m verdict revised** (#1381 + roadmap update). Original 2026-05-01 "not promoted, dev R@5 -5.5pp" was based on stale slot-state numbers; under the refreshed measurement it ties dev R@5 (75.2%) and beats agg R@1 (48.2% vs 46.8%). Repromoted to v1.34.0 default candidate, pending tighter cross-comparison.
+
+### Fixed (audit close-out)
+
+The post-release audit's fix wave bundles 24 PRs covering correctness, security, observability, robustness, and platform-behavior gaps. Highlights:
+
+- **24 P1 closed** across 8 PRs: lying-docs sweep (#1323, 11 fixes), SQLite batch sizes (#1324), HNSW persist contract (#1325), algorithm correctness (#1326, 8 fixes — limit saturation, NL-word classifier, MMR NaN, BM25 IDF, etc.), error handling (#1329, 6 fixes), wrapper-default cluster (#1330, 4 fixes — generate_nl_description / embed_documents / model_repo / CagraBackend gate), robustness (#1332, 5 fixes), footgun-pub cluster (#1335 — `search_embedding_only` deleted, `LlmReranker` demoted, `search_unified_with_index` renamed).
+- **17 P2 closed** across 5 PRs: slot migration races (#1327, 4 fixes — slots.lock, temp_suffix, backup_path_for, sentinel ordering), fs safety (#1328, 11 fixes — unbounded read caps + Windows canonicalize), security easy (#1331, 4 fixes — file perms / TOML escaping / size caps), correctness bugs (#1364, 5 fixes — embedder fingerprint, apply_rerank_scores, SPLADE fusion ordering, BM25 IDF, OnceLock reset on session clear), Tier A deferred (#1379 — reconcile mtime-touch helper, L5X line saturating_add).
+- **Observability** (#1362) — request_id on serve span, freshness-state-machine tracing, completion events with elapsed_ms on Reranker/SPLADE/Embedder, structured fields on watch errors and worker IDs.
+- **ci-slow.yml stabilization series** (#1305 family — #1307, #1308, #1310, #1311, #1313, #1314, #1315, #1316, #1317, #1318, #1319, #1320, #1321). Closed all 14 surfaced bug classes after the first ci-slow.yml run. One real production correctness fix (#1310: `cqs::resolve_index_db` on the resolve path); rest were test isolation, slot-path drift, soft-skip on missing HF cache, env-var lock consolidation, doctest visibility, CHANGELOG/metadata cleanup.
+
+### Removed (lib API surface — source-breaking)
+
+- **`Store::search_embedding_only`** (#1335). Was a `pub` wrapper whose own docstring said "use the other one"; zero non-test callers. Inline `store.search_filtered(q, &SearchFilter::default(), limit, threshold)` if you need the 4-arg shape.
+- **`Store::search_unified_with_index`** (#1335) renamed to `search_code_results`. Three production callers updated.
+- **`cqs::LlmReranker`** (#1335) demoted to `pub(crate)` and dropped from `lib.rs` re-export. The `Reranker` trait + `OnnxReranker` + `NoopReranker` remain public. Re-promoted when `LlmReranker` gets a real `BatchProvider` wiring (issue #1220).
+- **`cqs::Embedder::model_fingerprint()`** (#1364) return type `&str` → `String`. Required by the OnceLock-based reset semantics in `clear_session`.
+- **`StoreError::SchemaMismatch(String, i32, i32)`** (#1368) → struct-style with named fields `{ source, found, expected }`. `ProjectCommand::Register` (#1368) renamed to `Add` (the `register` CLI alias is preserved via `#[command(visible_alias = "register")]`).
+
+### Documentation
+
+- **README Retrieval Quality refreshed** (#1381). Per-preset table covering all 5 currently-materialized slots; per-slot LLM-summary state documented inline; cross-comparison protocol noted; 296-query Fixture table dropped (no longer in repo). TL;DR aggregate updated to BGE-large 46.8/73.9/85.3.
+- **Lying-docs sweep** (#1323): 11 docs fixed where they disagreed with code — lib.rs eval claim drift, README env-var count, README "How It Works" preset list, SECURITY.md slot layout post-#1105, `serve/mod.rs` "no auth" docstring, CONTRIBUTING.md `LlmProvider` reference, Cargo.toml encrypt feature contradiction, CHANGELOG missing post-v1.33.0 PRs, schema.sql line-range citation, cqs-bootstrap "14-category" claim.
+
+## [Unreleased]
 
 ## [1.33.0] - 2026-05-02
 
