@@ -990,7 +990,10 @@ mod tests {
     #[test]
     #[ignore] // Requires SPLADE model download
     fn test_encode_produces_sparse_vector() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
         let sparse = encoder.encode("parse configuration file").unwrap();
         assert!(!sparse.is_empty(), "Sparse vector should not be empty");
@@ -1003,7 +1006,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_respects_threshold() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.5).unwrap();
         let sparse = encoder.encode("search filtered results").unwrap();
         for &(_, weight) in &sparse {
@@ -1018,7 +1024,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_empty_string() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
         let sparse = encoder.encode("").unwrap();
         assert!(
@@ -1030,7 +1039,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_batch_matches_single() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
         let text = "find dead code functions";
         let single = encoder.encode(text).unwrap();
@@ -1059,7 +1071,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_batch_multiple_matches_serial() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
 
         let texts = vec![
@@ -1118,7 +1133,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_batch_empty_input_real_model() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
         let result = encoder.encode_batch(&[]).unwrap();
         assert!(result.is_empty(), "empty input list → empty result");
@@ -1129,7 +1147,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_batch_all_empty_strings() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
         let result = encoder.encode_batch(&["", "", ""]).unwrap();
         assert_eq!(result.len(), 3);
@@ -1147,7 +1168,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_encode_batch_mixed_empty_and_nonempty() {
-        let dir = splade_model_dir().expect("SPLADE model not downloaded");
+        let Some(dir) = splade_model_dir() else {
+            eprintln!("SPLADE model not in HF cache; skipping (#1305)");
+            return;
+        };
         let encoder = SpladeEncoder::new(&dir, 0.01).unwrap();
         let result = encoder
             .encode_batch(&["", "find dead code", "", "search for parser bugs", ""])

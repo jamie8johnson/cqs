@@ -582,7 +582,13 @@ fn test_model_comparison() {
 fn test_template_comparison() {
     let parser = Parser::new().expect("Failed to initialize parser");
     let e5_config = &MODELS[0]; // E5-base-v2
-    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+    let mut embedder = match EvalEmbedder::new(e5_config) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("E5-base-v2 unavailable in test env: {err}; skipping (#1305)");
+            return;
+        }
+    };
 
     let languages = [
         Language::Rust,
@@ -748,7 +754,13 @@ fn test_template_comparison() {
 fn test_hard_template_comparison() {
     let parser = Parser::new().expect("Failed to initialize parser");
     let e5_config = &MODELS[0]; // E5-base-v2
-    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+    let mut embedder = match EvalEmbedder::new(e5_config) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("E5-base-v2 unavailable in test env: {err}; skipping (#1305)");
+            return;
+        }
+    };
 
     let languages = [
         Language::Rust,
@@ -1376,7 +1388,13 @@ fn test_hard_reranker_comparison() {
 
     // Embed with E5-base-v2
     eprintln!("--- E5-base-v2 embedding ---");
-    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+    let mut embedder = match EvalEmbedder::new(e5_config) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("E5-base-v2 unavailable in test env: {err}; skipping (#1305)");
+            return;
+        }
+    };
 
     eprintln!("  Embedding {} chunks...", chunk_descs.len());
     let nl_texts: Vec<&str> = chunk_descs.iter().map(|c| c.nl_text.as_str()).collect();
@@ -1750,7 +1768,13 @@ fn generate_enriched_nl(chunk: &cqs::parser::Chunk, summary: Option<&str>) -> St
 fn test_hard_with_summaries() {
     let parser = Parser::new().expect("Failed to initialize parser");
     let e5_config = &MODELS[0]; // E5-base-v2 (production model)
-    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+    let mut embedder = match EvalEmbedder::new(e5_config) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("E5-base-v2 unavailable in test env: {err}; skipping (#1305)");
+            return;
+        }
+    };
 
     let summaries = load_fixture_summaries();
     eprintln!("Loaded {} fixture summaries\n", summaries.len());
@@ -2240,7 +2264,13 @@ fn test_type_aware_embeddings() {
         eprintln!();
     }
 
-    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5");
+    let mut embedder = match EvalEmbedder::new(e5_config) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("E5-base unavailable in test env: {err}; skipping (#1305)");
+            return;
+        }
+    };
 
     // Embed all three variants
     let configs: Vec<(&str, Box<dyn Fn(&TypeAwareChunk) -> &str>)> = vec![
@@ -2442,7 +2472,13 @@ fn test_weight_sweep() {
     }
     eprintln!("Parsed {} chunks\n", chunks.len());
 
-    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5");
+    let mut embedder = match EvalEmbedder::new(e5_config) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("E5-base unavailable in test env: {err}; skipping (#1305)");
+            return;
+        }
+    };
     let nl_refs: Vec<&str> = chunks.iter().map(|c| c.nl_text.as_str()).collect();
     let mut all_embs: Vec<Vec<f32>> = Vec::new();
     for batch in nl_refs.chunks(16) {
