@@ -59,13 +59,22 @@ impl ProjectRegistry {
         if !path.exists() {
             return Ok(Self::default());
         }
-        // Read first, then enforce the size guard — avoids TOCTOU between stat and read.
+        // RM-V1.33-2: bound the allocation at the I/O layer with
+        // `Read::take(MAX+1)` so a hostile multi-GiB registry file can
+        // never be fully read into memory before the cap fires. Reading
+        // through an opened file descriptor keeps the TOCTOU window
+        // identical to a stat-then-read; the win is that the buffer is
+        // bounded regardless of file size.
         const MAX_REGISTRY_SIZE: usize = 1024 * 1024;
-        let content = std::fs::read_to_string(&path)?;
+        use std::io::Read;
+        let mut content = String::new();
+        std::fs::File::open(&path)?
+            .take(MAX_REGISTRY_SIZE as u64 + 1)
+            .read_to_string(&mut content)?;
         if content.len() > MAX_REGISTRY_SIZE {
             return Err(ProjectError::FileTooLarge(format!(
-                "Project registry too large: {}KB (limit {}KB)",
-                content.len() / 1024,
+                "Project registry too large: > {}KB (limit {}KB)",
+                MAX_REGISTRY_SIZE / 1024,
                 MAX_REGISTRY_SIZE / 1024
             )));
         }

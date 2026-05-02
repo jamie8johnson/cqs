@@ -2,10 +2,28 @@
 //!
 //! Provides file enumeration and index locking.
 
-use std::io::{Seek, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+
+/// Cap on PID-file reads. A PID file holds an ASCII integer (max 7
+/// digits + newline = 8 bytes); 64 bytes is several orders of
+/// magnitude above realistic content while bounding hostile DoS
+/// allocations (RB-V1.33-4).
+const MAX_PID_FILE_BYTES: u64 = 64;
+
+/// Read a PID file with a 64-byte cap, returning the parsed PID if any.
+/// Returns `None` on missing file, IO error, or unparseable content.
+fn read_pid_capped(path: &Path) -> Option<u32> {
+    let mut buf = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_PID_FILE_BYTES)
+        .read_to_string(&mut buf)
+        .ok()?;
+    buf.trim().parse::<u32>().ok()
+}
 
 #[cfg(unix)]
 /// Derive the daemon socket path for a given cqs_dir.
@@ -218,9 +236,7 @@ pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
             Err(_) => {
                 // Lock is held - check if the owning process is still alive
                 if !retried {
-                    let stale_pid = std::fs::read_to_string(&lock_path)
-                        .ok()
-                        .and_then(|c| c.trim().parse::<u32>().ok());
+                    let stale_pid = read_pid_capped(&lock_path);
                     if let Some(pid) = stale_pid {
                         if !process_exists(pid) {
                             // Stale lock by best-effort PID check: drop the
@@ -237,10 +253,7 @@ pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
                         }
                     }
                 }
-                let pid_msg = match std::fs::read_to_string(&lock_path)
-                    .ok()
-                    .and_then(|c| c.trim().parse::<u32>().ok())
-                {
+                let pid_msg = match read_pid_capped(&lock_path) {
                     Some(pid) => format!(" (PID {pid} may be stale)"),
                     None => String::new(),
                 };

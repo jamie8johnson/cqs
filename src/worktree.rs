@@ -21,7 +21,14 @@
 //! signal in the JSON `_meta` block lets consuming agents know the
 //! results came from main's snapshot, not the worktree's branch.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// Cap on `.git` worktree file reads. A `.git` link file is normally
+/// ~30 bytes (just `gitdir: <path>\n`); 4 KiB rejects pathological
+/// content while leaving plenty of headroom for unusual but legitimate
+/// layouts. Mirrors the bounded-read pattern used in `slot/mod.rs`.
+const MAX_GIT_FILE_BYTES: u64 = 4 * 1024;
 
 /// Detect a git worktree at `dir` and return the main project's root
 /// directory if so. Returns `None` for the non-worktree happy path
@@ -53,8 +60,15 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    // Read `.git` file → "gitdir: <path>"
-    let raw = std::fs::read_to_string(&dot_git).ok()?;
+    // Read `.git` file → "gitdir: <path>" with a bounded cap to defend
+    // against a hostile or accidentally-huge file at this path
+    // (RB-V1.33-2). 4 KiB is far above realistic content (~30 bytes).
+    let mut raw = String::new();
+    std::fs::File::open(&dot_git)
+        .ok()?
+        .take(MAX_GIT_FILE_BYTES)
+        .read_to_string(&mut raw)
+        .ok()?;
     let gitdir_path_str = raw
         .lines()
         .find_map(|line| line.strip_prefix("gitdir:"))?
@@ -81,8 +95,11 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
     }
 
     // Resolve `<gitdir>/<commondir_relative>` → canonical `.git/`.
+    // Use `dunce::canonicalize` so Windows returns the non-`\\?\`-prefixed
+    // form — downstream `WorktreeUseMain.main_root` is surfaced via JSON
+    // envelopes and string-compared by agents (PB-V1.33-3).
     let canonical_git = gitdir.join(commondir_relative);
-    let canonical_git = std::fs::canonicalize(&canonical_git).ok()?;
+    let canonical_git = dunce::canonicalize(&canonical_git).ok()?;
 
     // Canonical `.git/`'s parent = main project root.
     let main_root = canonical_git.parent()?.to_path_buf();
@@ -158,7 +175,13 @@ pub fn worktree_name(dir: &Path) -> Option<String> {
     if std::fs::metadata(&dot_git).ok()?.is_dir() {
         return None;
     }
-    let raw = std::fs::read_to_string(&dot_git).ok()?;
+    // Bounded read — see RB-V1.33-2 / `MAX_GIT_FILE_BYTES`.
+    let mut raw = String::new();
+    std::fs::File::open(&dot_git)
+        .ok()?
+        .take(MAX_GIT_FILE_BYTES)
+        .read_to_string(&mut raw)
+        .ok()?;
     let gitdir_path_str = raw
         .lines()
         .find_map(|line| line.strip_prefix("gitdir:"))?

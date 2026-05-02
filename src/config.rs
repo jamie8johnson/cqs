@@ -11,6 +11,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+/// Cap on config-file reads. Used by `Config::load_file` (stat-then-read)
+/// and by the locked read-modify-write paths (`add_reference_to_config` /
+/// `remove_reference_from_config`) which take the cap at the I/O layer
+/// via `Read::take`. Real `cqs` config files are typically a few KB; 1
+/// MiB is several orders of magnitude above realistic content.
+const MAX_CONFIG_SIZE: u64 = 1024 * 1024;
+
 /// Typed error for config file operations (EH-15).
 /// Used by `add_reference_to_config` and `remove_reference_from_config`.
 /// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
@@ -598,8 +605,13 @@ impl Config {
         // malicious checked-in `.cqs.toml` with `source = "/home/user/.ssh"`
         // would cause `cqs ref update` to index arbitrary files into the
         // reference DB (data exfiltration).
-        let home = dirs::home_dir();
-        let cwd = std::env::current_dir().ok();
+        // PB-V1.33-1: use `dunce::canonicalize` and canonicalize both
+        // sides of the comparison so Windows verbatim (`\\?\C:\...`) vs
+        // non-verbatim differences don't trip the SEC-4/SEC-NEW-1 warn.
+        let home = dirs::home_dir().and_then(|h| dunce::canonicalize(h).ok());
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|c| dunce::canonicalize(c).ok());
         for r in &self.references {
             // Check both path and source (if present)
             let paths_to_check: Vec<(&str, &std::path::Path)> = {
@@ -610,7 +622,7 @@ impl Config {
                 v
             };
             for (field, p) in paths_to_check {
-                if let Ok(canonical) = p.canonicalize() {
+                if let Ok(canonical) = dunce::canonicalize(p) {
                     let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
                     let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
                     let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
@@ -681,8 +693,9 @@ impl Config {
 
     /// Load configuration from a specific file
     fn load_file(path: &Path) -> Result<Option<Self>, String> {
-        // Size guard: config files should be well under 1MB
-        const MAX_CONFIG_SIZE: u64 = 1024 * 1024;
+        // Size guard: config files should be well under 1MB.
+        // Module-level `MAX_CONFIG_SIZE` is also used by the locked
+        // read-modify-write paths.
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.len() > MAX_CONFIG_SIZE {
                 return Err(format!(
@@ -784,7 +797,7 @@ pub fn add_reference_to_config(
     // NOTE: File locking is advisory only on WSL over 9P (DrvFs/NTFS mounts).
     // This prevents concurrent cqs processes from corrupting the config,
     // but cannot protect against external Windows process modifications.
-    let mut lock_file = std::fs::OpenOptions::new()
+    let lock_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -792,9 +805,22 @@ pub fn add_reference_to_config(
         .open(config_path)?;
     lock_file.lock()?;
 
+    // Bounded read via `Read::take` so a hostile `<MAX_CONFIG_SIZE>+1`-byte
+    // config can't OOM us before the size check fires (RM-V1.33-1). The
+    // cap is enforced at the I/O layer, eliminating the stat→read TOCTOU
+    // window that a plain `metadata()`-then-`read_to_string` would have.
     let mut content = String::new();
     use std::io::Read;
-    lock_file.read_to_string(&mut content)?;
+    (&lock_file)
+        .take(MAX_CONFIG_SIZE + 1)
+        .read_to_string(&mut content)?;
+    if content.len() as u64 > MAX_CONFIG_SIZE {
+        return Err(ConfigError::InvalidFormat(format!(
+            "Config file too large: > {}KB (limit {}KB)",
+            MAX_CONFIG_SIZE / 1024,
+            MAX_CONFIG_SIZE / 1024
+        )));
+    }
     let mut table: toml::Table = if content.is_empty() {
         toml::Table::new()
     } else {
@@ -877,7 +903,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
     // NOTE: File locking is advisory only on WSL over 9P (DrvFs/NTFS mounts).
     // This prevents concurrent cqs processes from corrupting the config,
     // but cannot protect against external Windows process modifications.
-    let mut lock_file = match std::fs::OpenOptions::new()
+    let lock_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(config_path)
@@ -888,9 +914,20 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
     };
     lock_file.lock()?;
 
+    // Bounded read via `Read::take` — see add_reference_to_config above
+    // (RM-V1.33-1).
     let mut content = String::new();
     use std::io::Read;
-    lock_file.read_to_string(&mut content)?;
+    (&lock_file)
+        .take(MAX_CONFIG_SIZE + 1)
+        .read_to_string(&mut content)?;
+    if content.len() as u64 > MAX_CONFIG_SIZE {
+        return Err(ConfigError::InvalidFormat(format!(
+            "Config file too large: > {}KB (limit {}KB)",
+            MAX_CONFIG_SIZE / 1024,
+            MAX_CONFIG_SIZE / 1024
+        )));
+    }
 
     let mut table: toml::Table = content.parse()?;
 

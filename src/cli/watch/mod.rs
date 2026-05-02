@@ -265,7 +265,17 @@ fn is_under_wsl_automount(path: &str) -> bool {
 /// Parse the `automount.root` value from `/etc/wsl.conf`.
 /// Returns `None` if the file doesn't exist or doesn't contain the setting.
 fn parse_wsl_automount_root() -> Option<String> {
-    let content = std::fs::read_to_string("/etc/wsl.conf").ok()?;
+    // RM-V1.33-7: bound the read at 64 KiB. `/etc/wsl.conf` is normally
+    // a few hundred bytes; a hostile symlink or bind mount pointing at a
+    // multi-GB file would otherwise OOM the watch loop on first event.
+    use std::io::Read;
+    const MAX_WSL_CONF_BYTES: u64 = 64 * 1024;
+    let mut content = String::new();
+    std::fs::File::open("/etc/wsl.conf")
+        .ok()?
+        .take(MAX_WSL_CONF_BYTES)
+        .read_to_string(&mut content)
+        .ok()?;
     let mut in_automount = false;
     for line in content.lines() {
         let trimmed = line.trim();
