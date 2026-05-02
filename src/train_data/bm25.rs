@@ -62,10 +62,23 @@ impl Bm25Index {
 
         let avg_dl = if docs.is_empty() { 0.0 } else { total_dl / n };
 
-        // Compute IDF: ln((N - df + 0.5) / (df + 0.5) + 1)
+        // Compute IDF using the Robertson-Sparck-Jones formula:
+        //   ln((N - df + 0.5) / (df + 0.5))
+        //
+        // AC-V1.33-5: Previously this used the Atire/Lucene `+ 1.0` variant
+        // (`ln((N - df + 0.5) / (df + 0.5) + 1.0)`), which prevents negative
+        // IDF when `df > N/2` but mismatches the FTS5-backed BM25 path at
+        // `src/store/search.rs` (`ORDER BY bm25(chunks_fts, ...)`). SQLite
+        // FTS5's built-in BM25 uses the standard Robertson-Sparck-Jones
+        // formula without the `+ 1.0` shift. Aligning the hard-negative
+        // selection scoring with FTS5 means A/B comparisons of negative-
+        // mining quality against FTS5-derived candidates compare the same
+        // ranking function. Negative IDF on extremely-common terms is
+        // acceptable for hard-negative selection: the per-doc score is
+        // still monotonic in match strength.
         let mut idf = HashMap::new();
         for (term, doc_freq) in &df {
-            let idf_val = ((n - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
+            let idf_val = ((n - doc_freq + 0.5) / (doc_freq + 0.5)).ln();
             idf.insert(term.clone(), idf_val);
         }
 

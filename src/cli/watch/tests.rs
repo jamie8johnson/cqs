@@ -1424,7 +1424,7 @@ fn test_reindex_files_hits_global_cache_skipping_embedder() {
     cache
         .write_batch_owned(
             &[(target_hash.clone(), sentinel_clone)],
-            embedder.model_fingerprint(),
+            &embedder.model_fingerprint(),
             CachePurpose::Embedding,
             dim,
         )
