@@ -881,6 +881,23 @@ fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<f32>, limit:
         return;
     }
     let n = scores.len().min(results.len());
+    // AC-V1.33-9: if the reranker returned fewer scores than results
+    // (`compute_scores_opt` currently can't, but a future ONNX backend that
+    // short-circuits on a per-batch failure could), drop the un-rescored
+    // tail rather than mixing cross-encoder cohort scores ([0, 1] post
+    // sigmoid) with the surviving cosine cohort ([-1, 1]) inside the same
+    // sort comparator. The mixed comparison would interleave the two
+    // cohorts arbitrarily, producing neither pure rerank nor pure semantic
+    // ranking. Truncating the un-rescored tail keeps the surviving cohort
+    // homogeneous.
+    if n < results.len() {
+        tracing::warn!(
+            scores = scores.len(),
+            results = results.len(),
+            "Reranker returned fewer scores than results; dropping un-rescored tail to keep cohort homogeneous"
+        );
+        results.truncate(n);
+    }
     for (i, score) in scores.into_iter().take(n).enumerate() {
         results[i].score = score;
     }
@@ -1163,6 +1180,59 @@ mod tests {
             msg.contains("2"),
             "error message must mention passages.len()=2, got: {msg:?}"
         );
+    }
+
+    /// AC-V1.33-9: when a reranker backend returns fewer scores than results
+    /// (a future per-batch-failure short-circuit), `apply_rerank_scores`
+    /// must NOT mix cross-encoder cohort scores ([0, 1] post-sigmoid) with
+    /// the surviving cosine cohort ([-1, 1]) — the partial-overwrite path.
+    /// Truncating the un-rescored tail is the contract: every survivor in
+    /// the output must have come from the rerank cohort, never from the
+    /// pre-rerank cosine cohort.
+    #[test]
+    fn apply_rerank_scores_drops_unrescored_tail_on_length_mismatch() {
+        // Five results, only three scores. The last two carry pre-rerank
+        // cosine-style scores (here: 0.99) that, if mixed with the
+        // sigmoid-mapped rerank scores ([0, 1]), would arbitrarily
+        // outrank the rerank survivors.
+        let mut results = vec![
+            stub_result("a", "first"),
+            stub_result("b", "second"),
+            stub_result("c", "third"),
+            stub_result("d", "fourth"),
+            stub_result("e", "fifth"),
+        ];
+        // Pre-rerank: tail has high cosine scores that should NOT survive.
+        results[3].score = 0.99;
+        results[4].score = 0.95;
+        // Rerank cohort: low sigmoid scores that, before this fix, would
+        // have lost the sort to the cosine tail.
+        let scores = vec![0.1f32, 0.05, 0.2];
+        super::apply_rerank_scores(&mut results, scores, 10);
+        assert_eq!(
+            results.len(),
+            3,
+            "un-rescored tail must be dropped (5 results -> 3 after truncate to scores.len())"
+        );
+        let survivors: std::collections::HashSet<&str> =
+            results.iter().map(|r| r.chunk.id.as_str()).collect();
+        assert!(survivors.contains("a"), "rescored a must survive");
+        assert!(survivors.contains("b"), "rescored b must survive");
+        assert!(survivors.contains("c"), "rescored c must survive");
+        assert!(
+            !survivors.contains("d") && !survivors.contains("e"),
+            "un-rescored cosine cohort must be dropped, got {survivors:?}"
+        );
+        // Every surviving score must be from the rerank cohort (<= 0.2),
+        // never from the cosine tail (>= 0.95) — the cohort-mixing bug.
+        for r in &results {
+            assert!(
+                r.score <= 0.2 + f32::EPSILON,
+                "survivor {} carries score {} — must be from rerank cohort, not cosine tail",
+                r.chunk.id,
+                r.score
+            );
+        }
     }
 
     /// `LlmReranker` is a skeleton — every score-producing call returns

@@ -293,12 +293,27 @@ pub struct Embedder {
     /// successfully, `None` if it failed (best-effort fallback).
     disk_query_cache: std::sync::OnceLock<Option<crate::cache::QueryCache>>,
     /// Detected embedding dimension from the model. Set on first inference.
-    detected_dim: std::sync::OnceLock<usize>,
+    ///
+    /// DS-V1.33-7: switched from `OnceLock<usize>` to `Mutex<Option<usize>>`
+    /// so [`Self::clear_session`] can reset the slot. `OnceLock` cannot be
+    /// reset under `&self`, which would have left a model swap reading the
+    /// first-loaded model's dim forever — silently feeding the wrong dim to
+    /// `EmbeddingCache::read_batch`'s dimension filter (which then drops
+    /// every cache hit on dim mismatch). Mutex contention is irrelevant: a
+    /// single quick lock per `embedding_dim()` call.
+    detected_dim: Mutex<Option<usize>>,
     /// Model configuration (repo, paths, prefixes, dimensions)
     model_config: ModelConfig,
     /// blake3 fingerprint of the ONNX model file, computed lazily on first access.
     /// Used as cache key to distinguish models with the same name but different weights.
-    model_fingerprint: std::sync::OnceLock<String>,
+    ///
+    /// DS-V1.33-7: switched from `OnceLock<String>` to `Mutex<Option<String>>`
+    /// so [`Self::clear_session`] can reset the slot alongside the session
+    /// drop. `OnceLock` cannot be reset under `&self`, which would have
+    /// left a model swap reading the first-loaded model's fingerprint —
+    /// silently caching every new embedding under the wrong model_id key
+    /// in the on-disk embedding cache.
+    model_fingerprint: Mutex<Option<String>>,
     /// SHL-V1.29-1: Pad token id resolved at tokenizer-init time.
     ///
     /// Cache set once per embedder lifetime on first call to [`Self::pad_id`].
@@ -407,9 +422,9 @@ impl Embedder {
             max_length,
             query_cache,
             disk_query_cache: std::sync::OnceLock::new(),
-            detected_dim: std::sync::OnceLock::new(),
+            detected_dim: Mutex::new(None),
             model_config,
-            model_fingerprint: std::sync::OnceLock::new(),
+            model_fingerprint: Mutex::new(None),
             pad_id: std::sync::OnceLock::new(),
         })
     }
@@ -456,7 +471,7 @@ impl Embedder {
     /// Computed lazily on first access. Used as cache key to distinguish
     /// models with the same name but different weights (fine-tuned, different
     /// HF revision, different ONNX export).
-    pub fn model_fingerprint(&self) -> &str {
+    pub fn model_fingerprint(&self) -> String {
         // P2.63: stable fallback fingerprint — must NOT include any value
         // that changes across process restarts. Cross-slot embedding cache
         // copy by content_hash relies on the model fingerprint matching
@@ -465,7 +480,21 @@ impl Embedder {
         fn fallback_fingerprint(repo: &str, size: u64) -> String {
             format!("{}:fallback:size={}", repo, size)
         }
-        self.model_fingerprint.get_or_init(|| {
+        // DS-V1.33-7: lock-and-init pattern replaces the previous
+        // `OnceLock::get_or_init`. Returns owned `String` (not `&str`) so
+        // the value lives independently of the mutex guard. `clear_session`
+        // resets the inner Option to None so a model swap re-fingerprints
+        // on next access. Fast-path: lock, see Some, clone, return.
+        {
+            let guard = self
+                .model_fingerprint
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(fp) = guard.as_ref() {
+                return fp.clone();
+            }
+        }
+        let computed: String = {
             let _span = tracing::info_span!("compute_model_fingerprint").entered();
             match self.model_paths() {
                 Ok((model_path, _)) => {
@@ -500,8 +529,7 @@ impl Embedder {
                                     let mut hasher = blake3::Hasher::new();
                                     match hasher.update_reader(file) {
                                         Ok(_) => {
-                                            let hash =
-                                                hasher.finalize().to_hex().to_string();
+                                            let hash = hasher.finalize().to_hex().to_string();
                                             tracing::info!(
                                                 hash = &hash[..16],
                                                 "Model fingerprint computed (streaming)"
@@ -514,29 +542,56 @@ impl Embedder {
                                             // restart with a transient hash
                                             // failure used to mint a NEW
                                             // fingerprint and thrash the cache.
+                                            // EH-V1.33-6: when metadata also
+                                            // fails (the same FS hiccup that
+                                            // broke the hash), distinguish by
+                                            // failure mode instead of
+                                            // collapsing every model under
+                                            // `:fallback:size=0`.
                                             tracing::warn!(
                                                 error = %e,
                                                 "Failed to stream-hash model, using repo+size fallback (cache may miss until next successful hash)"
                                             );
-                                            let size = std::fs::metadata(model_path)
-                                                .ok()
-                                                .map(|m| m.len())
-                                                .unwrap_or(0);
-                                            fallback_fingerprint(&self.model_config.repo, size)
+                                            match std::fs::metadata(model_path) {
+                                                Ok(m) => fallback_fingerprint(
+                                                    &self.model_config.repo,
+                                                    m.len(),
+                                                ),
+                                                Err(meta_err) => {
+                                                    tracing::warn!(
+                                                        error = %meta_err,
+                                                        "Failed to stat model for size fallback after hash failure; using no-stat fingerprint"
+                                                    );
+                                                    format!(
+                                                        "{}:fallback:no-stat",
+                                                        self.model_config.repo
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
                                 Err(e) => {
                                     // P1.8 / P2.63: stable size-based fallback (see above).
+                                    // EH-V1.33-6: when metadata also fails,
+                                    // emit a no-stat sentinel so distinct
+                                    // models don't all share `:fallback:size=0`.
                                     tracing::warn!(
                                         error = %e,
                                         "Failed to open model for fingerprint, using repo+size fallback"
                                     );
-                                    let size = std::fs::metadata(model_path)
-                                        .ok()
-                                        .map(|m| m.len())
-                                        .unwrap_or(0);
-                                    fallback_fingerprint(&self.model_config.repo, size)
+                                    match std::fs::metadata(model_path) {
+                                        Ok(m) => {
+                                            fallback_fingerprint(&self.model_config.repo, m.len())
+                                        }
+                                        Err(meta_err) => {
+                                            tracing::warn!(
+                                                error = %meta_err,
+                                                "Failed to stat model for size fallback after open failure; using no-stat fingerprint"
+                                            );
+                                            format!("{}:fallback:no-stat", self.model_config.repo)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -553,7 +608,21 @@ impl Embedder {
                     format!("{}:fallback:no-path", self.model_config.repo)
                 }
             }
-        })
+        };
+        // Race: a parallel caller could have populated the slot between our
+        // initial check and the compute. The first writer wins; subsequent
+        // readers (including this caller's clone return) see the same value.
+        let mut guard = self
+            .model_fingerprint
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match guard.as_ref() {
+            Some(existing) => existing.clone(),
+            None => {
+                *guard = Some(computed.clone());
+                computed
+            }
+        }
     }
 
     /// Get or initialize model paths (lazy download)
@@ -875,7 +944,7 @@ impl Embedder {
         // Check disk cache (survives across CLI invocations)
         let model_fp = self.model_fingerprint();
         if let Some(disk) = self.disk_query_cache() {
-            if let Some(cached) = disk.get(text, model_fp) {
+            if let Some(cached) = disk.get(text, &model_fp) {
                 tracing::trace!(query = text, "Query cache hit (disk)");
                 // Populate in-memory LRU for fast subsequent hits
                 let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -911,7 +980,7 @@ impl Embedder {
             cache.put(text.to_string(), embedding.clone());
         }
         if let Some(disk) = self.disk_query_cache() {
-            disk.put(text, model_fp, &embedding);
+            disk.put(text, &model_fp, &embedding);
         }
 
         // P3.10: completion event so embed_query has parity with the
@@ -976,7 +1045,26 @@ impl Embedder {
             }
         }
         *tok = None;
-        tracing::info!("Embedder session, query cache, and tokenizer cleared");
+        // DS-V1.33-7: also reset detected_dim and model_fingerprint so a
+        // model swap re-detects dim and re-fingerprints on next inference.
+        // Without this reset, the OnceLock-replaced Mutex<Option<...>>
+        // slots would carry the first-loaded model's values forever,
+        // silently feeding the wrong dim to `EmbeddingCache::read_batch`'s
+        // dimension filter and the wrong fingerprint to the disk cache key.
+        {
+            let mut dim_guard = self.detected_dim.lock().unwrap_or_else(|p| p.into_inner());
+            *dim_guard = None;
+        }
+        {
+            let mut fp_guard = self
+                .model_fingerprint
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *fp_guard = None;
+        }
+        tracing::info!(
+            "Embedder session, query cache, tokenizer, detected_dim, and model_fingerprint cleared"
+        );
     }
 
     /// Warm up the model with a dummy inference
@@ -999,7 +1087,16 @@ impl Embedder {
     /// Returns the embedding dimension detected from the model.
     /// Falls back to the model config's declared dimension if no inference has been run yet.
     pub fn embedding_dim(&self) -> usize {
-        let dim = *self.detected_dim.get().unwrap_or(&self.model_config.dim);
+        // DS-V1.33-7: read through the Mutex<Option<usize>> slot. Falls
+        // back to the model config's declared dim when no inference has
+        // populated the slot yet (or after `clear_session` reset it).
+        let detected = self
+            .detected_dim
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .copied();
+        let dim = detected.unwrap_or(self.model_config.dim);
         if dim == 0 {
             EMBEDDING_DIM
         } else {
@@ -1138,20 +1235,24 @@ impl Embedder {
                 )));
             }
             let embedding_dim = shape[1] as usize;
-            match self.detected_dim.get() {
-                Some(&expected) if expected != embedding_dim => {
-                    return Err(EmbedderError::InferenceFailed(format!(
-                        "Embedding dimension changed: expected {expected}, got {embedding_dim}"
-                    )));
+            {
+                // DS-V1.33-7: lock-and-set the Mutex<Option<usize>> slot.
+                let mut guard = self.detected_dim.lock().unwrap_or_else(|p| p.into_inner());
+                match *guard {
+                    Some(expected) if expected != embedding_dim => {
+                        return Err(EmbedderError::InferenceFailed(format!(
+                            "Embedding dimension changed: expected {expected}, got {embedding_dim}"
+                        )));
+                    }
+                    None => {
+                        *guard = Some(embedding_dim);
+                        tracing::info!(
+                            dim = embedding_dim,
+                            "Detected embedding dimension from model (Identity pooling)"
+                        );
+                    }
+                    _ => {}
                 }
-                None => {
-                    let _ = self.detected_dim.set(embedding_dim);
-                    tracing::info!(
-                        dim = embedding_dim,
-                        "Detected embedding dimension from model (Identity pooling)"
-                    );
-                }
-                _ => {}
             }
             let results: Vec<Embedding> = (0..batch_size)
                 .map(|b| {
@@ -1172,20 +1273,24 @@ impl Embedder {
         }
         let embedding_dim = shape[2] as usize;
         // Set or validate embedding dimension from model output
-        match self.detected_dim.get() {
-            Some(&expected) if expected != embedding_dim => {
-                return Err(EmbedderError::InferenceFailed(format!(
-                    "Embedding dimension changed: expected {expected}, got {embedding_dim}"
-                )));
+        // DS-V1.33-7: lock-and-set the Mutex<Option<usize>> slot.
+        {
+            let mut guard = self.detected_dim.lock().unwrap_or_else(|p| p.into_inner());
+            match *guard {
+                Some(expected) if expected != embedding_dim => {
+                    return Err(EmbedderError::InferenceFailed(format!(
+                        "Embedding dimension changed: expected {expected}, got {embedding_dim}"
+                    )));
+                }
+                None => {
+                    *guard = Some(embedding_dim);
+                    tracing::info!(
+                        dim = embedding_dim,
+                        "Detected embedding dimension from model"
+                    );
+                }
+                _ => {} // matches expected — OK
             }
-            None => {
-                let _ = self.detected_dim.set(embedding_dim);
-                tracing::info!(
-                    dim = embedding_dim,
-                    "Detected embedding dimension from model"
-                );
-            }
-            _ => {} // matches expected — OK
         }
         if shape[0] as usize != batch_size {
             return Err(EmbedderError::InferenceFailed(format!(
@@ -1905,6 +2010,55 @@ mod tests {
         let embedder = Embedder::new_cpu(ModelConfig::e5_base()).unwrap();
         embedder.clear_session(); // clear before init -- should not panic
         embedder.clear_session(); // clear again -- should not panic
+    }
+
+    /// DS-V1.33-7: `clear_session` must reset `detected_dim` and
+    /// `model_fingerprint` so a model swap re-detects on the next inference.
+    /// Pre-fix, both fields were `OnceLock` and could not be cleared under
+    /// `&self`, leaving the first-loaded model's values in place forever.
+    /// This test directly mutates the Mutex<Option<...>> slots to simulate
+    /// post-inference state, calls clear_session, and verifies the slots
+    /// are now None — no model load required.
+    #[test]
+    fn clear_session_resets_detected_dim_and_model_fingerprint() {
+        let embedder = Embedder::new_cpu(ModelConfig::e5_base()).unwrap();
+        // Simulate post-inference state: detected_dim populated.
+        {
+            let mut g = embedder.detected_dim.lock().unwrap();
+            *g = Some(1024);
+        }
+        // Simulate post-fingerprint state: model_fingerprint populated.
+        {
+            let mut g = embedder.model_fingerprint.lock().unwrap();
+            *g = Some("stale-model-hash-from-old-load".to_string());
+        }
+        // Sanity: read-through via the public APIs returns the staged values.
+        assert_eq!(
+            embedder.embedding_dim(),
+            1024,
+            "embedding_dim must read the staged detected_dim"
+        );
+        assert_eq!(
+            embedder.model_fingerprint(),
+            "stale-model-hash-from-old-load",
+            "model_fingerprint must read the staged value"
+        );
+        // Clear and verify both slots reset to None.
+        embedder.clear_session();
+        assert!(
+            embedder.detected_dim.lock().unwrap().is_none(),
+            "detected_dim must be None after clear_session"
+        );
+        assert!(
+            embedder.model_fingerprint.lock().unwrap().is_none(),
+            "model_fingerprint must be None after clear_session"
+        );
+        // Public API now falls back to model_config.dim (model never loaded).
+        assert_eq!(
+            embedder.embedding_dim(),
+            ModelConfig::e5_base().dim,
+            "embedding_dim falls back to config dim when detected_dim is None"
+        );
     }
 
     // ===== Integration tests (require model) =====

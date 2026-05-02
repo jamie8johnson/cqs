@@ -369,7 +369,7 @@ pub(super) fn reindex_files(
     let mut global_hits: HashMap<String, Embedding> = HashMap::new();
     if let Some(cache) = global_cache {
         let model_fp = embedder.model_fingerprint();
-        match cache.read_batch(&hashes, model_fp, cqs::cache::CachePurpose::Embedding, dim) {
+        match cache.read_batch(&hashes, &model_fp, cqs::cache::CachePurpose::Embedding, dim) {
             Ok(hits) => {
                 if !hits.is_empty() {
                     tracing::debug!(hits = hits.len(), "Watch global cache hits");
@@ -477,7 +477,7 @@ pub(super) fn reindex_files(
             .collect();
         if let Err(e) = cache.write_batch(
             &entries,
-            embedder.model_fingerprint(),
+            &embedder.model_fingerprint(),
             cqs::cache::CachePurpose::Embedding,
             dim,
         ) {

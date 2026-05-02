@@ -632,26 +632,27 @@ impl<Mode> Store<Mode> {
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");
 
-        // PF-V1.25-16: drain `fused` into the score map (ids move, no clone).
-        // Previously the code ran `fused.iter().map(|r| (r.id.clone(), ...))`
-        // followed by a second `fused.iter().map(|r| r.id.as_str()).collect()`
-        // pass — one extra Vec allocation plus N string clones after having
-        // already owned the ids in `fused`.
+        // AC-V1.33-8: build `candidate_ids` from the sorted `fused` Vec
+        // BEFORE populating the score-lookup HashMap so the positional
+        // order of candidate_ids matches the fusion sort. The previous
+        // `PF-V1.25-16` shape drained ids into the HashMap first, then
+        // iterated `fused_map.keys()` to build candidate_ids — HashMap
+        // iteration order is unspecified, scrambling the tie-broken sort
+        // order computed by the `fused.sort_by(...)` above. The downstream
+        // re-sort in `search_by_candidate_ids_with_notes` recovers final
+        // ranking, but the contract that "candidate_ids order == fusion
+        // order" was load-bearing for any future tie-breaker that uses
+        // positional rank — and the silent scramble was only documented
+        // by an in-line comment, not enforced by the code structure.
         //
-        // Tie-break determinism downstream depends on the final
-        // `scored.sort_by(b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)))` in
-        // `search_by_candidate_ids_with_notes`, which carries its own id
-        // secondary key. The order of `candidate_ids` only affects DB fetch
-        // order, not final ranking.
+        // Cost: N clones of chunk-id strings (typically ~32 hex chars,
+        // N <= candidate_count ~= 200). Negligible vs the search work.
+        let candidate_ids: Vec<&str> = fused.iter().map(|r| r.id.as_str()).collect();
         let mut fused_map: std::collections::HashMap<String, f32> =
             std::collections::HashMap::with_capacity(fused.len());
-        for r in fused.drain(..) {
-            fused_map.insert(r.id, r.score);
+        for r in fused.iter() {
+            fused_map.insert(r.id.clone(), r.score);
         }
-        // HashMap iteration order is unspecified but STABLE across a single
-        // iteration within one call, which is all `fetch_candidates_by_ids_async`
-        // needs for its positional tie-breaker. No clone required.
-        let candidate_ids: Vec<&str> = fused_map.keys().map(|id| id.as_str()).collect();
         self.search_by_candidate_ids_with_notes(
             &candidate_ids,
             query,
