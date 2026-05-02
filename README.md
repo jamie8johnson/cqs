@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **44.5% R@1 / 73.4% R@5 / 84.9% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **46.8% R@1 / 73.9% R@5 / 85.3% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with BGE-large default (refreshed 2026-05-02; BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -697,26 +697,23 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 ## Retrieval Quality
 
-Two eval suites are run on every release:
+**Live codebase eval** — 218 queries (109 test + 109 dev) over the cqs source tree, each with a dual-judge (Gemma-4 + Claude) consensus gold chunk. v3.v2 fixture. Categories: `identifier_lookup`, `behavioral`, `conceptual`, `structural`, `negation`, `type_filtered`, `multi_step`, `cross_language` — every category N ≥ 16. Hard mode; measures the full production pipeline.
 
-**Fixture eval** — 296 hand-written queries across 7 languages with known gold-target functions. High ceiling; measures the embedder + RRF in isolation:
+**Per-preset (refreshed 2026-05-02, post-v1.33.0):**
 
-| Model | Params | Recall@1 | Recall@5 | MRR |
-|-------|--------|----------|----------|-----|
-| **BGE-large** (default) | 335M | **91.2%** | 99.3% | **0.951** |
-| v9-200k LoRA (preset) | 110M | 81.4% | 99.3% | 0.898 |
-| E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
+| Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@5 |
+|--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|
+| **BGE-large** (default) | 335M | 44.0% | **72.5%** | **83.5%** | **49.5%** | **75.2%** | **87.2%** | **73.9%** |
+| **embeddinggemma-300m** | 308M | **47.7%** | 71.6% | 83.5% | 48.6% | **75.2%** | **87.2%** | 73.4% |
+| **bge-large-ft** | 335M | 45.0% | **73.4%** | 83.5% | 46.8% | 70.6% | 82.6% | 72.0% |
+| v9-200k | 110M | 42.2% | 67.9% | 79.8% | 45.9% | 70.6% | 83.5% | 69.3% |
+| nomic-coderank | 137M | 42.2% | 67.9% | 79.8% | 47.7% | 69.7% | 81.7% | 68.8% |
 
-**Live codebase eval** — 218 queries (109 test + 109 dev) over the cqs source tree, each with a dual-judge (Gemma-4 + Claude) consensus gold chunk. Categories: `identifier_lookup`, `behavioral`, `conceptual`, `structural`, `negation`, `type_filtered`, `multi_step`, `cross_language` — every category N ≥ 16. Hard mode; measures the full production pipeline:
+Per-preset slot state at measurement time: `default` 19,857 chunks (48% LLM-summary coverage); `bge-ft` 14,460 (no summaries); `gemma` 13,118 (90% summaries); `v9` 14,468 (82% summaries); `coderank` 12,393 (no summaries). Slot reindex cadences differ — direct cross-model comparison is qualitative; for tighter A/B, reindex the candidate slot --force from a copied summary set first.
 
-| Split | R@1 | R@5 | R@20 |
-|-------|-----|-----|------|
-| **test (n=109)** | 42.2% | **67.0%** | **83.5%** |
-| **dev (n=109)** | 42.2% | 75.2% | 89.9% |
+Each split is ±2-3pp noisy on a single trial; quote both when comparing config changes.
 
-Both splits are ±2-3pp noisy on a single trial; quote both when comparing config changes.
-
-**Default config:** BGE-large dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. `CQS_EMBEDDING_MODEL=nomic-coderank` is a 137M code-specialised opt-in preset (#1110) for resource-constrained environments — wins R@1 on the v3.v2 test split at ~⅓ the parameters of BGE-large.
+**Default config:** BGE-large dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. BGE-large wins on dev R@5 + R@20 and agg R@5; `embeddinggemma-300m` is the strongest sub-1024-dim alternative — opt-in via `CQS_EMBEDDING_MODEL=embeddinggemma-300m`. `bge-large-ft` (#1289 LoRA fine-tune of BGE-large on `cqs-code-search-200k`) wins test R@5 by ~1pp at the same dim/cost — opt-in via `CQS_EMBEDDING_MODEL=bge-large-ft`. `nomic-coderank` and `v9-200k` are 137M / 110M alternatives for resource-constrained environments.
 
 ## Environment Variables
 
