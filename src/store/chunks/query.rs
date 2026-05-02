@@ -410,18 +410,23 @@ impl<Mode> Store<Mode> {
 
                 // Phase 1: lightweight id+name fetch via FTS
                 let total_limit = limit_per_name * batch.len();
-                let light_rows: Vec<_> = sqlx::query(
+                // SHL-V1.33-8: BM25 column weights flow through the canonical
+                // constants in `helpers/mod.rs` — must stay in sync with
+                // `store::search::search_by_name`.
+                let sql = format!(
                     "SELECT c.id, c.name
                      FROM chunks c
                      JOIN chunks_fts f ON c.id = f.id
                      WHERE chunks_fts MATCH ?1
-                     ORDER BY bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0)
+                     ORDER BY {}
                      LIMIT ?2",
-                )
-                .bind(&combined_fts)
-                .bind(total_limit as i64)
-                .fetch_all(&self.pool)
-                .await?;
+                    crate::store::helpers::bm25_ordering_expr()
+                );
+                let light_rows: Vec<_> = sqlx::query(&sql)
+                    .bind(&combined_fts)
+                    .bind(total_limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?;
 
                 // Phase 2: score name matches and collect IDs to hydrate.
                 // Track (chunk_id, query_name, score) for matched rows.

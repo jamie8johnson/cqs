@@ -238,9 +238,16 @@ pub fn search_across_projects(
         return Err(ProjectError::NoProjects);
     }
 
-    // RM-25: Cap concurrency to 4 threads — each project opens Store + HNSW (~200MB).
-    // RB-16: Fall back to sequential execution if thread pool creation fails,
-    // rather than panicking on a double-unwrap.
+    // RM-25: Cap concurrency to bound memory — each project opens its own
+    // Store + HNSW (~200 MB resident per project on cqs-sized corpora). With
+    // N projects loaded in parallel, peak RSS scales as N × 200 MB, so the
+    // thread count is the dominant lever on memory pressure for cross-project
+    // search. SHL-V1.33-10: when `CQS_RAYON_THREADS` is unset, fall back to
+    // `available_parallelism()` clamped at 8 — matches the daemon worker
+    // pool pattern in `watch/runtime.rs:62-66` and avoids the previous
+    // `unwrap_or(4)` that under-utilized 32-core hosts and over-committed
+    // 2-core ones. RB-16: fall back to sequential execution if thread pool
+    // creation fails, rather than panicking on a double-unwrap.
     let threads = std::env::var("CQS_RAYON_THREADS")
         .ok()
         .and_then(|v| {
@@ -250,7 +257,12 @@ pub fn search_across_projects(
             }
             parsed.ok()
         })
-        .unwrap_or(4);
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(8)
+        });
     let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(p) => p,
         Err(e) => {

@@ -748,15 +748,35 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
     lang.def().patterns
 }
 
-/// Extract imports when the visibility rule is `RegexImportSet`. The regex
-/// patterns replace simple prefix matching — a trimmed line counts as an
-/// import when any pattern matches. Regex compilation failures skip that
-/// pattern (logged) so one broken entry can't kill the whole extraction.
-fn extract_imports_regex(
-    chunks: &[ChunkSummary],
-    patterns: &[&'static str],
-    max: usize,
-) -> Vec<String> {
+/// Process-wide cache of compiled regex sets keyed by the patterns-slice
+/// address + length.
+///
+/// PERF-V1.33-7: `extract_imports_regex` previously compiled the same
+/// `&'static [&'static str]` patterns on every `cqs where` / `cqs task`
+/// call (~50 compiles per session). Since each language carries one fixed
+/// `RegexImportSet { patterns }` slice in static storage, `(as_ptr() as
+/// usize, len)` is a stable cache key — same language → same compiled
+/// `Vec<Regex>`. The cache lives for the process lifetime which matches
+/// the patterns' `'static` bound. Failed compiles get logged once and
+/// produce a shorter `Vec<Regex>` that's still cached, so a broken pattern
+/// doesn't pay the warn-log tax on every call.
+fn compiled_import_regexes(patterns: &[&'static str]) -> std::sync::Arc<Vec<regex::Regex>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = (usize, usize);
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Vec<regex::Regex>>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let key: Key = (patterns.as_ptr() as usize, patterns.len());
+    {
+        let guard = cache
+            .lock()
+            .expect("compiled_import_regexes mutex poisoned");
+        if let Some(arc) = guard.get(&key) {
+            return Arc::clone(arc);
+        }
+    }
+    // Slow path: compile outside the lock so concurrent first-call sites
+    // for different languages don't serialize on the mutex.
     let compiled: Vec<regex::Regex> = patterns
         .iter()
         .filter_map(|p| match regex::Regex::new(p) {
@@ -767,6 +787,23 @@ fn extract_imports_regex(
             }
         })
         .collect();
+    let arc = Arc::new(compiled);
+    let mut guard = cache
+        .lock()
+        .expect("compiled_import_regexes mutex poisoned");
+    Arc::clone(guard.entry(key).or_insert_with(|| Arc::clone(&arc)))
+}
+
+/// Extract imports when the visibility rule is `RegexImportSet`. The regex
+/// patterns replace simple prefix matching — a trimmed line counts as an
+/// import when any pattern matches. Regex compilation failures skip that
+/// pattern (logged) so one broken entry can't kill the whole extraction.
+fn extract_imports_regex(
+    chunks: &[ChunkSummary],
+    patterns: &[&'static str],
+    max: usize,
+) -> Vec<String> {
+    let compiled = compiled_import_regexes(patterns);
     let mut seen = std::collections::HashSet::new();
     let mut imports = Vec::new();
     for chunk in chunks {

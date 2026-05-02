@@ -56,12 +56,24 @@ pub fn extract_title(markdown: &str, source_path: &Path) -> String {
     fallback
 }
 
+/// Maximum length of the kebab-cased stem (excluding `.md`). 100 chars keeps
+/// the full path under Windows' traditional MAX_PATH=260 even when nested in
+/// a moderately deep `output/` tree, and well under Linux NAME_MAX=255 bytes
+/// (255 bytes / 4 bytes-per-char-worst-case ≈ 63 multibyte chars, but typical
+/// vendor-doc titles are ASCII-dominant). SHL-V1.33-11.
+const MAX_FILENAME_STEM_LEN: usize = 100;
+
 /// Convert a title string to a kebab-case filename with `.md` extension.
 /// - Lowercases everything
 /// - Keeps alphanumeric characters, spaces, and hyphens
 /// - Replaces parentheses content: `(v2024)` → `v2024`
 /// - Collapses whitespace into single hyphens
 /// - Strips leading/trailing hyphens
+/// - Caps the stem at `MAX_FILENAME_STEM_LEN` chars (truncated at the last
+///   word boundary inside the cap) to satisfy Windows MAX_PATH and Linux
+///   NAME_MAX constraints. Long vendor-doc H1 headings (600+ chars are legal
+///   in Markdown) would otherwise produce filenames the OS rejects at write
+///   time. SHL-V1.33-11.
 /// # Examples
 /// ```
 /// use cqs::convert::naming::title_to_filename;
@@ -85,9 +97,41 @@ pub fn title_to_filename(title: &str) -> String {
         return "untitled.md".to_string();
     }
 
-    let kebab = parts.join("-");
+    // Build the kebab incrementally, stopping at the last word boundary that
+    // fits within the stem cap. This preserves whole words rather than
+    // mid-word truncation that produces brittle stems like
+    // `aveva-historian-administra` (would later collide with itself).
+    let mut kebab = String::new();
+    for part in &parts {
+        let projected = if kebab.is_empty() {
+            part.len()
+        } else {
+            kebab.len() + 1 + part.len() // +1 for the hyphen separator
+        };
+        if projected > MAX_FILENAME_STEM_LEN {
+            // If even the first word exceeds the cap, truncate it byte-safely
+            // at a char boundary so we still emit a valid filename rather
+            // than `untitled.md` for a single 200-char H1 word.
+            if kebab.is_empty() {
+                let mut end = MAX_FILENAME_STEM_LEN.min(part.len());
+                while end > 0 && !part.is_char_boundary(end) {
+                    end -= 1;
+                }
+                kebab.push_str(&part[..end]);
+            }
+            break;
+        }
+        if !kebab.is_empty() {
+            kebab.push('-');
+        }
+        kebab.push_str(part);
+    }
+
     // Strip leading/trailing hyphens that might result from punctuation-only words
     let kebab = kebab.trim_matches('-');
+    if kebab.is_empty() {
+        return "untitled.md".to_string();
+    }
     format!("{}.md", kebab)
 }
 
@@ -179,6 +223,43 @@ mod tests {
         // Unicode chars are lowercased properly (not skipped by to_ascii_lowercase)
         assert_eq!(title_to_filename("Über Handbuch"), "über-handbuch.md");
         assert_eq!(title_to_filename("Ångström Guide"), "ångström-guide.md");
+    }
+
+    /// SHL-V1.33-11: a 600-char H1 heading must produce a filename within
+    /// the OS path limits. Stem capped at 100 chars; truncation respects
+    /// word boundaries.
+    #[test]
+    fn test_title_to_filename_caps_long_titles() {
+        let long_title =
+            "AVEVA Historian Administration Reference Manual For Industrial Process Engineers \
+             Working With Time-Series Data Across Multiple Plants And Sites";
+        let filename = title_to_filename(long_title);
+        // Stem (without `.md`) must fit under the cap.
+        let stem = filename.trim_end_matches(".md");
+        assert!(
+            stem.len() <= MAX_FILENAME_STEM_LEN,
+            "stem {} > cap {}",
+            stem.len(),
+            MAX_FILENAME_STEM_LEN
+        );
+        // Filename must end with `.md` and not have a trailing hyphen
+        // before the extension (would happen if word-boundary truncation
+        // left the kebab tailing).
+        assert!(filename.ends_with(".md"));
+        assert!(!stem.ends_with('-'));
+        // Sanity: the truncated stem starts with the first word.
+        assert!(stem.starts_with("aveva-"));
+    }
+
+    /// SHL-V1.33-11: a single word longer than the cap (no whitespace) must
+    /// still produce a valid filename rather than `untitled.md`.
+    #[test]
+    fn test_title_to_filename_truncates_oversized_single_word() {
+        let big_word: String = "a".repeat(200);
+        let filename = title_to_filename(&big_word);
+        let stem = filename.trim_end_matches(".md");
+        assert_eq!(stem.len(), MAX_FILENAME_STEM_LEN);
+        assert!(filename.ends_with(".md"));
     }
 
     #[test]

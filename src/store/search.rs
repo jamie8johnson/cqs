@@ -21,6 +21,81 @@ fn rrf_k() -> f32 {
     knob::resolve_knob("rrf_k")
 }
 
+/// PERF-V1.33-8: zero-alloc analogue of `score_name_match_pre_lower` for the
+/// ASCII fast path. Both inputs must be ASCII; `query_lower` must already
+/// be lowercase. Returns the same 1.0 / 0.9 / 0.8 / 0.7 / 0.0 tiers as the
+/// reference function (see `helpers::scoring`). Avoids per-row
+/// `chunk.name.to_lowercase()` allocations on the dominant code-identifier
+/// path inside `search_by_name`.
+///
+/// Tier order (must match `score_name_match_pre_lower` exactly):
+///   1.0 — `name == query` (case-insensitive)
+///   0.9 — `name.starts_with(query)` (case-insensitive)
+///   0.8 — `query.contains(name)` (i.e. name is substring of query)
+///   0.7 — `name.contains(query)` (i.e. query is substring of name)
+///   0.0 — no relationship
+///
+/// Empty-name corner case: `query.contains("")` is true for any query, so
+/// the reference returns 0.8 when `name == ""` and `query` is non-empty
+/// (`std::str::contains` semantics). We preserve that quirk for parity.
+fn score_name_match_ascii(name_raw: &str, query_lower: &str) -> f32 {
+    debug_assert!(name_raw.is_ascii());
+    debug_assert!(query_lower.is_ascii());
+    debug_assert!(query_lower.bytes().all(|b| !b.is_ascii_uppercase()));
+    if query_lower.is_empty() {
+        return 0.0;
+    }
+    if name_raw.eq_ignore_ascii_case(query_lower) {
+        return 1.0;
+    }
+    let n = name_raw.as_bytes();
+    let q = query_lower.as_bytes();
+    // 0.9 — case-insensitive prefix match. `starts_with("")` is true, but
+    // `query_lower.is_empty()` is already short-circuited above, so
+    // `q.len() == 0` is unreachable here.
+    if n.len() >= q.len()
+        && n[..q.len()]
+            .iter()
+            .zip(q)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    {
+        return 0.9;
+    }
+    // 0.8 — name is substring of query. `ascii_substring_ignore_case` mirrors
+    // `str::contains` and returns true for an empty needle, preserving the
+    // reference's empty-name → 0.8 quirk.
+    if q.len() >= n.len() && ascii_substring_ignore_case(q, n) {
+        return 0.8;
+    }
+    // 0.7 — query is substring of name (so query shorter; name "do_parse"
+    // contains "parse"). Scan `n` for `q`.
+    if n.len() >= q.len() && ascii_substring_ignore_case(n, q) {
+        return 0.7;
+    }
+    0.0
+}
+
+#[inline]
+fn ascii_substring_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    let last_start = haystack.len() - needle.len();
+    for i in 0..=last_start {
+        if haystack[i..i + needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 impl<Mode> Store<Mode> {
     /// Search FTS5 index for keyword matches.
     ///
@@ -116,26 +191,43 @@ impl<Mode> Store<Mode> {
         }
         let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
-        self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
-                 FROM chunks c
-                 JOIN chunks_fts f ON c.id = f.id
-                 WHERE chunks_fts MATCH ?1
-                 ORDER BY bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0) -- Heavy weight on name column
-                 LIMIT ?2",
-            )
-            .bind(&fts_query)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await?;
+        // SHL-V1.33-8: render the BM25 weights from the canonical constants
+        // in `helpers/mod.rs` so the `chunks/query.rs` sibling stays in sync.
+        let sql = format!(
+            "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
+             FROM chunks c
+             JOIN chunks_fts f ON c.id = f.id
+             WHERE chunks_fts MATCH ?1
+             ORDER BY {}
+             LIMIT ?2",
+            super::helpers::bm25_ordering_expr()
+        );
 
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(&sql)
+                .bind(&fts_query)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await?;
+
+            // PERF-V1.33-8: skip the per-row `to_lowercase()` allocation when
+            // both query and chunk name are pure ASCII (the dominant case for
+            // code identifiers — exotic Unicode in function names is rare).
+            // ASCII path uses `eq_ignore_ascii_case` + `score_name_match_ascii`
+            // for zero-alloc scoring; Unicode names still fall through to the
+            // existing `to_lowercase()` + `score_name_match_pre_lower` path
+            // so semantics are identical.
+            let lower_name_ascii = lower_name.is_ascii();
             let mut results = rows
                 .into_iter()
                 .map(|row| {
                     let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
-                    let name_lower = chunk.name.to_lowercase();
-                    let score = helpers::score_name_match_pre_lower(&name_lower, &lower_name);
+                    let score = if lower_name_ascii && chunk.name.is_ascii() {
+                        score_name_match_ascii(&chunk.name, &lower_name)
+                    } else {
+                        let name_lower = chunk.name.to_lowercase();
+                        helpers::score_name_match_pre_lower(&name_lower, &lower_name)
+                    };
                     SearchResult { chunk, score }
                 })
                 .collect::<Vec<_>>();
@@ -311,6 +403,33 @@ mod tests {
             results[0].chunk.line_start
         );
         assert_eq!(results[1].chunk.line_start, 10);
+    }
+
+    /// PERF-V1.33-8: `score_name_match_ascii` must produce the same tier
+    /// as `score_name_match_pre_lower` for every ASCII case. Pins parity so
+    /// the per-row `to_lowercase()` skip doesn't silently change ranking.
+    #[test]
+    fn score_name_match_ascii_matches_reference_for_ascii_inputs() {
+        let cases: &[(&str, &str)] = &[
+            ("parse_diff", "parse_diff"),    // 1.0 exact
+            ("Parse_Diff", "parse_diff"),    // 1.0 case-insensitive exact
+            ("parse_diff_hunks", "parse"),   // 0.9 prefix
+            ("ParseDiff", "parse"),          // 0.9 prefix case-insensitive
+            ("foo", "foo_bar_qux"),          // 0.8 query contains name
+            ("do_parse_diff", "parse_diff"), // 0.7 name contains query
+            ("foo", "bar"),                  // 0.0 no relation
+            ("", "anything"),                // 0.0 empty name
+        ];
+        for (raw_name, query) in cases {
+            let q_lower = query.to_lowercase();
+            let n_lower = raw_name.to_lowercase();
+            let reference = crate::store::helpers::score_name_match_pre_lower(&n_lower, &q_lower);
+            let ascii = score_name_match_ascii(raw_name, &q_lower);
+            assert_eq!(
+                ascii, reference,
+                "mismatch for ({raw_name:?}, {query:?}): ascii={ascii}, ref={reference}",
+            );
+        }
     }
 
     /// Cross-file tie-breaker: at equal score, the alphabetically-earlier

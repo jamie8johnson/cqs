@@ -155,6 +155,19 @@ fn cagra_max_bytes() -> usize {
     })
 }
 
+/// SHL-V1.33-9: Configurable CAGRA streaming batch size for `build_from_store`,
+/// overridable via `CQS_CAGRA_STREAM_BATCH_SIZE`. Default 10_000 matches the
+/// historical hardcoded constant — at dim=1024 that's a 40 MB allocation per
+/// batch (10_000 × 1024 × 4 bytes). Higher-dim models (e.g. hypothetical
+/// dim=4096) may want to shrink this to keep per-batch heap bounded; lower-dim
+/// models (E5-base, dim=768) can grow it for fewer SQL round trips.
+/// Cached in OnceLock for single parse.
+#[cfg(feature = "cuda-index")]
+fn cagra_stream_batch_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| crate::limits::parse_env_usize("CQS_CAGRA_STREAM_BATCH_SIZE", 10_000))
+}
+
 /// Issue #962: Scale `itopk_max` ceiling with corpus size. At 1k chunks we
 /// want the library default (~320); at 1M chunks we want ~640 or more.
 /// Logarithmic scaling based on chunk count:
@@ -733,9 +746,13 @@ impl CagraIndex {
         let mut id_map = Vec::with_capacity(chunk_count);
         let mut flat_data = Vec::with_capacity(chunk_count * dim);
 
-        const BATCH_SIZE: usize = 10_000;
+        // SHL-V1.33-9: streaming batch size is env-overridable so future
+        // higher-dim models can shrink the per-batch heap footprint without
+        // a recompile. At dim=1024 the default is 40 MB / batch
+        // (10_000 × 1024 × 4 bytes); at hypothetical dim=4096, 160 MB / batch.
+        let batch_size = cagra_stream_batch_size();
         let mut loaded_chunks = 0usize;
-        for batch_result in store.embedding_batches(BATCH_SIZE) {
+        for batch_result in store.embedding_batches(batch_size) {
             let batch = batch_result
                 .map_err(|e| CagraError::Cuvs(format!("Failed to fetch batch: {}", e)))?;
 
