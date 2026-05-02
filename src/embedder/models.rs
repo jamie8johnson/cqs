@@ -634,6 +634,48 @@ impl ModelConfig {
         Self::default_model()
     }
 
+    /// SHL-V1.30-1 / P2.41 — scale the embed batch size with this model's
+    /// dim & seq, holding the per-tensor footprint roughly constant.
+    ///
+    /// BGE-large (1024 dim, 512 seq) at batch=64 ≈ 130 MB per forward-pass
+    /// tensor — the empirical sweet spot on RTX 4060 8 GB. Nomic-coderank
+    /// (768 dim, 2048 seq) at batch=64 OOMs the same GPU because the tensor
+    /// blows up to ~390 MB.
+    ///
+    /// Formula: `batch_baseline * (1024/dim) * (512/seq)` rounded to a
+    /// power of 2, clamped to `[2, 256]`. The env override
+    /// `CQS_EMBED_BATCH_SIZE` takes priority — operators with workloads
+    /// they understand can pin a value.
+    pub fn embed_batch_size(&self) -> usize {
+        if let Ok(val) = std::env::var("CQS_EMBED_BATCH_SIZE") {
+            if let Ok(size) = val.parse::<usize>() {
+                if size > 0 {
+                    tracing::info!(batch_size = size, "CQS_EMBED_BATCH_SIZE override");
+                    return size;
+                }
+            }
+            tracing::warn!(
+                value = %val,
+                "Invalid CQS_EMBED_BATCH_SIZE, falling back to model-derived default"
+            );
+        }
+        let dim = self.dim.max(1) as f64;
+        let seq = self.max_seq_length.max(1) as f64;
+        let baseline = 64.0_f64;
+        let dim_factor = 1024.0 / dim;
+        let seq_factor = (512.0 / seq).max(0.25);
+        let scaled = (baseline * dim_factor * seq_factor).max(1.0) as usize;
+        let rounded = scaled.next_power_of_two().clamp(2, 256);
+        tracing::debug!(
+            dim = self.dim,
+            seq = self.max_seq_length,
+            scaled,
+            rounded,
+            "ModelConfig::embed_batch_size: model-derived default"
+        );
+        rounded
+    }
+
     /// Apply env var overrides to a resolved ModelConfig.
     /// CQS_MAX_SEQ_LENGTH overrides max_seq_length (for large-context models via CQS_ONNX_DIR).
     /// CQS_EMBEDDING_DIM overrides dim (for custom models where dim detection isn't automatic).
@@ -1199,6 +1241,114 @@ mod tests {
         };
         let cfg = ModelConfig::resolve(Some("e5-base"), Some(&embedding_cfg));
         assert_eq!(cfg.name, "e5-base");
+    }
+
+    // ===== CQ-V1.33.0-2: embed_batch_size scales with model dim/seq =====
+
+    /// BGE-large (1024 dim, 512 seq) — the calibration baseline. Scales to 64.
+    #[test]
+    fn embed_batch_size_bge_large_baseline() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+        assert_eq!(ModelConfig::bge_large().embed_batch_size(), 64);
+    }
+
+    /// E5-base (768 dim, 512 seq) — same seq, smaller dim → batch up to 128.
+    #[test]
+    fn embed_batch_size_e5_base_scales_up() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+        let cfg = ModelConfig::e5_base();
+        assert_eq!(cfg.dim, 768);
+        assert_eq!(cfg.max_seq_length, 512);
+        // 64 * (1024/768) * (512/512) ≈ 85 → next_power_of_two = 128
+        assert_eq!(cfg.embed_batch_size(), 128);
+    }
+
+    /// Synthetic nomic-coderank shape (768 dim, 2048 seq). The OOM-on-8GB
+    /// failure mode this method exists to fix — batch must drop to <= 32.
+    #[test]
+    fn embed_batch_size_nomic_coderank_shape_drops_on_long_seq() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+        let cfg = ModelConfig {
+            name: "nomic-coderank-test".to_string(),
+            repo: "test/test".to_string(),
+            onnx_path: "model.onnx".to_string(),
+            tokenizer_path: "tokenizer.json".to_string(),
+            dim: 768,
+            max_seq_length: 2048,
+            query_prefix: String::new(),
+            doc_prefix: String::new(),
+            input_names: InputNames::bert(),
+            output_name: "last_hidden_state".to_string(),
+            pooling: PoolingStrategy::Mean,
+            approx_download_bytes: None,
+            pad_id: 0,
+        };
+        // 64 * (1024/768) * (512/2048) ≈ 21 → next_power_of_two = 32
+        let bs = cfg.embed_batch_size();
+        assert!(
+            bs <= 32,
+            "nomic-coderank shape must drop batch to <= 32, got {}",
+            bs
+        );
+    }
+
+    /// Env override wins regardless of model shape.
+    #[test]
+    fn embed_batch_size_env_override_wins() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_EMBED_BATCH_SIZE", "16");
+        assert_eq!(ModelConfig::bge_large().embed_batch_size(), 16);
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+    }
+
+    /// Invalid env override falls through to model-derived default.
+    #[test]
+    fn embed_batch_size_invalid_env_falls_through() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_EMBED_BATCH_SIZE", "not_a_number");
+        assert_eq!(ModelConfig::bge_large().embed_batch_size(), 64);
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+    }
+
+    /// Zero env override falls through (defends against div-by-zero).
+    #[test]
+    fn embed_batch_size_zero_env_falls_through() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_EMBED_BATCH_SIZE", "0");
+        assert_eq!(ModelConfig::bge_large().embed_batch_size(), 64);
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+    }
+
+    /// Output is always clamped to [2, 256].
+    #[test]
+    fn embed_batch_size_clamped() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+        // Synthetic large-dim/long-seq → would fall to <2 unclamped.
+        let extreme = ModelConfig {
+            name: "extreme".to_string(),
+            repo: "test/test".to_string(),
+            onnx_path: "model.onnx".to_string(),
+            tokenizer_path: "tokenizer.json".to_string(),
+            dim: 65536,
+            max_seq_length: 65536,
+            query_prefix: String::new(),
+            doc_prefix: String::new(),
+            input_names: InputNames::bert(),
+            output_name: "last_hidden_state".to_string(),
+            pooling: PoolingStrategy::Mean,
+            approx_download_bytes: None,
+            pad_id: 0,
+        };
+        let bs = extreme.embed_batch_size();
+        assert!(
+            (2..=256).contains(&bs),
+            "embed_batch_size must clamp to [2, 256], got {}",
+            bs
+        );
     }
 
     // ===== TC-31: multi-model dim-threading (ModelConfig) =====

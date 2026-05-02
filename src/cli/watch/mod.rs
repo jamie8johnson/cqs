@@ -25,7 +25,7 @@ use notify::{Config, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, info_span, warn};
 
 use cqs::embedder::{Embedder, Embedding, ModelConfig};
-use cqs::generate_nl_description;
+use cqs::generate_nl_description_with_seq_len;
 use cqs::hnsw::HnswIndex;
 use cqs::note::parse_notes;
 use cqs::parser::{ChunkTypeRefs, Parser as CqParser};
