@@ -273,6 +273,11 @@ pub(crate) fn run_eval(
 ///   - Centroid reclassification with α floor
 ///   - DenseBase / Enriched index routing
 ///   - `code_types()` default include filter
+//
+// 8 args is one over clippy's default. Factoring into a `SearchContext`
+// struct mirrors `cmd_query_project::QueryContext` but offers no real
+// readability win for a one-arg addition; revisit if this grows again.
+#[allow(clippy::too_many_arguments)]
 fn search_for_rank(
     ctx: &CommandContext<'_, ReadOnly>,
     embedder: &cqs::Embedder,
