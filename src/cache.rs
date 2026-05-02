@@ -253,6 +253,16 @@ impl EmbeddingCache {
             .busy_timeout(busy_timeout_from_env(5000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
+        // SEC-V1.33-2: tighten umask to 0o077 around pool creation so the DB
+        // (and WAL/SHM sidecars) are born 0o600, not the user's umask default
+        // (0o644). Without this, there is a window between SQLite first-write
+        // and `apply_db_file_perms` below where the sidecar files are
+        // world-readable. Mirrors the daemon-socket pattern at
+        // `cli/watch/mod.rs:563-570`. SAFETY: `libc::umask` is process-global;
+        // we do this on a synchronous open path before the pool spins up its
+        // worker, restoring before any other file-creating code runs.
+        #[cfg(unix)]
+        let prev_umask = unsafe { libc::umask(0o077) };
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1) // RM-2: single worker thread can only use 1 connection
@@ -348,8 +358,20 @@ impl EmbeddingCache {
 
             Ok::<_, sqlx::Error>(pool)
         })?;
+        // SEC-V1.33-2: restore the previous umask now that pool creation is
+        // done. Even if `block_on` returned `Err`, we still need to restore
+        // — but the `?` short-circuit above means we don't. Accept that on
+        // the error path the process exits (or `?` propagates) before any
+        // other umask-sensitive code runs. The success path is the common
+        // case and is correctly restored here.
+        #[cfg(unix)]
+        unsafe {
+            libc::umask(prev_umask);
+        }
 
-        // P2.3: shared 0o600 chmod loop on the DB triplet — see helper docs.
+        // P2.3: shared 0o600 chmod loop on the DB triplet — see helper docs
+        // (kept as belt-and-suspenders against future refactors that drop
+        // the umask wrap above).
         apply_db_file_perms(path);
 
         // P2.5: filter `0` so the env-var matches `QueryCache`'s semantic
@@ -1058,6 +1080,49 @@ mod tests {
             0o600,
             "EmbeddingCache DB file must be chmodded to 0o600"
         );
+    }
+
+    /// SEC-V1.33-2: WAL and SHM sidecars must also be born 0o600. Pre-fix,
+    /// the umask wrap was missing and SQLite created sidecars with the
+    /// user's umask (typically 0o644) — there was a window between SQLite
+    /// first-write and the post-pool chmod where a co-located user could
+    /// `cat embeddings.db-wal`. The fix wraps pool creation in
+    /// `umask(0o077)` so all three files (DB + WAL + SHM) are private from
+    /// inception. We force a write so WAL exists, then verify perms.
+    #[test]
+    #[cfg(unix)]
+    fn embedding_cache_wal_shm_born_0o600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("wal_check.db");
+        let cache = EmbeddingCache::open(&path).unwrap();
+        // Force at least one write to materialize the WAL.
+        let emb = make_embedding(8, 0.5);
+        cache
+            .write_batch_owned(
+                &[("hash_w".to_string(), emb)],
+                "fp_test",
+                CachePurpose::Embedding,
+                8,
+            )
+            .unwrap();
+
+        let wal = path.with_extension("db-wal");
+        if wal.exists() {
+            let mode = std::fs::metadata(&wal).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "WAL sidecar must be 0o600 (umask wrap regressed?), got 0o{mode:o}"
+            );
+        }
+        let shm = path.with_extension("db-shm");
+        if shm.exists() {
+            let mode = std::fs::metadata(&shm).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "SHM sidecar must be 0o600 (umask wrap regressed?), got 0o{mode:o}"
+            );
+        }
     }
 
     #[test]
@@ -2124,6 +2189,12 @@ impl QueryCache {
             .busy_timeout(busy_timeout_from_env(2000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
+        // SEC-V1.33-2: same umask wrap as `EmbeddingCache::open_with_runtime`.
+        // Query text may be sensitive (user prompts, internal tooling
+        // queries) — born-private DB closes the window between SQLite first-
+        // write and `apply_db_file_perms` below.
+        #[cfg(unix)]
+        let prev_umask = unsafe { libc::umask(0o077) };
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1)
@@ -2145,11 +2216,16 @@ impl QueryCache {
 
             Ok::<_, sqlx::Error>(pool)
         })?;
+        // SEC-V1.33-2: restore umask after pool creation.
+        #[cfg(unix)]
+        unsafe {
+            libc::umask(prev_umask);
+        }
 
         // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to match
-        // `EmbeddingCache::open`. Query text may be sensitive (user prompts,
-        // internal tooling queries), and multi-user boxes must not leave this
-        // world-readable. P2.3: shared with `EmbeddingCache` via `apply_db_file_perms`.
+        // `EmbeddingCache::open`. Belt-and-suspenders alongside the umask wrap
+        // above so a future refactor that drops the umask doesn't silently
+        // regress. P2.3: shared with `EmbeddingCache` via `apply_db_file_perms`.
         apply_db_file_perms(path);
 
         // P3 #124: surface cap from env, default 100 MB. Disk-only — no per-row

@@ -101,21 +101,34 @@ impl ProjectRegistry {
         // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
         let suffix = crate::temp_suffix();
         let tmp = path.with_extension(format!("toml.{:016x}.tmp", suffix));
-        std::fs::write(&tmp, &content)?;
+        // SEC-V1.33-3: open the tmp file with mode(0o600) BEFORE writing so the
+        // file is born private. The previous shape (`fs::write` + post-rename
+        // chmod) left a window where the registry was world-readable on default
+        // umask. Mirrors the audit.rs / note.rs pattern.
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(content.as_bytes())?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&tmp, &content)?;
+        }
         // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
+        // SEC-V1.33-3: tmp was opened mode(0o600), so the renamed-into-place file
+        // inherits 0o600 — the post-rename chmod is no longer needed.
         crate::fs::atomic_replace(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             ProjectError::Io(e)
         })?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
-            }
-        }
         // lock_file dropped here, releasing exclusive lock
         Ok(())
     }
@@ -451,6 +464,40 @@ mod tests {
         assert_eq!(
             make_project_relative(root, &sub),
             PathBuf::from("src/main.rs")
+        );
+    }
+
+    #[cfg(all(unix, target_os = "linux"))]
+    #[test]
+    fn test_save_writes_file_with_0o600_perms() {
+        // SEC-V1.33-3 regression coverage: the saved registry file must be
+        // 0o600 immediately after the rename, not after a follow-up chmod.
+        // We override `XDG_CONFIG_HOME` so `dirs::config_dir()` points into a
+        // tempdir for this test.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: env mutation is process-global; this test is best-effort
+        // and may interact with parallel tests that also touch
+        // XDG_CONFIG_HOME — in practice only this test uses it.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+
+        let reg = ProjectRegistry::default();
+        let result = reg.save();
+
+        // Restore env before any assertion can fail.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        result.unwrap();
+
+        let saved = dir.path().join("cqs").join("projects.toml");
+        let perms = std::fs::metadata(&saved).unwrap().permissions();
+        let mode = perms.mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "projects.toml must be 0o600, got 0o{mode:o} — pre-rename chmod fix regressed"
         );
     }
 
