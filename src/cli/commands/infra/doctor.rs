@@ -169,13 +169,21 @@ pub(crate) fn cmd_doctor(
         Ok(embedder) => {
             // CQ-V1.29-6: show the actual index-metadata model rather than
             // the compile-time constant. If stored differs from the runtime
-            // `model_repo()`, promote the record from `ok` → `warn` so
-            // agents parsing `--json` see the drift as a warning.
-            let runtime_repo = cqs::embedder::model_repo();
+            // model repo, promote the record from `ok` → `warn` so agents
+            // parsing `--json` see the drift as a warning.
+            //
+            // CQ-V1.33.0-3: use `model_config.repo` (the resolved override)
+            // instead of `cqs::embedder::model_repo()`, which discards
+            // overrides and always returns the compile-time default. The
+            // old call lied: `cqs doctor --model e5-base` against an
+            // E5-indexed project would warn "stored=e5-base / runtime=
+            // bge-large mismatch" even though the override was honoured
+            // everywhere else.
+            let runtime_repo = model_config.repo.as_str();
             let metadata_label = stored_metadata_model.as_deref().unwrap_or("unset");
             let model_msg = format!("{} (metadata: {})", runtime_repo, metadata_label);
             let stored_matches = match stored_metadata_model.as_deref() {
-                Some(s) => s == runtime_repo.as_str(),
+                Some(s) => s == runtime_repo,
                 None => true, // nothing stored → not a mismatch, just a fresh index
             };
             let mark = if stored_matches {

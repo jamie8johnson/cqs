@@ -31,10 +31,16 @@ pub(super) fn prepare_for_embedding(
     model_fingerprint: &str,
 ) -> PreparedEmbedding {
     let _span = tracing::info_span!("prepare_for_embedding").entered();
-    use cqs::generate_nl_description;
+    use cqs::generate_nl_description_with_seq_len;
 
     // Step 1: Apply windowing to split long chunks into overlapping windows
     let windowed_chunks = apply_windowing(batch.chunks, embedder);
+
+    // P2.38 (CQ-V1.33.0-1): use the model-aware NL variant so the section-chunk
+    // content budget scales with `model.max_seq_length`. The legacy 1-arg form
+    // hardcodes 512 via the `CQS_MAX_SEQ_LENGTH` env path; nomic-coderank
+    // (2048 seq) was silently capped at 25% capacity.
+    let model_max_seq_len = embedder.model_config().max_seq_length;
 
     // Step 2a: Check global embedding cache first (fastest path)
     let dim = embedder.embedding_dim();
@@ -135,7 +141,10 @@ pub(super) fn prepare_for_embedding(
     );
 
     // Step 4: Generate NL descriptions for chunks needing embedding
-    let texts: Vec<String> = to_embed.iter().map(generate_nl_description).collect();
+    let texts: Vec<String> = to_embed
+        .iter()
+        .map(|c| generate_nl_description_with_seq_len(c, model_max_seq_len))
+        .collect();
 
     PreparedEmbedding {
         cached,

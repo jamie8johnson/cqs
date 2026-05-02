@@ -1342,11 +1342,20 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
             tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
             0
         });
-        if chunk_count < cagra_threshold || !CagraIndex::gpu_available() {
+        // SHL-V1.33-1: route through `gpu_available_for(n, dim)` so the P2.42
+        // VRAM-budget check actually fires. The legacy zero-arg
+        // `gpu_available()` collapses to `gpu_available_for(0, 0)` which
+        // short-circuits the corpus-aware branch — the gate then claims
+        // eligibility even on a corpus that would OOM CAGRA build on 8 GB
+        // GPUs.
+        let dim = ctx.store.dim();
+        let gpu_available = CagraIndex::gpu_available_for(chunk_count as usize, dim);
+        if chunk_count < cagra_threshold || !gpu_available {
             tracing::debug!(
                 chunk_count,
                 cagra_threshold,
-                gpu_available = CagraIndex::gpu_available(),
+                dim,
+                gpu_available,
                 "CAGRA backend ineligible — falling through"
             );
             return Ok(None);

@@ -28,12 +28,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-/// Retrieves the embedding model repository from the resolved ModelConfig.
-///
-/// Delegates to `ModelConfig::resolve(None, None)` which checks env var / defaults.
-pub fn model_repo() -> String {
-    ModelConfig::resolve(None, None).repo
-}
+// CQ-V1.33.0-3: `model_repo()` was removed. It silently dropped any CLI/env
+// override by calling `ModelConfig::resolve(None, None)`, which made
+// `cqs doctor --model X` lie about the runtime repo (always reporting the
+// compile-time default). Callers now use `model_config.repo` directly.
 
 // blake3 checksums — empty to skip validation (configurable models have different checksums)
 const MODEL_BLAKE3: &str = "";
@@ -770,12 +768,16 @@ impl Embedder {
     /// Embed documents (code chunks). Adds model-specific document prefix.
     ///
     /// Large inputs are processed in batches to cap GPU memory usage.
-    /// Batch size configurable via `CQS_EMBED_BATCH_SIZE` (default 64).
+    /// Batch size scales with the model's dim & seq via
+    /// [`ModelConfig::embed_batch_size`]; override with `CQS_EMBED_BATCH_SIZE`.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         let _span = tracing::info_span!("embed_documents", count = texts.len()).entered();
         let prefix = &self.model_config.doc_prefix;
-        // P2.4: route through shared `parse_env_usize` helper.
-        let max_batch: usize = crate::limits::parse_env_usize("CQS_EMBED_BATCH_SIZE", 64);
+        // CQ-V1.33.0-2: route through `ModelConfig::embed_batch_size` so the
+        // inner loop scales with model dim/seq instead of hardcoding 64.
+        // BGE-large stays at 64; nomic-coderank (768 dim × 2048 seq) drops
+        // to 16 to avoid OOM on 8 GB GPUs.
+        let max_batch: usize = self.model_config.embed_batch_size();
         let started = std::time::Instant::now();
         let result = if texts.len() <= max_batch {
             let prefixed: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();

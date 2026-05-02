@@ -453,9 +453,13 @@ pub(super) fn reindex_files(
     let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
         vec![]
     } else {
+        // P2.38 (CQ-V1.33.0-1): use the model-aware NL variant so section
+        // chunks get the full content budget the model can absorb (e.g.
+        // nomic-coderank's 2048-seq capacity instead of the legacy 512 cap).
+        let model_max_seq_len = embedder.model_config().max_seq_length;
         let texts: Vec<String> = to_embed
             .iter()
-            .map(|(_, c)| generate_nl_description(c))
+            .map(|(_, c)| generate_nl_description_with_seq_len(c, model_max_seq_len))
             .collect();
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         embedder.embed_documents(&text_refs)?.into_iter().collect()
