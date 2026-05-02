@@ -720,7 +720,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 
 ## Environment Variables
 
-162 knobs total. Quick index by domain (everything is searchable in the table below):
+Quick index by domain (everything is searchable in the table below):
 
 - **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
