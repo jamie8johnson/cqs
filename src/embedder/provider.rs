@@ -228,7 +228,16 @@ fn detect_provider() -> ExecutionProvider {
     ensure_ort_provider_libs();
 
     // ── NVIDIA TensorRT ────────────────────────────────────────────
-    {
+    //
+    // `CQS_DISABLE_TENSORRT=1` skips the TRT probe entirely (falls
+    // through to CUDA). Useful when a model's ONNX graph uses ops
+    // TensorRT can't compile — e.g. Gemma3's bidirectional-attention
+    // head emits a plugin op TRT 10 doesn't recognise, and
+    // `create_session` fails at engine build time. CUDA's op coverage
+    // is broader (it falls back to ORT's own kernel for unknown ops),
+    // so it accepts more graph shapes at the cost of TRT's specific
+    // perf wins.
+    if std::env::var("CQS_DISABLE_TENSORRT").as_deref() != Ok("1") {
         use ort::ep::TensorRT;
         let tensorrt = TensorRT::default();
         if tensorrt.is_available().unwrap_or(false) {
@@ -236,6 +245,8 @@ fn detect_provider() -> ExecutionProvider {
             tracing::info!(provider = ?provider, "Execution provider selected");
             return provider;
         }
+    } else {
+        tracing::info!("CQS_DISABLE_TENSORRT=1 — skipping TensorRT probe");
     }
 
     // ── NVIDIA CUDA ────────────────────────────────────────────────
