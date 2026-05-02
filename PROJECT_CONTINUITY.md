@@ -2,17 +2,17 @@
 
 ## Right Now
 
-**v1.32.0 released 2026-05-01.** Tag `v1.32.0` pushed (`5a577a30`); `cqs 1.32.0` published to crates.io. Schema v23 → v25 (chained, additive `ALTER TABLE … ADD COLUMN`); no reindex required.
+**v1.33.0 released 2026-05-02.** Tag `v1.33.0` pushed (triggers `release.yml` for binary artifacts); `cqs 1.33.0` published to crates.io after token rotation (the prior token returned 403 — root cause not fully diagnosed; new token generated with `publish-update` scope). No schema bump.
 
 Five themes (full detail in CHANGELOG.md):
 
-1. **HNSW load-phase flock self-deadlock fix** (#1261) — urgent watch-mode correctness.
-2. **Three-tier `trust_level: vendored-code`** (#1221, schema v24) — chunks under `vendor/`, `node_modules/`, `third_party/`, `.cargo/`, `target/`, `dist/`, `build/` get `vendored-code` instead of bare `user-code`. Override via `[index].vendored_paths`.
-3. **Worktree → main-index discovery** (#1254) — `cqs` from inside a `git worktree` without its own `.cqs/` auto-discovers main's index via `.git/commondir`; envelopes carry `_meta.worktree_stale` + `_meta.worktree_name`.
-4. **Note kind taxonomy** (#1133, schema v25) — `cqs notes add/list/update --kind` + structured `kind` column + `idx_notes_kind`. Full add/list/update lifecycle wired (kind taxonomy is end-to-end).
-5. **TC-ADV reconcile coverage + persistent TRT engine cache** (#1260).
+1. **Eval matcher drift fix** (#1284, big). Strict `(file, name, line_start)` was eating ~38% of gold chunks as misses after audit-driven line-shifts. Loosened to `(file, name)`. Today's BGE-base v3.v2 numbers under corrected matcher: R@1=44.5% / R@5=73.4% / R@20=84.9% (218 queries aggregate). The v9-200k "retired" verdict was 95% fixture-side artifact and the model is back as opt-in.
+2. **Placeholder-cache 30-second startup tax fix** (#1288, big). Eager `LazyLock<Vec<String>>` build of 32,466 SQL placeholder strings was ~30s on first DB write per process. Lazy per-`OnceLock<String>`. **CI test job ~38min → ~6min.**
+3. **Chunk orphan pipeline prune** (#1283). `cqs index --force` now cleans up old-format chunks left behind by chunker-version bumps. ~2% accumulated orphan rates clear automatically on next reindex.
+4. **`bge-large-ft` embedder preset** (#1289). LoRA fine-tune of BGE-large; **best test R@5 (73.4%) of any model in the 5-way A/B**, trades dev R@5 by 6.5pp. Opt-in (`CQS_EMBEDDING_MODEL=bge-large-ft`); default stays at BGE-base for the dev R@5 hedge.
+5. **Daemon test refactor + nightly CI workflow** (#1292, #1286 Phase 1). Thread-local override replaces unsafe `set_var` (eliminates the libc env-mutex deadlock that hung CI for hours); `.github/workflows/ci-slow.yml` runs `cargo test --include-ignored` on a daily cron with auto-issue-on-failure.
 
-### Post-v1.32.0 sweep (2026-05-01, all merged on main)
+### Post-v1.32.0 sweep — folded into v1.33.0 (2026-05-02)
 
 | PR | Closes | Theme |
 |---|---|---|
