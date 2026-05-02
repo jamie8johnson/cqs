@@ -409,7 +409,7 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
             )?;
             code_results.into_iter().map(UnifiedResult::Code).collect()
         } else {
-            store.search_unified_with_index(
+            store.search_code_results(
                 query_embedding,
                 filter,
                 search_limit,

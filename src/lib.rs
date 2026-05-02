@@ -178,7 +178,10 @@ pub use note::{
     NOTES_HEADER,
 };
 pub use parser::{Chunk, Parser};
-pub use reranker::{LlmReranker, NoopReranker, OnnxReranker, Reranker};
+// CQ-V1.33.0-8: `LlmReranker` is a SCAFFOLD-ONLY stub (every score call
+// returns Err). Demoted to `pub(crate)` and dropped from this re-export
+// until the production wiring lands in #1220.
+pub use reranker::{NoopReranker, OnnxReranker, Reranker};
 pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API

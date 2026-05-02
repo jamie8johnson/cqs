@@ -93,9 +93,10 @@ pub(crate) struct EvalCmdArgs {
     /// Apply a reranker stage after retrieval. Default `none` (skip
     /// reranking) preserves the historical eval pipeline. `onnx` runs
     /// the cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
-    /// `llm` resolves to [`cqs::LlmReranker`], which is a skeleton today
-    /// (errors on first call) and is included so the flag can absorb the
-    /// LlmReranker landing without a breaking API change.
+    /// `llm` is reserved for the LLM-judge reranker landing in #1220 and
+    /// currently bails with a "not yet implemented" error; the variant is
+    /// kept on the flag so the production wiring can land without a
+    /// breaking CLI change.
     ///
     /// When `onnx` or `llm` is selected, stage 1 over-retrieves to the
     /// `rerank_pool_size(limit)` cap (mirrors `cqs <q> --rerank`); stage 2
@@ -111,15 +112,16 @@ pub(crate) struct EvalCmdArgs {
 ///
 /// Mirrors the production three-impl set introduced in #1276 (`OnnxReranker`,
 /// `NoopReranker`, `LlmReranker`). `None` short-circuits the entire reranker
-/// path; `Onnx` and `Llm` route through [`crate::cli::CommandContext::reranker`]
-/// in a follow-up wiring pass.
+/// path; `Onnx` routes through [`crate::cli::CommandContext::reranker`]; `Llm`
+/// is reserved for the production wiring landing in #1220 and currently bails
+/// with a "not yet implemented" error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum RerankerMode {
     /// No reranking — stage-1 retrieval is the final answer (default).
     None,
     /// Cross-encoder reranker via [`cqs::OnnxReranker`].
     Onnx,
-    /// LLM reranker via [`cqs::LlmReranker`]. Skeleton today; errors on first call.
+    /// LLM reranker — reserved for #1220, currently errors on selection.
     Llm,
 }
 
@@ -189,12 +191,15 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
         RerankerMode::None => None,
         RerankerMode::Onnx => Some(ctx.reranker()?),
         RerankerMode::Llm => {
-            // LlmReranker is a skeleton — eagerly construct so the eval
-            // user sees the "not yet implemented" error before the search
-            // loop spins up the index, not after spending minutes on
-            // retrieval.
-            let r: std::sync::Arc<dyn cqs::Reranker> = std::sync::Arc::new(cqs::LlmReranker::new());
-            Some(r)
+            // CQ-V1.33.0-8: the underlying `LlmReranker` is a SCAFFOLD-ONLY
+            // crate-private stub (every score call returns Err). Bail before
+            // the search loop spins up so the eval user sees the unsupported
+            // mode immediately instead of after minutes of retrieval. When
+            // the production wiring lands (#1220), this branch goes back to
+            // constructing the real reranker.
+            anyhow::bail!(
+                "--reranker llm is not yet implemented (#1220). Use `--reranker onnx` or omit the flag."
+            );
         }
     };
 

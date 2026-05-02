@@ -1,6 +1,6 @@
 //! Eval runner: load query set, run search per query, score against gold chunks.
 //!
-//! Reuses the production search path (`search_unified_with_index` /
+//! Reuses the production search path (`search_code_results` /
 //! `search_hybrid`) so eval results match what `cqs <query>` returns. The
 //! filter construction mirrors `cmd_query` in
 //! `src/cli/commands/search/query.rs` — same SPLADE alpha resolution, same
@@ -365,13 +365,7 @@ fn search_for_rank(
         )?;
         code.into_iter().map(UnifiedResult::Code).collect()
     } else {
-        store.search_unified_with_index(
-            &query_embedding,
-            &filter,
-            stage1_limit,
-            threshold,
-            index,
-        )?
+        store.search_code_results(&query_embedding, &filter, stage1_limit, threshold, index)?
     };
 
     // Apply reranker (when enabled): pull out the SearchResult payloads,

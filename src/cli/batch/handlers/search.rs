@@ -265,7 +265,7 @@ pub(in crate::cli::batch) fn dispatch_search(
             .map(cqs::store::UnifiedResult::Code)
             .collect()
     } else {
-        ctx.store().search_unified_with_index(
+        ctx.store().search_code_results(
             &query_embedding,
             &filter,
             effective_limit,

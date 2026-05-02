@@ -1,9 +1,8 @@
 //! Search query execution on `Store`.
 //!
 //! Contains the `impl Store` block with all search methods:
-//! `search_embedding_only`, `search_filtered`, `finalize_results`,
-//! `search_filtered_with_index`, `search_by_candidate_ids`, and
-//! `search_unified_with_index`.
+//! `search_filtered`, `finalize_results`, `search_filtered_with_index`,
+//! `search_by_candidate_ids`, and `search_code_results`.
 
 use std::collections::HashSet;
 
@@ -76,21 +75,6 @@ impl<Mode> Store<Mode> {
             index_model,
             query_model,
         })
-    }
-
-    /// Raw embedding-only cosine similarity search (no RRF, no keyword matching).
-    ///
-    /// **You almost certainly want `search_filtered()` instead.** This method skips
-    /// hybrid RRF ranking, name boosting, and all filters. It exists for tests and
-    /// internal building blocks only. Two production bugs came from calling this
-    /// directly (PR #305).
-    pub fn search_embedding_only(
-        &self,
-        query: &Embedding,
-        limit: usize,
-        threshold: f32,
-    ) -> Result<Vec<SearchResult>, StoreError> {
-        self.search_filtered(query, &SearchFilter::default(), limit, threshold)
     }
 
     /// Searches for embeddings matching a query with optional filtering and ranking.
@@ -932,11 +916,15 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Unified search with optional vector index.
+    /// Code-only search returning [`UnifiedResult::Code`] variants.
     ///
-    /// Returns code-only results (SQ-9: notes removed from search pipeline).
-    /// When an HNSW index is provided, uses O(log n) candidate retrieval.
-    pub fn search_unified_with_index(
+    /// CQ-V1.33.0-10: renamed from `search_unified_with_index` post-SQ-9
+    /// (notes removed from the search pipeline). The function maps
+    /// `search_filtered_with_index` results into the `UnifiedResult::Code`
+    /// variant so callers that historically dispatched on the unified
+    /// enum keep compiling. When an HNSW index is provided, uses
+    /// O(log n) candidate retrieval.
+    pub fn search_code_results(
         &self,
         query: &Embedding,
         filter: &SearchFilter,
@@ -948,7 +936,8 @@ impl<Mode> Store<Mode> {
             return Ok(vec![]);
         }
 
-        let _span = tracing::info_span!("search_unified", limit, threshold = %threshold).entered();
+        let _span =
+            tracing::info_span!("search_code_results", limit, threshold = %threshold).entered();
 
         let code_results =
             self.search_filtered_with_index(query, filter, limit, threshold, index)?;

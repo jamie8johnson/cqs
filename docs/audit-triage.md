@@ -58,9 +58,9 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P1-28 | Code Quality | `generate_nl_description` legacy 1-arg wrapper still on watch + bulk hot paths | medium | ⬜ |
 | P1-29 | Code Quality | `embed_documents` inner batch loop hardcodes 64, ignores model dim/seq | easy | ⬜ |
 | P1-30 | Code Quality | `model_repo()` discards override and silently lies in `cmd_doctor` | easy | ⬜ |
-| P1-31 | Code Quality | `index_pack` uses `break` while `token_pack` uses `continue` (P1.18 mirror miss) | easy | ⬜ |
-| P1-32 | Code Quality | `search_embedding_only` `pub` wrapper with zero callers + self-warning footgun | easy | ⬜ |
-| P1-33 | Code Quality | `LlmReranker` exported `pub` but stub returns `Err` from every score call | easy | ⬜ |
+| P1-31 | Code Quality | `index_pack` uses `break` while `token_pack` uses `continue` (P1.18 mirror miss) | easy | ✅ |
+| P1-32 | Code Quality | `search_embedding_only` `pub` wrapper with zero callers + self-warning footgun | easy | ✅ |
+| P1-33 | Code Quality | `LlmReranker` exported `pub` but stub returns `Err` from every score call | easy | ✅ |
 | P1-34 | Scaling | CagraBackend gate uses zero-arg `gpu_available()`, defeats P2.42 VRAM check | easy | ⬜ |
 | P1-35 | Scaling | type_edges INSERT_BATCH=249 still uses pre-2020 SQLite limit | easy | ⬜ |
 | P1-36 | Scaling | chunks/embeddings.rs and chunks/query.rs BATCH_SIZE=500 legacy SQLite limit | easy | ⬜ |
@@ -139,7 +139,7 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-9 | Robustness | `set_on_item_complete` lock().unwrap() — duplicate of EH-V1.33-2 | easy | ⬜ |
 | P3-10 | Code Quality | `check_model_version()` wrapper dead in production | easy | ⬜ |
 | P3-11 | Code Quality | `is_false`/`is_zero_usize` trivial helpers duplicated 3+2 times across modules | easy | ⬜ |
-| P3-12 | Code Quality | `search_unified_with_index` is `pub` 6-line wrapper post-SQ-9 | easy | ⬜ |
+| P3-12 | Code Quality | `search_unified_with_index` is `pub` 6-line wrapper post-SQ-9 | easy | ✅ |
 | P3-13 | Scaling | BM25 K1=1.2, B=0.75 hardcoded in train_data without rationale or env override | easy | ⬜ |
 | P3-14 | Scaling | BM25 FTS5 column weights duplicated as inline SQL string at two sites | easy | ⬜ |
 | P3-15 | Scaling | cagra build_from_store BATCH_SIZE=10_000 hardcoded, doesn't scale with dim | easy | ⬜ |
@@ -155,7 +155,7 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-25 | API Design | `cqs project register` lacks `--json` and skips JSON envelope | easy | ⬜ |
 | P3-26 | API Design | `cqs notes add\|update\|remove` accept no `--json` at subcommand level | easy | ⬜ |
 | P3-27 | API Design | `cqs slot`/`cqs cache` still advertise `--slot` even though it bails | easy | ⬜ |
-| P3-28 | API Design | Public `Store::search_embedding_only` is `pub` footgun — visibility flip (overlaps P1-32) | easy | ⬜ |
+| P3-28 | API Design | Public `Store::search_embedding_only` is `pub` footgun — visibility flip (overlaps P1-32) | easy | ✅ |
 | P3-29 | API Design | `project register` vs `ref add` — same operation, two verbs | easy | ⬜ |
 | P3-30 | API Design | `--json` declared inline on six commands instead of via shared `TextJsonArgs` | easy | ⬜ |
 | P3-31 | API Design | `StoreError::SchemaMismatch(String, i32, i32)` uses positional fields | easy | ⬜ |

@@ -762,8 +762,14 @@ impl Reranker for NoopReranker {
 /// `(query, passage)` pairs, parses scores from the response, and feeds
 /// them through `apply_rerank_scores`. The trait surface here doesn't
 /// change.
-pub struct LlmReranker;
+// SCAFFOLD-ONLY (#1220): demoted to `pub(crate)` and gated behind `#[cfg(test)]`
+// per CQ-V1.33.0-8 because every score call returns `Err`. The trait-surface
+// pin lives in the `tests` module below. Promote back to `pub` (and re-export
+// from `lib.rs`) when the LLM provider wiring lands.
+#[cfg(test)]
+pub(crate) struct LlmReranker;
 
+#[cfg(test)]
 impl LlmReranker {
     /// Construct a skeleton instance. The skeleton returns
     /// `RerankerError::Inference` on every score call so an integration
@@ -774,12 +780,14 @@ impl LlmReranker {
     }
 }
 
+#[cfg(test)]
 impl Default for LlmReranker {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl Reranker for LlmReranker {
     fn rerank(
         &self,
