@@ -65,12 +65,41 @@ const DEFAULT_M: usize = 24;
 const DEFAULT_EF_CONSTRUCTION: usize = 200;
 const DEFAULT_EF_SEARCH: usize = 100;
 
+/// Parse an env-var-overridable HNSW knob, validating that the value is `>= 1`.
+/// AC-V1.33-7: a value of `0` (or unparseable garbage) produces a degenerate
+/// graph; warn and fall back to the default.
+fn parse_hnsw_env_knob(env_name: &str, default: usize) -> usize {
+    match std::env::var(env_name) {
+        Ok(raw) => match raw.parse::<usize>() {
+            Ok(n) if n >= 1 => n,
+            Ok(n) => {
+                tracing::warn!(
+                    env = env_name,
+                    raw = %raw,
+                    parsed = n,
+                    fallback = default,
+                    "HNSW env knob must be >= 1 — using default"
+                );
+                default
+            }
+            Err(e) => {
+                tracing::warn!(
+                    env = env_name,
+                    raw = %raw,
+                    error = %e,
+                    fallback = default,
+                    "HNSW env knob not parseable as usize — using default"
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
 /// M parameter — connections per node. Override with `CQS_HNSW_M`.
 pub(crate) fn max_nb_connection() -> usize {
-    let m: usize = std::env::var("CQS_HNSW_M")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_M);
+    let m = parse_hnsw_env_knob("CQS_HNSW_M", DEFAULT_M);
     if m != DEFAULT_M {
         tracing::info!(m, "CQS_HNSW_M override active");
     }
@@ -79,10 +108,7 @@ pub(crate) fn max_nb_connection() -> usize {
 
 /// Construction-time search width. Override with `CQS_HNSW_EF_CONSTRUCTION`.
 pub(crate) fn ef_construction() -> usize {
-    let ef: usize = std::env::var("CQS_HNSW_EF_CONSTRUCTION")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_EF_CONSTRUCTION);
+    let ef = parse_hnsw_env_knob("CQS_HNSW_EF_CONSTRUCTION", DEFAULT_EF_CONSTRUCTION);
     if ef != DEFAULT_EF_CONSTRUCTION {
         tracing::info!(ef, "CQS_HNSW_EF_CONSTRUCTION override active");
     }
@@ -92,10 +118,7 @@ pub(crate) fn ef_construction() -> usize {
 /// Search width for queries (higher = more accurate but slower).
 /// Override with `CQS_HNSW_EF_SEARCH`.
 pub(crate) fn ef_search() -> usize {
-    let ef: usize = std::env::var("CQS_HNSW_EF_SEARCH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_EF_SEARCH);
+    let ef = parse_hnsw_env_knob("CQS_HNSW_EF_SEARCH", DEFAULT_EF_SEARCH);
     if ef != DEFAULT_EF_SEARCH {
         tracing::info!(ef, "CQS_HNSW_EF_SEARCH override active");
     }

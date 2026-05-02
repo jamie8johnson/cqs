@@ -155,6 +155,24 @@ impl SearchFilter {
             ));
         }
 
+        // AC-V1.33-11: include_types ∩ exclude_types is unsatisfiable —
+        // an `IN (..) AND NOT IN (..)` with overlapping sets always returns zero
+        // rows for the overlapping types, which silently drops results instead
+        // of telling the caller their filter is contradictory.
+        if let (Some(includes), Some(excludes)) = (&self.include_types, &self.exclude_types) {
+            let overlap: Vec<String> = includes
+                .iter()
+                .filter(|ct| excludes.contains(ct))
+                .map(|ct| ct.to_string())
+                .collect();
+            if !overlap.is_empty() {
+                return Err(format!(
+                    "include_types and exclude_types both contain: {} — filter is unsatisfiable",
+                    overlap.join(", ")
+                ));
+            }
+        }
+
         Ok(())
     }
 }
@@ -311,5 +329,44 @@ mod tests {
             ..Default::default()
         };
         assert!(filter.validate().is_ok());
+    }
+
+    // AC-V1.33-11: include_types ∩ exclude_types overlap detection
+    #[test]
+    fn test_search_filter_include_exclude_overlap_rejected() {
+        use crate::parser::ChunkType;
+        let filter = SearchFilter {
+            include_types: Some(vec![ChunkType::Function, ChunkType::Method]),
+            exclude_types: Some(vec![ChunkType::Function]),
+            ..Default::default()
+        };
+        let result = filter.validate();
+        assert!(
+            result.is_err(),
+            "Overlapping include/exclude must be rejected"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unsatisfiable"),
+            "Error should mention unsatisfiability: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("function"),
+            "Error should name the overlapping type: {err}"
+        );
+    }
+
+    #[test]
+    fn test_search_filter_include_exclude_disjoint_ok() {
+        use crate::parser::ChunkType;
+        let filter = SearchFilter {
+            include_types: Some(vec![ChunkType::Function, ChunkType::Method]),
+            exclude_types: Some(vec![ChunkType::Test]),
+            ..Default::default()
+        };
+        assert!(
+            filter.validate().is_ok(),
+            "Disjoint include/exclude is fine"
+        );
     }
 }

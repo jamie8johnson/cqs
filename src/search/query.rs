@@ -154,7 +154,13 @@ impl<Mode> Store<Mode> {
 
         self.rt.block_on(async {
             let fsql = build_filter_sql(filter);
-            let semantic_limit = if fsql.use_rrf { limit * 3 } else { limit };
+            // AC-V1.33-3: saturating mul matches sibling paths (lines 505, 696);
+            // overflow on pathological `limit` would panic in debug.
+            let semantic_limit = if fsql.use_rrf {
+                limit.saturating_mul(3)
+            } else {
+                limit
+            };
             let need_name = fsql.use_hybrid || filter.enable_demotion;
 
             // Compile glob pattern once outside the loop (not per-chunk).
@@ -353,7 +359,8 @@ impl<Mode> Store<Mode> {
             let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
             // Request extra candidates from RRF to compensate for parent dedup
             // filtering below — dedup can drop results, leaving fewer than `limit`.
-            Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
+            // AC-V1.33-3: saturating mul to match sibling paths.
+            Self::rrf_fuse(&semantic_ids, &fts_ids, limit.saturating_mul(2))
         } else {
             scored.truncate(limit);
             scored

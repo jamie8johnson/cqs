@@ -121,7 +121,8 @@ fn parse_st_regions(
                     content,
                     file: path.to_path_buf(),
                     line_start: region.line_start,
-                    line_end: region.line_start + line_count,
+                    // AC-V1.33-2: line_end is inclusive 1-indexed (see chunk.rs:93)
+                    line_end: region.line_start + line_count.saturating_sub(1),
                     language: st_lang,
                     signature: sig,
                     doc: None,
