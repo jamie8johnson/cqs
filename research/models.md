@@ -225,3 +225,48 @@ The shape is consistent with the original phase 2 finding: lexical-heavy categor
 **Closing:** code change reverted; this branch carries only the docs update. The branch `research/splade-rrf-redo` carried the change for the eval and is being thrown away (same as the original phase 2 branch was). Issue #1176 stays closed. The phase 2 entry above is updated with this caveat-note pointing at this entry; the absolute numbers in the original entry are now superseded by the corrected-matcher numbers here.
 
 **Lesson — meta:** when a relative comparison feels "barely in tolerance," check the harness before accepting "tie within noise." The 0.9pp test R@5 gap in the original phase 2 was real — it was just compressed by matcher noise. A 3.6pp gap on the corrected matcher would have been an obvious "linear-α wins" without any "barely" caveat. Compressed-by-noise differences are a known pitfall of small benchmarks; loosening the matcher made the eval's resolution match what the underlying question deserved.
+
+---
+
+## 2026-05-02 — BGE-large LoRA fine-tune A/B vs base
+
+**Issue:** #1289. The HF repo `jamie8johnson/bge-large-v1.5-code-search` (LoRA fine-tune of BGE-large on `cqs-code-search-200k`) had been published since the original training pass but never made it into the v3.v2 production-fixture comparison. Question: is the FT model strictly better than base?
+
+**Setup:** Added `bge-large-ft` preset (same architecture as `bge-large` — 1024-dim, 512 max_seq, mean pooling, BGE prefix). Tokenizer fetch failed on first attempt because `tokenizer.json` lives in `onnx/` not at repo root for this HF layout — fixed `tokenizer_path = "onnx/tokenizer.json"`. Fresh slot, reindex to 14,460 chunks, then eval against test + dev under the corrected matcher.
+
+**Headline numbers:**
+
+| split | metric | BGE-large (base) | **BGE-large + LoRA** | Δ |
+|-------|--------|-----------------:|---------------------:|--:|
+| test  | R@1    | 43.1%            | **45.0%**            | +1.9 |
+| test  | R@5    | 69.7%            | **73.4%**            | **+3.7** |
+| test  | R@20   | 83.5%            | 83.5%                |  0.0 |
+| dev   | R@1    | 45.9%            | **46.8%**            | +0.9 |
+| dev   | R@5    | **77.1%**        | 70.6%                | **−6.5** |
+| dev   | R@20   | **86.2%**        | 82.6%                | −3.6 |
+
+**Updated best-per-metric across all 5 models tested today (BGE-base, BGE-FT, EmbeddingGemma+summ, v9-200k, nomic-coderank):**
+
+| metric         | winner               | runner-up                                              |
+|----------------|----------------------|--------------------------------------------------------|
+| test R@1       | Gemma / v9 (tie 45.9%) | BGE-FT 45.0%                                         |
+| **test R@5**   | **BGE-FT 73.4%**     | v9-200k 70.6%, BGE-base 69.7%                          |
+| test R@20      | BGE-base / BGE-FT 83.5% (tied) | Gemma 82.6%                                |
+| dev R@1        | Gemma / coderank 47.7% | BGE-FT / v9 46.8%                                    |
+| **dev R@5**    | **BGE-base 77.1%**   | Gemma 71.6%, BGE-FT 70.6%                              |
+| dev R@20       | **BGE-base 86.2%**   | Gemma 85.3%, BGE-FT 82.6%                              |
+
+**The trade-off, mechanistically.** LoRA fine-tuning on a curated code-pair distribution drags the embedding space toward that distribution. Test split is closer to it (queries look more like training pairs); dev split is deliberately broader (more natural-language reasoning, more open-ended exploration). Result: BGE-FT moves +3.7pp on test R@5 and -6.5pp on dev R@5. Canonical in-vs-out-of-distribution fine-tune trade-off — not a bug.
+
+**Verdict:** ship as `bge-large-ft` opt-in preset; do NOT promote to default. Reasoning:
+1. Dev R@5 is the more conservative signal for cqs's deployment context — agents don't always issue cleanly code-shaped queries (onboarding / exploratory questions). Losing 6.5pp there means worse generalization.
+2. The test R@5 win is real but capped — at 73.4% it's the best we've seen, but BGE-base at 69.7% was already in the same band, and the test gate has been historically noisy.
+3. Cost is identical — same architecture, same 1.3GB ONNX bundle, same inference latency. Opt-in preset is the right shape.
+
+cqs default stays at BGE-base. BGE-FT joins the opt-in preset list alongside `v9-200k`, `nomic-coderank`, `embeddinggemma-300m`.
+
+**Caveat on chunk counts.** Default slot has 19,476 chunks; the new `bge-ft` slot has 14,460. Partly real chunker output, partly accumulated orphan rows in the default slot from prior chunker-ID-format changes (#1283 — fixed in PR #1295, just not yet rerun against default). The eval matcher finds the right `(file, name)` chunk if indexed, so this doesn't bias the headline numbers, but a follow-up rerun of BGE-base from a freshly-pruned default slot would tighten the comparison.
+
+**Open follow-up:** per-category breakdown of the dev R@5 gap (6.5pp) — likely concentrated in `negation` / `multi_step` / `conceptual_search` where dev queries deliberately stress NL reasoning. Tracked as a footnote in the BGE-FT HF model card.
+
+**Closing:** preset added; HF model card updated with v3.v2 results + trade-off framing; default-model decision unchanged. Eval JSONs at `/tmp/eval-bge-ft-{test,dev}.json`. Issue #1289 closed.

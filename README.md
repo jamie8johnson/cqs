@@ -774,7 +774,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
-| `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
+| `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `bge-large-ft`, `v9-200k`, `e5-base`, `nomic-coderank`) or custom HF repo. See `src/embedder/models.rs` for the full preset list and per-preset trade-offs. |
 | `CQS_EVAL_OUTPUT` | (none) | Path to write per-query eval diagnostics JSON (used by eval harness) |
 | `CQS_EVAL_REQUIRE_FRESH` | `1` | Set to `0`/`false`/`no`/`off` to disable the freshness gate that `cqs eval` applies before running (#1182). When on, the eval harness blocks until the running `cqs watch --serve` daemon reports `state == fresh`, or errors out if the daemon isn't reachable — prevents silent stale-index runs that look like 5-25pp R@K regressions. Pass `--no-require-fresh` for the same effect on a single invocation. |
 | `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
