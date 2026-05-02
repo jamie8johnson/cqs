@@ -273,6 +273,19 @@ impl WatchSnapshot {
     /// Pure function — pulls only the fields it needs and resolves the
     /// `state` machine deterministically.
     pub fn compute(input: WatchSnapshotInput<'_>) -> Self {
+        // P2-2 (audit v1.33.0): trace the freshness state machine so
+        // operators investigating "why did the gate report Stale at
+        // 14:32:01?" can see what `compute()` saw at that timestamp.
+        // `debug_span` keeps the per-tick noise behind RUST_LOG=debug.
+        let _span = tracing::debug_span!(
+            "watch_snapshot_compute",
+            pending_files = input.pending_files_count,
+            pending_notes = input.pending_notes,
+            rebuilding = input.rebuild_in_flight,
+            dropped = input.dropped_this_cycle,
+            delta_saturated = input.delta_saturated,
+        )
+        .entered();
         let state = if input.rebuild_in_flight {
             FreshnessState::Rebuilding
         } else if input.pending_files_count > 0
@@ -307,6 +320,10 @@ impl WatchSnapshot {
             })
             .unwrap_or(0);
 
+        // P2-2: emit the resolved state so the per-call decision is
+        // queryable without rebuilding the state-machine inputs.
+        tracing::trace!(state = %state, "compute decision");
+
         Self {
             state,
             // RB-7: saturating `usize → u64`. On 64-bit platforms `as u64`
@@ -334,7 +351,16 @@ impl WatchSnapshot {
 /// helper. Watch-status snapshots prefer `Option<i64>` so the bad-clock
 /// case can surface as JSON `null` (versus a silent `0` lie).
 fn now_unix_secs() -> Option<i64> {
-    crate::unix_secs_i64()
+    let result = crate::unix_secs_i64();
+    if result.is_none() {
+        // P2-2 (audit v1.33.0): leave a per-call trace breadcrumb when the
+        // clock is bad. The central helper already emits a once-per-process
+        // warn, but a per-call trace lets operators correlate individual
+        // snapshot publications with the bad-clock condition under
+        // RUST_LOG=trace without re-firing the noisier warn.
+        tracing::trace!("now_unix_secs: clock before epoch — returning None");
+    }
+    result
 }
 
 #[cfg(test)]

@@ -261,11 +261,21 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
         // full URI — the `?token=…` query param lands in span fields
         // otherwise and bleeds the per-launch token into journald /
         // RUST_LOG=debug.
+        //
+        // P2-1 (audit v1.33.0): generate a per-process monotonic
+        // `request_id` so concurrent requests for the same path can
+        // be correlated in `journalctl --user -u cqs-watch` output.
+        // `AtomicU64` counter (no extra dep) — sufficient for one
+        // daemon's journal; not globally unique by design.
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request| {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+            let request_id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
             tracing::info_span!(
                 "http_request",
                 method = %req.method(),
                 path = %req.uri().path(),
+                request_id,
             )
         }))
 }

@@ -465,6 +465,10 @@ impl SpladeEncoder {
     /// sequence → ReLU + log(1+x) → threshold to keep significant weights.
     pub fn encode(&self, text: &str) -> Result<SparseVector, SpladeError> {
         let _span = tracing::debug_span!("splade_encode", text_len = text.len()).entered();
+        // P3-2 (audit v1.33.0): time encode end-to-end so cold session
+        // re-init spikes (`session_guard.is_none()` branch around line 521)
+        // surface in the journal alongside the existing per-call debug spans.
+        let start = std::time::Instant::now();
 
         if text.is_empty() {
             return Ok(Vec::new());
@@ -601,7 +605,14 @@ impl SpladeEncoder {
             )));
         };
 
-        tracing::debug!(non_zero = sparse.len(), "SPLADE encoding complete");
+        // P3-2: completion with elapsed_ms + nnz so encode-time spikes
+        // (cold session, model hiccup) are queryable without inferring
+        // from the surrounding `splade_encode` span.
+        tracing::debug!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            nnz = sparse.len(),
+            "splade_encode complete"
+        );
         Ok(sparse)
     }
 

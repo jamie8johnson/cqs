@@ -824,6 +824,11 @@ impl Embedder {
 
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let _span = tracing::info_span!("embed_query").entered();
+        // P3-3 (audit v1.33.0): time end-to-end so cache-hit vs. miss
+        // latency is queryable on the completion events. Without this
+        // operators can't tell "model is suddenly slow" from "cache hit
+        // rate cratered".
+        let start = std::time::Instant::now();
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);
@@ -854,6 +859,15 @@ impl Embedder {
             });
             if let Some(cached) = cache.get(text) {
                 tracing::trace!(query = text, "Query cache hit (memory)");
+                // P3-3: emit cache-aware completion (no query text — leaks at
+                // trace level otherwise) so operators tracking hit-rate can
+                // see hits at debug without enabling trace journals.
+                tracing::debug!(
+                    dim = self.embedding_dim(),
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    cache = "memory_hit",
+                    "embed_query complete"
+                );
                 return Ok(cached.clone());
             }
         }
@@ -866,6 +880,13 @@ impl Embedder {
                 // Populate in-memory LRU for fast subsequent hits
                 let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
                 cache.put(text.to_string(), cached.clone());
+                // P3-3: disk-hit completion mirrors memory_hit shape.
+                tracing::debug!(
+                    dim = self.embedding_dim(),
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    cache = "disk_hit",
+                    "embed_query complete"
+                );
                 return Ok(cached);
             }
         }
@@ -896,7 +917,14 @@ impl Embedder {
         // P3.10: completion event so embed_query has parity with the
         // embed_documents log line. Debug-level — embed_query runs once per
         // search and the entry span already covers timing.
-        tracing::debug!(dim = self.embedding_dim(), "embed_query complete");
+        // P3-3 (audit v1.33.0): add elapsed_ms + cache-tier so the journal
+        // distinguishes "model slow on miss" from "everything was a hit".
+        tracing::debug!(
+            dim = self.embedding_dim(),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            cache = "miss",
+            "embed_query complete"
+        );
         Ok(embedding)
     }
 
@@ -953,7 +981,18 @@ impl Embedder {
 
     /// Warm up the model with a dummy inference
     pub fn warm(&self) -> Result<(), EmbedderError> {
+        // P3-7 (audit v1.33.0): operators investigating "daemon takes 4s
+        // to come up" need a "warm started/completed" anchor. The dummy
+        // embed_query triggers ~250 MB+ ORT session + tokenizer load (1-3s
+        // on first GPU inference) and previously emitted nothing of its own.
+        let _span = tracing::info_span!("embedder_warm", model = %self.model_config.name).entered();
+        let start = std::time::Instant::now();
         let _ = self.embed_query("warmup")?;
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            model = %self.model_config.name,
+            "embedder warmed"
+        );
         Ok(())
     }
 

@@ -130,6 +130,16 @@ macro_rules! for_each_command {
                             "caches_invalidated": [],
                         }))
                     } else {
+                        // P3-6 (audit v1.33.0): mirror the JSON branch onto
+                        // the journal so operators correlating "user ran
+                        // refresh, no daemon" with later reindex weirdness
+                        // have a tracing breadcrumb. Keep the println for
+                        // terminal UX — log line is in addition.
+                        tracing::info!(
+                            refreshed = false,
+                            daemon_running = false,
+                            "cqs refresh: no daemon"
+                        );
                         println!("no daemon running, nothing to refresh");
                         Ok(())
                     }
