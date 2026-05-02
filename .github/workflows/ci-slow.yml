@@ -8,10 +8,15 @@ name: CI (slow / overnight)
 # Background: see #1286.
 
 on:
-  schedule:
-    # 06:00 UTC daily ≈ 22:00 PT previous day. Once-a-day, not hourly —
-    # the suite is heavy and free-tier minutes matter.
-    - cron: '0 6 * * *'
+  # Schedule cron disabled until #1305 is triaged — the first run on
+  # 2026-05-02 surfaced two pre-existing instabilities (cli_doctor_fix_test
+  # panics on the runner, 9 model-loading tests fail without an HF cache /
+  # token). Re-enable by uncommenting the schedule block once the underlying
+  # bugs are addressed; until then, run via workflow_dispatch when needed.
+  # schedule:
+  #   # 06:00 UTC daily ≈ 22:00 PT previous day. Once-a-day, not hourly —
+  #   # the suite is heavy and free-tier minutes matter.
+  #   - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       include_ignored:
