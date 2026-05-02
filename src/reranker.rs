@@ -1110,6 +1110,38 @@ mod tests {
         );
     }
 
+    /// TC-ADV-V1.33-4: pin that the length-mismatch error message contains
+    /// both lengths. P3.11 surfaced this as `InvalidArguments` so callers
+    /// can pattern-match the caller-bug case distinctly from model errors;
+    /// a future refactor that flipped the variant or dropped the lengths
+    /// from the message would break operator log-grep loops.
+    #[test]
+    fn test_rerank_with_passages_length_mismatch_returns_invalid_arguments() {
+        let reranker = NoopReranker::new();
+        // Three results, two passages — mismatch.
+        let mut results = vec![
+            stub_result("a", "first"),
+            stub_result("b", "second"),
+            stub_result("c", "third"),
+        ];
+        let passages = ["first passage", "second passage"];
+        let err = reranker
+            .rerank_with_passages("q", &mut results, &passages, 10)
+            .expect_err("length mismatch must error");
+        let msg = match err {
+            RerankerError::InvalidArguments(s) => s,
+            other => panic!("expected InvalidArguments, got {other:?}"),
+        };
+        assert!(
+            msg.contains("3"),
+            "error message must mention results.len()=3, got: {msg:?}"
+        );
+        assert!(
+            msg.contains("2"),
+            "error message must mention passages.len()=2, got: {msg:?}"
+        );
+    }
+
     /// `LlmReranker` is a skeleton — every score-producing call returns
     /// `RerankerError::Inference` so an integration test against the
     /// production search path can verify trait wiring without any
@@ -1127,6 +1159,101 @@ mod tests {
         assert!(
             msg.contains("skeleton"),
             "skeleton error must self-identify; got: {msg}"
+        );
+    }
+
+    // ===== TC-HAP-V1.33-10: resolve_reranker config-path coverage =====
+    //
+    // P1.7 fix shipped `OnnxReranker::with_section(section: Option<...>)`
+    // so `.cqs.toml` `[reranker]` `preset` / `model_path` / `tokenizer_path`
+    // override the hardcoded default. These tests pin the precedence chain
+    // documented at line 57-58 ("CLI → CQS_RERANKER_MODEL → [reranker]
+    // model_path → [reranker] preset → hardcoded ms-marco-minilm").
+    //
+    // Pure-config — no ONNX runtime needed, just `aux_model::resolve`
+    // dispatch. CQS_RERANKER_MODEL must be unset for deterministic
+    // results, hence the cross-test lock.
+
+    use std::sync::Mutex;
+    static RERANKER_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// TC-HAP-V1.33-10: `[reranker] preset = "ms-marco-minilm"` resolves
+    /// to the canonical preset config. Pins the preset branch (line 5 of
+    /// the precedence chain documented at reranker.rs:57-58).
+    #[test]
+    fn resolve_reranker_with_preset_resolves_to_preset_path() {
+        let _guard = RERANKER_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("CQS_RERANKER_MODEL").ok();
+        std::env::remove_var("CQS_RERANKER_MODEL");
+
+        let section = AuxModelSection {
+            preset: Some("ms-marco-minilm".to_string()),
+            model_path: None,
+            tokenizer_path: None,
+        };
+        let cfg = resolve_reranker(Some(&section)).expect("resolve must succeed for preset");
+
+        // Restore env before any assertion so a panic doesn't leak state.
+        match prev {
+            Some(v) => std::env::set_var("CQS_RERANKER_MODEL", v),
+            None => std::env::remove_var("CQS_RERANKER_MODEL"),
+        }
+
+        assert_eq!(
+            cfg.preset.as_deref(),
+            Some("ms-marco-minilm"),
+            "preset name must round-trip through resolve"
+        );
+        assert_eq!(
+            cfg.repo.as_deref(),
+            Some("cross-encoder/ms-marco-MiniLM-L-6-v2"),
+            "ms-marco-minilm preset must point at the cross-encoder repo"
+        );
+    }
+
+    /// TC-HAP-V1.33-10: when no `[reranker]` section is provided,
+    /// `resolve_reranker` falls back to the hardcoded default preset
+    /// (`ms-marco-minilm`). Pins the last branch of the precedence chain.
+    #[test]
+    fn resolve_reranker_with_no_section_falls_back_to_default_preset() {
+        let _guard = RERANKER_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("CQS_RERANKER_MODEL").ok();
+        std::env::remove_var("CQS_RERANKER_MODEL");
+
+        let cfg = resolve_reranker(None).expect("default-preset fallback must succeed");
+
+        match prev {
+            Some(v) => std::env::set_var("CQS_RERANKER_MODEL", v),
+            None => std::env::remove_var("CQS_RERANKER_MODEL"),
+        }
+
+        assert_eq!(
+            cfg.preset.as_deref(),
+            Some("ms-marco-minilm"),
+            "default fallback must be ms-marco-minilm"
+        );
+    }
+
+    /// TC-HAP-V1.33-10: model-loading variant — covers the full
+    /// `OnnxReranker::with_section` construction path. Gated `#[ignore]`
+    /// because the lazy session load that follows construction needs the
+    /// real ONNX model, but with_section itself only stores the section
+    /// (no model download). Runs in ci-slow.yml's full-suite job.
+    #[test]
+    #[ignore = "construction-only smoke; full reranker uses ms-marco-MiniLM model from ~/.cache/huggingface; runs in ci-slow.yml full-suite job"]
+    fn test_onnx_reranker_with_section() {
+        let section = AuxModelSection {
+            preset: Some("ms-marco-minilm".to_string()),
+            model_path: None,
+            tokenizer_path: None,
+        };
+        let reranker = OnnxReranker::with_section(Some(section.clone()))
+            .expect("with_section must construct without model load");
+        // The cached section is stored for lazy `model_paths` resolution.
+        // Sanity-check: the field is populated.
+        assert!(
+            reranker.section.is_some(),
+            "with_section must store the section for lazy resolve_reranker"
         );
     }
 }

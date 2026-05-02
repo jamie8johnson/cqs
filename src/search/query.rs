@@ -1180,6 +1180,82 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    /// TC-ADV-V1.33-1: `search_filtered` with `limit=0` must return an empty
+    /// result without panicking, even when the store has matching chunks.
+    /// Pins the contract that downstream `BoundedScoreHeap::new(0)` and
+    /// `semantic_limit = limit * 3 = 0` arithmetic don't blow up.
+    #[test]
+    fn test_search_filtered_limit_zero_returns_empty() {
+        let (store, _dir) = setup_store();
+        // Seed a chunk so the path actually traverses the cursor scan.
+        let c = make_chunk("alpha", "src/a.rs", Language::Rust, ChunkType::Function);
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c, emb.clone())], Some(12345))
+            .unwrap();
+
+        let filter = SearchFilter::default();
+        let results = store
+            .search_filtered(&emb, &filter, 0, 0.0)
+            .expect("limit=0 must not error");
+        assert!(
+            results.is_empty(),
+            "limit=0 must return empty result, got {} entries",
+            results.len()
+        );
+    }
+
+    /// TC-ADV-V1.33-1: same contract for `search_filtered_with_index` —
+    /// even with a vector index supplying candidate IDs, `limit=0` must
+    /// short-circuit (or naturally produce empty) without panic.
+    #[test]
+    fn test_search_filtered_with_index_limit_zero_returns_empty() {
+        use crate::embedder::Embedding;
+        use crate::index::{IndexResult, VectorIndex};
+
+        struct MockIdx {
+            candidate_id: String,
+        }
+        impl VectorIndex for MockIdx {
+            fn search(&self, _query: &Embedding, _k: usize) -> Vec<IndexResult> {
+                vec![IndexResult {
+                    id: self.candidate_id.clone(),
+                    score: 0.9,
+                }]
+            }
+            fn len(&self) -> usize {
+                1
+            }
+            fn name(&self) -> &'static str {
+                "MockIdx"
+            }
+            fn dim(&self) -> usize {
+                crate::EMBEDDING_DIM
+            }
+        }
+
+        let (store, _dir) = setup_store();
+        let c = make_chunk("alpha", "src/a.rs", Language::Rust, ChunkType::Function);
+        let chunk_id = c.id.clone();
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c, emb.clone())], Some(12345))
+            .unwrap();
+
+        let idx = MockIdx {
+            candidate_id: chunk_id,
+        };
+        let filter = SearchFilter::default();
+        let results = store
+            .search_filtered_with_index(&emb, &filter, 0, 0.0, Some(&idx))
+            .expect("limit=0 must not error");
+        assert!(
+            results.is_empty(),
+            "limit=0 with index must return empty result, got {} entries",
+            results.len()
+        );
+    }
+
     /// TC-7: Verify HNSW-guided path produces RRF results when enable_rrf is true.
     ///
     /// The search_by_candidate_ids path must apply the same RRF fusion as

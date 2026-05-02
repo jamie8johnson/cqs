@@ -530,4 +530,27 @@ mod tests {
             results.len()
         );
     }
+
+    /// TC-ADV-V1.33-2: `HnswIndex::search` with `k=0` must return an empty
+    /// result without panicking. Pins the contract at the cqs boundary so a
+    /// future `hnsw_rs` version bump can't silently change behavior — the
+    /// internal `ef_search = self.ef_search.max(k * 2).min(index_size)` math
+    /// must not trip on `k=0`.
+    #[test]
+    fn tc18_search_k_zero_returns_empty() {
+        // Build a populated index so the k=0 path doesn't short-circuit on
+        // `id_map.is_empty()` — we want to drive into search_neighbours.
+        let embeddings: Vec<(String, Embedding)> = (0..10)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+
+        let query = make_embedding(1);
+        let results = index.search(&query, 0);
+        assert!(
+            results.is_empty(),
+            "search with k=0 must return empty, got {} results",
+            results.len()
+        );
+    }
 }

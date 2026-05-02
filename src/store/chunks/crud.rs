@@ -1745,4 +1745,113 @@ mod tests {
             "file2.rs chunk should remain"
         );
     }
+
+    // ===== TC-HAP-V1.33-7: update_umap_coords_batch happy path =====
+
+    /// TC-HAP-V1.33-7: seed chunks, call `update_umap_coords_batch` with
+    /// finite values, verify the rows are written and `umap_x`/`umap_y`
+    /// round-trip via raw SELECT (matching how `build_cluster` reads them
+    /// in `serve/data.rs`).
+    #[test]
+    fn test_update_umap_coords_batch_writes_coords_atomically() {
+        let (store, _dir) = setup_store();
+
+        // Seed two chunks first (need real chunk rows for UPDATE-FROM
+        // semantics to land).
+        let c1 = make_chunk("alpha", "src/a.rs");
+        let c2 = make_chunk("beta", "src/b.rs");
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb)], Some(100))
+            .unwrap();
+
+        // Apply UMAP coords.
+        let coords = vec![
+            (id1.clone(), 1.5_f64, -2.25_f64),
+            (id2.clone(), 0.25_f64, 3.75_f64),
+        ];
+        let updated = store.update_umap_coords_batch(&coords).unwrap();
+        assert_eq!(updated, 2, "expected 2 rows updated, got {updated}");
+
+        // Read back via raw SELECT (mirrors build_cluster's path).
+        store.runtime().block_on(async {
+            let (x1, y1): (f64, f64) =
+                sqlx::query_as("SELECT umap_x, umap_y FROM chunks WHERE id = ?1")
+                    .bind(&id1)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert!((x1 - 1.5).abs() < 1e-9, "x1 round-trip: got {x1}");
+            assert!((y1 - (-2.25)).abs() < 1e-9, "y1 round-trip: got {y1}");
+
+            let (x2, y2): (f64, f64) =
+                sqlx::query_as("SELECT umap_x, umap_y FROM chunks WHERE id = ?1")
+                    .bind(&id2)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert!((x2 - 0.25).abs() < 1e-9, "x2 round-trip: got {x2}");
+            assert!((y2 - 3.75).abs() < 1e-9, "y2 round-trip: got {y2}");
+        });
+    }
+
+    /// TC-HAP-V1.33-7: passing an extra unknown ID — the warn fires +
+    /// `updated` is < input length. Documents the partial-update path
+    /// the function uses when the projection script's input drifts.
+    #[test]
+    fn test_update_umap_coords_batch_handles_missing_ids() {
+        let (store, _dir) = setup_store();
+
+        // Seed one real chunk; submit two coords (one real id, one fake).
+        let c = make_chunk("gamma", "src/g.rs");
+        let real_id = c.id.clone();
+        let emb = mock_embedding(1.0);
+        store.upsert_chunks_batch(&[(c, emb)], Some(100)).unwrap();
+
+        let coords = vec![
+            (real_id.clone(), 0.5_f64, 0.5_f64),
+            ("not-an-id".to_string(), 1.0_f64, 1.0_f64),
+        ];
+        let updated = store.update_umap_coords_batch(&coords).unwrap();
+        assert_eq!(
+            updated, 1,
+            "fake id must not be written; expected 1 row updated, got {updated}"
+        );
+        assert!(
+            updated < coords.len(),
+            "updated ({updated}) < input.len() ({}) — pins the partial-update warn path",
+            coords.len()
+        );
+    }
+
+    // ===== TC-ADV-V1.33-10: update_umap_coords_batch NaN/Inf handling =====
+
+    /// TC-ADV-V1.33-10: pin current behaviour around NaN/Inf coords.
+    /// Today the temp table's `umap_x REAL NOT NULL` schema rejects NaN
+    /// (sqlx binds NaN as NULL → constraint violation), so the call
+    /// surfaces a SQLite error rather than panicking or silently
+    /// writing corrupt floats to `chunks`. This test pins that
+    /// observed status quo: a future fix that adds an explicit
+    /// `is_finite` guard at the helper boundary should produce a
+    /// different, more user-friendly error — flipping this test signals
+    /// that contract change.
+    #[test]
+    fn test_update_umap_coords_batch_rejects_nan_today() {
+        let (store, _dir) = setup_store();
+        let c = make_chunk("delta", "src/d.rs");
+        let id = c.id.clone();
+        let emb = mock_embedding(1.0);
+        store.upsert_chunks_batch(&[(c, emb)], Some(100)).unwrap();
+
+        // Hostile input: a NaN coord. Today this fails the temp table's
+        // NOT NULL constraint (NaN binds as NULL via sqlx).
+        let coords = vec![(id.clone(), f64::NAN, 0.5_f64)];
+        let result = store.update_umap_coords_batch(&coords);
+        assert!(
+            result.is_err(),
+            "NaN coord must surface as an error today, got {result:?}"
+        );
+    }
 }

@@ -236,6 +236,46 @@ fn trace_no_path_returns_none() {
     );
 }
 
+/// TC-HAP-V1.33-4: pin the lib-level integration the CLI's
+/// `build_trace_output` orchestrates — BFS over the call graph followed
+/// by `search_by_names_batch` to resolve each hop's chunk metadata.
+/// `build_trace_output` itself is `pub(crate)` of the binary crate so
+/// this test exercises the same primitives in the same order.
+#[test]
+fn trace_resolves_hop_metadata_via_search_by_names_batch() {
+    let f = graph_corpus();
+    let graph = f.store.get_call_graph().expect("get_call_graph");
+    // BFS gives us the path of names; resolve each via batch search
+    // (same call build_trace_output makes at line 54).
+    let path = shortest_call_path(&graph.forward, "main", "validate", 5).expect("path must exist");
+    let name_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+    let batch = f
+        .store
+        .search_by_names_batch(&name_refs, 1)
+        .expect("search_by_names_batch");
+
+    // Every hop must resolve to at least one chunk — that's the
+    // load-bearing invariant; without it the JSON envelope's `path` array
+    // ships hops with empty file/line_start and `build_trace_output`'s
+    // tracing::warn fires (which itself is a regression signal).
+    for name in &path {
+        let hits = batch
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("name {name:?} missing from batch"));
+        // `build_trace_output` takes `.first()` (line 59) — pin the
+        // contract that every hop resolves to AT LEAST ONE chunk so
+        // no hop falls into the warn-fallback path that emits empty
+        // file/line_start in the JSON envelope.
+        let first = hits.first().expect("first hit");
+        assert!(
+            first.chunk.line_start > 0,
+            "resolved hop {name:?} must have non-zero line_start \
+             (would be 0 in the warn-fallback path); first match: name={:?}",
+            first.chunk.name
+        );
+    }
+}
+
 // ---------------------------------------------------------------------
 // impact (2 tests)
 // ---------------------------------------------------------------------
@@ -337,6 +377,64 @@ fn explain_process_reports_callers_and_callees() {
     assert!(
         callee_names.contains(&"validate") || callee_names.contains(&"transform"),
         "process calls validate + transform; got callees {callee_names:?}"
+    );
+}
+
+/// TC-HAP-V1.33-5: pin the full `build_explain_data` contract at the lib
+/// level — callers, callees, similar (semantic search), and hints all
+/// firing together for a real chunk. The CLI handler `build_explain_data`
+/// is `pub(crate)` of the binary crate so this test exercises the same
+/// primitives in the same orchestration order.
+#[test]
+fn explain_data_integrates_callers_callees_similar_and_hints() {
+    let f = graph_corpus();
+    // 1. Resolve target chunk via search (same path build_explain_data uses
+    //    via `cqs::resolve_target`).
+    let hits = f.search("process", 10).expect("search process");
+    let chunk = hits
+        .iter()
+        .find(|h| h.chunk.name == "process")
+        .map(|h| h.chunk.clone())
+        .expect("process chunk must be indexed");
+
+    // 2. Callers + callees (call graph integration).
+    let callers = f.store.get_callers_full(&chunk.name).expect("callers");
+    let callees = f
+        .store
+        .get_callees_full(&chunk.name, Some(&chunk.file.to_string_lossy()))
+        .expect("callees");
+
+    // 3. Similar via semantic search seeded with the chunk's stored
+    //    embedding (same path build_explain_data uses).
+    let (_chunk_again, embedding) = f
+        .store
+        .get_chunk_with_embedding(&chunk.id)
+        .expect("get_chunk_with_embedding")
+        .expect("chunk must have an embedding");
+    let filter = cqs::store::SearchFilter::default();
+    let similar = f
+        .store
+        .search_filtered(&embedding, &filter, 4, 0.0)
+        .expect("search_filtered for similar");
+
+    // 4. Hints (cqs::compute_hints — same call build_explain_data makes
+    //    when chunk_type.is_callable()).
+    let hints = cqs::compute_hints(&f.store.store, &chunk.name, Some(callers.len()))
+        .expect("compute_hints");
+
+    // Pin the integrated contract: every primitive yields data, and the
+    // hint counter aligns with the caller list — that alignment is the
+    // load-bearing invariant build_explain_data depends on.
+    assert!(!callers.is_empty(), "process has callers");
+    assert!(!callees.is_empty(), "process has callees");
+    assert!(
+        similar.iter().any(|r| r.chunk.id == chunk.id),
+        "similar must surface the seed chunk itself"
+    );
+    assert_eq!(
+        hints.caller_count,
+        callers.len(),
+        "compute_hints caller_count must match the explicit callers list"
     );
 }
 

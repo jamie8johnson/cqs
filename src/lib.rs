@@ -1201,6 +1201,116 @@ mentions = ["store.rs"]
             "Should return empty for directory with no supported files"
         );
     }
+
+    /// TC-ADV-V1.33-5: SECURITY.md promises `follow_links=false` per
+    /// SEC-V1.30.1-2. A symlink to a real `.rs` file inside the project
+    /// must NOT appear in the enumerated list — the walker is configured
+    /// to skip links, not to dereference them. Pins the security policy.
+    #[test]
+    #[cfg(unix)]
+    fn test_enumerate_files_skips_symlinks_to_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // A real source file the symlink will point at.
+        let real_rs = dir.path().join("real.rs");
+        std::fs::write(&real_rs, "fn real() {}").unwrap();
+        // A symlink alongside the real file, both `.rs`.
+        let link_rs = dir.path().join("link.rs");
+        symlink(&real_rs, &link_rs).unwrap();
+
+        let files = enumerate_files(dir.path(), &["rs"], false).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        // The real file is included; the symlink is filtered out by
+        // `follow_links(false)`.
+        assert!(
+            names.contains(&"real.rs".to_string()),
+            "real.rs should be enumerated, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"link.rs".to_string()),
+            "symlink link.rs must be skipped (SEC-V1.30.1-2), got {names:?}"
+        );
+    }
+
+    /// TC-ADV-V1.33-5: files exceeding `CQS_MAX_FILE_SIZE` must be
+    /// silently filtered. Pins the size cap behaviour at lines 759-779.
+    #[test]
+    fn test_enumerate_files_skips_oversized_files() {
+        use std::sync::Mutex;
+        // Cross-test serialisation lock for CQS_MAX_FILE_SIZE — env vars
+        // are process-global so parallel tests would race.
+        static MAX_SIZE_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = MAX_SIZE_LOCK.lock().unwrap();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // Small file should pass.
+        std::fs::write(dir.path().join("small.rs"), b"fn s() {}").unwrap();
+        // Big file (200 bytes) exceeds the cap (100 bytes) we set below.
+        std::fs::write(dir.path().join("big.rs"), vec![b'a'; 200]).unwrap();
+
+        let prev = std::env::var("CQS_MAX_FILE_SIZE").ok();
+        std::env::set_var("CQS_MAX_FILE_SIZE", "100");
+        let files = enumerate_files(dir.path(), &["rs"], false).unwrap();
+        // Restore env before any further work.
+        match prev {
+            Some(v) => std::env::set_var("CQS_MAX_FILE_SIZE", v),
+            None => std::env::remove_var("CQS_MAX_FILE_SIZE"),
+        }
+
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.contains(&"small.rs".to_string()),
+            "small.rs must be enumerated, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"big.rs".to_string()),
+            "big.rs (200B > 100B cap) must be filtered, got {names:?}"
+        );
+    }
+
+    /// TC-ADV-V1.33-5: file with a non-UTF8 byte sequence in its name on
+    /// Linux must not crash `enumerate_files`. The walker may either skip
+    /// or include it (both are defensible) but a panic is unacceptable —
+    /// a hostile filename should never bring down the indexer.
+    #[test]
+    #[cfg(unix)]
+    fn test_enumerate_files_handles_non_utf8_filename_on_unix() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // Build a filename with a `.rs` suffix preceded by non-UTF8 bytes.
+        // Linux file APIs accept arbitrary bytes; UTF-8 is just a
+        // convention.
+        let bad_name_bytes: &[u8] = b"bad\xFF\xFEname.rs";
+        let bad_path = dir.path().join(OsStr::from_bytes(bad_name_bytes));
+        // Some filesystems on Linux refuse arbitrary byte sequences (NTFS
+        // mounts, zfs with `-o utf8only`). Skip silently if the write
+        // can't land — the test asserts panic-free behaviour, not a
+        // specific filesystem capability.
+        if std::fs::write(&bad_path, b"fn b() {}").is_err() {
+            eprintln!("test env rejects non-UTF8 filenames; soft pass");
+            return;
+        }
+
+        let files = enumerate_files(dir.path(), &["rs"], false)
+            .expect("enumerate_files must not panic on non-UTF8 filenames");
+        // Either included or silently skipped — both are defensible.
+        // The contract under test is "no panic, returns Ok".
+        assert!(
+            files.len() <= 1,
+            "non-UTF8 file should yield at most 1 result, got {}",
+            files.len()
+        );
+    }
     /// Verifies that the `is_test_chunk` function correctly identifies test files based on filename patterns.
     ///
     /// # Arguments

@@ -2398,6 +2398,67 @@ impl Drop for QueryCache {
     }
 }
 
+// ─── TC-ADV-V1.33-6: QueryCache malformed-blob auto-delete ──────────────────
+//
+// EH-17 / OB-NEW-6: a malformed embedding blob (length not a multiple of
+// 4) is logged + deleted on `QueryCache::get`. Pins the auto-delete
+// behaviour so a re-poll loop on bad rows can't reintroduce the cost of
+// re-checking the same bad row.
+#[cfg(test)]
+mod query_cache_malformed_blob_tests {
+    use super::*;
+
+    /// TC-ADV-V1.33-6: insert a row whose embedding blob length isn't a
+    /// multiple of 4 (corrupt row, schema migration mid-flight, manual SQL
+    /// stomp). `get` returns `None` and deletes the row.
+    #[test]
+    fn test_query_cache_get_deletes_malformed_blob() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("query_cache.db");
+        let cache = QueryCache::open(&path).unwrap();
+
+        // Reach into the runtime to insert a malformed (7-byte) blob
+        // directly via raw sqlx — bypassing `put` which would reject
+        // non-finite floats but still requires a real Embedding.
+        cache.rt.block_on(async {
+            sqlx::query(
+                "INSERT INTO query_cache (query, model_fp, embedding) \
+                 VALUES (?1, ?2, ?3)",
+            )
+            .bind("malformed-q")
+            .bind("test-fp")
+            .bind(vec![0u8; 7]) // 7 bytes — not a multiple of 4
+            .execute(&cache.pool)
+            .await
+            .unwrap();
+        });
+
+        // First get must return None (malformed blob detected, deleted).
+        let got = cache.get("malformed-q", "test-fp");
+        assert!(
+            got.is_none(),
+            "malformed blob must produce a cache miss, got Some(_)"
+        );
+
+        // Verify the row was actually deleted (next `get` would also miss
+        // even without the malformed-blob path firing again).
+        let row_count: i64 = cache.rt.block_on(async {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM query_cache WHERE query = ?1 AND model_fp = ?2",
+            )
+            .bind("malformed-q")
+            .bind("test-fp")
+            .fetch_one(&cache.pool)
+            .await
+            .unwrap()
+        });
+        assert_eq!(
+            row_count, 0,
+            "malformed row must be deleted after get, found {row_count} row(s)"
+        );
+    }
+}
+
 // ─── #968 shared-runtime integration tests ──────────────────────────────────
 //
 // Confirms that one `Arc<Runtime>` can drive Store + EmbeddingCache +
