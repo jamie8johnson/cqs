@@ -166,16 +166,34 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
     // Detect a running cqs-watch --serve daemon BEFORE we touch anything.
     // The daemon holds a shared file lock on `index.hnsw.lock` for the
-    // lifetime of its in-memory HNSW. A subsequent `cqs index --force` then
-    // blocks indefinitely in `locks_lock_inode_wait` waiting for an
-    // exclusive write lock the daemon will never release. On WSL/NTFS the
-    // "advisory-only" warning fires but the wait still happens. Fail-fast
-    // here with clear instructions instead of hanging for 60+ minutes.
+    // lifetime of its in-memory HNSW.
     //
-    // We use a connect-only probe (not the typed `daemon_ping`) so a daemon
-    // running an older `PingResponse` schema still gets detected — schema
-    // drift would otherwise let the deserialize error fall through and
-    // silently restore the old hang behavior on version mismatches.
+    // Two paths from here, depending on whether `--force` is set:
+    //
+    // - **Without `--force`**: the daemon is already keeping the index
+    //   fresh via inotify-driven incremental reconcile. Trigger an
+    //   immediate reconcile pass via the daemon's `reconcile` socket
+    //   message and return `Ok(())` — the user gets the freshness they
+    //   asked for without paying for a redundant from-scratch rebuild.
+    //   Pre-fix, plain `cqs index` against a running daemon would bail
+    //   with a "stop the daemon" error; the v1.33.0 audit telemetry
+    //   showed 166 of 170 `cqs index` errors in 5 days were exactly this
+    //   case (≈98% of the visible "error rate").
+    //
+    // - **With `--force`**: the operator wants a complete from-scratch
+    //   rebuild. That requires invalidating the daemon's in-memory HNSW
+    //   (which the daemon won't release without a restart). We can't
+    //   transparently swap an in-memory HNSW under the daemon, so bail
+    //   with the original "stop the daemon" message — running this would
+    //   block indefinitely in `locks_lock_inode_wait` for an exclusive
+    //   write lock the daemon will never release. On WSL/NTFS the
+    //   "advisory-only" warning fires but the wait still happens.
+    //
+    // We use a connect-only probe (not the typed `daemon_ping`) so a
+    // daemon running an older `PingResponse` schema still gets detected;
+    // schema drift would otherwise let the deserialize error fall
+    // through and silently restore the old hang behavior on version
+    // mismatches.
     //
     // Daemon socket is hashed from the project-level `.cqs/` (one daemon
     // per project, regardless of slot) so we use `project_cqs_dir` here.
@@ -188,18 +206,76 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             match UnixStream::connect(&sock_path) {
                 Ok(stream) => {
                     // Connected — daemon is alive enough to hold the HNSW
-                    // lock. Drop the stream immediately and bail.
+                    // lock. Drop the stream immediately.
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
                     drop(stream);
-                    anyhow::bail!(
-                        "A cqs-watch --serve daemon is currently running ({}). It holds a shared lock on \
-                         the HNSW index, so this reindex would block indefinitely in locks_lock_inode_wait. \
-                         Stop the daemon before reindexing:\n\n  \
-                         systemctl --user stop cqs-watch && cqs index{} && systemctl --user start cqs-watch\n\n\
-                         (If you launched the daemon manually, kill that process instead.)",
-                        sock_path.display(),
-                        if force { " --force" } else { "" }
-                    );
+
+                    if force {
+                        // --force needs to invalidate the daemon's
+                        // in-memory HNSW. Bail with the operator-actionable
+                        // message (the original behavior).
+                        anyhow::bail!(
+                            "A cqs-watch --serve daemon is currently running ({}). It holds a shared lock on \
+                             the HNSW index, so this reindex would block indefinitely in locks_lock_inode_wait. \
+                             Stop the daemon before reindexing:\n\n  \
+                             systemctl --user stop cqs-watch && cqs index --force && systemctl --user start cqs-watch\n\n\
+                             (If you launched the daemon manually, kill that process instead.)",
+                            sock_path.display(),
+                        );
+                    }
+
+                    // Plain `cqs index`: route to the daemon's reconcile
+                    // RPC instead of fighting it for the lock.
+                    match cqs::daemon_translate::daemon_reconcile(
+                        &project_cqs_dir,
+                        Some("cli-index"),
+                        &[],
+                    ) {
+                        Ok(resp) => {
+                            if !cli.quiet {
+                                let suffix = if resp.was_pending {
+                                    " (a previous reconcile was already pending; the daemon coalesced both)"
+                                } else {
+                                    ""
+                                };
+                                println!(
+                                    "Daemon at {} is keeping the index fresh; queued an immediate reconcile pass{}.",
+                                    sock_path.display(),
+                                    suffix
+                                );
+                                println!(
+                                    "Use `cqs index --force` (after stopping the daemon) to fully rebuild from scratch."
+                                );
+                            }
+                            if cli.json || args.json {
+                                let env = serde_json::json!({
+                                    "data": {
+                                        "daemon_reconcile_queued": true,
+                                        "was_pending": resp.was_pending,
+                                        "socket": sock_path.display().to_string(),
+                                    },
+                                    "version": 1,
+                                    "error": null,
+                                });
+                                println!("{}", env);
+                            }
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            // Socket connected but reconcile RPC failed
+                            // (version skew / parse error / disconnect
+                            // mid-call). Fall back to the original bail
+                            // so the operator sees a deterministic
+                            // failure mode.
+                            anyhow::bail!(
+                                "Daemon detected at {} but reconcile RPC failed: {}.\n\n\
+                                 If this persists, restart the daemon:\n  \
+                                 systemctl --user restart cqs-watch",
+                                sock_path.display(),
+                                e
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     // Socket file exists but connect failed → stale socket
