@@ -114,6 +114,7 @@ pub(crate) use infra::ModelCommand;
 pub(crate) use infra::ProjectCommand;
 pub(crate) use infra::RefCommand;
 pub(crate) use infra::SlotCommand;
+pub(crate) use infra::{daemon_control_hint, DaemonHint};
 
 // -- train --
 pub(crate) use train::cmd_export_model;

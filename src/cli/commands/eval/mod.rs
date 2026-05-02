@@ -24,6 +24,7 @@ use anyhow::{Context as _, Result};
 
 use cqs::store::ReadOnly;
 
+use crate::cli::commands::{daemon_control_hint, DaemonHint};
 use crate::cli::CommandContext;
 
 pub(crate) use runner::EvalReport;
@@ -376,11 +377,13 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                     "watch daemon not reachable: {msg}\n\
                      \n\
                      Eval --require-fresh requires a running `cqs watch --serve`. Either:\n  \
-                       - start the daemon (`systemctl --user start cqs-watch` or `cqs watch --serve`)\n  \
+                       - start the daemon (`{start}`)\n  \
                        - rerun with `--no-require-fresh` for an offline check\n  \
                        - export `CQS_EVAL_REQUIRE_FRESH=0` to disable the gate for this shell\n\n\
                      NOTE: if you upgraded from <v1.30.1, the daemon socket name changed (BLAKE3); \
-                     run `systemctl --user restart cqs-watch` so the daemon binds the new path."
+                     run `{restart}` so the daemon binds the new path.",
+                    start = daemon_control_hint(DaemonHint::Start),
+                    restart = daemon_control_hint(DaemonHint::Restart),
                 )
             }
             // EH-V1.30.1-2: Transport — socket exists but daemon isn't
@@ -396,9 +399,10 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                      \n\
                      The daemon socket exists but isn't responding. The daemon may be \
                      hung or crashed mid-call. Try:\n  \
-                       - check the daemon log (`journalctl --user -u cqs-watch -n 50`)\n  \
-                       - restart the daemon (`systemctl --user restart cqs-watch`)\n  \
-                       - rerun with `--no-require-fresh` to skip the gate"
+                       - check the daemon log (`journalctl --user -u cqs-watch -n 50` on Linux)\n  \
+                       - restart the daemon (`{restart}`)\n  \
+                       - rerun with `--no-require-fresh` to skip the gate",
+                    restart = daemon_control_hint(DaemonHint::Restart),
                 )
             }
             // EH-V1.30.1-2: BadResponse — daemon replied but the envelope
@@ -415,8 +419,9 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                      The daemon answered but the response was unparseable — likely a \
                      CLI/daemon version skew. Restart the daemon after rebuilding so it \
                      speaks the same protocol as this CLI:\n  \
-                       - `systemctl --user stop cqs-watch && cargo install --path . && systemctl --user start cqs-watch`\n  \
-                       - rerun with `--no-require-fresh` to skip the gate"
+                       - `{reinstall}`\n  \
+                       - rerun with `--no-require-fresh` to skip the gate",
+                    reinstall = daemon_control_hint(DaemonHint::Reinstall),
                 )
             }
         }

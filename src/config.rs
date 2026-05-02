@@ -859,12 +859,20 @@ pub fn add_reference_to_config(
         }
     }
 
-    // Atomic write: temp file + rename (while holding lock)
+    // Atomic write: temp file + rename (while holding lock).
+    //
+    // RM-V1.33-8: the write block is wrapped in a closure so the tmp
+    // file is always cleaned up on any intermediate write/permission
+    // failure. The previous code propagated `?` directly out of the
+    // OpenOptions::open / write_all / std::fs::write calls, leaving
+    // `<config>.toml.<hex>.tmp` files behind on disk-full / EIO. Names
+    // include 16 hex chars of randomness so failures accumulated
+    // distinct tmp files rather than overwriting a single one.
     let suffix = crate::temp_suffix();
     let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
     let serialized = toml::to_string_pretty(&table)?;
-    // SEC-1: Write with mode 0o600 from creation so file is never world-readable
-    {
+    let write_result: Result<(), ConfigError> = (|| {
+        // SEC-1: Write with mode 0o600 from creation so file is never world-readable
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -881,6 +889,11 @@ pub fn add_reference_to_config(
         {
             std::fs::write(&tmp_path, &serialized)?;
         }
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
 
     // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
@@ -950,12 +963,14 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
     };
 
     if removed {
-        // Atomic write: temp file + rename (while holding lock)
+        // Atomic write: temp file + rename (while holding lock).
+        // RM-V1.33-8: same closure-wrapped cleanup as
+        // `add_reference_to_config` — see that site for rationale.
         let suffix = crate::temp_suffix();
         let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
         let serialized = toml::to_string_pretty(&table)?;
-        // SEC-1: Write with mode 0o600 from creation so file is never world-readable
-        {
+        let write_result: Result<(), ConfigError> = (|| {
+            // SEC-1: Write with mode 0o600 from creation so file is never world-readable
             #[cfg(unix)]
             {
                 use std::io::Write;
@@ -972,6 +987,11 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
             {
                 std::fs::write(&tmp_path, &serialized)?;
             }
+            Ok(())
+        })();
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
         }
 
         // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.

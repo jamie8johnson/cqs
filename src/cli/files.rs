@@ -76,6 +76,7 @@ fn process_exists(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_exists(pid: u32) -> bool {
+    use std::path::PathBuf;
     use std::process::Command;
     // PB-V1.30.1-3: previous impl matched the localized "INFO:" prefix
     // emitted only on English Windows. German `INFORMATION:`, French
@@ -86,7 +87,21 @@ fn process_exists(pid: u32) -> bool {
     // (or whitespace-only) stdout when no process is found. The PID
     // column substring `,"<pid>",` defends against substring collisions
     // (e.g., PID `12` matching PID `1234`).
-    Command::new("tasklist")
+    //
+    // PB-V1.33-10: resolve `tasklist.exe` from `%SystemRoot%\System32`
+    // rather than relying on a `PATH` lookup. Stripped-PATH containers
+    // (Docker, GHA Windows runners with custom PATH overrides) can hit
+    // `tasklist not found` if `System32` isn't on PATH, in which case
+    // `Command::new("tasklist")` fails with `ErrorKind::NotFound`. The
+    // original `unwrap_or(false)` then treats the running PID as stale
+    // and `acquire_index_lock` races the live holder for the index
+    // lock. Using the absolute path skips the PATH lookup entirely.
+    let tasklist_path: PathBuf = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("tasklist.exe");
+    Command::new(&tasklist_path)
         .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
         .output()
         .map(|o| {

@@ -35,6 +35,83 @@ use crate::cli::config::find_project_root;
 use crate::cli::definitions::Cli;
 
 // ---------------------------------------------------------------------------
+// Daemon control hints
+// ---------------------------------------------------------------------------
+
+/// Operator-facing daemon control hint for the current platform.
+///
+/// PB-V1.33-5: previously the eval / index error paths hardcoded
+/// `systemctl --user start cqs-watch` strings, which are dead UX on macOS
+/// (no systemd) and on bare-Linux setups without the cqs-watch unit. This
+/// helper returns the platform-correct nudge so a single bail message
+/// works across release targets.
+///
+/// Variants describe the action the operator should take:
+/// * [`DaemonHint::Start`] — daemon isn't running and the user needs one.
+/// * [`DaemonHint::Restart`] — daemon is running but should be cycled
+///   (version skew, schema drift, stuck socket).
+/// * [`DaemonHint::Stop`] — daemon is running and the operation needs
+///   exclusive access to the index lock.
+/// * [`DaemonHint::Reinstall`] — full rebuild + restart sequence after a
+///   `cargo install --path .`, used by the BadResponse / version-skew arm
+///   in the eval freshness gate.
+#[derive(Clone, Copy)]
+pub(crate) enum DaemonHint {
+    Start,
+    Restart,
+    Stop,
+    Reinstall,
+}
+
+/// Render a platform-correct command string for the requested hint.
+///
+/// Linux: emit `systemctl --user ...` (the canonical user-unit path used
+/// throughout the project's deployment docs). macOS has no systemd, so we
+/// emit `cqs watch --serve` for start and `pkill -TERM cqs` for
+/// stop/restart — matching the behavior `restart_daemon_if_needed`
+/// already implements for the macOS arm. Windows: the Unix-domain socket
+/// daemon doesn't run there, but we still surface a generic hint so the
+/// message isn't completely wrong.
+pub(crate) fn daemon_control_hint(hint: DaemonHint) -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        match hint {
+            DaemonHint::Start => "systemctl --user start cqs-watch",
+            DaemonHint::Restart => "systemctl --user restart cqs-watch",
+            DaemonHint::Stop => "systemctl --user stop cqs-watch",
+            DaemonHint::Reinstall => {
+                "systemctl --user stop cqs-watch && cargo install --path . \
+                 && systemctl --user start cqs-watch"
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match hint {
+            DaemonHint::Start => "cqs watch --serve &",
+            DaemonHint::Restart => "pkill -TERM -f 'cqs watch --serve' ; cqs watch --serve &",
+            DaemonHint::Stop => "pkill -TERM -f 'cqs watch --serve'",
+            DaemonHint::Reinstall => {
+                "pkill -TERM -f 'cqs watch --serve' ; cargo install --path . \
+                 ; cqs watch --serve &"
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        match hint {
+            DaemonHint::Start => "cqs watch --serve",
+            DaemonHint::Restart => "stop the cqs watch process and re-run `cqs watch --serve`",
+            DaemonHint::Stop => "stop the cqs watch process",
+            DaemonHint::Reinstall => {
+                "stop the cqs watch process, run `cargo install --path .`, \
+                 then re-run `cqs watch --serve`"
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI types
 // ---------------------------------------------------------------------------
 
@@ -1029,5 +1106,52 @@ mod tests {
         assert_eq!(json["chunks_indexed"], -1);
         assert_eq!(json["count_error"], "chunk_count failed: I/O error");
         assert_eq!(json["backup_path"], "/tmp/x/.cqs.bak");
+    }
+
+    /// PB-V1.33-5: every variant must produce a non-empty hint string on
+    /// the host platform — silently empty hints would degrade UX
+    /// without surfacing a compile error.
+    #[test]
+    fn daemon_control_hint_all_variants_nonempty() {
+        for hint in [
+            DaemonHint::Start,
+            DaemonHint::Restart,
+            DaemonHint::Stop,
+            DaemonHint::Reinstall,
+        ] {
+            let s = daemon_control_hint(hint);
+            assert!(!s.is_empty(), "hint for {:?} was empty", hint as u8);
+        }
+    }
+
+    /// PB-V1.33-5: on Linux (the canonical CI host), the hint must
+    /// reference `systemctl --user` so the deployment-doc commands stay
+    /// in lockstep with bail messages.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_control_hint_linux_uses_systemctl() {
+        assert!(daemon_control_hint(DaemonHint::Start).contains("systemctl --user start"));
+        assert!(daemon_control_hint(DaemonHint::Restart).contains("systemctl --user restart"));
+        assert!(daemon_control_hint(DaemonHint::Stop).contains("systemctl --user stop"));
+        assert!(daemon_control_hint(DaemonHint::Reinstall).contains("cargo install --path ."));
+    }
+
+    /// PB-V1.33-5: the macOS arm must NOT mention systemctl (no systemd
+    /// on Darwin) — guard against drift if a future edit copies the
+    /// Linux strings into the macOS branch.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_control_hint_macos_no_systemctl() {
+        for hint in [
+            DaemonHint::Start,
+            DaemonHint::Restart,
+            DaemonHint::Stop,
+            DaemonHint::Reinstall,
+        ] {
+            assert!(
+                !daemon_control_hint(hint).contains("systemctl"),
+                "macOS hint should not mention systemctl",
+            );
+        }
     }
 }
