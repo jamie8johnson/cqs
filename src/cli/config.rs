@@ -2,6 +2,7 @@
 //!
 //! Provides project root detection and config file application.
 
+use std::io::Read;
 use std::path::PathBuf;
 
 use clap::parser::ValueSource;
@@ -182,18 +183,34 @@ pub(crate) fn find_project_root() -> PathBuf {
 fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {
     let mut candidate = from.parent()?;
 
+    // Cap each Cargo.toml read at 1 MiB. Real Cargo.toml files are well
+    // under 100 KB; a hostile parent directory with a multi-GB file at
+    // `<parent>/Cargo.toml` would otherwise OOM `cqs` during config
+    // resolution before any user-facing arg parsing runs (RB-V1.33-3).
+    const MAX_CARGO_TOML_BYTES: u64 = 1 << 20;
     loop {
         let cargo_toml = candidate.join("Cargo.toml");
         if cargo_toml.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                if content.contains("[workspace]") {
-                    tracing::info!(
-                        workspace_root = %candidate.display(),
-                        member = %from.display(),
-                        "Detected Cargo workspace root"
-                    );
-                    return Some(candidate.to_path_buf());
-                }
+            let mut content = String::new();
+            let read_ok = match std::fs::File::open(&cargo_toml) {
+                Ok(f) => f
+                    .take(MAX_CARGO_TOML_BYTES)
+                    .read_to_string(&mut content)
+                    .is_ok(),
+                Err(_) => false,
+            };
+            if read_ok && content.contains("[workspace]") {
+                tracing::info!(
+                    workspace_root = %candidate.display(),
+                    member = %from.display(),
+                    "Detected Cargo workspace root"
+                );
+                return Some(candidate.to_path_buf());
+            } else if !read_ok {
+                tracing::warn!(
+                    path = %cargo_toml.display(),
+                    "Cargo.toml exceeds 1 MiB cap or read failed; skipping workspace detection at this candidate"
+                );
             }
         }
 

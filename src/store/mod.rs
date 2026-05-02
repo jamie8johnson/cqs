@@ -440,10 +440,21 @@ fn is_slow_mmap_fs(path: &Path) -> bool {
             Ok(p) => p,
             Err(_) => return false,
         };
-        let mountinfo = match std::fs::read_to_string("/proc/self/mountinfo") {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
+        // RM-V1.33-7: bound `/proc/self/mountinfo` reads at 1 MiB. The
+        // file is reliably small in practice (a few KiB) but a system
+        // with thousands of mounts (containers, network FS, btrfs
+        // subvols) plus a malformed mount table could exceed reasonable
+        // size. 1 MiB is several orders of magnitude above realistic
+        // content; rejection falls through to "not slow".
+        use std::io::Read;
+        const MAX_MOUNTINFO_BYTES: u64 = 1 << 20;
+        let mut mountinfo = String::new();
+        if std::fs::File::open("/proc/self/mountinfo")
+            .and_then(|f| f.take(MAX_MOUNTINFO_BYTES).read_to_string(&mut mountinfo))
+            .is_err()
+        {
+            return false;
+        }
         match fstype_for_path(&mountinfo, &abs) {
             Some(fstype) => SLOW_MMAP_FSTYPES.iter().any(|&s| s == fstype),
             None => false,

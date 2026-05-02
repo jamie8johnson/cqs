@@ -1016,13 +1016,19 @@ impl CentroidClassifier {
         }
 
         let path = dirs::data_dir()?.join("cqs/classifier_centroids.v1.json");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::debug!(path = %path.display(), error = %e, "centroid file not found — rule-only mode");
-                return None;
-            }
-        };
+        // RM-V1.33-9: cap centroid file reads at 16 MiB. Real centroid
+        // registries are 50-200 KiB even with 100 categories × 1024-dim
+        // floats; 16 MiB rejects hostile or corrupted multi-GB files
+        // before the daemon OOMs at first search.
+        use std::io::Read;
+        const MAX_CENTROID_BYTES: u64 = 16 * 1024 * 1024;
+        let mut text = String::new();
+        let read_result = std::fs::File::open(&path)
+            .and_then(|f| f.take(MAX_CENTROID_BYTES).read_to_string(&mut text));
+        if let Err(e) = read_result {
+            tracing::debug!(path = %path.display(), error = %e, "centroid file not found — rule-only mode");
+            return None;
+        }
         let data: serde_json::Value = match serde_json::from_str(&text) {
             Ok(d) => d,
             Err(e) => {

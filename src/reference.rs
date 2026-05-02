@@ -87,9 +87,14 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
 
     // SEC-4: Warn if reference path is outside project and home directories.
     // Canonicalize to resolve any `..` segments, then check containment.
-    if let Ok(canonical) = cfg.path.canonicalize() {
-        let home = dirs::home_dir();
-        let cwd = std::env::current_dir().ok();
+    // PB-V1.33-1: use `dunce::canonicalize` and canonicalize both sides
+    // so Windows verbatim (`\\?\C:\...`) vs non-verbatim mismatches
+    // don't defeat the comparison.
+    if let Ok(canonical) = dunce::canonicalize(&cfg.path) {
+        let home = dirs::home_dir().and_then(|h| dunce::canonicalize(h).ok());
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|c| dunce::canonicalize(c).ok());
         let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
         let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
         let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");

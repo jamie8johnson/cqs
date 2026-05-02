@@ -63,10 +63,15 @@ pub fn hf_cache_dir(subdir: &str) -> PathBuf {
             return PathBuf::from(p).join(subdir);
         }
     }
+    // PB-V1.33-6: split `.cache/huggingface` into separate path
+    // components. `PathBuf::join` does NOT auto-split forward slashes
+    // on Windows, so a literal `".cache/huggingface"` becomes one
+    // mangled component (mixed separators in display, broken
+    // `Path::starts_with` round-trips).
     dirs::cache_dir()
         .map(|c| c.join("huggingface").join(subdir))
-        .or_else(|| dirs::home_dir().map(|h| h.join(".cache/huggingface").join(subdir)))
-        .unwrap_or_else(|| PathBuf::from(".cache/huggingface").join(subdir))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join(subdir)))
+        .unwrap_or_else(|| PathBuf::from(".cache").join("huggingface").join(subdir))
 }
 
 /// Which auxiliary model is being resolved.

@@ -23,7 +23,12 @@ use super::TrainDataError;
 ///     entry present). This doubles as a clearer error message than
 ///     git's own "not a git repository".
 fn validate_git_repo(repo: &Path) -> Result<PathBuf, TrainDataError> {
-    let canonical = repo.canonicalize().map_err(|e| {
+    // PB-V1.33-2: use `dunce::canonicalize` so the verbatim `\\?\C:\...`
+    // prefix is stripped on Windows before the path is fed to `git -C`.
+    // Older git-for-Windows builds reject extended-length paths in some
+    // subcommand combinations, and downstream display/log surfaces the
+    // ugly prefix to operators when raw `canonicalize` is used.
+    let canonical = dunce::canonicalize(repo).map_err(|e| {
         TrainDataError::Git(format!(
             "cannot resolve repo path {}: {}",
             repo.display(),
