@@ -67,11 +67,11 @@ macro_rules! for_each_command {
             group_a: {
                 // ── lifecycle / no-store / mutation commands ────────────
 
-                (Commands::Init { json },
+                (Commands::Init { ref output },
                  Commands::Init { .. },
                  "init",
                  BatchSupport::Cli,
-                 { cmd_init(&$cli, json) }),
+                 { cmd_init(&$cli, $cli.json || output.json) }),
 
                 (Commands::Cache { ref subcmd },
                  Commands::Cache { .. },
@@ -85,23 +85,23 @@ macro_rules! for_each_command {
                  BatchSupport::Cli,
                  { cmd_slot(&$cli, subcmd) }),
 
-                (Commands::Doctor { fix, verbose, json },
+                (Commands::Doctor { fix, verbose, ref output },
                  Commands::Doctor { .. },
                  "doctor",
                  BatchSupport::Cli,
-                 { cmd_doctor($cli.model.as_deref(), fix, verbose, $cli.json || json) }),
+                 { cmd_doctor($cli.model.as_deref(), fix, verbose, $cli.json || output.json) }),
 
-                (Commands::Ping { json },
+                (Commands::Ping { ref output },
                  Commands::Ping { .. },
                  "ping",
                  BatchSupport::Cli,
-                 { cmd_ping($cli.json || json) }),
+                 { cmd_ping($cli.json || output.json) }),
 
-                (Commands::Status { watch_fresh, json, wait, wait_secs },
+                (Commands::Status { watch_fresh, ref output, wait, wait_secs },
                  Commands::Status { .. },
                  "status",
                  BatchSupport::Cli,
-                 { cmd_status($cli.json || json, watch_fresh, wait, wait_secs) }),
+                 { cmd_status($cli.json || output.json, watch_fresh, wait, wait_secs) }),
 
                 (Commands::Hook { subcmd },
                  Commands::Hook { .. },
@@ -116,12 +116,12 @@ macro_rules! for_each_command {
                 // P2.14: Refresh now carries its own --json (in addition to
                 // honoring the global --json), so the macro pattern-match
                 // needs to bind the field.
-                (Commands::Refresh { json },
+                (Commands::Refresh { ref output },
                  Commands::Refresh { .. },
                  "refresh",
                  BatchSupport::Daemon,
                  {
-                    if $cli.json || json {
+                    if $cli.json || output.json {
                         crate::cli::json_envelope::emit_json(&serde_json::json!({
                             "status": "noop",
                             "message": "no daemon running, nothing to refresh",
@@ -225,11 +225,11 @@ macro_rules! for_each_command {
                 #[cfg(feature = "convert")]
                 (Commands::Convert {
                     ref path,
-                    ref output,
+                    ref output_dir,
                     overwrite,
                     dry_run,
                     ref clean_tags,
-                    json,
+                    ref output,
                  },
                  Commands::Convert { .. },
                  "convert",
@@ -237,11 +237,11 @@ macro_rules! for_each_command {
                  {
                     cmd_convert(
                         path,
-                        output.as_deref(),
+                        output_dir.as_deref(),
                         overwrite,
                         dry_run,
                         clean_tags.as_deref(),
-                        $cli.json || json,
+                        $cli.json || output.json,
                     )
                  }),
 

@@ -137,8 +137,8 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-7 | Observability | `Embedder::warm` no span, no log — silent ~250 MB+ session init at startup | easy | ⬜ |
 | P3-8 | Observability | `LocalProvider` worker threads lack worker-id field on completion | easy | ⬜ |
 | P3-9 | Robustness | `set_on_item_complete` lock().unwrap() — duplicate of EH-V1.33-2 | easy | ⬜ |
-| P3-10 | Code Quality | `check_model_version()` wrapper dead in production | easy | ⬜ |
-| P3-11 | Code Quality | `is_false`/`is_zero_usize` trivial helpers duplicated 3+2 times across modules | easy | ⬜ |
+| P3-10 | Code Quality | `check_model_version()` wrapper dead in production | easy | ✅ pre-fixed (`#[cfg(test)]` already on both fns since #715/d46c8cf6) |
+| P3-11 | Code Quality | `is_false`/`is_zero_usize` trivial helpers duplicated 3+2 times across modules | easy | ✅ |
 | P3-12 | Code Quality | `search_unified_with_index` is `pub` 6-line wrapper post-SQ-9 | easy | ✅ |
 | P3-13 | Scaling | BM25 K1=1.2, B=0.75 hardcoded in train_data without rationale or env override | easy | ✅ #1363 |
 | P3-14 | Scaling | BM25 FTS5 column weights duplicated as inline SQL string at two sites | easy | ✅ #1363 |
@@ -152,13 +152,13 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-22 | TC Adversarial | `QueryCache::get` malformed-blob auto-delete path untested | easy | ⬜ |
 | P3-23 | TC Adversarial | `parse_env_usize_clamped`/`parse_env_f32` zero tests despite 10+ callers | easy | ⬜ |
 | P3-24 | TC Adversarial | `validate_and_read_file` oversized-file branch untested | easy | ⬜ |
-| P3-25 | API Design | `cqs project register` lacks `--json` and skips JSON envelope | easy | ⬜ |
-| P3-26 | API Design | `cqs notes add\|update\|remove` accept no `--json` at subcommand level | easy | ⬜ |
-| P3-27 | API Design | `cqs slot`/`cqs cache` still advertise `--slot` even though it bails | easy | ⬜ |
+| P3-25 | API Design | `cqs project register` lacks `--json` and skips JSON envelope | easy | ✅ |
+| P3-26 | API Design | `cqs notes add\|update\|remove` accept no `--json` at subcommand level | easy | ✅ |
+| P3-27 | API Design | `cqs slot`/`cqs cache` still advertise `--slot` even though it bails | easy | 🎫 #1365 (clap 4 has no clean per-subcommand global arg suppression) |
 | P3-28 | API Design | Public `Store::search_embedding_only` is `pub` footgun — visibility flip (overlaps P1-32) | easy | ✅ |
-| P3-29 | API Design | `project register` vs `ref add` — same operation, two verbs | easy | ⬜ |
-| P3-30 | API Design | `--json` declared inline on six commands instead of via shared `TextJsonArgs` | easy | ⬜ |
-| P3-31 | API Design | `StoreError::SchemaMismatch(String, i32, i32)` uses positional fields | easy | ⬜ |
+| P3-29 | API Design | `project register` vs `ref add` — same operation, two verbs | easy | ✅ |
+| P3-30 | API Design | `--json` declared inline on six commands instead of via shared `TextJsonArgs` | easy | ✅ |
+| P3-31 | API Design | `StoreError::SchemaMismatch(String, i32, i32)` uses positional fields | easy | ✅ |
 | P3-32 | TC Happy | `cqs convert` and `convert_path` have zero end-to-end tests | easy | ⬜ |
 | P3-33 | TC Happy | `cqs eval --reranker` flag (#1303) has zero CLI integration test | easy | ⬜ |
 | P3-34 | TC Happy | `cqs slot {create, remove, promote, list, active}` no CLI integration tests | easy | ⬜ |
@@ -173,10 +173,10 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P3-43 | Performance | `extract_imports_regex` recompiles same `Regex` set on every `cqs where`/`task` call | easy | ✅ #1363 |
 | P3-44 | Performance | `Store::search_by_name` lowercases every chunk name even though only ~100 rows scored | easy | ✅ #1363 |
 | P3-45 | Performance | `gather::bridge_scores` HashMap clones `pr.chunk.name`/`id` per result | easy | ✅ #1363 |
-| P3-46 | Extensibility | `SearchResult::to_json` and `to_json_relative` duplicate 12-field JSON shape | easy | ⬜ |
-| P3-47 | Extensibility | `BatchSubmitItem.context` is a stringly-typed bag — every prompt builder reinterprets | easy | ⬜ |
-| P3-48 | Extensibility | `run_migration` is a 16-arm hand-coded match — adding migration v26 needs three edits | easy | ⬜ |
-| P3-49 | Extensibility | Adding any new top-level CLI command needs three coordinated edits | easy | ⬜ |
+| P3-46 | Extensibility | `SearchResult::to_json` and `to_json_relative` duplicate 12-field JSON shape | easy | ✅ #1368 |
+| P3-47 | Extensibility | `BatchSubmitItem.context` is a stringly-typed bag — every prompt builder reinterprets | easy | ✅ #1368 (doc-comment schema; enum migration deferred — touches 5 readers + 5 construction sites) |
+| P3-48 | Extensibility | `run_migration` is a 16-arm hand-coded match — adding migration v26 needs three edits | easy | ✅ #1368 |
+| P3-49 | Extensibility | Adding any new top-level CLI command needs three coordinated edits | easy | 🎫 #1366 (structural — registry refactor or proc-macro out of scope for P3 batch) |
 | P3-50 | Platform Behavior | Daemon error/operator hints hardcode `systemctl --user` — broken UX for macOS | easy | ⬜ |
 | P3-51 | Platform Behavior | `process_exists` (Windows) uses PATH lookup for `tasklist` | easy | ⬜ |
 | P3-52 | API Design | Wildcard `pub use diff::* / gather::* / impact::* / scout::* / task::*` in lib.rs | medium | ⬜ |

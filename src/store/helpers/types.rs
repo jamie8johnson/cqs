@@ -55,18 +55,13 @@ pub struct ChunkSummary {
     /// `to_json_with_origin` / `to_json_relative_with_origin`. Defaults
     /// to false when the loading SELECT omits the column or the row
     /// predates v24.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "crate::serde_helpers::is_false")]
     pub vendored: bool,
 }
 
 #[inline]
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
-}
-
-#[inline]
-fn is_false(v: &bool) -> bool {
-    !*v
 }
 
 impl From<&ChunkSummary> for Chunk {
@@ -191,31 +186,10 @@ impl SearchResult {
     ///
     /// Closes #1167, #1169, #1221.
     pub fn to_json_with_origin(&self, ref_name: Option<&str>) -> serde_json::Value {
-        let trust_level = if ref_name.is_some() {
-            "reference-code"
-        } else if self.chunk.vendored {
-            "vendored-code"
-        } else {
-            "user-code"
-        };
-        let mut obj = serde_json::json!({
-            "file": crate::normalize_path(&self.chunk.file),
-            "line_start": self.chunk.line_start,
-            "line_end": self.chunk.line_end,
-            "name": self.chunk.name,
-            "signature": self.chunk.signature,
-            "language": self.chunk.language.to_string(),
-            "chunk_type": self.chunk.chunk_type.to_string(),
-            "score": self.score,
-            "content": maybe_wrap_content(&self.chunk.content, &self.chunk.id),
-            "has_parent": self.chunk.parent_id.is_some(),
-            "trust_level": trust_level,
-            "injection_flags": crate::llm::validation::detect_all_injection_patterns(&self.chunk.content),
-        });
-        if let Some(name) = ref_name {
-            obj["reference_name"] = serde_json::json!(name);
-        }
-        obj
+        // P3-46: routed through `build_chunk_json_inner` with `base = None`
+        // so the absolute-path branch and the relative-path branch share one
+        // 12-field literal. Adding a chunk metadata field is now a one-edit.
+        self.build_chunk_json_inner(ref_name, None)
     }
 
     /// Serialize to JSON with file paths relative to a project root.
@@ -232,6 +206,22 @@ impl SearchResult {
         root: &std::path::Path,
         ref_name: Option<&str>,
     ) -> serde_json::Value {
+        // P3-46: routed through `build_chunk_json_inner` with `base =
+        // Some(root)` — see `to_json_with_origin` above.
+        self.build_chunk_json_inner(ref_name, Some(root))
+    }
+
+    /// P3-46: shared 12-field JSON shape. `base = None` emits absolute
+    /// (normalized) paths; `base = Some(root)` strips the prefix and
+    /// normalizes. The trust-level cascade and injection-flag computation
+    /// were duplicated verbatim in `to_json_with_origin` and
+    /// `to_json_relative_with_origin` before — adding a metadata field cost
+    /// two edits; now one.
+    fn build_chunk_json_inner(
+        &self,
+        ref_name: Option<&str>,
+        base: Option<&std::path::Path>,
+    ) -> serde_json::Value {
         let trust_level = if ref_name.is_some() {
             "reference-code"
         } else if self.chunk.vendored {
@@ -239,8 +229,12 @@ impl SearchResult {
         } else {
             "user-code"
         };
+        let file = match base {
+            None => crate::normalize_path(&self.chunk.file),
+            Some(root) => crate::rel_display(&self.chunk.file, root),
+        };
         let mut obj = serde_json::json!({
-            "file": crate::rel_display(&self.chunk.file, root),
+            "file": file,
             "line_start": self.chunk.line_start,
             "line_end": self.chunk.line_end,
             "name": self.chunk.name,

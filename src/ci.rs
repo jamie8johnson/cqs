@@ -61,14 +61,10 @@ pub struct CiReport {
     /// index. Field is omitted from JSON on the happy path via
     /// `skip_serializing_if` so agents consuming existing CI JSON see no
     /// shape change — the failure signal is also surfaced in `gate.reasons`.
-    #[serde(skip_serializing_if = "is_true")]
+    #[serde(skip_serializing_if = "crate::serde_helpers::is_true")]
     pub dead_scan_ok: bool,
     /// Gate evaluation result
     pub gate: GateResult,
-}
-
-fn is_true(b: &bool) -> bool {
-    *b
 }
 
 /// Run CI analysis on a unified diff.

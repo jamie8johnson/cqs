@@ -74,18 +74,13 @@ pub struct EnvelopeMeta {
     /// own `.cqs/` (#1254). Consuming agents should fall back to
     /// reading absolute worktree paths for any chunk they intend to
     /// edit — the served snapshot reflects main's branch state.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "cqs::serde_helpers::is_false")]
     pub worktree_stale: bool,
     /// Worktree directory name when `worktree_stale = true`, else
     /// omitted. Lets agents distinguish two worktrees of the same
     /// repo without re-deriving from CWD.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_name: Option<String>,
-}
-
-#[inline]
-fn is_false(v: &bool) -> bool {
-    !*v
 }
 
 impl EnvelopeMeta {

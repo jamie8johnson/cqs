@@ -80,14 +80,12 @@ pub struct EvalQuery {
     /// Marker set by the v3 generator when the gold chunk could not be
     /// resolved against the live index. The runner treats these as misses;
     /// modeled so `deny_unknown_fields` parsers don't reject them.
-    #[serde(default, rename = "_unresolved", skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        rename = "_unresolved",
+        skip_serializing_if = "crate::serde_helpers::is_false"
+    )]
     pub unresolved: bool,
-}
-
-/// `serde(skip_serializing_if)` requires a `fn(&T) -> bool`; closures and
-/// trait methods don't work here. Used by `EvalQuery::unresolved`.
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// The expected matching chunk. `origin` is the file path as indexed.

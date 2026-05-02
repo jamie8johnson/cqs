@@ -121,6 +121,12 @@ pub mod llm;
 pub mod plan;
 pub(crate) mod scout;
 pub mod search;
+// P3-11: shared `#[serde(skip_serializing_if = ...)]` predicates so envelope
+// modules don't redeclare 1-line `is_false` / `is_zero_usize` / `is_true`
+// helpers per file. See serde_helpers.rs. `pub` (not `pub(crate)`) so the
+// binary crate's `cli/` modules can reference these via path strings inside
+// `serde(skip_serializing_if = "cqs::serde_helpers::is_false")` attributes.
+pub mod serde_helpers;
 pub(crate) mod structural;
 pub(crate) mod task;
 pub(crate) mod where_to_add;
