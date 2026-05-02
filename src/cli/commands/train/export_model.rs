@@ -7,6 +7,28 @@ fn find_python() -> anyhow::Result<String> {
     cqs::convert::find_python()
 }
 
+/// SEC-18 / SEC-V1.33-4: strict allowlist for HuggingFace repo IDs.
+/// The previous denylist missed `\r` (CR — line terminator on some systems),
+/// `[`, `]` (TOML table reopen), `=`, `#`, and surrounding whitespace, all
+/// of which `write_model_toml` interpolates verbatim into model.toml.
+/// HuggingFace repo IDs are documented as `[A-Za-z0-9._/-]` only, so we
+/// reject anything outside that set. Also reject leading `-` to prevent
+/// arg-confusion in the optimum subprocess that consumes `repo` next.
+fn validate_repo_id(repo: &str) -> anyhow::Result<()> {
+    if !repo.contains('/')
+        || repo.starts_with('-')
+        || !repo
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
+    {
+        anyhow::bail!(
+            "Invalid repo ID format. Expected: org/model-name with characters \
+             [A-Za-z0-9._/-] only (e.g. intfloat/e5-base-v2)"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_export_model(
     repo: &str,
     output: &Path,
@@ -17,12 +39,7 @@ pub(crate) fn cmd_export_model(
     // PB-30: Canonicalize output path
     let output = dunce::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
 
-    // SEC-18: Validate repo format to prevent TOML injection
-    if !repo.contains('/') || repo.contains('"') || repo.contains('\n') || repo.contains('\\') {
-        anyhow::bail!(
-            "Invalid repo ID format. Expected: org/model-name (e.g. intfloat/e5-base-v2)"
-        );
-    }
+    validate_repo_id(repo)?;
 
     println!("Exporting {} to ONNX...", repo);
 
@@ -196,6 +213,43 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join("model.toml")).unwrap();
         assert!(content.contains("dim = 1024"), "should contain dim = 1024");
         assert!(content.contains("org/model"), "should contain repo name");
+    }
+
+    #[test]
+    fn validate_repo_id_accepts_well_formed_ids() {
+        assert!(validate_repo_id("intfloat/e5-base-v2").is_ok());
+        assert!(validate_repo_id("BAAI/bge-large-en-v1.5").is_ok());
+        assert!(validate_repo_id("org/model_name").is_ok());
+        assert!(validate_repo_id("a/b").is_ok());
+    }
+
+    #[test]
+    fn validate_repo_id_rejects_toml_injection_chars() {
+        // SEC-V1.33-4 regression coverage. Each of these would corrupt
+        // model.toml via the `format!("repo = \"{repo}\"")` template if
+        // accepted.
+        assert!(validate_repo_id("evil/model\rinjected = 1").is_err()); // CR
+        assert!(validate_repo_id("evil/model]\n[other]").is_err()); // ]
+        assert!(validate_repo_id("evil/model[x]").is_err()); // [
+        assert!(validate_repo_id("evil/model = 1").is_err()); // =
+        assert!(validate_repo_id("evil/model#comment").is_err()); // #
+        assert!(validate_repo_id("evil/model\"quote").is_err()); // " (still rejected)
+        assert!(validate_repo_id("evil/model\\back").is_err()); // \ (still rejected)
+        assert!(validate_repo_id("evil/model\nline").is_err()); // \n (still rejected)
+        assert!(validate_repo_id("evil/model with space").is_err()); // space
+        assert!(validate_repo_id("evil/model\ttab").is_err()); // tab
+    }
+
+    #[test]
+    fn validate_repo_id_rejects_missing_slash() {
+        assert!(validate_repo_id("nomodelpart").is_err());
+        assert!(validate_repo_id("").is_err());
+    }
+
+    #[test]
+    fn validate_repo_id_rejects_leading_dash() {
+        // Avoid arg-confusion in the optimum subprocess.
+        assert!(validate_repo_id("-evil/model").is_err());
     }
 
     #[test]

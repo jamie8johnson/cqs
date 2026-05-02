@@ -75,6 +75,21 @@ struct AuditModeFile {
 pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
     let _span = tracing::info_span!("load_audit_state", dir = %cqs_dir.display()).entered();
     let path = cqs_dir.join("audit-mode.json");
+    // SEC-V1.33-6: cap file size before reading. `load_audit_state` runs on
+    // most CLI paths, so a `.cqs/`-write attacker could OOM cqs by planting a
+    // 1 GiB JSON file here. Real audit-mode JSON is ~80 bytes; 4 KiB is
+    // ample headroom. Mirrors the project registry's 1 MiB cap pattern.
+    const MAX_AUDIT_MODE_SIZE: u64 = 4096;
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > MAX_AUDIT_MODE_SIZE {
+            tracing::warn!(
+                path = %path.display(),
+                size = meta.len(),
+                "audit-mode.json exceeds size cap; ignoring"
+            );
+            return AuditMode::default();
+        }
+    }
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return AuditMode::default(),
@@ -293,6 +308,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let loaded = load_audit_state(dir.path());
         assert!(!loaded.is_active());
+    }
+
+    #[test]
+    fn test_load_oversized_file_returns_default() {
+        // SEC-V1.33-6: a `.cqs/`-write attacker who plants a giant
+        // audit-mode.json must not be able to OOM cqs. The size cap is 4 KiB;
+        // anything larger is ignored and the default (inactive) returned.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit-mode.json");
+        // 8 KiB of valid JSON-ish padding > 4 KiB cap.
+        let big = format!(
+            r#"{{"enabled":true,"expires_at":"2099-01-01T00:00:00Z","_pad":"{}"}}"#,
+            "x".repeat(8 * 1024)
+        );
+        std::fs::write(&path, big).unwrap();
+        let loaded = load_audit_state(dir.path());
+        assert!(
+            !loaded.is_active(),
+            "oversized audit-mode.json must be ignored, not parsed"
+        );
     }
 
     #[test]
