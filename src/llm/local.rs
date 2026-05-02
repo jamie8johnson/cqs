@@ -217,6 +217,16 @@ impl LocalProvider {
                 let self_ref = self;
                 s.spawn(move || {
                     let _worker_span = tracing::debug_span!("local_worker", worker_id).entered();
+                    // P3-8 (audit v1.33.0): per-worker counters + wall-clock
+                    // so the post-loop completion line breaks down the batch
+                    // by worker. Without these the journal has N
+                    // indistinguishable "worker complete" lines and operators
+                    // tuning `CQS_LOCAL_LLM_CONCURRENCY` can't see tail-worker
+                    // skew. `retried` would require lifting state out of
+                    // `process_one_item`; out of scope for this audit pass.
+                    let worker_start = std::time::Instant::now();
+                    let mut completed: usize = 0;
+                    let mut failed: usize = 0;
                     while let Ok(item) = rx_worker.recv() {
                         // Per-item catch_unwind — a panic on one item must not
                         // kill the worker.
@@ -234,6 +244,7 @@ impl LocalProvider {
 
                         match item_result {
                             Ok(Ok(Some(text))) => {
+                                completed += 1;
                                 // Stash the result for fetch_batch_results.
                                 if let Ok(mut map) = results_ref.lock() {
                                     map.insert(item.custom_id.clone(), text.clone());
@@ -268,6 +279,7 @@ impl LocalProvider {
                             Ok(Ok(None)) => {
                                 // Item skipped (non-retriable 4xx, malformed
                                 // JSON, etc) — already logged at call site.
+                                failed += 1;
                                 if let Ok(mut f) = failed_ref.lock() {
                                     *f += 1;
                                 }
@@ -278,6 +290,7 @@ impl LocalProvider {
                                     error = %e,
                                     "item processing failed after retries"
                                 );
+                                failed += 1;
                                 if let Ok(mut f) = failed_ref.lock() {
                                     *f += 1;
                                 }
@@ -288,12 +301,24 @@ impl LocalProvider {
                                     panic = ?panic,
                                     "worker panic, skipping item"
                                 );
+                                failed += 1;
                                 if let Ok(mut f) = failed_ref.lock() {
                                     *f += 1;
                                 }
                             }
                         }
                     }
+                    // P3-8: per-worker completion with explicit fields.
+                    // Span context isn't always carried by JSON formatters,
+                    // so emit `worker_id` directly rather than relying on
+                    // the entered span.
+                    tracing::info!(
+                        worker_id,
+                        completed,
+                        failed,
+                        elapsed_ms = worker_start.elapsed().as_millis() as u64,
+                        "local batch worker complete"
+                    );
                 });
             }
 

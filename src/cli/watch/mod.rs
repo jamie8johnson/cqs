@@ -1155,7 +1155,16 @@ pub fn cmd_watch(
                 collect_events(&event, &watch_cfg, &mut state);
             }
             Ok(Err(e)) => {
-                warn!(error = %e, "Watch error");
+                // P3-4 (audit v1.33.0): include `kind` and `paths` so
+                // operators can distinguish MaxFilesWatch (raise sysctl) from
+                // Io(broken pipe) (restart daemon). Display alone collapses
+                // the discriminator and drops paths.
+                warn!(
+                    error = %e,
+                    kind = ?e.kind,
+                    paths = ?e.paths,
+                    "Watch error"
+                );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // #1182 — Layer 1: out-of-band reconcile request. The

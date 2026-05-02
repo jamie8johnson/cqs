@@ -283,6 +283,10 @@ impl OnnxReranker {
     ///
     /// Returns one score per encoding in `chunk`.
     fn run_chunk(&self, chunk: &[tokenizers::Encoding]) -> Result<Vec<f32>, RerankerError> {
+        // P3-1 (audit v1.33.0): track per-chunk wall-clock so operators
+        // tuning `CQS_RERANKER_BATCH` or chasing tail latency can see
+        // per-chunk shape. Owns ~98% of reranker latency (ORT session.run).
+        let start = std::time::Instant::now();
         let batch_size = chunk.len();
         debug_assert!(batch_size > 0, "run_chunk called with empty chunk");
 
@@ -327,6 +331,10 @@ impl OnnxReranker {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .unwrap_or(true); // session() always sets this; fallback to true matches BERT default
+
+        // P3-1: per-chunk span carries shape data for journal correlation.
+        let _chunk_span =
+            tracing::debug_span!("reranker_run_chunk", batch_size, max_len, expects_tti).entered();
 
         let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
         let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
@@ -403,6 +411,13 @@ impl OnnxReranker {
         }
 
         let scores: Vec<f32> = (0..batch_size).map(|i| sigmoid(data[i * stride])).collect();
+        // P3-1: completion event with elapsed_ms so per-chunk latency
+        // is queryable without parsing the surrounding span.
+        tracing::debug!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            batch_size,
+            "run_chunk complete"
+        );
         Ok(scores)
     }
 

@@ -21,6 +21,16 @@ pub(super) fn max_pending_files() -> usize {
 }
 /// Collect file system events into pending sets, filtering by extension and deduplicating.
 pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchState) {
+    // P3-5 (audit v1.33.0): per-event entry span so an inotify event that
+    // makes it through filtering can be correlated to its later reindex.
+    // `trace_span` keeps the per-event noise behind RUST_LOG=trace; the
+    // accept-path debug below is the level operators actually reach for.
+    let _span = tracing::trace_span!(
+        "collect_events",
+        event_kind = ?event.kind,
+        paths = event.paths.len(),
+    )
+    .entered();
     for path in &event.paths {
         // PB-26: Skip canonicalize for deleted files — dunce::canonicalize
         // requires the file to exist (calls std::fs::canonicalize internally).
@@ -125,6 +135,15 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
                 state
                     .pending_files
                     .insert(super::reconcile::normalize_pending_path(rel));
+                // P3-5 (audit v1.33.0): debug the accept-and-queue branch.
+                // Operators investigating "why didn't my save get reindexed?"
+                // can `RUST_LOG=cqs::cli::watch=debug` and see the full
+                // event → queue chain.
+                tracing::debug!(
+                    path = %rel.display(),
+                    event_kind = ?event.kind,
+                    "Queued for reindex"
+                );
             } else {
                 // RM-V1.25-23: log per-event at debug (spammy on bulk
                 // drops) and accumulate a counter; the once-per-cycle
