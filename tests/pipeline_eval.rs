@@ -1214,6 +1214,22 @@ fn test_noise_eval_143q() {
         ("Chi (Go)", "/tmp/chi/", &["go"]),
     ];
 
+    // Pre-check: the test is designed around the *combined* noise corpus from
+    // all five repos. If the four /tmp/* sources aren't present the loop
+    // would still run, but only against cqs's own ~1700 .rs files — that
+    // takes 30+ min on a CPU embedder (CI runner) and isn't measuring what
+    // the test claims to measure. Skip cleanly instead. (#1305)
+    let any_external_noise_present = noise_sources
+        .iter()
+        .skip(1) // cqs's own src/ doesn't count — that's intra-repo, not noise
+        .any(|(_, dir_path, _)| Path::new(dir_path).exists());
+    if !any_external_noise_present {
+        eprintln!(
+            "test_noise_eval_143q: external noise corpora absent (need flask/zod/express/chi at /tmp/*); skipping (#1305)"
+        );
+        return;
+    }
+
     let mut noise_chunks = 0;
     let mut batch_texts: Vec<String> = Vec::new();
     let mut batch_chunks: Vec<cqs::parser::Chunk> = Vec::new();
