@@ -1,0 +1,83 @@
+name: CI (slow / overnight)
+
+# Catches the 15+ `#[ignore]`-tagged tests (model-loading, stress, daemon-env)
+# that don't run in PR-time CI. Triggered on a daily cron + manual dispatch.
+# Failures open a tracking issue rather than blocking merges (overnight runs
+# aren't gating).
+#
+# Background: see #1286.
+
+on:
+  schedule:
+    # 06:00 UTC daily ≈ 22:00 PT previous day. Once-a-day, not hourly —
+    # the suite is heavy and free-tier minutes matter.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      include_ignored:
+        description: 'Run #[ignore]-tagged tests (model-loading, stress, daemon-env)'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write  # auto-file-on-failure step
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct shared-key so the slow run doesn't poison the regular
+          # CI cache (different feature set, different output binaries).
+          shared-key: ci-slow
+
+      - name: Build (release)
+        run: cargo build --release --verbose
+
+      - name: Run full test suite (incl. ignored)
+        if: ${{ github.event_name == 'schedule' || inputs.include_ignored != 'false' }}
+        run: cargo test --release --verbose -- --include-ignored
+        # Note: model-loading tests under #[ignore] download from HF on first
+        # run (~3 GB across BGE-large + E5-base + SPLADE). Cache via separate
+        # `actions/cache` step on `~/.cache/huggingface` would help if egress
+        # becomes a concern; keeping it implicit for now since runs are daily.
+
+      - name: Run regular suite only (manual dispatch fallback)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_ignored == 'false' }}
+        run: cargo test --release --verbose
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Nightly CI failed on ${context.sha.substr(0, 7)}`;
+            const body = [
+              `Nightly run [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) failed.`,
+              ``,
+              `Not a PR-blocking failure (overnight cadence). Investigate when convenient.`,
+              ``,
+              `Triggered by commit ${context.sha} on \`${context.ref}\`.`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['ci-flake-or-bug', 'overnight-ci'],
+            });
