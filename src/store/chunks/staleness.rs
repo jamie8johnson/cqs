@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::store::helpers::sql::max_rows_per_statement;
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::{ReadWrite, Store};
 
@@ -309,10 +310,10 @@ impl Store<ReadWrite> {
                 return Ok(0);
             }
 
-            // Batch delete in chunks of 100 (SQLite has ~999 param limit).
-            // Single transaction wraps ALL batches — partial prune on crash
-            // would leave the index inconsistent with disk.
-            const BATCH_SIZE: usize = 100;
+            // Single-bind IN-list batched at the modern SQLite variable
+            // limit. Single transaction wraps ALL batches — partial prune
+            // on crash would leave the index inconsistent with disk.
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             let mut deleted = 0u32;
 
             for batch in missing.chunks(BATCH_SIZE) {
@@ -430,8 +431,9 @@ impl Store<ReadWrite> {
                 .map(|(origin,)| origin)
                 .collect();
 
-            // 2a. Delete chunks for missing files (batched for SQLite param limit)
-            const BATCH_SIZE: usize = 100;
+            // 2a. Delete chunks for missing files (single-bind IN-list,
+            // batched at the modern SQLite variable limit).
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             let mut pruned_chunks = 0u32;
 
             for batch in missing.chunks(BATCH_SIZE) {
@@ -597,7 +599,7 @@ impl Store<ReadWrite> {
             // Phase 2: batched delete in the SAME transaction started above.
             // Same shape as `prune_missing` so a partial prune on crash
             // leaves the index consistent with the remaining rows in `chunks`.
-            const BATCH_SIZE: usize = 100;
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             let mut deleted = 0u32;
 
             for batch in ignored.chunks(BATCH_SIZE) {

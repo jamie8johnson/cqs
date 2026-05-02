@@ -258,12 +258,13 @@ pub(super) struct ChunkSnapshot {
 }
 
 /// Snapshot existing content_hash + parser_version before INSERT overwrites
-/// them. Batched in groups of 500 to stay within SQLite's 999-param limit.
+/// them. Single-bind IN-list batched at the modern SQLite variable limit.
 pub(super) async fn snapshot_content_hashes(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
 ) -> Result<HashMap<String, ChunkSnapshot>, StoreError> {
-    const HASH_BATCH: usize = 500;
+    use crate::store::helpers::sql::max_rows_per_statement;
+    const HASH_BATCH: usize = max_rows_per_statement(1);
     let mut old: HashMap<String, ChunkSnapshot> = HashMap::new();
     let chunk_ids: Vec<&str> = chunks.iter().map(|(c, _)| c.id.as_str()).collect();
     for id_batch in chunk_ids.chunks(HASH_BATCH) {

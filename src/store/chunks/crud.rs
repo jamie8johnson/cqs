@@ -878,7 +878,10 @@ impl Store<ReadWrite> {
                     query.execute(&mut *tx).await?;
                 }
 
-                const INSERT_BATCH: usize = 300;
+                // 3 binds per row → modern SQLite variable limit yields
+                // ~10822 rows per statement (was hardcoded 300).
+                use crate::store::helpers::sql::max_rows_per_statement;
+                const INSERT_BATCH: usize = max_rows_per_statement(3);
                 for batch in calls.chunks(INSERT_BATCH) {
                     let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
                         sqlx::QueryBuilder::new(

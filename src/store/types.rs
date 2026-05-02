@@ -181,7 +181,9 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
-            const INSERT_BATCH: usize = 249;
+            // 4 binds per row (chunk_id, target_type_name, edge_kind, line_number);
+            // mirrors `replace_type_edges_in_tx_for_chunks` above.
+            const INSERT_BATCH: usize = max_rows_per_statement(4);
             for batch in type_refs.chunks(INSERT_BATCH) {
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
                     "INSERT INTO type_edges (source_chunk_id, target_type_name, edge_kind, line_number) ",
