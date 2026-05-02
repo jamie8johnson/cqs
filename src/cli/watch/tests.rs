@@ -1697,3 +1697,54 @@ fn process_file_changes_zero_files_is_noop_when_embedder_blocked() {
         "no work was attempted, no counter to clear or preserve"
     );
 }
+
+// ===== EH-V1.33-8 (#1290): touch_mtime_or_warn fail-loud helper =====
+
+/// EH-V1.33-8 (#1290): the parse-failure mtime-touch chain previously
+/// nested four `if let Ok(...)` checks. Any one failing silently
+/// abandoned the touch, leaving `cqs status --watch-fresh` reporting
+/// fresh while the touch never landed. The helper now returns false
+/// and logs a distinct warn at each failure step. This test exercises
+/// the metadata() failure branch (most common — file was deleted between
+/// the parse attempt and the touch).
+#[test]
+fn touch_mtime_or_warn_returns_false_on_missing_file() {
+    use super::reindex::touch_mtime_or_warn;
+
+    let fix = drain_test_fixture(4);
+    let rel = PathBuf::from("nonexistent.rs");
+    let abs = fix.tmp.path().join(&rel);
+    // Deliberately do NOT create the file. metadata() will fail.
+    assert!(!abs.exists(), "test setup: file must not exist");
+
+    let ok = touch_mtime_or_warn(&fix.store, &rel, &abs);
+    assert!(
+        !ok,
+        "metadata() failure must short-circuit and return false, not silently succeed"
+    );
+}
+
+/// EH-V1.33-8 (#1290): the success path — when the file exists, the
+/// helper must read its mtime and call `touch_source_mtime` on the
+/// store. Returns true even if no rows were affected (origin format
+/// mismatch with stored chunks would produce 0 rows but still indicate
+/// the FS chain succeeded). Pins the happy path so a future refactor
+/// that breaks the success branch is caught.
+#[test]
+fn touch_mtime_or_warn_returns_true_on_extant_file() {
+    use super::reindex::touch_mtime_or_warn;
+    use std::io::Write;
+
+    let fix = drain_test_fixture(4);
+    let abs = fix.tmp.path().join("present.rs");
+    let mut f = std::fs::File::create(&abs).unwrap();
+    f.write_all(b"fn x() {}").unwrap();
+    drop(f);
+    let rel = PathBuf::from("present.rs");
+
+    let ok = touch_mtime_or_warn(&fix.store, &rel, &abs);
+    assert!(
+        ok,
+        "extant file with readable mtime must succeed; FS chain returned false unexpectedly"
+    );
+}
