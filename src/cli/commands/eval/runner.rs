@@ -83,17 +83,21 @@ struct QueryHit {
 /// `query_file` is the path to a JSON queries file (v3 format).
 /// `category_filter` restricts the run to one category (None = all).
 /// `limit` is the per-query result count used to compute R@K (typically 20).
+/// `reranker` opts each query into stage-2 cross-encoder / LLM scoring;
+/// `None` preserves the historical retrieval-only pipeline.
 pub(crate) fn run_eval(
     ctx: &CommandContext<'_, ReadOnly>,
     query_file: &Path,
     category_filter: Option<&str>,
     limit: usize,
+    reranker: Option<&dyn cqs::Reranker>,
 ) -> Result<EvalReport> {
     let _span = tracing::info_span!(
         "run_eval",
         query_file = %query_file.display(),
         category = ?category_filter,
-        limit
+        limit,
+        reranker_enabled = reranker.is_some(),
     )
     .entered();
 
@@ -144,7 +148,9 @@ pub(crate) fn run_eval(
             .clone()
             .unwrap_or_else(|| "uncategorized".to_string());
 
-        let rank = match search_for_rank(ctx, embedder, store, index_ref, &q.query, gold, limit) {
+        let rank = match search_for_rank(
+            ctx, embedder, store, index_ref, &q.query, gold, limit, reranker,
+        ) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(
@@ -275,8 +281,19 @@ fn search_for_rank(
     query: &str,
     gold: &GoldChunk,
     limit: usize,
+    reranker: Option<&dyn cqs::Reranker>,
 ) -> Result<Option<usize>> {
     let query_embedding = embedder.embed_query(query)?;
+
+    // Mirror cmd_query: when reranking, over-retrieve so the cross-encoder
+    // sees more candidates than the user-facing limit. Cap respects
+    // `CQS_RERANK_POOL_MAX` / `RERANK_POOL_MAX` (currently 20). Without
+    // reranking, retrieval limit equals the requested limit.
+    let stage1_limit = if reranker.is_some() {
+        crate::cli::limits::rerank_pool_size(limit).max(limit)
+    } else {
+        limit
+    };
 
     // Adaptive routing: classify, then refine via centroid.
     let classification = cqs::search::router::classify_query(query);
@@ -332,18 +349,50 @@ fn search_for_rank(
 
     let threshold = 0.0_f32; // Don't drop low-similarity results — we want full top-K for R@K.
 
-    let results: Vec<UnifiedResult> = if splade_arg.is_some() {
+    let stage1_results: Vec<UnifiedResult> = if splade_arg.is_some() {
         let code = store.search_hybrid(
             &query_embedding,
             &filter,
-            limit,
+            stage1_limit,
             threshold,
             index,
             splade_arg,
         )?;
         code.into_iter().map(UnifiedResult::Code).collect()
     } else {
-        store.search_unified_with_index(&query_embedding, &filter, limit, threshold, index)?
+        store.search_unified_with_index(
+            &query_embedding,
+            &filter,
+            stage1_limit,
+            threshold,
+            index,
+        )?
+    };
+
+    // Apply reranker (when enabled): pull out the SearchResult payloads,
+    // hand them to the trait, truncate the reordered list to `limit`.
+    // `NoopReranker` is a valid mode but never reaches here — cmd_eval
+    // only constructs a reranker for `Onnx` / `Llm`, leaving `None` to
+    // fall through to retrieval-only.
+    let results: Vec<UnifiedResult> = if let Some(reranker) = reranker {
+        let mut code_results: Vec<cqs::store::SearchResult> = stage1_results
+            .into_iter()
+            .map(|r| match r {
+                UnifiedResult::Code(sr) => sr,
+            })
+            .collect();
+        if code_results.len() > 1 {
+            reranker
+                .rerank(query, &mut code_results, limit)
+                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+        }
+        // `Reranker::rerank` truncates to `limit` internally for impls that
+        // honor the contract; double-truncate as defense-in-depth so a
+        // misbehaving impl can't silently return more rows than asked.
+        code_results.truncate(limit);
+        code_results.into_iter().map(UnifiedResult::Code).collect()
+    } else {
+        stage1_results
     };
 
     // Find gold rank (1-indexed). Match on (file == origin) AND

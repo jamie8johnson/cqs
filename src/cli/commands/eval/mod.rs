@@ -89,6 +89,38 @@ pub(crate) struct EvalCmdArgs {
     /// differs by use case (eval default = 600, status = 30).
     #[arg(long = "require-fresh-secs", default_value_t = 600u64)]
     pub require_fresh_secs: u64,
+
+    /// Apply a reranker stage after retrieval. Default `none` (skip
+    /// reranking) preserves the historical eval pipeline. `onnx` runs
+    /// the cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
+    /// `llm` resolves to [`cqs::LlmReranker`], which is a skeleton today
+    /// (errors on first call) and is included so the flag can absorb the
+    /// LlmReranker landing without a breaking API change.
+    ///
+    /// When `onnx` or `llm` is selected, stage 1 over-retrieves to the
+    /// `rerank_pool_size(limit)` cap (mirrors `cqs <q> --rerank`); stage 2
+    /// truncates to `limit` after scoring. R@K can shift in either direction
+    /// — reranker promotes the gold to position 1 (R@1 win) but a gold
+    /// hovering near the pool edge can fall out of top-K under a poor
+    /// scorer (R@K loss).
+    #[arg(long = "reranker", value_enum, default_value_t = RerankerMode::None)]
+    pub reranker: RerankerMode,
+}
+
+/// Reranker dispatch for `cqs eval --reranker`.
+///
+/// Mirrors the production three-impl set introduced in #1276 (`OnnxReranker`,
+/// `NoopReranker`, `LlmReranker`). `None` short-circuits the entire reranker
+/// path; `Onnx` and `Llm` route through [`crate::cli::CommandContext::reranker`]
+/// in a follow-up wiring pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum RerankerMode {
+    /// No reranking — stage-1 retrieval is the final answer (default).
+    None,
+    /// Cross-encoder reranker via [`cqs::OnnxReranker`].
+    Onnx,
+    /// LLM reranker via [`cqs::LlmReranker`]. Skeleton today; errors on first call.
+    Llm,
 }
 
 /// CLI handler for `cqs eval`.
@@ -149,7 +181,30 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     // reports `state == fresh`, surface a clear error if it can't.
     require_fresh_gate(&args.no_require_fresh, args.require_fresh_secs)?;
 
-    let report = runner::run_eval(ctx, &args.query_file, args.category.as_deref(), args.limit)?;
+    // Resolve the reranker once before the search loop. `None` short-circuits
+    // the entire stage-2 path; `Onnx` / `Llm` build via the same lazy factory
+    // the CLI search path uses (`CommandContext::reranker`), so the eval
+    // path doesn't accidentally diverge from production reranker config.
+    let reranker = match args.reranker {
+        RerankerMode::None => None,
+        RerankerMode::Onnx => Some(ctx.reranker()?),
+        RerankerMode::Llm => {
+            // LlmReranker is a skeleton — eagerly construct so the eval
+            // user sees the "not yet implemented" error before the search
+            // loop spins up the index, not after spending minutes on
+            // retrieval.
+            let r: std::sync::Arc<dyn cqs::Reranker> = std::sync::Arc::new(cqs::LlmReranker::new());
+            Some(r)
+        }
+    };
+
+    let report = runner::run_eval(
+        ctx,
+        &args.query_file,
+        args.category.as_deref(),
+        args.limit,
+        reranker.as_deref(),
+    )?;
 
     // When --baseline is set, prefer the diff output over the raw report —
     // a CI-shaped invocation just wants the diff. The raw report still
@@ -680,6 +735,37 @@ mod tests {
         // every other flag.
         assert!(!w.args.no_require_fresh);
         assert_eq!(w.args.require_fresh_secs, 600);
+        // Default reranker mode is None — preserves the historical
+        // retrieval-only pipeline so existing baselines stay comparable.
+        assert_eq!(w.args.reranker, RerankerMode::None);
+    }
+
+    /// Pin the `--reranker` flag's three accepted values. Default is
+    /// already covered in `test_args_default_limit_is_20`; here we drive
+    /// every variant to catch typos in clap's value-enum derivation.
+    #[test]
+    fn reranker_flag_parses_each_variant() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: EvalCmdArgs,
+        }
+        for (input, expected) in [
+            ("none", RerankerMode::None),
+            ("onnx", RerankerMode::Onnx),
+            ("llm", RerankerMode::Llm),
+        ] {
+            let w = Wrapper::try_parse_from(["test", "queries.json", "--reranker", input]).unwrap();
+            assert_eq!(
+                w.args.reranker, expected,
+                "--reranker {input} should parse to {expected:?}"
+            );
+        }
+        // Garbage values must error — covers the contract that clap rejects
+        // unknown reranker spellings instead of silently falling back to None.
+        let err = Wrapper::try_parse_from(["test", "queries.json", "--reranker", "fancy"]);
+        assert!(err.is_err(), "--reranker fancy should be a clap error");
     }
 
     /// TC-HAP-1.30.1-9: pin the canonical row-by-row format so a

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`slow-tests-feature` job** in `.github/workflows/ci-slow.yml` (#1286 Phase 2). Runs `cargo test --release --features slow-tests` nightly. Self-contained — no HuggingFace model download dependency, in contrast to the existing `full-suite` job's `--include-ignored` path. Hosts the 11 subprocess-spawning `cli_*_test` binaries that have been gated since v1.29.0 plus the two new e2e additions above. Could later graduate to PR-time CI if wall time stays under budget.
+- **`cqs eval --reranker <none|onnx|llm>`** wires the v1.32.0 `Reranker` trait (#1276) into the eval harness. Default `none` keeps the historical retrieval-only pipeline so existing baselines stay comparable. `onnx` runs the cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL` and over-retrieves to `rerank_pool_size(limit)` (mirrors `cqs <q> --rerank`) before stage 2 truncates to `limit`. `llm` resolves to `cqs::LlmReranker` (skeleton — errors on first call) so the flag absorbs that wiring without a breaking API change later. Listed under "Outstanding follow-ups (small, optional)" in PROJECT_CONTINUITY.md.
 
 ## [1.33.0] - 2026-05-02
 
