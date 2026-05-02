@@ -7,6 +7,13 @@
 //!   2. R@1 = 0% when the gold chunk is missing from the store
 //!   3. `--save` writes a parseable JSON file with the expected fields
 //!   4. `--baseline foo.json` parses (Task C2 will implement the body)
+//!
+//! Gated behind `slow-tests` (#1286 Phase 2) — each of the five tests here
+//! seeds a store and runs `cqs eval` end-to-end via `Command::new`, paying
+//! the cqs-binary cold-start cost per test. ~5.3 min of regular-CI wall
+//! time (CI workflow `25227697806`).
+
+#![cfg(feature = "slow-tests")]
 
 mod common;
 
