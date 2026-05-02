@@ -484,17 +484,21 @@ impl<Mode> Store<Mode> {
             &crate::splade::SparseVector,
         )>,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        // If SPLADE is not enabled or not available, delegate to standard path
-        if !filter.enable_splade || splade.is_none() {
-            if filter.enable_splade && splade.is_none() {
+        // RB-V1.33-9: collapse the "not enabled OR no index" guard and the
+        // subsequent `splade.unwrap()` into a single let-else so the unwrap
+        // branch is structurally impossible.
+        let (splade_index, sparse_query) = match (filter.enable_splade, splade) {
+            (false, _) => {
+                return self.search_filtered_with_index(query, filter, limit, threshold, index);
+            }
+            (true, None) => {
                 tracing::debug!(
                     "SPLADE requested but index unavailable, falling back to dense-only search"
                 );
+                return self.search_filtered_with_index(query, filter, limit, threshold, index);
             }
-            return self.search_filtered_with_index(query, filter, limit, threshold, index);
-        }
-
-        let (splade_index, sparse_query) = splade.unwrap();
+            (true, Some(s)) => s,
+        };
         let _span = tracing::info_span!("search_hybrid", limit, enable_splade = true).entered();
 
         // Load notes once for all paths
