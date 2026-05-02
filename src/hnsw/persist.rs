@@ -144,43 +144,57 @@ pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError
                 continue;
             }
             let path = dir.join(format!("{}.{}", basename, ext));
-            if path.exists() {
-                // Stream file through blake3 hasher to avoid loading entire file into memory
-                let file = std::fs::File::open(&path).map_err(|e| {
-                    tracing::warn!(
-                        error = %e,
-                        path = %path.display(),
-                        kind = ?e.kind(),
-                        "verify_hnsw_checksums IO failure"
-                    );
-                    HnswError::Internal(format!(
-                        "Failed to open {} for checksum: {}",
-                        path.display(),
-                        e
-                    ))
-                })?;
-                let mut hasher = blake3::Hasher::new();
-                std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(|e| {
-                    tracing::warn!(
-                        error = %e,
-                        path = %path.display(),
-                        kind = ?e.kind(),
-                        "verify_hnsw_checksums IO failure"
-                    );
-                    HnswError::Internal(format!(
-                        "Failed to read {} for checksum: {}",
-                        path.display(),
-                        e
-                    ))
-                })?;
-                let actual = hasher.finalize().to_hex().to_string();
-                if actual != expected {
-                    return Err(HnswError::ChecksumMismatch {
-                        file: path.display().to_string(),
-                        expected: expected.to_string(),
-                        actual,
-                    });
-                }
+            // P1 / DS-V1.33-3: a missing file referenced by the checksum
+            // manifest is a hard failure, not a skip. The previous
+            // `if path.exists() { ... }` swallowed exactly the partial-save
+            // case we want to catch — a crash between writing the manifest
+            // and renaming the graph/data files into place left the
+            // verifier returning Ok, then the load path fell into
+            // `hnsw_rs::file_load` against a missing file. The
+            // `HNSW_EXTENSIONS` whitelist at the top of the loop already
+            // gates which paths can reach this branch, so the strict check
+            // is safe.
+            if !path.exists() {
+                return Err(HnswError::Internal(format!(
+                    "HNSW checksum manifest references missing file: {} (partial save?)",
+                    path.display()
+                )));
+            }
+            // Stream file through blake3 hasher to avoid loading entire file into memory
+            let file = std::fs::File::open(&path).map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    kind = ?e.kind(),
+                    "verify_hnsw_checksums IO failure"
+                );
+                HnswError::Internal(format!(
+                    "Failed to open {} for checksum: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            let mut hasher = blake3::Hasher::new();
+            std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    kind = ?e.kind(),
+                    "verify_hnsw_checksums IO failure"
+                );
+                HnswError::Internal(format!(
+                    "Failed to read {} for checksum: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            let actual = hasher.finalize().to_hex().to_string();
+            if actual != expected {
+                return Err(HnswError::ChecksumMismatch {
+                    file: path.display().to_string(),
+                    expected: expected.to_string(),
+                    actual,
+                });
             }
         }
     }
