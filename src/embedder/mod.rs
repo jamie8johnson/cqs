@@ -2039,10 +2039,14 @@ mod tests {
 
     mod ensure_model_tests {
         use super::*;
-        use std::sync::Mutex;
 
-        /// Mutex to serialize tests that manipulate CQS_ONNX_DIR env var.
-        static ONNX_DIR_MUTEX: Mutex<()> = Mutex::new(());
+        // ONNX_DIR_MUTEX hoisted to the crate-level shared
+        // `crate::ONNX_DIR_ENV_LOCK` (#1305) so this test mod serializes
+        // against `embedder_init_failure` (sibling) and the
+        // `cli::commands::infra::doctor::tests` cohort. Pre-fix all three
+        // had separate Mutex instances and raced on `CQS_ONNX_DIR` under
+        // cargo's parallel runner — a poisoned lock from a 401-on-CI HF
+        // download cascaded into PoisonError on the next two tests.
 
         fn test_model_config() -> ModelConfig {
             ModelConfig {
@@ -2064,7 +2068,9 @@ mod tests {
 
         #[test]
         fn cqs_onnx_dir_structured_layout() {
-            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let _lock = crate::ONNX_DIR_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let dir = tempfile::TempDir::new().unwrap();
             let onnx_dir = dir.path().join("onnx");
             std::fs::create_dir_all(&onnx_dir).unwrap();
@@ -2090,7 +2096,9 @@ mod tests {
 
         #[test]
         fn cqs_onnx_dir_flat_layout() {
-            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let _lock = crate::ONNX_DIR_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let dir = tempfile::TempDir::new().unwrap();
             std::fs::write(dir.path().join("model.onnx"), b"fake").unwrap();
             std::fs::write(dir.path().join("tokenizer.json"), b"fake").unwrap();
@@ -2114,7 +2122,9 @@ mod tests {
 
         #[test]
         fn cqs_onnx_dir_missing_files_falls_through() {
-            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let _lock = crate::ONNX_DIR_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let dir = tempfile::TempDir::new().unwrap();
             // Empty dir -- neither structured nor flat layout
 
@@ -2135,16 +2145,18 @@ mod tests {
 
     mod embedder_init_failure {
         use super::*;
-        use std::sync::Mutex;
 
-        /// Mutex to serialize tests that manipulate CQS_ONNX_DIR env var.
-        static ONNX_DIR_MUTEX: Mutex<()> = Mutex::new(());
+        // ONNX_DIR_MUTEX hoisted to `crate::ONNX_DIR_ENV_LOCK` (#1305) so
+        // this mod serializes against `ensure_model_tests` and
+        // `doctor::tests`. See the comment in `ensure_model_tests` above.
 
         #[test]
         fn embedder_with_bogus_onnx_path_returns_err_on_embed() {
             // TC-11: Verify that an Embedder with a ModelConfig pointing to
             // a nonexistent ONNX path returns Err (not panic) when embed is called.
-            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let _lock = crate::ONNX_DIR_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
 
             let dir = tempfile::TempDir::new().unwrap();
             // Create only the tokenizer file, leave ONNX model missing
@@ -2198,7 +2210,9 @@ mod tests {
         fn embedder_init_failure_is_not_cached() {
             // TC-11: Verify that after an Embedder returns Err on embed,
             // calling embed again also returns Err (no cached bad state).
-            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let _lock = crate::ONNX_DIR_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
 
             let dir = tempfile::TempDir::new().unwrap();
             // Create empty dir -- no model files at all
