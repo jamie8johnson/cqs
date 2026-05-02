@@ -53,7 +53,7 @@
     {"query": "extract body keywords from function source for search boosting", "expected": "extract_body_keywords", "also_accept": []}
   ],
   "conceptual": [
-    {"query": "how does the search pipeline combine keyword and vector results", "expected_functions": ["search_filtered", "search_fts", "search_unified_with_index", "rrf_fuse", "finalize_results"], "category": "search_pipeline"},
+    {"query": "how does the search pipeline combine keyword and vector results", "expected_functions": ["search_filtered", "search_fts", "search_code_results", "rrf_fuse", "finalize_results"], "category": "search_pipeline"},
     {"query": "what happens when you index a file for the first time", "expected_functions": ["parse_file", "generate_nl_description", "embed_documents", "upsert_chunks_batch", "upsert_calls_batch"], "category": "indexing"},
     {"query": "how does the enrichment pipeline transform code before embedding", "expected_functions": ["generate_nl_description", "generate_nl_with_call_context", "generate_nl_with_template", "embedding_text"], "category": "enrichment"},
     {"query": "what is the complete flow for analyzing the impact of a code change", "expected_functions": ["analyze_impact", "analyze_diff_impact", "compute_risk_batch", "find_test_chunks", "reverse_bfs"], "category": "impact"},

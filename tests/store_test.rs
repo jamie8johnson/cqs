@@ -31,7 +31,9 @@ fn test_upsert_and_search() {
     store.upsert_chunk(&chunk, &embedding, Some(12345)).unwrap();
 
     // Search should find it
-    let results = store.search_embedding_only(&embedding, 5, 0.0).unwrap();
+    let results = store
+        .search_filtered(&embedding, &SearchFilter::default(), 5, 0.0)
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "add");
     assert!(
@@ -57,7 +59,9 @@ fn test_search_with_threshold() {
 
     // Search with query similar to chunk1
     let query = mock_embedding(0.9);
-    let results = store.search_embedding_only(&query, 5, 0.5).unwrap();
+    let results = store
+        .search_filtered(&query, &SearchFilter::default(), 5, 0.5)
+        .unwrap();
 
     // Should find chunk1 (similar) but not chunk2 (dissimilar)
     assert!(results.iter().any(|r| r.chunk.name == "add"));
@@ -76,7 +80,9 @@ fn test_search_limit() {
 
     // Search with limit
     let query = mock_embedding(1.0);
-    let results = store.search_embedding_only(&query, 3, 0.0).unwrap();
+    let results = store
+        .search_filtered(&query, &SearchFilter::default(), 3, 0.0)
+        .unwrap();
 
     assert_eq!(results.len(), 3);
 }
@@ -153,7 +159,7 @@ fn test_delete_by_origin() {
 
     // Only chunk2 should remain
     let results = store
-        .search_embedding_only(&mock_embedding(1.0), 10, 0.0)
+        .search_filtered(&mock_embedding(1.0), &SearchFilter::default(), 10, 0.0)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "fn2");
@@ -191,7 +197,7 @@ fn test_prune_missing() {
 
     // Only chunk1 should remain
     let results = store
-        .search_embedding_only(&mock_embedding(1.0), 10, 0.0)
+        .search_filtered(&mock_embedding(1.0), &SearchFilter::default(), 10, 0.0)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "fn1");
@@ -874,7 +880,7 @@ fn test_store_close() {
 
     // Search should still work
     let results = store
-        .search_embedding_only(&mock_embedding(1.0), 5, 0.0)
+        .search_filtered(&mock_embedding(1.0), &SearchFilter::default(), 5, 0.0)
         .unwrap();
     assert_eq!(results.len(), 1, "Should find the persisted chunk");
 }
@@ -1144,7 +1150,7 @@ fn test_open_readonly_preserves_data() {
 
     // Search should find the chunk
     let results = ro
-        .search_embedding_only(&mock_embedding(1.0), 5, 0.0)
+        .search_filtered(&mock_embedding(1.0), &SearchFilter::default(), 5, 0.0)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "preserved_fn");

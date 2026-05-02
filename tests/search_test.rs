@@ -214,10 +214,10 @@ fn test_search_filtered_with_index_falls_back_without_index() {
     assert_eq!(results.len(), 1);
 }
 
-// ===== #36: search_unified_with_index (SQ-9: code-only) =====
+// ===== #36: search_code_results (SQ-9: code-only; renamed CQ-V1.33.0-10) =====
 
 #[test]
-fn test_search_unified_with_index_returns_code_only() {
+fn test_search_code_results_returns_code_only() {
     let store = TestStore::new();
     let c1 = test_chunk("unified_fn", "fn unified_fn() { code }");
     let ids = insert_chunks(&store, &[c1], 1.0);
@@ -240,7 +240,7 @@ fn test_search_unified_with_index_returns_code_only() {
     ]);
 
     let results = store
-        .search_unified_with_index(&query, &filter, 10, 0.0, Some(&mock))
+        .search_code_results(&query, &filter, 10, 0.0, Some(&mock))
         .unwrap();
 
     let has_code = results.iter().any(|r| matches!(r, UnifiedResult::Code(_)));
@@ -265,7 +265,7 @@ fn test_search_unified_without_index() {
 
     // No index -- brute-force
     let results = store
-        .search_unified_with_index(&query, &filter, 10, 0.0, None)
+        .search_code_results(&query, &filter, 10, 0.0, None)
         .unwrap();
 
     let has_code = results.iter().any(|r| matches!(r, UnifiedResult::Code(_)));

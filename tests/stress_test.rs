@@ -8,6 +8,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
+use cqs::store::SearchFilter;
 use std::sync::Arc;
 use std::thread;
 
@@ -65,7 +66,7 @@ fn test_concurrent_searches() {
             thread::spawn(move || {
                 for i in 0..searches_per_thread {
                     let query = mock_embedding((t * searches_per_thread + i) as f32 / 1000.0);
-                    let results = store.search_embedding_only(&query, 5, 0.0);
+                    let results = store.search_filtered(&query, &SearchFilter::default(), 5, 0.0);
                     assert!(results.is_ok(), "Search should succeed");
                 }
             })
@@ -100,7 +101,7 @@ fn test_many_small_operations() {
     for i in 0..200 {
         let query = mock_embedding(i as f32 / 200.0);
         let results = ts
-            .search_embedding_only(&query, 5, 0.0)
+            .search_filtered(&query, &SearchFilter::default(), 5, 0.0)
             .expect("Search failed");
         assert!(!results.is_empty(), "Should find results");
     }
@@ -127,7 +128,7 @@ fn test_search_threshold_performance() {
 
     // Low threshold - should return more results
     let results_low = ts
-        .search_embedding_only(&query, 100, 0.0)
+        .search_filtered(&query, &SearchFilter::default(), 100, 0.0)
         .expect("Search failed");
     assert!(
         !results_low.is_empty(),
@@ -136,7 +137,7 @@ fn test_search_threshold_performance() {
 
     // High threshold - should return fewer results
     let results_high = ts
-        .search_embedding_only(&query, 100, 0.8)
+        .search_filtered(&query, &SearchFilter::default(), 100, 0.8)
         .expect("Search failed");
     assert!(
         results_high.len() <= results_low.len(),

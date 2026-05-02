@@ -518,7 +518,11 @@ pub(crate) fn index_pack(
     for idx in order {
         let cost = token_counts[idx] + overhead_per_item;
         if used + cost > budget && !kept.is_empty() {
-            break;
+            // P1.18 parity (CQ-V1.33.0-4): skip oversized mid-stream items but
+            // keep probing — smaller, lower-scored items may still fit in the
+            // remaining budget. Mirrors `token_pack`'s behavior so waterfall
+            // budgeting in `task::pack_section` doesn't silently truncate.
+            continue;
         }
         // Mirror token_pack's 10x guard: skip items that vastly exceed budget
         // to avoid pathological cases (e.g., 50K-token item with 300-token budget)
@@ -712,6 +716,26 @@ mod tests {
         let (indices, used) = index_pack(&counts, 30, 0, |_| 1.0);
         assert_eq!(indices, vec![0]);
         assert_eq!(used, 100);
+    }
+
+    // CQ-V1.33.0-4: index_pack must `continue` (not `break`) when an oversized
+    // mid-stream item won't fit, so smaller lower-scored items still pack.
+    // Mirrors the P1.18 fix in token_pack.
+    #[test]
+    fn test_index_pack_continues_after_oversized_item() {
+        // 3 items, budget 30. Score order: idx0 (10), idx1 (50, won't fit), idx2 (10).
+        // Pre-fix `break` after idx1 would drop idx2. Post-fix `continue` keeps it.
+        let counts = vec![10, 50, 10];
+        let (indices, used) = index_pack(&counts, 30, 0, |i| match i {
+            0 => 3.0, // highest -> always picked first
+            1 => 2.0, // middle score, oversized after first pick
+            2 => 1.0, // lowest score, smaller — should still fit
+            _ => 0.0,
+        });
+        // After idx0 (used=10), idx1 (cost=50, used+50=60 > 30) must be skipped
+        // via `continue`, then idx2 (cost=10, used+10=20 <= 30) fits.
+        assert_eq!(indices, vec![0, 2]);
+        assert_eq!(used, 20);
     }
 
     // HP-2: inject_token_info adds fields when Some
