@@ -134,6 +134,21 @@ Where multiple chunks share `(file, name)` (overloaded names, sub-chunks of wind
 
 **Was nomic-coderank affected by the matcher bug?** No — the canonical CodeRankEmbed numbers in `PROJECT_CONTINUITY.md` (test R@5=67.0%, dev R@5=69.7%, recorded 2026-04-25 in PR #1110) were collected the *same day* as PR #1109's fixture re-pin, before any drift had accumulated. Today's loosened-matcher numbers (test R@5=67.9%, dev R@5=69.7%) reproduce those within ~1pp. The verdict at the time (CodeRankEmbed beats BGE on test R@5, loses on dev R@5, ships as opt-in) holds. The matcher bug bites evals run *after* several audit waves accumulate; coderank was lucky on timing.
 
+**v9-200k bare vs. v9-200k + summaries (2026-05-01 follow-up).** Cross-slot copied the 9,505 default-slot summaries to the v9 slot by content_hash, then ran `cqs index --slot v9 --force --llm-summaries` (which generated 2,333 fresh summaries via Anthropic Batches API to bring chunks_with_summary from 6,572 → 9,081, ~63% coverage). Eval against the corrected matcher:
+
+| split | metric | v9-200k bare | v9-200k + LLM summaries | Δ |
+|-------|--------|-------------:|------------------------:|--:|
+| test  | R@1    | 45.9%        | 39.4%                   | -6.5 |
+| test  | R@5    | 70.6%        | 69.7%                   | -0.9 |
+| test  | R@20   | 80.7%        | 80.7%                   |  0.0 |
+| dev   | R@1    | 46.8%        | 45.0%                   | -1.8 |
+| dev   | R@5    | 68.8%        | 67.9%                   | -0.9 |
+| dev   | R@20   | 81.7%        | 86.2%                   | +4.5 |
+
+Summaries hurt v9-200k's strongest signal (test R@1 down 6.5pp), are a wash on R@5 across both splits, and only help on dev R@20. The original v9-200k retirement-note claim — "bare-vs-enriched gives identical numbers — summaries can't rescue what the dense channel doesn't surface" — was directionally right under the broken matcher and continues to hold under the corrected matcher (the small-pp shifts go in the *wrong* direction for the headline metrics, not toward summaries-rescuing-the-model).
+
+This matches the EmbeddingGemma+summ result from earlier in this entry (bare and with-summaries both at test R@5=42.2%) — the dense channels of these code-specialist or code-tuned models already capture what summaries would add. BGE-large gets a small enrichment win because its pre-training distribution is broader and the summary text adds genuinely new signal. **Practical advice: pass `--llm-summaries` for BGE-large; skip it for v9-200k and EmbeddingGemma.** Eval JSONs at `/tmp/eval-v9-summ-{test,dev}.json`.
+
 **Takeaway 1 — v9-200k un-retired.** The 2026-04-25 verdict was "30pp behind, retire" but it turns out to be ~95% fixture artifact. v9-200k actually marginally beats BGE-large on test R@5 (70.6% vs 69.7%) and trails by 8.3pp on dev R@5 (68.8% vs 77.1%). For 1/3 the dim, 1/3 the params, and already fine-tuned on cqs's own call-graph data, that's a strong showing. Decision (per ROADMAP entry): keep BGE-large as default for now (dev R@5 hedge against unknown query types, broader pre-training base) but un-retire v9-200k as an opt-in preset.
 
 **Takeaway 2 — EmbeddingGemma is competitive but doesn't dethrone BGE.** Edges out on R@1 (likely the projection-head's task-aware pooling helping top-1 precision) but loses on R@5 and R@20 across both splits. Summary-pass enrichment didn't materially shift the numbers (bare Gemma was already at test R@5=42.2% in the broken-matcher run — same as with-summaries). Keep EmbeddingGemma as an opt-in preset; not the right default for cqs's query mix.
