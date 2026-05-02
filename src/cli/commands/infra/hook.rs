@@ -35,6 +35,7 @@
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::cli::find_project_root;
@@ -167,7 +168,24 @@ fn cmd_install(no_overwrite: bool, json: bool) -> Result<()> {
 
     for &hook in MANAGED_HOOKS {
         let path = git_dir.join(hook);
-        let existing = std::fs::read_to_string(&path).ok();
+        // EH-V1.33-3: distinguish `NotFound` (no hook present, safe to
+        // install) from any other read failure (PermissionDenied, corrupt
+        // UTF-8, IO hiccup). Collapsing all errors to `None` via `.ok()`
+        // would let the `None` arm clobber a foreign hook that was simply
+        // unreadable. Refuse to write in any non-NotFound failure case.
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(s) => Some(s),
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    "Refusing to install over unreadable hook (may be a foreign hook with restricted perms)"
+                );
+                report.skipped_existing.push(hook.to_string());
+                continue;
+            }
+        };
         match existing {
             None => {
                 if no_overwrite {

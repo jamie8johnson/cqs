@@ -1003,7 +1003,19 @@ fn first_encounter_notes_gate(
             let negative = notes.iter().filter(|n| n.sentiment < 0.0).count();
             (Some(total), Some(positive), Some(negative))
         }
-        Err(_) => (None, None, None),
+        Err(e) => {
+            // EH-V1.33-5: log the underlying parse error so operators
+            // staring at a `(? entries, ? positive, ? negative)` prompt
+            // have a debuggable trail. The downstream `index_notes_from_file`
+            // surfaces the error too, but only if the user proceeds —
+            // logging here keeps the diagnostic visible at gate time.
+            tracing::warn!(
+                error = %e,
+                path = %notes_path.display(),
+                "Failed to parse docs/notes.toml during acceptance check; rendering counts as `?`"
+            );
+            (None, None, None)
+        }
     };
 
     // Empty notes file → no payload to gate. Don't write the marker either;
