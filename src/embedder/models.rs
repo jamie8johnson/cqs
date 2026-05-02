@@ -352,6 +352,29 @@ define_embedder_presets! {
         pad_id = 0,
         default = true;
 
+    /// BGE-large-ft: LoRA fine-tune of BGE-large-en-v1.5 on cqs's
+    /// `cqs-code-search-200k` dataset (`jamie8johnson/cqs-code-search-200k`).
+    /// Same architecture, dim, max_seq, and prefixes as the upstream
+    /// BGE-large preset — adapters merged into the ONNX export.
+    ///
+    /// Opt-in candidate to dethrone the bare BGE-large default. Whether it
+    /// actually improves on v3.v2 production-fixture R@5 is the open
+    /// question (#1289). The original synthetic-fixture A/B (296q, 7
+    /// languages) showed +0.7pp R@1 vs base at the cost of broader
+    /// distribution coverage; the v3.v2 numbers are pending the eval that
+    /// motivated this preset.
+    ///
+    /// Set `CQS_EMBEDDING_MODEL=bge-large-ft` or
+    /// `cqs slot create bge-ft --model bge-large-ft` to use it.
+    bge_large_ft => name = "bge-large-ft", repo = "jamie8johnson/bge-large-v1.5-code-search",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "onnx/tokenizer.json",
+        dim = 1024, max_seq_length = 512,
+        query_prefix = "Represent this sentence for searching relevant passages: ", doc_prefix = "",
+        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
+        // Same architecture as base BGE-large, ~1.3 GiB ONNX bundle.
+        approx_download_bytes = Some(1_300 * 1024 * 1024),
+        pad_id = 0;
+
     /// CodeRankEmbed: 768-dim, 2048 tokens. Code-specialized fine-tune of
     /// Snowflake Arctic Embed M Long, trained on CoRNStack (~21M code pairs).
     /// Headline: 77.9 MRR on CodeSearchNet, 60.1 NDCG@10 on CoIR.
