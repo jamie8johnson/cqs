@@ -310,7 +310,7 @@ src/
   worktree.rs   - Git-worktree → main-project-`.cqs/` discovery (#1254). When `cqs` runs from inside a worktree without its own `.cqs/`, `resolve_index_dir` parses the worktree's `.git` file, follows `commondir` to the main project, and serves queries from main's index. Every JSON envelope from that process gets `_meta.worktree_stale: true` so consuming agents know the served snapshot is from main's branch.
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
-    mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), provider.rs (BatchProvider trait, BatchSubmitItem, LlmProvider), summary.rs (find_contrastive_neighbors)
+    mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), provider.rs (BatchProvider trait, BatchSubmitItem, MockBatchProvider for tests), summary.rs (find_contrastive_neighbors)
   doc_writer/   - Doc comment generation and source file rewriting (SQ-8, optional "llm-summaries" feature)
     mod.rs      - DocCommentResult, module exports
     formats.rs  - Per-language doc comment formatting (prefix, position, wrapping)

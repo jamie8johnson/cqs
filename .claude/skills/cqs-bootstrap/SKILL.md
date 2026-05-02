@@ -98,7 +98,7 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
    - `red-team` — adversarial testing against cqs
-   - `audit` — 14-category code audit with parallel agents
+   - `audit` — 16-category code audit with parallel agents
    - `pr` — WSL-safe PR creation (always --body-file)
    - `release` — version bump, changelog, publish, GitHub release
 

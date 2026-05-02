@@ -113,7 +113,6 @@ base64 = { version = "0.22", optional = true }
 
 # Storage (sqlx async SQLite)
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
-keyring = { version = "3", optional = true }
 
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
@@ -242,9 +241,10 @@ lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "l
 convert = ["dep:fast_html2md", "dep:walkdir"]
 
 # Other features
-# encrypt feature removed - sqlx doesn't support SQLCipher directly
-# TODO: Re-evaluate encryption strategy with sqlx
-encrypt = ["keyring"]
+# (encrypt feature deleted — sqlx doesn't expose a SQLCipher backend, the
+# feature had zero `cfg(feature = "encrypt")` callers, and the only dep it
+# pulled in (`keyring`) had no consuming code. Revisit encryption strategy
+# if and when sqlx grows a SQLCipher driver.)
 
 # CAGRA (cuVS) ANN backend — CUDA-only. Issue #956 (Phase A): renamed
 # from `gpu-index` to make the CUDA-specificity explicit. The legacy
