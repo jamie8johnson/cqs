@@ -669,7 +669,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination. Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default; `bge-large-ft`, `E5-base`, `v9-200k`, `nomic-coderank`, `embeddinggemma-300m` presets, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -720,7 +720,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 
 ## Environment Variables
 
-120 knobs total. Quick index by domain (everything is searchable in the table below):
+Quick index by domain (everything is searchable in the table below):
 
 - **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`

@@ -9,7 +9,10 @@
 //! - `axum` HTTP server reading from a `Store<ReadOnly>`
 //! - Frontend is one HTML page + Cytoscape.js, all embedded in the binary
 //!   via `include_str!` / `include_bytes!`
-//! - No auth, no WebSocket, no live updates — single-user local exploration
+//! - Per-launch 256-bit auth token gates every request (#1118 / SEC-7);
+//!   3 credential channels (Bearer / cookie / `?token=` query); `--no-auth`
+//!   requires `NoAuthAcknowledgement` proof token. No WebSocket, no live
+//!   updates — single-user local exploration
 //!
 //! # Threading
 //! `run_server` is async-friendly but synchronous from the caller's

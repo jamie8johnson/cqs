@@ -44,7 +44,7 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 | **Project source code** | Comments, strings, doc blocks containing injection payloads (committed by a contributor or embedded by an upstream dependency) | Yes — survives until removed from source |
 | **Reference content** (`cqs ref add`) | Third-party code indexed for cross-project search; less curated than the user's own code, blended into search results without an explicit trust signal | Yes — survives until ref is removed |
 | **Shared notes** (`docs/notes.toml`) | A cloned repo can ship committed notes that bias rankings and surface in agent context. `audit-mode` mitigates ranking influence at runtime, but not the first-encounter case | Yes — survives in the indexed repo |
-| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary text is cached in the `llm_summaries` table keyed by `(content_hash, purpose)` per `src/schema.sql:180-187`; the post-summary embedding flows through the normal `embeddings_cache.db` (purpose `embedding`, the same purpose served to search) and is replayed to downstream agents | Yes — cached in `llm_summaries` table + `embeddings_cache.db` |
+| **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary text is cached in the `llm_summaries` table keyed by `(content_hash, purpose)` (search for `CREATE TABLE IF NOT EXISTS llm_summaries` in `src/schema.sql`); the post-summary embedding flows through the normal `embeddings_cache.db` (purpose `embedding`, the same purpose served to search) and is replayed to downstream agents | Yes — cached in `llm_summaries` table + `embeddings_cache.db` |
 | **Doc-comment generation** (`cqs index --llm-summaries --improve-docs`) | LLM output is **written back to source files in place**. A poisoned chunk can produce a doc comment that lands in the user's repo on commit | **Yes — commits the LLM's output into git** |
 | **Search result blending** | RRF merges chunks across project + references; the consuming agent sees a single ranked list with no in-protocol trust signal distinguishing user code from third-party content | Yes — every query |
 
@@ -107,9 +107,9 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | Path | Purpose | When |
 |------|---------|------|
 | Project source files | Parsing and embedding | `cqs index`, `cqs watch` |
-| `.cqs/index.db` | SQLite database | All operations |
-| `.cqs/index.hnsw.*` | HNSW vector index files | Search operations |
-| `.cqs/index_base.hnsw.*` | Base (non-enriched) HNSW index | Search operations (Phase 5 dual routing) |
+| `.cqs/slots/<name>/index.db` | SQLite database (per-slot, PR #1105). Pre-migration projects may still see the legacy `.cqs/index.db`. | All operations |
+| `.cqs/slots/<name>/index.hnsw.*` | HNSW vector index files (per-slot) | Search operations |
+| `.cqs/slots/<name>/index_base.hnsw.*` | Base (non-enriched) HNSW index (per-slot) | Search operations (Phase 5 dual routing) |
 | `.cqs/splade.index.bin` | SPLADE sparse inverted index | Search operations (`--splade` or routed cross-language) |
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
@@ -125,9 +125,9 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | Path | Purpose | When |
 |------|---------|------|
 | `.cqs/` directory | Index storage | `cqs init` |
-| `.cqs/index.db` | SQLite database | `cqs index`, note operations |
-| `.cqs/index.hnsw.*` | HNSW vector index + checksums | `cqs index` |
-| `.cqs/index_base.hnsw.*` | Base HNSW index + checksums | `cqs index` |
+| `.cqs/slots/<name>/index.db` | SQLite database (per-slot, PR #1105). Pre-migration projects may still see the legacy `.cqs/index.db`. | `cqs index`, note operations |
+| `.cqs/slots/<name>/index.hnsw.*` | HNSW vector index + checksums (per-slot) | `cqs index` |
+| `.cqs/slots/<name>/index_base.hnsw.*` | Base HNSW index + checksums (per-slot) | `cqs index` |
 | `.cqs/splade.index.bin` | SPLADE sparse inverted index | `cqs index` (with `CQS_SPLADE_MODEL` set), lazy rebuild on first `--splade` query |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
@@ -240,7 +240,7 @@ When the user passes a path on the command line, cqs canonicalizes it (`dunce::c
 
 ## Index Storage
 
-- Stored in `.cqs/index.db` (SQLite with WAL mode)
+- Stored in `.cqs/slots/<name>/index.db` (SQLite with WAL mode; PR #1105 introduced per-slot layout, pre-migration projects may still see the legacy `.cqs/index.db`)
 - Contains: code chunks, embeddings (1024-dim vectors for default BGE-large), file metadata
 - Add `.cqs/` to `.gitignore` to avoid committing
 - Database is **not encrypted** - it contains your code

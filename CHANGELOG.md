@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`slow-tests-feature` job** in `.github/workflows/ci-slow.yml` (#1286 Phase 2). Runs `cargo test --release --features slow-tests` nightly. Self-contained — no HuggingFace model download dependency, in contrast to the existing `full-suite` job's `--include-ignored` path. Hosts the 11 subprocess-spawning `cli_*_test` binaries that have been gated since v1.29.0 plus the two new e2e additions above. Could later graduate to PR-time CI if wall time stays under budget.
 - **`cqs eval --reranker <none|onnx|llm>`** wires the v1.32.0 `Reranker` trait (#1276) into the eval harness. Default `none` keeps the historical retrieval-only pipeline so existing baselines stay comparable. `onnx` runs the cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL` and over-retrieves to `rerank_pool_size(limit)` (mirrors `cqs <q> --rerank`) before stage 2 truncates to `limit`. `llm` resolves to `cqs::LlmReranker` (skeleton — errors on first call) so the flag absorbs that wiring without a breaking API change later. Listed under "Outstanding follow-ups (small, optional)" in PROJECT_CONTINUITY.md.
+- **`embeddinggemma-300m` embedder preset + `CQS_DISABLE_TENSORRT` knob** (#1301). New 308M-param Google EmbeddingGemma preset (`CQS_EMBEDDING_MODEL=embeddinggemma-300m`) and an opt-out for TensorRT EP when the engine cache thrashes (`CQS_DISABLE_TENSORRT=1`). Enumerated in `README.md` env-var table.
+- **`cqs notes update --new-kind <kind>`** (#1278). In-place kind edits without re-adding; symmetric with `--new-text` and `--new-sentiment`. Same v25 normalization as `cqs notes add`.
+
+### Fixed
+
+- **ci-slow.yml stabilization series** (#1305 family — #1307, #1308, #1310, #1311, #1313, #1314, #1315, #1316, #1317, #1318, #1319, #1320, #1321). Closed all 14 surfaced bug classes after the first ci-slow.yml run. One real production correctness fix (#1310: `cqs::resolve_index_db` on the resolve path); the rest were test isolation, slot-path drift, soft-skip on missing HF cache, env-var lock consolidation, doctest visibility, and CHANGELOG/metadata cleanup. Daily 06:00 UTC cron re-enabled — first fully green run is `25256531515`.
 
 ## [1.33.0] - 2026-05-02
 
