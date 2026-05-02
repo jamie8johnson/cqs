@@ -1714,3 +1714,24 @@ mentions = [
     "research/models.md",
     "SPLADE",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Cascade-rebase pattern can silently roll back triage flips. When multiple PRs are concurrently rebased and force-pushed against the same docs/audit-triage.md rows, OLDER PRs' pre-flip snapshots can override NEWER merged ✅s when conflict resolution naively takes the branch's version. Cost a recovery PR (#1380) to re-apply 112 lost flips. Mitigation: keep triage flips append-only OR move each PR's triage update into a separate narrow PR per cluster. Pattern is independent of source-code correctness — only bookkeeping is affected."
+mentions = [
+    "audit-triage.md",
+    "rebase",
+]
+
+[[note]]
+sentiment = 0.5
+text = "embeddinggemma-300m beats BGE-large on aggregate R@1 in v3.v2 218q dual-judge eval (48.2% vs 46.8%, refreshed 2026-05-02). Same R@20 (85.3%). Loses agg R@5 by 0.5pp (73.4% vs 73.9%). At 308M params vs 335M params and 768 dim vs 1024 dim, it's the strongest sub-1024-dim alternative. Worth considering as default candidate for v1.34.0 if dim reduction matters."
+mentions = [
+    "embedder/models.rs",
+    "embeddinggemma",
+]
+
+[[note]]
+sentiment = 0.5
+text = "MEMORY.md noted 'R@5 regression discovered 2026-05-01' (BGE-large agg R@5 dropped 24-25pp from canonical). Refresh on 2026-05-02 shows BGE-large agg R@5 = 73.9%, slightly HIGHER than the original 73.4% TL;DR claim. Drop was a stale measurement from a particular slot state, not a code regression. The eval pipeline is stable."
+mentions = ["eval/runner.rs"]
