@@ -432,7 +432,25 @@ mod tests {
     fn test_apply_windowing_long_chunk() {
         use cqs::embedder::ModelConfig;
         use cqs::Embedder;
-        let embedder = Embedder::new_cpu(ModelConfig::resolve(None, None)).unwrap();
+        let embedder = match Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("CPU embedder unavailable in test env: {err}; skipping (#1305)");
+                return;
+            }
+        };
+
+        // Probe the tokenizer health up front. `apply_windowing` swallows
+        // tokenize errors and passes the chunk through unchanged — fine
+        // for production (best-effort fallback) but it'd make the
+        // `result.len() > 1` assertion below fire with a "got 1" misleading
+        // diagnostic when the real cause is a corrupt tokenizer.json (e.g.
+        // CI runner half-populated HF cache, see #1305). Skip cleanly
+        // instead.
+        if let Err(err) = embedder.token_count("probe") {
+            eprintln!("tokenizer unhealthy in test env: {err}; skipping (#1305)");
+            return;
+        }
 
         // Build content that exceeds 480 tokens. Each line is a unique function body.
         // ~500 lines of "let varN = N;\n" should comfortably exceed the token limit.
