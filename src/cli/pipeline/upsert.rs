@@ -110,6 +110,15 @@ pub(super) fn store_stage(
     let mut total_calls = 0;
     let mut deferred_type_edges: Vec<(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)> = Vec::new();
     let mut deferred_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
+    // #1283: track every chunk id we upsert per file so we can prune phantom
+    // rows (chunks at the same origin from prior runs whose ID format / hash
+    // changed) after the loop completes. Per-batch pruning is unsafe because
+    // a single file's chunks can split across batches when the file is large
+    // — pruning mid-loop would delete chunks the next batch is about to
+    // re-insert. The watch path already passes per-file live_ids to
+    // `upsert_chunks_calls_and_prune`; this brings the full reindex pipeline
+    // in line.
+    let mut live_ids_per_file: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     let mut batch_counter: usize = 0;
     let flush_interval = deferred_flush_interval();
 
@@ -128,9 +137,16 @@ pub(super) fn store_stage(
         let no_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
 
         // Upsert chunks WITHOUT calls (calls are deferred)
+        // #1283: also accumulate per-file live IDs for the post-loop prune pass.
         if batch.file_mtimes.len() <= 1 {
             // Fast path: single file or no mtimes
             let mtime = batch.file_mtimes.values().next().copied();
+            for (chunk, _) in &batch.chunk_embeddings {
+                live_ids_per_file
+                    .entry(chunk.file.clone())
+                    .or_default()
+                    .insert(chunk.id.clone());
+            }
             store.upsert_chunks_and_calls(&batch.chunk_embeddings, mtime, &no_calls)?;
         } else {
             // Multi-file batch: group by file and upsert with correct per-file mtime.
@@ -144,6 +160,12 @@ pub(super) fn store_stage(
 
             for (file, pairs) in &by_file {
                 let mtime = batch.file_mtimes.get(file.as_path()).copied();
+                for (chunk, _) in pairs {
+                    live_ids_per_file
+                        .entry(file.clone())
+                        .or_default()
+                        .insert(chunk.id.clone());
+                }
                 store.upsert_chunks_and_calls(pairs, mtime, &no_calls)?;
             }
         }
@@ -204,6 +226,39 @@ pub(super) fn store_stage(
                 deferred_type_edges.clear();
             }
         }
+    }
+
+    // #1283: prune phantom chunks per file. Walks every origin we touched,
+    // deletes rows whose ID isn't in the current live set. Catches old-format
+    // chunk IDs from prior chunker versions (e.g. `:t3wN:` middle segments
+    // dropped in later versions, `:wN` window suffix added/removed). The
+    // watch path already does this per-file via
+    // `upsert_chunks_calls_and_prune(prune_file: Some(...))`; the full reindex
+    // pipeline didn't, so a `cqs index --force` after a chunker bump would
+    // accumulate orphans (~2% of rows on the cqs default slot before this
+    // fix). Runs before the deferred call/edge flushes so any FK-cascading
+    // delete from `chunks` happens before fresh calls reference the new IDs.
+    let mut total_orphans_pruned: u32 = 0;
+    for (file, live_ids) in &live_ids_per_file {
+        let live_ids_vec: Vec<&str> = live_ids.iter().map(|s| s.as_str()).collect();
+        match store.delete_phantom_chunks(file.as_path(), &live_ids_vec) {
+            Ok(deleted) => {
+                total_orphans_pruned += deleted;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    file = %file.display(),
+                    error = %e,
+                    "delete_phantom_chunks failed; orphan rows from prior chunker versions may persist for this file"
+                );
+            }
+        }
+    }
+    if total_orphans_pruned > 0 {
+        tracing::info!(
+            count = total_orphans_pruned,
+            "Pruned phantom chunks from prior chunker versions (#1283)"
+        );
     }
 
     // Final flush: insert any remaining deferred items now that all chunks are in the DB.
