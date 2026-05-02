@@ -139,9 +139,12 @@ fn test_ref_add_then_list_shows_reference() {
 
     let envelope = ref_list_json(xdg.path(), host.path());
     // emit_json envelope: {data: [...], error: null, version: 1}
-    let entries = envelope["data"]
+    // P2.15: list envelopes wrap the array in `{references: [...]}` so
+    // every list-shaped command (slot/project/notes/ref) shares the same
+    // outer accessor. Drill in via `data.references` rather than `data`.
+    let entries = envelope["data"]["references"]
         .as_array()
-        .unwrap_or_else(|| panic!("data must be an array: {envelope}"));
+        .unwrap_or_else(|| panic!("data.references must be an array: {envelope}"));
     assert_eq!(
         entries.len(),
         1,
@@ -175,7 +178,7 @@ fn test_ref_remove_deletes_from_config() {
     ref_add(xdg.path(), host.path(), "tmpref", source.path());
     // Sanity: present before remove.
     assert_eq!(
-        ref_list_json(xdg.path(), host.path())["data"]
+        ref_list_json(xdg.path(), host.path())["data"]["references"]
             .as_array()
             .map(|a| a.len()),
         Some(1),
@@ -188,9 +191,12 @@ fn test_ref_remove_deletes_from_config() {
         .success();
 
     let envelope = ref_list_json(xdg.path(), host.path());
-    let entries = envelope["data"]
+    // P2.15: list envelopes wrap the array in `{references: [...]}` so
+    // every list-shaped command (slot/project/notes/ref) shares the same
+    // outer accessor. Drill in via `data.references` rather than `data`.
+    let entries = envelope["data"]["references"]
         .as_array()
-        .unwrap_or_else(|| panic!("data must be an array: {envelope}"));
+        .unwrap_or_else(|| panic!("data.references must be an array: {envelope}"));
     assert!(
         entries.is_empty(),
         "list must be empty after remove, got {entries:?}"
@@ -211,7 +217,9 @@ fn test_ref_update_reindexes_source() {
 
     ref_add(xdg.path(), host.path(), "evolving", source.path());
     let before = ref_list_json(xdg.path(), host.path());
-    let chunks_before = before["data"][0]["chunks"].as_u64().expect("chunks before");
+    let chunks_before = before["data"]["references"][0]["chunks"]
+        .as_u64()
+        .expect("chunks before");
 
     // Add a new public function to lib_a.rs — `ref update` should pick
     // up the new chunk.
@@ -238,7 +246,9 @@ pub fn process_gamma(z: i32) -> i32 {
         .success();
 
     let after = ref_list_json(xdg.path(), host.path());
-    let chunks_after = after["data"][0]["chunks"].as_u64().expect("chunks after");
+    let chunks_after = after["data"]["references"][0]["chunks"]
+        .as_u64()
+        .expect("chunks after");
     assert!(
         chunks_after > chunks_before,
         "chunk count must grow after adding a new function. before={chunks_before} after={chunks_after}"
@@ -302,9 +312,12 @@ fn test_ref_add_weight_rejects_out_of_range() {
 
     // And nothing should have landed in the config — both attempts bailed.
     let envelope = ref_list_json(xdg.path(), host.path());
-    let entries = envelope["data"]
+    // P2.15: list envelopes wrap the array in `{references: [...]}` so
+    // every list-shaped command (slot/project/notes/ref) shares the same
+    // outer accessor. Drill in via `data.references` rather than `data`.
+    let entries = envelope["data"]["references"]
         .as_array()
-        .unwrap_or_else(|| panic!("data must be an array: {envelope}"));
+        .unwrap_or_else(|| panic!("data.references must be an array: {envelope}"));
     assert!(
         entries.is_empty(),
         "rejected ref add must not add entries to config, got {entries:?}"
