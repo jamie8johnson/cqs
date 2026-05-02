@@ -7,9 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-05-02
+
+Minor release. No schema bump. Themed around eval correctness, indexing performance, and a new fine-tuned embedder preset.
+
+### Five highlights
+
+1. **Eval matcher drift fix** (#1284, big). The eval matcher in `eval/runner.rs` required strict `(file, name, line_start)` to score gold-chunk hits. After 5 days of v1.30.x audit waves shifting line numbers, ~38% of gold chunks went "invisible" — search returned them but the matcher couldn't see them. Loosened to `(file, name)`. Side effect: under the corrected matcher, today's BGE-base v3.v2 numbers are R@1=44.5% / R@5=73.4% / R@20=84.9% (218 queries aggregate); the v9-200k "retired" verdict from 2026-04-25 was 95% fixture-side artifact and the model is back in serious contention. The original phase 2 SPLADE RRF-vs-linear-α conclusion was re-validated under the corrected matcher and held with stronger margins.
+2. **Placeholder-cache 30-second startup tax fix** (#1288, big). `make_placeholders` was eagerly building 32,466 SQL-placeholder strings on first call via `LazyLock<Vec<String>>` — O(n²) string ops, ~30 seconds the first time `Store::open` + first DB write happened in any process. Replaced with `Vec<OnceLock<String>>` (per-size lazy build). Production paths see 30s → 2ms on first write. CI test job time: ~38 min → ~6 min.
+3. **Chunk orphan pipeline prune** (#1283). `cqs index --force` now cleans up old-format chunks left behind by chunker-version bumps (~2% accumulated orphan rows on the cqs default slot before this fix). Watch path was already correct; this brings the full reindex pipeline in line. No new tools needed — next `cqs index --force` cleans automatically.
+4. **`bge-large-ft` embedder preset** (#1289). LoRA fine-tune of BGE-large on `cqs-code-search-200k`. Same architecture, same 1.3 GB ONNX bundle, same inference cost. Wins **test R@5 by 3.7pp** (73.4%, best of any model tested), trades dev R@5 by 6.5pp. Opt-in: `CQS_EMBEDDING_MODEL=bge-large-ft`. Default stays at BGE-base for the dev R@5 hedge.
+5. **Daemon test refactor + nightly CI workflow** (#1292, #1286 Phase 1). Replaced `unsafe std::env::set_var(XDG_RUNTIME_DIR)` in 12 daemon_translate tests with a thread-local override hook — eliminates the libc env-mutex deadlock that was hanging PR-time CI for hours. New `.github/workflows/ci-slow.yml` runs `cargo test -- --include-ignored` on a daily cron with auto-issue-on-failure, so the ~15 files of `#[ignore]`-tagged tests (model-loading, stress) get exercised regularly again.
+
 ### Added
 
-- **`cqs notes list --kind <kind>`** filter — column-level filter against the v25 `notes.kind` column (kebab-case lowercase, normalized). ANDs with `--warnings` / `--patterns`. CLI prints the kind tag inline (`[+0.5] [todo] note text…`); JSON adds `kind` field to every list entry, omitted on null. Same flag wired into the daemon batch path (`BatchCmd::Notes`) so `--kind` works through the socket too. Companion to the v25 schema landed in #1265 (#1133 follow-up).
+- **`cqs notes list --kind <kind>`** filter — column-level filter against the v25 `notes.kind` column (kebab-case lowercase, normalized). ANDs with `--warnings` / `--patterns`. CLI prints the kind tag inline (`[+0.5] [todo] note text…`); JSON adds `kind` field to every list entry, omitted on null. Same flag wired into the daemon batch path (`BatchCmd::Notes`) so `--kind` works through the socket too. Companion to the v25 schema landed in #1265 (#1133 follow-up, #1269).
+- **`cqs notes update --new-kind <kind>`** for in-place kind edits without re-adding (#1278). Symmetric with `--new-text` and `--new-sentiment`.
+- **`bge-large-ft` embedder preset** (#1289). Routes to `jamie8johnson/bge-large-v1.5-code-search` (LoRA fine-tune of BGE-large on `cqs-code-search-200k`). Tokenizer lives at `onnx/tokenizer.json` for this HF layout — preset path reflects that. Same 1024-dim / 512 max-seq / mean pooling / BGE-prefix as the base preset.
+- **`.github/workflows/ci-slow.yml`** — nightly cron + manual-dispatch workflow that runs `cargo test --release -- --include-ignored`. Failures during scheduled runs auto-file a tracking issue with `ci-flake-or-bug` + `overnight-ci` labels (#1286 Phase 1, #1293).
+- **`set_socket_dir_override_for_test`** (test-only, `#[doc(hidden)]`) on `daemon_translate.rs` — thread-local hook for redirecting the daemon socket directory in tests. Replaces unsafe `std::env::set_var` (#1292).
+
+### Fixed
+
+- **Eval matcher line-start drift** (#1284). `(file, name, line_start)` → `(file, name)`. PR description and `research/models.md` walk through the diagnosis. The matcher fix is "fix-by-code"; the previous PR #1109 had been "fix-by-data" (re-pin the fixture line numbers) which is a treadmill — every audit wave re-introduced the drift. Now durable.
+- **`total_calls` over-counts on FK violation** (#1281, #1284). Pipeline credited `total_calls += deferred_chunk_calls.len()` even when `upsert_calls_batch` returned Err. SQLite transactions are all-or-nothing on FK violation, so an Err means *zero* rows landed. Moved the increment inside the `Ok` arm.
+- **CAGRA staleness on full reindex** (#1282, #1284). `cqs index` rebuilt HNSW but never invalidated `index.cagra`; if the file existed from a prior run, lazy CAGRA build didn't fire and search at `chunk_count ≥ CQS_CAGRA_THRESHOLD` returned pre-rebuild results silently. Now `unlink(index.cagra)` after HNSW save; lazy rebuild fires on next search.
+- **Placeholder cache eager-build startup tax** (#1288). `PLACEHOLDER_CACHE: LazyLock<Vec<String>>` → `LazyLock<Vec<OnceLock<String>>>`. ~30 seconds saved on first call per process; affects every test that exercises `Store::open` + a write, every CLI invocation, and the daemon cold start.
+- **Chunk orphan accumulation across chunker ID-format changes** (#1283). Added per-file `live_ids` accumulation through `store_stage` + post-loop `delete_phantom_chunks` per touched file. Watch path was already correct (passed `prune_file=Some(...)` directly); the full reindex pipeline now matches.
+- **Daemon test deadlock from `unsafe set_var(XDG_RUNTIME_DIR)`** (#1292). 12 mock-round-trip tests were intermittently hanging on CI's parallel test runner when the libc env mutex deadlocked under cross-thread setenv contention. Replaced with a thread-local override; tests run fully parallel again, no `#[serial]` annotations needed.
+- **Test compile fix** (#1268). `ENV_LOCK` hoisted to module level in `llm::validation::tests` so the post-Phase-A test layout doesn't double-initialize.
+- **Slot model-write preservation** (#1272, #1217). `write_slot_model` now round-trips through `SlotConfigFile` flatten extras, so unrelated TOML sections in `slot.toml` survive a model edit.
+
+### Changed
+
+- **`Reranker` trait + 3 impls** (#1276, #1220). `OnnxReranker` (default ms-marco-MiniLM-L-6-v2 + the cqs domain-fine-tune from earlier rounds), `NoopReranker`, `LlmReranker`. Public API unchanged — the trait is internal; the user-visible knob is the env-var preset selector.
+- **`AuthChannel` trait + 3-impl registry for `check_request`** (#1275, #1218). Splits the daemon-socket vs HTTP-serve auth surfaces into a registry-driven dispatcher. Same wire format on both ends.
+- **`daemon_request<T>` helper** (#1273, #1215). Extracts the connect → BEGIN → write → read-line → parse-envelope dance from `daemon_ping` / `daemon_status` / `daemon_reconcile` into a single typed helper. Each call site is now ~4 lines instead of ~30.
+- **`enumerate_files` walk shared between gc + reconcile** (#1279, #1226). When the watch-loop schedules a gc and a reconcile in the same tick, they walk the corpus once instead of twice.
+
+### Documentation
+
+- **`research/models.md`** has four new entries today (3 added 2026-05-01, 1 added 2026-05-02): the eval-matcher-loosening discovery + corrected 4-way A/B, the v9-200k bare-vs-summaries follow-up, the SPLADE phase 2 RRF-vs-linear-α redo under the corrected matcher, and the BGE-FT vs BGE-base A/B. Headline numbers in `Cargo.toml`, `README.md` TL;DR, and the GitHub repo description updated to reflect the corrected-matcher BGE-base aggregate.
+- **HF model cards updated** for `e5-base-v2-code-search` (un-retirement note + v3.v2 production-eval column + bare-vs-summaries row), `CodeRankEmbed-onnx` (written from scratch — the repo had no card before), and `bge-large-v1.5-code-search` (production-eval table + trade-off framing for the test+/dev− pattern).
+- **`PRIVACY.md` model-download list** extended with `bge-large-ft`, `v9-200k`, `nomic-coderank`, `embeddinggemma-300m` and a Gemma Terms reference.
+- **`CONTRIBUTING.md` Architecture Overview** caught up: store schema v22 → v25, embedder preset list, reranker trait split.
+
+### Build / CI
+
+- CI test job time reduced from ~38 min (best case, often hung at 60+ min) to ~6 min via #1288's placeholder fix and #1292's daemon-test refactor.
+- New optional `slow-tests` overnight workflow as `.github/workflows/ci-slow.yml` (#1286).
 
 ## [1.32.0] - 2026-05-01
 
