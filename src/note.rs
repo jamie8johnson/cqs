@@ -339,22 +339,39 @@ pub fn rewrite_notes_file(
         }
     };
 
+    // RM-V1.33-8: wrap the write + permission fixup in a closure so
+    // any intermediate failure (disk full, EIO, EROFS) cleans up the
+    // tmp file before propagating. Previously the bare `?` on the
+    // `std::fs::write` left `notes.toml.<hex>.tmp` files behind on
+    // every failed attempt — names include 16 hex chars of randomness
+    // so failures piled up rather than collided.
     let output = format!("{}\n{}", NOTES_HEADER, serialized);
-    std::fs::write(&tmp_path, &output).map_err(|e| {
-        NoteError::Io(std::io::Error::new(
-            e.kind(),
-            format!("{}: {}", tmp_path.display(), e),
-        ))
-    })?;
+    let write_result: Result<(), NoteError> = (|| {
+        std::fs::write(&tmp_path, &output).map_err(|e| {
+            NoteError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {}", tmp_path.display(), e),
+            ))
+        })?;
 
-    // Restrict permissions BEFORE rename so the file is never world-readable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+        // Restrict permissions BEFORE rename so the file is never world-readable.
+        // set_permissions failure is logged at debug! and does not propagate —
+        // it's a best-effort hardening, not a correctness requirement, so we
+        // don't want to leak the tmp on a permission-set error.
+        #[cfg(unix)]
         {
-            tracing::debug!(path = %tmp_path.display(), error = %e, "Failed to set file permissions");
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::debug!(path = %tmp_path.display(), error = %e, "Failed to set file permissions");
+            }
         }
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
 
     // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.

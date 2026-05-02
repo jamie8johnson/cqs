@@ -731,6 +731,7 @@ Quick index by domain (everything is searchable in the table below):
 - **CLI I/O caps** — `CQS_MAX_DIFF_BYTES`, `CQS_MAX_DISPLAY_FILE_SIZE`, `CQS_READ_MAX_FILE_SIZE`
 - **LLM & document conversion** — `CQS_LLM_*`, `CQS_API_BASE`, `CQS_LLM_ALLOW_INSECURE`, `CQS_PDF_SCRIPT`, `CQS_CONVERT_*`
 - **Telemetry & eval** — `CQS_TELEMETRY`, `CQS_TELEMETRY_REDACT_QUERY`, `CQS_EVAL_OUTPUT`, `CQS_EVAL_TIMEOUT_SECS`
+- **Training data extraction** — `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES`, `CQS_TRAIN_GIT_SHOW_MAX_BYTES`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -882,6 +883,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TRT_ENGINE_CACHE` | `1` (on) | Persist compiled TensorRT engines + timing cache to `~/.cache/cqs/trt-engine-cache/` so daemon restarts reuse the engine instead of paying the 4–90 s per-model compile cost again. Set to `0` to opt out (forces re-compile every session — useful for validating that a driver upgrade invalidated the cache). Cache invalidates automatically when (model bytes, GPU SM, TRT version) changes. |
 | `CQS_TRUST_DELIMITERS` | `1` (on) | Wraps every chunk's `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers so prompt-injection guards downstream of cqs detect content boundaries when the agent inlines the rendered string into a larger prompt. Set to `0` to opt out (raw text). Default flipped on in v1.30.2. (#1167, #1181) |
+| `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES` | `268435456` (256 MiB) | Max bytes retrieved from `git diff-tree` during training-data extraction. Diffs above the cap cause the producer to bail (rather than truncate) so a malformed or unexpectedly large commit can't OOM the training generator. (P3-39 / RM-V1.33-6) |
 | `CQS_TRAIN_GIT_SHOW_MAX_BYTES` | `52428800` (50 MiB) | Max bytes retrieved per file via `git show` during training-data extraction. Files above the cap are skipped; bump to capture larger generated files (schema dumps, vendored corpora). |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |

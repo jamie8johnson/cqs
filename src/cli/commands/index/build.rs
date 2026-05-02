@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use cqs::{parse_notes, Embedder, HnswIndex, HnswKind, ModelInfo, Parser as CqParser, Store};
 
+use crate::cli::commands::{daemon_control_hint, DaemonHint};
 use crate::cli::{
     acquire_index_lock, args::IndexArgs, check_interrupted, enumerate_files, find_project_root,
     reset_interrupted, run_index_pipeline, signal, Cli,
@@ -218,9 +219,11 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                             "A cqs-watch --serve daemon is currently running ({}). It holds a shared lock on \
                              the HNSW index, so this reindex would block indefinitely in locks_lock_inode_wait. \
                              Stop the daemon before reindexing:\n\n  \
-                             systemctl --user stop cqs-watch && cqs index --force && systemctl --user start cqs-watch\n\n\
+                             {stop} && cqs index --force && {start}\n\n\
                              (If you launched the daemon manually, kill that process instead.)",
                             sock_path.display(),
+                            stop = daemon_control_hint(DaemonHint::Stop),
+                            start = daemon_control_hint(DaemonHint::Start),
                         );
                     }
 
@@ -270,9 +273,10 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                             anyhow::bail!(
                                 "Daemon detected at {} but reconcile RPC failed: {}.\n\n\
                                  If this persists, restart the daemon:\n  \
-                                 systemctl --user restart cqs-watch",
+                                 {restart}",
                                 sock_path.display(),
-                                e
+                                e,
+                                restart = daemon_control_hint(DaemonHint::Restart),
                             );
                         }
                     }

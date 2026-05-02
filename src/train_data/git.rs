@@ -10,8 +10,9 @@
 //! traversal via relative `../` segments and refuses to operate on a
 //! non-git directory.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use super::TrainDataError;
 
@@ -138,6 +139,17 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
 /// Get the unified diff for a single commit.
 /// Uses `--root` so the initial commit (no parent) produces a diff against
 /// the empty tree. `--no-commit-id -r -p` gives raw recursive patch output.
+///
+/// RM-V1.33-6: stdout is read via a piped child + `Read::take(max)` cap
+/// rather than `Command::output()` so a single bulk-import commit
+/// (vendor drop, schema dump, generated migration) producing hundreds of
+/// MiB of patch text cannot OOM the parent process. The cap is governed
+/// by `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES` (default 256 MiB). When the
+/// cap is hit we kill the child, log a warn, and return
+/// `TrainDataError::Git` so the caller can decide whether to skip the
+/// commit or retry with a tighter window — the alternative (silent
+/// truncation) would corrupt the diff stream and feed a malformed patch
+/// to downstream pair extraction.
 pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
     let _span = tracing::info_span!("git_diff_tree", repo = %repo.display(), sha).entered();
 
@@ -151,32 +163,91 @@ pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
     // SEC-V1.25-11: resolve + validate before passing to git.
     let canonical_repo = validate_git_repo(repo)?;
 
-    let output = Command::new("git")
+    let max = max_diff_tree_size();
+    let mut child = Command::new("git")
         .args(["-C"])
         .arg(&canonical_repo)
         .args(["diff-tree", "--root", "--no-commit-id", "-r", "-p", sha])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| {
             tracing::warn!(error = %e, "Failed to spawn git diff-tree");
             e
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // Take the piped handles up front so we can read with a hard cap
+    // and still call `wait()` afterward.
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TrainDataError::Git("git diff-tree spawn lost stdout pipe".to_string()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| TrainDataError::Git("git diff-tree spawn lost stderr pipe".to_string()))?;
+
+    // Read stdout with a +1 byte read past the cap so we can distinguish
+    // "exactly max" from "exceeded max".
+    let mut buf = Vec::with_capacity(64 * 1024);
+    let read_result = stdout
+        .by_ref()
+        .take(max as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to read git diff-tree stdout");
+            e
+        });
+
+    let exceeded = read_result.is_ok() && buf.len() > max;
+
+    if exceeded {
         tracing::warn!(
-            exit = output.status.code(),
             sha,
-            stderr = %stderr.trim(),
+            max,
+            "git diff-tree stdout exceeded max — killing child (override via CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES)"
+        );
+        let _ = child.kill();
+    }
+
+    // Read stderr (always small for git) and reap the child.
+    let mut stderr_buf = String::new();
+    let _ = stderr.read_to_string(&mut stderr_buf);
+    let status = child.wait().map_err(|e| {
+        tracing::warn!(error = %e, "Failed to wait on git diff-tree");
+        e
+    })?;
+
+    // Surface read errors after the child is reaped.
+    read_result?;
+
+    if exceeded {
+        return Err(TrainDataError::Git(format!(
+            "git diff-tree output for {} exceeds max ({} bytes) — \
+             override via CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES",
+            sha, max
+        )));
+    }
+
+    if !status.success() {
+        tracing::warn!(
+            exit = status.code(),
+            sha,
+            stderr = %stderr_buf.trim(),
             "git_diff_tree failed",
         );
         return Err(TrainDataError::Git(format!(
             "git diff-tree failed for {}: {}",
             sha,
-            stderr.trim()
+            stderr_buf.trim()
         )));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    // Avoid the third allocation `from_utf8_lossy().to_string()` makes
+    // when the bytes are valid UTF-8 (the dominant case): take ownership
+    // first, fall back to lossy on actual invalid UTF-8.
+    Ok(String::from_utf8(buf)
+        .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned()))
 }
 
 /// Default maximum file size to retrieve via `git show` (50 MB).
@@ -191,6 +262,25 @@ fn max_show_size() -> usize {
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_MAX_SHOW_SIZE)
+}
+
+/// Default maximum stdout size for `git diff-tree` — 256 MiB.
+///
+/// Sized higher than `git_show`'s 50 MB because `diff-tree` aggregates
+/// across every file in a single commit; bulk imports / vendor drops
+/// can legitimately reach into the hundreds of MiB. Past the cap, the
+/// caller almost certainly wants to skip the commit anyway, so we bail
+/// rather than silently truncate.
+const DEFAULT_MAX_DIFF_TREE_SIZE: usize = 256 * 1024 * 1024;
+
+/// Maximum stdout bytes accepted from `git diff-tree`. Override with
+/// `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES`.
+fn max_diff_tree_size() -> usize {
+    std::env::var("CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_DIFF_TREE_SIZE)
 }
 
 /// Retrieve file content at a specific commit.
