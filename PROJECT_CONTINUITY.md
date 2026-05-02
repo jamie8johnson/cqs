@@ -30,7 +30,7 @@ Five themes (full detail in CHANGELOG.md):
 
 **Eight issues closed by this sweep:** #1133 (already), #1176, #1217, #1218, #1220, #1226, #1230, #1215.
 
-**State:** main at `a83b5b2b` (post-#1303). Local in sync. Daemon needs a rebuild + restart to pick up the eval `--reranker` flag (still serves prior code until then).
+**State:** main at `766115af` (post-#1308). Local in sync. Daemon was rebuilt + restarted post-#1303 (carries the eval `--reranker` flag); needs another rebuild + restart to pick up #1308's test-only soft-skip changes (no behavior change for production code).
 
 **Conda/pip cleanup pass (2026-05-01):** safe-tier upgrades across base, cqs-train, onnx-export, vllm-serve. Bumped: `anthropic` 0.86→0.97 (used by SQ-6), `onnxruntime` 1.24.4→1.25.1, `onnx` 1.20→1.21, `sentence-transformers` 5.1→5.4, `peft` 0.18→0.19, `datasets` 4.8.4→4.8.5, `pip` 26.0.1→26.1, plus ~15 utility minors per env. Held: `transformers` 4→5, `protobuf` 6→7, `cudnn` 9.19→9.21, `cuda-version` 13.1→13.2, `vllm` 0.19→0.20, `torch` 2.9→2.11, all `nvidia-*` (torch-pinned). Rolled back: `mpmath` (sympy cap), `setuptools` (torch cap), `fsspec` (datasets cap), `flashinfer-cubin/python`/`lark` (vllm exact pins). Pre-existing latent conflicts surfaced (not caused by upgrades): `pylate` pins `st==5.1.1`/`ujson==5.10.0` in base; `optimum-onnx` pins `transformers<4.58` in cqs-train; `vllm 0.19` pins `transformers<5` but env has 5.6.0.dev0; `coir-eval` missing `faiss-cpu`.
 
@@ -43,10 +43,14 @@ Five themes (full detail in CHANGELOG.md):
 | #1302 | — | #1286 Phase 2 — gate `onboard_test` (~6.6 min) + `eval_subcommand_test` (~5.3 min) behind `slow-tests`; new `slow-tests-feature` job in `ci-slow.yml`. ~12 min off PR-time CI. |
 | #1303 | — | `cqs eval --reranker <none\|onnx\|llm>` — wires #1276's Reranker trait into the eval harness. Default `none` preserves baselines. |
 | HF dataset README | #1290 | Fixed HF viewer CastError (sidecar `processing_manifest.jsonl` was being ingested as data; added `configs` block scoping train split to the dataset file only). |
+| #1306 | — | Disabled ci-slow.yml schedule cron — the first manual run failed; daily cron would auto-file an issue every 06:00 UTC. workflow_dispatch still wired up. |
+| #1307 | half of #1305 | `cli_doctor_fix_test` was checking legacy `.cqs/index.db` path; PR #1105 (per-project slots) moved it to `.cqs/slots/default/index.db`. Fixed by switching to `cqs::resolve_index_db(&cqs_dir)`. Tests pass locally and on CI. |
+| #1308 | other half of #1305 | 9 model-loading tests (8× SPLADE + 1× embedder, plus `tests/embedding_test.rs` + `tests/model_eval.rs` + `tests/eval_test.rs` + reranker integration test) panic'd on the GitHub-hosted runner because anonymous HF downloads return error pages. All `expect()` on model-load now `match` to soft-skip with a one-line diagnostic. Tests still load + run locally where models are cached. |
 
-**Issue closure:** #1290 (HF dataset viewer); #1286 Phase 2 fully addressed (Phase 3 deferred per user direction).
+**Issues closed in sweep:** #1290 (HF dataset viewer); #1286 Phase 2 fully addressed (Phase 3 deferred per user direction); #1305 fully addressed via #1307 + #1308.
 
 **Up next (no active task — user-direct):**
+- Manual `gh workflow run ci-slow.yml -f include_ignored=true` is in flight (run `25247620924`); if it goes green, **re-enable the ci-slow.yml schedule cron** by uncommenting the `schedule:` block (single revert of #1306).
 - v1.32.0 audit eligible (16-category audit).
 - Embedder eval queue: ceiling probes Qwen3-Embedding-8B + NV-Embed-v2.
 - `LlmReranker` production wiring against `BatchProvider` (skeleton in `src/reranker.rs`; eval flag now consumes it from `cqs::LlmReranker::new()` so the wire-up is the only missing piece).
@@ -55,7 +59,6 @@ Five themes (full detail in CHANGELOG.md):
 
 - Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
 - `cuvs` crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
-- ci-slow.yml `slow-tests-feature` job's first run is the next nightly cron (06:00 UTC) — verify it actually exercises the 9 newly-gated tests rather than failing at compile or a path issue. Trigger via `gh workflow run ci-slow.yml` to sanity-check before then if convenient.
 
 ## Open issues (12 total)
 
