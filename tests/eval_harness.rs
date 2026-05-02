@@ -488,11 +488,25 @@ fn test_eval_matrix() {
         query_set.queries.len() - train_queries.len()
     );
 
-    // Open cqs index (uses CARGO_MANIFEST_DIR as project root)
+    // Open cqs index (uses CARGO_MANIFEST_DIR as project root). On a fresh
+    // GitHub-hosted runner the repo is just-checked-out — no `cqs index` has
+    // ever run, so the DB doesn't exist. Skip cleanly instead of panicking
+    // on the misleading "unable to open database file" sqlite diagnostic.
+    // Same shape as #1308 / #1311 — the test is fundamentally for a populated
+    // dev workstation. (#1305)
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let root = PathBuf::from(&manifest_dir);
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let db_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    // PR #1105 moved index.db to .cqs/slots/<active>/index.db; resolve_index_db
+    // honors that and falls back to legacy .cqs/index.db if present.
+    let db_path = cqs::resolve_index_db(&cqs_dir);
+    if !db_path.exists() {
+        eprintln!(
+            "cqs index not present at {} — run `cqs index` first; skipping (#1305)",
+            db_path.display()
+        );
+        return;
+    }
     let store = cqs::Store::open_readonly_pooled(&db_path).expect("Failed to open store");
     let model_config = cqs::embedder::ModelConfig::resolve(None, None);
     let embedder = cqs::Embedder::new_cpu(model_config).expect("Failed to init embedder");
