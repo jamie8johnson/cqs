@@ -271,21 +271,26 @@ tree-sitter-elm = ["dep:tree-sitter-elm"]
 # need the CLI.
 serve = ["dep:axum", "dep:tower", "dep:tower-http", "dep:subtle", "dep:base64"]
 
-# Slow CLI integration tests that haven't yet been converted to the
-# in-process `InProcessFixture` harness. Five binaries were converted
-# in 2026-04-23 (`health_test.rs`, `index_search_test.rs`, `graph_test.rs`,
-# `related_impact_test.rs`, plus `cli_surface_test.rs` for genuine
-# binary-surface checks) and the nightly `.github/workflows/slow-tests.yml`
-# cron was deleted alongside. The `slow-tests` feature flag itself is
-# kept alive for the 11 remaining subprocess-spawning files
-# (cli_blame_test, cli_brief_test, cli_chat_completer_test,
-# cli_chat_format_test, cli_doctor_fix_test, cli_drift_diff_test,
-# cli_envelope_test, cli_neighbors_test, cli_reconstruct_test,
-# cli_review_test, cli_train_review_test) — they cold-load the
-# embedder per invocation, so they're skipped in regular CI. Tracked
-# as a follow-up to issue #980; convert when re-touching the code
-# they test. See docs/plans/2026-04-22-cqs-slow-tests-elimination.md
-# for the conversion pattern.
+# Slow integration tests excluded from PR-time CI. Two reasons a binary
+# lands here:
+#   (a) Subprocess-spawning CLI tests that cold-load the embedder per
+#       invocation. Originally 16 such binaries; 5 were migrated to the
+#       in-process `InProcessFixture` harness on 2026-04-23 and the old
+#       `.github/workflows/slow-tests.yml` cron was deleted alongside.
+#       11 still gated: cli_blame_test, cli_brief_test,
+#       cli_chat_completer_test, cli_chat_format_test, cli_doctor_fix_test,
+#       cli_drift_diff_test, cli_envelope_test, cli_neighbors_test,
+#       cli_reconstruct_test, cli_review_test, cli_train_review_test.
+#       Tracked as follow-up to #980; convert when re-touching the code
+#       they test. See docs/plans/2026-04-22-cqs-slow-tests-elimination.md
+#       for the conversion pattern.
+#   (b) End-to-end binaries with high per-test cost. Added 2026-05-02
+#       under #1286 Phase 2: `onboard_test` (~6.6 min, full index pipeline
+#       per test) and `eval_subcommand_test` (~5.3 min, `cqs eval` subprocess
+#       per test). Together these were 12 min / 35% of regular-CI test time
+#       (CI workflow `25227697806`).
+# Run nightly via `.github/workflows/ci-slow.yml` (`slow-tests-feature` job).
+# Locally: `cargo test --features slow-tests`.
 slow-tests = []
 
 [dev-dependencies]

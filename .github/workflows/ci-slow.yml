@@ -61,8 +61,36 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_ignored == 'false' }}
         run: cargo test --release --verbose
 
+  slow-tests-feature:
+    # Self-contained tests gated behind the `slow-tests` cargo feature
+    # (subprocess-spawning CLI tests + the heaviest e2e binaries — onboard,
+    # eval_subcommand). No HF model download dependency; all use mock or
+    # local-only embedders. Could later graduate to PR-time CI if the wall
+    # time stays under budget. See Cargo.toml `slow-tests` comment for
+    # the gated file inventory. (#1286 Phase 2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-slow-feature
+
+      - name: Run slow-tests feature suite
+        run: cargo test --release --features slow-tests --verbose
+
+  notify-failure:
+    needs: [full-suite, slow-tests-feature]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
       - name: Open issue on failure
-        if: failure() && github.event_name == 'schedule'
         uses: actions/github-script@v7
         with:
           script: |

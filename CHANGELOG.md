@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`onboard_test` and `eval_subcommand_test` gated behind `slow-tests`** (#1286 Phase 2). The two heaviest e2e binaries — 6.6 min + 5.3 min ≈ 12 min, 35% of regular-CI test job time on workflow `25227697806` — now only run via `cargo test --features slow-tests` or the new nightly `slow-tests-feature` job in `.github/workflows/ci-slow.yml`. Both shell out to the cqs binary per test (full index pipeline / `cqs eval` cold start), which is where the wall time goes.
+
+### Added
+
+- **`slow-tests-feature` job** in `.github/workflows/ci-slow.yml` (#1286 Phase 2). Runs `cargo test --release --features slow-tests` nightly. Self-contained — no HuggingFace model download dependency, in contrast to the existing `full-suite` job's `--include-ignored` path. Hosts the 11 subprocess-spawning `cli_*_test` binaries that have been gated since v1.29.0 plus the two new e2e additions above. Could later graduate to PR-time CI if wall time stays under budget.
+
 ## [1.33.0] - 2026-05-02
 
 Minor release. No schema bump. Themed around eval correctness, indexing performance, and a new fine-tuned embedder preset.

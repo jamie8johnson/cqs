@@ -3,6 +3,14 @@
 //! Uses a graph fixture with call relationships:
 //!   src/lib.rs:  process_data() -> validate(), process_data() -> format_output()
 //!   src/lib.rs:  test_process() -> process_data()
+//!
+//! Gated behind `slow-tests` (#1286 Phase 2) — every test calls
+//! `setup_graph_project()` + `init_and_index()`, which shells out to the cqs
+//! binary and runs the full index pipeline (parse + embed + HNSW build) per
+//! test. The four tests here account for ~6.6 min of regular-CI wall time
+//! (CI workflow `25227697806`, the heaviest-hitting binary by a wide margin).
+
+#![cfg(feature = "slow-tests")]
 
 use assert_cmd::Command;
 use predicates::prelude::*;
