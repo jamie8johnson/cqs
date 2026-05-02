@@ -282,7 +282,7 @@ fn test_ci_with_clean_diff_returns_low_risk_and_exits_zero() {
 
     // No modifications → empty diff → no changed functions → low risk → gate passes.
     let output = cqs()
-        .args(["ci", "--format", "json", "--gate", "high"])
+        .args(["ci", "--json", "--gate", "high"])
         .current_dir(dir.path())
         .output()
         .expect("Failed to run cqs ci");
@@ -360,7 +360,7 @@ fn validate(input: i32) -> i32 {
     .expect("rewrite lib.rs");
 
     let output = cqs()
-        .args(["ci", "--format", "json", "--gate", "off"])
+        .args(["ci", "--json", "--gate", "off"])
         .current_dir(dir.path())
         .output()
         .expect("Failed to run cqs ci");
@@ -391,7 +391,7 @@ fn test_ci_token_budget_adds_token_fields() {
     let dir = setup_git_project();
 
     let output = cqs()
-        .args(["ci", "--format", "json", "--gate", "off", "--tokens", "200"])
+        .args(["ci", "--json", "--gate", "off", "--tokens", "200"])
         .current_dir(dir.path())
         .output()
         .expect("Failed to run cqs ci --tokens");
@@ -471,7 +471,7 @@ fn validate(input: i32) -> i32 {
     // Use --gate off so risk level doesn't drive exit code — we just want
     // the JSON envelope to populate.
     let output = cqs()
-        .args(["ci", "--format", "json", "--gate", "off"])
+        .args(["ci", "--json", "--gate", "off"])
         .current_dir(dir.path())
         .output()
         .expect("Failed to run cqs ci");
