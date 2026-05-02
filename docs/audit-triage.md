@@ -189,28 +189,28 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 
 | ID | Category | Title | Difficulty | Action |
 |----|----------|-------|------------|--------|
-| P4-1 | Security | `cqs serve --open` leaks per-launch token to local processes via argv | medium | issue |
-| P4-2 | Security | `find_7z` accepts `ProgramFiles` env var without `is_safe_executable_path` enforcement | medium | issue |
-| P4-3 | Security | `HF_HOME`/`HUGGINGFACE_HUB_CACHE` accepted without canonicalization or trust check | medium | issue |
-| P4-4 | Security | `LocalProvider`'s `CQS_LLM_API_BASE` accepts `http://` for non-loopback hosts | medium | issue |
-| P4-5 | Security | Chunk content printed verbatim to stdout — embedded ANSI/OSC8 escapes reach terminal | medium | issue |
-| P4-6 | Data Safety | `chunks` `INSERT OR REPLACE` cascade enforced only by call-site convention | medium | issue |
-| P4-7 | Resource Management | `EmbeddingCache`/`QueryCache` `Drop` calls `block_on` — can stall daemon shutdown | medium | issue |
-| P4-8 | Resource Management | HNSW background rebuild loads second `Store` (256 MiB mmap × 2) — daemon peaks at 2× RAM | hard | issue |
-| P4-9 | Resource Management | `cqs serve` has no idle eviction — Store mmap pinned for entire process lifetime | medium | issue |
-| P4-10 | Resource Management | Per-handler `Semaphore` permits decoupled from SQLite pool size (32 vs 4) | medium | issue |
-| P4-11 | Extensibility | `BatchProvider` trait has three near-identical `submit_*_batch` methods | medium | issue |
-| P4-12 | Extensibility | `IndexBackend` registry hand-coded in `backends()` — third backend needs cfg edits | medium | issue |
-| P4-13 | Extensibility | `SearchFilter` has 12 fields and 37 of 54 sites enumerate every field | medium | issue |
-| P4-14 | Extensibility | `apply_scoring_pipeline` is hand-coded — adding third score signal edits two paths | medium | issue |
-| P4-15 | Extensibility | HNSW distance metric type-baked as `DistCosine` — switching needs persist-format migration | hard | issue |
-| P4-16 | Extensibility | Telemetry has one hardcoded sink (`.cqs/telemetry.jsonl`) — no trait, no exporter abstraction | medium | issue |
-| P4-17 | Platform Behavior | `db_file_identity` non-Unix fallback uses mtime — fails to detect rapid `--force` replacements | medium | issue |
-| P4-18 | Platform Behavior | Hook scripts assume `cqs` is on the MSYS-shell PATH on Windows-native | medium | issue |
-| P4-19 | Platform Behavior | `audit.rs` audit-mode file gets no Windows ACL — SEC-1 promise broken on Windows | medium | issue |
-| P4-20 | Platform Behavior | `note.rs::write_notes_file` writes bare `\n` — CRLF round-trip churn on Windows | medium | issue |
-| P4-21 | TC Happy | `run_umap_projection` (`cqs index --umap` orchestrator) has zero tests | medium | issue |
-| P4-22 | TC Happy | `cmd_gc` end-to-end is untested — only `GcOutput` JSON serialization asserted | medium | issue |
-| P4-23 | TC Happy | `cqs serve` has no end-to-end smoke test (run_server + auth + handlers) | hard | issue |
+| P4-1 | Security | `cqs serve --open` leaks per-launch token to local processes via argv | medium | 🎫 #1337 |
+| P4-2 | Security | `find_7z` accepts `ProgramFiles` env var without `is_safe_executable_path` enforcement | medium | 🎫 #1338 |
+| P4-3 | Security | `HF_HOME`/`HUGGINGFACE_HUB_CACHE` accepted without canonicalization or trust check | medium | 🎫 #1339 |
+| P4-4 | Security | `LocalProvider`'s `CQS_LLM_API_BASE` accepts `http://` for non-loopback hosts | medium | 🎫 #1340 |
+| P4-5 | Security | Chunk content printed verbatim to stdout — embedded ANSI/OSC8 escapes reach terminal | medium | 🎫 #1341 |
+| P4-6 | Data Safety | `chunks` `INSERT OR REPLACE` cascade enforced only by call-site convention | medium | 🎫 #1342 |
+| P4-7 | Resource Management | `EmbeddingCache`/`QueryCache` `Drop` calls `block_on` — can stall daemon shutdown | medium | 🎫 #1343 |
+| P4-8 | Resource Management | HNSW background rebuild loads second `Store` (256 MiB mmap × 2) — daemon peaks at 2× RAM | hard | 🎫 #1344 |
+| P4-9 | Resource Management | `cqs serve` has no idle eviction — Store mmap pinned for entire process lifetime | medium | 🎫 #1345 |
+| P4-10 | Resource Management | Per-handler `Semaphore` permits decoupled from SQLite pool size (32 vs 4) | medium | 🎫 #1346 |
+| P4-11 | Extensibility | `BatchProvider` trait has three near-identical `submit_*_batch` methods | medium | 🎫 #1347 |
+| P4-12 | Extensibility | `IndexBackend` registry hand-coded in `backends()` — third backend needs cfg edits | medium | 🎫 #1348 |
+| P4-13 | Extensibility | `SearchFilter` has 12 fields and 37 of 54 sites enumerate every field | medium | 🎫 #1349 |
+| P4-14 | Extensibility | `apply_scoring_pipeline` is hand-coded — adding third score signal edits two paths | medium | 🎫 #1350 |
+| P4-15 | Extensibility | HNSW distance metric type-baked as `DistCosine` — switching needs persist-format migration | hard | 🎫 #1351 |
+| P4-16 | Extensibility | Telemetry has one hardcoded sink (`.cqs/telemetry.jsonl`) — no trait, no exporter abstraction | medium | 🎫 #1352 |
+| P4-17 | Platform Behavior | `db_file_identity` non-Unix fallback uses mtime — fails to detect rapid `--force` replacements | medium | 🎫 #1353 |
+| P4-18 | Platform Behavior | Hook scripts assume `cqs` is on the MSYS-shell PATH on Windows-native | medium | 🎫 #1354 |
+| P4-19 | Platform Behavior | `audit.rs` audit-mode file gets no Windows ACL — SEC-1 promise broken on Windows | medium | 🎫 #1355 |
+| P4-20 | Platform Behavior | `note.rs::write_notes_file` writes bare `\n` — CRLF round-trip churn on Windows | medium | 🎫 #1356 |
+| P4-21 | TC Happy | `run_umap_projection` (`cqs index --umap` orchestrator) has zero tests | medium | 🎫 #1357 |
+| P4-22 | TC Happy | `cmd_gc` end-to-end is untested — only `GcOutput` JSON serialization asserted | medium | 🎫 #1358 |
+| P4-23 | TC Happy | `cqs serve` has no end-to-end smoke test (run_server + auth + handlers) | hard | 🎫 #1359 |
 
 P1 = 47, P2 = 41, P3 = 56, P4 = 23. Total = 167.
