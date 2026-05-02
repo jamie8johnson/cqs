@@ -65,12 +65,20 @@ fn resolve_reference_db(root: &Path, ref_name: &str) -> Result<std::path::PathBu
     let config = Config::load(root);
     let ref_cfg = find_reference_config(&config, ref_name)?;
 
-    // Refs use the same `.cqs/` layout as projects, so honor slot resolution
-    // (post-migration: `.cqs/slots/<active>/index.db`; pre-migration:
-    // `.cqs/index.db`). `resolve_index_db` falls back to the legacy path for
-    // refs that were built against an older cqs version and never migrated.
-    let ref_cqs_dir = cqs::resolve_index_dir(&ref_cfg.path);
-    let ref_db = cqs::resolve_index_db(&ref_cqs_dir);
+    // Refs are stored at `~/.local/share/cqs/refs/<name>/` with the DB
+    // written directly into that directory (`cmd_ref_add` at
+    // `infra/reference.rs:204`: `ref_dir.join(INDEX_DB_FILENAME)`). The
+    // ref directory IS the cqs index dir — it does NOT have an outer
+    // project `.cqs/` segment. `resolve_index_db` then picks the slot
+    // layout (`slots/<active>/index.db`) over the legacy bare-file path,
+    // matching the writer's behavior post-#1105.
+    //
+    // Pre-fix this called `resolve_index_dir(&ref_cfg.path)`, which
+    // appended a spurious `.cqs/` segment and then `resolve_index_db`
+    // looked at `<ref_dir>/.cqs/slots/default/index.db` — a path the
+    // writer never produces. `cqs drift` / `cqs diff` against any newly
+    // added ref would error with "no index, run cqs ref update". (#1305)
+    let ref_db = cqs::resolve_index_db(&ref_cfg.path);
     if !ref_db.exists() {
         bail!(
             "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",
