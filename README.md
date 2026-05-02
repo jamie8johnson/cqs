@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **44.5% R@1 / 73.4% R@5 / 84.9% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)

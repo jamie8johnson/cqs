@@ -450,7 +450,7 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
     if name_match {
         return true;
     }
-    // Path-based patterns from the language registry (all 52+ languages).
+    // Path-based patterns from the language registry (all 54 languages).
     // Patterns use SQL LIKE syntax: `%` = any chars, `\_` = literal underscore.
     // Normalize backslashes to forward slashes for cross-platform matching.
     let normalized = file.replace('\\', "/");

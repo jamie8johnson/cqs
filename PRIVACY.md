@@ -28,8 +28,11 @@ This data never leaves your machine.
 The embedding model is downloaded once from HuggingFace:
 
 - Default: `BAAI/bge-large-en-v1.5` (BGE-large, ~1.2GB, 1024-dim)
+- Preset: `jamie8johnson/bge-large-v1.5-code-search` (BGE-large LoRA fine-tune on cqs-code-search-200k, ~1.3GB, 1024-dim) — opt-in via `CQS_EMBEDDING_MODEL=bge-large-ft` (#1289)
 - Preset: `intfloat/e5-base-v2` (E5-base, ~438MB, 768-dim)
-- Preset: `nomic-ai/CodeRankEmbed` (nomic-coderank, ~547MB, 768-dim) — code-specialised, opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
+- Preset: `jamie8johnson/e5-base-v2-code-search` (v9-200k LoRA fine-tune on cqs-code-search-200k, ~440MB, 768-dim) — opt-in via `CQS_EMBEDDING_MODEL=v9-200k`
+- Preset: `jamie8johnson/CodeRankEmbed-onnx` (community ONNX export of nomic-ai/CodeRankEmbed, ~547MB, 768-dim) — opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
+- Preset: `onnx-community/embeddinggemma-300m-ONNX` (Google EmbeddingGemma-300m, ~1.2GB FP32, 768-dim, 2048 max-seq) — opt-in via `CQS_EMBEDDING_MODEL=embeddinggemma-300m`. Subject to [Google Gemma Terms](https://ai.google.dev/gemma/terms) (commercial-allowed; restrictions on weapons/biometric ID/dangerous infra apply).
 - Custom: any HuggingFace repo via `[embedding]` config section, `--model` CLI flag, or `CQS_EMBEDDING_MODEL` env var
 - Size varies by model
 - Cached in: `~/.cache/huggingface/`

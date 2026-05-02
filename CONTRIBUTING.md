@@ -209,7 +209,7 @@ src/
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
-  store/        - SQLite storage layer (Schema v22, WAL mode)
+  store/        - SQLite storage layer (Schema v25, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
     search.rs   - RRF fusion, search_filtered, search_unified_with_index
@@ -223,7 +223,7 @@ src/
     types.rs    - Type edge storage and queries
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
-    migrations.rs - Schema migration framework (v10-v22, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y)
+    migrations.rs - Schema migration framework (v10-v25, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
@@ -234,11 +234,11 @@ src/
     l5x.rs      - Rockwell PLC exports (L5X XML + L5K ASCII) → Structured Text extraction
     markdown/   - Heading-based markdown parser
       mod.rs, headings.rs, code_blocks.rs, tables.rs
-  embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default; E5-base, nomic-coderank-137M, custom ONNX presets)
+  embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default; bge-large-ft, E5-base, v9-200k, nomic-coderank-137M, embeddinggemma-300m, custom ONNX presets)
     mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection, ExecutionProvider enum (CUDA/TensorRT/CPU; CoreML/ROCm cfg-gated per #956 Phase A)
-    models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large, nomic-coderank), resolution logic, EmbeddingConfig
+    models.rs   - ModelConfig struct, built-in presets (bge-large default, bge-large-ft, e5-base, v9-200k, nomic-coderank, embeddinggemma-300m), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection — per-backend cfg-blocks; CUDA/TensorRT always-on, CoreML/ROCm scaffolded via `ep-coreml`/`ep-rocm` features (#956 Phase A)
-  reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)
+  reranker.rs   - Cross-encoder re-ranking (Reranker trait + OnnxReranker / NoopReranker / LlmReranker impls; default ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF
     scoring/    - ScoringConfig, score normalization, RRF fusion constants
