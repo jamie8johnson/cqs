@@ -749,6 +749,12 @@ pub fn enumerate_files(
         .build();
 
     let size_cap = max_file_size();
+    // EH-V1.33-4: when `metadata()` fails (broken symlink target, transient FS
+    // error, permission flip mid-walk), surface it via the same first-3-warn-
+    // then-debug shape used by the canonicalize arm below. Silently dropping
+    // files leaves operators staring at fewer chunks than expected with no
+    // diagnostic trail.
+    let metadata_failures = std::sync::atomic::AtomicUsize::new(0);
     let files: Vec<PathBuf> = walker
         .filter_map(|e| {
             e.map_err(|err| {
@@ -775,7 +781,28 @@ pub fn enumerate_files(
                     true
                 }
             }
-            Err(_) => false,
+            Err(err) => {
+                // EH-V1.33-4: `ignore::Error::Display` already prints the
+                // underlying io kind (e.g., "permission denied", "no such
+                // file or directory"), so the operator gets the kind
+                // implicitly via `error = %err`.
+                let count =
+                    metadata_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count < 3 {
+                    tracing::warn!(
+                        path = %e.path().display(),
+                        error = %err,
+                        "Skipping file: metadata() failed"
+                    );
+                } else {
+                    tracing::debug!(
+                        path = %e.path().display(),
+                        error = %err,
+                        "Skipping file: metadata() failed"
+                    );
+                }
+                false
+            }
         })
         .filter(|e| {
             // P3 #141: `to_ascii_lowercase` allocated a fresh `String` per

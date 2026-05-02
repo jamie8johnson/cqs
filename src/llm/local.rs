@@ -705,7 +705,11 @@ impl BatchProvider for LocalProvider {
     }
 
     fn set_on_item_complete(&mut self, cb: Box<dyn Fn(&str, &str) + Send + Sync>) {
-        *self.on_item.lock().unwrap() = Some(cb);
+        // EH-V1.33-2 / RB-V1.33-10: tolerate a poisoned mutex (a sibling
+        // worker may have panicked while sharing other LocalProvider mutexes).
+        // Match the rest of this file's `lock().unwrap_or_else(|p| p.into_inner())`
+        // recovery pattern from P1.9 / P2.35 instead of panicking the caller.
+        *self.on_item.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);
     }
 }
 

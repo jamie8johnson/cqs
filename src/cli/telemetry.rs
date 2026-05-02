@@ -20,7 +20,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Maximum telemetry file size before auto-archiving (10 MB).
 const MAX_TELEMETRY_BYTES: u64 = 10 * 1024 * 1024;
@@ -77,10 +76,10 @@ pub fn log_command(
         }
     }
 
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // EH-V1.33-1: use `cqs::unix_secs_i64()` so a pre-epoch clock surfaces as
+    // `ts: null` (serializing `Option<i64>::None`) and emits a one-shot
+    // tracing::warn from the helper, instead of silently coercing to `ts: 0`.
+    let timestamp = cqs::unix_secs_i64();
 
     // P3 #136: redact `query` by default to keep search strings out of the
     // telemetry log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
@@ -123,7 +122,13 @@ pub fn log_command(
         // SHL-20: auto-archive if file exceeds 10 MB to prevent unbounded growth
         if let Ok(meta) = fs::metadata(&path) {
             if meta.len() > MAX_TELEMETRY_BYTES {
-                let archive_name = format!("telemetry_{timestamp}.jsonl");
+                // EH-V1.33-1: archive filename falls back to `0` when the
+                // clock is pre-epoch — uniqueness here is best-effort and
+                // the JSON row above already records `ts: null` so the
+                // bad-clock condition is preserved in the data, not just
+                // a swept-under filename.
+                let ts_for_filename = timestamp.unwrap_or(0);
+                let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
                 let archive_path = cqs_dir.join(&archive_name);
                 if let Err(e) = fs::rename(&path, &archive_path) {
                     tracing::warn!(
@@ -192,10 +197,8 @@ pub fn log_command_complete(
         }
     }
 
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // EH-V1.33-1: see `log_command` above for the rationale.
+    let timestamp = cqs::unix_secs_i64();
 
     let error_field = error.map(|s| {
         if s.len() > 240 {
@@ -232,7 +235,13 @@ pub fn log_command_complete(
 
         if let Ok(meta) = fs::metadata(&path) {
             if meta.len() > MAX_TELEMETRY_BYTES {
-                let archive_name = format!("telemetry_{timestamp}.jsonl");
+                // EH-V1.33-1: archive filename falls back to `0` when the
+                // clock is pre-epoch — uniqueness here is best-effort and
+                // the JSON row above already records `ts: null` so the
+                // bad-clock condition is preserved in the data, not just
+                // a swept-under filename.
+                let ts_for_filename = timestamp.unwrap_or(0);
+                let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
                 let archive_path = cqs_dir.join(&archive_name);
                 if let Err(e) = fs::rename(&path, &archive_path) {
                     tracing::warn!(error = %e, "Failed to auto-archive telemetry file");
@@ -286,10 +295,8 @@ pub fn log_routed(
         }
     }
 
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // EH-V1.33-1: see `log_command` above for the rationale.
+    let timestamp = cqs::unix_secs_i64();
 
     // P3 #136: redact `query` by default — see `redact_query_str` doc.
     let query_field = redact_query_str(query);
@@ -328,7 +335,13 @@ pub fn log_routed(
         // Auto-archive if file exceeds 10 MB to prevent unbounded growth
         if let Ok(meta) = fs::metadata(&path) {
             if meta.len() > MAX_TELEMETRY_BYTES {
-                let archive_name = format!("telemetry_{timestamp}.jsonl");
+                // EH-V1.33-1: archive filename falls back to `0` when the
+                // clock is pre-epoch — uniqueness here is best-effort and
+                // the JSON row above already records `ts: null` so the
+                // bad-clock condition is preserved in the data, not just
+                // a swept-under filename.
+                let ts_for_filename = timestamp.unwrap_or(0);
+                let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
                 let archive_path = cqs_dir.join(&archive_name);
                 if let Err(e) = fs::rename(&path, &archive_path) {
                     tracing::warn!(

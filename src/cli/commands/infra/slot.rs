@@ -293,7 +293,19 @@ fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
 
     let dir = slot_dir(project_cqs_dir, name);
     if !dir.exists() {
-        let available = list_slots(project_cqs_dir).unwrap_or_default().join(", ");
+        // EH-V1.33-10: surface listing failure with path context instead of
+        // masking it as "Available: []", which would tell the user to
+        // create a slot when in reality there might already be several but
+        // we can't read them (perm denied on .cqs/slots/, FS hiccup, slot
+        // dir corrupted). Mirrors P2.21's slot_remove fix.
+        let available = list_slots(project_cqs_dir)
+            .with_context(|| {
+                format!(
+                    "Failed to list slots while building slot-missing message at {}",
+                    project_cqs_dir.display()
+                )
+            })?
+            .join(", ");
         anyhow::bail!(
             "Slot '{}' does not exist. Available: [{}]. Create with: cqs slot create <name> --model <model-id>",
             name,
