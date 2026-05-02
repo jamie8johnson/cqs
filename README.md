@@ -731,6 +731,7 @@ Quick index by domain (everything is searchable in the table below):
 - **CLI I/O caps** — `CQS_MAX_DIFF_BYTES`, `CQS_MAX_DISPLAY_FILE_SIZE`, `CQS_READ_MAX_FILE_SIZE`
 - **LLM & document conversion** — `CQS_LLM_*`, `CQS_API_BASE`, `CQS_LLM_ALLOW_INSECURE`, `CQS_PDF_SCRIPT`, `CQS_CONVERT_*`
 - **Telemetry & eval** — `CQS_TELEMETRY`, `CQS_TELEMETRY_REDACT_QUERY`, `CQS_EVAL_OUTPUT`, `CQS_EVAL_TIMEOUT_SECS`
+- **Training data extraction** — `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES`, `CQS_TRAIN_GIT_SHOW_MAX_BYTES`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
