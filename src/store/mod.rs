@@ -951,6 +951,23 @@ fn open_with_config_impl<Mode>(
     // Build cache_size PRAGMA string once for the after_connect closure.
     let cache_pragma = format!("PRAGMA cache_size = {}", config.cache_size);
 
+    // DS-V1.33-8: cap the WAL at N pages so an abrupt shutdown (SIGKILL,
+    // panic-without-Drop, daemon worker thread crash) leaves a bounded WAL
+    // for the next open to replay. Without this, a long-lived read-only
+    // `cqs serve` that never commits never triggers SQLite's default 1000-
+    // page autocheckpoint, and the on-disk WAL grows to whatever the kernel
+    // buffered between explicit `wal_checkpoint(TRUNCATE)` calls. 1000 pages
+    // is the SQLite default — we set it explicitly so it actually applies
+    // to read-mostly connections that rarely COMMIT. Override via
+    // `CQS_WAL_AUTOCHECKPOINT_PAGES` (e.g. for WSL-NTFS boxes where each
+    // checkpoint is expensive — set higher; for tighter recovery — set
+    // lower).
+    let wal_autocheckpoint_pages: u32 = std::env::var("CQS_WAL_AUTOCHECKPOINT_PAGES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+    let wal_pragma = format!("PRAGMA wal_autocheckpoint = {}", wal_autocheckpoint_pages);
+
     let pool = rt.block_on(async {
         SqlitePoolOptions::new()
             .max_connections(config.max_connections)
@@ -962,11 +979,13 @@ fn open_with_config_impl<Mode>(
             ))
             .after_connect(move |conn, _meta| {
                 let pragma = cache_pragma.clone();
+                let wal = wal_pragma.clone();
                 Box::pin(async move {
                     sqlx::query(&pragma).execute(&mut *conn).await?;
                     sqlx::query("PRAGMA temp_store = MEMORY")
                         .execute(&mut *conn)
                         .await?;
+                    sqlx::query(&wal).execute(&mut *conn).await?;
                     Ok(())
                 })
             })
@@ -1826,5 +1845,31 @@ mod tests {
         .expect("second attempt after closure error should succeed");
         // Sanity: the recovered handle can run a read query.
         assert!(recovered.check_model_version().is_ok());
+    }
+
+    /// DS-V1.33-8 regression: every connection from the main store pool must
+    /// carry a finite `wal_autocheckpoint` ceiling so an abrupt shutdown
+    /// (SIGKILL, panic-without-Drop, daemon worker thread crash) leaves a
+    /// bounded WAL for the next open. Asserting via PRAGMA query on a freshly-
+    /// opened store pins the after_connect wiring so a refactor that drops the
+    /// hook surfaces here.
+    #[test]
+    fn wal_autocheckpoint_pragma_is_applied_after_connect() {
+        let (store, _dir) = make_test_store_initialized();
+        let pages: i64 = store
+            .runtime()
+            .block_on(async {
+                sqlx::query_scalar::<_, i64>("PRAGMA wal_autocheckpoint")
+                    .fetch_one(&store.pool)
+                    .await
+            })
+            .expect("PRAGMA wal_autocheckpoint should succeed on a freshly opened store");
+        // Default is 1000 pages (mirrors SQLite's built-in autocheckpoint
+        // default). The exact value isn't load-bearing — we're proving the
+        // after_connect hook executed and applied a finite ceiling.
+        assert_eq!(
+            pages, 1000,
+            "expected default wal_autocheckpoint=1000 from after_connect hook"
+        );
     }
 }

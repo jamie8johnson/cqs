@@ -191,10 +191,13 @@ impl<Mode> Store<Mode> {
         }
         let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
-        // SHL-V1.33-8: render the BM25 weights from the canonical constants
-        // in `helpers/mod.rs` so the `chunks/query.rs` sibling stays in sync.
+        // SHL-V1.33-8 + SEC-V1.33-9: BM25 weights via canonical helper, plus
+        // SELECT `c.vendored` so `resolve_target` / `read --focus` can emit the
+        // correct `trust_level` for chunks under `node_modules/`/`vendor/`.
+        // Without that column the `ChunkRow::from_row` `try_get` falls back
+        // to false and every vendored chunk masquerades as user-code.
         let sql = format!(
-            "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
+            "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name, c.vendored
              FROM chunks c
              JOIN chunks_fts f ON c.id = f.id
              WHERE chunks_fts MATCH ?1

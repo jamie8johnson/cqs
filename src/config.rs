@@ -622,18 +622,38 @@ impl Config {
                 v
             };
             for (field, p) in paths_to_check {
-                if let Ok(canonical) = dunce::canonicalize(p) {
-                    let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
-                    let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
-                    let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
-                    if !in_home && !in_project && !in_cqs_dir {
+                // EH-V1.33-9: silent `if let Ok(...) = canonicalize(p)` swallowed
+                // canonicalize failures (typo'd path, ENOENT, EACCES) and skipped the
+                // SEC-4 / SEC-NEW-1 audit entirely — the protection meant to flag a
+                // malicious `.cqs.toml` was effectively opt-out by error. Fail-loud:
+                // a canonicalize error means we can't audit, so warn explicitly and
+                // treat as untrusted.
+                match dunce::canonicalize(p) {
+                    Ok(canonical) => {
+                        let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
+                        let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
+                        let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
+                        if !in_home && !in_project && !in_cqs_dir {
+                            tracing::warn!(
+                                name = %r.name,
+                                field,
+                                path = %canonical.display(),
+                                "Reference {field} is outside project and home directories — \
+                                 a malicious .cqs.toml could use this to index arbitrary files. \
+                                 Verify the source is intentional."
+                            );
+                        }
+                    }
+                    Err(e) => {
                         tracing::warn!(
                             name = %r.name,
                             field,
-                            path = %canonical.display(),
-                            "Reference {field} is outside project and home directories — \
-                             a malicious .cqs.toml could use this to index arbitrary files. \
-                             Verify the source is intentional."
+                            path = %p.display(),
+                            error = %e,
+                            "Cannot canonicalize reference {field} for SEC-4 audit; \
+                             treating as untrusted. A typo in `.cqs.toml` or a path the \
+                             user cannot access bypasses the in-home/in-project check; \
+                             verify the path is correct and reachable."
                         );
                     }
                 }

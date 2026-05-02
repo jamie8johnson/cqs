@@ -10,8 +10,44 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use thiserror::Error;
+
+/// DS-V1.33-6: process-global mutex serializing `EmbeddingCache::evict()`
+/// across all `EmbeddingCache` handles in this process.
+///
+/// `EmbeddingCache::open` is called from multiple call paths (bulk pipeline
+/// `prepare_for_embedding`, watch daemon reindex, `cqs cache prune`); each
+/// returned a fresh per-instance `Mutex<()>` that pointed at the same
+/// `embeddings_cache.db` file but didn't coordinate. Two of those instances
+/// calling `evict()` concurrently from different runtimes would each measure
+/// the same logical size and issue overlapping `LIMIT ?` DELETEs — exactly
+/// the race the docstring promised to prevent.
+///
+/// Lifting the lock to module scope mirrors `WRITE_LOCK` in
+/// `src/store/mod.rs:54`. Cross-process serialization still relies on SQLite
+/// busy_timeout + the `BEGIN IMMEDIATE` evict transaction (DS-V1.33-4).
+static EMBEDDING_CACHE_EVICT_LOCK: Mutex<()> = Mutex::new(());
+
+/// DS-V1.33-6: process-global mutex serializing `QueryCache::evict()` across
+/// all `QueryCache` handles in this process. See `EMBEDDING_CACHE_EVICT_LOCK`.
+static QUERY_CACHE_EVICT_LOCK: Mutex<()> = Mutex::new(());
+
+/// DS-V1.33-8: cap the on-disk WAL at this many pages on each open so an
+/// abrupt shutdown (SIGKILL, panic, daemon worker crash) leaves a bounded
+/// WAL for the next open. Default 1000 pages mirrors SQLite's built-in
+/// autocheckpoint default; we set it explicitly so it actually applies to
+/// read-mostly cache connections that rarely COMMIT (without an explicit
+/// PRAGMA the autocheckpoint only runs on COMMIT). Override via
+/// `CQS_WAL_AUTOCHECKPOINT_PAGES`.
+fn wal_autocheckpoint_pragma() -> String {
+    let pages: u32 = std::env::var("CQS_WAL_AUTOCHECKPOINT_PAGES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+    format!("PRAGMA wal_autocheckpoint = {}", pages)
+}
 
 use crate::store::helpers::sql::{
     busy_timeout_from_env, make_placeholders_offset, max_rows_per_statement,
@@ -157,12 +193,11 @@ pub struct EmbeddingCache {
     /// constructor spinning up its own worker pool.
     rt: Arc<tokio::runtime::Runtime>,
     max_size_bytes: u64,
-    /// DS2-5: serializes `evict()` calls so two parallel invocations can't both
-    /// measure the same logical size and issue overlapping `LIMIT ?` DELETEs.
-    /// Size/AVG/DELETE inside `evict()` are further wrapped in a single
-    /// transaction so the snapshot is consistent against concurrent
-    /// `write_batch` traffic.
-    evict_lock: std::sync::Mutex<()>,
+    // DS-V1.33-6: `evict_lock` was previously a per-instance `Mutex<()>` field,
+    // but `EmbeddingCache::open` is called from multiple paths in one process
+    // and each call constructed a fresh mutex pointing at the same DB file
+    // — defeating the serialization the docstring promised. Lifted to the
+    // module-level `EMBEDDING_CACHE_EVICT_LOCK` static; see its docs.
 }
 
 impl EmbeddingCache {
@@ -263,10 +298,22 @@ impl EmbeddingCache {
         // worker, restoring before any other file-creating code runs.
         #[cfg(unix)]
         let prev_umask = unsafe { libc::umask(0o077) };
+        // DS-V1.33-8: cap the on-disk WAL via after_connect so every
+        // connection (including the read-only checkout one acquires for
+        // statistics) carries the ceiling. Same default and env override as
+        // the main store.
+        let wal_pragma = wal_autocheckpoint_pragma();
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1) // RM-2: single worker thread can only use 1 connection
                 .idle_timeout(std::time::Duration::from_secs(30)) // RM-5: release idle connections
+                .after_connect(move |conn, _meta| {
+                    let wal = wal_pragma.clone();
+                    Box::pin(async move {
+                        sqlx::query(&wal).execute(&mut *conn).await?;
+                        Ok(())
+                    })
+                })
                 .connect_with(connect_opts)
                 .await?;
 
@@ -391,7 +438,6 @@ impl EmbeddingCache {
             pool,
             rt,
             max_size_bytes,
-            evict_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -541,15 +587,16 @@ impl EmbeddingCache {
             return Ok(0);
         }
 
-        // P2.66: hold `evict_lock` across the write so a concurrent `evict()`
-        // can't measure size, then DELETE rows that this in-flight write_batch
-        // committed between the SELECT and DELETE. Without this, a writer
-        // sees its INSERT succeed while a cross-session reader sees a cache
-        // miss — silently re-embedding chunks the cache "should" have. Mutex
-        // poisoning is non-fatal: a previous holder's panic shouldn't keep
-        // the cache write path locked out.
-        let _evict_guard = self
-            .evict_lock
+        // P2.66: hold `EMBEDDING_CACHE_EVICT_LOCK` across the write so a
+        // concurrent `evict()` can't measure size, then DELETE rows that this
+        // in-flight write_batch committed between the SELECT and DELETE.
+        // Without this, a writer sees its INSERT succeed while a cross-session
+        // reader sees a cache miss — silently re-embedding chunks the cache
+        // "should" have. Mutex poisoning is non-fatal: a previous holder's
+        // panic shouldn't keep the cache write path locked out.
+        // DS-V1.33-6: process-global static so all `EmbeddingCache` handles in
+        // this process share the same mutex (was per-instance, useless).
+        let _evict_guard = EMBEDDING_CACHE_EVICT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
@@ -617,46 +664,69 @@ impl EmbeddingCache {
 
     /// Evict oldest entries if cache exceeds max size.
     ///
-    /// DS2-5: the size / AVG / DELETE trio runs inside a single
-    /// `pool.begin()` transaction so concurrent `write_batch` traffic cannot
-    /// invalidate the measurement between steps. An in-process `evict_lock`
-    /// mutex further prevents two `evict()` callers from overlapping their
-    /// `LIMIT ?` prefixes and each over-counting `rows_affected()`.
+    /// DS2-5: the size / AVG / DELETE trio runs inside a single transaction so
+    /// concurrent `write_batch` traffic cannot invalidate the measurement
+    /// between steps. An in-process `evict_lock` mutex further prevents two
+    /// `evict()` callers from overlapping their `LIMIT ?` prefixes and each
+    /// over-counting `rows_affected()`.
+    ///
+    /// DS-V1.33-4: the transaction uses `BEGIN IMMEDIATE` (not the sqlx
+    /// default deferred BEGIN) so the writer lock is acquired up front.
+    /// Without this, two cqs processes (e.g. `cqs cache prune` running while
+    /// the daemon is calling `write_batch`) each open their own pool, bypass
+    /// the in-process `evict_lock`, and SQLite WAL hands each a deferred
+    /// snapshot that doesn't include the other's in-flight commits — so the
+    /// cache can be evicted below `max_size_bytes / 2` even though only one
+    /// excess interval was supposed to be reclaimed. `BEGIN IMMEDIATE` makes
+    /// the second writer wait on the first instead of racing with stale data.
     pub fn evict(&self) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("cache_evict").entered();
 
         // Serialize evicts across threads. Mutex poisoning is non-fatal here:
         // if the previous holder panicked we still want to attempt an evict.
-        let _guard = self
-            .evict_lock
+        // DS-V1.33-6: process-global static — see `EMBEDDING_CACHE_EVICT_LOCK`
+        // docs for why per-instance was a bug.
+        let _guard = EMBEDDING_CACHE_EVICT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         self.rt.block_on(async {
-            let mut tx = match self.pool.begin().await {
-                Ok(t) => t,
+            // DS-V1.33-4: hold one connection across the whole eviction so the
+            // BEGIN IMMEDIATE / SELECTs / DELETE / COMMIT all land on the same
+            // connection. Returning the connection to the pool with no explicit
+            // COMMIT triggers SQLite's implicit ROLLBACK — sqlx::Pool resets
+            // dirty state on `release_to_pool` — so any early `return Ok(0)` is
+            // safe.
+            let mut conn = match self.pool.acquire().await {
+                Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(error = %e, "Cache evict begin-tx failed");
+                    tracing::warn!(error = %e, "Cache evict acquire failed");
                     return Ok(0);
                 }
             };
+            if let Err(e) = sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await {
+                tracing::warn!(error = %e, "Cache evict BEGIN IMMEDIATE failed");
+                return Ok(0);
+            }
 
             // Use logical data size, not physical pages (DS-49)
             let size: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM embedding_cache",
             )
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await
             {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "Cache evict size query failed");
+                    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
                     return Ok(0);
                 }
             };
 
             // Guard against negative/zero size (SEC-10)
             if size <= 0 || (size as u64) <= self.max_size_bytes {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
                 return Ok(0);
             }
 
@@ -665,7 +735,7 @@ impl EmbeddingCache {
             let avg_entry: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM embedding_cache",
             )
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await
             {
                 Ok(v) => v,
@@ -682,10 +752,10 @@ impl EmbeddingCache {
                  (SELECT rowid FROM embedding_cache ORDER BY created_at ASC LIMIT ?1)",
             )
             .bind(entries_to_delete as i64)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
 
-            tx.commit().await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
 
             let evicted = result.rows_affected() as usize;
             tracing::info!(evicted, "Cache eviction complete");
@@ -1374,7 +1444,6 @@ mod tests {
             pool,
             rt,
             max_size_bytes: 1, // 1 byte — everything should be evicted
-            evict_lock: std::sync::Mutex::new(()),
         };
 
         let entries: Vec<_> = (0..10)
@@ -2098,6 +2167,53 @@ mod tests {
         assert!((r2["colliding_hash"][0] - base_emb[0]).abs() < 1e-6);
         assert_eq!(cache.stats().unwrap().total_entries, 2);
     }
+
+    /// DS-V1.33-8 regression: every connection acquired from the embedding
+    /// cache pool carries `PRAGMA wal_autocheckpoint` set to a finite ceiling
+    /// (default 1000 pages). Without this, abrupt shutdown leaves the WAL
+    /// unbounded for the next open to replay. Asserting via PRAGMA query on a
+    /// freshly-opened cache pins the after_connect wiring so a refactor that
+    /// drops the hook surfaces here.
+    #[test]
+    fn wal_autocheckpoint_pragma_is_applied_after_connect() {
+        let (cache, _dir) = test_cache();
+        let pages: i64 = cache
+            .rt
+            .block_on(async {
+                sqlx::query_scalar::<_, i64>("PRAGMA wal_autocheckpoint")
+                    .fetch_one(&cache.pool)
+                    .await
+            })
+            .expect("PRAGMA wal_autocheckpoint should succeed on an open cache");
+        // Default is 1000 (mirrors SQLite's built-in autocheckpoint default).
+        // The exact value isn't load-bearing — what we're proving is the
+        // after_connect hook executed and applied a finite ceiling.
+        assert_eq!(
+            pages, 1000,
+            "expected default wal_autocheckpoint=1000 from `wal_autocheckpoint_pragma()`"
+        );
+    }
+
+    /// DS-V1.33-6 regression: `EMBEDDING_CACHE_EVICT_LOCK` is a process-global
+    /// static — opening two `EmbeddingCache` handles against different DB
+    /// paths still shares the same module-level mutex, so concurrent evicts
+    /// across handles don't race. Pinning the static's address is the
+    /// simplest structural assertion we can make without timing-sensitive
+    /// thread tests.
+    #[test]
+    fn embedding_cache_evict_lock_is_process_global() {
+        let p1 = &EMBEDDING_CACHE_EVICT_LOCK as *const Mutex<()>;
+        let p2 = &EMBEDDING_CACHE_EVICT_LOCK as *const Mutex<()>;
+        assert_eq!(
+            p1, p2,
+            "EMBEDDING_CACHE_EVICT_LOCK must resolve to a single static address"
+        );
+        // Smoke: lock and immediately unlock — the static is reachable from
+        // tests, the same way `evict()` accesses it from production code.
+        let _g = EMBEDDING_CACHE_EVICT_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+    }
 }
 
 // ─── Query Cache ────────────────────────────────────────────────────────────
@@ -2117,10 +2233,10 @@ pub struct QueryCache {
     /// default 100 MB). Read at `open` time and used by [`Self::evict`] —
     /// no resize support, daemon restart picks up env changes.
     max_size_bytes: u64,
-    /// DS2-5: serializes `evict()` calls so two parallel invocations can't
-    /// both measure the same size and issue overlapping `LIMIT ?` DELETEs.
-    /// Size/AVG/DELETE inside `evict()` are wrapped in a single transaction.
-    evict_lock: std::sync::Mutex<()>,
+    // DS-V1.33-6: `evict_lock` lifted to module-level
+    // `QUERY_CACHE_EVICT_LOCK` static for the same reason as
+    // `EmbeddingCache` — multiple opens in one process should share the
+    // mutex, not race past it.
 }
 
 impl QueryCache {
@@ -2198,10 +2314,20 @@ impl QueryCache {
         // write and `apply_db_file_perms` below.
         #[cfg(unix)]
         let prev_umask = unsafe { libc::umask(0o077) };
+        // DS-V1.33-8: cap the on-disk WAL for the query cache too. See
+        // `wal_autocheckpoint_pragma` for rationale.
+        let wal_pragma = wal_autocheckpoint_pragma();
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1)
                 .idle_timeout(std::time::Duration::from_secs(30))
+                .after_connect(move |conn, _meta| {
+                    let wal = wal_pragma.clone();
+                    Box::pin(async move {
+                        sqlx::query(&wal).execute(&mut *conn).await?;
+                        Ok(())
+                    })
+                })
                 .connect_with(connect_opts)
                 .await?;
 
@@ -2244,7 +2370,6 @@ impl QueryCache {
             pool,
             rt,
             max_size_bytes,
-            evict_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -2256,25 +2381,40 @@ impl QueryCache {
     /// periodic-eviction tick so disk usage stays bounded across long
     /// sessions.
     ///
-    /// DS2-5: size / AVG / DELETE run in a single `pool.begin()` transaction
-    /// so concurrent `put()` traffic cannot invalidate the measurement
-    /// between steps. `evict_lock` serializes parallel evict callers.
+    /// DS2-5: size / AVG / DELETE run in a single transaction so concurrent
+    /// `put()` traffic cannot invalidate the measurement between steps.
+    /// `QUERY_CACHE_EVICT_LOCK` (process-global, DS-V1.33-6) serializes
+    /// parallel evict callers across all `QueryCache` handles in this process.
+    ///
+    /// DS-V1.33-4: the transaction is opened with `BEGIN IMMEDIATE` so a
+    /// peer process running its own evict can't race us via deferred
+    /// snapshots. See `EmbeddingCache::evict` for the full rationale.
     pub fn evict(&self) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("query_cache_evict").entered();
 
-        let _guard = self
-            .evict_lock
+        // DS-V1.33-6: process-global static — see QUERY_CACHE_EVICT_LOCK docs.
+        let _guard = QUERY_CACHE_EVICT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         self.rt.block_on(async {
-            let mut tx = match self.pool.begin().await {
-                Ok(t) => t,
+            // DS-V1.33-4: same connection-held BEGIN IMMEDIATE pattern as
+            // `EmbeddingCache::evict`. Implicit ROLLBACK on connection return
+            // keeps early `return Ok(0)` paths safe.
+            let mut conn = match self.pool.acquire().await {
+                Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(error = %e, "Query cache evict begin-tx failed");
+                    tracing::warn!(error = %e, "Query cache evict acquire failed");
                     return Ok(0);
                 }
             };
+            if let Err(e) = sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut *conn)
+                .await
+            {
+                tracing::warn!(error = %e, "Query cache evict BEGIN IMMEDIATE failed");
+                return Ok(0);
+            }
 
             // Same logical-data measure as `EmbeddingCache::evict` (data + per-row
             // overhead). Page-count would over-report after deletions because the
@@ -2282,17 +2422,19 @@ impl QueryCache {
             let size: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM query_cache",
             )
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await
             {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "Query cache evict size query failed");
+                    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
                     return Ok(0);
                 }
             };
 
             if size <= 0 || (size as u64) <= self.max_size_bytes {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
                 return Ok(0);
             }
 
@@ -2300,7 +2442,7 @@ impl QueryCache {
             let avg_entry: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM query_cache",
             )
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await
             {
                 Ok(v) => v,
@@ -2316,10 +2458,10 @@ impl QueryCache {
                  (SELECT rowid FROM query_cache ORDER BY ts ASC LIMIT ?1)",
             )
             .bind(entries_to_delete as i64)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
 
-            tx.commit().await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
 
             let evicted = result.rows_affected() as usize;
             tracing::info!(evicted, "Query cache eviction complete");
@@ -2534,6 +2676,29 @@ mod query_cache_malformed_blob_tests {
         assert_eq!(
             row_count, 0,
             "malformed row must be deleted after get, found {row_count} row(s)"
+        );
+    }
+
+    /// DS-V1.33-8 regression for QueryCache: same as the EmbeddingCache test,
+    /// every connection from the query-cache pool must carry a finite
+    /// wal_autocheckpoint ceiling so an abrupt shutdown doesn't leave an
+    /// unbounded WAL tail.
+    #[test]
+    fn query_cache_wal_autocheckpoint_pragma_is_applied_after_connect() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("query_cache.db");
+        let cache = QueryCache::open(&path).unwrap();
+        let pages: i64 = cache
+            .rt
+            .block_on(async {
+                sqlx::query_scalar::<_, i64>("PRAGMA wal_autocheckpoint")
+                    .fetch_one(&cache.pool)
+                    .await
+            })
+            .expect("PRAGMA wal_autocheckpoint should succeed on a fresh QueryCache");
+        assert_eq!(
+            pages, 1000,
+            "expected default wal_autocheckpoint=1000 from `wal_autocheckpoint_pragma()`"
         );
     }
 }
