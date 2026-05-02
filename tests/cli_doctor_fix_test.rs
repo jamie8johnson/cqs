@@ -63,7 +63,10 @@ fn test_doctor_fix_creates_missing_index() {
         .assert()
         .success();
 
-    let index_db = dir.path().join(".cqs").join("index.db");
+    // PR #1105 moved the DB into per-project slots: .cqs/slots/<name>/index.db
+    // (no `.cqs/index.db` in the new layout for fresh-init projects). Resolve
+    // via the public helper so any future layout shift stays in one place.
+    let index_db = cqs::resolve_index_db(&dir.path().join(".cqs"));
     assert!(
         !index_db.exists(),
         "precondition: index.db must not exist before --fix"
@@ -134,7 +137,10 @@ fn test_init_rerun_preserves_existing_index() {
         .success()
         .stdout(predicate::str::contains("Index complete"));
 
-    let index_db = dir.path().join(".cqs").join("index.db");
+    // PR #1105 moved the DB into per-project slots: .cqs/slots/<name>/index.db
+    // (no `.cqs/index.db` in the new layout for fresh-init projects). Resolve
+    // via the public helper so any future layout shift stays in one place.
+    let index_db = cqs::resolve_index_db(&dir.path().join(".cqs"));
     assert!(
         index_db.exists(),
         "precondition: index.db must exist after first index"
