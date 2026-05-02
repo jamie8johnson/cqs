@@ -20,7 +20,14 @@ fn is_cjk(c: char) -> bool {
 /// "XMLParser" become individual letters. This is intentional for search
 /// tokenization where "xml parser" is more useful than preserving "XML".
 /// # Examples
-/// ```ignore
+///
+/// `text` rather than `ignore` because `nl` is `pub(crate)` — external
+/// rustdoc can't actually call `cqs::nl::tokenize_identifier`. The block
+/// is illustrative; under `cargo test -- --include-ignored` (the
+/// `ci-slow.yml` shape) `ignore`-tagged doctests *are* compiled and
+/// would surface the visibility error. (#1305)
+///
+/// ```text
 /// use cqs::nl::tokenize_identifier;
 /// assert_eq!(tokenize_identifier("parseConfigFile"), vec!["parse", "config", "file"]);
 /// assert_eq!(tokenize_identifier("get_user_name"), vec!["get", "user", "name"]);

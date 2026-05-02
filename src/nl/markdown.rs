@@ -21,7 +21,14 @@ static JSDOC_RETURNS_RE: LazyLock<Regex> =
 /// Parse JSDoc tags from a documentation comment.
 /// Extracts @param and @returns/@return tags from JSDoc-style comments.
 /// # Example
-/// ```ignore
+///
+/// `text` rather than `ignore` because `nl` is `pub(crate)` — external
+/// rustdoc can't actually call `cqs::nl::parse_jsdoc_tags`. The block
+/// is illustrative; under `cargo test -- --include-ignored` (the
+/// `ci-slow.yml` shape) `ignore`-tagged doctests *are* compiled and
+/// would surface the visibility error. (#1305)
+///
+/// ```text
 /// use cqs::nl::parse_jsdoc_tags;
 /// let doc = r#"/**
 ///  * Validates an email address
