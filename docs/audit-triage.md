@@ -82,7 +82,7 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 |----|----------|-------|------------|--------|
 | P2-1 | Observability | `serve` axum `http_request` span has no `request_id` field | medium | ⬜ |
 | P2-2 | Observability | `WatchSnapshot::compute` and `now_unix_secs` lack tracing on freshness state machine | medium | ⬜ |
-| P2-3 | Error Handling | `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides cache keys | medium | ⬜ |
+| P2-3 | Error Handling | `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides cache keys | medium | ✅ #1364 |
 | P2-4 | Error Handling | `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror | medium | ⬜ |
 | P2-5 | Error Handling | Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure | medium | ⬜ |
 | P2-6 | Error Handling | Reference path canonicalize-failure in `Config::validate` skips SEC-4 + SEC-NEW-1 check | medium | ⬜ |
@@ -94,16 +94,16 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P2-12 | TC Adversarial | `update_umap_coords_batch` accepts NaN/Inf coords; serializes as bare JSON `NaN` | medium | ⬜ |
 | P2-13 | API Design | Same `--depth` flag means four different defaults across five commands | medium | ⬜ |
 | P2-14 | API Design | `--rerank` (bool) on search vs `--reranker <mode>` (enum) on eval | medium | ⬜ |
-| P2-15 | Algorithm Correctness | `apply_rerank_scores` partial overwrite when `scores.len() != results.len()` | medium | ⬜ |
-| P2-16 | Algorithm Correctness | SPLADE hybrid fusion truncates+re-collects into HashMap, scrambles ordering | medium | ⬜ |
-| P2-17 | Algorithm Correctness | BM25 IDF formula uses non-standard `+1.0` (Atire) without docs; mismatches FTS5 | medium | ⬜ |
+| P2-15 | Algorithm Correctness | `apply_rerank_scores` partial overwrite when `scores.len() != results.len()` | medium | ✅ #1364 |
+| P2-16 | Algorithm Correctness | SPLADE hybrid fusion truncates+re-collects into HashMap, scrambles ordering | medium | ✅ #1364 |
+| P2-17 | Algorithm Correctness | BM25 IDF formula uses non-standard `+1.0` (Atire) without docs; mismatches FTS5 | medium | ✅ #1364 |
 | P2-18 | Data Safety | `migrate_legacy_index_to_default_slot` does not acquire `slots.lock` | medium | ⬜ |
 | P2-19 | Data Safety | `write_active_slot`/`write_slot_model` use fixed `<file>.tmp` paths | easy | ⬜ |
 | P2-20 | Data Safety | `verify_hnsw_checksums` skips files not on disk — partial index passes verification | easy | ⬜ |
 | P2-21 | Data Safety | `EmbeddingCache::evict`/`QueryCache::evict` use deferred transactions | medium | ⬜ |
 | P2-22 | Data Safety | `backup_path_for` uses 1-second timestamp with no PID — concurrent migrations collide | easy | ⬜ |
 | P2-23 | Data Safety | `evict_lock` reset on every `EmbeddingCache::open` — multiple opens don't share | medium | ⬜ |
-| P2-24 | Data Safety | `clear_session` doesn't reset `detected_dim` or `model_fingerprint` | medium | ⬜ |
+| P2-24 | Data Safety | `clear_session` doesn't reset `detected_dim` or `model_fingerprint` | medium | ✅ #1364 |
 | P2-25 | Data Safety | Pool `after_connect` has no `wal_autocheckpoint` ceiling | medium | ⬜ |
 | P2-26 | Data Safety | `migrate_legacy_index_to_default_slot` checkpoints before sentinel | easy | ⬜ |
 | P2-27 | Security | `apply_db_file_perms` runs after pool open — embedding cache born world-readable | easy | ⬜ |
