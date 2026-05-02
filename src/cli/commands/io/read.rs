@@ -7,6 +7,7 @@
 //! `build_file_note_header`, `build_focused_output`) so batch mode
 //! can reuse them without duplicating ~200 lines.
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -74,7 +75,9 @@ pub(crate) fn build_file_note_header(
     let mut notes_injected = false;
 
     if let Some(status) = audit_state.status_line() {
-        header.push_str(&format!("// {}\n//\n", status));
+        // PERF-V1.33-4: write! straight into the destination buffer avoids
+        // the throwaway `format!` String per call.
+        let _ = writeln!(header, "// {}\n//", status);
     }
 
     if !audit_state.is_active() {
@@ -95,11 +98,7 @@ pub(crate) fn build_file_note_header(
             header.push_str("// └─────────────────────────────────────────────────────────────┘\n");
             for n in relevant {
                 if let Some(first_line) = n.text.lines().next() {
-                    header.push_str(&format!(
-                        "// [{}] {}\n",
-                        n.sentiment_label(),
-                        first_line.trim()
-                    ));
+                    let _ = writeln!(header, "// [{}] {}", n.sentiment_label(), first_line.trim());
                 }
             }
             header.push_str("//\n");
@@ -135,11 +134,13 @@ pub(crate) fn build_focused_output<Mode>(
 
     let mut output = String::new();
 
-    // Header
-    output.push_str(&format!(
-        "// [cqs] Focused read: {} ({}:{}-{})\n",
+    // Header — PERF-V1.33-4: write! into output buffer avoids throwaway
+    // `format!` String per fragment.
+    let _ = writeln!(
+        output,
+        "// [cqs] Focused read: {} ({}:{}-{})",
         chunk.name, rel_file, chunk.line_start, chunk.line_end
-    ));
+    );
 
     // Hints (function/method only)
     let hints = if chunk.chunk_type.is_callable() {
@@ -164,12 +165,12 @@ pub(crate) fn build_focused_output<Mode>(
         } else {
             format!("{} tests", h.test_count)
         };
-        output.push_str(&format!("// [cqs] {} | {}\n", caller_label, test_label));
+        let _ = writeln!(output, "// [cqs] {} | {}", caller_label, test_label);
     }
 
     // Audit mode status
     if let Some(status) = audit_state.status_line() {
-        output.push_str(&format!("// {}\n", status));
+        let _ = writeln!(output, "// {}", status);
     }
 
     // Note injection (skip in audit mode)
@@ -184,11 +185,7 @@ pub(crate) fn build_focused_output<Mode>(
             .collect();
         for n in &relevant {
             if let Some(first_line) = n.text.lines().next() {
-                output.push_str(&format!(
-                    "// [{}] {}\n",
-                    n.sentiment_label(),
-                    first_line.trim()
-                ));
+                let _ = writeln!(output, "// [{}] {}", n.sentiment_label(), first_line.trim());
             }
         }
         if !relevant.is_empty() {
@@ -270,10 +267,11 @@ pub(crate) fn build_focused_output<Mode>(
                 } else {
                     format!(" [{}]", edge_kind)
                 };
-                output.push_str(&format!(
-                    "\n// --- Type: {}{} ({}:{}-{}) ---\n",
+                let _ = writeln!(
+                    output,
+                    "\n// --- Type: {}{} ({}:{}-{}) ---",
                     r.chunk.name, kind_label, dep_rel, r.chunk.line_start, r.chunk.line_end
-                ));
+                );
                 output.push_str(&r.chunk.content);
                 output.push('\n');
             }

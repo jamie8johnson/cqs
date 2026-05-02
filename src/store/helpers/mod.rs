@@ -49,6 +49,38 @@ pub(crate) use sql::make_placeholders;
 // Embedding serialization
 pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 
+// ============ BM25 FTS5 column weights ============
+// Single source of truth for the FTS5 `bm25(chunks_fts, name, sig, content, doc)`
+// argument vector. Two production query paths (`store::search::search_by_name`
+// and `chunks::query::search_by_names_batch`) need to agree byte-for-byte —
+// hoisted here so a tuning sweep is a one-line edit instead of two-site grep.
+// Order matches the chunks_fts column order in `schema.sql:73-77`.
+//
+// `name` weighted 10× to prefer definition matches over content mentions when
+// callers pass a function/struct name. `signature`, `content`, `doc` get the
+// FTS5 default weight (1.0) — no per-column rationale yet, so the relative
+// weighting is the load-bearing knob.
+
+/// Weight applied to the `name` column in `bm25()` ordering — heavy enough to
+/// pin the definition of `parse_diff` above other chunks that mention it.
+pub(crate) const BM25_NAME_WEIGHT: f32 = 10.0;
+/// Weight applied to the `signature` column in `bm25()`.
+pub(crate) const BM25_SIGNATURE_WEIGHT: f32 = 1.0;
+/// Weight applied to the `content` column in `bm25()`.
+pub(crate) const BM25_CONTENT_WEIGHT: f32 = 1.0;
+/// Weight applied to the `doc` column in `bm25()`.
+pub(crate) const BM25_DOC_WEIGHT: f32 = 1.0;
+
+/// Render the `bm25(chunks_fts, ...)` ordering expression with the canonical
+/// column weights. Both production sites that need the heavy-name weighting
+/// must call this so a tuning sweep stays single-source.
+pub(crate) fn bm25_ordering_expr() -> String {
+    format!(
+        "bm25(chunks_fts, {}, {}, {}, {})",
+        BM25_NAME_WEIGHT, BM25_SIGNATURE_WEIGHT, BM25_CONTENT_WEIGHT, BM25_DOC_WEIGHT
+    )
+}
+
 // Schema version constant
 /// Schema version for database migrations
 ///

@@ -751,6 +751,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_CAGRA_ITOPK_MIN` | `128` | Lower clamp on CAGRA `itopk_size`. `itopk_size = (k*2).clamp(min, max)`. |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_PERSIST` | `1` | Persist the CAGRA graph to `{cqs_dir}/index.cagra` after build and reload it on restart. Set to `0` to disable (daemon rebuilds from scratch every startup). |
+| `CQS_CAGRA_STREAM_BATCH_SIZE` | `10000` | Embedding rows streamed per batch during CAGRA index construction. At dim=1024 this is ~40 MB/batch; raise/lower to fit a per-batch byte budget for non-default-dim models. (P3-15 / SHL-V1.33-9) |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
 | `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
@@ -883,6 +884,8 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TRT_ENGINE_CACHE` | `1` (on) | Persist compiled TensorRT engines + timing cache to `~/.cache/cqs/trt-engine-cache/` so daemon restarts reuse the engine instead of paying the 4–90 s per-model compile cost again. Set to `0` to opt out (forces re-compile every session — useful for validating that a driver upgrade invalidated the cache). Cache invalidates automatically when (model bytes, GPU SM, TRT version) changes. |
 | `CQS_TRUST_DELIMITERS` | `1` (on) | Wraps every chunk's `content` in `<<<chunk:{id}>>> ... <<</chunk:{id}>>>` markers so prompt-injection guards downstream of cqs detect content boundaries when the agent inlines the rendered string into a larger prompt. Set to `0` to opt out (raw text). Default flipped on in v1.30.2. (#1167, #1181) |
+| `CQS_TRAIN_BM25_B` | `0.75` | BM25 length-normalisation parameter for training-data hard-negative mining. Standard Robertson-Walker default. (P3-13 / SHL-V1.33-7) |
+| `CQS_TRAIN_BM25_K1` | `1.2` | BM25 term-frequency saturation parameter for training-data hard-negative mining. Standard Robertson-Walker default. (P3-13 / SHL-V1.33-7) |
 | `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES` | `268435456` (256 MiB) | Max bytes retrieved from `git diff-tree` during training-data extraction. Diffs above the cap cause the producer to bail (rather than truncate) so a malformed or unexpectedly large commit can't OOM the training generator. (P3-39 / RM-V1.33-6) |
 | `CQS_TRAIN_GIT_SHOW_MAX_BYTES` | `52428800` (50 MiB) | Max bytes retrieved per file via `git show` during training-data extraction. Files above the cap are skipped; bump to capture larger generated files (schema dumps, vendored corpora). |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |

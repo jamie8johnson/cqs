@@ -705,18 +705,21 @@ pub fn gather_cross_index_with_index<Mode: Sync>(
 
     drop(_bridge_span);
 
-    // Merge into bridge_scores sequentially (HashMap not Sync)
+    // Merge into bridge_scores sequentially (HashMap not Sync).
+    // PERF-V1.33-9: consume `bridge_results` so the per-result strings
+    // (`pr.chunk.name`, `pr.chunk.id`) move into the entry instead of being
+    // cloned and immediately dropped along with the source vec.
     let mut bridge_scores: HashMap<String, (f32, String)> = HashMap::new(); // name -> (score, chunk_id)
     for (seed_score, results) in bridge_results {
-        for pr in &results {
+        for pr in results {
             let bridge_score = pr.score * seed_score;
-            match bridge_scores.entry(pr.chunk.name.clone()) {
+            match bridge_scores.entry(pr.chunk.name) {
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert((bridge_score, pr.chunk.id.clone()));
+                    e.insert((bridge_score, pr.chunk.id));
                 }
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     if bridge_score > e.get().0 {
-                        e.insert((bridge_score, pr.chunk.id.clone()));
+                        e.insert((bridge_score, pr.chunk.id));
                     }
                 }
             }

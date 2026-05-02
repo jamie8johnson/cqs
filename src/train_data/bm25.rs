@@ -1,7 +1,26 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
-const K1: f32 = 1.2;
-const B: f32 = 0.75;
+/// BM25 term-frequency saturation parameter.
+///
+/// Default 1.2 is the Robertson & Walker (1994) / Lucene baseline — see
+/// "Some Simple Effective Approximations to the 2-Poisson Model for
+/// Probabilistic Weighted Retrieval", SIGIR '94. Code-specific corpora
+/// sometimes prefer K1≈1.5; sweep via `CQS_TRAIN_BM25_K1` (must be a
+/// finite positive `f32`).
+fn bm25_k1() -> f32 {
+    static K1: OnceLock<f32> = OnceLock::new();
+    *K1.get_or_init(|| crate::limits::parse_env_f32("CQS_TRAIN_BM25_K1", 1.2))
+}
+
+/// BM25 length-normalization parameter (0.0 = no normalization, 1.0 = full).
+///
+/// Default 0.75 is the Robertson & Walker / Lucene baseline. Override via
+/// `CQS_TRAIN_BM25_B` (must be a finite positive `f32`).
+fn bm25_b() -> f32 {
+    static B: OnceLock<f32> = OnceLock::new();
+    *B.get_or_init(|| crate::limits::parse_env_f32("CQS_TRAIN_BM25_B", 0.75))
+}
 
 /// BM25 index for hard negative selection in training data generation.
 /// Built from a corpus of (content_hash, content) pairs. Scores queries
@@ -62,6 +81,8 @@ impl Bm25Index {
     pub fn score(&self, query: &str) -> Vec<(String, f32)> {
         let _span = tracing::info_span!("bm25_score").entered();
         let query_terms = tokenize(query);
+        let k1 = bm25_k1();
+        let b = bm25_b();
         let mut scores: Vec<(String, f32)> = self
             .docs
             .iter()
@@ -86,8 +107,8 @@ impl Bm25Index {
                 for qt in &query_terms {
                     if let Some(&idf_val) = self.idf.get(qt) {
                         let tf = tf_map.get(qt).copied().unwrap_or(0.0);
-                        let numerator = tf * (K1 + 1.0);
-                        let denominator = tf + K1 * (1.0 - B + B * dl_ratio);
+                        let numerator = tf * (k1 + 1.0);
+                        let denominator = tf + k1 * (1.0 - b + b * dl_ratio);
                         score += idf_val * numerator / denominator;
                     }
                 }

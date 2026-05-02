@@ -217,8 +217,16 @@ impl SpladeIndex {
             return Vec::new();
         }
 
-        // Accumulate dot product scores per chunk
-        let mut scores: HashMap<usize, f32> = HashMap::new();
+        // Accumulate dot product scores per chunk.
+        //
+        // PERF-V1.33-5: pre-size to a sensible upper bound so we don't pay
+        // 12-14 rehashes during accumulation. Bounded by both the corpus
+        // (`id_map.len()`) and the query's reach (`query.len() * 256`,
+        // assuming each query token's posting list rarely exceeds 256
+        // matching docs in practice). For an 18k-chunk index with 100
+        // query tokens this preallocates ~18k buckets vs growing from 0.
+        let cap = self.id_map.len().min(query.len().saturating_mul(256));
+        let mut scores: HashMap<usize, f32> = HashMap::with_capacity(cap);
         for &(token_id, query_weight) in query {
             if let Some(posting_list) = self.postings.get(&token_id) {
                 for &(chunk_idx, doc_weight) in posting_list {
