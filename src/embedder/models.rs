@@ -96,6 +96,18 @@ pub enum PoolingStrategy {
     /// Used by autoregressive / decoder-only embedders (rare: Qwen3-Embedding,
     /// some Mistral-based embedders).
     LastToken,
+    /// The ONNX output is already pooled — return it as-is, after L2 norm.
+    ///
+    /// Used by models whose ONNX export includes a task-aware pooling head
+    /// that cannot be reproduced by mean/cls/last over the per-token hidden
+    /// state. Example: EmbeddingGemma's `sentence_embedding` output is
+    /// computed by an internal projection layer; mean-pooling
+    /// `last_hidden_state` produces a vector that has cosine ≈ 0 with the
+    /// model's own pooled output (verified empirically — this isn't a
+    /// missing-attention-mask issue, it's a fundamentally different head).
+    /// The strategy expects a 2D `[batch, dim]` output tensor; the embed
+    /// loop skips the 3D reshape + pool dispatch and emits the rows directly.
+    Identity,
 }
 
 /// Configuration for an embedding model.
@@ -395,6 +407,47 @@ define_embedder_presets! {
         input_names = InputNames::bert_no_token_types(), output_name = "token_embeddings".to_string(), pooling = PoolingStrategy::Cls,
         // ONNX bundle: 522 MiB model + 712 KiB tokenizer.
         approx_download_bytes = Some(523 * 1024 * 1024),
+        pad_id = 0;
+
+    /// EmbeddingGemma-300m: 768-dim, 2048 tokens. Google's Gemma3-backbone
+    /// embedder (Sep 2025), 308M params. #1 multilingual under 500M on MTEB
+    /// at release. **2K context** (vs BERT-family 512), MRL-truncatable to
+    /// 768/512/256/128, task-instruction prompt format.
+    ///
+    /// Architecture: Gemma3 decoder + bidirectional-attention head. Two ONNX
+    /// inputs (`input_ids` + `attention_mask`, no `token_type_ids`). The
+    /// FP16 ONNX export from `onnx-community/embeddinggemma-300m-ONNX` ships
+    /// both `last_hidden_state` (3D `[batch, seq, 768]`) and
+    /// `sentence_embedding` (2D `[batch, 768]`) — but the latter is computed
+    /// by a task-aware projection head that cannot be reproduced by
+    /// mean/cls/last over `last_hidden_state` (verified: cosine ≈ 0 between
+    /// any naive pool and the model's own pooled output). Use
+    /// `PoolingStrategy::Identity` to consume the pre-pooled output
+    /// directly.
+    ///
+    /// Tokenizer: Gemma3 SentencePiece, 256k vocab, `<bos>`-prefixed +
+    /// `<eos>`-suffixed via the post-processor in `tokenizer.json`. The
+    /// tokenizer file is ~20 MB (vs BERT's ~700 KB) due to the larger vocab.
+    ///
+    /// Query/doc prefix follows Google's recommended task-instruction
+    /// format: `task: search result | query: …` for queries,
+    /// `title: none | text: …` for documents. cqs's existing
+    /// `query_prefix` / `doc_prefix` plumbing handles this directly — the
+    /// prefix is just a longer string than E5/BGE use.
+    embeddinggemma_300m => name = "embeddinggemma-300m", repo = "onnx-community/embeddinggemma-300m-ONNX",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 768, max_seq_length = 2048,
+        query_prefix = "task: search result | query: ", doc_prefix = "title: none | text: ",
+        input_names = InputNames::bert_no_token_types(),
+        output_name = "sentence_embedding".to_string(),
+        pooling = PoolingStrategy::Identity,
+        // FP32 ONNX bundle: ~1.2 GB model + ~20 MB tokenizer + small configs.
+        // FP16 (`onnx/model_fp16.onnx`, ~617 MB) is also published but
+        // produces NaN/Inf in attention layers under CUDA EP — the
+        // mixed-precision auto-fallback that TensorRT/TRT-RTX would
+        // provide isn't there. Stay on FP32 until we wire TRT-RTX or
+        // confirm a different EP handles FP16 cleanly.
+        approx_download_bytes = Some(1_300 * 1024 * 1024),
         pad_id = 0;
 }
 

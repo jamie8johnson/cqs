@@ -1076,9 +1076,53 @@ impl Embedder {
         })?;
         let (shape, data) = output.try_extract_tensor::<f32>().map_err(ort_err)?;
 
-        // Validate tensor shape: expect [batch_size, seq_len, dim]
         let batch_size = texts.len();
         let seq_len = max_len;
+
+        // PoolingStrategy::Identity: the ONNX output is already pooled to
+        // `[batch, dim]`. Skip the 3D reshape + pool dispatch and emit
+        // L2-normalized rows directly. Used by EmbeddingGemma's
+        // `sentence_embedding` output (#1220 follow-up).
+        if self.model_config.pooling == PoolingStrategy::Identity {
+            if shape.len() != 2 {
+                return Err(EmbedderError::InferenceFailed(format!(
+                    "PoolingStrategy::Identity expects 2D [batch, dim] output; got {} dimensions",
+                    shape.len()
+                )));
+            }
+            if shape[0] as usize != batch_size {
+                return Err(EmbedderError::InferenceFailed(format!(
+                    "Tensor batch size mismatch: expected {}, got {}",
+                    batch_size, shape[0]
+                )));
+            }
+            let embedding_dim = shape[1] as usize;
+            match self.detected_dim.get() {
+                Some(&expected) if expected != embedding_dim => {
+                    return Err(EmbedderError::InferenceFailed(format!(
+                        "Embedding dimension changed: expected {expected}, got {embedding_dim}"
+                    )));
+                }
+                None => {
+                    let _ = self.detected_dim.set(embedding_dim);
+                    tracing::info!(
+                        dim = embedding_dim,
+                        "Detected embedding dimension from model (Identity pooling)"
+                    );
+                }
+                _ => {}
+            }
+            let results: Vec<Embedding> = (0..batch_size)
+                .map(|b| {
+                    let start = b * embedding_dim;
+                    let v = data[start..start + embedding_dim].to_vec();
+                    Embedding::new(normalize_l2(v))
+                })
+                .collect();
+            return Ok(results);
+        }
+
+        // Validate tensor shape: expect [batch_size, seq_len, dim]
         if shape.len() != 3 {
             return Err(EmbedderError::InferenceFailed(format!(
                 "Unexpected tensor shape: expected 3 dimensions [batch, seq, dim], got {} dimensions",
@@ -1120,6 +1164,12 @@ impl Embedder {
             PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask, embedding_dim),
             PoolingStrategy::Cls => cls_pool(&hidden),
             PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask),
+            // Already handled by the early-return above; this arm is only
+            // reachable if the model output had 3 dims AND pooling = Identity,
+            // which is a config error (Identity expects 2D).
+            PoolingStrategy::Identity => unreachable!(
+                "PoolingStrategy::Identity should be handled before the 3D pool dispatch"
+            ),
         };
 
         let results = pooled_batch
