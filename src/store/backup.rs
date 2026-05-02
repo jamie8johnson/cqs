@@ -57,10 +57,18 @@ pub(crate) const KEEP_BACKUPS: usize = 3;
 
 /// Build the backup path for a given migration span.
 ///
-/// Filename format: `{db_stem}.bak-v{from}-v{to}-{unix_ts}.db`.
+/// Filename format: `{db_stem}.bak-v{from}-v{to}-{unix_ts}-{pid}-{rand_hex}.db`.
 /// The filename lives in the same directory as `db_path` so the backup shares
 /// the DB's filesystem — `atomic_replace`'s cheap rename path works without
 /// falling back to cross-device copy.
+///
+/// DS-V1.33-5: includes `std::process::id()` and `crate::temp_suffix()` so
+/// two CLI processes running migrations concurrently (rare but realistic on
+/// a build farm or under a CI matrix) cannot collide on the same backup
+/// filename. Without per-process disambiguation, second-resolution timestamps
+/// (and the `0` fallback on a clock anomaly) make collisions deterministic.
+/// The `prune_old_backups` regex tolerates arbitrary middle content so the
+/// only-newest-N-mtime sort still works without changes.
 pub(crate) fn backup_path_for(db_path: &Path, from: i32, to: i32) -> PathBuf {
     let dir = db_path.parent().unwrap_or(Path::new("."));
     let stem = db_path
@@ -71,7 +79,12 @@ pub(crate) fn backup_path_for(db_path: &Path, from: i32, to: i32) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    dir.join(format!("{}.bak-v{}-v{}-{}.db", stem, from, to, ts))
+    let pid = std::process::id();
+    let rand_hex = crate::temp_suffix();
+    dir.join(format!(
+        "{}.bak-v{}-v{}-{}-{}-{:016x}.db",
+        stem, from, to, ts, pid, rand_hex
+    ))
 }
 
 /// Take a filesystem snapshot of `index.db` (+ `-wal`/`-shm` if present)

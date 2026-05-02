@@ -367,7 +367,12 @@ pub fn write_slot_model(
         source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
     })?;
 
-    let tmp_path = dir.join(format!("{}.tmp", SLOT_CONFIG_FILE));
+    // DS-V1.33-2: include `crate::temp_suffix()` so concurrent writers (e.g.
+    // legacy migration in one CLI process while another `cqs slot promote`
+    // runs) each stage to their own temp file before atomic_replace, instead
+    // of racing on a fixed `slot.toml.tmp` path.
+    let suffix = crate::temp_suffix();
+    let tmp_path = dir.join(format!("{}.{:016x}.tmp", SLOT_CONFIG_FILE, suffix));
     {
         let mut f = fs::File::create(&tmp_path).map_err(|source| SlotError::Io {
             slot: slot_name.to_string(),
@@ -504,7 +509,12 @@ pub fn write_active_slot(project_cqs_dir: &Path, slot_name: &str) -> Result<(), 
     }
 
     let final_path = active_slot_path(project_cqs_dir);
-    let tmp_path = project_cqs_dir.join(format!("{}.tmp", ACTIVE_SLOT_FILE));
+    // DS-V1.33-2: include `crate::temp_suffix()` so concurrent writers (e.g.
+    // legacy migration in one CLI process while another `cqs slot promote`
+    // runs) each stage to their own temp file before atomic_replace, instead
+    // of racing on a fixed `active_slot.tmp` path.
+    let suffix = crate::temp_suffix();
+    let tmp_path = project_cqs_dir.join(format!("{}.{:016x}.tmp", ACTIVE_SLOT_FILE, suffix));
 
     {
         let mut f = fs::File::create(&tmp_path).map_err(|source| SlotError::Io {
@@ -670,6 +680,17 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         return Ok(false);
     }
 
+    // DS-V1.33-1: serialize with other slot lifecycle operations. Two
+    // concurrent CLI invocations on a fresh-clone project (e.g. a watch
+    // daemon starting at the same moment as `cqs search`) both observed the
+    // pre-migration state, both passed the sentinel check, and both kicked
+    // off the move loop — leaving sidecars split across `.cqs/` and
+    // `slots/default/` because the rollback only ran in the loser. Acquiring
+    // the same `slots.lock` that `slot_create/promote/remove` hold makes
+    // these checks-and-mutates atomic per `.cqs/` directory. Held until the
+    // function returns (the `_lock` binding is dropped on every exit path).
+    let _lock = acquire_slots_lock(project_cqs_dir)?;
+
     let slots_dir = slots_root(project_cqs_dir);
     if slots_dir.exists() {
         return Ok(false);
@@ -713,6 +734,24 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         )));
     }
 
+    // P2.34 / DS-V1.33-9: write the sentinel FIRST — before we touch the FS
+    // for any reason, including the WAL checkpoint below. The checkpoint is a
+    // FS mutation (it truncates the WAL and removes uncommitted page state
+    // from the live DB), so a crash between checkpoint and sentinel-write
+    // leaves "WAL drained, no breadcrumb" — the next migration call cannot
+    // tell that anything happened and proceeds as a fresh migration.
+    let started_at = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = fs::write(
+        &sentinel,
+        format!("started_at={}\nstate=in_progress\n", started_at),
+    ) {
+        tracing::warn!(
+            error = %e,
+            path = %sentinel.display(),
+            "Failed to write migration sentinel; migration will proceed without crash protection"
+        );
+    }
+
     // P2.62: drain WAL before moving files. Failure is non-fatal — same-fs
     // renames are atomic per file so the WAL/SHM either move with index.db or
     // not at all. Cross-device moves (EXDEV fallback) accept the residual risk
@@ -723,20 +762,6 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
             db = %legacy_index.display(),
             "Failed to checkpoint legacy index.db before migration; cross-device \
              move may lose uncommitted WAL pages"
-        );
-    }
-
-    // P2.34: write the sentinel before we touch the FS so a crash between
-    // here and full success leaves a recovery breadcrumb.
-    let started_at = chrono::Utc::now().to_rfc3339();
-    if let Err(e) = fs::write(
-        &sentinel,
-        format!("started_at={}\nstate=in_progress\n", started_at),
-    ) {
-        tracing::warn!(
-            error = %e,
-            path = %sentinel.display(),
-            "Failed to write migration sentinel; migration will proceed without crash protection"
         );
     }
 
