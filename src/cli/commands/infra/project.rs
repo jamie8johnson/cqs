@@ -47,12 +47,23 @@ pub(crate) struct ProjectListEntry {
 /// Project subcommands
 #[derive(clap::Subcommand)]
 pub(crate) enum ProjectCommand {
-    /// Register a project for cross-project search
-    Register {
+    /// Add a project to the cross-project search registry
+    ///
+    /// P3-29: renamed from `register` to align with `ref add`, `slot create`,
+    /// and `cache clear`. Old `register` form preserved as a visible alias
+    /// so existing scripts and `--help` searches keep working.
+    #[command(visible_alias = "register")]
+    Add {
         /// Project name (used for identification)
         name: String,
         /// Path to project root (must have .cqs/index.db)
         path: PathBuf,
+        /// P3-25: shared `--json` arg so `cqs project add --json` emits the
+        /// envelope. Without this, `cqs --json project register` silently
+        /// dropped the top-level flag and `cqs project register --json` was
+        /// rejected at parse time as `unexpected argument`.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// List registered projects
     List {
@@ -96,8 +107,8 @@ pub(crate) fn cmd_project(
     // query). The previous single `cmd_project` span collapsed four very
     // different code paths into one trace entry.
     let _span = match subcmd {
-        ProjectCommand::Register { name, .. } => {
-            tracing::info_span!("cmd_project_register", name = %name).entered()
+        ProjectCommand::Add { name, .. } => {
+            tracing::info_span!("cmd_project_add", name = %name).entered()
         }
         ProjectCommand::List { .. } => tracing::info_span!("cmd_project_list").entered(),
         ProjectCommand::Remove { name, .. } => {
@@ -108,7 +119,7 @@ pub(crate) fn cmd_project(
         }
     };
     match subcmd {
-        ProjectCommand::Register { name, path } => {
+        ProjectCommand::Add { name, path, output } => {
             let abs_path = if path.is_absolute() {
                 path.clone()
             } else {
@@ -118,7 +129,21 @@ pub(crate) fn cmd_project(
 
             let mut registry = ProjectRegistry::load()?;
             registry.register(name.clone(), abs_path.clone())?;
-            println!("Registered '{}' at {}", name, abs_path.display());
+            // P3-25: emit JSON envelope when `--json` was passed at either
+            // the top level (`cqs --json project add ...`) or the subcommand
+            // level (`cqs project add ... --json`). Mirrors the `Remove` arm
+            // shape; agents piping through `jq` no longer need to special-
+            // case `register` as the one mutation that prints text.
+            let json = cli.json || output.json;
+            if json {
+                crate::cli::json_envelope::emit_json(&serde_json::json!({
+                    "status": "registered",
+                    "name": name,
+                    "path": normalize_path(&abs_path),
+                }))?;
+            } else {
+                println!("Registered '{}' at {}", name, abs_path.display());
+            }
             Ok(())
         }
         ProjectCommand::List { output } => {

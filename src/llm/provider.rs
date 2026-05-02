@@ -30,7 +30,26 @@ pub struct BatchSubmitItem {
     pub custom_id: String,
     /// Source code content or pre-built prompt
     pub content: String,
-    /// Context field: chunk_type (summaries), signature (doc comments), or unused (prebuilt/HyDE)
+    /// Stringly-typed context bag whose meaning depends on which prompt
+    /// builder (`build_summary_prompt` / `build_doc_prompt` /
+    /// `build_hyde_prompt` / pre-built path) consumes the item. P3-47:
+    /// upgrading to a `PromptContext` enum touches every reader and
+    /// every construction site (see `llm/batch.rs:874,993`,
+    /// `llm/doc_comments.rs:266`, `llm/summary.rs:86`,
+    /// `llm/hyde.rs:57`, `llm/local.rs:739`) so the enum migration is
+    /// scoped to a separate change. Until then, the field's payload is:
+    ///
+    /// | Submission path                          | Field carries           |
+    /// |------------------------------------------|-------------------------|
+    /// | `submit_batch_prebuilt` (contrastive)    | unused (`String::new`)  |
+    /// | `submit_doc_batch` (doc comments)        | function signature      |
+    /// | `submit_hyde_batch` (HyDE queries)       | unused (`String::new`)  |
+    /// | summary batches (`llm_summary_pass`)     | chunk type label        |
+    ///
+    /// The receiver decides; a typo at the call site silently sends
+    /// the wrong field. This is the same tuple-with-named-fields
+    /// problem the struct was meant to solve, just one level deeper —
+    /// hence the deferred refactor.
     pub context: String,
     /// Programming language name
     pub language: String,

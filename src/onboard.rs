@@ -111,18 +111,12 @@ pub struct OnboardSummary {
     /// `CQS_ONBOARD_CALLEE_FETCH`. Zero when no truncation happened. Surfaces
     /// the cap to consumers so a user can lift it intentionally rather than
     /// silently wonder where their callees went.
-    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    #[serde(default, skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
     pub callees_truncated: usize,
     /// SHL-V1.30-5: callers truncated to `CQS_ONBOARD_CALLER_FETCH`. See
     /// `callees_truncated`.
-    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    #[serde(default, skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
     pub callers_truncated: usize,
-}
-
-/// Helper used by `OnboardSummary` `skip_serializing_if` to elide zero-valued
-/// truncation counters from the JSON wire shape (keeps the common case clean).
-fn is_zero_usize(n: &usize) -> bool {
-    *n == 0
 }
 
 /// Produce a guided tour of a concept in the codebase.

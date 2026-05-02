@@ -94,11 +94,11 @@ impl<Mode> Store<Mode> {
                 // means something bypassed open() and stamped a stale
                 // `schema_version` after migration completed — surface that
                 // as a SchemaMismatch instead of trying to re-migrate.
-                return Err(StoreError::SchemaMismatch(
-                    path_str,
-                    version,
-                    CURRENT_SCHEMA_VERSION,
-                ));
+                return Err(StoreError::SchemaMismatch {
+                    db_path: path_str,
+                    found: version,
+                    expected: CURRENT_SCHEMA_VERSION,
+                });
             }
             Ok(())
         })

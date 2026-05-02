@@ -20,12 +20,25 @@ pub enum StoreError {
     /// file-scoped resolution misses. Lets callers distinguish "doesn't exist"
     /// from other runtime errors for retry/suggest logic.
     NotFound(String),
-    #[error("Schema version mismatch in {0}: index is v{1}, cqs expects v{2}. Run 'cqs index --force' to rebuild.")]
-    SchemaMismatch(String, i32, i32),
+    /// P3-31: struct-style fields. Positional `(String, i32, i32)` made every
+    /// construction site re-derive which integer was "found" vs "expected" —
+    /// `QueryDimMismatch` further down already uses named fields and is
+    /// self-documenting; this matches.
+    ///
+    /// `db_path` (not `source`) — `thiserror` reserves the `source` field
+    /// name for the error-chain `Error::source()` accessor and rejects
+    /// non-error types in that slot.
+    #[error("Schema version mismatch in {db_path}: index is v{found}, cqs expects v{expected}. Run 'cqs index --force' to rebuild.")]
+    SchemaMismatch {
+        db_path: String,
+        found: i32,
+        expected: i32,
+    },
     #[error("Index created by newer cqs version (schema v{0}). Please upgrade cqs.")]
     SchemaNewerThanCq(i32),
-    #[error("No migration path from schema v{0} to v{1}. Run 'cqs index --force' to rebuild.")]
-    MigrationNotSupported(i32, i32),
+    /// P3-31: struct-style fields — see `SchemaMismatch` above.
+    #[error("No migration path from schema v{from} to v{to}. Run 'cqs index --force' to rebuild.")]
+    MigrationNotSupported { from: i32, to: i32 },
     #[error(
         "Model mismatch: index uses \"{0}\" but configured model is \"{1}\".\nRun `cqs index --force` to reindex with the new model."
     )]

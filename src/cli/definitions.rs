@@ -315,8 +315,12 @@ pub(super) enum Commands {
         /// Keeps `cqs init` parity with the rest of the CLI's `--json`
         /// contract; without this, JSON-driven agents had no way to confirm
         /// the directory and model that got created.
-        #[arg(long)]
-        json: bool,
+        ///
+        /// P3-30: flattens shared `TextJsonArgs` so a future change to the
+        /// flag (NDJSON, `--pretty`, `--format`) is a one-file edit instead
+        /// of six.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// One-line-per-function summary for a file
     Brief {
@@ -342,8 +346,10 @@ pub(super) enum Commands {
         ///
         /// Colored human-readable check progress is routed to stderr in this
         /// mode so `cqs doctor --json | jq` works.
-        #[arg(long)]
-        json: bool,
+        ///
+        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Index current project
     Index {
@@ -655,8 +661,12 @@ pub(super) enum Commands {
         /// File or directory to convert
         path: String,
         /// Output directory for .md files [default: same as input]
-        #[arg(short = 'o', long)]
-        output: Option<String>,
+        ///
+        /// P3-30: field renamed `output` → `output_dir` to avoid colliding
+        /// with the flattened `TextJsonArgs.output` envelope. The
+        /// user-facing flag `-o`/`--output` is preserved via `long = "output"`.
+        #[arg(short = 'o', long = "output")]
+        output_dir: Option<String>,
         /// Overwrite existing .md files
         #[arg(long)]
         overwrite: bool,
@@ -674,8 +684,12 @@ pub(super) enum Commands {
         /// P2.12: emit a structured JSON envelope summarizing conversions.
         /// Suppresses the per-file text rendering in favor of a
         /// `{converted: [...], skipped: [...], took_ms}` summary.
-        #[arg(long)]
-        json: bool,
+        ///
+        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above. The
+        /// command's destination directory was previously `output`, now
+        /// `output_dir` to avoid the collision with the flattened envelope.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Export a HuggingFace model to ONNX format for use with cqs
     ExportModel {
@@ -758,9 +772,11 @@ pub(super) enum Commands {
     /// output. Reuses [`cqs::daemon_translate::daemon_ping`] under the hood
     /// so other tools (e.g. `cqs doctor --verbose`) can pull the same data.
     Ping {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        /// Output as JSON.
+        ///
+        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Watch-mode freshness — show whether the index is caught up
     ///
@@ -780,9 +796,6 @@ pub(super) enum Commands {
         /// Report watch-mode freshness (currently the only mode).
         #[arg(long)]
         watch_fresh: bool,
-        /// Output as JSON. Without this, prints a one-line human summary.
-        #[arg(long)]
-        json: bool,
         /// Block until the snapshot reports `state == fresh` (or until the
         /// `--wait-secs` budget expires). Requires `--watch-fresh`.
         #[arg(long)]
@@ -794,6 +807,11 @@ pub(super) enum Commands {
         /// default differs by use case (eval default = 600, status = 30).
         #[arg(long, default_value_t = 30)]
         wait_secs: u64,
+        /// Output as JSON. Without this, prints a one-line human summary.
+        ///
+        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Invalidate daemon caches and re-open the Store
     ///
@@ -807,8 +825,10 @@ pub(super) enum Commands {
         /// P2.14: brings `cqs refresh` in line with the rest of the CLI's
         /// `--json` contract; without this, JSON-driven agents had no way to
         /// detect whether the daemon was actually running and got refreshed.
-        #[arg(long)]
-        json: bool,
+        ///
+        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// First-class eval harness: run query set against current index, print R@K
     Eval {

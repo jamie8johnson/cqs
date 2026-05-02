@@ -91,6 +91,11 @@ pub(crate) enum NotesCommand {
         /// Skip re-indexing after adding (useful for batch operations)
         #[arg(long)]
         no_reindex: bool,
+        /// P3-26: shared `--json` arg so `cqs notes add ... --json` works
+        /// at the subcommand level. The `List` arm already flattens
+        /// `TextJsonArgs`; the three mutation arms were the holdouts.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Update an existing note (find by exact text match)
     Update {
@@ -117,6 +122,9 @@ pub(crate) enum NotesCommand {
         /// Skip re-indexing after update
         #[arg(long)]
         no_reindex: bool,
+        /// P3-26: shared `--json` arg — see `Add` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Remove a note by exact text match
     Remove {
@@ -125,6 +133,9 @@ pub(crate) enum NotesCommand {
         /// Skip re-indexing after removal
         #[arg(long)]
         no_reindex: bool,
+        /// P3-26: shared `--json` arg — see `Add` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
 }
 
@@ -166,6 +177,7 @@ pub(crate) fn cmd_notes(
             mentions,
             kind,
             no_reindex,
+            output,
         } => cmd_notes_add(
             cli,
             ctx,
@@ -174,6 +186,7 @@ pub(crate) fn cmd_notes(
             mentions.as_deref(),
             kind.as_deref(),
             *no_reindex,
+            output.json,
         ),
         NotesCommand::Update {
             text,
@@ -182,6 +195,7 @@ pub(crate) fn cmd_notes(
             new_mentions,
             new_kind,
             no_reindex,
+            output,
         } => cmd_notes_update(
             cli,
             ctx,
@@ -191,8 +205,13 @@ pub(crate) fn cmd_notes(
             new_mentions.as_deref(),
             new_kind.as_deref(),
             *no_reindex,
+            output.json,
         ),
-        NotesCommand::Remove { text, no_reindex } => cmd_notes_remove(cli, ctx, text, *no_reindex),
+        NotesCommand::Remove {
+            text,
+            no_reindex,
+            output,
+        } => cmd_notes_remove(cli, ctx, text, *no_reindex, output.json),
     }
 }
 
@@ -254,6 +273,12 @@ fn ensure_notes_file(root: &std::path::Path) -> Result<PathBuf> {
 }
 
 /// Add a note: validate text/sentiment, append to notes.toml, optionally reindex.
+///
+/// `output_json` accepts the subcommand-level `--json` (P3-26); combined with
+/// `cli.json` to honour the top-level flag too. 8 args is on clippy's
+/// `too_many_arguments` boundary — same rationale as `cmd_notes_update`'s
+/// allow attribute below.
+#[allow(clippy::too_many_arguments)]
 fn cmd_notes_add(
     cli: &Cli,
     ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
@@ -262,6 +287,7 @@ fn cmd_notes_add(
     mentions: Option<&[String]>,
     kind: Option<&str>,
     no_reindex: bool,
+    output_json: bool,
 ) -> Result<()> {
     // P3 #92: per-subhandler span so the shared "Note operation warning"
     // line carries enough context (op + sentiment for add, op + length
@@ -337,7 +363,7 @@ fn cmd_notes_add(
         "observation"
     };
 
-    if cli.json {
+    if cli.json || output_json {
         let result = NoteMutationOutput {
             status: "added".into(),
             note_type: Some(sentiment_label.into()),
@@ -373,11 +399,10 @@ fn cmd_notes_add(
 
 /// Update a note: match by text, apply new text/sentiment/mentions/kind, optionally reindex.
 ///
-/// 8 args is one over clippy's default `too_many_arguments` threshold.
-/// Bundling into a struct would be more shape than the call site warrants —
-/// the dispatcher at `cmd_notes` already destructures the same fields, and a
-/// helper struct just round-trips them through one extra hop. Allow the
-/// width here; if a 9th arg lands, that's the right time to factor.
+/// 9 args after P3-26 added `output_json`. Bundling into a struct would be
+/// more shape than the call site warrants — the dispatcher at `cmd_notes`
+/// already destructures the same fields, and a helper struct just round-
+/// trips them through one extra hop.
 #[allow(clippy::too_many_arguments)]
 fn cmd_notes_update(
     cli: &Cli,
@@ -388,6 +413,7 @@ fn cmd_notes_update(
     new_mentions: Option<&[String]>,
     new_kind: Option<&str>,
     no_reindex: bool,
+    output_json: bool,
 ) -> Result<()> {
     // P3 #92: per-subhandler span — see `cmd_notes_add`.
     let _span = tracing::info_span!(
@@ -485,7 +511,7 @@ fn cmd_notes_update(
     };
 
     let final_text = new_text.unwrap_or(text);
-    if cli.json {
+    if cli.json || output_json {
         let result = NoteMutationOutput {
             status: "updated".into(),
             note_type: None,
@@ -519,6 +545,7 @@ fn cmd_notes_remove(
     ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
     text: &str,
     no_reindex: bool,
+    output_json: bool,
 ) -> Result<()> {
     // P3 #92: per-subhandler span — see `cmd_notes_add`.
     let _span =
@@ -563,7 +590,7 @@ fn cmd_notes_remove(
         }
     };
 
-    if cli.json {
+    if cli.json || output_json {
         let result = NoteMutationOutput {
             status: "removed".into(),
             note_type: None,

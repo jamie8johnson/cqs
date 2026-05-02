@@ -261,11 +261,11 @@ pub async fn check_and_migrate_schema(
             );
             Ok(p)
         }
-        Err(StoreError::MigrationNotSupported(from, to)) => Err(StoreError::SchemaMismatch(
-            db_path.display().to_string(),
-            from,
-            to,
-        )),
+        Err(StoreError::MigrationNotSupported { from, to }) => Err(StoreError::SchemaMismatch {
+            db_path: db_path.display().to_string(),
+            found: from,
+            expected: to,
+        }),
         Err(e) => Err(e),
     }
 }
@@ -339,30 +339,50 @@ async fn run_migration_tx(pool: &SqlitePool, from: i32, to: i32) -> Result<(), S
     Ok(())
 }
 
+/// P3-48: registered migration step. Each row pairs a `(from, to)` pair
+/// with a function that builds a boxed future running the step. Using the
+/// `Pin<Box<dyn Future>>` shape lets us hold a slice of `fn` pointers (no
+/// closures, no trait objects) — adding a step in v26 is now one row
+/// append rather than editing a hand-coded `match` ladder.
+// `+ Send` is intentionally absent — every per-version migration enters a
+// `tracing::info_span!(...).entered()` whose `EnteredSpan` guard is `!Send`,
+// so the resulting future isn't `Send` either. `run_migration` is awaited
+// from the same task that holds the SQLite connection, so a non-`Send`
+// future is fine. If a future migration moves the connection across
+// `tokio::spawn`, that step would need its own restructure regardless.
+type MigrationFn = for<'c> fn(
+    &'c mut sqlx::SqliteConnection,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), StoreError>> + 'c>,
+>;
+
+const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
+    (10, 11, |c| Box::pin(migrate_v10_to_v11(c))),
+    (11, 12, |c| Box::pin(migrate_v11_to_v12(c))),
+    (12, 13, |c| Box::pin(migrate_v12_to_v13(c))),
+    (13, 14, |c| Box::pin(migrate_v13_to_v14(c))),
+    (14, 15, |c| Box::pin(migrate_v14_to_v15(c))),
+    (15, 16, |c| Box::pin(migrate_v15_to_v16(c))),
+    (16, 17, |c| Box::pin(migrate_v16_to_v17(c))),
+    (17, 18, |c| Box::pin(migrate_v17_to_v18(c))),
+    (18, 19, |c| Box::pin(migrate_v18_to_v19(c))),
+    (19, 20, |c| Box::pin(migrate_v19_to_v20(c))),
+    (20, 21, |c| Box::pin(migrate_v20_to_v21(c))),
+    (21, 22, |c| Box::pin(migrate_v21_to_v22(c))),
+    (22, 23, |c| Box::pin(migrate_v22_to_v23(c))),
+    (23, 24, |c| Box::pin(migrate_v23_to_v24(c))),
+    (24, 25, |c| Box::pin(migrate_v24_to_v25(c))),
+];
+
 /// Run a single migration step
-#[allow(clippy::match_single_binding)] // Intentional: migration arms will be added here
 async fn run_migration(
     conn: &mut sqlx::SqliteConnection,
     from: i32,
     to: i32,
 ) -> Result<(), StoreError> {
-    match (from, to) {
-        (10, 11) => migrate_v10_to_v11(conn).await,
-        (11, 12) => migrate_v11_to_v12(conn).await,
-        (12, 13) => migrate_v12_to_v13(conn).await,
-        (13, 14) => migrate_v13_to_v14(conn).await,
-        (14, 15) => migrate_v14_to_v15(conn).await,
-        (15, 16) => migrate_v15_to_v16(conn).await,
-        (16, 17) => migrate_v16_to_v17(conn).await,
-        (17, 18) => migrate_v17_to_v18(conn).await,
-        (18, 19) => migrate_v18_to_v19(conn).await,
-        (19, 20) => migrate_v19_to_v20(conn).await,
-        (20, 21) => migrate_v20_to_v21(conn).await,
-        (21, 22) => migrate_v21_to_v22(conn).await,
-        (22, 23) => migrate_v22_to_v23(conn).await,
-        (23, 24) => migrate_v23_to_v24(conn).await,
-        (24, 25) => migrate_v24_to_v25(conn).await,
-        _ => Err(StoreError::MigrationNotSupported(from, to)),
+    match MIGRATIONS.iter().find(|(f, t, _)| *f == from && *t == to) {
+        Some((_, _, run)) => run(conn).await,
+        None => Err(StoreError::MigrationNotSupported { from, to }),
     }
 }
 
@@ -924,7 +944,7 @@ mod tests {
     #[test]
     fn test_migration_not_supported_error() {
         // Verify unknown migrations produce clear errors
-        let err = StoreError::MigrationNotSupported(5, 6);
+        let err = StoreError::MigrationNotSupported { from: 5, to: 6 };
         let msg = err.to_string();
         assert!(msg.contains("5"));
         assert!(msg.contains("6"));
@@ -1671,7 +1691,7 @@ mod tests {
             let result = migrate(pool, &db_path, 8, 11).await;
             assert!(result.is_err(), "unsupported range should fail");
             match result.unwrap_err() {
-                StoreError::MigrationNotSupported(from, to) => {
+                StoreError::MigrationNotSupported { from, to } => {
                     assert_eq!(from, 8);
                     assert_eq!(to, 9);
                 }
