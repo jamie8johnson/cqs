@@ -2,6 +2,27 @@
 
 ## Right Now
 
+**v1.33.0 audit + close-out, 2026-05-02 (this session).** 16-category audit produced 167 findings; triaged P1=47/P2=41/P3=56/P4=23. Fix wave: **24 PRs landed today** plus PR #1381 (Retrieval Quality refresh) waiting on CI. Branch: `chore/refresh-eval-numbers-1369`. Daemon active, binary rebuilt + installed at v1.33.0.
+
+**Coverage now:**
+- ✅ 129 closed (all P1, all in-scope P2/P3 batches, plus 17 new tests)
+- 🎫 15 issue-tracked (P4 batches: #1337-#1359; deferred: #1365, #1366, #1369, #1370-#1377)
+- ⬜ 0 open
+
+**One surprising operational lesson:** PR #1380 was needed to **recover 112 lost ✅ flips** in `docs/audit-triage.md`. The cascade of force-pushed rebases — when multiple branches conflict on the same triage rows — caused older agents' pre-flip snapshots to silently override newer merged ✅s when conflicts were resolved naively. Source-code fixes were unaffected; only the bookkeeping rolled back. **Mitigation for future audits: keep triage flips append-only OR move each PR's triage update into a separate narrow PR per cluster.** See `feedback_agent_worktrees.md` and the new note added below for the full pattern.
+
+**Eval refresh (PR #1381 in flight, closes #1369):** all 5 materialized presets re-run against v3.v2 218q dual-judge:
+
+| Preset | Agg R@1 | Agg R@5 | Agg R@20 |
+|--------|---:|---:|---:|
+| BGE-large (default) | 46.8% | **73.9%** | **85.3%** |
+| embeddinggemma-300m | **48.2%** | 73.4% | 85.3% |
+| bge-large-ft | 45.9% | 72.0% | 83.0% |
+| v9-200k | 44.0% | 69.3% | 81.7% |
+| nomic-coderank | 45.0% | 68.8% | 80.7% |
+
+The "R@5 regression discovered 2026-05-01" noted in MEMORY.md was *not* a regression — BGE-large agg R@5 is 73.9% now vs 73.4% in the original TL;DR claim. The drop was a stale measurement, not a code change. **embeddinggemma-300m beats BGE-large on agg R@1 by 1.4pp** — that's the v1.34.0 angle if anyone wants to ship it as a default candidate. The 296-query "Fixture eval" table was dropped from the README (the fixture itself isn't in the repo, can't be regenerated).
+
 **v1.33.0 released 2026-05-02.** Tag `v1.33.0` pushed (triggers `release.yml` for binary artifacts); `cqs 1.33.0` published to crates.io after token rotation (the prior token returned 403 — root cause not fully diagnosed; new token generated with `publish-update` scope). No schema bump.
 
 Five themes (full detail in CHANGELOG.md):
@@ -60,9 +81,28 @@ Five themes (full detail in CHANGELOG.md):
 - Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
 - `cuvs` crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
 
-## Open issues (12 total)
+## Open issues (~37 total — 12 long-running + 25 new from v1.33.0 audit)
 
-All P1/P2 closed. Refactor frontier (#1215, #1217, #1218, #1220, #1226) cleared. Remaining are tier-3 or have specific blockers.
+The audit's P4 + deferred-medium tier all got tickets so they're tracked rather than forgotten. None are time-sensitive.
+
+**v1.33.0 audit issues filed today** (medium-effort, no fix in this session):
+
+| Range | Theme |
+|-------|-------|
+| #1337-#1359 | P4 batch (23 issues) — security defense-in-depth, RM eviction/idle-state, Extensibility refactors, Platform Behavior on Windows, missing e2e smoke tests |
+| #1365 | P3-27: clap `--slot` help-text mismatch on slot/cache subcommands |
+| #1366 | P3-49: structural CLI registry — top-level command needs three coordinated edits |
+| #1369 | P1-5/P1-6: README eval numbers (closing via PR #1381) |
+| #1370 | P2-9: HNSW M/ef defaults static — auto-scale with corpus |
+| #1371 | P2-37: SQLite chunks missing composite index `(source_type, origin)` |
+| #1372 | P2-14: `--rerank` (bool) on search vs `--reranker <mode>` on eval |
+| #1373 | P2-13: `--depth` flag four defaults across five commands |
+| #1374 | P2-4: `IndexBackend` trait uses `anyhow::Result` instead of `thiserror` |
+| #1375 | P3-52: `lib.rs` wildcard `pub use diff::* / gather::* / ...` |
+| #1376 | P2-8: `serve` async handlers duplicate ~15-20 LOC × 6 |
+| #1377 | Umbrella: P2-36, P3-53, P3-54, P3-55 — perf micro-opts |
+
+**Pre-existing tier-3 issues:**
 
 | # | Title | Why open |
 |---|---|---|
@@ -119,13 +159,17 @@ Strategic frontier candidates if redirected:
 
 `v3_test.v2.json` (109q) and `v3_dev.v2.json` (109q). Both fixtures refreshed 2026-04-25 (PR #1109) — gold chunks re-pinned to current line numbers to absorb v1.29.x audit drift.
 
+**Refreshed 2026-05-02 against current slot states (post-audit binary):**
+
 | Config | test R@1 | test R@5 | test R@20 | dev R@1 | dev R@5 | dev R@20 |
 |---|---|---|---|---|---|---|
 | canonical (post-v1.28.3, 2026-04-20) | 41.3% | 68.8% | 85.3% | 45.0% | 78.0% | 88.1% |
-| **current (refreshed fixture, BGE-large)** | 36.7% | **63.3%** | **80.7%** | 42.2% | **74.3%** | **87.2%** |
-| current (CodeRankEmbed, opt-in via #1110) | 37.6% | **67.0%** | 78.9% | 45.0% | 69.7% | 79.8% |
-| current (v9-200k, retired) | 22.9% | 38.5% | 47.7% | 20.2% | 40.4% | 52.3% |
+| **default = BGE-large** | 44.0% | **72.5%** | **83.5%** | **49.5%** | **75.2%** | **87.2%** |
+| embeddinggemma-300m | **47.7%** | 71.6% | 83.5% | 48.6% | **75.2%** | **87.2%** |
+| bge-large-ft | 45.0% | **73.4%** | 83.5% | 46.8% | 70.6% | 82.6% |
+| v9-200k | 42.2% | 67.9% | 79.8% | 45.9% | 70.6% | 83.5% |
+| nomic-coderank | 42.2% | 67.9% | 79.8% | 47.7% | 69.7% | 81.7% |
 
-The 3.7-5.5pp gap between canonical and refreshed-current is real corpus-drift attrition (5,413 new chunks since 2026-04-20, ~30% of corpus). Not a search regression. The v3.v2 fixture is the canonical eval slate; v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors. Long-term inoculation against fixture drift would be relaxing eval gold-match to `(file, name, chunk_type)` only — out of scope for this round.
+Per-slot state at measurement time was uneven (default 19,857 chunks 48% summaries; bge-ft 14,460 0% summaries; gemma 13,118 90%; v9 14,468 82%; coderank 12,393 0%) — direct cross-model comparison is qualitative; tighter A/B requires reindex-from-shared-summary-set per slot. The earlier "post-v1.28.3 → refreshed" 3.7-5.5pp R@5 gap that was attributed to corpus drift was actually noise; current BGE-large numbers are *higher* than the canonical row across most metrics. The v3.v2 fixture is still the canonical slate; v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors.
 
 The `research/models.md` file (committed in #1270) is the inaugural retrieval-research log. Future A/B writeups append there.

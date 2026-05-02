@@ -387,10 +387,14 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "SQLite 999 variable limit hit in batch inserts — use INSERT_BATCH constants (999/bind_count) and chunk iterations. Applies to calls.rs and chunks.rs batch methods."
+text = "SQLite batch inserts: use crate::store::helpers::sql::max_rows_per_statement(N) (where N = binds per row), not the legacy 999/bind_count constants. Modern SQLite is 32766 variables (cqs requires 3.35+). Pre-2020 999 limit assumption was systematically wrong across calls.rs / chunks.rs / staleness.rs / async_helpers.rs / types.rs and corrected by v1.33.0 audit cluster (PR #1324, P1-35..P1-39). Round-trip reduction was 30-65× on hot indexing paths."
 mentions = [
-    "calls.rs",
-    "chunks.rs",
+    "store/helpers/sql.rs",
+    "calls",
+    "chunks",
+    "staleness",
+    "batch",
+    "sqlite",
 ]
 
 [[note]]
@@ -1502,15 +1506,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "Python print() block-buffers when stdout is redirected to a file (nohup, &> /tmp/log). Long-running scripts appear to produce zero output for hours, even when working correctly. Defensive moves: run with 'python3 -u' for line buffering, OR have the script call sys.stdout.flush() at progress checkpoints. Diagnostic: don't trust an empty log to mean 'stuck' — verify activity at the work side (vLLM POSTs in journalctl, output file growth, sockets in /proc/PID/fd/) before declaring failure. Small give-up I almost made: nearly killed a 57-min Gemma generation run because the log was empty."
-mentions = [
-    "evals",
-    "debugging",
-    "python",
-]
-
-[[note]]
 sentiment = 0.0
 text = "Distilled query classifier head delivers 0pp R@5 even at 88.1% val accuracy. Phase 1.4 (79.8% acc) and Phase 1.4b (88.1%) both ±0pp on test, ±1pp on dev. The constraint is the convex hull of 8 fixed alpha defaults {1.0, 0.9, 0.8, 0.7, 0.1}, not classifier accuracy. Oracle test +9.2pp came from forcing alpha values directly. Continuous alpha (regression or contrastive) is the unlock — adding a more accurate categorical head cannot break the hull."
 mentions = [
@@ -1713,4 +1708,45 @@ mentions = [
     "src/search/query.rs",
     "research/models.md",
     "SPLADE",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Cascade-rebase pattern can silently roll back triage flips. When multiple PRs are concurrently rebased and force-pushed against the same docs/audit-triage.md rows, OLDER PRs' pre-flip snapshots can override NEWER merged ✅s when conflict resolution naively takes the branch's version. Cost a recovery PR (#1380) to re-apply 112 lost flips. Mitigation: keep triage flips append-only OR move each PR's triage update into a separate narrow PR per cluster. Pattern is independent of source-code correctness — only bookkeeping is affected."
+mentions = [
+    "audit-triage.md",
+    "rebase",
+]
+
+[[note]]
+sentiment = 0.5
+text = "embeddinggemma-300m beats BGE-large on aggregate R@1 in v3.v2 218q dual-judge eval (48.2% vs 46.8%, refreshed 2026-05-02). Same R@20 (85.3%). Loses agg R@5 by 0.5pp (73.4% vs 73.9%). At 308M params vs 335M params and 768 dim vs 1024 dim, it's the strongest sub-1024-dim alternative. Worth considering as default candidate for v1.34.0 if dim reduction matters."
+mentions = [
+    "embedder/models.rs",
+    "embeddinggemma",
+]
+
+[[note]]
+sentiment = 0.5
+text = "MEMORY.md noted 'R@5 regression discovered 2026-05-01' (BGE-large agg R@5 dropped 24-25pp from canonical). Refresh on 2026-05-02 shows BGE-large agg R@5 = 73.9%, slightly HIGHER than the original 73.4% TL;DR claim. Drop was a stale measurement from a particular slot state, not a code regression. The eval pipeline is stable."
+mentions = ["eval/runner.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "cqs index without --force forwards to daemon_reconcile when a watch daemon is running, instead of bailing with the legacy 'stop the daemon' message. --force still bails because it needs to invalidate the daemon's in-memory HNSW. Closed 98% of the visible CLI error rate in telemetry (166 of 170 'cqs index' failures pre-fix were the daemon-lock bail). Reuses the existing daemon_reconcile RPC; round-trip is microseconds and the actual reconcile pass runs on the next watch-loop tick. Implementation in src/cli/commands/index/build.rs (PR #1334, v1.33.0 audit follow-up)."
+mentions = [
+    "cli/commands/index/build.rs",
+    "daemon",
+    "reconcile",
+    "index",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Every CQS_* env var added to source code needs a row in the README env-var table. The tests/env_var_docs.rs CI test greps for CQS_[A-Z][A-Z_]* identifiers in src/ and asserts each appears in README.md; missing rows fail CI. Caught PRs #1361, #1363, #1367 in the v1.33.0 audit fix wave (each added 1-3 new env vars without README rows). Mitigation: add the README row in the same commit as the env_var_read call site. Mutex/lock identifiers like LLM_ENV_LOCK should NOT have CQS_ prefix to avoid triggering the test on non-env-var statics (#1318 lesson)."
+mentions = [
+    "tests/env_var_docs.rs",
+    "README.md",
+    "ci",
+    "env-vars",
 ]
