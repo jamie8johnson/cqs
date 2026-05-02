@@ -436,4 +436,65 @@ mod tests {
         assert_eq!(freshness_poll_ms_initial(), 250);
         std::env::remove_var("CQS_FRESHNESS_POLL_MS");
     }
+
+    // ============ TC-ADV-V1.33-7: parse_env_usize_clamped + parse_env_f32 ====
+
+    /// TC-ADV-V1.33-7: above-max value clamps to max (not "use default").
+    #[test]
+    fn parse_env_usize_clamped_clamps_above_max() {
+        let key = "CQS_TEST_CLAMP_ABOVE_MAX";
+        std::env::set_var(key, "9999999");
+        // default=10, range [1, 100] — 9999999 must clamp to 100.
+        assert_eq!(parse_env_usize_clamped(key, 10, 1, 100), 100);
+        std::env::remove_var(key);
+    }
+
+    /// TC-ADV-V1.33-7: below-min value clamps to min.
+    #[test]
+    fn parse_env_usize_clamped_clamps_below_min() {
+        let key = "CQS_TEST_CLAMP_BELOW_MIN";
+        // Note: parse_env_usize_clamped requires `n > 0` to not fall back
+        // to default — pick min=5 so 1 is parseable but below-floor.
+        std::env::set_var(key, "1");
+        assert_eq!(parse_env_usize_clamped(key, 10, 5, 100), 5);
+        std::env::remove_var(key);
+    }
+
+    /// TC-ADV-V1.33-7: garbage value triggers fallback to (clamped) default.
+    /// Out-of-range default also gets clamped — pin the "default also
+    /// passes through clamp()" path documented in the helper.
+    #[test]
+    fn parse_env_usize_clamped_garbage_uses_clamped_default() {
+        let key = "CQS_TEST_CLAMP_GARBAGE";
+        std::env::set_var(key, "not_a_number");
+        // default=200 is above max=100 — clamp must apply to the default
+        // too, returning 100 not 200.
+        assert_eq!(parse_env_usize_clamped(key, 200, 1, 100), 100);
+        std::env::remove_var(key);
+    }
+
+    /// TC-ADV-V1.33-7: NaN string for `parse_env_f32` falls back to default
+    /// (`is_finite` filter rejects NaN before the unwrap_or).
+    #[test]
+    fn parse_env_f32_rejects_nan() {
+        let key = "CQS_TEST_F32_NAN";
+        std::env::set_var(key, "NaN");
+        assert_eq!(parse_env_f32(key, 0.5), 0.5);
+        std::env::remove_var(key);
+    }
+
+    /// TC-ADV-V1.33-7: `parse_env_f32` rejects negative and zero — the
+    /// helper's `*n > 0.0` filter is load-bearing for risk thresholds
+    /// (a 0.0 threshold would silently collapse the classification).
+    #[test]
+    fn parse_env_f32_rejects_negative_and_zero() {
+        let key = "CQS_TEST_F32_NEG";
+        std::env::set_var(key, "-1.5");
+        assert_eq!(parse_env_f32(key, 0.5), 0.5, "negative falls back");
+        std::env::set_var(key, "0.0");
+        assert_eq!(parse_env_f32(key, 0.5), 0.5, "zero falls back");
+        std::env::set_var(key, "0");
+        assert_eq!(parse_env_f32(key, 0.5), 0.5, "integer zero falls back");
+        std::env::remove_var(key);
+    }
 }

@@ -270,6 +270,129 @@ fn test_notes_add_sentiment_clamps() {
     );
 }
 
+/// TC-HAP-V1.33-6: `notes update --new-kind` sets `kind` on a kind-less
+/// note. Pins the field-mutation path added in PR #1278.
+#[test]
+#[serial]
+fn test_notes_update_changes_kind() {
+    let dir = setup_notes_project();
+    notes_add_json(&dir, "kind change note", "0.0", None);
+
+    cqs()
+        .args([
+            "--json",
+            "notes",
+            "update",
+            "kind change note",
+            "--new-kind",
+            "deprecation",
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let notes = read_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].kind.as_deref(),
+        Some("deprecation"),
+        "expected kind=deprecation after update, got {:?}",
+        notes[0].kind
+    );
+}
+
+/// TC-HAP-V1.33-6: passing an empty/whitespace `--new-kind` clears the
+/// kind. Pins the three-state normalization at notes.rs:441-448
+/// (`Some(None)` means "clear", distinct from `None` meaning "leave alone").
+#[test]
+#[serial]
+fn test_notes_update_clears_kind_with_empty_value() {
+    let dir = setup_notes_project();
+    // Seed a note that already has a kind.
+    cqs()
+        .args([
+            "--json",
+            "notes",
+            "add",
+            "note with kind",
+            "--sentiment",
+            "0.0",
+            "--kind",
+            "todo",
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Sanity: kind landed.
+    let before = read_notes(&dir);
+    assert_eq!(before[0].kind.as_deref(), Some("todo"));
+
+    // Now clear it via empty `--new-kind`.
+    cqs()
+        .args([
+            "notes",
+            "update",
+            "note with kind",
+            "--new-kind",
+            "",
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let after = read_notes(&dir);
+    assert_eq!(after.len(), 1);
+    assert!(
+        after[0].kind.is_none(),
+        "empty --new-kind must clear, got {:?}",
+        after[0].kind
+    );
+}
+
+/// TC-HAP-V1.33-6: `--new-mentions` replaces the mentions list. Pins
+/// the mentions-merge clone at notes.rs:467-469.
+#[test]
+#[serial]
+fn test_notes_update_changes_mentions() {
+    let dir = setup_notes_project();
+    notes_add_json(&dir, "mention swap note", "0.0", Some("foo.rs,bar"));
+    let before = read_notes(&dir);
+    assert!(before[0].mentions.iter().any(|m| m == "foo.rs"));
+
+    cqs()
+        .args([
+            "notes",
+            "update",
+            "mention swap note",
+            "--new-mentions",
+            "baz.rs,qux",
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let after = read_notes(&dir);
+    assert_eq!(after.len(), 1);
+    let mentions = &after[0].mentions;
+    assert!(
+        mentions.iter().any(|m| m == "baz.rs"),
+        "new mentions must include baz.rs, got {mentions:?}"
+    );
+    assert!(
+        mentions.iter().any(|m| m == "qux"),
+        "new mentions must include qux, got {mentions:?}"
+    );
+    assert!(
+        !mentions.iter().any(|m| m == "foo.rs"),
+        "old mentions must be replaced, got {mentions:?}"
+    );
+}
+
 /// TC-HP-2f: update against a non-existent text errors cleanly instead of
 /// silently rewriting the notes file.
 #[test]

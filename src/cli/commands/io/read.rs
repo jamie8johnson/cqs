@@ -541,6 +541,52 @@ mod tests {
         assert!(flags.is_empty(), "no per-content heuristics fired yet");
     }
 
+    /// TC-ADV-V1.33-9: file exceeding `CQS_READ_MAX_FILE_SIZE` is rejected
+    /// with the documented error message including both the actual size
+    /// and the cap. The size-cap branch is the only DoS-prevention layer
+    /// for arbitrary-content reads — a flipped comparison sign would slip
+    /// through CI without a regression test.
+    #[test]
+    fn read_rejects_oversized_file() {
+        use std::sync::Mutex;
+        // CQS_READ_MAX_FILE_SIZE is process-global; serialise the env edit.
+        static READ_SIZE_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = READ_SIZE_LOCK.lock().unwrap();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let big_path = dir.path().join("big.rs");
+        // 100 bytes; cap below is 50.
+        std::fs::write(&big_path, vec![b'a'; 100]).unwrap();
+
+        let prev = std::env::var("CQS_READ_MAX_FILE_SIZE").ok();
+        std::env::set_var("CQS_READ_MAX_FILE_SIZE", "50");
+        let err = super::validate_and_read_file(dir.path(), "big.rs")
+            .expect_err("oversized file must error");
+        // Restore env regardless of assert outcome.
+        match prev {
+            Some(v) => std::env::set_var("CQS_READ_MAX_FILE_SIZE", v),
+            None => std::env::remove_var("CQS_READ_MAX_FILE_SIZE"),
+        }
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("File too large"),
+            "error must mention 'File too large', got {msg:?}"
+        );
+        assert!(
+            msg.contains("100"),
+            "error must include actual size (100), got {msg:?}"
+        );
+        assert!(
+            msg.contains("50"),
+            "error must include the cap (50), got {msg:?}"
+        );
+        assert!(
+            msg.contains("CQS_READ_MAX_FILE_SIZE"),
+            "error must name the env var so users can tune, got {msg:?}"
+        );
+    }
+
     /// SEC-D.5: `validate_and_read_file` must produce identical error text
     /// for "file outside project root" and "file not found" so a daemon
     /// client can't probe filesystem layout via distinguishable messages.

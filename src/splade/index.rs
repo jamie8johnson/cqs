@@ -916,6 +916,60 @@ mod tests {
         assert_eq!(results.len(), 2);
     }
 
+    /// TC-ADV-V1.33-3: `SpladeIndex::search` with `k=0` must return empty
+    /// even on a populated index. `BoundedScoreHeap::new(0)` is tested
+    /// elsewhere; this pins the SPLADE call path that passes `k` straight in.
+    #[test]
+    fn test_search_k_zero_returns_empty() {
+        let index = make_test_index();
+        // Use a query that would otherwise match all three chunks.
+        let results = index.search(&vec![(1, 1.0), (2, 1.0), (3, 1.0)], 0);
+        assert!(
+            results.is_empty(),
+            "k=0 must return empty, got {} results",
+            results.len()
+        );
+    }
+
+    /// TC-ADV-V1.33-3: a query SparseVector with NaN weights must not
+    /// panic — the search loop's `query_weight * doc_weight` accumulator
+    /// must remain panic-free under the hostile input. NaN is allowed to
+    /// propagate into scores (current behaviour) but the call must complete.
+    #[test]
+    fn test_search_handles_nan_query_weights() {
+        let index = make_test_index();
+        // NaN on token 1 (which exists in the index for chunk_a + chunk_b).
+        let results = index.search(&vec![(1, f32::NAN)], 10);
+        // Contract: no panic. Today NaN propagates into the score comparator
+        // via `total_cmp`, so results may or may not be present — the
+        // load-bearing assertion is "did not crash".
+        for r in &results {
+            // Score may be NaN; just ensure id is a known chunk.
+            assert!(
+                r.id == "chunk_a" || r.id == "chunk_b",
+                "unexpected id in results: {}",
+                r.id
+            );
+        }
+    }
+
+    /// TC-ADV-V1.33-3: same panic-free contract for `f32::INFINITY`.
+    #[test]
+    fn test_search_handles_inf_query_weights() {
+        let index = make_test_index();
+        let results = index.search(&vec![(1, f32::INFINITY)], 10);
+        // Inf * positive doc_weight = Inf — sortable; first should be the
+        // matching chunk. We don't pin score values; just no crash + no
+        // unexpected ids.
+        for r in &results {
+            assert!(
+                r.id == "chunk_a" || r.id == "chunk_b",
+                "unexpected id in results: {}",
+                r.id
+            );
+        }
+    }
+
     #[test]
     fn test_persist_roundtrip() {
         let dir = tempfile::TempDir::new().unwrap();

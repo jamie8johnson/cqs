@@ -1151,6 +1151,62 @@ mod tests {
         );
     }
 
+    /// TC-ADV-V1.33-8: oversized files are silently skipped (Ok(vec![])),
+    /// not surfaced as an error. This is the documented contract — a
+    /// future refactor that surfaced the size cap as Err would break the
+    /// watch loop's "parse failures are recoverable" invariant.
+    #[test]
+    fn parse_file_returns_empty_vec_for_oversized_file() {
+        use std::sync::Mutex;
+        // CQS_PARSER_MAX_FILE_SIZE is process-global; serialise.
+        static PARSER_SIZE_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = PARSER_SIZE_LOCK.lock().unwrap();
+
+        let parser = Parser::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("big.rs");
+        // Write a 200-byte Rust file; cap is set to 100 below.
+        std::fs::write(&path, vec![b'a'; 200]).unwrap();
+
+        let prev = std::env::var("CQS_PARSER_MAX_FILE_SIZE").ok();
+        std::env::set_var("CQS_PARSER_MAX_FILE_SIZE", "100");
+        let result = parser.parse_file(&path);
+        // Restore env immediately.
+        match prev {
+            Some(v) => std::env::set_var("CQS_PARSER_MAX_FILE_SIZE", v),
+            None => std::env::remove_var("CQS_PARSER_MAX_FILE_SIZE"),
+        }
+
+        let chunks = result.expect("oversized file must skip silently, not error");
+        assert!(
+            chunks.is_empty(),
+            "oversized file must produce empty Vec, got {} chunk(s)",
+            chunks.len()
+        );
+    }
+
+    /// TC-ADV-V1.33-8: non-UTF8 file content is silently skipped
+    /// (Ok(vec![])). Documented behaviour ("Returns an empty Vec for
+    /// non-UTF8 files (with a warning logged)") — pinning so a future
+    /// refactor that surfaced this as an error doesn't break the indexer.
+    #[test]
+    fn parse_file_returns_empty_vec_for_non_utf8_content() {
+        let parser = Parser::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad_utf8.rs");
+        // Write bytes that are not valid UTF-8 (lone continuation bytes).
+        std::fs::write(&path, [0xFFu8, 0xFE, 0xFD, 0xFC]).unwrap();
+
+        let chunks = parser
+            .parse_file(&path)
+            .expect("non-UTF8 file must skip silently, not error");
+        assert!(
+            chunks.is_empty(),
+            "non-UTF8 file must produce empty Vec, got {} chunk(s)",
+            chunks.len()
+        );
+    }
+
     /// P2 #63: property test pinning the equivalence between
     /// `parse_file_all_with_chunk_calls` (Pass-2 emit) and the previous
     /// per-chunk `extract_calls_from_chunk` loop the indexing pipeline used
