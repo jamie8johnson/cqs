@@ -890,6 +890,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_TRAIN_GIT_SHOW_MAX_BYTES` | `52428800` (50 MiB) | Max bytes retrieved per file via `git show` during training-data extraction. Files above the cap are skipped; bump to capture larger generated files (schema dumps, vendored corpora). |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |
+| `CQS_WAL_AUTOCHECKPOINT_PAGES` | `1000` | SQLite `wal_autocheckpoint` ceiling (pages) applied via every connection's `after_connect` hook. Caps WAL growth between commits so an abrupt shutdown leaves a bounded recovery walk. Lower for tighter WAL bounds; raise on long write-heavy reindex sessions to amortize checkpoint cost. (P2-25 / DS-V1.33-8) |
 | `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
 | `CQS_WATCH_INCREMENTAL_SPLADE` | `1` | Set to `0` to disable inline SPLADE encoding in `cqs watch`. Daemon then runs dense-only and sparse coverage drifts until a manual `cqs index`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
