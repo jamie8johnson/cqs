@@ -1523,12 +1523,13 @@ fn tick(b: bool) -> colored::ColoredString {
 mod tests {
     use super::*;
     use cqs::embedder::ModelInfo;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    /// Tests that touch `CQS_*` env vars must serialize — env vars are
-    /// process-global and concurrent threads race on set/remove.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    // ENV_MUTEX hoisted to `cqs::ONNX_DIR_ENV_LOCK` (#1305) so this cohort
+    // serializes against `embedder::tests::ensure_model_tests` and
+    // `embedder::tests::embedder_init_failure`. Pre-fix all three were
+    // independent Mutex instances and raced on `CQS_ONNX_DIR` under
+    // cargo's parallel runner.
 
     #[test]
     fn issue_kind_maps_to_fix_action() {
@@ -1571,7 +1572,9 @@ mod tests {
 
     #[test]
     fn test_doctor_verbose_without_index() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = cqs::ONNX_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         std::env::remove_var("CQS_ONNX_DIR");
         let tmp = TempDir::new().expect("tempdir");
@@ -1596,7 +1599,9 @@ mod tests {
 
     #[test]
     fn test_doctor_verbose_with_index() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = cqs::ONNX_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         std::env::remove_var("CQS_ONNX_DIR");
         let tmp = TempDir::new().expect("tempdir");
@@ -1637,7 +1642,9 @@ mod tests {
 
     #[test]
     fn test_doctor_verbose_json_output() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = cqs::ONNX_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         std::env::remove_var("CQS_ONNX_DIR");
         let tmp = TempDir::new().expect("tempdir");
@@ -1667,7 +1674,9 @@ mod tests {
 
     #[test]
     fn test_resolution_source_priority() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = cqs::ONNX_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         // Stored preset wins over everything else.
         assert_eq!(
@@ -1696,7 +1705,9 @@ mod tests {
 
     #[test]
     fn test_collect_cqs_env_vars_filters_correctly() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = cqs::ONNX_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_TEST_FOO_DOCTOR", "bar");
         std::env::set_var("NOT_CQS_VAR", "ignored");
         let vars = collect_cqs_env_vars();
@@ -1746,7 +1757,9 @@ mod tests {
     /// `cqs doctor --json | jq` and expect both top-level keys.
     #[test]
     fn doctor_report_combines_checks_and_verbose() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = cqs::ONNX_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         std::env::remove_var("CQS_ONNX_DIR");
         let tmp = TempDir::new().expect("tempdir");

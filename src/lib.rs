@@ -140,6 +140,32 @@ pub mod watch_status;
 #[cfg(test)]
 pub mod test_helpers;
 
+/// Crate-wide test mutex for serializing access to the `CQS_ONNX_DIR`
+/// process-global env var. Serializes the three cohorts that mutate it:
+///
+/// - `embedder::tests::ensure_model_tests` (3 tests)
+/// - `embedder::tests::embedder_init_failure` (2 tests)
+/// - `cli::commands::infra::doctor::tests` (4 tests)
+///
+/// Pre-fix each cohort had its own `static Mutex<()>` and they didn't
+/// actually serialize against each other — under cargo's parallel
+/// runner a poisoned lock from a 401-on-CI HF download cascaded into
+/// `PoisonError` panics in the next two tests. (#1305 / ci-slow.yml run
+/// 25255950909 retry surface)
+///
+/// Same shape as `crate::llm::LLM_ENV_LOCK` from #1318 — hoist to a
+/// single shared lock so all cohorts serialize through one Mutex.
+///
+/// Visibility is `pub` (not `pub(crate)`) because `doctor::tests` lives
+/// in the binary crate and reaches the lib via `cqs::ONNX_DIR_ENV_LOCK`;
+/// `pub(crate)` doesn't cross the lib→bin boundary even within one
+/// Cargo package, and `#[cfg(test)]` doesn't either (the lib used by
+/// `cqs` bin tests is built with `cfg(test)` for the lib unit-test
+/// target only, not when serving as a dep). Public-but-cheap (an 8-byte
+/// `Mutex<()>` with `#[doc(hidden)]`) is the right escape hatch.
+#[doc(hidden)]
+pub static ONNX_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(feature = "cuda-index")]
 pub mod cagra;
 
