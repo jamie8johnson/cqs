@@ -8,6 +8,7 @@ use sqlx::Row;
 use crate::embedder::Embedding;
 use crate::nl::normalize_for_fts;
 use crate::parser::{ChunkType, Language};
+use crate::store::helpers::sql::max_rows_per_statement;
 use crate::store::helpers::{
     bytes_to_embedding, clamp_line_number, ChunkIdentity, ChunkRow, ChunkSummary, IndexStats,
     StoreError,
@@ -185,7 +186,7 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<ChunkSummary>> = HashMap::new();
 
-            const BATCH_SIZE: usize = 500;
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             for batch in origins.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
@@ -215,7 +216,7 @@ impl<Mode> Store<Mode> {
 
     /// Batch-fetch chunks by multiple function names.
     /// Returns a map of name -> Vec<ChunkSummary> for all found names.
-    /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
+    /// Single-bind IN-list batched at the modern SQLite variable limit.
     /// Used by `cqs related` to avoid N+1 `get_chunks_by_name` calls.
     pub fn get_chunks_by_names_batch(
         &self,
@@ -230,7 +231,7 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<ChunkSummary>> = HashMap::new();
 
-            const BATCH_SIZE: usize = 500;
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             for batch in names.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
@@ -316,7 +317,7 @@ impl<Mode> Store<Mode> {
             return Ok(HashMap::new());
         }
 
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = max_rows_per_statement(1);
         let dim = self.dim;
         let mut result = HashMap::new();
 

@@ -5,12 +5,14 @@ use std::collections::HashMap;
 use sqlx::Row;
 
 use crate::embedder::Embedding;
+use crate::store::helpers::sql::max_rows_per_statement;
 use crate::store::helpers::{bytes_to_embedding, StoreError};
 use crate::store::Store;
 
 impl<Mode> Store<Mode> {
     /// Get embeddings for chunks with matching content hashes (batch lookup).
-    /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
+    /// Single-bind IN-list; batches at the modern SQLite variable limit
+    /// (~32466 rows per statement via `max_rows_per_statement(1)`).
     pub fn get_embeddings_by_hashes(
         &self,
         hashes: &[&str],
@@ -21,7 +23,7 @@ impl<Mode> Store<Mode> {
             return Ok(HashMap::new());
         }
 
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = max_rows_per_statement(1);
         let dim = self.dim;
         let mut result = HashMap::new();
 
@@ -100,7 +102,7 @@ impl<Mode> Store<Mode> {
             return Ok(Vec::new());
         }
 
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = max_rows_per_statement(1);
         let dim = self.dim;
         let mut result = Vec::new();
 
