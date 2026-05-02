@@ -38,8 +38,6 @@ mod common;
 use assert_cmd::Command;
 use serde_json::json;
 use serial_test::serial;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -60,10 +58,24 @@ fn cqs() -> Command {
 /// Mirror `cqs::daemon_translate::daemon_socket_path` but with explicit
 /// runtime-dir override so the mock and the spawned CLI agree on which
 /// path to use without mutating the test process's `XDG_RUNTIME_DIR`.
+///
+/// Must use BLAKE3 over the canonical `OsStr` bytes, truncated to 8 bytes
+/// formatted as 16 lowercase hex chars — matches AC-V1.30.1-9 in
+/// `daemon_translate.rs:216-228`. Earlier versions of this helper used
+/// `DefaultHasher`, which silently diverges from the production socket name
+/// on every Rust release; the mock would bind at one path and the spawned
+/// CLI would look at another, panicking with "no daemon running" the first
+/// time ci-slow.yml ran the slow-tests-feature suite (#1305).
 fn daemon_socket_path_with_runtime_dir(cqs_dir: &Path, runtime_dir: &Path) -> PathBuf {
-    let mut h = DefaultHasher::new();
-    cqs_dir.hash(&mut h);
-    let sock_name = format!("cqs-{:x}.sock", h.finish());
+    let canonical_path_bytes = cqs_dir.as_os_str().as_encoded_bytes();
+    let hash = blake3::hash(canonical_path_bytes);
+    let truncated = &hash.as_bytes()[..8];
+    let mut hex = String::with_capacity(16);
+    for b in truncated {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    let sock_name = format!("cqs-{}.sock", hex);
     runtime_dir.join(sock_name)
 }
 
