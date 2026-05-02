@@ -618,12 +618,17 @@ mod tests {
     // function returns `Ok(Vec::new())` *before* any HTTP traffic. A
     // regression that, e.g., started making an API call before the empty-
     // candidates check would surface here as a connect error.
-    use std::sync::Mutex;
-    static DOC_ENV_LOCK: Mutex<()> = Mutex::new(());
+    //
+    // #1312 / #1305: DOC_ENV_LOCK was a file-local Mutex; replaced by the
+    // module-wide `crate::llm::LLM_ENV_LOCK` so this test serializes
+    // against `hyde::tests` and any other future caller that mutates the
+    // shared `CQS_LLM_*` env vars.
 
     #[test]
     fn doc_comment_pass_returns_empty_for_empty_store() {
-        let _g = DOC_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let prev_provider = std::env::var("CQS_LLM_PROVIDER").ok();
         let prev_api_base = std::env::var("CQS_LLM_API_BASE").ok();

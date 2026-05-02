@@ -715,9 +715,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// Serialize tests that manipulate CQS_LOCAL_* env vars. Env vars are
-    /// process-global; concurrent set/remove across threads races.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // ENV_MUTEX hoisted to module-wide `crate::llm::LLM_ENV_LOCK`
+    // (#1312 / #1305). The local lock served `CQS_LLM_API_KEY` here; siblings
+    // mutated `CQS_LLM_*` under their own per-file mutexes and raced.
+    // Single shared lock serializes all callers.
 
     fn make_config(api_base: &str, model: &str) -> LlmConfig {
         LlmConfig {
@@ -743,7 +744,9 @@ mod tests {
     // ===== Happy-path test 1: 3-item batch, concurrency=1 =====
     #[test]
     fn happy_single_worker_three_items() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -785,7 +788,9 @@ mod tests {
     // ===== Happy-path test 2: 3-item batch, concurrency=4, order-independent =====
     #[test]
     fn happy_four_workers_order_independent() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "4");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -819,7 +824,9 @@ mod tests {
     // ===== Happy-path test 3: auth header when CQS_LLM_API_KEY is set =====
     #[test]
     fn auth_header_present_when_key_set() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::set_var("CQS_LLM_API_KEY", "secret-key-42");
 
@@ -853,7 +860,9 @@ mod tests {
     // env var — a bug.
     #[test]
     fn no_auth_header_when_key_unset() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -892,7 +901,9 @@ mod tests {
     // production integration test (item 26 in the spec).
     #[test]
     fn exhausted_retries_on_5xx_yield_failure() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -919,7 +930,9 @@ mod tests {
     // ===== Happy-path test 6: 429 once, 200 on retry =====
     #[test]
     fn retry_429_then_succeed() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -945,7 +958,9 @@ mod tests {
     // ===== Happy-path test 7: unicode preserved end-to-end =====
     #[test]
     fn unicode_preserved_end_to_end() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -973,7 +988,9 @@ mod tests {
     // ===== Happy-path test 8: very long response not truncated =====
     #[test]
     fn long_response_not_truncated() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -998,7 +1015,9 @@ mod tests {
     // ===== Happy-path test 9: stash drained after fetch_batch_results =====
     #[test]
     fn stash_drained_after_fetch() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1029,7 +1048,9 @@ mod tests {
     // ===== Sad-path test 10: connection refused → BatchFailed with URL =====
     #[test]
     fn connection_refused_produces_error() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::set_var("CQS_LOCAL_LLM_TIMEOUT_SECS", "5");
         std::env::remove_var("CQS_LLM_API_KEY");
@@ -1052,7 +1073,9 @@ mod tests {
     // ===== Sad-path test 13: malformed JSON → skip, empty stash =====
     #[test]
     fn malformed_json_skipped() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1079,7 +1102,9 @@ mod tests {
     // ===== Sad-path test 14: empty choices array → skip =====
     #[test]
     fn empty_choices_skipped() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1105,7 +1130,9 @@ mod tests {
     // ===== Sad-path test 15: null content → skip =====
     #[test]
     fn null_content_skipped() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1129,7 +1156,9 @@ mod tests {
     // ===== Sad-path test 16: 400 prompt-too-large → skip without retry =====
     #[test]
     fn non_retriable_4xx_no_retry() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1155,7 +1184,9 @@ mod tests {
     // ===== Sad-path test 17: 404 model-not-found → skip without retry =====
     #[test]
     fn model_not_found_no_retry() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1177,7 +1208,9 @@ mod tests {
     // ===== Sad-path test 18: all 401 → batch aborts with auth error =====
     #[test]
     fn all_401_aborts_with_auth_error() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1208,7 +1241,9 @@ mod tests {
     // ===== Sad-path test 21: concurrency=0 clamps to 1 =====
     #[test]
     fn concurrency_zero_clamps_to_one() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "0");
         let got = local_concurrency();
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
@@ -1220,7 +1255,9 @@ mod tests {
     // before 16 workers and the unbounded shape was just stack churn.
     #[test]
     fn concurrency_too_high_clamps_to_16() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "9999");
         let got = local_concurrency();
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
@@ -1230,7 +1267,9 @@ mod tests {
     // ===== Trait-level test: is_valid_batch_id =====
     #[test]
     fn is_valid_batch_id_uuid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = make_config("http://example.test/v1", "test-model");
         let provider = LocalProvider::new(config).unwrap();
         // UUIDs accepted
@@ -1246,7 +1285,9 @@ mod tests {
     // ===== Trait-level test: model_name =====
     #[test]
     fn model_name_returns_configured() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = make_config("http://example.test/v1", "my-custom-model");
         let provider = LocalProvider::new(config).unwrap();
         assert_eq!(provider.model_name(), "my-custom-model");
@@ -1259,7 +1300,9 @@ mod tests {
     // does not abort the batch: all items still get processed.
     #[test]
     fn callback_panic_does_not_abort_batch() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
@@ -1302,7 +1345,9 @@ mod tests {
     // a tiny cap (1 KiB) and serve a 64 KiB body so the test stays fast.
     #[test]
     fn oversized_response_body_capped_at_max() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::set_var("CQS_LOCAL_LLM_MAX_BODY_BYTES", "1024");
         std::env::remove_var("CQS_LLM_API_KEY");
@@ -1344,7 +1389,9 @@ mod tests {
     // batch finishes and the item is recorded as failed.
     #[test]
     fn fourxx_with_large_body_does_not_buffer_entire_body() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::llm::LLM_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
         std::env::remove_var("CQS_LLM_API_KEY");
 
