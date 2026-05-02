@@ -144,10 +144,23 @@ fn similarity(a: &MmrCandidate<'_>, b: &MmrCandidate<'_>) -> f32 {
 /// want to silently change production search behavior. Opt-in via env
 /// or `SearchFilter.mmr_lambda`.
 pub(crate) fn mmr_lambda_from_env() -> Option<f32> {
-    std::env::var("CQS_MMR_LAMBDA")
-        .ok()
-        .and_then(|s| s.parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 1.0))
+    let raw = std::env::var("CQS_MMR_LAMBDA").ok()?;
+    match raw.parse::<f32>() {
+        // AC-V1.33-10: reject NaN/Inf so they don't slip through `clamp`
+        // (clamp propagates NaN). Downstream checks `lambda < 1.0`, which
+        // returns false for NaN, silently disabling MMR.
+        Ok(v) if v.is_finite() => Some(v.clamp(0.0, 1.0)),
+        Ok(v) => {
+            tracing::warn!(
+                env = "CQS_MMR_LAMBDA",
+                raw = %raw,
+                parsed = v,
+                "CQS_MMR_LAMBDA parsed to non-finite — MMR disabled"
+            );
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]

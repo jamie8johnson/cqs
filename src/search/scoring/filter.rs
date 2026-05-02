@@ -8,9 +8,10 @@ use super::name_match::is_name_like_query;
 /// Extract file path from a chunk ID.
 /// Standard format: `"path:line_start:hash_prefix"` (3 segments from right)
 /// Windowed format: `"path:line_start:hash_prefix:wN"` (4 segments)
-/// The hash_prefix is always 8 hex chars. Windowed chunk IDs append `:wN` where
-/// N is a small integer (0-99). We detect windowed IDs by checking if the last
-/// segment starts with 'w' followed by digits.
+/// Markdown table-window format: `"path:line_start:hash_prefix:tNwM"` (4 segments,
+/// emitted by `parser/markdown/tables.rs::emit_table_window`)
+/// The hash_prefix is always 8 hex chars. Windowed chunk IDs append a window
+/// suffix: either `wN` (generic windowed chunks) or `tNwM` (markdown tables).
 pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
     // Strip last segment
     let Some(last_colon) = id.rfind(':') else {
@@ -20,17 +21,11 @@ pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
 
     // Determine how many segments to strip from the right:
     // - Standard: 2 (hash_prefix, line_start)
-    // - Windowed: 3 (wN, hash_prefix, line_start)
-    // Window suffix format: "w0", "w1", ..., "w99"
-    let segments_to_strip = if !last_seg.is_empty()
-        && last_seg.starts_with('w')
-        && last_seg.len() <= 3
-        && last_seg[1..].bytes().all(|b| b.is_ascii_digit())
-    {
-        3
-    } else {
-        2
-    };
+    // - Windowed: 3 (wN or tNwM, hash_prefix, line_start)
+    // Window suffix formats:
+    //   - "w0", "w1", ..., "w99" (generic)
+    //   - "t0w0", "t1w3", ..., "tNwM" (markdown table windows)
+    let segments_to_strip = if is_window_suffix(last_seg) { 3 } else { 2 };
 
     let mut end = id.len();
     for _ in 0..segments_to_strip {
@@ -41,6 +36,37 @@ pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
         }
     }
     &id[..end]
+}
+
+/// Returns `true` if `seg` looks like a window suffix produced by the parser:
+/// either `wN` (generic windowed chunks) or `tNwM` (markdown table windows
+/// from `parser/markdown/tables.rs::emit_table_window`).
+fn is_window_suffix(seg: &str) -> bool {
+    let bytes = seg.as_bytes();
+    // Generic: "wN" — 'w' followed by 1+ ASCII digits, total length ≤ 3
+    if bytes.first() == Some(&b'w')
+        && bytes.len() >= 2
+        && bytes.len() <= 3
+        && bytes[1..].iter().all(u8::is_ascii_digit)
+    {
+        return true;
+    }
+    // Table-window: "tNwM" — 't' + digits + 'w' + digits
+    if bytes.first() == Some(&b't') && bytes.len() >= 4 {
+        // Find the 'w' separator after the t-digits
+        let mut i = 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        // Need at least one digit after 't', then 'w', then at least one digit
+        if i >= 2 && i < bytes.len() && bytes[i] == b'w' {
+            let rest = &bytes[i + 1..];
+            if !rest.is_empty() && rest.iter().all(u8::is_ascii_digit) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Compile a glob pattern into a matcher, logging and ignoring invalid patterns.
@@ -213,6 +239,41 @@ mod tests {
             extract_file_from_chunk_id("src/foo.rs:10:deadbeef"),
             "src/foo.rs"
         );
+    }
+
+    #[test]
+    fn test_extract_file_markdown_table_window() {
+        // AC-V1.33-1: markdown table windows produce `:tNwM` suffix
+        // (from src/parser/markdown/tables.rs::emit_table_window)
+        assert_eq!(
+            extract_file_from_chunk_id("docs/x.md:10:abc12345:t0w3"),
+            "docs/x.md"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("docs/x.md:42:abc12345:t1w0"),
+            "docs/x.md"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("docs/foo/bar.md:5:cafebabe:t12w99"),
+            "docs/foo/bar.md"
+        );
+    }
+
+    #[test]
+    fn test_is_window_suffix_recognizes_both_formats() {
+        // Generic wN
+        assert!(is_window_suffix("w0"));
+        assert!(is_window_suffix("w99"));
+        // Table tNwM
+        assert!(is_window_suffix("t0w0"));
+        assert!(is_window_suffix("t12w99"));
+        // Negative: hash prefixes, plain hex
+        assert!(!is_window_suffix("deadbeef"));
+        assert!(!is_window_suffix("abc12345"));
+        assert!(!is_window_suffix("w")); // no digits
+        assert!(!is_window_suffix("t1w")); // no digits after w
+        assert!(!is_window_suffix("tw0")); // no digits after t
+        assert!(!is_window_suffix(""));
     }
 
     #[test]

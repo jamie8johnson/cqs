@@ -193,7 +193,20 @@ pub fn resolve_knob(name: &str) -> f32 {
 
 fn resolve_uncached(knob: &ScoringKnob) -> f32 {
     if let Some(&v) = CONFIG_OVERRIDES.get().and_then(|m| m.get(knob.name)) {
-        return v.clamp(knob.min, knob.max);
+        // AC-V1.33-4: match env-path validation — reject NaN/Inf and out-of-range
+        // before the value can flow into BM25/RRF math (`f32::clamp` propagates NaN).
+        if v.is_finite() && v >= knob.min && v <= knob.max {
+            return v;
+        }
+        tracing::warn!(
+            knob = knob.name,
+            value = v,
+            min = knob.min,
+            max = knob.max,
+            fallback = knob.default,
+            "scoring knob config override out of range or non-finite — using default"
+        );
+        return knob.default;
     }
     if let Some(env_name) = knob.env_var {
         if let Ok(raw) = std::env::var(env_name) {

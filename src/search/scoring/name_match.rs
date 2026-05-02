@@ -20,10 +20,6 @@ const NAME_TOKEN_STACK: usize = 16;
 /// semantic relevance.
 pub(crate) fn is_name_like_query(query: &str) -> bool {
     let words: Vec<&str> = query.split_whitespace().collect();
-    // Single token or two-token queries are likely identifiers
-    if words.len() <= 2 {
-        return true;
-    }
     // NL indicators: common function words that never appear in identifiers
     const NL_WORDS: &[&str] = &[
         "the",
@@ -59,12 +55,19 @@ pub(crate) fn is_name_like_query(query: &str) -> bool {
         "find",
         "search",
     ];
+    // AC-V1.33-6: NL_WORDS check must run BEFORE the ≤2-token short-circuit
+    // so that "how are", "what is", "do that", etc. are correctly classified
+    // as natural language even at small lengths.
     let lower = query.to_lowercase();
     let lower_words: Vec<&str> = lower.split_whitespace().collect();
     for w in &lower_words {
         if NL_WORDS.contains(w) {
             return false;
         }
+    }
+    // Single token or two-token queries with no NL indicators are likely identifiers
+    if words.len() <= 2 {
+        return true;
     }
     // 3+ words with no NL indicators — still likely NL if all lowercase
     // (identifiers are usually camelCase or snake_case)
