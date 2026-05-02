@@ -184,25 +184,34 @@ pub fn stripped_model_value(raw: &[String]) -> Option<String> {
 pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
     use std::path::PathBuf;
 
-    let sock_dir = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => {
-            // P3.38: silent fallback to /tmp (mode 1777) is fine on macOS
-            // (`/var/folders/.../T/` is per-user) but a meaningful trust
-            // drop on multi-user Linux. Surface it once so operators can
-            // wire `XDG_RUNTIME_DIR=/run/user/$(id -u)` if they care.
-            #[cfg(target_os = "linux")]
-            {
-                static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-                WARNED.get_or_init(|| {
-                    tracing::info!(
-                        "XDG_RUNTIME_DIR unset — daemon socket falls back to temp_dir; \
-                         consider XDG_RUNTIME_DIR=/run/user/$(id -u)"
-                    );
-                });
+    // Thread-local override (test-only) takes precedence so test fixtures
+    // can redirect the socket without `unsafe std::env::set_var`. None in
+    // production. See SOCKET_DIR_OVERRIDE.
+    let override_dir =
+        SOCKET_DIR_OVERRIDE.with(|cell| cell.borrow().as_ref().map(|p| p.to_path_buf()));
+
+    let sock_dir = match override_dir {
+        Some(d) => d,
+        None => match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(d) => PathBuf::from(d),
+            None => {
+                // P3.38: silent fallback to /tmp (mode 1777) is fine on macOS
+                // (`/var/folders/.../T/` is per-user) but a meaningful trust
+                // drop on multi-user Linux. Surface it once so operators can
+                // wire `XDG_RUNTIME_DIR=/run/user/$(id -u)` if they care.
+                #[cfg(target_os = "linux")]
+                {
+                    static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                    WARNED.get_or_init(|| {
+                        tracing::info!(
+                            "XDG_RUNTIME_DIR unset — daemon socket falls back to temp_dir; \
+                             consider XDG_RUNTIME_DIR=/run/user/$(id -u)"
+                        );
+                    });
+                }
+                std::env::temp_dir()
             }
-            std::env::temp_dir()
-        }
+        },
     };
     // AC-V1.30.1-9: BLAKE3 is stable across Rust versions — important
     // because systemd unit files and operator scripts encode the socket
@@ -218,6 +227,36 @@ pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
     }
     let sock_name = format!("cqs-{}.sock", hex);
     sock_dir.join(sock_name)
+}
+
+// Thread-local override for the socket directory. Production paths leave
+// this `None` and `daemon_socket_path` reads `XDG_RUNTIME_DIR` as before;
+// tests set it via `set_socket_dir_override_for_test` to redirect the
+// socket under a per-test tempdir without touching process-wide env vars.
+//
+// Why thread-local rather than `unsafe std::env::set_var`: setenv races
+// with concurrent env reads from any other thread, deadlocking libc's
+// env mutex on parallel test runners (#1292). A thread-local override
+// has no cross-thread state and lets the daemon round-trip tests run
+// fully parallel.
+#[cfg(unix)]
+std::thread_local! {
+    static SOCKET_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only hook to redirect the daemon socket directory on the current
+/// thread. Pass `None` to clear. See [`SOCKET_DIR_OVERRIDE`] for the
+/// rationale; replaces the previous `unsafe { std::env::set_var(
+/// "XDG_RUNTIME_DIR", ...) }` pattern.
+///
+/// `#[doc(hidden)]` because it's strictly a test utility — the symbol is
+/// `pub` so integration tests can reach it but it's not part of the
+/// public API.
+#[cfg(unix)]
+#[doc(hidden)]
+pub fn set_socket_dir_override_for_test(dir: Option<std::path::PathBuf>) {
+    SOCKET_DIR_OVERRIDE.with(|cell| *cell.borrow_mut() = dir);
 }
 
 /// Typed error returned by [`daemon_ping`], [`daemon_status`], and
@@ -929,8 +968,6 @@ mod tests {
     /// (`daemon_socket_xdg`) makes the env mutation safe.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_ping_mock_round_trip() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -939,17 +976,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        // Override XDG_RUNTIME_DIR so the socket lives in our temp dir.
-        // Snapshot the prior value to restore at the end (other tests
-        // may rely on the inherited environment).
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: tests run sequentially within a process; this is only
-        // racy against parallel test workers, but the worst case is a
-        // sibling test computing a different socket path — not data
-        // corruption. The temp_dir itself is unique per test.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -992,16 +1020,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // Restore prior XDG_RUNTIME_DIR before the assertion so a
-        // failure doesn't leak the temp-dir override into subsequent
-        // tests in the same process.
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         let resp = result.expect("daemon_ping should succeed against mock");
         assert_eq!(resp.model, "BAAI/bge-large-en-v1.5");
@@ -1068,8 +1087,6 @@ mod tests {
     /// (also pins `daemon_reconcile_mock_round_trip` from Layer 1).
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_status_mock_round_trip() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1078,12 +1095,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: tests run sequentially within a process; this only races
-        // against parallel workers, and the temp_dir is unique per test.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1131,13 +1144,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         let resp = result.expect("daemon_status should succeed against mock");
         assert_eq!(resp.state, crate::watch_status::FreshnessState::Stale);
@@ -1178,8 +1185,6 @@ mod tests {
     /// `daemon_status_mock_round_trip`.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_reconcile_mock_round_trip() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1188,11 +1193,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1247,13 +1249,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         let resp = result.expect("daemon_reconcile should succeed against mock");
         // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
@@ -1269,8 +1265,6 @@ mod tests {
     /// trips on multi-byte boundaries inside `BufRead::read_line`.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_reconcile_forwards_unicode_args() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1280,11 +1274,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: serial_test guards env mutation.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1323,13 +1314,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: serial_test guards env mutation.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         let resp = result.expect("daemon_reconcile should succeed against mock");
         assert_eq!(resp.hook.as_deref(), Some("post-merge"));
@@ -1389,8 +1374,6 @@ mod tests {
     /// — agents that never have a stale tree don't pay 250 ms latency.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_fresh_on_first_poll() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1399,11 +1382,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1444,13 +1424,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         match result {
             FreshnessWait::Fresh(snap) => {
@@ -1469,18 +1443,13 @@ mod tests {
     /// caller's bail message can adapt.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_timeout_when_budget_expires() {
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         // A bound socket so the helper sees a daemon socket file. We never
         // actually accept — the deadline-first guard returns before the
@@ -1491,13 +1460,7 @@ mod tests {
         let result = wait_for_fresh(&cqs_dir, 0);
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         match result {
             FreshnessWait::Timeout(snap) => {
@@ -1523,28 +1486,17 @@ mod tests {
     /// and return `Timeout(unknown)` without ever asking the daemon.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_no_daemon_without_socket() {
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let result = wait_for_fresh(&cqs_dir, 5);
 
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         match result {
             FreshnessWait::NoDaemon(msg) => {
@@ -1564,8 +1516,6 @@ mod tests {
     /// poll interval × 1 sleep — a fresh-on-first wouldn't sleep at all).
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_fresh_after_two_stale_polls() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1574,13 +1524,18 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: tests run sequentially within a process; this only races
-        // against parallel workers, and the temp_dir is unique per test.
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        // CQS_FRESHNESS_POLL_MS still uses set_var because freshness_poll_ms_initial
+        // reads it directly (no thread-local hook); this is one isolated env mutation,
+        // not a serialization-group dance, and the 25ms value is read once on test
+        // entry. The structural fix for `freshness_poll_ms_initial` is the same shape
+        // as #1292 (parameter / thread-local) but is out of scope for this PR.
+        let prev_poll = std::env::var("CQS_FRESHNESS_POLL_MS").ok();
+        // SAFETY: a single-set, single-restore env touch — racy in principle but the
+        // mutator and reader are both in this test thread and the value is a poll
+        // interval, not a path computed against contemporaneous state.
         unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-            // Fast-poll override so the test's two sleeps don't add a
-            // perceptible delay. 25ms is the floor.
             std::env::set_var("CQS_FRESHNESS_POLL_MS", "25");
         }
 
@@ -1635,12 +1590,12 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
+        set_socket_dir_override_for_test(None);
+        // SAFETY: matched single-set/restore with the entry block above.
         unsafe {
-            std::env::remove_var("CQS_FRESHNESS_POLL_MS");
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            match prev_poll {
+                Some(v) => std::env::set_var("CQS_FRESHNESS_POLL_MS", v),
+                None => std::env::remove_var("CQS_FRESHNESS_POLL_MS"),
             }
         }
 
@@ -1669,8 +1624,6 @@ mod tests {
     /// because no listener is bound to it.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn wait_for_fresh_returns_transport_when_daemon_dies_mid_poll() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1679,10 +1632,11 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let prev_poll = std::env::var("CQS_FRESHNESS_POLL_MS").ok();
         // SAFETY: see above.
         unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
             std::env::set_var("CQS_FRESHNESS_POLL_MS", "25");
         }
 
@@ -1729,12 +1683,12 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
+        set_socket_dir_override_for_test(None);
+        // SAFETY: matched single-set/restore with the entry block above.
         unsafe {
-            std::env::remove_var("CQS_FRESHNESS_POLL_MS");
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            match prev_poll {
+                Some(v) => std::env::set_var("CQS_FRESHNESS_POLL_MS", v),
+                None => std::env::remove_var("CQS_FRESHNESS_POLL_MS"),
             }
         }
 
@@ -1756,8 +1710,6 @@ mod tests {
     /// than "start a daemon".
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_status_returns_bad_response_on_malformed_envelope() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1766,11 +1718,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see above.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1788,13 +1737,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         match result {
             Err(DaemonRpcError::BadResponse(msg)) => {
@@ -1819,20 +1762,10 @@ mod tests {
     #[test]
     fn daemon_socket_path_blake3_pinned() {
         use std::path::Path;
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
-        }
+        // #1292: thread-local override; was previously unsafe set_var on XDG.
+        set_socket_dir_override_for_test(Some(std::path::PathBuf::from("/tmp")));
         let p = daemon_socket_path(Path::new("/tmp/foo"));
-        // Restore env early so a panic doesn't poison neighbour tests.
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         // Compute the expected hex independently so the test pins both
         // the algorithm choice (BLAKE3) and the truncation length (8 bytes
@@ -1869,8 +1802,6 @@ mod tests {
     /// this test.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_status_handles_err_envelope_with_no_message() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1879,11 +1810,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1901,13 +1829,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         match result {
             Err(DaemonRpcError::DaemonError(msg)) => {
@@ -1937,8 +1859,6 @@ mod tests {
     /// has a clear inversion target.
     #[cfg(unix)]
     #[test]
-    #[ignore = "uses unsafe std::env::set_var(XDG_RUNTIME_DIR) which races with concurrent env reads on CI's parallel test runner and deadlocks the libc env mutex; passes locally with `cargo test daemon_translate`. Run with --include-ignored or in overnight CI. Long-term fix: thread XDG_RUNTIME_DIR through as a function parameter instead of a global env var."]
-    #[serial_test::serial(daemon_socket_xdg)]
     fn daemon_status_handles_err_envelope_with_non_string_message() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1947,11 +1867,8 @@ mod tests {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
 
-        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-        // SAFETY: see daemon_status_mock_round_trip.
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
+        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1969,13 +1886,7 @@ mod tests {
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
 
-        // SAFETY: see above.
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
+        set_socket_dir_override_for_test(None);
 
         match result {
             Err(DaemonRpcError::DaemonError(msg)) => {
