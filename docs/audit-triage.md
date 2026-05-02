@@ -84,9 +84,9 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P2-2 | Observability | `WatchSnapshot::compute` and `now_unix_secs` lack tracing on freshness state machine | medium | ⬜ |
 | P2-3 | Error Handling | `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides cache keys | medium | ✅ #1364 |
 | P2-4 | Error Handling | `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror | medium | ⬜ |
-| P2-5 | Error Handling | Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure | medium | ⬜ |
+| P2-5 | Error Handling | Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure | medium | ✅ #1379 |
 | P2-6 | Error Handling | Reference path canonicalize-failure in `Config::validate` skips SEC-4 + SEC-NEW-1 check | medium | ⬜ |
-| P2-7 | Robustness | L5X parser line arithmetic uses unchecked u32+u32 — overflow panics in debug | medium | ⬜ |
+| P2-7 | Robustness | L5X parser line arithmetic uses unchecked u32+u32 — overflow panics in debug | medium | ✅ #1379 |
 | P2-8 | Code Quality | `serve` async handlers duplicate 15-20 LOC of permit + spawn_blocking + span ×6 | medium | ⬜ |
 | P2-9 | Scaling | HNSW M/ef defaults static, don't auto-scale with corpus | medium | ⬜ |
 | P2-10 | TC Adversarial | `enumerate_files` symlink-skip / oversized-skip / non-UTF8-path branches untested | medium | ⬜ |

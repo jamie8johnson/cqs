@@ -106,7 +106,10 @@ fn parse_st_regions(
         if all_chunks.len() == region_chunk_start {
             if let Some(ref name) = region.routine_name {
                 let content = region.source.clone();
-                let line_count = content.lines().count() as u32;
+                // RB-V1.33-7 (#1290): clamp on the `usize -> u32` cast so
+                // a pathological file with >4 B lines saturates instead of
+                // silently truncating to a tiny line_count.
+                let line_count: u32 = content.lines().count().try_into().unwrap_or(u32::MAX);
                 let sig = content.lines().next().unwrap_or("").to_string();
                 let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
                 all_chunks.push(Chunk {
@@ -122,7 +125,13 @@ fn parse_st_regions(
                     file: path.to_path_buf(),
                     line_start: region.line_start,
                     // AC-V1.33-2: line_end is inclusive 1-indexed (see chunk.rs:93)
-                    line_end: region.line_start + line_count.saturating_sub(1),
+                    // RB-V1.33-7 (#1290): saturating_add so a high
+                    // `region.line_start` plus a large line_count clamps
+                    // at u32::MAX instead of overflow-panicking in debug
+                    // (test runs!) and silently wrapping in release.
+                    line_end: region
+                        .line_start
+                        .saturating_add(line_count.saturating_sub(1)),
                     language: st_lang,
                     signature: sig,
                     doc: None,
@@ -169,8 +178,20 @@ fn extract_st_chunk(
     }
 
     let content = source[node.byte_range()].to_string();
-    let line_start = region.line_start + node.start_position().row as u32;
-    let line_end = region.line_start + node.end_position().row as u32;
+    // RB-V1.33-7 (#1290): tree-sitter row indices are usize internally; the
+    // `as u32` cast silently truncates on files >4 B lines. `try_into +
+    // unwrap_or(u32::MAX)` clamps the cast so the saturating_add below
+    // reaches u32::MAX deterministically rather than wrapping.
+    let start_row: u32 = node.start_position().row.try_into().unwrap_or(u32::MAX);
+    let end_row: u32 = node.end_position().row.try_into().unwrap_or(u32::MAX);
+    // saturating_add so `region.line_start + tree-sitter row` clamps at
+    // u32::MAX on a pathological L5X (large `Routine` with many rungs and
+    // a high `region.line_start` offset). Pre-fix this overflowed in
+    // debug (test panic!) and silently wrapped in release, producing a
+    // chunk with `line_start ≈ 0`, `line_end ≈ u32::MAX` — a nonsense
+    // span that corrupts the index for that chunk.
+    let line_start = region.line_start.saturating_add(start_row);
+    let line_end = region.line_start.saturating_add(end_row);
 
     let signature = content
         .lines()
@@ -841,6 +862,88 @@ END_PROGRAM
         assert!(!chunks.is_empty(), "CRLF L5X source should produce chunks");
         for chunk in &chunks {
             assert_eq!(chunk.language, Language::StructuredText);
+        }
+    }
+
+    /// RB-V1.33-7 (#1290): synthetic-chunk path must saturate on overflow.
+    ///
+    /// When the routine has a name but tree-sitter produces no matches
+    /// (no parseable ST inside), the synthetic-chunk fallback computes
+    /// `line_end = region.line_start + (line_count - 1)`. With a high
+    /// `region.line_start` (near `u32::MAX`) and a multi-line region,
+    /// pre-fix this overflowed `u32 + u32` — panics in debug (test
+    /// runs!), wraps in release. Post-fix uses `saturating_add` so it
+    /// clamps at `u32::MAX` and produces a valid chunk.
+    #[test]
+    fn test_l5x_synthetic_chunk_saturates_on_line_overflow() {
+        // The fallback only triggers when the ST source has *no* tree-sitter
+        // matches. Use a comment-only payload so `parse_st_regions` produces
+        // zero matches and falls through to the synthetic path.
+        let source = "// just a comment\n// no statements\n// nothing parseable";
+        let regions = vec![StRegion {
+            source: source.to_string(),
+            line_start: u32::MAX - 1, // forces overflow on `+ (line_count - 1)`
+            routine_name: Some("OverflowRoutine".to_string()),
+            program_name: Some("OverflowProg".to_string()),
+        }];
+
+        let parser = Parser::new().unwrap();
+        let chunks = parse_st_regions(&regions, Path::new("overflow.l5x"), &parser)
+            .expect("parse_st_regions must not panic on near-MAX line_start");
+
+        assert_eq!(
+            chunks.len(),
+            1,
+            "Synthetic fallback should produce exactly one chunk"
+        );
+        let c = &chunks[0];
+        assert_eq!(
+            c.line_start,
+            u32::MAX - 1,
+            "line_start should match region.line_start"
+        );
+        assert_eq!(
+            c.line_end,
+            u32::MAX,
+            "line_end must saturate at u32::MAX, not wrap"
+        );
+        assert!(
+            c.line_end >= c.line_start,
+            "line_end must be >= line_start (no wrap)"
+        );
+    }
+
+    /// RB-V1.33-7 (#1290): tree-sitter chunk path must saturate on
+    /// overflow. With a high `region.line_start` and a tree-sitter row
+    /// index, pre-fix `region.line_start + node.row as u32` overflowed.
+    /// Post-fix uses `saturating_add` and a clamping cast so both line
+    /// bounds clamp at `u32::MAX`.
+    #[test]
+    fn test_l5x_tree_sitter_chunk_saturates_on_line_overflow() {
+        // Real ST function so the tree-sitter parser produces a chunk.
+        let source = "FUNCTION_BLOCK MyFB\nVAR x : INT; END_VAR\nx := 1;\nEND_FUNCTION_BLOCK";
+        let regions = vec![StRegion {
+            source: source.to_string(),
+            line_start: u32::MAX, // any tree-sitter row added overflows u32
+            routine_name: Some("Saturate".to_string()),
+            program_name: Some("Prog".to_string()),
+        }];
+
+        let parser = Parser::new().unwrap();
+        let chunks = parse_st_regions(&regions, Path::new("saturate.l5x"), &parser)
+            .expect("parse_st_regions must not panic on u32::MAX line_start");
+
+        for c in &chunks {
+            assert_eq!(
+                c.line_start,
+                u32::MAX,
+                "line_start must saturate at u32::MAX, not wrap"
+            );
+            assert_eq!(
+                c.line_end,
+                u32::MAX,
+                "line_end must saturate at u32::MAX, not wrap"
+            );
         }
     }
 }

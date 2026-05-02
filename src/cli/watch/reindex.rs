@@ -201,6 +201,67 @@ pub(super) fn splade_batch_size() -> usize {
         .filter(|n| *n > 0)
         .unwrap_or(32)
 }
+
+/// EH-V1.33-8 (#1290): touch the stored `source_mtime` to disk's mtime so
+/// the next reconcile pass sees `disk == stored` and stops re-queuing the
+/// file. Returns `true` on success.
+///
+/// Pre-fix this was a four-deep `if let Ok` chain (`metadata` → `modified`
+/// → `duration_since(UNIX_EPOCH)` → `touch_source_mtime`); any one of
+/// those four steps failing silently abandoned the touch, leaving the
+/// stored mtime stale and the reconcile loop running forever for that
+/// file. Worse, `cqs status --watch-fresh` would then claim
+/// `state == fresh` while the touch never landed — operators trusting
+/// the readiness signal would proceed against a stale index.
+///
+/// The helper logs a distinct `tracing::warn!` at each failure step so
+/// operators can see exactly which FS API or store call broke the chain.
+pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Path) -> bool {
+    let meta = match std::fs::metadata(abs_path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                path = %rel_path.display(),
+                error = %e,
+                "Cannot touch source_mtime: metadata() failed; reconcile loop may persist"
+            );
+            return false;
+        }
+    };
+    let disk_mtime = match meta.modified() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                path = %rel_path.display(),
+                error = %e,
+                "Cannot touch source_mtime: modified() failed; reconcile loop may persist"
+            );
+            return false;
+        }
+    };
+    let d = match disk_mtime.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                path = %rel_path.display(),
+                error = %e,
+                "Cannot touch source_mtime: file mtime predates UNIX_EPOCH (clock skew?); reconcile loop may persist"
+            );
+            return false;
+        }
+    };
+    let mtime_ms = cqs::duration_to_mtime_millis(d);
+    if let Err(e) = store.touch_source_mtime(rel_path, mtime_ms) {
+        tracing::warn!(
+            path = %rel_path.display(),
+            error = %e,
+            "Failed to touch source_mtime for parse-failed file — reconcile loop may persist"
+        );
+        return false;
+    }
+    true
+}
+
 /// Reindex specific files.
 ///
 /// Returns `(chunk_count, content_hashes)` — the content hashes can be used for
@@ -323,22 +384,19 @@ pub(super) fn reindex_files(
                     // piece; the file's previous chunks remain visible
                     // in search until the user fixes the syntax error
                     // and the next save retriggers a successful re-parse.
-                    if let Ok(meta) = std::fs::metadata(&abs_path) {
-                        if let Ok(disk_mtime) = meta.modified() {
-                            if let Ok(d) = disk_mtime.duration_since(std::time::UNIX_EPOCH) {
-                                let mtime_ms = cqs::duration_to_mtime_millis(d);
-                                if let Err(touch_err) =
-                                    store.touch_source_mtime(rel_path, mtime_ms)
-                                {
-                                    tracing::warn!(
-                                        path = %rel_path.display(),
-                                        error = %touch_err,
-                                        "Failed to touch source_mtime for parse-failed file — reconcile loop may persist"
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    //
+                    // EH-V1.33-8 (#1290): the previous nested `if let Ok`
+                    // chain swallowed metadata / modified / duration_since
+                    // failures silently. A clock-skewed mtime, a deleted
+                    // file mid-walk, or a permission flake on the second
+                    // FS read would silently abandon the touch — and
+                    // `cqs status --watch-fresh` would then claim the
+                    // index is fresh while the touch never landed.
+                    // Refactored to a fail-loud helper that logs a
+                    // distinct warn at each step so operators can see
+                    // *why* a touch failed and the reconcile loop
+                    // persisted.
+                    touch_mtime_or_warn(store, rel_path, &abs_path);
                     vec![]
                 }
             }
