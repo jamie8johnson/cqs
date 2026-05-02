@@ -122,7 +122,13 @@ impl HnswIndex {
     /// * `dim` - Expected embedding dimension
     ///
     /// # Example
-    /// ```ignore
+    ///
+    /// `text` rather than `ignore` because the snippet references `store`
+    /// without setup; `cargo test -- --include-ignored` (the `ci-slow.yml`
+    /// shape) compiles `ignore`-tagged doctests and would surface
+    /// `cannot find value 'store' in this scope`. (#1305)
+    ///
+    /// ```text
     /// let index = HnswIndex::build_batched_with_dim(
     ///     store.embedding_batches(10_000),
     ///     store.chunk_count()?,
