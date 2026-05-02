@@ -388,11 +388,28 @@ pub(in crate::cli::batch) fn dispatch_read(
         format!("{}{}", header, content)
     };
 
+    // SEC-V1.33-9: file-read path should also honor vendored detection so
+    // `cqs read node_modules/lodash.js` reports the correct trust level
+    // matching the chunks-side labeling. Match the user-supplied relative
+    // path against the configured `[index].vendored_paths` (or defaults).
+    let cfg = ctx.config();
+    let prefixes = cqs::vendored::effective_prefixes(
+        cfg.index
+            .as_ref()
+            .and_then(|ic| ic.vendored_paths.as_deref()),
+    );
+    let normalized = cqs::normalize_path(std::path::Path::new(path));
+    let trust_level = if cqs::vendored::is_vendored_origin(&normalized, &prefixes) {
+        "vendored-code"
+    } else {
+        "user-code"
+    };
+
     Ok(serde_json::json!({
         "path": path,
         "content": enriched,
         "notes_injected": notes_injected,
-        "trust_level": "user-code",
+        "trust_level": trust_level,
     }))
 }
 
@@ -423,10 +440,20 @@ fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Val
         &notes,
     )?;
 
+    // SEC-V1.33-9: was hardcoded `"user-code"` even for chunks under
+    // `node_modules/`/`vendor/`/etc, defeating the #1221 vendored-code
+    // boundary. `build_focused_output` now surfaces the resolved chunk's
+    // `vendored` flag (schema v24) so the daemon RPC matches the index-time
+    // labeling shape used by search/scout JSON.
+    let trust_level = if result.vendored {
+        "vendored-code"
+    } else {
+        "user-code"
+    };
     let mut json = serde_json::json!({
         "focus": focus,
         "content": result.output,
-        "trust_level": "user-code",
+        "trust_level": trust_level,
     });
     if let Some(ref h) = result.hints {
         json["hints"] = serde_json::json!({
@@ -522,6 +549,94 @@ mod tests {
         assert!(
             json.get("errors").and_then(|v| v.as_u64()).is_some(),
             "stats must carry an `errors` field, got: {json}"
+        );
+    }
+
+    /// SEC-V1.33-9 regression: a vendored chunk surfaces `trust_level:
+    /// "vendored-code"` from `dispatch_read --focus`. Pre-fix the daemon
+    /// hardcoded `"user-code"` regardless of the chunk's actual origin,
+    /// defeating the #1221 vendored-code boundary.
+    fn make_chunk_at(id: &str, name: &str, file: &str) -> Chunk {
+        let content = format!("fn {name}() {{ }}");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: id.to_string(),
+            file: PathBuf::from(file),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    fn seed_with_vendored_chunk() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let emb1 = Embedding::new(emb_vec.clone());
+        let emb2 = Embedding::new(emb_vec);
+
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            // Apply default vendored prefixes BEFORE upsert so `node_modules/`
+            // is flagged at write time. `set_vendored_prefixes` is on a
+            // OnceLock — write order matters: must precede `upsert_chunks_batch`.
+            store.set_vendored_prefixes(cqs::vendored::effective_prefixes(None));
+            let chunks = vec![
+                (
+                    make_chunk_at(
+                        "node_modules/lib.js:1:lib_fn",
+                        "lib_fn",
+                        "node_modules/lib.js",
+                    ),
+                    emb1,
+                ),
+                (
+                    make_chunk_at("src/lib.rs:1:user_fn", "user_fn", "src/lib.rs"),
+                    emb2,
+                ),
+            ];
+            store.upsert_chunks_batch(&chunks, Some(0)).expect("upsert");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("ctx");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn dispatch_read_focus_emits_vendored_code_for_vendored_chunk() {
+        let (_dir, ctx) = seed_with_vendored_chunk();
+        let view = ctx.build_view(None);
+        // `lib_fn` lives in `node_modules/lib.js` so it must be tagged vendored.
+        let json = dispatch_read_focused(&view, "lib_fn").expect("dispatch_read_focused");
+        assert_eq!(
+            json["trust_level"], "vendored-code",
+            "vendored chunk must surface trust_level=vendored-code, got: {json}"
+        );
+    }
+
+    #[test]
+    fn dispatch_read_focus_emits_user_code_for_normal_chunk() {
+        let (_dir, ctx) = seed_with_vendored_chunk();
+        let view = ctx.build_view(None);
+        // `user_fn` lives in `src/lib.rs` so it must be tagged user-code.
+        let json = dispatch_read_focused(&view, "user_fn").expect("dispatch_read_focused");
+        assert_eq!(
+            json["trust_level"], "user-code",
+            "non-vendored chunk must surface trust_level=user-code, got: {json}"
         );
     }
 }

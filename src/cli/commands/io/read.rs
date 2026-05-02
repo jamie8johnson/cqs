@@ -117,6 +117,13 @@ pub(crate) struct FocusedReadResult {
     /// silently dropped type-definition lookups; agents now see exactly
     /// what was missed instead of inferring it from absent JSON keys.
     pub warnings: Vec<String>,
+    /// SEC-V1.33-9: was the resolved focus chunk indexed under a vendored
+    /// path (`vendor/`, `node_modules/`, `third_party/`, …)? Mirrors
+    /// `ChunkSummary::vendored` (#1221, schema v24). Both CLI and daemon
+    /// JSON paths emit `trust_level: "vendored-code"` when this is true,
+    /// closing the v1.33.0 gap where `dispatch_read` and `cmd_read --focus`
+    /// hardcoded `"user-code"` regardless of the chunk's actual origin.
+    pub vendored: bool,
 }
 
 /// Build focused-read output: header + hints + notes + target + type deps.
@@ -282,6 +289,10 @@ pub(crate) fn build_focused_output<Mode>(
         output,
         hints,
         warnings,
+        // SEC-V1.33-9: surface the resolved chunk's vendored flag so
+        // both CLI and daemon JSON paths can emit the correct
+        // `trust_level` instead of hardcoding `"user-code"`.
+        vendored: chunk.vendored,
     })
 }
 
@@ -312,7 +323,11 @@ struct FocusedReadJsonOutput {
     content: String,
     /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
     /// trust_level. `read --focus` reads from the project store only
-    /// (no reference-store fan-in), so this is always "user-code".
+    /// (no reference-store fan-in), so the value is either `"user-code"`
+    /// or `"vendored-code"` depending on the resolved chunk's
+    /// `chunks.vendored` flag (schema v24). SEC-V1.33-9 closed the gap
+    /// where this was hardcoded `"user-code"` even for vendored chunks,
+    /// defeating the #1221 trust boundary.
     /// SECURITY.md's mitigation contract is that agents can branch
     /// safely on this field; the `read --focus` path was missing it.
     trust_level: &'static str,
@@ -417,7 +432,14 @@ fn cmd_read_focused(
         let output = FocusedReadJsonOutput {
             focus: focus.to_string(),
             content: result.output,
-            trust_level: "user-code",
+            // SEC-V1.33-9: honor the resolved chunk's vendored flag so a
+            // chunk under `node_modules/` is reported as `vendored-code`,
+            // matching the index-time labeling shape used by search/scout.
+            trust_level: if result.vendored {
+                "vendored-code"
+            } else {
+                "user-code"
+            },
             injection_flags: Vec::new(),
             hints,
             warnings: result.warnings.clone(),

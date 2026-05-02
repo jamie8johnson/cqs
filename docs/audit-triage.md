@@ -85,7 +85,7 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P2-3 | Error Handling | `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides cache keys | medium | ✅ #1364 |
 | P2-4 | Error Handling | `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror | medium | ⬜ |
 | P2-5 | Error Handling | Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure | medium | ✅ #1379 |
-| P2-6 | Error Handling | Reference path canonicalize-failure in `Config::validate` skips SEC-4 + SEC-NEW-1 check | medium | ⬜ |
+| P2-6 | Error Handling | Reference path canonicalize-failure in `Config::validate` skips SEC-4 + SEC-NEW-1 check | medium | ✅ #1367 |
 | P2-7 | Robustness | L5X parser line arithmetic uses unchecked u32+u32 — overflow panics in debug | medium | ✅ #1379 |
 | P2-8 | Code Quality | `serve` async handlers duplicate 15-20 LOC of permit + spawn_blocking + span ×6 | medium | ⬜ |
 | P2-9 | Scaling | HNSW M/ef defaults static, don't auto-scale with corpus | medium | ⬜ |
@@ -100,17 +100,17 @@ Total findings: 167 across 16 categories. Classified into P1 (fix immediately) /
 | P2-18 | Data Safety | `migrate_legacy_index_to_default_slot` does not acquire `slots.lock` | medium | ⬜ |
 | P2-19 | Data Safety | `write_active_slot`/`write_slot_model` use fixed `<file>.tmp` paths | easy | ⬜ |
 | P2-20 | Data Safety | `verify_hnsw_checksums` skips files not on disk — partial index passes verification | easy | ⬜ |
-| P2-21 | Data Safety | `EmbeddingCache::evict`/`QueryCache::evict` use deferred transactions | medium | ⬜ |
+| P2-21 | Data Safety | `EmbeddingCache::evict`/`QueryCache::evict` use deferred transactions | medium | ✅ #1367 |
 | P2-22 | Data Safety | `backup_path_for` uses 1-second timestamp with no PID — concurrent migrations collide | easy | ⬜ |
-| P2-23 | Data Safety | `evict_lock` reset on every `EmbeddingCache::open` — multiple opens don't share | medium | ⬜ |
+| P2-23 | Data Safety | `evict_lock` reset on every `EmbeddingCache::open` — multiple opens don't share | medium | ✅ #1367 |
 | P2-24 | Data Safety | `clear_session` doesn't reset `detected_dim` or `model_fingerprint` | medium | ✅ #1364 |
-| P2-25 | Data Safety | Pool `after_connect` has no `wal_autocheckpoint` ceiling | medium | ⬜ |
+| P2-25 | Data Safety | Pool `after_connect` has no `wal_autocheckpoint` ceiling | medium | ✅ #1367 |
 | P2-26 | Data Safety | `migrate_legacy_index_to_default_slot` checkpoints before sentinel | easy | ⬜ |
 | P2-27 | Security | `apply_db_file_perms` runs after pool open — embedding cache born world-readable | easy | ⬜ |
 | P2-28 | Security | `ProjectRegistry::save` writes tmp with default umask; chmod after rename | easy | ⬜ |
 | P2-29 | Security | `write_model_toml` interpolates `repo` into TOML without escaping | easy | ⬜ |
 | P2-30 | Security | `audit-mode.json` parsed without size cap — `.cqs/`-write attacker can OOM cqs | easy | ⬜ |
-| P2-31 | Security | `dispatch_read` daemon handler hardcodes `trust_level: "user-code"` | medium | ⬜ |
+| P2-31 | Security | `dispatch_read` daemon handler hardcodes `trust_level: "user-code"` | medium | ✅ #1367 |
 | P2-32 | Resource Management | `add_reference_to_config`/`remove_reference_from_config` read locked TOML unbounded | easy | ⬜ |
 | P2-33 | Resource Management | `ProjectRegistry::load` reads file *then* checks size — full alloc before cap | easy | ⬜ |
 | P2-34 | Resource Management | `parse_wsl_automount_root`/`is_slow_mmap_filesystem` read system files unbounded | easy | ⬜ |
