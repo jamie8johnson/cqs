@@ -7,10 +7,16 @@
 //! here so new envelope additions are a single attribute import.
 //!
 //! Use as:
-//! ```ignore
+//! ```text
 //! #[serde(skip_serializing_if = "crate::serde_helpers::is_false")]
 //! pub flag: bool,
 //! ```
+//!
+//! `text` (not `ignore`) is deliberate: the snippet is a struct-field
+//! fragment, not a full program. `ignore` skips execution but is still
+//! handed to rustc when ci-slow.yml runs `cargo test -- --include-ignored`,
+//! which treats ignored doctests as runnable. `text` opts the block out of
+//! the doctest harness entirely.
 
 #[inline]
 pub fn is_false(v: &bool) -> bool {
