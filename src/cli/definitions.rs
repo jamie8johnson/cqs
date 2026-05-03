@@ -283,6 +283,15 @@ pub struct Cli {
     /// `.cqs/slots/<name>/`. Default behaviour is to read the active slot
     /// from `.cqs/active_slot` (falls back to `default`). Spec:
     /// `docs/plans/2026-04-24-embeddings-cache-and-slots.md`.
+    ///
+    /// **Ignored (and rejected at runtime) on `cqs slot` and `cqs cache`
+    /// subcommands** — those manage slots and the cache themselves, so
+    /// scoping them to a slot is incoherent. Use the explicit
+    /// `<subcommand> <name>` argument instead (e.g. `cqs slot remove
+    /// <name>`, `cqs cache stats <name>`). Audit P3-27 / #1365: clap-derive
+    /// can't suppress a `global = true` arg per subcommand, so the
+    /// runtime bails in `cli/commands/infra/slot.rs` and
+    /// `cli/commands/infra/cache_cmd.rs`.
     #[arg(long, global = true)]
     pub slot: Option<String>,
 
