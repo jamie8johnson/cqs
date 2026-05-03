@@ -107,9 +107,36 @@ impl LocalProvider {
 
         let concurrency = local_concurrency();
         let timeout = local_timeout();
-        let api_key = std::env::var("CQS_LLM_API_KEY")
+        let mut api_key = std::env::var("CQS_LLM_API_KEY")
             .ok()
             .filter(|s| !s.is_empty());
+
+        // SEC-V1.33-10 / #1340: refuse to attach `Authorization: Bearer <key>`
+        // when an `http://` (plaintext) base targets a non-loopback /
+        // non-RFC1918 host. The default reqwest cross-origin redirect policy
+        // and SEC-V1.30.1-7 same-origin redirect both assume the operator at
+        // least started with HTTPS or a loopback bind — neither defense
+        // triggers when the operator's intentional initial bind is plaintext
+        // to a public host. Pre-fix, every prompt + the bearer token shipped
+        // over the wire in cleartext to whoever was on-path.
+        //
+        // Symmetric to `cqs serve`'s loud-warn for `--no-auth` on non-loopback
+        // (PB-V1.30.1-1, #1206) — operator gets a clear refusal instead of a
+        // silent leak.
+        if api_base_lc.starts_with("http://") && api_key.is_some() {
+            let host = http_host(&llm_config.api_base);
+            if !is_local_or_private_host(host) {
+                tracing::warn!(
+                    api_base = %llm_config.api_base,
+                    host = host,
+                    "Refusing to attach Authorization: Bearer over plaintext HTTP to a \
+                     non-loopback / non-RFC1918 host. Use https:// or bind to a private \
+                     network. Auth header dropped; requests will proceed without it. \
+                     SEC-V1.33-10 / #1340"
+                );
+                api_key = None;
+            }
+        }
 
         // SEC-V1.30.1-7 (#1223): same-origin redirect policy. Submit
         // requests carry `Authorization: Bearer <key>` when
@@ -594,6 +621,140 @@ impl LocalProvider {
 /// Not memoised: read on each response so tests can flip the cap without a
 /// process-wide cache. The env-var cost is negligible compared to the HTTP
 /// request that just completed.
+/// Extract the host portion of an `http(s)://host[:port]/path` URL without
+/// pulling the `url` crate as a direct dep.
+///
+/// Handles IPv6 literals (`http://[::1]:8080/...` → `[::1]`), default ports
+/// (`http://example.com/...` → `example.com`), and ports
+/// (`http://10.0.0.1:8080/v1` → `10.0.0.1`). Returns the input unchanged
+/// when the URL doesn't match the expected shape — `is_local_or_private_host`
+/// will then reject it as not-loopback.
+///
+/// SEC-V1.33-10 / #1340 helper.
+fn http_host(api_base: &str) -> &str {
+    let rest = match api_base
+        .strip_prefix("http://")
+        .or_else(|| api_base.strip_prefix("https://"))
+    {
+        Some(r) => r,
+        None => return api_base,
+    };
+    // IPv6 literals are bracketed: [::1]:8080
+    if let Some(stripped) = rest.strip_prefix('[') {
+        if let Some(end) = stripped.find(']') {
+            return &stripped[..end];
+        }
+    }
+    // Otherwise host runs until the first `:` (port) or `/` (path).
+    let end = rest
+        .bytes()
+        .position(|b| b == b':' || b == b'/')
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+/// Predicate: does `host` (already extracted by [`http_host`]) refer to a
+/// loopback or RFC1918 destination, where plaintext `http://` is acceptable?
+///
+/// Loopback: `127.0.0.1` (and any `127.x.x.x`), `::1`, `localhost`.
+/// RFC1918:
+/// - `10.0.0.0/8` (any `10.x.x.x`)
+/// - `172.16.0.0/12` (`172.16.x.x` through `172.31.x.x`)
+/// - `192.168.0.0/16` (any `192.168.x.x`)
+///
+/// Returns `false` for hostnames containing dots that don't match those
+/// patterns (e.g. `internal-llm.example.com`). Returns `false` for
+/// non-IPv4-shaped strings outside the explicit-loopback names —
+/// catches `attacker.example.com`, `8.8.8.8`, etc.
+fn is_local_or_private_host(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    if h == "localhost" || h == "::1" {
+        return true;
+    }
+    // IPv4 dotted-quad: split into 4 octets and pattern-match the prefix.
+    let octets: Vec<_> = h.split('.').collect();
+    if octets.len() != 4 {
+        return false;
+    }
+    let parsed: Option<Vec<u8>> = octets.iter().map(|o| o.parse::<u8>().ok()).collect();
+    let Some(quad) = parsed else {
+        return false;
+    };
+    match (quad[0], quad[1]) {
+        (127, _) => true,                           // 127.0.0.0/8
+        (10, _) => true,                            // 10.0.0.0/8
+        (172, b) if (16..=31).contains(&b) => true, // 172.16.0.0/12
+        (192, 168) => true,                         // 192.168.0.0/16
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod url_predicates_tests {
+    use super::{http_host, is_local_or_private_host};
+
+    #[test]
+    fn host_extraction_basic() {
+        assert_eq!(http_host("http://example.com/v1"), "example.com");
+        assert_eq!(http_host("https://api.openai.com/v1"), "api.openai.com");
+        assert_eq!(http_host("http://10.0.0.1:8080/v1"), "10.0.0.1");
+        assert_eq!(http_host("http://localhost:8000"), "localhost");
+        assert_eq!(http_host("http://localhost"), "localhost");
+    }
+
+    #[test]
+    fn host_extraction_ipv6() {
+        assert_eq!(http_host("http://[::1]:8080/v1"), "::1");
+        assert_eq!(http_host("https://[2001:db8::1]/api"), "2001:db8::1");
+    }
+
+    #[test]
+    fn host_extraction_unparseable_returns_input() {
+        assert_eq!(http_host("not a url"), "not a url");
+        assert_eq!(http_host("ftp://x"), "ftp://x");
+    }
+
+    #[test]
+    fn loopback_accepted() {
+        assert!(is_local_or_private_host("127.0.0.1"));
+        assert!(is_local_or_private_host("127.5.6.7"));
+        assert!(is_local_or_private_host("::1"));
+        assert!(is_local_or_private_host("localhost"));
+        assert!(is_local_or_private_host("LOCALHOST"));
+    }
+
+    #[test]
+    fn rfc1918_accepted() {
+        assert!(is_local_or_private_host("10.0.0.1"));
+        assert!(is_local_or_private_host("10.255.255.255"));
+        assert!(is_local_or_private_host("172.16.0.1"));
+        assert!(is_local_or_private_host("172.31.255.255"));
+        assert!(is_local_or_private_host("192.168.1.1"));
+    }
+
+    #[test]
+    fn rfc1918_172_boundaries() {
+        assert!(!is_local_or_private_host("172.15.0.1"), "below /12 range");
+        assert!(!is_local_or_private_host("172.32.0.1"), "above /12 range");
+    }
+
+    #[test]
+    fn public_rejected() {
+        assert!(!is_local_or_private_host("8.8.8.8"));
+        assert!(!is_local_or_private_host("example.com"));
+        assert!(!is_local_or_private_host("internal-llm.example.com"));
+        assert!(!is_local_or_private_host(""));
+    }
+
+    #[test]
+    fn rejects_non_ipv4_with_dots() {
+        // Hostname like "1.2.3" (3 parts) shouldn't be treated as IP.
+        assert!(!is_local_or_private_host("1.2.3"));
+        // Hostname with 4 parts but non-numeric.
+        assert!(!is_local_or_private_host("a.b.c.d"));
+    }
+}
+
 fn local_max_body_bytes() -> usize {
     std::env::var("CQS_LOCAL_LLM_MAX_BODY_BYTES")
         .ok()
