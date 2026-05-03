@@ -719,7 +719,7 @@ Each split is ±2-3pp noisy on a single trial; quote both when comparing config 
 
 Quick index by domain (everything is searchable in the table below):
 
-- **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`, `CQS_NO_ANSI_STRIP`
+- **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`, `CQS_NO_ANSI_STRIP`, `CQS_HF_CACHE_TRUSTED`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
 - **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_TRT_ENGINE_CACHE`, `CQS_DISABLE_TENSORRT`, `CQS_DISABLE_CPU_WARM`, `CQS_SPARSE_CHUNKS_PER_TX`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
 - **Daemon, watch, batch** — `CQS_NO_DAEMON`, `CQS_DAEMON_*`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_BATCH_*IDLE_MINUTES`, `CQS_REFS_LRU_SIZE`, `CQS_WATCH_*`, `CQS_CHAT_HISTORY`
@@ -836,6 +836,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
 | `CQS_MIGRATE_REQUIRE_BACKUP` | `1` | Migration-time DB backup is required by default; a backup failure aborts the migration with `StoreError::Io` so the destructive v18→v19 rebuild never runs without a recovery snapshot. Set to `0` to downgrade to a `warn!` and proceed without a snapshot (accept data-loss risk on a subsequent commit failure). |
+| `CQS_HF_CACHE_TRUSTED` | (none) | Set to `1` to opt into env-supplied HF cache paths (`HF_HOME` / `HUGGINGFACE_HUB_CACHE`) that would otherwise be flagged as suspicious — under `/tmp`, `/var/tmp`, `/dev/shm`, `~/Downloads`, `~/Desktop`, or outside both `$HOME` and the system cache dir. Without this, suspicious paths get a `tracing::warn!` and the loader falls through to the default cache so a hostile env var can't redirect ONNX model loads. SEC-V1.33-8 / #1339. |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |
 | `CQS_NO_ANSI_STRIP` | (none) | Set to `1` to disable terminal-control sanitization on chunk content. By default `cqs` (text mode) replaces ESC / DEL / C0+C1 control bytes from chunk-derived strings before `println!` to defend against ANSI / OSC 8 / DCS payloads embedded in the indexed corpus or a poisoned reference index — the shell-version of indirect-prompt-injection. Tab / LF / CR are preserved so source layout still renders. Opt out when displaying chunks of code whose own string literals legitimately contain escape sequences being analyzed. SEC-V1.33-5 / #1341. |
 | `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
