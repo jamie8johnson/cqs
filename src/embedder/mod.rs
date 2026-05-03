@@ -1397,9 +1397,21 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
         tracing::warn!(dir = %dir.display(), "CQS_ONNX_DIR set but model files not found, falling back to HF download");
     }
 
-    use hf_hub::api::sync::Api;
+    use hf_hub::api::sync::ApiBuilder;
 
-    let api = Api::new().map_err(|e| EmbedderError::HfHub(e.to_string()))?;
+    // hf-hub defaults to max_retries=0 — a single transient ureq error
+    // (TLS handshake glitch, HTTP/2 reset, throttling) aborts the download
+    // with no retry. The Python `huggingface-cli` retries internally and
+    // succeeds, so the same file from the same server can fail in cqs and
+    // succeed in Python. Bump retries to 5 to match human expectations
+    // and to make >2 GB external-data downloads (Gemma, Qwen3) reliable.
+    // Discovered 2026-05-03 during the Qwen3-Embedding-8B ceiling-probe
+    // attempt: a `model.onnx_data` fetch silently failed with no retry,
+    // ORT then panicked at session init with "cannot get file size".
+    let api = ApiBuilder::from_env()
+        .with_retries(5)
+        .build()
+        .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
     let repo = api.model(config.repo.clone());
 
     let model_path = repo
@@ -1414,18 +1426,38 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
     // sit next to model.onnx; without it, session init fails with
     // "filesystem error: cannot get file size" when the graph references
     // external tensors. Most presets (BGE, E5, etc.) ship a single
-    // self-contained model.onnx and do not have this file — we attempt the
-    // fetch and silently ignore a 404, since the absence of the sidecar is
-    // the common case. EmbeddingGemma-300m is the first preset that needs
-    // it (~1.2GB of FP32 tensors live in onnx/model.onnx_data alongside the
-    // ~480KB onnx/model.onnx graph).
+    // self-contained model.onnx and do not have this file — the sidecar
+    // attempt returns a 404 wrapped in `ApiError::RequestError`. That's
+    // expected for self-contained models and gets silenced at debug level.
+    //
+    // Anything other than a clean 404 (network error, IoError,
+    // LockAcquisition, etc.) is unexpected: either the operator is on
+    // an external-data preset and the file genuinely couldn't be fetched
+    // (broken setup), or there's a transient that even retries didn't
+    // recover from. Either way the operator needs to see it — log at
+    // warn so it surfaces at the default RUST_LOG level. The pipeline
+    // continues; if ORT later panics with "cannot get file size", the
+    // warn line is the breadcrumb.
     let external_data_path = format!("{}_data", config.onnx_path);
-    if let Err(e) = repo.get(&external_data_path) {
-        tracing::debug!(
-            file = %external_data_path,
-            error = %e,
-            "ONNX external-data sidecar not present in repo (expected for self-contained models)"
-        );
+    match repo.get(&external_data_path) {
+        Ok(_) => {} // Sidecar fetched (or already cached) — common path for Gemma / Qwen3.
+        Err(e) if is_likely_not_found(&e) => {
+            tracing::debug!(
+                file = %external_data_path,
+                error = %e,
+                "ONNX external-data sidecar not present in repo (expected for self-contained models)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                file = %external_data_path,
+                error = %e,
+                "ONNX external-data sidecar fetch failed unexpectedly. \
+                 If the model exceeds 2GB, ORT will panic with 'cannot get file size' \
+                 at session init. Check network, HF auth, or run \
+                 `hf download <repo> --include='{external_data_path}'` manually."
+            );
+        }
     }
 
     // Verify checksums (skip if already verified via marker file)
@@ -1452,6 +1484,25 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
     }
 
     Ok((model_path, tokenizer_path))
+}
+
+/// Heuristic — was an `hf_hub::api::sync::ApiError` likely a 404 / "file not
+/// in repo" rather than a real failure?
+///
+/// `hf_hub` wraps the HTTP layer behind ureq and exposes most errors as
+/// `RequestError(Box<ureq::Error>)`. Distinguishing 404 cleanly would
+/// require pattern-matching the inner ureq error, which is version-specific
+/// and exposes the dependency surface. Instead we string-match the
+/// rendered error: `ureq::Error::Status(404, _)` formats with "404" or
+/// "status code 404". Good-enough for the warn-vs-debug split — if a 404
+/// ever stops formatting that way, we just get a warn for a self-contained
+/// preset, which is annoying but not wrong. False-positive direction
+/// (treating a real failure as 404) is the more dangerous one but
+/// requires the error message to literally contain "404", which a network
+/// failure normally won't.
+fn is_likely_not_found(err: &hf_hub::api::sync::ApiError) -> bool {
+    let s = err.to_string();
+    s.contains("404") || s.contains("Not Found") || s.contains("not found")
 }
 
 /// Verify file checksum using blake3
