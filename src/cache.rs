@@ -1554,26 +1554,52 @@ mod tests {
 
     // ===== TC-24: prune edge cases =====
 
+    /// `prune(0)` should not touch entries with `created_at >= now`.
+    ///
+    /// The earlier version of this test wrote entries via `write_batch_owned`
+    /// (which stamps `created_at = now()`) then called `prune(0)` and
+    /// asserted nothing was pruned. That worked when both calls landed in
+    /// the same wall-clock second — `created_at == cutoff` and the SQL
+    /// query is strict `<`, so the rows survived. But CI runners are
+    /// nondeterministically slow: when the prune call landed in the *next*
+    /// second, `cutoff = now + 1` while `created_at = now`, the query
+    /// matched, and all five rows got deleted (#1389).
+    ///
+    /// The fix: insert with `created_at = now + 1 day` via raw SQL, so the
+    /// rows are strictly *in the future* relative to whatever instant the
+    /// prune call materializes. The test now exercises the same `< cutoff`
+    /// boundary without depending on sub-second timing.
     #[test]
     fn test_prune_zero_days() {
         let (cache, _dir) = test_cache();
 
-        // Write entries (they get current timestamp)
-        let entries: Vec<_> = (0..5)
-            .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
-            .collect();
-        cache
-            .write_batch_owned(&entries, "fp_1", CachePurpose::Embedding, 128)
-            .unwrap();
+        cache.rt.block_on(async {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let future = now + 86_400; // 1 day in the future — robust to any test runtime
+            let blob: Vec<u8> = vec![0u8; 512]; // 128-dim * 4 bytes
+            for i in 0..5 {
+                sqlx::query(
+                    "INSERT INTO embedding_cache (content_hash, model_fingerprint, purpose, embedding, dim, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
+                    .bind(format!("future_{i}"))
+                    .bind("fp_1")
+                    .bind("embedding")
+                    .bind(&blob)
+                    .bind(128i64)
+                    .bind(future)
+                    .execute(&cache.pool)
+                    .await
+                    .unwrap();
+            }
+        });
 
-        // Prune with 0 days — cutoff is "now - 0 seconds" = now.
-        // Entries written in the same second should survive (created_at >= cutoff).
         let pruned = cache.prune_older_than(0).unwrap();
-        // Same-second entries: created_at == cutoff, and the query is `< cutoff`,
-        // so they should NOT be pruned.
         assert_eq!(
             pruned, 0,
-            "prune(0) should not delete entries written in the same second"
+            "prune(0) must not delete entries whose created_at >= now"
         );
 
         let stats = cache.stats().unwrap();
