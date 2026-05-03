@@ -2,7 +2,28 @@
 
 ## Right Now
 
-**v1.33.0 audit + close-out, 2026-05-02 (this session).** 16-category audit produced 167 findings; triaged P1=47/P2=41/P3=56/P4=23. Fix wave: **24 PRs landed today** plus PR #1381 (Retrieval Quality refresh) waiting on CI. Branch: `chore/refresh-eval-numbers-1369`. Daemon active, binary rebuilt + installed at v1.33.0.
+**v1.34.0 released 2026-05-02 (same day as v1.33.0).** Bundled the post-v1.33.0 audit close-out (24 fix PRs) + pre-audit feature work (EmbeddingGemma-300m preset, `cqs eval --reranker`, slow-tests Phase 2, ci-slow.yml stabilization). On crates.io. Tag pushed (binaries via `release.yml`).
+
+**Open in flight: PR #1384 — `fix(embedder): bypass tokenizer truncation in windowing/count paths`.** Apples-to-apples eval comparison surfaced a real correctness bug. **bge-large-ft and v9-200k tokenizers ship `truncation: {max_length: 512}` baked into `tokenizer.json`** (HF's `optimum-cli` default). cqs `split_into_windows`/`token_count` rely on `encode().get_ids().len()` to count tokens — the silent truncation cap meant long markdown sections were chunked at "fits in 1-2 windows" when they actually needed 12, so ~90% of section content was never embedded. Surgical fix: clone the tokenizer Arc and disable truncation for counting paths only (inference paths still need the cap to clamp at max_seq).
+
+Reproducer on `docs/audit-findings-v1.30.0.md` (15.5k chars, 5358 real tokens):
+- BGE-large default tokenizer (no truncation): 5358 tokens → 12 windows
+- bge-large-ft tokenizer (truncation=512): 512 tokens reported → 2 windows
+
+**Pending after #1384 merges:** rebuild binary, install, restart daemon, re-reindex bge-ft + v9 (their indexes are missing real content), re-eval all 4 slots for the clean apples-to-apples comparison. The earlier "matching coverage" eval is contaminated — bge-ft and v9 numbers were measured against indexes missing ~90% of long-section content.
+
+**v1.33.0 audit close-out (earlier in this session, all merged):** 16-category audit produced 167 findings; triaged P1=47/P2=41/P3=56/P4=23. **24 fix PRs landed**; 25 medium-effort items filed as tracking issues (#1337-#1377). Coverage: 129 ✅ closed / 15 🎫 issue-tracked / 0 ⬜ open. PR #1334 (daemon-aware `cqs index`) closed 98% of telemetry CLI error rate. PR #1380 recovered 112 lost ✅ flips after a cascade-rebase pattern silently rolled back triage updates.
+
+**Eval results pre-tokenizer-fix (apples-to-apples, all 4 slots reindexed --force --llm-summaries):**
+
+| Preset | Agg R@1 | Agg R@5 | Agg R@20 | Note |
+|--------|---:|---:|---:|------|
+| BGE-large (default) | 47.7% | 71.6% | 83.9% | clean — full-coverage tokenizer |
+| **embeddinggemma-300m** | **49.1%** | **72.5%** | **86.2%** | clean — full-coverage tokenizer |
+| bge-large-ft | 45.4% | 72.9% | 86.2% | **CONTAMINATED** — truncation bug |
+| v9-200k | 44.5% | 69.7% | 81.7% | **CONTAMINATED** — truncation bug |
+
+Take only the BGE-large vs Gemma comparison as valid: **embeddinggemma-300m wins agg R@1 by 1.4pp, R@5 by 0.9pp, R@20 by 2.3pp**. v1.35.0 default-candidate at 308M params / 768 dim. The bge-ft and v9 numbers will likely jump after the fix lands and they're reindexed; re-run before any roadmap conclusion.
 
 **Coverage now:**
 - ✅ 129 closed (all P1, all in-scope P2/P3 batches, plus 17 new tests)
@@ -146,6 +167,7 @@ Strategic frontier candidates if redirected:
 - **CI cqs test job runs ~30-40 min** serialised on a single GPU runner. Fixed-interval `/loop` heartbeats > 60min should go to cloud schedule (`/schedule`).
 - **vllm 0.19 has tight pins** on `flashinfer==0.6.6` and `lark==1.2.2`. Bumping these without bumping vllm itself breaks the Gemma server. The vllm-serve env runs a `transformers 5.6.0.dev0` build that vllm theoretically rejects — tolerated at runtime, fragile if vllm ever bumps.
 - **`pylate 1.4.0` pins `sentence-transformers==5.1.1` exactly** with no newer pylate available. Conflict is dormant unless ColBERT eval is run; cleanest fix would be a dedicated `colbert-eval` env.
+- **HF preset tokenizers may ship `truncation: {max_length: 512}` baked into `tokenizer.json`** (HF's `optimum-cli` enables it by default on export). Affects bge-large-ft and v9-200k locally. cqs windowing/counting paths must clone-and-disable truncation before counting tokens, otherwise long sections silently chunk into 1-2 windows when they need 12+ — see PR #1384. Inference paths intentionally keep truncation. When adding a new preset, sanity-check `python -c "from tokenizers import Tokenizer; print(Tokenizer.from_file('tokenizer.json').get_truncation())"` before relying on token counts.
 
 ## Collaboration calibration (still load-bearing)
 
@@ -171,5 +193,7 @@ Strategic frontier candidates if redirected:
 | nomic-coderank | 42.2% | 67.9% | 79.8% | 47.7% | 69.7% | 81.7% |
 
 Per-slot state at measurement time was uneven (default 19,857 chunks 48% summaries; bge-ft 14,460 0% summaries; gemma 13,118 90%; v9 14,468 82%; coderank 12,393 0%) — direct cross-model comparison is qualitative; tighter A/B requires reindex-from-shared-summary-set per slot. The earlier "post-v1.28.3 → refreshed" 3.7-5.5pp R@5 gap that was attributed to corpus drift was actually noise; current BGE-large numbers are *higher* than the canonical row across most metrics. The v3.v2 fixture is still the canonical slate; v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors.
+
+**Apples-to-apples reindex pass (2026-05-02, post-summary-equalization):** all 4 slots reindexed `--force --llm-summaries` to identical 90%+ coverage. Results in Right Now; bge-ft + v9 contaminated by truncation bug (PR #1384). Re-run pending after #1384 merges.
 
 The `research/models.md` file (committed in #1270) is the inaugural retrieval-research log. Future A/B writeups append there.

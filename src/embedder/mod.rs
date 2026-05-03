@@ -713,8 +713,18 @@ impl Embedder {
     ///
     /// Returns `EmbedderError::Tokenizer` if the tokenizer is unavailable or if encoding the text fails.
     pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
-        let encoding = self
-            .tokenizer()?
+        // Same truncation-bypass as `split_into_windows`: count actual
+        // tokens, not whatever the tokenizer's `truncation` cap returns.
+        // bge-large-ft and v9-200k ship tokenizer.json with
+        // truncation.max_length=512, which silently caps `token_count`
+        // and breaks every downstream "is this chunk too long?" check.
+        let tokenizer_arc = self.tokenizer()?;
+        let mut tok = (*tokenizer_arc).clone();
+        if tok.get_truncation().is_some() {
+            tok.with_truncation(None)
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
+        }
+        let encoding = tok
             .encode(text, false)
             .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
         Ok(encoding.get_ids().len())
@@ -728,8 +738,15 @@ impl Embedder {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let encodings = self
-            .tokenizer()?
+        // Same truncation-bypass as `token_count` — count actual tokens
+        // for accurate windowing decisions.
+        let tokenizer_arc = self.tokenizer()?;
+        let mut tok = (*tokenizer_arc).clone();
+        if tok.get_truncation().is_some() {
+            tok.with_truncation(None)
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
+        }
+        let encodings = tok
             .encode_batch(texts.to_vec(), false)
             .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
         Ok(encodings.iter().map(|e| e.get_ids().len()).collect())
@@ -782,8 +799,26 @@ impl Embedder {
             )));
         }
 
-        let tokenizer = self.tokenizer()?;
-        let encoding = tokenizer
+        // Clone the tokenizer and disable truncation so we count the FULL
+        // token sequence, not whatever the tokenizer's `truncation` field
+        // caps it to. Some preset tokenizers (notably bge-large-ft and
+        // v9-200k, which were exported via `optimum-cli` with default
+        // truncation enabled) ship `tokenizer.json` with
+        // `truncation: {max_length: 512}`. Without this clone, encode()
+        // silently caps long content at 512 tokens, the windowing loop
+        // sees `ids.len() <= max_tokens` and returns a single window —
+        // dropping ~90% of long markdown sections from the embedding.
+        // Inference paths (embed_query/embed_batch) intentionally keep the
+        // truncation behavior because they need to clamp input to
+        // max_seq_length anyway, so we only override here.
+        let tokenizer_arc = self.tokenizer()?;
+        let mut tokenizer_no_trunc = (*tokenizer_arc).clone();
+        if tokenizer_no_trunc.get_truncation().is_some() {
+            tokenizer_no_trunc
+                .with_truncation(None)
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
+        }
+        let encoding = tokenizer_no_trunc
             .encode(text, false)
             .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
 
