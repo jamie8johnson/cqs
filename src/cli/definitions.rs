@@ -206,9 +206,23 @@ pub struct Cli {
     #[arg(long)]
     pub include_docs: bool,
 
-    /// Re-rank results with cross-encoder (slower, more accurate)
+    /// Re-rank results with cross-encoder (slower, more accurate).
+    ///
+    /// Boolean shorthand for `--reranker onnx`. `--reranker <mode>` (P2-14,
+    /// #1372) is the canonical form; this stays for muscle memory and batch
+    /// scripts. If both are passed, `--reranker` wins.
     #[arg(long)]
     pub rerank: bool,
+
+    /// Reranker mode: `none|onnx|llm` (#1372).
+    ///
+    /// Mirrors `cqs eval --reranker`. `none` is the default; `onnx` runs the
+    /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`; `llm`
+    /// is reserved for the production wiring landing in #1220 and currently
+    /// errors with a "not yet implemented" message. Takes precedence over
+    /// the legacy `--rerank` bool when both are passed.
+    #[arg(long = "reranker", value_enum)]
+    pub reranker: Option<args::RerankerMode>,
 
     /// Force-enable SPLADE sparse-dense hybrid search.
     ///
@@ -313,6 +327,17 @@ impl Cli {
         self.resolved_model
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("ModelConfig not resolved — call resolve_model() first"))
+    }
+
+    /// Effective reranker mode after resolving `(--reranker, --rerank)` (#1372).
+    /// Returns `RerankerMode::None` when neither flag is set.
+    pub(crate) fn rerank_mode(&self) -> args::RerankerMode {
+        args::resolve_rerank_mode(self.reranker, self.rerank)
+    }
+
+    /// `true` if any reranker stage is selected (Onnx or Llm).
+    pub(crate) fn rerank_active(&self) -> bool {
+        !matches!(self.rerank_mode(), args::RerankerMode::None)
     }
 }
 

@@ -65,9 +65,16 @@ pub(crate) fn cmd_query(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
+    // #1372: --reranker llm not wired in search — eval has the same gate.
+    if matches!(cli.rerank_mode(), crate::cli::args::RerankerMode::Llm) {
+        bail!(
+            "--reranker llm is reserved for #1220 (LLM-judge reranker) and not yet wired into search. Use --reranker onnx (or --rerank for the same effect)."
+        );
+    }
+
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {
-        if cli.rerank {
+        if cli.rerank_active() {
             bail!("--rerank requires embedding search, incompatible with --name-only");
         }
         if let Some(ref ref_name) = cli.ref_name {
@@ -79,7 +86,7 @@ pub(crate) fn cmd_query(
     // Adaptive routing: classify query BEFORE embedding to potentially skip it
     // --splade intentionally NOT here: it only controls SPLADE fusion,
     // not adaptive routing. --rrf/--rerank/--ref override the search strategy.
-    let has_explicit_flags = cli.rrf || cli.rerank || cli.ref_name.is_some();
+    let has_explicit_flags = cli.rrf || cli.rerank_active() || cli.ref_name.is_some();
     let classification = if !has_explicit_flags {
         let c = cqs::search::router::classify_query(query);
         tracing::info!(
@@ -127,7 +134,7 @@ pub(crate) fn cmd_query(
     // Over-retrieve when reranking to give the cross-encoder more candidates.
     // P3 #100: pool sizing centralized in `cli/limits.rs::rerank_pool_size`,
     // honors CQS_RERANK_OVER_RETRIEVAL / CQS_RERANK_POOL_MAX.
-    let effective_limit = if cli.rerank {
+    let effective_limit = if cli.rerank_active() {
         crate::cli::limits::rerank_pool_size(cli.limit)
     } else {
         cli.limit
@@ -239,7 +246,7 @@ pub(crate) fn cmd_query(
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
     // Lazily obtain reranker from CommandContext (shared across ref + project paths)
-    let reranker = if cli.rerank {
+    let reranker = if cli.rerank_active() {
         Some(ctx.reranker()?)
     } else {
         None
@@ -519,7 +526,7 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
         return Ok(());
     }
 
-    if cli.rerank {
+    if cli.rerank_active() {
         tracing::warn!("--rerank is not supported with multi-index search, skipping re-ranking");
     }
 
@@ -690,7 +697,7 @@ fn cmd_query_ref_only(ctx: &RefQueryContext<'_>, ref_name: &str) -> Result<()> {
     let ref_idx = crate::cli::commands::resolve::find_reference(ctx.root, ref_name)?;
 
     // P3 #100: shared pool sizing.
-    let ref_limit = if ctx.cli.rerank {
+    let ref_limit = if ctx.cli.rerank_active() {
         crate::cli::limits::rerank_pool_size(ctx.cli.limit)
     } else {
         ctx.cli.limit

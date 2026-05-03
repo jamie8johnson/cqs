@@ -490,18 +490,23 @@ mod tests {
         assert!(cli.name_only);
     }
 
-    // ===== --rerank flag tests =====
+    // ===== --rerank / --reranker flag tests =====
 
     #[test]
     fn test_cli_rerank_flag() {
         let cli = Cli::try_parse_from(["cqs", "--rerank", "search query"]).unwrap();
         assert!(cli.rerank);
+        // #1372: --rerank shorthand resolves to Onnx mode.
+        assert!(cli.rerank_active());
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Onnx);
     }
 
     #[test]
     fn test_cli_rerank_default_false() {
         let cli = Cli::try_parse_from(["cqs", "search query"]).unwrap();
         assert!(!cli.rerank);
+        assert!(!cli.rerank_active());
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::None);
     }
 
     #[test]
@@ -516,6 +521,63 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "--rerank", "-n", "20", "query"]).unwrap();
         assert!(cli.rerank);
         assert_eq!(cli.limit, 20);
+    }
+
+    /// #1372: `--reranker onnx` produces the same effective mode as `--rerank`.
+    #[test]
+    fn test_cli_reranker_onnx() {
+        let cli = Cli::try_parse_from(["cqs", "--reranker", "onnx", "query"]).unwrap();
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Onnx);
+        assert!(cli.rerank_active());
+    }
+
+    /// #1372: `--reranker none` is the default and stays inactive even though
+    /// the flag was passed.
+    #[test]
+    fn test_cli_reranker_none_explicit() {
+        let cli = Cli::try_parse_from(["cqs", "--reranker", "none", "query"]).unwrap();
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::None);
+        assert!(!cli.rerank_active());
+    }
+
+    /// #1372: `--reranker llm` parses; runtime gates it with a "not yet wired"
+    /// error in `cmd_query` / `dispatch_search`. The flag exists so the LLM
+    /// reranker landing in #1220 doesn't need a breaking CLI change.
+    #[test]
+    fn test_cli_reranker_llm() {
+        let cli = Cli::try_parse_from(["cqs", "--reranker", "llm", "query"]).unwrap();
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Llm);
+        assert!(cli.rerank_active());
+    }
+
+    /// #1372: when both flags are passed, `--reranker` wins (explicit beats
+    /// shorthand). Lets a script with hardcoded `--rerank` opt into Llm
+    /// without having to drop the shorthand.
+    #[test]
+    fn test_cli_reranker_overrides_rerank() {
+        let cli = Cli::try_parse_from(["cqs", "--rerank", "--reranker", "none", "query"]).unwrap();
+        // `--rerank` raw bool is still set, but resolved mode is None.
+        assert!(cli.rerank);
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::None);
+        assert!(!cli.rerank_active());
+    }
+
+    /// #1372: invalid `--reranker` value rejected at parse time (clap
+    /// `value_enum`) — keeps typos from silently downgrading to default.
+    #[test]
+    fn test_cli_reranker_invalid_rejected() {
+        let result = Cli::try_parse_from(["cqs", "--reranker", "bogus", "query"]);
+        let err = match result {
+            Ok(_) => panic!("expected clap to reject `--reranker bogus`"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid value")
+                || msg.contains("possible values")
+                || msg.contains("'bogus'"),
+            "expected clap value-enum rejection, got: {msg}"
+        );
     }
 
     // ===== --tokens flag tests =====

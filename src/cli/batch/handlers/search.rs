@@ -30,6 +30,13 @@ pub(in crate::cli::batch) fn dispatch_search(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %args.query).entered();
 
+    // #1372: --reranker llm not wired in search yet — eval has the same gate.
+    if matches!(args.rerank_mode(), crate::cli::args::RerankerMode::Llm) {
+        anyhow::bail!(
+            "--reranker llm is reserved for #1220 (LLM-judge reranker) and not yet wired into search. Use --reranker onnx (or --rerank for the same effect)."
+        );
+    }
+
     // Accepted for CLI parity; batch JSON doesn't use line-context, parent
     // expansion, include-docs, pattern, or no-stale-check yet. Assigning to
     // `_` avoids clippy unused-field warnings while preserving forwards
@@ -96,7 +103,7 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     let limit = args.limit.clamp(1, 100);
     // P3 #100: shared rerank pool sizing.
-    let effective_limit = if args.rerank {
+    let effective_limit = if args.rerank_active() {
         crate::cli::limits::rerank_pool_size(limit)
     } else {
         limit
@@ -154,7 +161,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     if let Some(ref ref_name) = args.ref_name {
         let ref_idx = crate::cli::commands::resolve::find_reference(&ctx.root, ref_name)?;
         // P3 #100: shared rerank pool sizing.
-        let ref_limit = if args.rerank {
+        let ref_limit = if args.rerank_active() {
             crate::cli::limits::rerank_pool_size(limit)
         } else {
             limit
@@ -170,7 +177,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         )?;
 
         // Re-rank ref results
-        if args.rerank && results.len() > 1 {
+        if args.rerank_active() && results.len() > 1 {
             let reranker = ctx.reranker()?;
             reranker
                 .rerank(&args.query, &mut results, limit)
@@ -275,7 +282,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     };
 
     // Re-rank if requested
-    let results = if args.rerank && results.len() > 1 {
+    let results = if args.rerank_active() && results.len() > 1 {
         let mut code_results: Vec<cqs::store::SearchResult> = results
             .into_iter()
             .map(|r| match r {
