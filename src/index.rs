@@ -5,10 +5,52 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use thiserror::Error;
 
 use crate::embedder::Embedding;
-use crate::store::{ClearHnswDirty, Store};
+use crate::store::{ClearHnswDirty, Store, StoreError};
+
+/// Errors produced by [`IndexBackend::try_open`].
+///
+/// EH-V1.33-7 / #1374: previously `try_open` returned `anyhow::Result`,
+/// which leaked the `anyhow` dependency into a public lib-side trait
+/// (cqs convention is `thiserror` for library APIs, `anyhow` only in
+/// CLI). Most error paths in current backends — checksum mismatches,
+/// failed loads, dirty-flag-reads — are already self-handled with
+/// `tracing::warn!` + `Ok(None)` so the next backend can take over.
+/// The variants below are reserved for the small set of cases where a
+/// backend wants a hard failure to bubble up to the selector (currently
+/// unused; future backends like USearch / Metal / ROCm can adopt as
+/// needed). CLI sites consume this with `?` into `anyhow::Result` exactly
+/// as today via the `From` impl.
+#[derive(Debug, Error)]
+pub enum IndexBackendError {
+    /// A backend-internal store query failed in a way that can't be
+    /// recovered by falling through to the next backend.
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
+
+    /// Persisted index file failed integrity check (blake3 mismatch,
+    /// magic-bytes mismatch, dim mismatch, chunk-count mismatch).
+    /// Distinct from `LoadFailed` because the operator-facing message
+    /// differs: a checksum mismatch usually means the file is stale and
+    /// safe to delete, while a load failure may indicate a deeper
+    /// corruption.
+    #[error("index integrity check failed: {0}")]
+    ChecksumMismatch(String),
+
+    /// Persisted index file deserialization failed for reasons other
+    /// than a clean integrity mismatch (truncation, IO error during
+    /// read, library deserialization error).
+    #[error("index load failed: {0}")]
+    LoadFailed(String),
+}
+
+/// Convenience for CLI consumers that want to fold backend errors into
+/// `anyhow::Error` chains. Standard `thiserror`-derived error already
+/// implements `std::error::Error`, so `anyhow::Result<...>` accepts it
+/// via `?`.
+pub type Result<T> = std::result::Result<T, IndexBackendError>;
 
 /// Result from a vector index search
 #[derive(Debug, Clone)]
@@ -131,7 +173,10 @@ pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
     /// failed, dirty flag with stale checksums). Return `Ok(Some(idx))` on
     /// success. Return `Err(_)` only for true store-level errors that
     /// should abort selection entirely.
-    fn try_open(&self, ctx: &BackendContext<'_, Mode>) -> Result<Option<Box<dyn VectorIndex>>>;
+    fn try_open(
+        &self,
+        ctx: &BackendContext<'_, Mode>,
+    ) -> std::result::Result<Option<Box<dyn VectorIndex>>, IndexBackendError>;
 }
 
 /// Build the ordered backend slice for this build (`cuda-index` feature on/off).
