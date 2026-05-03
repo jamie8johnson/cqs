@@ -391,27 +391,54 @@ pub(super) fn cpu_embed_stage(
     let mut embedder: Option<Embedder> = None;
     let mut fingerprint: Option<String> = None;
 
+    // CQS_DISABLE_CPU_WARM=1: don't compete with GPU for parse_rx batches.
+    // CPU still drains fail_rx for fault tolerance (GPU-failed chunks),
+    // but if GPU handles every batch successfully the CPU embedder never
+    // lazy-inits, saving the ONNX-mmap RSS. The motivating case is the
+    // 2026-05-03 Qwen3-Embedding-8B ceiling probe (#1392): each session
+    // mmaps the 30 GB FP32 weights file, so racing on parse_rx caused
+    // both CPU and GPU sessions to exist simultaneously — RSS climbed
+    // to 91 GB / 94 GB usable inside WSL2 and forced an early kill.
+    // Default (env unset) preserves the historical race / overflow path.
+    let disable_cpu_warm = std::env::var("CQS_DISABLE_CPU_WARM")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if disable_cpu_warm {
+        tracing::info!(
+            "CQS_DISABLE_CPU_WARM=1: CPU embedder will only handle GPU-failed batches \
+             (parse_rx race disabled)"
+        );
+    }
+
     loop {
         if check_interrupted() {
             break;
         }
 
-        // Race: GPU and CPU both grab from parse_rx, CPU also handles routed long batches
-        let batch = select! {
-            recv(fail_rx) -> msg => match msg {
+        // Race: GPU and CPU both grab from parse_rx, CPU also handles routed long batches.
+        // With CQS_DISABLE_CPU_WARM=1, only watch fail_rx — GPU has parse_rx to itself.
+        let batch = if disable_cpu_warm {
+            match fail_rx.recv() {
                 Ok(b) => b,
-                Err(_) => match parse_rx.recv() {
+                Err(_) => break,
+            }
+        } else {
+            select! {
+                recv(fail_rx) -> msg => match msg {
                     Ok(b) => b,
-                    Err(_) => break,
+                    Err(_) => match parse_rx.recv() {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    },
                 },
-            },
-            recv(parse_rx) -> msg => match msg {
-                Ok(b) => b,
-                Err(_) => match fail_rx.recv() {
+                recv(parse_rx) -> msg => match msg {
                     Ok(b) => b,
-                    Err(_) => break,
+                    Err(_) => match fail_rx.recv() {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    },
                 },
-            },
+            }
         };
 
         // Lazy-init CPU embedder on first batch
