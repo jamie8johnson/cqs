@@ -203,6 +203,16 @@ macro_rules! register_index_backends {
             ;
         )+
     ) => {
+        // `vec_init_then_push` fires when only one cfg-arm is active for a
+        // given build (no `cuda-index` → just HNSW, single `push` after
+        // `Vec::new()`). The macro can't statically know how many backends
+        // will be registered for a given build matrix, and `vec![...]`
+        // doesn't compose cleanly with per-row `#[cfg]` attributes (the
+        // closest equivalent — `vec![a, $(#[cfg] b,)?]` — trips on
+        // trailing-comma quirks under cfg pruning). The allow is
+        // load-bearing: removing it breaks `cargo clippy -- -D warnings` for
+        // every backend permutation that ends up with one row active.
+        #[allow(clippy::vec_init_then_push)]
         pub fn backends<Mode: ClearHnswDirty>() -> Vec<&'static dyn IndexBackend<Mode>> {
             let mut v: Vec<&'static dyn IndexBackend<Mode>> = Vec::new();
             $(
