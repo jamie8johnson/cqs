@@ -88,6 +88,13 @@ pub(crate) fn bm25_ordering_expr() -> String {
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
+/// - v26: composite index `idx_chunks_source_type_origin` covering the
+///   `WHERE source_type = ? + DISTINCT origin` pattern in `list_stale_files`
+///   (every reconcile + `cqs status --watch-fresh`) and `prune_missing_files`.
+///   Pre-v26, SQLite probed `idx_chunks_source_type` then row-visited; with
+///   the composite, both filter and DISTINCT walk satisfy from a single
+///   index pass. ~50× speedup expected at 50k+ chunk corpora; index size
+///   ~5-15% of the chunks table. PERF-V1.33-10 / #1371.
 /// - v23: source_size INTEGER + source_content_hash BLOB columns on chunks for
 ///   the reconcile fingerprint (issue #1219 / EX-V1.30.1-6). Layer 2 periodic
 ///   reconciliation previously diverged on `disk_mtime != stored_mtime` only,
@@ -130,7 +137,7 @@ pub(crate) fn bm25_ordering_expr() -> String {
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 25;
+pub const CURRENT_SCHEMA_VERSION: i32 = 26;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.
