@@ -11,6 +11,62 @@ use clap::Args;
 use super::{parse_finite_f32, parse_nonzero_usize, parse_unit_f32};
 use cqs::store::DeadConfidence;
 
+// ============ #1373 / API-V1.33: depth-flag default rule ============
+//
+// Five graph commands take a "depth" knob. Pre-#1373, the spread
+// (gather=1, impact=1, test-map=5, trace=10, onboard=3) read like
+// accidents. The named constants below document the per-command
+// rationale so the spread is auditable and intentional, even though
+// the values themselves stay where they were (changing them is a
+// behavior change for operators who depend on the current radii).
+//
+// Two rule classes:
+//
+//   BLAST   — depth=1 by default. The chunk is a "what does *this*
+//             thing reach" query. Direct callers / direct callees
+//             only; deeper traversals usually swamp the answer
+//             with chunks that don't materially change the
+//             decision. Used by `gather`, `impact`.
+//
+//   WALK    — depth=3 by default. The chunk is a "trace this
+//             concept across a few hops" query. Three is the
+//             smallest depth where you reliably catch a chain like
+//             "feature → orchestrator → primitive" without
+//             expanding beyond what an agent can read in one
+//             context window. Used by `onboard`. `test-map` keeps
+//             depth=5 because tests are leaves on the call graph,
+//             so the WALK has to descend further to reach them.
+//
+// `trace` keeps `--max-depth` semantics: it's a path-search (find
+// route from A to B), not BFS-traversal, so its 10-step ceiling
+// expresses "give up after 10 hops" rather than "expand 10 deep."
+// `--depth` alias added so the spelling matches the others.
+
+/// Default for "blast radius" depth flags (gather, impact). One step
+/// of direct callers / callees.
+pub const DEFAULT_DEPTH_BLAST: usize = 1;
+
+/// Default for "walk the call graph" depth flags (onboard). Three
+/// hops covers feature → orchestrator → primitive without
+/// over-expanding into chunks that don't materially change the
+/// agent's mental model of the area.
+pub const DEFAULT_DEPTH_WALK: usize = 3;
+
+/// `test-map` walks deeper than the standard WALK because tests are
+/// leaves on the call graph — depth 3 frequently misses test files
+/// that are 4+ hops from a deep production chunk. Five is the smallest
+/// value that catches typical project-level tests without dramatically
+/// blowing up the response.
+pub const DEFAULT_DEPTH_TEST_MAP: usize = 5;
+
+/// `trace` is path-search, not BFS-traversal. The flag is
+/// `--max-depth` (with `--depth` alias as of #1373) and means "give
+/// up looking for a route between source and target after N hops."
+/// 10 is the historical default, large enough to find paths through
+/// long indirection chains but small enough that an unreachable pair
+/// surfaces in <1s.
+pub const DEFAULT_DEPTH_TRACE: u16 = 10;
+
 /// Shared `--limit / -n` argument for graph commands that previously had no
 /// per-subcommand limit (callers, callees, deps, impact, test-map, trace,
 /// onboard, explain). Default mirrors the top-level `Cli::limit` (= 5) so a
@@ -162,7 +218,8 @@ pub(crate) struct GatherArgs {
     /// Call-graph BFS depth for gather expansion (0=seeds only, max 5).
     /// Aligned with `onboard`/`impact`/`test-map` which already use `--depth`;
     /// the legacy `--expand` form is kept as a visible alias.
-    #[arg(long, default_value = "1", visible_alias = "expand")]
+    /// #1373: BLAST default — direct callers / callees only.
+    #[arg(long, default_value_t = DEFAULT_DEPTH_BLAST, visible_alias = "expand")]
     pub depth: usize,
     /// Expansion direction: both, callers, callees
     #[arg(long, default_value = "both")]
@@ -187,7 +244,8 @@ pub(crate) struct ImpactArgs {
     ///
     /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
     /// which already accepts it.
-    #[arg(short = 'd', long, default_value = "1")]
+    /// #1373: BLAST default — direct callers only.
+    #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_BLAST)]
     pub depth: usize,
     /// Suggest tests for untested callers
     #[arg(long)]
@@ -283,8 +341,17 @@ pub(crate) struct TraceArgs {
     pub source: String,
     /// Target function name or file:function
     pub target: String,
-    /// Max search depth (1-50)
-    #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
+    /// Max search depth (1-50). `trace` is path-search (find route
+    /// A → B), not BFS-traversal — `--max-depth` means "give up looking
+    /// for a path after N hops." `--depth` is accepted as an alias
+    /// (#1373) so the spelling matches the rest of the depth-knob
+    /// family even though the semantic differs.
+    #[arg(
+        long,
+        visible_alias = "depth",
+        default_value_t = DEFAULT_DEPTH_TRACE,
+        value_parser = clap::value_parser!(u16).range(1..=50)
+    )]
     pub max_depth: u16,
     /// Trace across all configured reference projects
     #[arg(long)]
@@ -338,7 +405,10 @@ pub(crate) struct TestMapArgs {
     ///
     /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
     /// which already accepts it.
-    #[arg(short = 'd', long, default_value = "5")]
+    /// #1373: deeper than the WALK default because tests are leaves on
+    /// the call graph; depth=3 frequently misses test files 4+ hops from
+    /// a deep production chunk.
+    #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_TEST_MAP)]
     pub depth: usize,
     /// Search for tests across all configured reference projects
     #[arg(long)]
@@ -364,8 +434,8 @@ pub(crate) struct RelatedArgs {
 pub(crate) struct OnboardArgs {
     /// Concept or query to explore
     pub query: String,
-    /// Callee expansion depth
-    #[arg(short = 'd', long, default_value = "3")]
+    /// Callee expansion depth — #1373: WALK default.
+    #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_WALK)]
     pub depth: usize,
     /// Maximum token budget
     #[arg(long, value_parser = parse_nonzero_usize)]
