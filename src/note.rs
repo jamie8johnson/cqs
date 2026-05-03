@@ -345,7 +345,32 @@ pub fn rewrite_notes_file(
     // `std::fs::write` left `notes.toml.<hex>.tmp` files behind on
     // every failed attempt — names include 16 hex chars of randomness
     // so failures piled up rather than collided.
-    let output = format!("{}\n{}", NOTES_HEADER, serialized);
+    //
+    // PB-V1.33-9 (#1356): preserve the existing on-disk line ending
+    // convention so cqs doesn't fight with `core.autocrlf=true` on
+    // Windows. Without this, every write replaces CRLF with bare LF;
+    // git's smudge filter converts back to CRLF on the next checkout;
+    // cqs reads the file, sees byte-different content, and reindexes
+    // even though the semantic content is identical. With CLAUDE.md
+    // explicitly encouraging users to commit `docs/notes.toml`, the
+    // CRLF interaction shipped on every Windows project.
+    //
+    // Sniff once from `content` (already in memory). If the existing
+    // file uses CRLF, translate every bare LF in the formatted output
+    // back to CRLF so the round trip is byte-stable.
+    let line_ending = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let raw_output = format!("{}\n{}", NOTES_HEADER, serialized);
+    let output = if line_ending == "\r\n" {
+        // Bytewise translate \n → \r\n. The toml serializer emits bare
+        // LFs only (no platform variation), so we never double-up CRLF.
+        raw_output.replace('\n', "\r\n")
+    } else {
+        raw_output
+    };
     let write_result: Result<(), NoteError> = (|| {
         std::fs::write(&tmp_path, &output).map_err(|e| {
             NoteError::Io(std::io::Error::new(
@@ -669,6 +694,66 @@ text = "first note"
         assert!(
             content.starts_with("# Notes"),
             "Should have standard header"
+        );
+    }
+
+    /// PB-V1.33-9 / #1356: a notes file written with CRLF line endings on
+    /// disk (e.g., touched by git's `core.autocrlf=true` smudge filter on
+    /// Windows) must round-trip back to CRLF when cqs rewrites it. Without
+    /// preservation, every cqs note edit fights with git's smudge filter
+    /// and triggers a phantom reindex on every checkout.
+    #[test]
+    fn test_rewrite_preserves_crlf_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        // Write with explicit CRLFs.
+        std::fs::write(
+            &path,
+            "# Notes\r\n[[note]]\r\ntext = \"hello\"\r\nsentiment = 0.0\r\n",
+        )
+        .unwrap();
+
+        rewrite_notes_file(&path, |_entries| Ok(())).unwrap();
+
+        // Read raw bytes (not lossy through `read_to_string` on Windows-y
+        // crates) and assert the file contains CRLF and no bare LFs.
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(
+            bytes.windows(2).any(|w| w == b"\r\n"),
+            "rewrite should preserve CRLF line endings (file: {:?})",
+            String::from_utf8_lossy(&bytes)
+        );
+        // Every \n in the result must be preceded by \r — no bare LFs.
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\n' && i > 0 {
+                assert_eq!(
+                    bytes[i - 1],
+                    b'\r',
+                    "bare LF at byte {i}: rewrite leaked \\n through CRLF file"
+                );
+            }
+        }
+    }
+
+    /// LF-only files (the Linux/macOS norm) must stay LF-only on rewrite —
+    /// no spurious CRLF promotion that would surprise non-Windows users.
+    #[test]
+    fn test_rewrite_preserves_lf_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        std::fs::write(
+            &path,
+            "# Notes\n[[note]]\ntext = \"hello\"\nsentiment = 0.0\n",
+        )
+        .unwrap();
+
+        rewrite_notes_file(&path, |_entries| Ok(())).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(
+            !bytes.contains(&b'\r'),
+            "LF-only file should stay LF-only: {:?}",
+            String::from_utf8_lossy(&bytes)
         );
     }
 
