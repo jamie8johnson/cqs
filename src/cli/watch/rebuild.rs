@@ -236,8 +236,17 @@ pub(super) fn spawn_hnsw_rebuild(
         .spawn(move || {
             let _enter = span.entered();
             let result: RebuildOutcome = (|| -> RebuildOutcome {
-                let store =
-                    cqs::Store::open_readonly_pooled(&index_path).map_err(anyhow::Error::from)?;
+                // #1344 / RM-V1.33-4: use the lower-footprint readonly open
+                // instead of `open_readonly_pooled`. The watch loop's main
+                // (read-write) store is already resident with 256 MiB mmap +
+                // 16 MiB cache; if we re-opened the rebuild store at the
+                // same size, the rebuild window peaked at 2× SQLite mapping
+                // (272 MiB) on top of the dual HNSW indexes (~50–200 MiB
+                // each). `open_readonly` keeps mmap at 64 MiB + cache at
+                // 4 MiB — `build_hnsw_index_owned` streams chunks via the
+                // batched embedding API, so the smaller mapping doesn't hurt
+                // rebuild throughput on the corpora that hit this path.
+                let store = cqs::Store::open_readonly(&index_path).map_err(anyhow::Error::from)?;
                 if store.dim() != expected_dim {
                     anyhow::bail!(
                         "store dim ({}) does not match expected ({}); refusing rebuild",
