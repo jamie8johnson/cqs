@@ -1076,6 +1076,7 @@ fn open_with_config_impl<Mode>(
         pool,
         path,
         helpers::CURRENT_SCHEMA_VERSION,
+        config.read_only,
     ))?;
 
     // Read dim from metadata before constructing Store (avoid unsafe mutation).
