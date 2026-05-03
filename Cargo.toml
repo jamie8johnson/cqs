@@ -1,9 +1,9 @@
 [package]
 name = "cqs"
-version = "1.34.0"
+version = "1.35.0"
 edition = "2021"
 rust-version = "1.95"
-description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 54 languages + L5X/L5K PLC exports. 47% R@1 / 74% R@5 / 85% R@20 on v3.v2 dual-judge code-search (218 queries, BGE-large default). Daemon mode (3-19ms queries). Local-first, GPU-accelerated."
+description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 54 languages + L5X/L5K PLC exports. 49% R@1 / 73% R@5 / 86% R@20 on v3.v2 dual-judge code-search (218 queries, EmbeddingGemma-300m default). Daemon mode (3-19ms queries). Local-first, GPU-accelerated."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"

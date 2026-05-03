@@ -77,9 +77,10 @@ cqs runs locally by default. No network telemetry. Optional local command loggin
 The only network activity is:
 
 - **Model download** (`cqs init`): Downloads embedding model from HuggingFace Hub
-  - Default: `huggingface.co/BAAI/bge-large-en-v1.5` (~1.2GB)
+  - Default since v1.35.0: `huggingface.co/onnx-community/embeddinggemma-300m-ONNX` (~1.2GB FP32 ONNX bundle + ~20MB tokenizer)
+  - Preset: `bge-large` (`BAAI/bge-large-en-v1.5`, ~1.2GB) — former default; opt-in via `CQS_EMBEDDING_MODEL=bge-large`
   - Preset: `e5-base` (`intfloat/e5-base-v2`, ~438MB)
-  - Preset: `nomic-coderank` (`nomic-ai/CodeRankEmbed`, ~547MB) — code-specialised, opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
+  - Preset: `nomic-coderank` (`jamie8johnson/CodeRankEmbed-onnx`, ~547MB) — code-specialised, opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
   - Custom: any HuggingFace repo via `[embedding]` config or `CQS_EMBEDDING_MODEL` env var. Custom model configs download ONNX files from the specified repo — only configure repos you trust.
   - One-time download per model, cached in `~/.cache/huggingface/`
 
@@ -241,7 +242,7 @@ When the user passes a path on the command line, cqs canonicalizes it (`dunce::c
 ## Index Storage
 
 - Stored in `.cqs/slots/<name>/index.db` (SQLite with WAL mode; PR #1105 introduced per-slot layout, pre-migration projects may still see the legacy `.cqs/index.db`)
-- Contains: code chunks, embeddings (1024-dim vectors for default BGE-large), file metadata
+- Contains: code chunks, embeddings (768-dim vectors for default embeddinggemma-300m since v1.35.0; 1024-dim for bge-large preset), file metadata
 - Add `.cqs/` to `.gitignore` to avoid committing
 - Database is **not encrypted** - it contains your code
 

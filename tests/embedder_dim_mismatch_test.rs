@@ -100,7 +100,7 @@ fn resolve_for_query_falls_through_to_default_when_chain_empty() {
     let _lock = ENV_MUTEX.lock().unwrap();
     std::env::remove_var("CQS_EMBEDDING_MODEL");
     let resolved = ModelConfig::resolve_for_query(None, None, None);
-    assert_eq!(resolved.name, "bge-large");
+    assert_eq!(resolved.name, ModelConfig::default_model().name);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

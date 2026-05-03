@@ -273,7 +273,7 @@ pub struct Cli {
     #[arg(long)]
     pub no_demote: bool,
 
-    /// Embedding model: bge-large (default), e5-base, or custom
+    /// Embedding model: embeddinggemma-300m (default), bge-large, e5-base, or custom
     #[arg(long)]
     pub model: Option<String>,
 

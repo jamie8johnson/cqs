@@ -235,7 +235,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using a configurable model (default: BGE-large-en-v1.5)
+/// Text embedding generator using a configurable model (default since v1.35.0: EmbeddingGemma-300m)
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -1409,6 +1409,25 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
         .get(&config.tokenizer_path)
         .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
 
+    // Fetch the ONNX external-data sidecar for models that exceed the 2GB
+    // protobuf limit. The Rust ONNX Runtime expects the .onnx_data file to
+    // sit next to model.onnx; without it, session init fails with
+    // "filesystem error: cannot get file size" when the graph references
+    // external tensors. Most presets (BGE, E5, etc.) ship a single
+    // self-contained model.onnx and do not have this file — we attempt the
+    // fetch and silently ignore a 404, since the absence of the sidecar is
+    // the common case. EmbeddingGemma-300m is the first preset that needs
+    // it (~1.2GB of FP32 tensors live in onnx/model.onnx_data alongside the
+    // ~480KB onnx/model.onnx graph).
+    let external_data_path = format!("{}_data", config.onnx_path);
+    if let Err(e) = repo.get(&external_data_path) {
+        tracing::debug!(
+            file = %external_data_path,
+            error = %e,
+            "ONNX external-data sidecar not present in repo (expected for self-contained models)"
+        );
+    }
+
     // Verify checksums (skip if already verified via marker file)
     if !MODEL_BLAKE3.is_empty() || !TOKENIZER_BLAKE3.is_empty() {
         let marker = model_path
@@ -1893,7 +1912,9 @@ mod tests {
 
     #[test]
     fn test_model_dimensions() {
-        assert_eq!(EMBEDDING_DIM, 1024);
+        // EMBEDDING_DIM derives from the preset row marked `default = true`
+        // in `define_embedder_presets!`. EmbeddingGemma-300m since v1.35.0.
+        assert_eq!(EMBEDDING_DIM, 768);
     }
 
     // ===== pad_2d_i64 tests =====

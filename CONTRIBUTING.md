@@ -234,9 +234,9 @@ src/
     l5x.rs      - Rockwell PLC exports (L5X XML + L5K ASCII) → Structured Text extraction
     markdown/   - Heading-based markdown parser
       mod.rs, headings.rs, code_blocks.rs, tables.rs
-  embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default; bge-large-ft, E5-base, v9-200k, nomic-coderank-137M, embeddinggemma-300m, custom ONNX presets)
+  embedder/      - ONNX embedding models (configurable: embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank-137M, custom ONNX presets)
     mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection, ExecutionProvider enum (CUDA/TensorRT/CPU; CoreML/ROCm cfg-gated per #956 Phase A)
-    models.rs   - ModelConfig struct, built-in presets (bge-large default, bge-large-ft, e5-base, v9-200k, nomic-coderank, embeddinggemma-300m), resolution logic, EmbeddingConfig
+    models.rs   - ModelConfig struct, built-in presets (embeddinggemma-300m default, bge-large, bge-large-ft, e5-base, v9-200k, nomic-coderank), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection — per-backend cfg-blocks; CUDA/TensorRT always-on, CoreML/ROCm scaffolded via `ep-coreml`/`ep-rocm` features (#956 Phase A)
   reranker.rs   - Cross-encoder re-ranking (Reranker trait + OnnxReranker / NoopReranker / LlmReranker impls; default ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
@@ -350,7 +350,7 @@ src/
 ```
 
 **Key design notes:**
-- Configurable embeddings (BGE-large 1024-dim default; E5-base 768-dim, nomic-coderank-137M 768-dim, custom ONNX presets)
+- Configurable embeddings (embeddinggemma-300m 768-dim default since v1.35.0; bge-large 1024-dim, bge-large-ft 1024-dim, E5-base 768-dim, nomic-coderank-137M 768-dim, custom ONNX presets)
 - HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries

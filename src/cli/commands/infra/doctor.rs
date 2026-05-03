@@ -1596,9 +1596,11 @@ mod tests {
             report.resolved_model.source, "default",
             "no stored model + no CLI/env/config → default"
         );
-        // Default model is BGE-large.
-        assert_eq!(report.resolved_model.name, "bge-large");
-        assert_eq!(report.resolved_model.dim, 1024);
+        // Default model derives from the row marked `default = true` in
+        // `define_embedder_presets!`.
+        let dm = ModelConfig::default_model();
+        assert_eq!(report.resolved_model.name, dm.name);
+        assert_eq!(report.resolved_model.dim, dm.dim);
         // Config files don't exist.
         assert!(!report.config.project_exists);
         // Cross-check the text path doesn't panic on the empty case.

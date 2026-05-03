@@ -6,7 +6,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (BGE-large default; bge-large-ft, E5-base, v9-200k, nomic-coderank, embeddinggemma-300m, and custom ONNX presets). High recall on the curated fixture eval; see README.md#retrieval-quality for current numbers.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, and custom ONNX presets). High recall on the curated fixture eval; see README.md#retrieval-quality for current numbers.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?

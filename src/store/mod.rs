@@ -121,12 +121,14 @@ pub use helpers::CURRENT_SCHEMA_VERSION;
 /// Which HNSW index a dirty-flag operation applies to (enriched vs base).
 pub use metadata::HnswKind;
 
-/// Name of the embedding model (compile-time default for BGE-large).
+/// Name of the embedding model (compile-time default — derives from the
+/// preset row marked `default = true` in `define_embedder_presets!`).
 /// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
 /// This constant exists for callers outside the store (e.g. `doctor.rs`).
 pub const MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
-/// Expected embedding dimensions (compile-time default for BGE-large).
+/// Expected embedding dimensions (compile-time default — derives from the
+/// preset row marked `default = true` in `define_embedder_presets!`).
 /// Runtime code should use `Store::dim` instead. This constant exists for
 /// callers outside the store that need a compile-time value.
 pub const EXPECTED_DIMENSIONS: usize = crate::EMBEDDING_DIM;
