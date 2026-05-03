@@ -24,6 +24,7 @@ use anyhow::{Context as _, Result};
 
 use cqs::store::ReadOnly;
 
+use crate::cli::args::RerankerMode;
 use crate::cli::commands::{daemon_control_hint, DaemonHint};
 use crate::cli::CommandContext;
 
@@ -107,23 +108,6 @@ pub(crate) struct EvalCmdArgs {
     /// scorer (R@K loss).
     #[arg(long = "reranker", value_enum, default_value_t = RerankerMode::None)]
     pub reranker: RerankerMode,
-}
-
-/// Reranker dispatch for `cqs eval --reranker`.
-///
-/// Mirrors the production three-impl set introduced in #1276 (`OnnxReranker`,
-/// `NoopReranker`, `LlmReranker`). `None` short-circuits the entire reranker
-/// path; `Onnx` routes through [`crate::cli::CommandContext::reranker`]; `Llm`
-/// is reserved for the production wiring landing in #1220 and currently bails
-/// with a "not yet implemented" error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub(crate) enum RerankerMode {
-    /// No reranking — stage-1 retrieval is the final answer (default).
-    None,
-    /// Cross-encoder reranker via [`cqs::OnnxReranker`].
-    Onnx,
-    /// LLM reranker — reserved for #1220, currently errors on selection.
-    Llm,
 }
 
 /// CLI handler for `cqs eval`.

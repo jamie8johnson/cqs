@@ -67,6 +67,41 @@ pub const DEFAULT_DEPTH_TEST_MAP: usize = 5;
 /// surfaces in <1s.
 pub const DEFAULT_DEPTH_TRACE: u16 = 10;
 
+/// Cross-encoder / LLM reranker mode for retrieval surfaces.
+///
+/// Lifted out of `src/cli/commands/eval/mod.rs` (P2-14, #1372) so search and
+/// eval share the same flag shape. `cqs <q> --rerank` is preserved as a
+/// boolean shorthand for `--reranker onnx`; `--reranker none|onnx|llm` is
+/// the canonical form. `Llm` is reserved for the production wiring landing
+/// in #1220 — the variant is exposed on every retrieval surface so the
+/// future implementation can plug in without a breaking CLI change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum RerankerMode {
+    /// No reranking — stage-1 retrieval is the final answer (default).
+    None,
+    /// Cross-encoder reranker via [`cqs::OnnxReranker`].
+    Onnx,
+    /// LLM reranker — reserved for #1220, currently errors on selection.
+    Llm,
+}
+
+/// Resolve the effective reranker mode from the `(--reranker, --rerank)`
+/// pair. `--reranker` (explicit enum) wins when set; otherwise `--rerank`
+/// (bool) is mapped to `Onnx`. Both unset → `None`.
+///
+/// Used by `SearchArgs` and `Cli` (top-level search) to keep the bool flag
+/// working for muscle memory / batch scripts while exposing the full enum.
+pub(crate) fn resolve_rerank_mode(
+    explicit: Option<RerankerMode>,
+    rerank_bool: bool,
+) -> RerankerMode {
+    match (explicit, rerank_bool) {
+        (Some(m), _) => m,
+        (None, true) => RerankerMode::Onnx,
+        (None, false) => RerankerMode::None,
+    }
+}
+
 /// Shared `--limit / -n` argument for graph commands that previously had no
 /// per-subcommand limit (callers, callees, deps, impact, test-map, trace,
 /// onboard, explain). Default mirrors the top-level `Cli::limit` (= 5) so a
@@ -150,9 +185,23 @@ pub(crate) struct SearchArgs {
     #[arg(long)]
     pub include_docs: bool,
 
-    /// Re-rank results with cross-encoder (slower, more accurate)
+    /// Re-rank results with cross-encoder (slower, more accurate).
+    ///
+    /// Boolean shorthand for `--reranker onnx`. `--reranker <mode>` (P2-14,
+    /// #1372) is the canonical form; this stays for muscle memory and batch
+    /// scripts. If both are passed, `--reranker` wins.
     #[arg(long)]
     pub rerank: bool,
+
+    /// Reranker mode: `none|onnx|llm` (#1372).
+    ///
+    /// Mirrors `cqs eval --reranker`. `none` is the default; `onnx` runs the
+    /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`; `llm`
+    /// is reserved for the production wiring landing in #1220 and currently
+    /// errors with a "not yet implemented" message. Takes precedence over
+    /// the legacy `--rerank` bool when both are passed.
+    #[arg(long = "reranker", value_enum)]
+    pub reranker: Option<RerankerMode>,
 
     /// Force-enable SPLADE sparse-dense hybrid search.
     ///
@@ -208,6 +257,19 @@ pub(crate) struct SearchArgs {
     /// Disable search-time demotion of test functions and underscore-prefixed names
     #[arg(long)]
     pub no_demote: bool,
+}
+
+impl SearchArgs {
+    /// Effective reranker mode after resolving `(--reranker, --rerank)` (#1372).
+    /// Returns `RerankerMode::None` when neither flag is set.
+    pub(crate) fn rerank_mode(&self) -> RerankerMode {
+        resolve_rerank_mode(self.reranker, self.rerank)
+    }
+
+    /// `true` if any reranker stage is selected (Onnx or Llm).
+    pub(crate) fn rerank_active(&self) -> bool {
+        !matches!(self.rerank_mode(), RerankerMode::None)
+    }
 }
 
 /// Arguments shared between CLI `gather` and batch `gather`.
