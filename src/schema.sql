@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_type ON chunks(source_type);
+-- v26 / #1371 / PERF-V1.33-10: composite index covering the
+-- `WHERE source_type = ? + DISTINCT origin` pattern used by
+-- `list_stale_files` (every reconcile + `cqs status --watch-fresh`)
+-- and `prune_missing_files` (GC). With the single-column indexes
+-- above, SQLite probes one then row-visits the other; with the
+-- composite, both the filter and the DISTINCT walk satisfy from a
+-- single index pass. Expected ~50× speedup at 50k+ chunk corpora;
+-- index size ~5-15% of the chunks table.
+CREATE INDEX IF NOT EXISTS idx_chunks_source_type_origin
+    ON chunks(source_type, origin);
 CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_chunks_name ON chunks(name);
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language);

@@ -372,6 +372,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (22, 23, |c| Box::pin(migrate_v22_to_v23(c))),
     (23, 24, |c| Box::pin(migrate_v23_to_v24(c))),
     (24, 25, |c| Box::pin(migrate_v24_to_v25(c))),
+    (25, 26, |c| Box::pin(migrate_v25_to_v26(c))),
 ];
 
 /// Run a single migration step
@@ -921,6 +922,30 @@ async fn migrate_v24_to_v25(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// PERF-V1.33-10 / #1371 — add composite `(source_type, origin)` index on
+/// `chunks` so `list_stale_files` and `prune_missing_files` can satisfy
+/// their `WHERE source_type = ? + DISTINCT origin` queries from a single
+/// index pass. Pre-v26 SQLite would probe `idx_chunks_source_type`, then
+/// row-visit (or fall through to a full scan + sort). Mirrors the
+/// schema.sql change so fresh DBs match.
+async fn migrate_v25_to_v26(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v25_to_v26").entered();
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_source_type_origin \
+         ON chunks(source_type, origin)",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!(
+        "Migrated to v26: idx_chunks_source_type_origin composite index. \
+         Speeds up reconcile / status --watch-fresh / GC at 50k+ chunk corpora. \
+         PERF-V1.33-10 / #1371."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,7 +978,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
     }
 
     #[test]
