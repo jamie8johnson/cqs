@@ -309,8 +309,8 @@ pub(super) fn gpu_embed_stage(
         // Without this scale, every windowed Qwen3 chunk (~28k chars at
         // 8k tokens) would route to CPU, defeating CQS_DISABLE_CPU_WARM
         // and causing memory pressure on host RAM during 8B-model runs.
-        let max_chars_threshold = 8000usize
-            .saturating_mul(embedder.model_config().max_seq_length.max(512) / 512);
+        let max_chars_threshold =
+            8000usize.saturating_mul(embedder.model_config().max_seq_length.max(512) / 512);
         if max_len > max_chars_threshold {
             tracing::warn!(
                 chunks = prepared.to_embed.len(),
