@@ -1052,24 +1052,66 @@ fn blake3_hex_or_passthrough(bytes: &[u8]) -> String {
     }
 }
 
+impl EmbeddingCache {
+    /// Run a blocking `PRAGMA wal_checkpoint(TRUNCATE)` to copy the WAL back
+    /// into the main DB. Intended for the daemon's structured-shutdown path,
+    /// before the cache is dropped — the operator chose to wait, so blocking
+    /// for the WAL truncate is fine. After this returns successfully, the
+    /// cache's `-wal` sidecar is gone or empty.
+    ///
+    /// Drop performs only a non-blocking [`PASSIVE`] checkpoint with a 1 s
+    /// timeout (#1343). If the daemon doesn't call `checkpoint_wal` first, a
+    /// large WAL persists across the restart — SQLite recovers from it on
+    /// next open, but the file lingers on disk.
+    ///
+    /// [`PASSIVE`]: https://www.sqlite.org/pragma.html#pragma_wal_checkpoint
+    pub fn checkpoint_wal(&self) -> Result<(), CacheError> {
+        let _span = tracing::info_span!("cache_checkpoint_wal_truncate").entered();
+        self.rt.block_on(async {
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await?;
+            Ok(())
+        })
+    }
+}
+
 impl Drop for EmbeddingCache {
-    /// RM-V1.29-7: mirror `Store::drop`. Best-effort `PRAGMA wal_checkpoint(TRUNCATE)`
-    /// on daemon shutdown so the embedding cache's `-wal` sidecar doesn't
-    /// accumulate hundreds of MB across weeks of daemon restarts. Errors and
-    /// panics are swallowed (Drop can't fail). `catch_unwind` guards against
-    /// `block_on` panicking when the cache is dropped from inside a tokio
-    /// runtime.
+    /// #1343 / RM-V1.33-3: best-effort `PRAGMA wal_checkpoint(PASSIVE)` with
+    /// a 1 s timeout, replacing the prior unbounded `TRUNCATE`. The previous
+    /// implementation could stall daemon shutdown by minutes when a 200 MiB
+    /// WAL had to be copied back synchronously, blowing past systemd's
+    /// `TimeoutStopSec` and triggering SIGKILL — which skips ALL further
+    /// `Drop` impls including [`SocketCleanupGuard`]. PASSIVE bails immediately
+    /// when active readers/writers exist (no copy), and the 1 s timeout caps
+    /// every other case. Operators who want the truncate semantics call
+    /// [`EmbeddingCache::checkpoint_wal`] from the structured-shutdown path
+    /// before drop.
+    ///
+    /// `catch_unwind` guards against `block_on` panicking when dropped from
+    /// inside a tokio runtime.
+    ///
+    /// [`SocketCleanupGuard`]: crate::cli::watch
     fn drop(&mut self) {
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Err(e) = self.rt.block_on(async {
-                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                    .execute(&self.pool)
-                    .await
-            }) {
-                tracing::warn!(
+            let res = self.rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(&self.pool),
+                )
+                .await
+            });
+            match res {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(
                     error = %e,
-                    "EmbeddingCache WAL checkpoint on drop failed (non-fatal)"
-                );
+                    "EmbeddingCache WAL checkpoint(PASSIVE) on drop failed (non-fatal)"
+                ),
+                Err(_) => tracing::warn!(
+                    "EmbeddingCache WAL checkpoint(PASSIVE) timed out after 1s on drop; \
+                     WAL will be replayed on next open. Call checkpoint_wal() before \
+                     drop in shutdown paths to truncate."
+                ),
             }
         })) {
             let msg = crate::panic_message(&payload);
@@ -1131,6 +1173,68 @@ mod tests {
         assert!(!path.exists());
         let _cache = EmbeddingCache::open(&path).unwrap();
         assert!(path.exists());
+    }
+
+    /// #1343 / RM-V1.33-3: explicit `checkpoint_wal()` truncates the WAL.
+    /// After insert + checkpoint, the `-wal` sidecar should be empty (or
+    /// have been rolled back into the main DB).
+    #[test]
+    fn embedding_cache_checkpoint_wal_returns_ok() {
+        let (cache, dir) = test_cache();
+        let entries: Vec<(Vec<u8>, String, Vec<f32>)> = vec![(
+            b"a".repeat(32),
+            "test-model".to_string(),
+            make_embedding(8, 0.1),
+        )];
+        cache
+            .insert_many(&entries, CachePurpose::Embedding, 8)
+            .unwrap();
+        cache
+            .checkpoint_wal()
+            .expect("checkpoint_wal should succeed");
+        // `-wal` may not be deleted (SQLite keeps the file) but should be
+        // truncated to zero bytes after a successful TRUNCATE checkpoint.
+        let wal = dir.path().join("test_cache.db-wal");
+        if wal.exists() {
+            let len = std::fs::metadata(&wal).unwrap().len();
+            assert_eq!(
+                len, 0,
+                "WAL should be truncated to 0 bytes after checkpoint_wal(); got {len}"
+            );
+        }
+    }
+
+    /// #1343 / RM-V1.33-3: drop must complete within ~2s even when the WAL
+    /// has uncheckpointed data, because the in-Drop checkpoint is now
+    /// `PASSIVE` with a 1s `tokio::time::timeout` wrapper. Pre-fix, drop
+    /// ran an unbounded `TRUNCATE` checkpoint that could stall daemon
+    /// shutdown for many seconds and trip systemd's `TimeoutStopSec`.
+    #[test]
+    fn embedding_cache_drop_is_bounded() {
+        let (cache, _dir) = test_cache();
+        // Insert some data so there's something for the in-Drop checkpoint
+        // to potentially copy back.
+        let entries: Vec<(Vec<u8>, String, Vec<f32>)> = (0..32)
+            .map(|i| {
+                let mut hash = vec![0u8; 32];
+                hash[0] = i as u8;
+                (
+                    hash,
+                    "test-model".to_string(),
+                    make_embedding(64, i as f32 * 0.01),
+                )
+            })
+            .collect();
+        cache
+            .insert_many(&entries, CachePurpose::Embedding, 64)
+            .unwrap();
+        let start = std::time::Instant::now();
+        drop(cache);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "EmbeddingCache::drop should complete in <3s (1s checkpoint timeout + slack); took {elapsed:?}"
+        );
     }
 
     /// SEC-D.4: `EmbeddingCache::open` must restrict the DB file to 0o600.
@@ -2618,22 +2722,47 @@ impl QueryCache {
     }
 }
 
+impl QueryCache {
+    /// Run a blocking `PRAGMA wal_checkpoint(TRUNCATE)` — see
+    /// [`EmbeddingCache::checkpoint_wal`] for the contract. Same #1343 /
+    /// RM-V1.33-3 motivation: structured shutdown paths call this before
+    /// drop; drop falls back to a 1 s PASSIVE checkpoint.
+    pub fn checkpoint_wal(&self) -> Result<(), CacheError> {
+        let _span = tracing::info_span!("query_cache_checkpoint_wal_truncate").entered();
+        self.rt.block_on(async {
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await?;
+            Ok(())
+        })
+    }
+}
+
 impl Drop for QueryCache {
-    /// RM-V1.29-7: mirror `Store::drop`. Best-effort `PRAGMA wal_checkpoint(TRUNCATE)`
-    /// on daemon shutdown so the query cache's `-wal` sidecar doesn't
-    /// accumulate over long-running daemon sessions. `catch_unwind` guards
-    /// against `block_on` panicking when dropped from inside a tokio runtime.
+    /// #1343 / RM-V1.33-3: see [`EmbeddingCache::drop`] for the rationale.
+    /// Best-effort `PRAGMA wal_checkpoint(PASSIVE)` with a 1 s timeout —
+    /// caps daemon-shutdown WAL-copy stalls. Explicit truncate via
+    /// [`QueryCache::checkpoint_wal`].
     fn drop(&mut self) {
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Err(e) = self.rt.block_on(async {
-                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                    .execute(&self.pool)
-                    .await
-            }) {
-                tracing::warn!(
+            let res = self.rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(&self.pool),
+                )
+                .await
+            });
+            match res {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(
                     error = %e,
-                    "QueryCache WAL checkpoint on drop failed (non-fatal)"
-                );
+                    "QueryCache WAL checkpoint(PASSIVE) on drop failed (non-fatal)"
+                ),
+                Err(_) => tracing::warn!(
+                    "QueryCache WAL checkpoint(PASSIVE) timed out after 1s on drop; \
+                     WAL will be replayed on next open. Call checkpoint_wal() before \
+                     drop in shutdown paths to truncate."
+                ),
             }
         })) {
             let msg = crate::panic_message(&payload);
