@@ -208,8 +208,9 @@ pub async fn check_and_migrate_schema(
     pool: SqlitePool,
     db_path: &Path,
     current_version: i32,
+    read_only: bool,
 ) -> Result<SqlitePool, StoreError> {
-    let _span = tracing::info_span!("check_and_migrate_schema").entered();
+    let _span = tracing::info_span!("check_and_migrate_schema", read_only).entered();
 
     // Read the stored schema version. A "no such table" error means the
     // metadata table hasn't been created yet (fresh DB pre-init), which is
@@ -244,6 +245,27 @@ pub async fn check_and_migrate_schema(
     if version <= 0 || version >= current_version {
         // Either fresh-DB sentinel (0) or already current — no migration.
         return Ok(pool);
+    }
+
+    // Read-only handles can't migrate (every migration step issues writes).
+    // Surface `SchemaMismatch` so the operator runs `cqs index` (or restarts
+    // the watch daemon, which opens read-write and migrates structurally) —
+    // before this check, every read-only open of an older DB triggered a
+    // backup → migrate → write-fail → restore loop, which left the DB at
+    // its old version while still scattering `index.bak-*` snapshots and
+    // returning a confusing "attempt to write a readonly database" error.
+    if read_only {
+        tracing::info!(
+            path = %db_path.display(),
+            found = version,
+            expected = current_version,
+            "Read-only handle with stale schema; skipping migration (run `cqs index` to migrate)"
+        );
+        return Err(StoreError::SchemaMismatch {
+            db_path: db_path.display().to_string(),
+            found: version,
+            expected: current_version,
+        });
     }
 
     // Migration needed. Hand the pool off by value so migrate() can close it
@@ -1034,6 +1056,136 @@ mod tests {
                 StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 15),
                 other => panic!("Expected SchemaNewerThanCq, got: {:?}", other),
             }
+        });
+    }
+
+    /// Read-only handles can't migrate. Stale-schema readonly opens should
+    /// surface `SchemaMismatch` instead of attempting writes that fail with
+    /// the SQLite "attempt to write a readonly database" error and leave
+    /// stray `index.bak-*` files behind.
+    #[test]
+    fn test_check_and_migrate_schema_readonly_returns_mismatch() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            // Set up a DB stamped at an old schema version (writable open).
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '10')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            // Reopen read-only and call check_and_migrate_schema with
+            // read_only=true; should bail with SchemaMismatch (not attempt
+            // a migration that would fail with "attempt to write a readonly
+            // database").
+            let ro_pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .read_only(true),
+                )
+                .await
+                .unwrap();
+            let result = check_and_migrate_schema(ro_pool, &db_path, 26, true).await;
+            match result {
+                Err(StoreError::SchemaMismatch {
+                    found, expected, ..
+                }) => {
+                    assert_eq!(found, 10);
+                    assert_eq!(expected, 26);
+                }
+                Ok(_) => panic!("expected SchemaMismatch on stale readonly handle"),
+                Err(other) => {
+                    panic!("expected SchemaMismatch on stale readonly handle, got: {other:?}")
+                }
+            }
+
+            // No backup files should have been created (no migrate path
+            // means no `index.bak-*` snapshots).
+            let backup_count = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .ok()
+                        .and_then(|e| e.file_name().to_str().map(String::from))
+                        .map(|n| n.starts_with("test.bak-"))
+                        .unwrap_or(false)
+                })
+                .count();
+            assert_eq!(
+                backup_count, 0,
+                "readonly stale-schema check must not create migration backups"
+            );
+        });
+    }
+
+    /// Read-only opens of a DB already at the current version must succeed
+    /// (no migration, no error). Regression guard for the `read_only=true`
+    /// branch added above so it doesn't reject every readonly open.
+    #[test]
+    fn test_check_and_migrate_schema_readonly_current_version_succeeds() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '26')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let ro_pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .read_only(true),
+                )
+                .await
+                .unwrap();
+            let result = check_and_migrate_schema(ro_pool, &db_path, 26, true).await;
+            assert!(
+                result.is_ok(),
+                "readonly open at current version must succeed, got: {:?}",
+                result.err()
+            );
         });
     }
 
