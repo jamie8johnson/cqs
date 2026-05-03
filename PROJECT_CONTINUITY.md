@@ -2,7 +2,9 @@
 
 ## Right Now
 
-**v1.35.0 in flight 2026-05-02.** **Default embedder swaps from BGE-large to EmbeddingGemma-300m.** Plus tokenizer truncation fix (PR #1384, already merged into v1.34.0 main). 5-slot apples-to-apples eval after every slot was reindexed `--force --llm-summaries` shows gemma wins agg R@1 by +1.9pp over BGE-large at half the params + 4× context. BGE-large remains a first-class preset; existing slot indexes keep their stored model.
+**v1.35.0 released 2026-05-02.** **Default embedder swaps from BGE-large to EmbeddingGemma-300m.** PR #1385 merged (3 follow-up fixes during CI iteration: doctor test default-derivation, embedder ONNX external-data sidecar download, embedder_dim_mismatch test default-derivation). Tag pushed; binaries via `release.yml`; crates.io publish in flight.
+
+5-slot apples-to-apples eval after every slot was reindexed `--force --llm-summaries` on the truncation-fixed binary (#1384):
 
 | Slot | Agg R@1 | Agg R@5 | Agg R@20 |
 |---|---:|---:|---:|
@@ -12,7 +14,9 @@
 | v9-200k | 45.0% | 68.8% | 80.7% |
 | nomic-coderank | 45.0% | 67.9% | 78.9% |
 
-Branch (TBD): release/v1.35.0. Code change: `default = true` annotation moves from `bge_large` → `embeddinggemma_300m` in `define_embedder_presets!`. All four downstream constants update via the macro. Tests adjusted to derive expected default name from `ModelConfig::default_model().name`. README + CHANGELOG + Cargo.toml description refreshed.
+Existing slot indexes keep their stored model — only fresh slots / fresh `cqs index` runs pick up the new default. BGE-large remains a first-class preset (`CQS_EMBEDDING_MODEL=bge-large`).
+
+**Side fix (#1385): ONNX external-data sidecar.** EmbeddingGemma's >2GB FP32 weights live in `model.onnx_data` next to `model.onnx`. The downloader was only fetching the graph file, not the weights file. Without the sidecar, ORT init fails on a fresh runner with `cannot get file size: No such file or directory [.../onnx/model.onnx_data]`. Fix: after the existing model.onnx + tokenizer.json fetches, also try `<onnx_path>_data`; ignore 404 since most presets don't have one.
 
 **v1.34.0 released 2026-05-02 (same day as v1.33.0).** Bundled the post-v1.33.0 audit close-out (24 fix PRs) + pre-audit feature work (EmbeddingGemma-300m preset, `cqs eval --reranker`, slow-tests Phase 2, ci-slow.yml stabilization). On crates.io. Tag pushed (binaries via `release.yml`).
 
