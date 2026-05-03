@@ -239,6 +239,32 @@ When the user passes a path on the command line, cqs canonicalizes it (`dunce::c
 
 **Recommendation**: If you don't trust symlinks in your project, remove them. The directory-walk path is already conservative.
 
+## Windows-Specific Asymmetries
+
+Several `cfg(unix)` paths apply file-mode hardening that the `cfg(not(unix))` arms can't replicate without per-file ACL programming. Documented here so the SEC promises don't read as universal when they're actually Linux/macOS-specific.
+
+### Audit-mode marker (`src/audit.rs::write_state`)
+
+- **Linux/macOS**: file is created with `mode(0o600)` so it's never world-readable; the audit token can't be read by other accounts on a shared host.
+- **Windows**: file is created via `std::fs::write` and inherits the parent directory's DACL. The default `%LOCALAPPDATA%\cqs\` location inherits user-only ACLs from the user profile, which is fine — but operators with roaming profiles, or who've relocated `%LOCALAPPDATA%` to a shared mount (some enterprise deployments), can end up with the audit-mode file readable by other authenticated users on the same machine.
+- **Recommendation**: on Windows, verify the parent directory's ACL doesn't grant read to other users before treating the audit-mode marker as a confidentiality boundary. Audit-mode is a debugging aid, not a credential store; the file contains a timestamp + opt-in flag, not a token.
+
+### Embedding cache file mode (`src/cache.rs::apply_db_file_perms`)
+
+- **Linux/macOS**: `apply_db_file_perms` sets `mode(0o600)` after creation.
+- **Windows**: `apply_db_file_perms(_path: &Path) {}` is a no-op. Same DACL inheritance story as above. The cache contains chunk content_hashes + embedding vectors — not directly sensitive, but the same operator-environment caveat applies.
+
+### Database file backup discovery (`src/store/migrations::db_file_identity`)
+
+- **Linux/macOS**: identity is `(dev, inode)` — durable across `mtime` changes from `--force` reindexes.
+- **Windows / non-Unix**: identity falls back to `mtime`, which can collide if two `--force` operations run in the same second. The legacy backup discovery path (used only for the v18→v19 migration on existing indexes) may misidentify a fresh DB as the pre-migration one. Mitigated in practice because the v18→v19 migration shipped over a year ago and operators on current schemas don't hit this code path.
+
+### Hook scripts on Windows-native (`src/cli/hook.rs`)
+
+- The `cqs hook install` script body assumes `cqs` is on PATH from a POSIX-style shell. On Windows-native Git (cmd.exe / PowerShell), the inherited PATH from MSYS shells doesn't always carry over. Operators on native-Windows git should use Git for Windows' bundled bash for the hook scripts to fire reliably.
+
+These limitations are tracked as Windows-specific issues in the v1.33.0 audit batch (#1353, #1354, #1355).
+
 ## Index Storage
 
 - Stored in `.cqs/slots/<name>/index.db` (SQLite with WAL mode; PR #1105 introduced per-slot layout, pre-migration projects may still see the legacy `.cqs/index.db`)
