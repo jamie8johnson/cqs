@@ -205,12 +205,31 @@ impl<Mode> Store<Mode> {
 impl Store<ReadWrite> {
     /// Insert or update chunks in batch using multi-row INSERT.
     ///
-    /// Chunks are inserted in batches of 52 rows (52 * 19 params = 988 < SQLite's 999 limit).
-    /// FTS operations remain per-row because FTS5 doesn't support INSERT OR REPLACE.
+    /// Batch size is set by `max_rows_per_statement(22)` in `batch_insert_chunks`
+    /// (22 binds per row against the SQLite 32766-variable limit, roughly
+    /// 1488 rows per statement). FTS operations remain per-row because FTS5
+    /// doesn't support upsert.
     ///
-    /// **DS-19 warning:** Uses `INSERT OR REPLACE` which triggers `ON DELETE CASCADE` on
-    /// `calls` and `type_edges` tables. Callers must re-populate call graph edges after
-    /// this function if the chunks had existing relationships.
+    /// **DS-V1.33-10 / #1342 — actual cascade contract:**
+    ///
+    /// Pre-#1342 doc comment claimed `INSERT OR REPLACE`, which would trigger
+    /// `ON DELETE CASCADE` on `calls` / `type_edges` and require callers to
+    /// re-populate. The code was migrated to `INSERT … ON CONFLICT(id) DO
+    /// UPDATE SET …` (upsert) some time ago — the row is updated *in place*,
+    /// no `DELETE` fires, and `calls` / `type_edges` rows are preserved as-is.
+    ///
+    /// That preservation is *not* equivalent to the cascade: when a chunk's
+    /// `content_hash` changes, its outgoing calls / type uses likely change
+    /// too, and the old rows now reference a stale call graph. Callers
+    /// **must still** re-populate `calls` and `type_edges` for any chunk
+    /// whose content changed (compare returned `content_hash` to the
+    /// pre-existing snapshot from `snapshot_content_hashes`). The
+    /// pre-existing rows aren't *wrong* in the same way they would be after
+    /// a cascade — they're just stale until the caller refreshes.
+    ///
+    /// `enrichment_hash` and `enrichment_version` columns *are* preserved
+    /// across upsert so the enrichment pass doesn't get its work invalidated
+    /// by every reindex (DS-2).
     pub fn upsert_chunks_batch(
         &self,
         chunks: &[(Chunk, Embedding)],
