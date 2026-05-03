@@ -226,3 +226,84 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
     }
     Ok(updated)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::store::ModelInfo;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    /// Spin up an empty `Store` whose dim matches a small test profile, just
+    /// enough that `run_umap_projection` can hit `embedding_batches` and the
+    /// empty-corpus branch.
+    fn fresh_empty_store(dim: usize) -> (Store, TempDir) {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("test_umap.db");
+        let mut store = Store::open(&path).expect("open store");
+        store
+            .init(&ModelInfo::new("test/model", dim))
+            .expect("init store");
+        store.set_dim(dim);
+        (store, dir)
+    }
+
+    /// #1357 / TC-HAP-V1.33-8: pin the documented graceful-skip path on
+    /// machines without Python. Pre-test, a future refactor that promoted
+    /// the skip to a hard error would silently break `cqs index --umap` on
+    /// the install base that doesn't have umap-learn — exactly the case the
+    /// graceful skip exists for.
+    ///
+    /// Mutates the process-global `PATH`, so `#[serial]` to avoid races
+    /// with any other test that shells out (notably the doctor / convert
+    /// tests).
+    #[test]
+    #[serial]
+    fn run_umap_projection_returns_zero_when_python_missing() {
+        // Save and restore PATH; on Windows also save Path / PATHEXT.
+        let saved_path = std::env::var_os("PATH");
+        // Point PATH at an empty tempdir so `which` for python3/python/py
+        // all fail. Tempdir lives for the duration of the test.
+        let empty_dir = TempDir::new().expect("empty PATH dir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        let (store, _tmp) = fresh_empty_store(8);
+        let result = run_umap_projection(&store, true);
+
+        // Restore PATH before any assertion so a panic doesn't leak the
+        // empty PATH into the rest of the suite.
+        match saved_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+
+        match result {
+            Ok(n) => assert_eq!(n, 0, "Python-missing path must return Ok(0), got Ok({n})"),
+            Err(e) => panic!(
+                "Python-missing path must return Ok(0), got Err: {e:#}. \
+                 The graceful-skip path at umap.rs:53-60 is documented \
+                 behavior — promoting it to a hard error breaks `cqs index \
+                 --umap` on every machine without umap-learn installed."
+            ),
+        }
+    }
+
+    /// #1357 / TC-HAP-V1.33-8: empty corpus also returns Ok(0). Reachable
+    /// only when Python + umap-learn are present (otherwise the earlier
+    /// graceful-skip branch fires); this assertion is correct under both
+    /// paths so the test is portable across the dev workstation and CI
+    /// runners that lack umap-learn.
+    #[test]
+    fn run_umap_projection_returns_zero_for_empty_corpus() {
+        let (store, _tmp) = fresh_empty_store(8);
+        let result = run_umap_projection(&store, true);
+        match result {
+            Ok(n) => assert_eq!(n, 0, "empty corpus must return Ok(0), got Ok({n})"),
+            Err(e) => panic!(
+                "empty corpus must return Ok(0), got Err: {e:#}. \
+                 If this fails on a machine WITH umap-learn, the empty-corpus \
+                 branch at umap.rs:94-100 has regressed."
+            ),
+        }
+    }
+}
