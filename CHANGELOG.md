@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] - 2026-05-02
+
+Minor release. No schema bump. **Default embedding model swaps from BGE-large-en-v1.5 (335M, 1024-dim) to EmbeddingGemma-300m (308M, 768-dim).** Plus a tokenizer-truncation correctness fix (#1384) that materially affects fine-tuned BERT-family presets.
+
+### Headline
+
+- **Default embedder: EmbeddingGemma-300m.** On the v3.v2 dual-judge eval (109 test + 109 dev), gemma wins agg R@1 +1.9pp over BGE-large (49.1% vs 47.2%), ties bge-large-ft on agg R@20 (86.2%), and ships at half the params + 4× context (2K vs 512). BGE-large remains a first-class preset (`CQS_EMBEDDING_MODEL=bge-large`); existing slot indexes keep their stored model — only fresh slots / fresh `cqs index` runs pick up the new default.
+- **Apples-to-apples 5-slot eval (2026-05-02)** comparing presets after every slot was reindexed `--force --llm-summaries` on the truncation-fixed binary:
+
+  | Slot | Agg R@1 | Agg R@5 | Agg R@20 |
+  |---|---:|---:|---:|
+  | embeddinggemma-300m (new default) | **49.1%** | 72.5% | **86.2%** |
+  | bge-large-ft | 47.7% | **73.4%** | **86.2%** |
+  | BGE-large (former default) | 47.2% | 72.0% | 84.4% |
+  | v9-200k | 45.0% | 68.8% | 80.7% |
+  | nomic-coderank | 45.0% | 67.9% | 78.9% |
+
+### Fixed
+
+- **Tokenizer truncation cap leaked into windowing/count paths** (#1384). HF-exported BERT-family tokenizers (bge-large-ft, v9-200k, nomic-coderank) ship `tokenizer.json` with `truncation: {max_length: 512}` baked in. cqs's `split_into_windows` / `token_count` / `token_counts_batch` used `encode().get_ids().len()` to count tokens — the truncation cap silently capped the count at 512 even for 5,000+-token inputs, so long markdown sections chunked into 1-2 windows when they actually needed 12+. Fix clones the tokenizer Arc and disables truncation before counting; inference paths intentionally keep the cap. Affected slots gained ~32% chunks on reindex (bge-ft 14,704 → 19,463; v9 14,718 → 19,506). BGE-large default and EmbeddingGemma-300m tokenizers ship with `truncation: None` so they were unaffected.
+
+### Changed
+
+- **`bge_large` preset no longer marked `default = true`** (`src/embedder/models.rs:365`). `embeddinggemma_300m` takes that role. All four constants (`ModelConfig::DEFAULT_REPO`, `ModelConfig::DEFAULT_DIM`, `embedder::DEFAULT_MODEL_REPO`, `EMBEDDING_DIM`) update via the `define_embedder_presets!` macro automatically.
+- **README Retrieval Quality table** refreshed with apples-to-apples numbers (5 slots × test+dev, every slot reindexed after the truncation fix).
+
+---
+
 ## [1.34.0] - 2026-05-02
 
 Minor release. No schema bump. Bundles the post-v1.33.0-audit close-out: 12th full audit (16 categories, 167 findings) was run against the freshly-released v1.33.0 binary. **129 audit findings closed across 24 fix PRs** plus 25 medium-effort items filed as tracking issues (#1337-#1377). Plus pre-audit feature work: EmbeddingGemma-300m preset, `cqs eval --reranker`, slow-tests gating Phase 2, and the ci-slow.yml stabilization series.

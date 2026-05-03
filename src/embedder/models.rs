@@ -350,7 +350,10 @@ define_embedder_presets! {
         approx_download_bytes = Some(440 * 1024 * 1024),
         pad_id = 0;
 
-    /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Higher quality, slower.
+    /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Strong general-purpose
+    /// retriever; was the cqs default through v1.34.x. Replaced as default
+    /// by `embeddinggemma-300m` in v1.35.0 (R@1 +1.9pp on v3.v2 dual-judge,
+    /// half the params, 4× context window).
     ///
     /// Standard BERT I/O, mean pooling (matches the BGE-reference implementation
     /// used in HuggingFace `sentence-transformers`).
@@ -361,20 +364,16 @@ define_embedder_presets! {
         input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
         // EX-V1.29-6: full BGE-large ONNX bundle ~1.3 GiB.
         approx_download_bytes = Some(1_300 * 1024 * 1024),
-        pad_id = 0,
-        default = true;
+        pad_id = 0;
 
     /// BGE-large-ft: LoRA fine-tune of BGE-large-en-v1.5 on cqs's
     /// `cqs-code-search-200k` dataset (`jamie8johnson/cqs-code-search-200k`).
     /// Same architecture, dim, max_seq, and prefixes as the upstream
     /// BGE-large preset — adapters merged into the ONNX export.
     ///
-    /// Opt-in candidate to dethrone the bare BGE-large default. Whether it
-    /// actually improves on v3.v2 production-fixture R@5 is the open
-    /// question (#1289). The original synthetic-fixture A/B (296q, 7
-    /// languages) showed +0.7pp R@1 vs base at the cost of broader
-    /// distribution coverage; the v3.v2 numbers are pending the eval that
-    /// motivated this preset.
+    /// Best R@5 on v3.v2 dual-judge (73.4% agg vs default 72.5%);
+    /// recommended for R@5-sensitive flows where broader top-K is needed
+    /// before reranking. Top-1 trails the default by 1.4pp.
     ///
     /// Set `CQS_EMBEDDING_MODEL=bge-large-ft` or
     /// `cqs slot create bge-ft --model bge-large-ft` to use it.
@@ -448,7 +447,8 @@ define_embedder_presets! {
         // provide isn't there. Stay on FP32 until we wire TRT-RTX or
         // confirm a different EP handles FP16 cleanly.
         approx_download_bytes = Some(1_300 * 1024 * 1024),
-        pad_id = 0;
+        pad_id = 0,
+        default = true;
 }
 
 impl ModelConfig {
@@ -625,13 +625,16 @@ impl ModelConfig {
             );
         }
 
-        // 4. Default — BGE-large since v1.9.0
+        // 4. Default — see `define_embedder_presets!` for the row marked
+        // `default = true`. EmbeddingGemma-300m since v1.35.0; BGE-large
+        // before that.
+        let dm = Self::default_model();
         tracing::info!(
-            model = "bge-large",
+            model = %dm.name,
             source = "default",
             "Resolved model config"
         );
-        Self::default_model()
+        dm
     }
 
     /// SHL-V1.30-1 / P2.41 — scale the embed batch size with this model's
@@ -706,7 +709,8 @@ impl ModelConfig {
 /// to BERT defaults when absent.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingConfig {
-    /// Model name or preset (default: "bge-large")
+    /// Model name or preset (defaults to the row marked `default = true` in
+    /// `define_embedder_presets!` — `embeddinggemma-300m` since v1.35.0).
     #[serde(default = "default_model_name")]
     pub model: String,
     /// HuggingFace repo ID (required for custom models)
@@ -773,7 +777,8 @@ impl Default for EmbeddingConfig {
 /// Model metadata for index initialization.
 ///
 /// Construct via `ModelInfo::new()` with explicit name + dim, or
-/// `ModelInfo::default()` for tests only (BGE-large, 1024-dim).
+/// `ModelInfo::default()` for tests only (project default model, currently
+/// EmbeddingGemma-300m, 768-dim).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelInfo {
     pub name: String,
@@ -803,7 +808,7 @@ impl ModelInfo {
 }
 
 impl Default for ModelInfo {
-    /// Test-only default: project default model (currently BGE-large, 1024-dim).
+    /// Test-only default: project default model (currently EmbeddingGemma-300m, 768-dim).
     ///
     /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
     /// All fields derive from `ModelConfig::default_model()` — change the
@@ -1061,7 +1066,7 @@ mod tests {
         // Clear env to ensure we get default
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let cfg = ModelConfig::resolve(None, None);
-        assert_eq!(cfg.name, "bge-large");
+        assert_eq!(cfg.name, ModelConfig::default_model().name);
     }
 
     #[test]
@@ -1096,7 +1101,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "nonexistent-model");
         let cfg = ModelConfig::resolve(None, None);
-        assert_eq!(cfg.name, "bge-large"); // falls back to default
+        assert_eq!(cfg.name, ModelConfig::default_model().name); // falls back to default
         std::env::remove_var("CQS_EMBEDDING_MODEL");
     }
 
@@ -1104,7 +1109,7 @@ mod tests {
     fn test_resolve_unknown_cli_warns_and_defaults() {
         let _lock = ENV_MUTEX.lock().unwrap();
         let cfg = ModelConfig::resolve(Some("nonexistent"), None);
-        assert_eq!(cfg.name, "bge-large");
+        assert_eq!(cfg.name, ModelConfig::default_model().name);
     }
 
     #[test]
@@ -1177,7 +1182,7 @@ mod tests {
             pad_id: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
-        assert_eq!(cfg.name, "bge-large"); // falls back
+        assert_eq!(cfg.name, ModelConfig::default_model().name); // falls back
     }
 
     // ===== EmbeddingConfig serde tests =====
@@ -1186,13 +1191,14 @@ mod tests {
     fn test_embedding_config_default_model() {
         let json = r#"{}"#;
         let cfg: EmbeddingConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.model, "bge-large");
+        assert_eq!(cfg.model, ModelConfig::default_model().name);
     }
 
     #[test]
     fn test_embedding_config_explicit_model() {
         let json = r#"{"model": "bge-large"}"#;
         let cfg: EmbeddingConfig = serde_json::from_str(json).unwrap();
+        // Explicit model name overrides default — bge-large stays valid as a preset.
         assert_eq!(cfg.model, "bge-large");
     }
 
@@ -1217,7 +1223,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "");
         let cfg = ModelConfig::resolve(None, None);
-        assert_eq!(cfg.name, "bge-large");
+        assert_eq!(cfg.name, ModelConfig::default_model().name);
         std::env::remove_var("CQS_EMBEDDING_MODEL");
     }
 
@@ -1373,11 +1379,9 @@ mod tests {
             pad_id: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
-        assert_eq!(
-            cfg.name, "bge-large",
-            "dim=0 should cause fallback to default bge-large"
-        );
-        assert_eq!(cfg.dim, 1024, "Fallback should have BGE-large dim=1024");
+        let dm = ModelConfig::default_model();
+        assert_eq!(cfg.name, dm.name, "dim=0 should cause fallback to default");
+        assert_eq!(cfg.dim, dm.dim, "Fallback should have default model's dim");
     }
 
     // ===== TC-43: SEC-20 path traversal rejection tests =====
@@ -1402,7 +1406,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             "Traversal in onnx_path should fall back to default"
         );
     }
@@ -1427,7 +1432,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             "Traversal in tokenizer_path should fall back to default"
         );
     }
@@ -1452,7 +1458,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             "Absolute onnx_path should fall back to default"
         );
     }
@@ -1504,7 +1511,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             ".. anywhere in path should fall back"
         );
     }
@@ -1531,7 +1539,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             "Repo without slash should fall back to default"
         );
     }
@@ -1556,7 +1565,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             "Repo with .. should fall back to default"
         );
     }
@@ -1581,7 +1591,8 @@ mod tests {
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
-            resolved.name, "bge-large",
+            resolved.name,
+            ModelConfig::default_model().name,
             "Repo starting with / should fall back to default"
         );
     }

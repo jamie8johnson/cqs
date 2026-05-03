@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **46.8% R@1 / 73.9% R@5 / 85.3% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with BGE-large default (refreshed 2026-05-02; BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **49.1% R@1 / 72.5% R@5 / 86.2% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (refreshed 2026-05-02; gemma dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -60,10 +60,10 @@ When the daemon is running, all `cqs` commands auto-connect via the socket. No c
 
 ### Embedding Model
 
-cqs ships with BGE-large-en-v1.5 (1024-dim) as the default. Alternative models can be configured:
+cqs ships with EmbeddingGemma-300m (768-dim, 2K context) as the default since v1.35.0 — wins R@1 + ties R@20 with BGE-large on the v3.v2 dual-judge eval at 308M params. Alternative models can be configured:
 
 ```bash
-# Built-in preset
+# Built-in preset (e.g. switch to BGE-large)
 export CQS_EMBEDDING_MODEL=bge-large
 cqs index --force  # reindex required after model change
 
@@ -161,9 +161,9 @@ stale_check = true
 quiet = false
 verbose = false
 
-# Embedding model (optional — defaults to bge-large)
+# Embedding model (optional — defaults to embeddinggemma-300m)
 [embedding]
-model = "bge-large"              # built-in preset
+model = "embeddinggemma-300m"    # built-in preset (default)
 # model = "custom"               # for custom ONNX models:
 # repo = "org/model-name"
 # onnx_path = "model.onnx"
@@ -669,7 +669,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination. Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default; `bge-large-ft`, `E5-base`, `v9-200k`, `nomic-coderank`, `embeddinggemma-300m` presets, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
+3. **Embed** — Configurable embedding model (`embeddinggemma-300m` default since v1.35.0; `bge-large`, `bge-large-ft`, `E5-base`, `v9-200k`, `nomic-coderank` presets, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -699,21 +699,21 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 **Live codebase eval** — 218 queries (109 test + 109 dev) over the cqs source tree, each with a dual-judge (Gemma-4 + Claude) consensus gold chunk. v3.v2 fixture. Categories: `identifier_lookup`, `behavioral`, `conceptual`, `structural`, `negation`, `type_filtered`, `multi_step`, `cross_language` — every category N ≥ 16. Hard mode; measures the full production pipeline.
 
-**Per-preset (refreshed 2026-05-02, post-v1.33.0):**
+**Per-preset (apples-to-apples 2026-05-02; all 5 slots reindexed --force --llm-summaries on cqs v1.35.0):**
 
-| Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@5 |
-|--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|
-| **BGE-large** (default) | 335M | 44.0% | **72.5%** | **83.5%** | **49.5%** | **75.2%** | **87.2%** | **73.9%** |
-| **embeddinggemma-300m** | 308M | **47.7%** | 71.6% | 83.5% | 48.6% | **75.2%** | **87.2%** | 73.4% |
-| **bge-large-ft** | 335M | 45.0% | **73.4%** | 83.5% | 46.8% | 70.6% | 82.6% | 72.0% |
-| v9-200k | 110M | 42.2% | 67.9% | 79.8% | 45.9% | 70.6% | 83.5% | 69.3% |
-| nomic-coderank | 137M | 42.2% | 67.9% | 79.8% | 47.7% | 69.7% | 81.7% | 68.8% |
+| Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@1 | Agg R@5 | Agg R@20 |
+|--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|--------:|---------:|
+| **embeddinggemma-300m** (default) | 308M | **48.6%** | 68.8% | 83.5% | 49.5% | **76.1%** | **89.0%** | **49.1%** | 72.5% | **86.2%** |
+| bge-large-ft | 335M | 45.0% | **71.6%** | **85.3%** | 50.5% | 75.2% | 87.2% | 47.7% | **73.4%** | **86.2%** |
+| BGE-large | 335M | 43.1% | 68.8% | 82.6% | **51.4%** | 75.2% | 86.2% | 47.2% | 72.0% | 84.4% |
+| v9-200k | 110M | 44.0% | 67.9% | 79.8% | 45.9% | 69.7% | 81.7% | 45.0% | 68.8% | 80.7% |
+| nomic-coderank | 137M | 43.1% | 67.0% | 78.0% | 46.8% | 68.8% | 79.8% | 45.0% | 67.9% | 78.9% |
 
-Per-preset slot state at measurement time: `default` 19,857 chunks (48% LLM-summary coverage); `bge-ft` 14,460 (no summaries); `gemma` 13,118 (90% summaries); `v9` 14,468 (82% summaries); `coderank` 12,393 (no summaries). Slot reindex cadences differ — direct cross-model comparison is qualitative; for tighter A/B, reindex the candidate slot --force from a copied summary set first.
+Per-slot summary coverage at measurement: `default` 62.1%, `gemma` 99.0%, `bge-ft` 62.1%, `v9` 67.6%, `coderank` 65.5%. Variance is structural — only `chunk_type.is_code()` chunks are summary-eligible (markdown / json / ini are skipped at `src/llm/mod.rs:115`), and tokenizers produce different chunk-type distributions. Each slot has all *its* eligible chunks summarized.
 
 Each split is ±2-3pp noisy on a single trial; quote both when comparing config changes.
 
-**Default config:** BGE-large dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. BGE-large wins on dev R@5 + R@20 and agg R@5; `embeddinggemma-300m` is the strongest sub-1024-dim alternative — opt-in via `CQS_EMBEDDING_MODEL=embeddinggemma-300m`. `bge-large-ft` (#1289 LoRA fine-tune of BGE-large on `cqs-code-search-200k`) wins test R@5 by ~1pp at the same dim/cost — opt-in via `CQS_EMBEDDING_MODEL=bge-large-ft`. `nomic-coderank` and `v9-200k` are 137M / 110M alternatives for resource-constrained environments.
+**Default config:** EmbeddingGemma-300m dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. Gemma wins agg R@1 (+1.9pp over BGE) and ties bge-large-ft on agg R@20 at half the params. `bge-large-ft` (#1289 LoRA fine-tune of BGE-large on `cqs-code-search-200k`) wins agg R@5 by 0.9pp — opt-in via `CQS_EMBEDDING_MODEL=bge-large-ft` for R@5-sensitive flows. `nomic-coderank` and `v9-200k` are 137M / 110M alternatives for resource-constrained environments.
 
 ## Environment Variables
 
@@ -774,7 +774,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
-| `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `bge-large-ft`, `v9-200k`, `e5-base`, `nomic-coderank`, `embeddinggemma-300m`) or custom HF repo. See `src/embedder/models.rs` for the full preset list and per-preset trade-offs. |
+| `CQS_EMBEDDING_MODEL` | `embeddinggemma-300m` | Embedding model preset (`embeddinggemma-300m`, `bge-large`, `bge-large-ft`, `v9-200k`, `e5-base`, `nomic-coderank`) or custom HF repo. See `src/embedder/models.rs` for the full preset list and per-preset trade-offs. |
 | `CQS_EVAL_OUTPUT` | (none) | Path to write per-query eval diagnostics JSON (used by eval harness) |
 | `CQS_EVAL_REQUIRE_FRESH` | `1` | Set to `0`/`false`/`no`/`off` to disable the freshness gate that `cqs eval` applies before running (#1182). When on, the eval harness blocks until the running `cqs watch --serve` daemon reports `state == fresh`, or errors out if the daemon isn't reachable — prevents silent stale-index runs that look like 5-25pp R@K regressions. Pass `--no-require-fresh` for the same effect on a single invocation. |
 | `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
@@ -899,7 +899,7 @@ Quick index by domain (everything is searchable in the table below):
 
 ## Per-category SPLADE alpha
 
-Hybrid retrieval fuses a dense (BGE-large) and sparse (SPLADE) candidate pool. The fusion weight `alpha` controls how much each side contributes to the final score: `alpha = 1.0` means pure dense, `alpha = 0.0` means pure sparse, and values in between interpolate ranks via RRF.
+Hybrid retrieval fuses a dense (EmbeddingGemma-300m by default; configurable via `CQS_EMBEDDING_MODEL`) and sparse (SPLADE) candidate pool. The fusion weight `alpha` controls how much each side contributes to the final score: `alpha = 1.0` means pure dense, `alpha = 0.0` means pure sparse, and values in between interpolate ranks via RRF.
 
 SPLADE is always generating candidates; `alpha` only weights the scoring. The defaults below are derived from a per-category sweep on the live eval set:
 

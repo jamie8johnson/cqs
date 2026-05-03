@@ -2,6 +2,18 @@
 
 ## Right Now
 
+**v1.35.0 in flight 2026-05-02.** **Default embedder swaps from BGE-large to EmbeddingGemma-300m.** Plus tokenizer truncation fix (PR #1384, already merged into v1.34.0 main). 5-slot apples-to-apples eval after every slot was reindexed `--force --llm-summaries` shows gemma wins agg R@1 by +1.9pp over BGE-large at half the params + 4× context. BGE-large remains a first-class preset; existing slot indexes keep their stored model.
+
+| Slot | Agg R@1 | Agg R@5 | Agg R@20 |
+|---|---:|---:|---:|
+| **embeddinggemma-300m (new default)** | **49.1%** | 72.5% | **86.2%** |
+| bge-large-ft | 47.7% | **73.4%** | **86.2%** |
+| BGE-large (former default) | 47.2% | 72.0% | 84.4% |
+| v9-200k | 45.0% | 68.8% | 80.7% |
+| nomic-coderank | 45.0% | 67.9% | 78.9% |
+
+Branch (TBD): release/v1.35.0. Code change: `default = true` annotation moves from `bge_large` → `embeddinggemma_300m` in `define_embedder_presets!`. All four downstream constants update via the macro. Tests adjusted to derive expected default name from `ModelConfig::default_model().name`. README + CHANGELOG + Cargo.toml description refreshed.
+
 **v1.34.0 released 2026-05-02 (same day as v1.33.0).** Bundled the post-v1.33.0 audit close-out (24 fix PRs) + pre-audit feature work (EmbeddingGemma-300m preset, `cqs eval --reranker`, slow-tests Phase 2, ci-slow.yml stabilization). On crates.io. Tag pushed (binaries via `release.yml`).
 
 **Open in flight: PR #1384 — `fix(embedder): bypass tokenizer truncation in windowing/count paths`.** Apples-to-apples eval comparison surfaced a real correctness bug. **bge-large-ft and v9-200k tokenizers ship `truncation: {max_length: 512}` baked into `tokenizer.json`** (HF's `optimum-cli` default). cqs `split_into_windows`/`token_count` rely on `encode().get_ids().len()` to count tokens — the silent truncation cap meant long markdown sections were chunked at "fits in 1-2 windows" when they actually needed 12, so ~90% of section content was never embedded. Surgical fix: clone the tokenizer Arc and disable truncation for counting paths only (inference paths still need the cap to clamp at max_seq).

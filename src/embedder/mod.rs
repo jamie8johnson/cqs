@@ -235,7 +235,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using a configurable model (default: BGE-large-en-v1.5)
+/// Text embedding generator using a configurable model (default since v1.35.0: EmbeddingGemma-300m)
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -1893,7 +1893,9 @@ mod tests {
 
     #[test]
     fn test_model_dimensions() {
-        assert_eq!(EMBEDDING_DIM, 1024);
+        // EMBEDDING_DIM derives from the preset row marked `default = true`
+        // in `define_embedder_presets!`. EmbeddingGemma-300m since v1.35.0.
+        assert_eq!(EMBEDDING_DIM, 768);
     }
 
     // ===== pad_2d_i64 tests =====
