@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 25); // v25: notes.kind column for structured tag taxonomy (#1133); chains v23→v24→v25
+    assert_eq!(stats.schema_version, 26); // v26: idx_chunks_source_type_origin composite index for list_stale_files / prune_missing_files (#1371); chains v23→v24→v25→v26
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
@@ -1113,7 +1113,7 @@ fn test_open_readonly_on_initialized_store() {
     let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
-    assert_eq!(stats.schema_version, 25);
+    assert_eq!(stats.schema_version, 26);
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
