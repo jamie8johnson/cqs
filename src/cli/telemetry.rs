@@ -51,16 +51,30 @@ fn redact_query_opt(query: Option<&str>) -> Option<String> {
     query.map(redact_query_str)
 }
 
-/// Log a command invocation to the telemetry file.
+/// Append a telemetry entry to `.cqs/telemetry.jsonl`.
 ///
-/// Does nothing if `CQS_TELEMETRY` env var is not set to "1".
-/// Silently ignores write failures — telemetry should never break the tool.
-pub fn log_command(
-    cqs_dir: &Path,
-    command: &str,
-    query: Option<&str>,
-    result_count: Option<usize>,
-) {
+/// Centralizes the activation check, advisory-flock, 10-MB auto-archive,
+/// and 0o600 file-mode contract that every `log_*` function shared inline
+/// before #1352 / EX-V1.33-9. New event flavors should construct a
+/// `serde_json::Value` and call this — they MUST NOT re-implement the
+/// flock/archive/write dance, since that's the cluster the audit flagged
+/// as the maintenance hazard ("three reimplementations, one bug fix
+/// would have to land in three places").
+///
+/// Activation rules (mirror the module docstring):
+///   - `CQS_TELEMETRY=1`                          → active
+///   - any other `CQS_TELEMETRY` value (incl. `0`) → hard opt-out, returns immediately
+///   - unset                                       → active iff `telemetry.jsonl` already exists
+///
+/// `timestamp` is the value already produced by `cqs::unix_secs_i64()` at
+/// the call site (callers that include the timestamp in `entry` reuse the
+/// same value here so the archive filename matches the event's `ts` field).
+/// `None` triggers the EH-V1.33-1 fallback path: archive filename uses
+/// `0` as the suffix, matching the entry's `ts: null`.
+///
+/// Failures are logged at `debug` and dropped — telemetry must never
+/// break the tool.
+fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option<i64>) {
     // Active if env var is explicitly "1" OR (env unset AND telemetry file
     // already exists). RM-V1.25-25: when CQS_TELEMETRY is set to any
     // non-"1" value (including "0"), treat that as a hard opt-out so the
@@ -76,36 +90,16 @@ pub fn log_command(
         }
     }
 
-    // EH-V1.33-1: use `cqs::unix_secs_i64()` so a pre-epoch clock surfaces as
-    // `ts: null` (serializing `Option<i64>::None`) and emits a one-shot
-    // tracing::warn from the helper, instead of silently coercing to `ts: 0`.
-    let timestamp = cqs::unix_secs_i64();
-
-    // P3 #136: redact `query` by default to keep search strings out of the
-    // telemetry log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
-    let query_field = redact_query_opt(query);
-    let entry = serde_json::json!({
-        "ts": timestamp,
-        "cmd": command,
-        "query": query_field,
-        "results": result_count,
-    });
-
-    // path already declared above for existence check
-    // P3 #134: surface the closure result at debug. A telemetry write that
-    // fails (lock contention, disk full, perms) should not be a hard error
-    // — but `let _ = ...` made the failure invisible to the journal.
     let result: std::io::Result<()> = (|| -> std::io::Result<()> {
-        // DS-V1.25-8: single-writer assumption — telemetry is per-process, but
-        // multiple cqs invocations (CLI + agents + `cqs watch`) write to the
-        // same `.cqs/telemetry.jsonl` concurrently. The advisory `flock` on
-        // `telemetry.lock` enforces ordering *only if every writer takes the
-        // lock* (classic advisory-lock caveat). Do not bypass it: skipping the
-        // `try_lock` call will race with `cqs telemetry reset` (which takes
-        // the blocking `lock`) and can either lose writes or corrupt a
-        // half-rotated file.
+        // DS-V1.25-8 / DS-NEW-2: single-writer assumption — telemetry is
+        // per-process, but multiple cqs invocations (CLI + agents +
+        // `cqs watch`) write to the same `.cqs/telemetry.jsonl` concurrently.
+        // The advisory `flock` on `telemetry.lock` enforces ordering *only
+        // if every writer takes the lock* (classic advisory-lock caveat). Do
+        // not bypass it: skipping the `try_lock` call will race with
+        // `cqs telemetry reset` (which takes the blocking `lock`) and can
+        // either lose writes or corrupt a half-rotated file.
         //
-        // DS-NEW-2: advisory lock to prevent races with concurrent telemetry reset.
         // Non-blocking try_lock — if reset holds it, skip this write silently.
         let lock_path = cqs_dir.join("telemetry.lock");
         let lock_file = OpenOptions::new()
@@ -143,6 +137,7 @@ pub fn log_command(
                 }
             }
         }
+
         // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
         // close the umask race. The post-open set_permissions approach
         // left a window where the file was visible with default perms
@@ -163,6 +158,34 @@ pub fn log_command(
     if let Err(e) = result {
         tracing::debug!(error = %e, "Telemetry write skipped");
     }
+}
+
+/// Log a command invocation to the telemetry file.
+///
+/// Does nothing if `CQS_TELEMETRY` env var is not set to "1".
+/// Silently ignores write failures — telemetry should never break the tool.
+pub fn log_command(
+    cqs_dir: &Path,
+    command: &str,
+    query: Option<&str>,
+    result_count: Option<usize>,
+) {
+    // EH-V1.33-1: use `cqs::unix_secs_i64()` so a pre-epoch clock surfaces as
+    // `ts: null` (serializing `Option<i64>::None`) and emits a one-shot
+    // tracing::warn from the helper, instead of silently coercing to `ts: 0`.
+    let timestamp = cqs::unix_secs_i64();
+
+    // P3 #136: redact `query` by default to keep search strings out of the
+    // telemetry log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
+    let query_field = redact_query_opt(query);
+    let entry = serde_json::json!({
+        "ts": timestamp,
+        "cmd": command,
+        "query": query_field,
+        "results": result_count,
+    });
+
+    append_telemetry(cqs_dir, &entry, timestamp);
 }
 
 /// Log the completion of a previously-invoked command — duration and
@@ -186,17 +209,6 @@ pub fn log_command_complete(
     ok: bool,
     error: Option<&str>,
 ) {
-    let path = cqs_dir.join("telemetry.jsonl");
-    match std::env::var("CQS_TELEMETRY") {
-        Ok(v) if v == "1" => {}
-        Ok(_) => return,
-        Err(_) => {
-            if !path.exists() {
-                return;
-            }
-        }
-    }
-
     // EH-V1.33-1: see `log_command` above for the rationale.
     let timestamp = cqs::unix_secs_i64();
 
@@ -219,54 +231,7 @@ pub fn log_command_complete(
         "error": error_field,
     });
 
-    let result: std::io::Result<()> = (|| -> std::io::Result<()> {
-        // Same single-writer + non-blocking flock + auto-archive contract
-        // as `log_command`. See its inline doc for the rationale.
-        let lock_path = cqs_dir.join("telemetry.lock");
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)?;
-        if lock_file.try_lock().is_err() {
-            return Ok(());
-        }
-
-        if let Ok(meta) = fs::metadata(&path) {
-            if meta.len() > MAX_TELEMETRY_BYTES {
-                // EH-V1.33-1: archive filename falls back to `0` when the
-                // clock is pre-epoch — uniqueness here is best-effort and
-                // the JSON row above already records `ts: null` so the
-                // bad-clock condition is preserved in the data, not just
-                // a swept-under filename.
-                let ts_for_filename = timestamp.unwrap_or(0);
-                let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
-                let archive_path = cqs_dir.join(&archive_name);
-                if let Err(e) = fs::rename(&path, &archive_path) {
-                    tracing::warn!(error = %e, "Failed to auto-archive telemetry file");
-                } else {
-                    tracing::info!(archived = %archive_name, "Auto-archived telemetry file (exceeded 10 MB)");
-                }
-            }
-        }
-
-        let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(&path)?;
-        if let Err(e) = writeln!(file, "{}", entry) {
-            tracing::warn!(error = %e, "Failed to write telemetry completion entry");
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        tracing::debug!(error = %e, "Telemetry completion write skipped");
-    }
+    append_telemetry(cqs_dir, &entry, timestamp);
 }
 
 /// Log a search command with adaptive routing classification.
@@ -282,19 +247,6 @@ pub fn log_routed(
     fallback: bool,
     result_count: Option<usize>,
 ) {
-    // RM-V1.25-25: mirrors log_command — explicit non-"1" env opts out
-    // even when the telemetry file is present.
-    let path = cqs_dir.join("telemetry.jsonl");
-    match std::env::var("CQS_TELEMETRY") {
-        Ok(v) if v == "1" => {}
-        Ok(_) => return,
-        Err(_) => {
-            if !path.exists() {
-                return;
-            }
-        }
-    }
-
     // EH-V1.33-1: see `log_command` above for the rationale.
     let timestamp = cqs::unix_secs_i64();
 
@@ -311,72 +263,7 @@ pub fn log_routed(
         "results": result_count,
     });
 
-    // P3 #134: same surface-at-debug treatment as `log_command`.
-    let result: std::io::Result<()> = (|| -> std::io::Result<()> {
-        // DS-V1.25-8: see the corresponding block in `log_command` above for the
-        // full single-writer rationale. In short: telemetry is per-process but
-        // many cqs invocations (CLI + agents + `cqs watch`) share the file, and
-        // `flock` enforces ordering only when every writer takes it. Do not
-        // bypass.
-        //
-        // Advisory lock to prevent races with concurrent telemetry reset.
-        // Non-blocking try_lock — if reset holds it, skip this write silently.
-        let lock_path = cqs_dir.join("telemetry.lock");
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)?;
-        if lock_file.try_lock().is_err() {
-            return Ok(());
-        }
-
-        // Auto-archive if file exceeds 10 MB to prevent unbounded growth
-        if let Ok(meta) = fs::metadata(&path) {
-            if meta.len() > MAX_TELEMETRY_BYTES {
-                // EH-V1.33-1: archive filename falls back to `0` when the
-                // clock is pre-epoch — uniqueness here is best-effort and
-                // the JSON row above already records `ts: null` so the
-                // bad-clock condition is preserved in the data, not just
-                // a swept-under filename.
-                let ts_for_filename = timestamp.unwrap_or(0);
-                let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
-                let archive_path = cqs_dir.join(&archive_name);
-                if let Err(e) = fs::rename(&path, &archive_path) {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to auto-archive telemetry file"
-                    );
-                } else {
-                    tracing::info!(
-                        archived = %archive_name,
-                        "Auto-archived telemetry file (exceeded 10 MB)"
-                    );
-                }
-            }
-        }
-
-        // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
-        // close the umask race. The post-open set_permissions approach
-        // left a window where the file was visible with default perms
-        // (often 0o644).
-        let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(&path)?;
-        if let Err(e) = writeln!(file, "{}", entry) {
-            tracing::warn!(error = %e, "Failed to write telemetry entry");
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        tracing::debug!(error = %e, "Telemetry write skipped");
-    }
+    append_telemetry(cqs_dir, &entry, timestamp);
 }
 
 /// Extract command name and query from CLI args for telemetry.
