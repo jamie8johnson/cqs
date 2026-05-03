@@ -405,7 +405,10 @@ fn print_explain_terminal(data: &ExplainData, root: &Path) {
     if data.include_target_content {
         println!();
         println!("{}", "\u{2500}".repeat(50));
-        println!("{}", chunk.content);
+        println!(
+            "{}",
+            crate::cli::display::sanitize_for_terminal(&chunk.content)
+        );
     }
 
     if !data.callers.is_empty() {
@@ -438,7 +441,10 @@ fn print_explain_terminal(data: &ExplainData, root: &Path) {
             if let Some(ref set) = data.similar_content_ids {
                 if set.contains(&r.chunk.id) {
                     println!("{}", "\u{2500}".repeat(40));
-                    println!("{}", r.chunk.content);
+                    println!(
+                        "{}",
+                        crate::cli::display::sanitize_for_terminal(&r.chunk.content)
+                    );
                 }
             }
         }

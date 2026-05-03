@@ -614,7 +614,7 @@ fn print_full_terminal(
         if let Some(included) = content_set {
             if included.contains(&c.name) {
                 println!("{}", "\u{2500}".repeat(50));
-                println!("{}", c.content);
+                println!("{}", crate::cli::display::sanitize_for_terminal(&c.content));
                 println!();
             }
         }
