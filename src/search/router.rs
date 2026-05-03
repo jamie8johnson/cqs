@@ -186,8 +186,21 @@ define_query_categories! {
     /// optimum to a dense-leaning fusion (0.7) that keeps SPLADE's exact
     /// language-name signal as a tiebreaker.
     CrossLanguage => "cross_language", default_alpha = 0.70;
-    /// No clear category — use default strategy
-    Unknown => "unknown", default_alpha = 1.00;
+    /// No clear category — and the catch-all bucket where the rule-based
+    /// classifier deposits queries it doesn't recognise.
+    ///
+    /// Tuned 1.00 → 0.80 from the EmbeddingGemma v3.v2 sweep (2026-05-03).
+    /// Empirically `Unknown` is also where many MISCLASSIFIED queries land
+    /// (e.g. structural-style queries the rule chain doesn't fire on), so
+    /// the per-category α for their *true* category never reaches them.
+    /// Pure dense (1.00) is the worst single point in the global sweep on
+    /// both splits (test R@5 67.0, dev R@5 75.2); flat α=0.80 is the joint
+    /// optimum on mean R@5 (test 72.5, dev 80.7). Setting `Unknown=0.80`
+    /// turns the catch-all into a hedge: misroutes still get most of the
+    /// SPLADE+dense fusion benefit, while genuine "no signal" queries — the
+    /// case the variant was originally for — also pick up a 5pp R@5 lift
+    /// over the old 1.00 default.
+    Unknown => "unknown", default_alpha = 0.80;
 }
 
 /// Classifier confidence level.

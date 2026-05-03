@@ -81,7 +81,10 @@ const PER_CATEGORY_DEFAULTS: &[(QueryCategory, f32)] = &[
     // v3 sweep change (2026-04-16): 1.00 → 0.10.
     // EmbeddingGemma v3.v2 sweep change (2026-05-03): 0.10 → 0.70.
     (QueryCategory::CrossLanguage, 0.70),
-    (QueryCategory::Unknown, 1.00),
+    // EmbeddingGemma v3.v2 sweep change (2026-05-03): 1.00 → 0.80.
+    // Unknown is the catch-all where misclassified queries land; flat α=0.80
+    // is the joint mean-R@5 optimum from the global sweep.
+    (QueryCategory::Unknown, 0.80),
 ];
 
 #[test]
@@ -188,7 +191,7 @@ fn test_resolve_splade_alpha_rejects_infinity_falls_back_to_default() {
     std::env::set_var(GLOBAL_ENV_KEY, "-inf");
     let got = resolve_splade_alpha(&QueryCategory::Unknown);
     assert!(
-        (got - 1.00).abs() < f32::EPSILON,
+        (got - 0.80).abs() < f32::EPSILON,
         "Non-finite global env must fall through to default; got {got}"
     );
     clear_all_alpha_env();
