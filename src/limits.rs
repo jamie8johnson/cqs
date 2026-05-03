@@ -418,6 +418,14 @@ pub fn parse_env_duration_secs(key: &str, default_secs: u64) -> std::time::Durat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    /// Clear every env var the four `serve_blocking_permits` tests mutate so a
+    /// run with leftover state from a crashed earlier test still starts clean.
+    fn clear_serve_blocking_env() {
+        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
+        std::env::remove_var("CQS_MAX_CONNECTIONS");
+    }
 
     #[test]
     fn parse_env_usize_handles_missing_and_garbage() {
@@ -432,42 +440,53 @@ mod tests {
         std::env::remove_var("CQS_TEST_LIMITS_USZ");
     }
 
+    /// All four `serve_blocking_permits_*` tests mutate the same process-global
+    /// `CQS_SERVE_BLOCKING_PERMITS` / `CQS_MAX_CONNECTIONS` env vars. cqs CI
+    /// (`cargo test --verbose` without `--test-threads=1`) runs lib tests in
+    /// parallel — the previous comment that claimed "lib tests already run
+    /// --test-threads=1" was wrong, and the resulting env race produced a
+    /// flaky failure on the v1.36.0 release branch (test got `permits=2`,
+    /// expected 8 — meaning a sibling test's `CQS_SERVE_BLOCKING_PERMITS=2`
+    /// leaked between this test's `remove_var` and `serve_blocking_permits()`
+    /// call). `#[serial]` from the `serial_test` crate forces a process-wide
+    /// mutex around the cohort.
     #[test]
+    #[serial]
     fn serve_blocking_permits_defaults_to_max_connections_default() {
-        // SAFETY: this test mutates process-global env vars; cqs lib tests
-        // already run --test-threads=1 to avoid parallel env races.
-        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
-        std::env::remove_var("CQS_MAX_CONNECTIONS");
+        clear_serve_blocking_env();
         assert_eq!(serve_blocking_permits(), 4);
     }
 
     #[test]
+    #[serial]
     fn serve_blocking_permits_tracks_max_connections_when_unset() {
-        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
+        clear_serve_blocking_env();
         std::env::set_var("CQS_MAX_CONNECTIONS", "8");
         assert_eq!(serve_blocking_permits(), 8);
-        std::env::remove_var("CQS_MAX_CONNECTIONS");
+        clear_serve_blocking_env();
     }
 
     #[test]
+    #[serial]
     fn serve_blocking_permits_respects_explicit_when_under_max_connections() {
+        clear_serve_blocking_env();
         std::env::set_var("CQS_SERVE_BLOCKING_PERMITS", "2");
         std::env::set_var("CQS_MAX_CONNECTIONS", "8");
         assert_eq!(serve_blocking_permits(), 2);
-        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
-        std::env::remove_var("CQS_MAX_CONNECTIONS");
+        clear_serve_blocking_env();
     }
 
     #[test]
+    #[serial]
     fn serve_blocking_permits_clamps_above_max_connections() {
+        clear_serve_blocking_env();
         std::env::set_var("CQS_SERVE_BLOCKING_PERMITS", "32");
         std::env::set_var("CQS_MAX_CONNECTIONS", "4");
         // Pre-fix this returned 32 (the requested value); post-fix it
         // clamps to max_connections so the permit budget can't outrun the
         // SQLite pool budget.
         assert_eq!(serve_blocking_permits(), 4);
-        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
-        std::env::remove_var("CQS_MAX_CONNECTIONS");
+        clear_serve_blocking_env();
     }
 
     #[test]
