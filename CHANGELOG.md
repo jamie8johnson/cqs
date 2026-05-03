@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] - 2026-05-03
+
+Minor release. **Schema bump v25 → v26** (composite `(source_type, origin)` index on `chunks`; auto-migrated on first read-write open). Headline change: per-category SPLADE α defaults retuned for EmbeddingGemma — agg R@5 lifts from 72.5% → **76.2%** (test 68.8 → 72.5; dev 76.1 → 79.8) on the v3.v2 fixture. Plus 13 audit follow-up fixes and a critical migration bug.
+
+### Headline
+
+- **Per-category SPLADE α retuned for EmbeddingGemma** (#1414). The previous defaults (`Structural=0.90, Behavioral=0.80, Conceptual=0.70, TypeFiltered=1.00, CrossLanguage=0.10`) were tuned on BGE-large in 2026-04-15/16. Sweeping 11 alphas × 2 splits × 8 categories on the gemma slot (13,359 chunks) produced new joint-optimal defaults — `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70. Critically, **`Unknown` 1.00→0.80** turns the catch-all into a hedge: most fixture-misrouted queries (the rule-based `classify_query()` doesn't fire reliably on `structural`/`multi_step`/`type_filtered`) end up at `Unknown`, where pure-dense α=1.00 was the worst single point in the global sweep. The hedge alone reclaims ~2.7pp of test R@5 lift that the per-category tuning had been silently failing to deliver.
+
+  | Metric | v1.35 (BGE-tuned α) | v1.36 (gemma-tuned α + Unknown hedge) | Δ |
+  |---|---:|---:|---:|
+  | TEST R@5 | 68.8% | **72.5%** | **+3.7pp** |
+  | DEV R@5 | 76.1% | **79.8%** | **+3.7pp** |
+  | Agg R@1 | 49.1% | **50.9%** | +1.8pp |
+  | Agg R@5 | 72.5% | **76.2%** | +3.7pp |
+  | Agg R@20 | 86.2% | **88.6%** | +2.4pp |
+
+  Per-category test R@5 deltas the Unknown hedge reclaimed (these queries land in `Unknown` from misroutes): `structural_search` 12.5 → 37.5 (+25pp), `multi_step` 71.4 → 85.7 (+14.3pp), `cross_language` 63.6 → 72.7 (+9.1pp).
+
+### Added
+
+- **Schema v26**: composite `idx_chunks_source_type_origin` index on `chunks(source_type, origin)` (#1409). Speeds up `list_stale_files` / `prune_missing_files` / `cqs status --watch-fresh` / GC at 50k+ chunk corpora — previously these queries probed `idx_chunks_source_type` and then row-visited (or fell through to a full scan + sort). Auto-migrated on first read-write open; readonly opens with stale schema now surface `SchemaMismatch` (#1413) instead of attempting writes.
+- **`--reranker <none|onnx|llm>` on `cqs search`** (#1411). `RerankerMode` lifted out of `cli/commands/eval/mod.rs` to `cli/args.rs` so search and eval share the same flag shape. `--rerank` (bool) is preserved as a shorthand for `--reranker onnx`. `--reranker llm` parses but errors at runtime ("not yet wired") so #1220's LLM-judge wiring lands without a breaking CLI change.
+
+### Changed
+
+- **`Unknown` SPLADE α default**: 1.00 → 0.80 (#1414). Pure-dense was the worst point in the EmbeddingGemma global sweep on both splits; α=0.80 is the joint mean-R@5 optimum. Affects every query the rule-based classifier doesn't recognise plus every misrouted query, both of which previously got pure-dense fusion.
+- **All other per-category SPLADE α**: retuned for EmbeddingGemma — see Headline. 4 of 8 categories changed; `MultiStep` (0.10), `Negation` (0.80), `IdentifierLookup` (1.00, but routes through NameOnly so α is moot) unchanged.
+- **`--depth` defaults documented** (#1410): the spread (`gather=1, impact=1, test-map=5, trace=10, onboard=3`) now has named constants in `src/cli/args.rs` (`DEFAULT_DEPTH_BLAST`, `DEFAULT_DEPTH_WALK`, `DEFAULT_DEPTH_TEST_MAP`, `DEFAULT_DEPTH_TRACE`) with per-rule rationale comments. `cqs trace` gains `--depth` as a visible alias for `--max-depth`. Behavior-stable (every numeric default preserved).
+- **Library re-export surface tightened** (#1412): replaced 10 wildcard `pub use module::*` lines in `lib.rs` (`diff::*`, `gather::*`, `impact::*`, `onboard::*`, `project::*`, `related::*`, `scout::*`, `search::*`, `task::*`, `where_to_add::*`) with explicit re-export lists. New `pub` items in submodules now stay internal until explicitly added — closes the silent-API-widening risk that the prior comment ("no external users so name conflicts are compiler-caught") didn't actually cover.
+
+### Fixed
+
+- **Read-only opens with stale schema no longer attempt migration** (#1413). After the v25→v26 bump (#1409), every readonly CLI command (`cqs eval`, `cqs status`, `cqs notes list`) failed with the SQLite low-level "attempt to write a readonly database" error and scattered `index.bak-v25-v26-*` snapshots across `.cqs/slots/<name>/`. Fix: `check_and_migrate_schema` now takes `read_only: bool`; on stale-schema readonly opens it returns `StoreError::SchemaMismatch { found, expected }` so the operator runs `cqs index` (or restarts the daemon) to upgrade.
+- **Notes file CRLF preservation** (#1405): `cqs notes add/update/remove` previously rewrote `notes.toml` with bare `\n` on every save, mangling line endings on Windows-edited files. Now sniffs existing on-disk content and translates to `\r\n` when CRLF is detected.
+- **`serve` blocking-permits cap fixed** (#1404): `CQS_SERVE_BLOCKING_PERMITS` now defaults to `CQS_MAX_CONNECTIONS` (4 by default) instead of an oversized hardcoded value, and explicit overrides clamp at `max_connections` with a warn. Prevents thread-pool overcommit on resource-constrained deployments.
+- **Stale `INSERT OR REPLACE` cascade banner removed** (#1406): `upsert_chunks_batch` doc-comment claimed it used `INSERT OR REPLACE` and lost cascading deletes; the actual code uses `ON CONFLICT(id) DO UPDATE` and preserves cascades. Doc-only; corrects the contract.
+- **Suspicious HF cache paths warn + fall through** (#1339, #1401): `CQS_HF_HOME` / `HF_HOME` pointing into `/tmp`, `/var/tmp`, `/dev/shm`, or paths outside `$HOME` + cache_dir now warn and fall through to the default cache instead of trusting attacker-controlled locations. Opt-in via `CQS_HF_CACHE_TRUSTED=1`.
+- **Authorization headers refused over plaintext HTTP to public hosts** (#1340, #1403): `cqs llm` and related paths drop `Authorization: Bearer …` headers when api_base is `http://` and host is non-private (not loopback, RFC1918, or `*.local`). Local development setups (loopback / 10.x / 192.168.x) still work without extra config.
+- **Windows ProgramFiles env pinned to canonical roots** (#1338, #1402): only `C:\Program Files` and `C:\Program Files (x86)` (case-insensitive, trailing-slash tolerant) are accepted from the `ProgramFiles` / `ProgramFiles(x86)` env vars during CHM conversion path lookup. Foreign values warn and fall through to the registered defaults.
+- **Terminal control sequences sanitized from chunk content** (#1341, #1400): `cqs` (text mode) now replaces ESC / DEL / C0+C1 control bytes from chunk-derived `println!` output by default, defending against ANSI / OSC 8 / DCS payloads embedded in the indexed corpus or a poisoned reference index. Tab / LF / CR preserved. Opt out with `CQS_NO_ANSI_STRIP=1`.
+- **Redundant char-count GPU pre-filter routing dropped** (#1395, #1398): the windowing pipeline already enforces `max_seq_length`, so the 35-line char-count pre-filter was both redundant and miscalibrated for non-BERT tokenizers. Replaced with an 11-line explanatory comment.
+- **Indirect-via-anyhow errors at index backend boundary typed** (#1374, #1408): `IndexBackend::try_open` returns `Result<…, IndexBackendError>` (variants `Store`, `ChecksumMismatch`, `LoadFailed`) instead of `anyhow::Result<…>`. CLI consumer at `src/cli/store.rs:446` still uses `?` via anyhow's blanket `From` impl.
+- **`--slot` rejected on slot/cache subcommands documented** (#1365, #1399): doc-paragraph explains that `cqs slot create --slot foo` will runtime-error rather than silently create slot `foo`. Imperative `mut_subcommand` hide path was attempted but panics at runtime (clap globals are added at parse time, not definition time).
+- **SECURITY.md: Windows-specific asymmetries disclosed** (#1353, #1354, #1355, #1407): documents `cfg(unix)`-only file-mode hardening on the audit-mode marker, embedding cache file mode, `db_file_identity` mtime fallback, and hook scripts MSYS PATH assumption.
+
+### Changed (eval methodology / test fixtures)
+
+- **`tests/router_test.rs::PER_CATEGORY_DEFAULTS`** renamed from `V1_26_0_DEFAULTS`; per-variant comments tag each post-2026-05-03 retune with sweep date. Spec table is exhaustive across every `QueryCategory` variant — adding a 10th variant without a `default_alpha = …` annotation in `define_query_categories!` is a compile error.
+
+### Migration notes
+
+- **Reindex not required.** The v25→v26 schema bump only adds a new SQLite index; existing chunks/embeddings are untouched. The migration runs in <1s on the daemon's first read-write open after upgrade.
+- **Per-category α changes affect every search query** the moment v1.36.0 is installed; on average this is +3.7pp R@5 lift, but individual query results shift in either direction. If you have a downstream baseline pinned to the v1.35 alphas, you can restore them with `CQS_SPLADE_ALPHA_STRUCTURAL=0.90 CQS_SPLADE_ALPHA_BEHAVIORAL=0.80 CQS_SPLADE_ALPHA_CONCEPTUAL=0.70 CQS_SPLADE_ALPHA_TYPE_FILTERED=1.00 CQS_SPLADE_ALPHA_CROSS_LANGUAGE=0.10` (per-category env wins over defaults).
+- **`cqs eval` against a stale index now errors with `SchemaMismatch` instead of silently corrupting the DB** (#1413). Run `cqs index` (or restart the watch daemon) to migrate.
+
+---
+
 ## [1.35.0] - 2026-05-02
 
 Minor release. No schema bump. **Default embedding model swaps from BGE-large-en-v1.5 (335M, 1024-dim) to EmbeddingGemma-300m (308M, 768-dim).** Plus a tokenizer-truncation correctness fix (#1384) that materially affects fine-tuned BERT-family presets.

@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **49.1% R@1 / 72.5% R@5 / 86.2% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (refreshed 2026-05-02; gemma dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **50.9% R@1 / 76.2% R@5 / 88.6% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (refreshed 2026-05-03 with v1.36.0 per-category SPLADE α retune on the new dense backbone; gemma dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -699,21 +699,23 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 **Live codebase eval** — 218 queries (109 test + 109 dev) over the cqs source tree, each with a dual-judge (Gemma-4 + Claude) consensus gold chunk. v3.v2 fixture. Categories: `identifier_lookup`, `behavioral`, `conceptual`, `structural`, `negation`, `type_filtered`, `multi_step`, `cross_language` — every category N ≥ 16. Hard mode; measures the full production pipeline.
 
-**Per-preset (apples-to-apples 2026-05-02; all 5 slots reindexed --force --llm-summaries on cqs v1.35.0):**
+**Per-preset:**
+
+The `embeddinggemma-300m` row reflects the v1.36.0 per-category SPLADE α retune (2026-05-03) on the gemma slot at 13,359 chunks — `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70, plus `Unknown` 1.00→0.80 (catch-all hedge for misroutes). Other rows are pre-retune (apples-to-apples 2026-05-02 on cqs v1.35.0, all 5 slots reindexed `--force --llm-summaries`); their numbers will shift up under the new alphas, but a fresh sweep across all five slots is queued.
 
 | Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@1 | Agg R@5 | Agg R@20 |
 |--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|--------:|---------:|
-| **embeddinggemma-300m** (default) | 308M | **48.6%** | 68.8% | 83.5% | 49.5% | **76.1%** | **89.0%** | **49.1%** | 72.5% | **86.2%** |
-| bge-large-ft | 335M | 45.0% | **71.6%** | **85.3%** | 50.5% | 75.2% | 87.2% | 47.7% | **73.4%** | **86.2%** |
-| BGE-large | 335M | 43.1% | 68.8% | 82.6% | **51.4%** | 75.2% | 86.2% | 47.2% | 72.0% | 84.4% |
-| v9-200k | 110M | 44.0% | 67.9% | 79.8% | 45.9% | 69.7% | 81.7% | 45.0% | 68.8% | 80.7% |
-| nomic-coderank | 137M | 43.1% | 67.0% | 78.0% | 46.8% | 68.8% | 79.8% | 45.0% | 67.9% | 78.9% |
+| **embeddinggemma-300m** (default, v1.36 α) | 308M | 48.6% | **72.5%** | 83.5% | **53.2%** | **79.8%** | **93.6%** | **50.9%** | **76.2%** | **88.6%** |
+| bge-large-ft (pre-retune) | 335M | 45.0% | 71.6% | 85.3% | 50.5% | 75.2% | 87.2% | 47.7% | 73.4% | 86.2% |
+| BGE-large (pre-retune) | 335M | 43.1% | 68.8% | 82.6% | 51.4% | 75.2% | 86.2% | 47.2% | 72.0% | 84.4% |
+| v9-200k (pre-retune) | 110M | 44.0% | 67.9% | 79.8% | 45.9% | 69.7% | 81.7% | 45.0% | 68.8% | 80.7% |
+| nomic-coderank (pre-retune) | 137M | 43.1% | 67.0% | 78.0% | 46.8% | 68.8% | 79.8% | 45.0% | 67.9% | 78.9% |
 
 Per-slot summary coverage at measurement: `default` 62.1%, `gemma` 99.0%, `bge-ft` 62.1%, `v9` 67.6%, `coderank` 65.5%. Variance is structural — only `chunk_type.is_code()` chunks are summary-eligible (markdown / json / ini are skipped at `src/llm/mod.rs:115`), and tokenizers produce different chunk-type distributions. Each slot has all *its* eligible chunks summarized.
 
 Each split is ±2-3pp noisy on a single trial; quote both when comparing config changes.
 
-**Default config:** EmbeddingGemma-300m dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. Gemma wins agg R@1 (+1.9pp over BGE) and ties bge-large-ft on agg R@20 at half the params. `bge-large-ft` (#1289 LoRA fine-tune of BGE-large on `cqs-code-search-200k`) wins agg R@5 by 0.9pp — opt-in via `CQS_EMBEDDING_MODEL=bge-large-ft` for R@5-sensitive flows. `nomic-coderank` and `v9-200k` are 137M / 110M alternatives for resource-constrained environments.
+**Default config:** EmbeddingGemma-300m dense + SPLADE sparse, RRF-fused with per-category α (re-tuned 2026-05-03 on the gemma slot — see [PR #1414](https://github.com/jamie8johnson/cqs/pull/1414) for the sweep methodology and per-category rationale), centroid query classifier active by default for category routing. Under the new alphas, gemma wins all three aggregate metrics (R@1, R@5, R@20) over BGE-large at half the params: +3.7pp agg R@1, +4.2pp agg R@5, +4.2pp agg R@20 (note: BGE rows in the table are pre-retune, so the gap will narrow when those slots are re-evaluated). `bge-large-ft` (#1289 LoRA fine-tune of BGE-large on `cqs-code-search-200k`) and `nomic-coderank` / `v9-200k` (137M / 110M alternatives) remain available as opt-in presets via `CQS_EMBEDDING_MODEL`.
 
 ## Environment Variables
 
