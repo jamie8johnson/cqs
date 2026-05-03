@@ -179,17 +179,45 @@ pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
     ) -> std::result::Result<Option<Box<dyn VectorIndex>>, IndexBackendError>;
 }
 
-/// Build the ordered backend slice for this build (`cuda-index` feature on/off).
-/// Sorted highest-priority first. The selector iterates and takes the first
-/// backend whose `try_open` succeeds.
-pub fn backends<Mode: ClearHnswDirty>() -> Vec<&'static dyn IndexBackend<Mode>> {
-    #[cfg(feature = "cuda-index")]
-    let mut v: Vec<&'static dyn IndexBackend<Mode>> =
-        vec![&crate::cagra::CagraBackend, &crate::hnsw::HnswBackend];
-    #[cfg(not(feature = "cuda-index"))]
-    let mut v: Vec<&'static dyn IndexBackend<Mode>> = vec![&crate::hnsw::HnswBackend];
-    v.sort_by_key(|b| std::cmp::Reverse(b.priority()));
-    v
+/// #1348 / EX-V1.33-2: declare the registered backends as a single table.
+///
+/// Each row is either an unconditional `name => path` or a feature-gated
+/// `name => path, cfg(feature = "...")`. The macro emits a private const
+/// `INDEX_BACKEND_REGISTRY: &[fn() -> &'static dyn IndexBackend<Mode>]`
+/// (well — actually a `&[&dyn …]`) covering only the cfg-active rows, so
+/// adding a backend is a single new row no matter how many cfg permutations
+/// the build matrix has. `[`backends`]` reads the table, copies it, and
+/// sorts.
+///
+/// Backends that ship in the future (USearch / Metal / ROCm / SIMD
+/// brute-force) drop in as one extra `Backend, cfg(feature = "<flag>"),`
+/// row each. The cfg-permutation matrix at the call site collapses; before
+/// this refactor a USearch backend would have required four `#[cfg]` arms
+/// (cuda+usearch, cuda only, usearch only, neither) per `backends()`
+/// definition.
+macro_rules! register_index_backends {
+    (
+        $(
+            $backend:expr
+            $(, cfg( $($cfg:tt)+ ))?
+            ;
+        )+
+    ) => {
+        pub fn backends<Mode: ClearHnswDirty>() -> Vec<&'static dyn IndexBackend<Mode>> {
+            let mut v: Vec<&'static dyn IndexBackend<Mode>> = Vec::new();
+            $(
+                $( #[cfg( $($cfg)+ )] )?
+                v.push(& $backend);
+            )+
+            v.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+            v
+        }
+    };
+}
+
+register_index_backends! {
+    crate::hnsw::HnswBackend;
+    crate::cagra::CagraBackend, cfg(feature = "cuda-index");
 }
 
 #[cfg(test)]
