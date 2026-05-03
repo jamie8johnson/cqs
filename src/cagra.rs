@@ -1350,7 +1350,7 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
     fn try_open(
         &self,
         ctx: &crate::index::BackendContext<'_, Mode>,
-    ) -> anyhow::Result<Option<Box<dyn VectorIndex>>> {
+    ) -> std::result::Result<Option<Box<dyn VectorIndex>>, crate::index::IndexBackendError> {
         let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
             .ok()
             .and_then(|v| v.parse().ok())
