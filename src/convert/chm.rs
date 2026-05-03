@@ -253,12 +253,37 @@ fn find_7z() -> Result<String> {
     // Check common names first, then env-based Windows install paths
     let mut candidates: Vec<String> =
         vec!["7z".to_string(), "7za".to_string(), "p7zip".to_string()];
-    // Check env-based Windows paths (handles non-standard install dirs)
+    // SEC-V1.33-7 / #1338: validate that `ProgramFiles` / `ProgramFiles(x86)`
+    // resolve to documented system locations before trusting them as absolute
+    // paths. A non-elevated Windows user can override these via
+    // `setx ProgramFiles C:\Users\me\evil` (HKCU env). The downstream
+    // `is_safe_executable_path` check rejects /tmp + world-writable dirs but
+    // not owner-writable dirs under `C:\Users\<me>\`, so an attacker-set
+    // env var was previously enough to redirect 7z spawning. Pin the
+    // accepted prefixes to the canonical Windows install roots.
     if let Ok(pf) = std::env::var("ProgramFiles") {
-        candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
+        if is_canonical_program_files(&pf) {
+            candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
+        } else {
+            tracing::warn!(
+                env = "ProgramFiles",
+                value = %pf,
+                "Ignoring non-canonical ProgramFiles env var (SEC-V1.33-7 / #1338). \
+                 Expected `C:\\Program Files` or `C:\\Program Files (x86)`. \
+                 Add 7-Zip to PATH if it lives elsewhere."
+            );
+        }
     }
     if let Ok(pf) = std::env::var("ProgramFiles(x86)") {
-        candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
+        if is_canonical_program_files(&pf) {
+            candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
+        } else {
+            tracing::warn!(
+                env = "ProgramFiles(x86)",
+                value = %pf,
+                "Ignoring non-canonical ProgramFiles(x86) env var (SEC-V1.33-7 / #1338)."
+            );
+        }
     }
     for name in &candidates {
         // Resolve the candidate to an absolute path so we can vet the parent directory.
@@ -301,9 +326,64 @@ fn find_7z() -> Result<String> {
     )
 }
 
+/// SEC-V1.33-7 / #1338 — accept only the documented Windows system install
+/// roots for `ProgramFiles` / `ProgramFiles(x86)`. A non-elevated user can
+/// override these via HKCU env (`setx ProgramFiles ...`) to redirect a
+/// spawned binary; the downstream `is_safe_executable_path` check doesn't
+/// catch owner-writable dirs under `C:\Users\<me>\`.
+///
+/// Drive letter is checked case-insensitively because Windows path roots
+/// are case-folded (`C:` and `c:` are equivalent). The path-after-drive
+/// segment is matched literally against the conventional names.
+fn is_canonical_program_files(value: &str) -> bool {
+    let v = value.trim_end_matches(['/', '\\']);
+    let lower = v.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "c:\\program files"
+            | "c:\\program files (x86)"
+            | "c:/program files"
+            | "c:/program files (x86)"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_program_files_accepts_default() {
+        assert!(is_canonical_program_files("C:\\Program Files"));
+        assert!(is_canonical_program_files("C:\\Program Files (x86)"));
+        assert!(is_canonical_program_files("c:\\program files"));
+        assert!(is_canonical_program_files("c:\\PROGRAM FILES (x86)"));
+    }
+
+    #[test]
+    fn canonical_program_files_strips_trailing_slash() {
+        assert!(is_canonical_program_files("C:\\Program Files\\"));
+        assert!(is_canonical_program_files("C:/Program Files/"));
+    }
+
+    #[test]
+    fn canonical_program_files_rejects_user_dir() {
+        assert!(!is_canonical_program_files("C:\\Users\\me\\evil"));
+        assert!(!is_canonical_program_files("D:\\Program Files"));
+        assert!(!is_canonical_program_files("\\\\server\\share"));
+        assert!(!is_canonical_program_files("/tmp/program files"));
+    }
+
+    #[test]
+    fn canonical_program_files_rejects_substring_attempts() {
+        // Defends against a value that *contains* "Program Files" as a
+        // substring but isn't the canonical install root.
+        assert!(!is_canonical_program_files(
+            "C:\\Program Files\\..\\Users\\me"
+        ));
+        assert!(!is_canonical_program_files(
+            "C:\\Program Files (x86)\\..\\Users"
+        ));
+    }
 
     #[test]
     fn test_chm_to_markdown_nonexistent_file_returns_error() {
