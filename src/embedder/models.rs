@@ -449,6 +449,55 @@ define_embedder_presets! {
         approx_download_bytes = Some(1_300 * 1024 * 1024),
         pad_id = 0,
         default = true;
+
+    /// Qwen3-Embedding-8B: 4096-dim, ~32K context, 8B params. **Research /
+    /// ceiling-probe preset, not production.** Use to measure the empirical
+    /// ceiling of v3.v2 dual-judge code-search when model-size isn't the
+    /// constraint. Don't ship as a default — 8B inference defeats the
+    /// local-embedder positioning on the 8GB consumer-RTX class. A6000-only
+    /// (the FP32 ONNX is ~30 GB).
+    ///
+    /// Architecture: Qwen3 decoder LLM with sentence-transformers-style
+    /// pooling. The community ONNX export from
+    /// `onnx-community/Qwen3-Embedding-8B-ONNX` exposes both
+    /// `token_embeddings` (3D `[batch, seq, 4096]`) and a pre-pooled
+    /// `sentence_embedding` (2D `[batch, 4096]`) — read the pre-pooled
+    /// output directly via `PoolingStrategy::Identity`, same approach as
+    /// the EmbeddingGemma preset. Two ONNX inputs only (`input_ids` +
+    /// `attention_mask`); no `token_type_ids`.
+    ///
+    /// Tokenizer: Qwen3 BPE, 151,665-token vocab, no `add_bos_token` and
+    /// `add_eos_token` is handled by the export — cqs's preset doesn't
+    /// need to splice EOS itself. Truncation: None (clean, no #1384-style
+    /// silent-cap bug). `pad_token = <|endoftext|>` = id 151643.
+    ///
+    /// Query prompt convention: Qwen3-Embedding uses natural-language
+    /// instructions (`Instruct: ...\nQuery: ...`) rather than the BGE
+    /// "Represent this sentence ..." or Gemma "task: search result | ..."
+    /// styles. Per the model card, the instruction is the lever — different
+    /// instructions specialize the same encoder for different retrieval
+    /// targets without retraining.
+    ///
+    /// Storage: 4096-dim float32 → ~16 KB per chunk embedding. The cqs
+    /// corpus at ~19,500 chunks = ~312 MB of vectors before HNSW overhead.
+    /// Doable on the A6000 but ~4× the vector storage of BGE-large at 1024
+    /// dim. MRL (Matryoshka Representation Learning) truncation to 1024-dim
+    /// for storage parity is a future option but cqs's current pipeline
+    /// returns whatever the model produces.
+    qwen3_embedding_8b => name = "qwen3-embedding-8b", repo = "onnx-community/Qwen3-Embedding-8B-ONNX",
+        onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 4096, max_seq_length = 8192,
+        query_prefix = "Instruct: Find the code chunk that best matches the query.\nQuery: ", doc_prefix = "",
+        input_names = InputNames::bert_no_token_types(),
+        output_name = "sentence_embedding".to_string(),
+        pooling = PoolingStrategy::Identity,
+        // FP32 ONNX bundle: ~2 MB graph + ~30.27 GB external-data
+        // weights file at `model.onnx_data`. Plus ~14 MB tokenizer/vocab.
+        // External-data sidecar download is handled by the
+        // `<onnx_path>_data` fetch in `download_model_files` (added in
+        // PR #1385 alongside the gemma swap).
+        approx_download_bytes = Some(30_300 * 1024 * 1024),
+        pad_id = 151643;
 }
 
 impl ModelConfig {
