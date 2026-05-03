@@ -1,26 +1,31 @@
 # Roadmap
 
-## Current: v1.35.0 (released 2026-05-02)
+## Current: v1.36.0 (cut 2026-05-03)
 
-Tag `v1.35.0` pushed; `cqs 1.35.0` published to crates.io. No schema bump.
+Schema bump v25 → v26 (composite `(source_type, origin)` index on `chunks`; auto-migrated on first read-write open).
 
-**Headline: default embedder swap to EmbeddingGemma-300m.** Wins agg R@1 +1.9pp over BGE-large at half the params (308M vs 335M) and 4× context (2K vs 512). BGE-large remains a first-class preset; existing slot indexes keep their stored model — only fresh slots / fresh `cqs index` runs pick up the new default. Plus a tokenizer-truncation correctness fix (#1384) that materially affects fine-tuned BERT-family presets — bge-large-ft / v9-200k / coderank tokenizers ship `truncation: max_length=512` baked in, so cqs's windowing/counting silently capped at 512 tokens, dropping ~90% of long-section content.
+**Headline: per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge.** v1.35.0 shipped EmbeddingGemma as the new default but inherited per-category α defaults that were tuned for BGE-large (2026-04-15/16). A fresh sweep on the gemma slot landed different optima: `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70, plus `Unknown` 1.00→0.80 (catch-all hedge — most fixture-misrouted queries land in `Unknown`, where pure-dense α=1.00 was the worst point in the global sweep). Net agg lift: R@1 +1.8pp, R@5 +3.7pp, R@20 +2.4pp.
 
-**v1.34.0 (same day, 2026-05-02):** bundled the post-v1.33.0 audit close-out (24 fix PRs, 129 findings closed) plus pre-audit feature work — EmbeddingGemma-300m preset (#1301), `cqs eval --reranker` (#1303), `slow-tests` Phase 2 (#1302), ci-slow.yml stabilization.
+Plus 13 audit-followup fixes including a critical bug catch (#1413): readonly opens with stale schema were attempting to migrate and failing with SQLite "attempt to write a readonly database" errors, scattering `index.bak-v25-v26-*` snapshots and breaking every readonly CLI command. Fixed by surfacing `SchemaMismatch` on stale-schema readonly opens.
 
-**v1.33.0 (also 2026-05-02):** eval-matcher drift fix (#1284, ~38% of gold chunks were going invisible after audit-driven line shifts), placeholder-cache 30s startup tax fix (#1288, CI 38min→6min), chunk-orphan pipeline prune (#1283), `bge-large-ft` LoRA preset (#1289), daemon test refactor + nightly CI workflow (#1292, #1286 Phase 1).
+**v1.35.0 (released 2026-05-02):** default embedder swap BGE-large → EmbeddingGemma-300m (308M, 768-dim, 2K context). Plus tokenizer-truncation correctness fix (#1384) that affected fine-tuned BERT-family presets (bge-large-ft, v9-200k, coderank).
 
-**Apples-to-apples eval baseline (v3.v2 218q dual-judge, 2026-05-02 post-#1384 truncation fix, all slots reindexed `--force --llm-summaries`):**
+**v1.34.0 (2026-05-02):** bundled the post-v1.33.0 audit close-out (24 fix PRs, 129 findings closed) plus pre-audit feature work — EmbeddingGemma-300m preset (#1301), `cqs eval --reranker` (#1303), `slow-tests` Phase 2 (#1302), ci-slow.yml stabilization.
 
-| Slot | Agg R@1 | Agg R@5 | Agg R@20 |
+**v1.33.0 (2026-05-02):** eval-matcher drift fix (#1284, ~38% of gold chunks were going invisible after audit-driven line shifts), placeholder-cache 30s startup tax fix (#1288, CI 38min→6min), chunk-orphan pipeline prune (#1283), `bge-large-ft` LoRA preset (#1289), daemon test refactor + nightly CI workflow (#1292, #1286 Phase 1).
+
+**Eval baseline (v3.v2 218q dual-judge):**
+
+| Config | Agg R@1 | Agg R@5 | Agg R@20 |
 |---|---:|---:|---:|
-| **embeddinggemma-300m (default)** | **49.1%** | 72.5% | **86.2%** |
-| bge-large-ft | 47.7% | **73.4%** | **86.2%** |
-| BGE-large | 47.2% | 72.0% | 84.4% |
-| v9-200k | 45.0% | 68.8% | 80.7% |
-| nomic-coderank | 45.0% | 67.9% | 78.9% |
+| **embeddinggemma-300m + v1.36 α (current default)** | **50.9%** | **76.2%** | **88.6%** |
+| embeddinggemma-300m + v1.35 α (BGE-tuned) | 49.1% | 72.5% | 86.2% |
+| bge-large-ft (pre-retune) | 47.7% | 73.4% | 86.2% |
+| BGE-large (pre-retune) | 47.2% | 72.0% | 84.4% |
+| v9-200k (pre-retune) | 45.0% | 68.8% | 80.7% |
+| nomic-coderank (pre-retune) | 45.0% | 67.9% | 78.9% |
 
-Per-split numbers + per-category breakdowns + eval methodology in `~/training-data/research/models.md`.
+Other rows are pre-retune; a 5-slot rerun under the new alphas is queued. Per-split numbers + per-category breakdowns + sweep methodology in `~/training-data/research/models.md` and `/tmp/gemma-alpha-sweep/`.
 
 (Older release detail is in the Done table at the bottom + CHANGELOG.md.)
 
