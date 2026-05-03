@@ -190,12 +190,21 @@ pub use parser::{Chunk, Parser};
 pub use reranker::{NoopReranker, OnnxReranker, Reranker};
 pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 
-// Re-exports for binary crate (CLI) - these are NOT part of the public library API
-// but need to be accessible to src/cli/* and tests/.
-// Wildcard re-exports: no external users, so name conflicts are compiler-caught.
-pub use diff::*;
+// Re-exports for binary crate (CLI) — these are NOT part of the public library
+// API but need to be accessible to src/cli/* and tests/.
+//
+// #1372 / P3-52: previously a chain of `pub use module::*` wildcards. The
+// glob made it easy to silently widen the surface area: a future
+// `pub struct InternalScratch` in `gather/mod.rs` would have auto-leaked
+// to `cqs::InternalScratch`. Each module now lists exactly what crosses
+// the lib boundary; new pub items in submodules stay internal until
+// explicitly added here.
+pub use diff::{semantic_diff, DiffEntry, DiffResult};
 pub use focused_read::COMMON_TYPES;
-pub use gather::*;
+pub use gather::{
+    gather, gather_cross_index, gather_cross_index_with_index, gather_max_nodes, gather_with_graph,
+    GatherDirection, GatherOptions, GatherResult, GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
+};
 /// Cross-project call graph types and context.
 pub mod cross_project {
     pub use crate::impact::cross_project::{
@@ -206,21 +215,43 @@ pub mod cross_project {
         NamedStore,
     };
 }
-pub use impact::*;
+pub use impact::{
+    analyze_diff_impact, analyze_diff_impact_with_graph, analyze_impact, compute_hints,
+    compute_hints_batch, compute_hints_with_graph, compute_risk_and_tests, compute_risk_batch,
+    diff_impact_empty_json, diff_impact_to_json, find_hotspots, find_test_matches,
+    format_test_suggestions, impact_to_json, impact_to_mermaid, map_hunks_to_functions,
+    suggest_tests, CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary,
+    DiffTestInfo, FunctionHints, ImpactOptions, ImpactResult, RiskLevel, RiskScore, TestInfo,
+    TestMatch, TestSuggestion, TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
+};
 pub use nl::{
     generate_nl_description, generate_nl_description_with_seq_len,
     generate_nl_with_call_context_and_summary, generate_nl_with_template,
     generate_nl_with_template_and_seq_len, normalize_for_fts, tokenize_identifier, CallContext,
     NlTemplate,
 };
-pub use onboard::*;
-pub use project::*;
-pub use related::*;
-pub use scout::*;
-pub use search::*;
+pub use onboard::{
+    onboard, OnboardEntry, OnboardResult, OnboardSummary, TestEntry, TypeInfo,
+    DEFAULT_ONBOARD_DEPTH,
+};
+pub use project::{
+    search_across_projects, CrossProjectResult, ProjectEntry, ProjectError, ProjectRegistry,
+};
+pub use related::{find_related, RelatedFunction, RelatedResult};
+pub use scout::{
+    scout, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions, ScoutResult,
+    ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
+};
+pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
-pub use task::*;
-pub use where_to_add::*;
+pub use task::{
+    extract_modify_targets, task, task_with_resources, FunctionRisk, TaskResult, TaskSummary,
+};
+pub use where_to_add::{
+    suggest_placement, suggest_placement_with_options, FileSuggestion, LanguagePatternDef,
+    LocalPatterns, PlacementOptions, PlacementResult, VisibilityRule,
+    DEFAULT_PLACEMENT_SEARCH_LIMIT, DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
+};
 
 #[cfg(feature = "cuda-index")]
 pub use cagra::CagraIndex;
