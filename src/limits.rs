@@ -327,10 +327,43 @@ pub fn serve_chunk_detail_tests_limit() -> usize {
     parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_TESTS", 20, 1, 1_000)
 }
 
-/// P2.76 — cap on concurrent `spawn_blocking` jobs in `cqs serve`. Default 32.
-/// Env: `CQS_SERVE_BLOCKING_PERMITS`. Bounded to `[1, 1024]`.
+/// P2.76 / RM-V1.33-10 (#1346) — cap on concurrent `spawn_blocking` jobs
+/// in `cqs serve`. Default tracks the SQLite connection pool size (default
+/// 4 from `CQS_MAX_CONNECTIONS`) so the permit budget can't outrun the pool
+/// budget. Env: `CQS_SERVE_BLOCKING_PERMITS`. Bounded to `[1, 1024]` and
+/// then clamped at runtime to `<= CQS_MAX_CONNECTIONS`.
+///
+/// **Why the coupling matters.** Each handler `spawn_blocking` body holds a
+/// permit AND borrows a SQLite connection from the pool. If permits > pool
+/// connections, panicking handlers can drop their permit while the
+/// connection takes longer to return cleanly to the pool — the permit
+/// budget says "plenty of headroom" while the pool starves. Capping
+/// permits at pool size makes the actual budget the visible one.
+///
+/// Operators raising both knobs in lockstep (e.g.
+/// `CQS_SERVE_BLOCKING_PERMITS=16 CQS_MAX_CONNECTIONS=16`) get the higher
+/// concurrency they asked for. Setting only `CQS_SERVE_BLOCKING_PERMITS`
+/// without raising `CQS_MAX_CONNECTIONS` clamps to the pool size and
+/// emits a one-time warn so the misconfiguration is visible.
 pub fn serve_blocking_permits() -> usize {
-    parse_env_usize_clamped("CQS_SERVE_BLOCKING_PERMITS", 32, 1, 1024)
+    let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4);
+    let requested = parse_env_usize_clamped("CQS_SERVE_BLOCKING_PERMITS", max_connections, 1, 1024);
+    if requested > max_connections {
+        tracing::warn!(
+            requested,
+            max_connections,
+            "CQS_SERVE_BLOCKING_PERMITS exceeds CQS_MAX_CONNECTIONS — clamping. \
+             Raise CQS_MAX_CONNECTIONS in lockstep to grow the actual concurrency budget. \
+             RM-V1.33-10 / #1346"
+        );
+        max_connections
+    } else {
+        requested
+    }
 }
 
 /// Same as [`parse_env_usize`] but for `u64`-shaped byte limits.
@@ -397,6 +430,44 @@ mod tests {
         std::env::set_var("CQS_TEST_LIMITS_USZ", "42");
         assert_eq!(parse_env_usize("CQS_TEST_LIMITS_USZ", 99), 42);
         std::env::remove_var("CQS_TEST_LIMITS_USZ");
+    }
+
+    #[test]
+    fn serve_blocking_permits_defaults_to_max_connections_default() {
+        // SAFETY: this test mutates process-global env vars; cqs lib tests
+        // already run --test-threads=1 to avoid parallel env races.
+        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
+        std::env::remove_var("CQS_MAX_CONNECTIONS");
+        assert_eq!(serve_blocking_permits(), 4);
+    }
+
+    #[test]
+    fn serve_blocking_permits_tracks_max_connections_when_unset() {
+        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
+        std::env::set_var("CQS_MAX_CONNECTIONS", "8");
+        assert_eq!(serve_blocking_permits(), 8);
+        std::env::remove_var("CQS_MAX_CONNECTIONS");
+    }
+
+    #[test]
+    fn serve_blocking_permits_respects_explicit_when_under_max_connections() {
+        std::env::set_var("CQS_SERVE_BLOCKING_PERMITS", "2");
+        std::env::set_var("CQS_MAX_CONNECTIONS", "8");
+        assert_eq!(serve_blocking_permits(), 2);
+        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
+        std::env::remove_var("CQS_MAX_CONNECTIONS");
+    }
+
+    #[test]
+    fn serve_blocking_permits_clamps_above_max_connections() {
+        std::env::set_var("CQS_SERVE_BLOCKING_PERMITS", "32");
+        std::env::set_var("CQS_MAX_CONNECTIONS", "4");
+        // Pre-fix this returned 32 (the requested value); post-fix it
+        // clamps to max_connections so the permit budget can't outrun the
+        // SQLite pool budget.
+        assert_eq!(serve_blocking_permits(), 4);
+        std::env::remove_var("CQS_SERVE_BLOCKING_PERMITS");
+        std::env::remove_var("CQS_MAX_CONNECTIONS");
     }
 
     #[test]
