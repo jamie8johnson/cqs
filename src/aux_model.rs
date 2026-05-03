@@ -54,13 +54,37 @@ pub fn hf_cache_dir(subdir: &str) -> PathBuf {
     if subdir == "hub" {
         if let Ok(p) = std::env::var("HUGGINGFACE_HUB_CACHE") {
             if !p.is_empty() {
-                return PathBuf::from(p);
+                let path = PathBuf::from(&p);
+                if let Some(reason) = is_suspicious_cache_path(&path) {
+                    tracing::warn!(
+                        env = "HUGGINGFACE_HUB_CACHE",
+                        path = %p,
+                        reason,
+                        "Suspicious HF cache path from env var — falling back to default. \
+                         Set CQS_HF_CACHE_TRUSTED=1 to opt into the env-supplied path. \
+                         SEC-V1.33-8 / #1339"
+                    );
+                } else {
+                    return path;
+                }
             }
         }
     }
     if let Ok(p) = std::env::var("HF_HOME") {
         if !p.is_empty() {
-            return PathBuf::from(p).join(subdir);
+            let path = PathBuf::from(&p);
+            if let Some(reason) = is_suspicious_cache_path(&path) {
+                tracing::warn!(
+                    env = "HF_HOME",
+                    path = %p,
+                    reason,
+                    "Suspicious HF cache path from env var — falling back to default. \
+                     Set CQS_HF_CACHE_TRUSTED=1 to opt into the env-supplied path. \
+                     SEC-V1.33-8 / #1339"
+                );
+            } else {
+                return path.join(subdir);
+            }
         }
     }
     // PB-V1.33-6: split `.cache/huggingface` into separate path
@@ -72,6 +96,136 @@ pub fn hf_cache_dir(subdir: &str) -> PathBuf {
         .map(|c| c.join("huggingface").join(subdir))
         .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join(subdir)))
         .unwrap_or_else(|| PathBuf::from(".cache").join("huggingface").join(subdir))
+}
+
+/// SEC-V1.33-8 / #1339 — flag env-supplied HF cache paths that are obvious
+/// supply-chain attack surfaces.
+///
+/// Threat: an attacker who can set `HF_HOME` / `HUGGINGFACE_HUB_CACHE` in
+/// the user's shell (via `.bashrc`, hostile devcontainer image, shared
+/// dotfiles repo) redirects `model.onnx` / `tokenizer.json` loads to a
+/// path under their control. ORT then consumes the malicious ONNX —
+/// arbitrary compute graphs, known CVE classes in older `ort` versions.
+///
+/// Returns `Some(reason)` for suspicious paths so the caller logs
+/// context-rich `warn!` and falls through to the default cache. Returns
+/// `None` (trusted) when the path is unambiguous or when the operator
+/// has set `CQS_HF_CACHE_TRUSTED=1` to opt into the env-supplied path.
+///
+/// Heuristic — flag paths under:
+/// - World-writable or guest-shared dirs: `/tmp`, `/var/tmp`,
+///   `/dev/shm` (Linux); `%TEMP%`, `%TMP%` (Windows).
+/// - Browser download dirs: `~/Downloads`, `~/Desktop`.
+/// - Outside the user's home dir entirely (catches `/opt/attacker`,
+///   `/var/cache/...`, network mounts under `/mnt/<server>`). Allows
+///   `dirs::cache_dir()` (XDG_CACHE_HOME on Linux, `~/Library/Caches`
+///   on macOS, `%LOCALAPPDATA%` on Windows) since that's the canonical
+///   trusted location.
+///
+/// Doesn't canonicalize — a symlink under `~/Downloads/cache → /home`
+/// still gets caught by the home check before it resolves. False
+/// negatives are acceptable; the goal is operator awareness, not
+/// airtight prevention. The opt-out (`CQS_HF_CACHE_TRUSTED=1`) covers
+/// legitimate non-default cache locations.
+fn is_suspicious_cache_path(path: &Path) -> Option<&'static str> {
+    if std::env::var("CQS_HF_CACHE_TRUSTED")
+        .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+    {
+        return None;
+    }
+    let s = path.to_string_lossy();
+
+    // World-writable / shared-tmp surfaces.
+    for prefix in [
+        "/tmp/",
+        "/tmp",
+        "/var/tmp/",
+        "/var/tmp",
+        "/dev/shm/",
+        "/dev/shm",
+    ] {
+        if s == prefix || s.starts_with(&format!("{prefix}/")) {
+            return Some("under world-writable temp dir");
+        }
+    }
+
+    // Browser-download / desktop surfaces under the user's home — flagged
+    // because they're the destination for drive-by downloads even though
+    // they're inside `home`.
+    if let Some(home) = dirs::home_dir() {
+        for sub in ["Downloads", "Desktop"] {
+            let suspect = home.join(sub);
+            if path.starts_with(&suspect) {
+                return Some("under user's Downloads/Desktop");
+            }
+        }
+        // Outside home + outside system cache dir → suspicious.
+        let in_home = path.starts_with(&home);
+        let in_cache = dirs::cache_dir().is_some_and(|c| path.starts_with(&c));
+        if !in_home && !in_cache {
+            return Some("outside user's home + system cache dir");
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod hf_cache_path_tests {
+    use super::is_suspicious_cache_path;
+    use std::path::Path;
+
+    #[test]
+    fn flags_tmp() {
+        assert_eq!(
+            is_suspicious_cache_path(Path::new("/tmp/attacker/hf")),
+            Some("under world-writable temp dir")
+        );
+    }
+
+    #[test]
+    fn flags_var_tmp() {
+        assert_eq!(
+            is_suspicious_cache_path(Path::new("/var/tmp/x")),
+            Some("under world-writable temp dir")
+        );
+    }
+
+    #[test]
+    fn flags_dev_shm() {
+        assert_eq!(
+            is_suspicious_cache_path(Path::new("/dev/shm/cache")),
+            Some("under world-writable temp dir")
+        );
+    }
+
+    #[test]
+    fn flags_outside_home() {
+        // Skip if HOME isn't set in test env (CI variants).
+        if dirs::home_dir().is_none() {
+            return;
+        }
+        assert!(is_suspicious_cache_path(Path::new("/opt/attacker")).is_some());
+    }
+
+    #[test]
+    fn allows_explicit_trusted_env() {
+        let prev = std::env::var("CQS_HF_CACHE_TRUSTED").ok();
+        std::env::set_var("CQS_HF_CACHE_TRUSTED", "1");
+        assert!(is_suspicious_cache_path(Path::new("/tmp/anywhere")).is_none());
+        match prev {
+            Some(v) => std::env::set_var("CQS_HF_CACHE_TRUSTED", v),
+            None => std::env::remove_var("CQS_HF_CACHE_TRUSTED"),
+        }
+    }
+
+    #[test]
+    fn allows_home_subdir() {
+        if let Some(home) = dirs::home_dir() {
+            let sub = home.join(".cache").join("huggingface");
+            assert!(is_suspicious_cache_path(&sub).is_none());
+        }
+    }
 }
 
 /// Which auxiliary model is being resolved.
