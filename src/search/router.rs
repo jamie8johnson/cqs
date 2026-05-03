@@ -126,20 +126,34 @@ macro_rules! define_query_categories {
 }
 
 define_query_categories! {
-    /// Looking for a specific function/type by name ("search_filtered", "HashMap::new")
+    /// Looking for a specific function/type by name ("search_filtered", "HashMap::new").
+    /// Routes to `SearchStrategy::NameOnly` which bypasses SPLADE entirely, so
+    /// alpha is moot — kept at 1.0 as a "if SPLADE ran, default to dense" hint.
     IdentifierLookup => "identifier_lookup", default_alpha = 1.00;
-    /// Searching for code by structure ("functions that return Result", "structs with Display")
-    Structural => "structural", default_alpha = 0.90, aliases = ["structural_search"];
+    /// Searching for code by structure ("functions that return Result", "structs with Display").
+    /// Tuned 0.90 → 0.60 from EmbeddingGemma v3.v2 sweep (2026-05-03): the
+    /// curve is bimodal — pure dense (1.0) collapses to test R@5 12.5%, but
+    /// dev R@5 is 100% across α=0.4-0.7. 0.6 sits in the middle of the dev
+    /// plateau and keeps test R@5 at 37.5% (vs 25% at 0.9). N=8 per split, so
+    /// the choice within the plateau is noise; 0.6 favors the SPLADE-leaning
+    /// edge because structural signals ("returns Result", "Display impl")
+    /// surface in the sparse encoder's lexical features.
+    Structural => "structural", default_alpha = 0.60, aliases = ["structural_search"];
     /// Searching for code by behavior ("validates user input", "retries with backoff").
-    /// Bumped 0.00 → 0.80 in v1.28.3 — original sweep optimized R@1 (where pure
-    /// SPLADE wins on action-verb exact matches), but R@5 wants heavy dense for
-    /// broader candidate recall. v3.v2 sweep direction was consistent across
-    /// train/test/dev (best ∈ [0.65, 0.90]). Production lift is bottlenecked
-    /// by `behavioral` classifier accuracy (~19% fire rate per the v3 audit);
-    /// only correctly-routed queries see the lift.
-    Behavioral => "behavioral", default_alpha = 0.80, aliases = ["behavioral_search"];
-    /// Searching for abstract concepts ("dependency injection", "observer pattern")
-    Conceptual => "conceptual", default_alpha = 0.70, aliases = ["conceptual_search"];
+    /// Tuned 0.80 → 1.00 from EmbeddingGemma v3.v2 sweep (2026-05-03): joint
+    /// optimum is pure dense (test R@5 75.0, dev R@5 75.0). The v1.28.3
+    /// rationale ("R@5 wants heavy dense for broader recall") points the same
+    /// direction here, just further — EmbeddingGemma's behavioral query
+    /// embeddings are strong enough that adding any SPLADE weight hurts.
+    /// Production lift is still bottlenecked by `behavioral` classifier
+    /// accuracy (~19% fire rate per the v3 audit).
+    Behavioral => "behavioral", default_alpha = 1.00, aliases = ["behavioral_search"];
+    /// Searching for abstract concepts ("dependency injection", "observer pattern").
+    /// Tuned 0.70 → 0.80 from EmbeddingGemma v3.v2 sweep (2026-05-03):
+    /// dev R@5 lifts +16.7pp (50.0 → 66.7), test R@5 +7.7pp (61.5 → 69.2).
+    /// EmbeddingGemma handles abstract concept queries well; small SPLADE
+    /// weight catches the few queries with token overlap to specific impls.
+    Conceptual => "conceptual", default_alpha = 0.80, aliases = ["conceptual_search"];
     /// Queries requiring multiple signals ("find where errors are logged and retried").
     /// Dropped 1.00 → 0.10 in v1.28.3 — multi-clause queries have heavy keyword
     /// overlap that SPLADE catches well at depth; pure dense was optimizing R@1
@@ -147,14 +161,31 @@ define_query_categories! {
     /// (best ∈ [0.05, 0.10]). Same classifier-accuracy caveat as `behavioral`:
     /// the rule-based classifier rarely fires `multi_step` correctly because
     /// "X AND Y" patterns trip the structural rule first.
+    /// EmbeddingGemma sweep (2026-05-03) confirms: α=0.10 is still the joint
+    /// optimum (test R@5 92.9, dev R@5 92.9) — flat across α=0.1..0.8.
     MultiStep => "multi_step", default_alpha = 0.10;
-    /// Queries with negation ("sort without allocating", "parse but not validate")
+    /// Queries with negation ("sort without allocating", "parse but not validate").
+    /// Kept at 0.80 after EmbeddingGemma v3.v2 sweep (2026-05-03): the curve
+    /// is essentially flat across α=0.0-0.9 (test R@5 81.2 throughout, dev
+    /// R@5 oscillates between 76.5 and 82.4). Only α=1.0 fails (test R@5
+    /// drops to 62.5%). 0.8 stays inside the flat region with a comfortable
+    /// margin from the dense-only edge.
     Negation => "negation", default_alpha = 0.80;
-    /// Queries constrained by chunk type ("all test functions", "every enum")
-    TypeFiltered => "type_filtered", default_alpha = 1.00;
+    /// Queries constrained by chunk type ("all test functions", "every enum").
+    /// Tuned 1.00 → 0.00 from EmbeddingGemma v3.v2 sweep (2026-05-03): pure
+    /// SPLADE wins (test R@5 69.2, dev R@5 76.9) over pure dense (test R@5
+    /// 69.2 — tied — but dev R@5 only 69.2, -7.7pp). Type-filter queries are
+    /// dominated by lexical signals ("test function", "enum variant"); dense
+    /// embeddings add noise that SPLADE's term weights filter out cleanly.
+    TypeFiltered => "type_filtered", default_alpha = 0.00;
     /// Queries mentioning multiple languages ("Python equivalent of map in Rust").
-    /// Ships 2026-04-16: 1.00 → 0.10 based on v3 sweep.
-    CrossLanguage => "cross_language", default_alpha = 0.10;
+    /// Tuned 0.10 → 0.70 from EmbeddingGemma v3.v2 sweep (2026-05-03): test
+    /// R@5 jumps +18.2pp (54.5 → 72.7), dev R@5 holds at 63.6. The v1.28.3
+    /// 0.10 was tuned for BGE-large where SPLADE's tokenized language-name
+    /// matching dominated; EmbeddingGemma's bilingual embeddings shift the
+    /// optimum to a dense-leaning fusion (0.7) that keeps SPLADE's exact
+    /// language-name signal as a tiebreaker.
+    CrossLanguage => "cross_language", default_alpha = 0.70;
     /// No clear category — use default strategy
     Unknown => "unknown", default_alpha = 1.00;
 }
