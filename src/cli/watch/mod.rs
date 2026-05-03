@@ -5,8 +5,31 @@
 //! Watch mode holds several resources in memory while idle:
 //!
 //! - **Parser**: ~1MB for tree-sitter queries (allocated immediately)
-//! - **Store**: SQLite connection pool with up to 4 connections (allocated immediately)
+//! - **Store**: SQLite connection pool with up to 4 connections + 256 MiB mmap
+//!   + 16 MiB page cache (allocated immediately)
 //! - **Embedder**: ~500MB for ONNX model (lazy-loaded on first file change)
+//!
+//! ### Background-rebuild peak (#1344 / RM-V1.33-4)
+//!
+//! When `spawn_hnsw_rebuild` fires, the rebuild thread opens a second
+//! read-only `Store` handle to stream chunks for the new HNSW index. As of
+//! this fix that handle uses [`Store::open_readonly`] (64 MiB mmap + 4 MiB
+//! cache) instead of the prior [`Store::open_readonly_pooled`] (256 + 16) —
+//! shaves ~200 MiB off the rebuild-window peak. The build_hnsw_index_owned
+//! pipeline streams chunks via the batched embedding API, so the smaller
+//! mmap doesn't hurt rebuild throughput. Rebuild-window peak now:
+//!
+//! ```text
+//! main store     :  ~272 MiB (256 mmap + 16 cache)
+//! rebuild store  :   ~68 MiB (64 mmap + 4 cache)        ← was 272 MiB
+//! enriched HNSW  :  ~50–200 MiB (live, in main process)
+//! rebuild HNSW   :  ~50–200 MiB (under construction, in rebuild thread)
+//! ```
+//!
+//! `incremental_count`-driven backpressure (`watch::events`) is the only
+//! guard against multiple concurrent rebuilds; in practice that holds, but
+//! a future stress on the trigger thresholds would benefit from a
+//! `Mutex<()>`-style "only one rebuild at a time" gate.
 //!
 //! The Embedder is the largest resource and is only loaded when files actually change.
 //! Once loaded, it remains in memory for fast subsequent reindexing. This tradeoff
