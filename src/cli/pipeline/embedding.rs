@@ -288,41 +288,17 @@ pub(super) fn gpu_embed_stage(
             "embed_batch start"
         );
 
-        // Pre-filter long batches to CPU (GPU hits CUDNN limits at high
-        // token counts on older CUDNN versions). Threshold is scaled by
-        // the model's `max_seq_length` so the routing decision tracks the
-        // actual constraint:
-        //
-        //   8000 chars × (max_seq_length / 512)
-        //
-        // The "8000 chars" baseline was calibrated for BERT-class models
-        // (BGE, E5: 512-token max_seq, ~3.5–4 chars/token English). When
-        // windowing produces a 512-token chunk it's typically <8000 chars,
-        // so the threshold rarely fires for those presets — preserved as
-        // a defensive cap on accidental >max_seq inputs.
-        //
-        // For larger-context models (Gemma 2K, Qwen3-8B 8K) windowing
-        // legitimately produces longer post-windowed chunks. The scale
-        // factor matches the windowing bound: a chunk that fits within
-        // `max_seq_length` tokens has at most `max_seq_length × 16` chars
-        // for any common tokenizer (BPE / WordPiece / SentencePiece).
-        // Without this scale, every windowed Qwen3 chunk (~28k chars at
-        // 8k tokens) would route to CPU, defeating CQS_DISABLE_CPU_WARM
-        // and causing memory pressure on host RAM during 8B-model runs.
-        let max_chars_threshold =
-            8000usize.saturating_mul(embedder.model_config().max_seq_length.max(512) / 512);
-        if max_len > max_chars_threshold {
-            tracing::warn!(
-                chunks = prepared.to_embed.len(),
-                max_len,
-                threshold = max_chars_threshold,
-                "Routing long batch to CPU (GPU CUDNN limit)"
-            );
-            if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &ctx.embedded_count) {
-                break;
-            }
-            continue;
-        }
+        // Note: the previous "Pre-filter long batches to CPU (GPU CUDNN
+        // limit)" pre-flight check was removed in #1395. Both
+        // `apply_windowing` (`src/cli/pipeline/windowing.rs`) and
+        // `generate_nl_description_with_seq_len` already bound chunk text
+        // to `model_max_seq_length` tokens, so the pre-filter was firing
+        // on inputs the model could correctly handle — calibrated for
+        // BERT-class 512-token models, it false-positive'd nearly every
+        // windowed chunk on Gemma 2K and Qwen3-8B 8K presets and
+        // defeated `CQS_DISABLE_CPU_WARM` (#1392). Genuine GPU failures
+        // (CUDNN seq-len limits, OOM, etc.) still route to CPU via the
+        // existing `fail_tx` path inside `embed_documents` below.
 
         let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
         let embed_start = std::time::Instant::now();
