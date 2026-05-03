@@ -127,7 +127,7 @@ pub(crate) fn cmd_scout(
                     if let Some(ref cmap) = content_map {
                         if let Some(content) = cmap.get(&chunk.name) {
                             println!("{}", "\u{2500}".repeat(50));
-                            println!("{}", content);
+                            println!("{}", crate::cli::display::sanitize_for_terminal(content));
                             println!();
                         }
                     }

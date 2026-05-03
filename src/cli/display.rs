@@ -9,6 +9,135 @@ use colored::Colorize;
 use cqs::reference::TaggedResult;
 use cqs::store::{ParentContext, UnifiedResult};
 
+/// Strip terminal control sequences from chunk-derived strings before
+/// printing them to a TTY.
+///
+/// SEC-V1.33-5 (#1341): every CLI text-mode path that surfaces a chunk
+/// feeds content directly to `println!`. A malicious file in the indexed
+/// corpus (or a poisoned reference index — explicitly listed as a
+/// "semi-trusted" surface in `SECURITY.md`) can embed:
+///
+/// - ANSI cursor / line-clear codes that overwrite previous terminal
+///   output (forging "OK" status lines)
+/// - OSC 8 hyperlinks that render as innocent text but click through to
+///   attacker-chosen destinations
+/// - iTerm2 / kitty / wezterm proprietary escapes that read clipboard
+///   or execute commands in some configurations
+/// - DCS sequences interpreted as commands by some terminals
+///
+/// `SECURITY.md` flags indexed content as "Untrusted (in AI agent
+/// context)" — but the interactive CLI user is also a terminal, and so
+/// is the agent's terminal when cqs runs through Claude Code. This
+/// helper is the shell-version of indirect-prompt-injection mitigation.
+///
+/// Strategy: replace ESC (`\x1b`), DEL (`\x7f`), and most C0/C1 control
+/// chars with `'?'`. Preserves `\t` / `\n` / `\r` so source-code layout
+/// still renders. Using `'?'` (rather than dropping) keeps the byte
+/// budget identical, which preserves column alignment in fancy
+/// displays.
+///
+/// **Opt-out via `CQS_NO_ANSI_STRIP=1`** for terminals where the user
+/// trusts their corpus and wants escape passthrough (e.g., displaying
+/// chunks of code whose own string literals legitimately contain
+/// escape sequences being analyzed).
+///
+/// Returns the input unchanged when no candidate byte is present,
+/// avoiding allocation on every clean chunk.
+pub fn sanitize_for_terminal(s: &str) -> std::borrow::Cow<'_, str> {
+    if std::env::var("CQS_NO_ANSI_STRIP")
+        .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+    {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    if !s.bytes().any(|b| {
+        b == 0x1b
+            || (b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r')
+            || b == 0x7f
+            || (0x80..=0x9f).contains(&b)
+    }) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c as u32 {
+            0x1b => out.push('?'), // ESC — kills all CSI / OSC / DCS introducers
+            0x00..=0x08 => out.push('?'),
+            0x0b | 0x0c => out.push('?'), // VT / FF
+            0x0e..=0x1a => out.push('?'),
+            0x1c..=0x1f => out.push('?'),
+            0x7f => out.push('?'),        // DEL
+            0x80..=0x9f => out.push('?'), // C1 controls
+            _ => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_for_terminal;
+
+    #[test]
+    fn passes_clean_text_unchanged() {
+        let s = "fn foo() {\n    bar();\n}\t// trailing tab\n";
+        // Borrowed Cow proves we didn't allocate.
+        assert!(matches!(
+            sanitize_for_terminal(s),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn strips_ansi_csi() {
+        let s = "before\x1b[31mred\x1b[0mafter";
+        assert_eq!(sanitize_for_terminal(s).as_ref(), "before?[31mred?[0mafter");
+    }
+
+    #[test]
+    fn strips_osc8_hyperlink() {
+        let s = "\x1b]8;;file:///etc/passwd\x1b\\benign\x1b]8;;\x1b\\";
+        let out = sanitize_for_terminal(s).into_owned();
+        // Both ESC bytes replaced so the terminal doesn't interpret OSC 8;
+        // the URL text is preserved as plain text (audit-visible).
+        assert!(!out.contains('\x1b'));
+        assert!(out.contains("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn preserves_tab_lf_cr() {
+        let s = "a\tb\nc\rd";
+        assert_eq!(sanitize_for_terminal(s).as_ref(), s);
+    }
+
+    #[test]
+    fn strips_c1_controls() {
+        let s = "before\u{0085}NEL\u{009b}CSIafter";
+        let out = sanitize_for_terminal(s).into_owned();
+        assert!(!out.contains('\u{0085}'));
+        assert!(!out.contains('\u{009b}'));
+    }
+
+    #[test]
+    fn strips_del() {
+        let s = "before\x7fDELafter";
+        assert_eq!(sanitize_for_terminal(s).as_ref(), "before?DELafter");
+    }
+
+    #[test]
+    fn opt_out_via_env() {
+        // SAFETY: this test mutates a process-global env var and is intentionally
+        // not parallel-safe; full test run uses --test-threads=1 already.
+        let prev = std::env::var("CQS_NO_ANSI_STRIP").ok();
+        std::env::set_var("CQS_NO_ANSI_STRIP", "1");
+        let s = "before\x1b[31mred\x1b[0mafter";
+        assert_eq!(sanitize_for_terminal(s).as_ref(), s);
+        match prev {
+            Some(v) => std::env::set_var("CQS_NO_ANSI_STRIP", v),
+            None => std::env::remove_var("CQS_NO_ANSI_STRIP"),
+        }
+    }
+}
+
 /// Read context lines before and after a range in a file
 /// # Arguments
 /// * `line_start` - 1-indexed start line (0 treated as 1)
@@ -169,10 +298,10 @@ pub fn display_unified_results(
 
                     // Show signature or truncated content
                     if r.chunk.content.lines().count() <= 10 {
-                        println!("{}", r.chunk.content);
+                        println!("{}", sanitize_for_terminal(&r.chunk.content));
                     } else {
                         for line in r.chunk.content.lines().take(8) {
-                            println!("{}", line);
+                            println!("{}", sanitize_for_terminal(line));
                         }
                         println!("    ...");
                     }
@@ -338,10 +467,10 @@ pub fn display_tagged_results(
                     }
 
                     if r.chunk.content.lines().count() <= 10 {
-                        println!("{}", r.chunk.content);
+                        println!("{}", sanitize_for_terminal(&r.chunk.content));
                     } else {
                         for line in r.chunk.content.lines().take(8) {
-                            println!("{}", line);
+                            println!("{}", sanitize_for_terminal(line));
                         }
                         println!("    ...");
                     }
