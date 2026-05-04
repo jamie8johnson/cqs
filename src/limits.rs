@@ -374,32 +374,10 @@ pub fn parse_env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
-// ============ #1182 wait_for_fresh poll cadence ============
-
-/// Default initial poll interval (milliseconds) for `wait_for_fresh`. The
-/// poll loop starts here and doubles up to a 2 s ceiling. 100 ms is fast
-/// enough that an already-fresh tree returns within a tick, slow enough
-/// that 600 s × 100 ms ≈ 6000 connect/parse round-trips can't pin a
-/// host's socket budget on a stuck-stale daemon.
-///
-/// SHL-V1.30-2: env override `CQS_FRESHNESS_POLL_MS` clamped to
-/// `[25, 5000]` so a misconfigured `=1` doesn't burn CPU and `=60000`
-/// doesn't masquerade as a hang.
-pub const FRESHNESS_POLL_MS_INITIAL_DEFAULT: u64 = 100;
-
-/// Resolve the initial poll interval honoring `CQS_FRESHNESS_POLL_MS`.
-/// Floor 25 ms, ceiling 5000 ms. See [`FRESHNESS_POLL_MS_INITIAL_DEFAULT`].
-pub fn freshness_poll_ms_initial() -> u64 {
-    match std::env::var("CQS_FRESHNESS_POLL_MS") {
-        Ok(v) => v
-            .parse::<u64>()
-            .ok()
-            .filter(|n| *n > 0)
-            .map(|n| n.clamp(25, 5000))
-            .unwrap_or(FRESHNESS_POLL_MS_INITIAL_DEFAULT),
-        Err(_) => FRESHNESS_POLL_MS_INITIAL_DEFAULT,
-    }
-}
+// `freshness_poll_ms_initial` and `FRESHNESS_POLL_MS_INITIAL_DEFAULT`
+// were removed in #1228 (RM-2): `wait_for_fresh` is now a single
+// server-parked round-trip, so the poll-cadence knob has no semantic.
+// The `CQS_FRESHNESS_POLL_MS` env var that drove them is also gone.
 
 /// Parse a duration-in-seconds env var into a `std::time::Duration`,
 /// falling back to `default_secs` on missing/empty/garbage/zero values.
@@ -523,31 +501,6 @@ mod tests {
         std::env::set_var("CQS_TEST_LIMITS_U64", "42");
         assert_eq!(parse_env_u64("CQS_TEST_LIMITS_U64", 99), 42);
         std::env::remove_var("CQS_TEST_LIMITS_U64");
-    }
-
-    /// SHL-V1.30-2: `freshness_poll_ms_initial` honors the env override and
-    /// clamps to `[25, 5000]`. Missing / garbage / zero falls back to the
-    /// 100 ms default.
-    #[test]
-    fn freshness_poll_ms_initial_default_and_clamp() {
-        // Default path
-        std::env::remove_var("CQS_FRESHNESS_POLL_MS");
-        assert_eq!(freshness_poll_ms_initial(), 100);
-        // Garbage / zero falls back to default
-        std::env::set_var("CQS_FRESHNESS_POLL_MS", "garbage");
-        assert_eq!(freshness_poll_ms_initial(), 100);
-        std::env::set_var("CQS_FRESHNESS_POLL_MS", "0");
-        assert_eq!(freshness_poll_ms_initial(), 100);
-        // Below floor → clamped to 25
-        std::env::set_var("CQS_FRESHNESS_POLL_MS", "1");
-        assert_eq!(freshness_poll_ms_initial(), 25);
-        // Above ceiling → clamped to 5000
-        std::env::set_var("CQS_FRESHNESS_POLL_MS", "60000");
-        assert_eq!(freshness_poll_ms_initial(), 5000);
-        // In-range value passes through
-        std::env::set_var("CQS_FRESHNESS_POLL_MS", "250");
-        assert_eq!(freshness_poll_ms_initial(), 250);
-        std::env::remove_var("CQS_FRESHNESS_POLL_MS");
     }
 
     // ============ TC-ADV-V1.33-7: parse_env_usize_clamped + parse_env_f32 ====

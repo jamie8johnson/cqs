@@ -783,7 +783,6 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
 | `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
 | `CQS_FORCE_BASE_INDEX` | (none) | Set to `1` to force search via the base (non-enriched) HNSW index |
-| `CQS_FRESHNESS_POLL_MS` | `100` | Initial poll interval (ms) for `wait_for_fresh` exponential backoff before the eval freshness gate fires. Clamped to `[25, 5000]`. Bump on slow filesystems (WSL `/mnt/c/`) where the daemon's first snapshot is rarely under 100 ms. |
 | `CQS_FTS_NORMALIZE_MAX` | `16384` | Max bytes of `normalize_for_fts` output per chunk. Truncation is emitted at warn level; bump if FTS recall on long chunks (large generated tables, monolithic functions) is degraded. |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
 | `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |

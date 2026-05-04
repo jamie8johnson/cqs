@@ -414,6 +414,27 @@ fn daemon_request<T: serde::de::DeserializeOwned>(
     args: serde_json::Value,
     payload_label: &str,
 ) -> Result<T, DaemonRpcError> {
+    daemon_request_with_timeout(cqs_dir, command, args, payload_label, None)
+}
+
+/// Like [`daemon_request`] but accepts a per-call read/write timeout
+/// override. `None` uses the default 5 s; `Some(d)` sets both timeouts
+/// to `d`. Used by [`wait_for_fresh`] (#1228 — RM-2) where the daemon
+/// holds the connection while parking on its `FreshNotifier` for up to
+/// the caller's wait budget.
+///
+/// The override applies before the request is written, so a misbehaving
+/// daemon that never replies still hits a deadline. Callers should pass
+/// `wait_secs + small_grace` so the client-side timeout can't beat the
+/// server-side `wait_until_fresh` deadline by accident.
+#[cfg(unix)]
+fn daemon_request_with_timeout<T: serde::de::DeserializeOwned>(
+    cqs_dir: &std::path::Path,
+    command: &str,
+    args: serde_json::Value,
+    payload_label: &str,
+    timeout_override: Option<std::time::Duration>,
+) -> Result<T, DaemonRpcError> {
     use std::io::{BufRead, Read as _, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -447,7 +468,12 @@ fn daemon_request<T: serde::de::DeserializeOwned>(
     // 5s is generous: every daemon RPC's handler does at most a single
     // RwLock read + clone + a `metadata()` syscall. No real I/O on the
     // daemon side.
-    let timeout = Duration::from_secs(5);
+    //
+    // #1228 (RM-2): `wait_fresh` parks server-side for up to `wait_secs`
+    // before responding, so the caller passes a longer timeout via
+    // `timeout_override`. All other RPCs leave it `None` and inherit
+    // the 5 s default.
+    let timeout = timeout_override.unwrap_or(Duration::from_secs(5));
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
         tracing::debug!(stage = "set_read_timeout", error = %e, command, "daemon request failed");
         return Err(DaemonRpcError::Transport(format!(
@@ -709,73 +735,81 @@ pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWai
     let start = std::time::Instant::now();
     // RB-2: defensive cap so a `pub fn` can't panic on
     // `Instant + Duration::from_secs(u64::MAX)`. Caller should pass a
-    // sane budget but we bound it here regardless.
+    // sane budget but we bound it here regardless. Daemon-side mirrors
+    // the same cap in `dispatch_wait_fresh` so a malicious / buggy
+    // client can't request a wait longer than 24 h either.
     let bounded_secs = wait_secs.min(86_400);
-    let deadline = start + std::time::Duration::from_secs(bounded_secs);
 
-    let mut poll_interval =
-        std::time::Duration::from_millis(crate::limits::freshness_poll_ms_initial());
-    let max_interval = std::time::Duration::from_secs(2);
+    // RB-9: deadline-first. A zero-budget wait short-circuits to
+    // `Timeout(unknown)` without a socket round-trip, matching the
+    // pre-#1228 behaviour. Real callers always pass a non-zero budget;
+    // the zero path is a defensive contract that "give me 0 budget"
+    // never spawns network I/O.
+    if bounded_secs == 0 {
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "wait_for_fresh: deadline reached before first fresh poll",
+        );
+        return FreshnessWait::Timeout(crate::watch_status::WatchSnapshot::unknown());
+    }
 
-    loop {
-        // RB-9: deadline-first so a slow daemon timeout can't push us
-        // past the user's budget. If the deadline already passed before
-        // we got our first response, return Timeout with the unknown
-        // snapshot — the caller's bail message will explain.
-        if std::time::Instant::now() >= deadline {
-            tracing::info!(
-                elapsed_ms = start.elapsed().as_millis() as u64,
-                "wait_for_fresh: deadline reached before first fresh poll",
-            );
-            return FreshnessWait::Timeout(crate::watch_status::WatchSnapshot::unknown());
+    // #1228 (RM-2): single-round-trip server-side wait. Daemon parks
+    // the request on its shared `FreshNotifier` until either the watch
+    // loop publishes a Fresh transition or the deadline expires, then
+    // replies with the current snapshot. Replaces the prior 250 ms-poll
+    // loop (4-5k connect/parse round-trips per 60 s wait at the default
+    // budget) — see issue #1228 RM-2 for the cost-shape rationale.
+    //
+    // Client-side timeout is `bounded_secs + 5` so a slow-but-honest
+    // daemon (handler scheduling jitter, write-buffer flush) gets a
+    // small grace period before the read times out. A genuinely wedged
+    // daemon still hits the budget plus grace, not minutes-of-pin.
+    let timeout = std::time::Duration::from_secs(bounded_secs.saturating_add(5));
+    let request = serde_json::json!(["--wait-secs", bounded_secs.to_string()]);
+    let result: Result<crate::watch_status::WatchSnapshot, DaemonRpcError> =
+        daemon_request_with_timeout(
+            cqs_dir,
+            "wait-fresh",
+            request,
+            "WatchSnapshot",
+            Some(timeout),
+        );
+
+    match result {
+        Ok(snap) => {
+            if snap.is_fresh() {
+                tracing::info!(
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    modified_files = snap.modified_files,
+                    "wait_for_fresh: index reached Fresh",
+                );
+                FreshnessWait::Fresh(snap)
+            } else {
+                tracing::info!(
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    modified_files = snap.modified_files,
+                    pending_notes = snap.pending_notes,
+                    rebuild_in_flight = snap.rebuild_in_flight,
+                    "wait_for_fresh: timeout — index still stale",
+                );
+                FreshnessWait::Timeout(snap)
+            }
         }
-
-        match daemon_status(cqs_dir) {
-            Ok(snap) => {
-                if snap.is_fresh() {
-                    tracing::info!(
-                        elapsed_ms = start.elapsed().as_millis() as u64,
-                        modified_files = snap.modified_files,
-                        "wait_for_fresh: index reached Fresh",
-                    );
-                    return FreshnessWait::Fresh(snap);
-                }
-                if std::time::Instant::now() >= deadline {
-                    tracing::info!(
-                        elapsed_ms = start.elapsed().as_millis() as u64,
-                        modified_files = snap.modified_files,
-                        pending_notes = snap.pending_notes,
-                        rebuild_in_flight = snap.rebuild_in_flight,
-                        "wait_for_fresh: timeout — index still stale",
-                    );
-                    return FreshnessWait::Timeout(snap);
-                }
-                std::thread::sleep(poll_interval);
-                // Exponential backoff with a 2 s ceiling. Linearly
-                // doubling beats fixed cadence on long waits because the
-                // socket budget cost is per round-trip, not per second.
-                poll_interval = (poll_interval * 2).min(max_interval);
-            }
-            Err(DaemonRpcError::SocketMissing(msg)) => {
-                tracing::info!(error = %msg, "wait_for_fresh: daemon socket missing");
-                return FreshnessWait::NoDaemon(msg);
-            }
-            Err(DaemonRpcError::Transport(msg)) => {
-                tracing::info!(error = %msg, "wait_for_fresh: transport failure");
-                return FreshnessWait::Transport(msg);
-            }
-            Err(DaemonRpcError::BadResponse(msg)) => {
-                tracing::warn!(error = %msg, "wait_for_fresh: malformed daemon response");
-                return FreshnessWait::BadResponse(msg);
-            }
-            Err(DaemonRpcError::DaemonError(msg)) => {
-                // The daemon answered with `status: "err"`. From the
-                // freshness-poll perspective this is the daemon refusing
-                // to provide a snapshot — surface as transport-class so
-                // the caller's message points at the daemon log.
-                tracing::warn!(error = %msg, "wait_for_fresh: daemon-side error");
-                return FreshnessWait::Transport(msg);
-            }
+        Err(DaemonRpcError::SocketMissing(msg)) => {
+            tracing::info!(error = %msg, "wait_for_fresh: daemon socket missing");
+            FreshnessWait::NoDaemon(msg)
+        }
+        Err(DaemonRpcError::Transport(msg)) => {
+            tracing::info!(error = %msg, "wait_for_fresh: transport failure");
+            FreshnessWait::Transport(msg)
+        }
+        Err(DaemonRpcError::BadResponse(msg)) => {
+            tracing::warn!(error = %msg, "wait_for_fresh: malformed daemon response");
+            FreshnessWait::BadResponse(msg)
+        }
+        Err(DaemonRpcError::DaemonError(msg)) => {
+            tracing::warn!(error = %msg, "wait_for_fresh: daemon-side error");
+            FreshnessWait::Transport(msg)
         }
     }
 }
@@ -1509,136 +1543,22 @@ mod tests {
         }
     }
 
-    /// TC-HAP-1.30.1-5: `wait_for_fresh` polls past stale snapshots and
-    /// returns `Fresh` once the daemon flips. Listener accepts three
-    /// connections: stale, stale, fresh. Pins both the polling loop AND
-    /// the exponential backoff (elapsed must be at least the initial
-    /// poll interval × 1 sleep — a fresh-on-first wouldn't sleep at all).
+    /// #1228 (RM-2): `wait_for_fresh` is now a single round-trip.
+    /// When the mock daemon replies with a Stale snapshot (i.e. the
+    /// daemon's `dispatch_wait_fresh` parked, hit its deadline, and
+    /// returned the still-stale snapshot), the helper must surface
+    /// `Timeout(snap)` so the eval gate's bail message can quote the
+    /// `modified_files` / `pending_notes` counters.
     #[cfg(unix)]
     #[test]
-    fn wait_for_fresh_returns_fresh_after_two_stale_polls() {
+    fn wait_for_fresh_returns_timeout_with_stale_snapshot_from_server() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
 
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
-
-        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
         set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
-        // CQS_FRESHNESS_POLL_MS still uses set_var because freshness_poll_ms_initial
-        // reads it directly (no thread-local hook); this is one isolated env mutation,
-        // not a serialization-group dance, and the 25ms value is read once on test
-        // entry. The structural fix for `freshness_poll_ms_initial` is the same shape
-        // as #1292 (parameter / thread-local) but is out of scope for this PR.
-        let prev_poll = std::env::var("CQS_FRESHNESS_POLL_MS").ok();
-        // SAFETY: a single-set, single-restore env touch — racy in principle but the
-        // mutator and reader are both in this test thread and the value is a poll
-        // interval, not a path computed against contemporaneous state.
-        unsafe {
-            std::env::set_var("CQS_FRESHNESS_POLL_MS", "25");
-        }
-
-        let sock_path = daemon_socket_path(&cqs_dir);
-        let listener = UnixListener::bind(&sock_path).unwrap();
-
-        // Helper: build the outer envelope wrapping a snapshot.
-        let envelope = |state: crate::watch_status::FreshnessState| -> String {
-            let snap = crate::watch_status::WatchSnapshot {
-                state,
-                modified_files: if matches!(state, crate::watch_status::FreshnessState::Fresh) {
-                    0
-                } else {
-                    3
-                },
-                pending_notes: false,
-                rebuild_in_flight: false,
-                delta_saturated: false,
-                incremental_count: 0,
-                dropped_this_cycle: 0,
-                last_event_unix_secs: 1_734_120_488,
-                last_synced_at: Some(1_734_120_000),
-                snapshot_at: Some(1_734_120_500),
-                active_slot: None,
-            };
-            let inner = serde_json::json!({
-                "data": serde_json::to_value(&snap).unwrap(),
-                "error": null,
-                "version": 1,
-            });
-            serde_json::json!({"status": "ok", "output": inner}).to_string()
-        };
-
-        let stale1 = envelope(crate::watch_status::FreshnessState::Stale);
-        let stale2 = envelope(crate::watch_status::FreshnessState::Stale);
-        let fresh = envelope(crate::watch_status::FreshnessState::Fresh);
-
-        let handle = std::thread::spawn(move || {
-            for body in [stale1, stale2, fresh] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut req = String::new();
-                BufReader::new(&stream).read_line(&mut req).unwrap();
-                writeln!(stream, "{body}").unwrap();
-                stream.flush().unwrap();
-            }
-        });
-
-        let start = std::time::Instant::now();
-        let result = wait_for_fresh(&cqs_dir, 5);
-        let elapsed = start.elapsed();
-
-        handle.join().unwrap();
-        let _ = std::fs::remove_file(&sock_path);
-
-        set_socket_dir_override_for_test(None);
-        // SAFETY: matched single-set/restore with the entry block above.
-        unsafe {
-            match prev_poll {
-                Some(v) => std::env::set_var("CQS_FRESHNESS_POLL_MS", v),
-                None => std::env::remove_var("CQS_FRESHNESS_POLL_MS"),
-            }
-        }
-
-        match result {
-            FreshnessWait::Fresh(snap) => {
-                assert_eq!(snap.state, crate::watch_status::FreshnessState::Fresh);
-                assert_eq!(snap.modified_files, 0);
-            }
-            other => panic!("expected Fresh after stale polls, got: {other:?}"),
-        }
-        // We slept at least once (after first stale poll). At a 25ms
-        // initial interval the test must take >= 25ms total. Use a loose
-        // 20ms floor to allow scheduler jitter.
-        assert!(
-            elapsed.as_millis() >= 20,
-            "expected at least one sleep cycle, got {}ms",
-            elapsed.as_millis()
-        );
-    }
-
-    /// TC-ADV-1.30.1-4: `wait_for_fresh` returns `Transport(_)` (not
-    /// `NoDaemon`) when the daemon socket file exists but the daemon
-    /// process has died — i.e. the listener was bound, accepted one
-    /// connection, then dropped. The socket file persists (until we
-    /// `remove_file`) but `UnixStream::connect` returns ECONNREFUSED
-    /// because no listener is bound to it.
-    #[cfg(unix)]
-    #[test]
-    fn wait_for_fresh_returns_transport_when_daemon_dies_mid_poll() {
-        use std::io::{BufRead, BufReader, Write};
-        use std::os::unix::net::UnixListener;
-
-        let dir = tempfile::tempdir().unwrap();
-        let cqs_dir = dir.path().join(".cqs");
-        std::fs::create_dir_all(&cqs_dir).unwrap();
-
-        // #1292: thread-local override avoids the unsafe set_var race that hangs CI.
-        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
-        let prev_poll = std::env::var("CQS_FRESHNESS_POLL_MS").ok();
-        // SAFETY: see above.
-        unsafe {
-            std::env::set_var("CQS_FRESHNESS_POLL_MS", "25");
-        }
 
         let sock_path = daemon_socket_path(&cqs_dir);
         let listener = UnixListener::bind(&sock_path).unwrap();
@@ -1646,7 +1566,7 @@ mod tests {
         let stale_envelope = {
             let snap = crate::watch_status::WatchSnapshot {
                 state: crate::watch_status::FreshnessState::Stale,
-                modified_files: 5,
+                modified_files: 7,
                 pending_notes: false,
                 rebuild_in_flight: false,
                 delta_saturated: false,
@@ -1665,40 +1585,68 @@ mod tests {
             serde_json::json!({"status": "ok", "output": inner}).to_string()
         };
 
-        // Listener thread: accept once, send Stale, drop listener. The
-        // socket file persists on disk so subsequent connects see the
-        // file but hit ECONNREFUSED (no listener bound) — exercises
-        // Transport, not SocketMissing.
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut req = String::new();
             BufReader::new(&stream).read_line(&mut req).unwrap();
+            // Mock acts as the post-deadline server: replies with the
+            // still-stale snapshot. No artificial sleep — the helper
+            // doesn't depend on wall-clock for this path.
             writeln!(stream, "{stale_envelope}").unwrap();
             stream.flush().unwrap();
-            drop(stream);
-            drop(listener);
         });
 
         let result = wait_for_fresh(&cqs_dir, 5);
         handle.join().unwrap();
         let _ = std::fs::remove_file(&sock_path);
-
         set_socket_dir_override_for_test(None);
-        // SAFETY: matched single-set/restore with the entry block above.
-        unsafe {
-            match prev_poll {
-                Some(v) => std::env::set_var("CQS_FRESHNESS_POLL_MS", v),
-                None => std::env::remove_var("CQS_FRESHNESS_POLL_MS"),
-            }
-        }
 
-        // The socket file existed at every poll, but the daemon was
-        // gone for the second one — must surface as Transport, not
-        // NoDaemon, so the eval gate's advice points at journalctl
-        // rather than at "start the daemon".
+        match result {
+            FreshnessWait::Timeout(snap) => {
+                assert_eq!(snap.state, crate::watch_status::FreshnessState::Stale);
+                assert_eq!(snap.modified_files, 7);
+            }
+            other => panic!("expected Timeout(stale), got: {other:?}"),
+        }
+    }
+
+    /// #1228 (RM-2): `wait_for_fresh` returns `Transport(_)` when the
+    /// daemon socket exists but the daemon dies mid-call. Listener
+    /// accepts once, drops without writing a response — the helper's
+    /// read times out and surfaces as Transport so the eval gate's
+    /// advice points at journalctl rather than "start the daemon."
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_fresh_returns_transport_when_daemon_drops_mid_call() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Listener thread: accept once and drop both stream and listener
+        // without writing. The helper's read times out → Transport.
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            drop(stream);
+            drop(listener);
+        });
+
+        // Use wait_secs=1 so the test wraps up quickly. Client-side
+        // timeout is 1 + 5 = 6 s; the read times out at the per-call
+        // timeout.
+        let result = wait_for_fresh(&cqs_dir, 1);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+
         match result {
             FreshnessWait::Transport(_) => { /* expected */ }
-            other => panic!("expected Transport after daemon death, got: {other:?}"),
+            other => panic!("expected Transport after daemon drop, got: {other:?}"),
         }
     }
 

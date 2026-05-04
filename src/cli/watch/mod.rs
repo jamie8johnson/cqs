@@ -199,6 +199,7 @@ const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(
 /// wire data — wasted budget.
 fn publish_watch_snapshot(
     handle: &cqs::watch_status::SharedWatchSnapshot,
+    fresh_notifier: &cqs::watch_status::SharedFreshNotifier,
     state: &mut WatchState,
     index_path: &std::path::Path,
 ) {
@@ -272,6 +273,13 @@ fn publish_watch_snapshot(
             "watch state transition",
         );
     }
+
+    // #1228 (RM-2): event-driven freshness wake-up. The notifier
+    // dedupes on idempotent `false → false` and `true → true` calls
+    // (cheap mutex acquire + boolean compare), so calling it every
+    // 100 ms tick is fine — only `false → true` transitions issue a
+    // `notify_all` to parked `wait_fresh` clients.
+    fresh_notifier.set_fresh(next_snap.is_fresh());
 }
 
 /// PB-3: Check if a path is under a WSL DrvFS automount root.
@@ -702,6 +710,14 @@ pub fn cmd_watch(
     let reconcile_signal_handle: cqs::watch_status::SharedReconcileSignal =
         cqs::watch_status::shared_reconcile_signal();
 
+    // #1228 (RM-2): cross-thread event-driven freshness notifier. Watch
+    // loop's `publish_watch_snapshot` calls `set_fresh` every cycle;
+    // the daemon's `wait_fresh` handler parks on `wait_until_fresh`.
+    // Replaces the prior client-side 250 ms-poll loop in
+    // `wait_for_fresh` — single round-trip, zero busy-poll.
+    let fresh_notifier_handle: cqs::watch_status::SharedFreshNotifier =
+        cqs::watch_status::shared_fresh_notifier();
+
     // #1182 — Layer 1: pick up a leftover `.cqs/.dirty` marker from a
     // previous session where a git hook fired without a daemon listening.
     // The hook touches this file as a fallback; on next daemon start we
@@ -756,6 +772,10 @@ pub fn cmd_watch(
             let daemon_watch_snapshot = Arc::clone(&watch_snapshot_handle);
             // #1182 — Layer 1: clone the reconcile-signal Arc too.
             let daemon_reconcile_signal = Arc::clone(&reconcile_signal_handle);
+            // #1228 (RM-2): clone the freshness notifier so the daemon's
+            // `wait_fresh` handler shares the same notifier the watch
+            // loop publishes through.
+            let daemon_fresh_notifier = Arc::clone(&fresh_notifier_handle);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = daemon::spawn_daemon_thread(
@@ -765,6 +785,7 @@ pub fn cmd_watch(
                 daemon_runtime,
                 daemon_watch_snapshot,
                 daemon_reconcile_signal,
+                daemon_fresh_notifier,
             );
             Some(thread)
         } else {
@@ -1548,7 +1569,12 @@ pub fn cmd_watch(
         // tick old. The `RwLock` on `watch_snapshot_handle` is acquired
         // for the duration of a struct-move; readers (daemon clients)
         // never wait more than that.
-        publish_watch_snapshot(&watch_snapshot_handle, &mut state, &index_path);
+        publish_watch_snapshot(
+            &watch_snapshot_handle,
+            &fresh_notifier_handle,
+            &mut state,
+            &index_path,
+        );
 
         if check_interrupted() {
             println!("\nStopping watch...");

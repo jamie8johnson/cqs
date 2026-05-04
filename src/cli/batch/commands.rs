@@ -339,6 +339,29 @@ pub(crate) enum BatchCmd {
         #[arg(long = "arg", value_name = "ARG")]
         args: Vec<String>,
     },
+    /// Block until the watch loop transitions to Fresh, or `wait_secs`
+    /// elapses. (#1228 — RM-2: server-side wait, no client-side polling.)
+    ///
+    /// One round-trip total — the daemon parks the request on a
+    /// `FreshNotifier` shared with the watch loop. When `publish_watch_snapshot`
+    /// observes a `false → true` transition it issues a `notify_all`,
+    /// the parked handler wakes, and replies with the latest snapshot.
+    /// On deadline the handler replies with the still-stale snapshot.
+    ///
+    /// Replaces the prior 250 ms-poll loop in `wait_for_fresh` (4-5k
+    /// connect/parse round-trips per 60 s wait at the default budget).
+    /// `cqs status --watch-fresh --wait` and `cqs eval --require-fresh`
+    /// route through this when talking to a daemon. Outside `cqs watch
+    /// --serve` the notifier never flips and the call hits the deadline
+    /// naturally.
+    #[command(name = "wait-fresh")]
+    WaitFresh {
+        /// Maximum seconds to block before returning the current
+        /// (still-stale) snapshot. Capped server-side at 86_400 (24 h)
+        /// for parity with the client-side cap in `wait_for_fresh`.
+        #[arg(long, default_value_t = 60)]
+        wait_secs: u64,
+    },
     /// Show help
     Help,
     /// #1127 (test-only): sleep `--ms` milliseconds before returning. Used by
@@ -408,6 +431,9 @@ macro_rules! for_each_batch_cmd_pipeability {
                 (Suggest, false)
                 (Gc, false)
                 (Reconcile, false)
+                // #1228 (RM-2): not pipeable — wait_secs is the only
+                // arg, no positional function name to receive a pipe.
+                (WaitFresh, false)
             }
             unit_variants: {
                 (Refresh, false)
@@ -676,6 +702,7 @@ pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Val
         BatchCmd::Ping => handlers::dispatch_ping(ctx),
         BatchCmd::Status => handlers::dispatch_status(ctx),
         BatchCmd::Reconcile { hook, args } => handlers::dispatch_reconcile(ctx, hook, args),
+        BatchCmd::WaitFresh { wait_secs } => handlers::dispatch_wait_fresh(ctx, wait_secs),
         BatchCmd::Help => handlers::dispatch_help(),
         #[cfg(test)]
         BatchCmd::TestSleep { ms } => {

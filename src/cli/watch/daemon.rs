@@ -42,6 +42,7 @@ pub(super) fn spawn_daemon_thread(
     daemon_runtime: Arc<tokio::runtime::Runtime>,
     daemon_watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
     daemon_reconcile_signal: cqs::watch_status::SharedReconcileSignal,
+    daemon_fresh_notifier: cqs::watch_status::SharedFreshNotifier,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         // BatchContext created inside the thread — RefCell is !Send
@@ -90,6 +91,10 @@ pub(super) fn spawn_daemon_thread(
         // git hook posts to the socket) flips a flag the watch loop is
         // actually checking.
         ctx.adopt_reconcile_signal(daemon_reconcile_signal);
+        // #1228 (RM-2): same shape for the freshness notifier. After
+        // this swap, `dispatch_wait_fresh` parks on the same notifier
+        // the watch loop signals from `publish_watch_snapshot`.
+        ctx.adopt_fresh_notifier(daemon_fresh_notifier);
 
         // SEC-V1.25-1: wrap the BatchContext in Arc<Mutex> so each
         // accepted connection gets its own handler thread. Without
