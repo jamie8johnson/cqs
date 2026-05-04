@@ -828,31 +828,36 @@ fn body_preview(resp: reqwest::blocking::Response) -> String {
 }
 
 impl BatchProvider for LocalProvider {
-    fn submit_batch_prebuilt(
+    fn submit_batch(
         &self,
+        kind: super::provider::BatchKind,
         items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        // Prebuilt prompts: content IS the user message. Ignore context/language.
-        self.submit_via_chat_completions(items, max_tokens, "prebuilt", |content, _, _| {
-            content.to_string()
-        })
-    }
-
-    fn submit_doc_batch(
-        &self,
-        items: &[BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        self.submit_via_chat_completions(items, max_tokens, "doc", LlmClient::build_doc_prompt)
-    }
-
-    fn submit_hyde_batch(
-        &self,
-        items: &[BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        self.submit_via_chat_completions(items, max_tokens, "hyde", LlmClient::build_hyde_prompt)
+        // #1347: dispatch on `BatchKind` once. Adding a new kind is one
+        // arm. The historical purpose-label strings ("prebuilt" / "doc" /
+        // "hyde") are kept stable so existing log greps still match.
+        use super::provider::BatchKind;
+        match kind {
+            BatchKind::Prebuilt => {
+                // Prebuilt prompts: content IS the user message. Ignore context/language.
+                self.submit_via_chat_completions(items, max_tokens, "prebuilt", |content, _, _| {
+                    content.to_string()
+                })
+            }
+            BatchKind::DocComment => self.submit_via_chat_completions(
+                items,
+                max_tokens,
+                "doc",
+                LlmClient::build_doc_prompt,
+            ),
+            BatchKind::Hyde => self.submit_via_chat_completions(
+                items,
+                max_tokens,
+                "hyde",
+                LlmClient::build_hyde_prompt,
+            ),
+        }
     }
 
     fn check_batch_status(&self, _batch_id: &str) -> Result<String, LlmError> {
@@ -959,7 +964,9 @@ mod tests {
         }));
 
         let items = make_items(3);
-        let batch_id = provider.submit_batch_prebuilt(&items, 100).unwrap();
+        let batch_id = provider
+            .submit_batch(crate::llm::provider::BatchKind::Prebuilt, &items, 100)
+            .unwrap();
         assert!(provider.is_valid_batch_id(&batch_id));
 
         let results = provider.fetch_batch_results(&batch_id).unwrap();
@@ -1002,7 +1009,9 @@ mod tests {
         }));
 
         let items = make_items(3);
-        let batch_id = provider.submit_batch_prebuilt(&items, 100).unwrap();
+        let batch_id = provider
+            .submit_batch(crate::llm::provider::BatchKind::Prebuilt, &items, 100)
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
 
         assert_eq!(results.len(), 3);
@@ -1032,7 +1041,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         assert_eq!(provider.fetch_batch_results(&batch_id).unwrap().len(), 1);
         m.assert();
 
@@ -1067,7 +1082,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         assert_eq!(provider.fetch_batch_results(&batch_id).unwrap().len(), 1);
         // Mock fires when the request lacks conditions mocks reject; our
         // happy-path `auth_header_present_when_key_set` already proves that
@@ -1105,7 +1126,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(
             results.is_empty(),
@@ -1139,7 +1166,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         assert_eq!(provider.fetch_batch_results(&batch_id).unwrap().len(), 1);
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
@@ -1165,7 +1198,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert_eq!(
             results.get("hash_0").map(|s| s.as_str()),
@@ -1195,7 +1234,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert_eq!(results.get("hash_0").map(|s| s.len()), Some(100_000));
 
@@ -1221,7 +1266,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
 
         let first = provider.fetch_batch_results(&batch_id).unwrap();
         assert_eq!(first.len(), 1);
@@ -1248,7 +1299,13 @@ mod tests {
         // Point at a closed port (high-numbered loopback) so connect fails fast.
         let config = make_config("http://127.0.0.1:1/v1", "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         // All retries exhausted → item failed → empty stash.
         assert!(
@@ -1279,7 +1336,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(
             results.is_empty(),
@@ -1307,7 +1370,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(
             results.is_empty(),
@@ -1336,7 +1405,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(results.is_empty());
 
@@ -1362,7 +1437,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(results.is_empty());
         // Only 1 HTTP call, not 4 — skip-without-retry path.
@@ -1388,7 +1469,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let _ = provider.fetch_batch_results(&batch_id);
         m.assert_hits(1);
 
@@ -1412,7 +1499,11 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let result = provider.submit_batch_prebuilt(&make_items(1), 100);
+        let result = provider.submit_batch(
+            crate::llm::provider::BatchKind::Prebuilt,
+            &make_items(1),
+            100,
+        );
         match result {
             Err(LlmError::Api { status, message }) => {
                 assert_eq!(status, 401);
@@ -1518,7 +1609,9 @@ mod tests {
         }));
 
         let items = make_items(4);
-        let batch_id = provider.submit_batch_prebuilt(&items, 100).unwrap();
+        let batch_id = provider
+            .submit_batch(crate::llm::provider::BatchKind::Prebuilt, &items, 100)
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         // All 4 items stashed — stash insert happens before callback fires.
         assert_eq!(results.len(), 4);
@@ -1559,7 +1652,13 @@ mod tests {
         // submit_batch_prebuilt must still succeed (returns a batch id) — the
         // single item failed during parse and was recorded as failed, not
         // bubbled up. Successful items count = 0; stash is empty.
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(
             results.is_empty(),
@@ -1594,7 +1693,13 @@ mod tests {
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
         let provider = LocalProvider::new(config).unwrap();
-        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let batch_id = provider
+            .submit_batch(
+                crate::llm::provider::BatchKind::Prebuilt,
+                &make_items(1),
+                100,
+            )
+            .unwrap();
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(
             results.is_empty(),
