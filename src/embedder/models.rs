@@ -534,9 +534,18 @@ define_embedder_presets! {
     /// triggered CPU-fallback init alongside the GPU-side ~30 GB ONNX
     /// mmap — combined RSS spikes past the 94 GB host budget. The 4B
     /// halves both:
-    /// * ONNX mmap: ~8 GB (FP16 export from `zhiqing/...`) vs ~30 GB.
-    /// * GPU steady-state: ~13 GB vs ~48 GB. No OOMs expected.
+    /// * ONNX mmap: ~16 GB FP32 vs ~30 GB.
+    /// * GPU steady-state: ~26 GB vs ~48 GB. Substantial OOM headroom.
     /// * Indexing rate: ~2-3× faster (smaller KV cache + matmul).
+    ///
+    /// FP32 vs FP16 note: `zhiqing/Qwen3-Embedding-4B-ONNX` ships an
+    /// 8 GB FP16 sidecar that's tempting on disk, but its
+    /// `last_hidden_state` output tensor is `Tensor<f16>`. cqs's embed
+    /// loop calls `try_extract_tensor::<f32>()` and fails fast with
+    /// "Cannot extract Tensor<f32> from Tensor<f16>" before producing
+    /// any output. `sigalr/Qwen3-Embedding-4B-ONNX-ST` keeps the
+    /// weights FP32 and emits a `Tensor<f32>` last_hidden_state — uses
+    /// 2× the disk + GPU but works without an ORT-side dtype shim.
     ///
     /// Pooling note: the third-party export does NOT bake pooling into
     /// the ONNX graph (unlike `onnx-community`'s 8B variant which
@@ -547,16 +556,16 @@ define_embedder_presets! {
     /// Position-ids note: the export exposes `position_ids` as an
     /// explicit ONNX input. cqs's `decoder_only_with_position_ids` shape
     /// materialises `[[0, 1, …, seq_len-1]] × batch` per call. (#1442)
-    qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "zhiqing/Qwen3-Embedding-4B-ONNX",
-        onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
+    qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "sigalr/Qwen3-Embedding-4B-ONNX-ST",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
         dim = 2560, max_seq_length = 8192,
         query_prefix = "Instruct: Find the code chunk that best matches the query.\nQuery: ", doc_prefix = "",
         input_names = InputNames::decoder_only_with_position_ids(),
         output_name = "last_hidden_state".to_string(),
         pooling = PoolingStrategy::LastToken,
-        // FP16 ONNX bundle: ~1.6 MB graph + ~8.04 GB external-data
-        // weights file at `model.onnx_data`. Plus ~14 MB tokenizer/vocab.
-        approx_download_bytes = Some(8_100 * 1024 * 1024),
+        // FP32 ONNX bundle: ~1.6 MB graph + ~16.1 GB external-data
+        // weights file at `onnx/model.onnx_data`. Plus ~14 MB tokenizer.
+        approx_download_bytes = Some(16_200 * 1024 * 1024),
         pad_id = 151643;
 }
 
