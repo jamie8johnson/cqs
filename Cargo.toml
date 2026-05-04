@@ -160,7 +160,7 @@ rand = "0.10"
 lru = "0.18"
 once_cell = "1"
 tempfile = "3"
-similar = "2"
+similar = "3"
 # Percent-decoding query keys in serve auth (P1.3 / SEC-7 redirect path).
 percent-encoding = "2"
 
