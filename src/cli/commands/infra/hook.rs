@@ -125,6 +125,13 @@ struct StatusReport {
     foreign: Vec<String>,
     missing: Vec<String>,
     daemon_up: bool,
+    /// PB-V1.33-7 / #1354: on Windows, the MSYS shell that runs hooks does
+    /// not see `%PATH%` reliably. This field carries the result of a
+    /// `bash -c 'command -v cqs'` probe so operators see whether the hook
+    /// will actually fire. `None` on Linux/macOS (PATH is shared, probe is
+    /// moot) and on Windows when `bash` itself isn't available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cqs_visible_in_hook_shell: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -223,10 +230,47 @@ fn cmd_install(no_overwrite: bool, json: bool) -> Result<()> {
 }
 
 fn write_hook_script(path: &Path, hook_name: &str) -> Result<()> {
-    let body = render_hook_script(hook_name);
+    let fallback = absolute_cqs_for_hook();
+    let body = render_hook_script(hook_name, fallback.as_deref());
     std::fs::write(path, body).with_context(|| format!("write {}", path.display()))?;
     set_executable(path)?;
     Ok(())
+}
+
+/// PB-V1.33-7 / #1354: Windows-only — the git-bash MSYS shell that runs
+/// `.git/hooks/*` does not inherit `%PATH%`; only entries that translate
+/// to valid POSIX-style paths survive (`C:\Users\foo\.cargo\bin` →
+/// `/c/Users/foo/.cargo/bin`). Operators who installed `cqs` via
+/// `cargo install` and verified `cqs --version` works in `cmd.exe` see
+/// `command -v cqs` fail silently inside the hook. To recover, embed the
+/// POSIX-translated absolute path of the running `cqs.exe` into the
+/// wrapper as a fallback. Linux/macOS hits the `command -v cqs` branch
+/// and never reads the fallback.
+#[cfg(windows)]
+fn absolute_cqs_for_hook() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    windows_to_msys_path(&exe)
+}
+
+#[cfg(not(windows))]
+fn absolute_cqs_for_hook() -> Option<String> {
+    None
+}
+
+/// Translate a Windows native path (`C:\Users\foo\.cargo\bin\cqs.exe`)
+/// to the MSYS / git-bash POSIX form (`/c/Users/foo/.cargo/bin/cqs.exe`)
+/// that the hook shell understands. Drive letter is lowercased; the `:`
+/// is dropped; backslashes become forward slashes.
+#[cfg(windows)]
+fn windows_to_msys_path(p: &Path) -> Option<String> {
+    let s = p.to_str()?;
+    let bytes = s.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' {
+        return None;
+    }
+    let drive = (bytes[0] as char).to_ascii_lowercase();
+    let tail = &s[2..].replace('\\', "/");
+    Some(format!("/{drive}{tail}"))
 }
 
 #[cfg(unix)]
@@ -256,7 +300,22 @@ fn set_executable(_path: &Path) -> Result<()> {
 ///   - Skips silently if `cqs` isn't on `$PATH`.
 ///   - Forks `cqs hook fire <name> "$@" &` so git never waits.
 ///   - Always exits 0 — a flaky daemon must never break `git checkout`.
-fn render_hook_script(hook_name: &str) -> String {
+fn render_hook_script(hook_name: &str, absolute_fallback: Option<&str>) -> String {
+    // Background fire-and-forget. `cqs hook fire` is bounded — it has its
+    // own socket timeout and exits within a few hundred ms even on a wedged
+    // daemon. The redirect keeps git's output channel clean.
+    //
+    // PB-V1.33-7 / #1354: on Windows-native installs, the MSYS shell that
+    // runs hooks does not see `%PATH%` entries reliably. When `cqs hook
+    // install` runs on Windows, the resolved absolute `cqs.exe` path is
+    // embedded as a second branch; on Linux/macOS the fallback is absent
+    // and the script is identical to the pre-#1354 form.
+    let fallback_branch = match absolute_fallback {
+        Some(p) => format!(
+            "elif [ -x \"{p}\" ]; then\n    \"{p}\" hook fire {hook_name} \"$@\" >/dev/null 2>&1 &\n",
+        ),
+        None => String::new(),
+    };
     format!(
         r#"#!/bin/sh
 {marker}
@@ -266,17 +325,16 @@ fn render_hook_script(hook_name: &str) -> String {
 # Bail silently when cqs isn't initialised or installed in this tree.
 git_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -d "$git_root/.cqs" ] || exit 0
-command -v cqs >/dev/null 2>&1 || exit 0
 
-# Background fire-and-forget. `cqs hook fire` is bounded — it has its
-# own socket timeout and exits within a few hundred ms even on a wedged
-# daemon. The redirect keeps git's output channel clean.
-( cqs hook fire {hook_name} "$@" >/dev/null 2>&1 & )
+if command -v cqs >/dev/null 2>&1; then
+    cqs hook fire {hook_name} "$@" >/dev/null 2>&1 &
+{fallback_branch}fi
 
 exit 0
 "#,
         marker = HOOK_MARKER_CURRENT,
         hook_name = hook_name,
+        fallback_branch = fallback_branch,
     )
 }
 
@@ -402,8 +460,32 @@ fn cmd_status(json: bool) -> Result<()> {
         let _ = cqs_dir; // unused on non-unix
     }
 
+    // PB-V1.33-7 / #1354: on Windows-native, surface whether the hook's
+    // shell environment can actually find `cqs`. Linux/macOS share PATH
+    // with the hook shell, so the probe is moot and the field stays None.
+    #[cfg(windows)]
+    {
+        report.cqs_visible_in_hook_shell = probe_cqs_visible_in_bash();
+    }
+
     emit(&report, json)?;
     Ok(())
+}
+
+/// Run `bash -c 'command -v cqs'` and report whether bash found `cqs`.
+/// `None` when bash itself isn't available on PATH — the probe can't
+/// distinguish "no bash" from "no cqs," so signal that with a missing
+/// field rather than asserting one or the other.
+#[cfg(windows)]
+fn probe_cqs_visible_in_bash() -> Option<bool> {
+    let out = std::process::Command::new("bash")
+        .args(["-c", "command -v cqs >/dev/null 2>&1"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    Some(out.success())
 }
 
 /// TC-HAP-1.30.1-2: path-aware hook-status helper. Pure file-system
@@ -416,6 +498,7 @@ fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
         foreign: Vec::new(),
         missing: Vec::new(),
         daemon_up: false,
+        cqs_visible_in_hook_shell: None,
     };
 
     for &hook in MANAGED_HOOKS {
@@ -480,7 +563,7 @@ mod tests {
 
     #[test]
     fn render_hook_script_contains_marker_and_name() {
-        let body = render_hook_script("post-checkout");
+        let body = render_hook_script("post-checkout", None);
         assert!(body.contains(HOOK_MARKER_CURRENT), "marker missing: {body}");
         assert!(body.contains("post-checkout"), "hook name missing: {body}");
         assert!(body.contains("cqs hook fire post-checkout"));
@@ -492,11 +575,73 @@ mod tests {
         // The shebang has to be *exactly* the first line for the kernel
         // to recognise it. The marker follows on line 2 so detection
         // doesn't depend on script body content.
-        let body = render_hook_script("post-merge");
+        let body = render_hook_script("post-merge", None);
         let first_line = body.lines().next().unwrap_or("");
         let second_line = body.lines().nth(1).unwrap_or("");
         assert_eq!(first_line, "#!/bin/sh");
         assert_eq!(second_line, HOOK_MARKER_CURRENT);
+    }
+
+    /// PB-V1.33-7 / #1354: a Windows install passes the POSIX-translated
+    /// absolute `cqs.exe` path as the fallback. The rendered script
+    /// keeps the `command -v cqs` branch (so cargo-bin-on-MSYS-PATH users
+    /// still hit the bare `cqs` invocation) and adds an `elif [ -x "<abs>" ]`
+    /// branch that fires the hook through the absolute path.
+    #[test]
+    fn render_hook_script_with_absolute_fallback_emits_elif_branch() {
+        let body = render_hook_script("post-checkout", Some("/c/Users/foo/.cargo/bin/cqs.exe"));
+        assert!(
+            body.contains("if command -v cqs >/dev/null 2>&1; then"),
+            "PATH-first branch missing: {body}"
+        );
+        assert!(
+            body.contains("cqs hook fire post-checkout"),
+            "PATH branch invocation missing: {body}"
+        );
+        assert!(
+            body.contains("elif [ -x \"/c/Users/foo/.cargo/bin/cqs.exe\" ]; then"),
+            "absolute-path elif missing: {body}"
+        );
+        assert!(
+            body.contains("\"/c/Users/foo/.cargo/bin/cqs.exe\" hook fire post-checkout"),
+            "absolute-path invocation missing: {body}"
+        );
+    }
+
+    /// Without a fallback (Linux / macOS), the script must not emit any
+    /// `elif` branch — keeps the on-disk text minimal and identical to
+    /// the pre-#1354 one-branch shape on platforms that don't need it.
+    #[test]
+    fn render_hook_script_without_fallback_has_no_elif() {
+        let body = render_hook_script("post-merge", None);
+        assert!(
+            !body.contains("elif"),
+            "no fallback should mean no elif: {body}"
+        );
+        assert!(
+            body.contains("cqs hook fire post-merge"),
+            "PATH-branch invocation missing: {body}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_to_msys_path_translates_drive_letter() {
+        use std::path::PathBuf;
+        // Lowercased drive, dropped colon, forward slashes.
+        let p = PathBuf::from(r"C:\Users\foo\.cargo\bin\cqs.exe");
+        assert_eq!(
+            super::windows_to_msys_path(&p).as_deref(),
+            Some("/c/Users/foo/.cargo/bin/cqs.exe")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_to_msys_path_rejects_non_drive_path() {
+        use std::path::PathBuf;
+        let p = PathBuf::from(r"\\server\share\cqs.exe"); // UNC, no drive letter
+        assert!(super::windows_to_msys_path(&p).is_none());
     }
 
     #[test]
@@ -530,7 +675,7 @@ mod tests {
             "foreign hook must not match cqs marker"
         );
 
-        let cqs_hook = render_hook_script("post-checkout");
+        let cqs_hook = render_hook_script("post-checkout", None);
         assert!(cqs_hook.contains(HOOK_MARKER_PREFIX));
     }
 
