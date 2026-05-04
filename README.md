@@ -864,6 +864,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_SERVE_CLUSTER_MAX_NODES` | `50000` | Cap on `/api/embed/2d` nodes (cluster view). Clamped to `[1, 1_000_000]`. SEC-3. |
 | `CQS_SERVE_GRAPH_MAX_EDGES` | `500000` | Cap on `/api/graph` edges. Clamped to `[1, 10_000_000]`. SEC-3. |
 | `CQS_SERVE_GRAPH_MAX_NODES` | `50000` | Cap on `/api/graph` nodes. Clamped to `[1, 1_000_000]`. SEC-3. |
+| `CQS_SERVE_IDLE_MINUTES` | `30` | Idle-shutdown threshold for `cqs serve`. After this many minutes with no incoming requests, the server exits cleanly so the read-only mmap and tokio runtime release. `0` disables (server runs until killed). #1345 / RM-V1.33-5. |
 | `CQS_SLOT` | (unset) | Slot to use for this invocation. Overridden by `--slot` flag, overrides `.cqs/active_slot`. See `cqs slot --help`. |
 | `CQS_CACHE_ENABLED` | `1` | Set `0` to disable the project-scoped embeddings cache for this run (benchmark / debug). Cache lives at `<project>/.cqs/embeddings_cache.db`. |
 | `CQS_CACHE_MAX_BYTES` | (unset) | Soft cap; emits `tracing::warn!` when the embeddings cache DB exceeds this many bytes. Does NOT auto-prune — use `cqs cache prune` / `cqs cache compact`. |
