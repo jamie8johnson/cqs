@@ -1781,3 +1781,14 @@ mentions = [
     "for_each_batch_cmd",
     "enumerate_files_iter",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Qwen3-Embedding-4B FP16 GPU OOM at batch=8, seq=4096 on A6000 49GB. Default batch_size formula yields batch=8 (64*0.4*0.25=6.4→pow2=8). Per-layer attention [8,32,4096,4096]×fp16 ≈ 8.6 GB plus model weights ~8-10 GB plus ORT arenas hits 48.5/49 GB ceiling. CPU fallback then climbs RSS toward WSL crash. Mitigation requires CQS_EMBED_BATCH_SIZE=1-2 or smaller model (Qwen3-Embedding-0.6B fits comfortably). Conclusion: 4B/8B Qwen3-Embedding need 80GB-class GPU for production indexing."
+mentions = [
+    "src/embedder/models.rs",
+    "src/embedder/mod.rs",
+    "qwen3",
+    "gpu",
+    "wsl",
+]
