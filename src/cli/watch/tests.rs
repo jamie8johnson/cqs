@@ -949,7 +949,8 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
     tx.send(Ok(Some(RebuildResult {
         index: new_idx,
         // No overlap between delta ids and snapshot — all replay.
-        snapshot_hashes: std::collections::HashMap::new(),
+        // #1244: HashSet<u64> of (id, hash) fingerprints, not HashMap.
+        snapshot_keys: std::collections::HashSet::new(),
     })))
     .unwrap();
     drop(tx);
@@ -1025,14 +1026,15 @@ fn test_rebuild_window_re_embedding_replays_fresh_vector() {
         .expect("build snapshot index");
     assert_eq!(new_idx.len(), 2, "snapshot starts with 2 entries");
 
-    let mut snapshot_hashes = std::collections::HashMap::new();
-    snapshot_hashes.insert("a".to_string(), "h_v1".to_string());
-    snapshot_hashes.insert("z".to_string(), "h_z".to_string());
+    // #1244: HashSet<u64> of (id, hash) fingerprints, not HashMap.
+    let mut snapshot_keys = std::collections::HashSet::new();
+    snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("a", "h_v1"));
+    snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("z", "h_z"));
 
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(Ok(Some(RebuildResult {
         index: new_idx,
-        snapshot_hashes,
+        snapshot_keys,
     })))
     .unwrap();
     drop(tx);
@@ -1112,15 +1114,16 @@ fn drain_pending_rebuild_dedups_against_known_ids() {
     let dim = 4;
     let new_idx = synthetic_owned_index(3, dim); // ids: c0, c1, c2
 
-    let mut snapshot_hashes = std::collections::HashMap::new();
-    snapshot_hashes.insert("c0".to_string(), "h0".to_string());
-    snapshot_hashes.insert("c1".to_string(), "h1".to_string());
-    snapshot_hashes.insert("c2".to_string(), "h2".to_string());
+    // #1244: HashSet<u64> of (id, hash) fingerprints, not HashMap.
+    let mut snapshot_keys = std::collections::HashSet::new();
+    snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("c0", "h0"));
+    snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("c1", "h1"));
+    snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("c2", "h2"));
 
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(Ok(Some(RebuildResult {
         index: new_idx,
-        snapshot_hashes,
+        snapshot_keys,
     })))
     .unwrap();
     drop(tx);

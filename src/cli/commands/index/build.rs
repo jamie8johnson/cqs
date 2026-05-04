@@ -1247,25 +1247,56 @@ pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<u
     Ok(build_hnsw_index_owned(store, cqs_dir)?.map(|(h, _)| h.len()))
 }
 
-/// Build HNSW index and return the Owned index plus a per-id `content_hash`
-/// snapshot for continued incremental use.
+/// #1244 / RM-4: 64-bit fingerprint of `(id, content_hash)` used by
+/// [`build_hnsw_index_owned`] / `RebuildResult` to track which exact
+/// (chunk_id, content_hash) pairs landed in the rebuilt index.
+///
+/// The swap-time drain (`drain_pending_rebuild`) compares each delta
+/// entry against this snapshot to decide whether to replay; the
+/// fingerprint form replaces a `HashMap<String, String>` (~ ~150 B per
+/// entry, ~3 MB for a 17 k-chunk corpus, held across the full rebuild
+/// window of tens of seconds) with a `HashSet<u64>` (~24 B per entry,
+/// ~400 KB at the same N — ~7× reduction). Collision risk: blake3
+/// truncated to 64 bits, ~600 M-entry birthday bound vs the ~10 K
+/// per-rebuild N — false positives are below the per-rebuild
+/// already-orphan rate from `insert_batch`'s no-deletion API. A
+/// false-positive collision (delta entry skipped that shouldn't have
+/// been) just leaves a chunk unindexed until the next threshold
+/// rebuild — same recovery path as a saturated delta or HNSW orphan.
+pub(crate) fn snapshot_fingerprint(id: &str, hash: &str) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(hash.as_bytes());
+    let bytes = hasher.finalize();
+    let b = bytes.as_bytes();
+    u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+}
+
+/// Build HNSW index and return the Owned index plus a per-(id, content_hash)
+/// fingerprint set for continued incremental use.
 ///
 /// Builds from all chunk embeddings in the store, saves to disk, and returns
-/// `(HnswIndex, snapshot_hashes)` where `snapshot_hashes[id]` is the
-/// `content_hash` the embedding was generated from. Used by watch mode to
-/// keep a mutable index in memory for `insert_batch` calls and (on the
-/// background-rebuild path, #1124) to detect entries that were re-embedded
-/// mid-rebuild — the swap-time drain replays them with the fresh vector
-/// instead of dedup'ing them by id-only and silently dropping the update.
+/// `(HnswIndex, snapshot_keys)` where `snapshot_keys` contains
+/// [`snapshot_fingerprint`]`(id, hash)` for every (id, hash) that landed
+/// in the rebuilt index. Used by watch mode to keep a mutable index in
+/// memory for `insert_batch` calls and (on the background-rebuild path,
+/// #1124) to detect entries that were re-embedded mid-rebuild — the
+/// swap-time drain replays them with the fresh vector instead of
+/// dedup'ing them by id-only and silently dropping the update.
 ///
 /// Both the embeddings and the hashes come from a single SQL pass via
 /// [`Store::embedding_and_hash_batches`] so they're consistent under
 /// concurrent writers (WAL snapshot isolation only holds within a
 /// transaction).
+///
+/// #1244 / RM-4: pre-fix held `HashMap<String, String>` (~3 MB on a
+/// 17 k-chunk corpus); now holds `HashSet<u64>` (~400 KB at the same N).
+/// See [`snapshot_fingerprint`] for the collision-rate analysis.
 pub(crate) fn build_hnsw_index_owned<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
-) -> Result<Option<(HnswIndex, std::collections::HashMap<String, String>)>> {
+) -> Result<Option<(HnswIndex, std::collections::HashSet<u64>)>> {
     let chunk_count = store.chunk_count().context("Failed to read chunk count")? as usize;
     let _span = tracing::info_span!("build_hnsw_index_owned", chunk_count).entered();
 
@@ -1276,16 +1307,16 @@ pub(crate) fn build_hnsw_index_owned<M>(
     let batch_size = hnsw_batch_size();
 
     // Tee the (id, embedding, hash) stream: HNSW build consumes
-    // (id, embedding) pairs while we accumulate (id, hash) into a side map.
-    // Single SQL pass — no second query, no risk of the hash drifting from
-    // the embedding under concurrent writers.
-    let mut snapshot_hashes: std::collections::HashMap<String, String> =
-        std::collections::HashMap::with_capacity(chunk_count);
+    // (id, embedding) pairs while we accumulate fingerprints into a side
+    // set. Single SQL pass — no second query, no risk of the hash drifting
+    // from the embedding under concurrent writers.
+    let mut snapshot_keys: std::collections::HashSet<u64> =
+        std::collections::HashSet::with_capacity(chunk_count);
     let chunk_batches = store.embedding_and_hash_batches(batch_size).map(|batch| {
         batch.map(|triples| {
             let mut pairs = Vec::with_capacity(triples.len());
             for (id, emb, hash) in triples {
-                snapshot_hashes.insert(id.clone(), hash);
+                snapshot_keys.insert(snapshot_fingerprint(&id, &hash));
                 pairs.push((id, emb));
             }
             pairs
@@ -1295,7 +1326,7 @@ pub(crate) fn build_hnsw_index_owned<M>(
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, chunk_count, store.dim())?;
     hnsw.save(cqs_dir, "index")?;
 
-    Ok(Some((hnsw, snapshot_hashes)))
+    Ok(Some((hnsw, snapshot_keys)))
 }
 
 /// Build the Phase 5 base HNSW index from `embedding_base` and save as
@@ -1459,22 +1490,30 @@ mod tests {
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
 
-        let (idx, snapshot_hashes) = build_hnsw_index_owned(&store, &cqs_dir)
+        let (idx, snapshot_keys) = build_hnsw_index_owned(&store, &cqs_dir)
             .expect("build_hnsw_index_owned must succeed")
             .expect("non-empty store must produce an index");
         assert_eq!(idx.len(), n, "index len must equal seeded chunk count");
-        // P1.17 (#1124): snapshot must carry one (id, content_hash) entry
-        // per built vector so the rebuild-window drain can detect stale
-        // entries.
+        // P1.17 (#1124) + #1244 / RM-4: snapshot must carry one fingerprint
+        // entry per built (id, content_hash) so the rebuild-window drain
+        // can detect stale entries. Pre-#1244 this was a HashMap<id, hash>;
+        // now a HashSet<u64> of `snapshot_fingerprint(id, hash)`.
         assert_eq!(
-            snapshot_hashes.len(),
+            snapshot_keys.len(),
             n,
-            "snapshot_hashes must contain one entry per chunk"
+            "snapshot_keys must contain one entry per chunk"
         );
-        for id in idx.ids() {
+        // Reconstruct each (id, content_hash) the test seeded and confirm
+        // its fingerprint is in the set — same round-trip the swap-time
+        // drain performs.
+        for i in 0..n {
+            let id = format!("c{i}");
+            let content = format!("fn {}() {{ }}", id);
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let fp = super::snapshot_fingerprint(&id, &hash);
             assert!(
-                snapshot_hashes.contains_key(id),
-                "snapshot_hashes missing id {id}"
+                snapshot_keys.contains(&fp),
+                "snapshot_keys missing fingerprint for {id}"
             );
         }
         // The hnsw save side-effect should land at `<cqs_dir>/index.hnsw.*`.
