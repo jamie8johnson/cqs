@@ -8,8 +8,8 @@ use super::BatchView;
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
     ExplainArgs, GatherArgs, ImpactArgs, ImpactDiffArgs, NotesListArgs, OnboardArgs, PlanArgs,
-    ReadArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, SuggestArgs,
-    TaskArgs, TestMapArgs, TraceArgs, WhereArgs,
+    ReadArgs, ReconcileArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs,
+    StaleArgs, SuggestArgs, TaskArgs, TestMapArgs, TraceArgs, WaitFreshArgs, WhereArgs,
 };
 use crate::cli::definitions::{OutputArgs, TextJsonArgs};
 
@@ -330,14 +330,8 @@ pub(crate) enum BatchCmd {
     ///   `cqs hook fire post-checkout <prev_HEAD> <new_HEAD> <branch_flag>`
     /// `--hook` carries the hook name; everything else lands in `--arg`.
     Reconcile {
-        /// Name of the hook that fired this reconcile (e.g. `post-checkout`).
-        /// Logged for operator diagnostics; not used for the walk itself.
-        #[arg(long)]
-        hook: Option<String>,
-        /// Free-form positional payload from the hook (e.g. previous and
-        /// current commit SHAs). Captured for tracing only.
-        #[arg(long = "arg", value_name = "ARG")]
-        args: Vec<String>,
+        #[command(flatten)]
+        args: ReconcileArgs,
     },
     /// Block until the watch loop transitions to Fresh, or `wait_secs`
     /// elapses. (#1228 — RM-2: server-side wait, no client-side polling.)
@@ -356,11 +350,8 @@ pub(crate) enum BatchCmd {
     /// naturally.
     #[command(name = "wait-fresh")]
     WaitFresh {
-        /// Maximum seconds to block before returning the current
-        /// (still-stale) snapshot. Capped server-side at 86_400 (24 h)
-        /// for parity with the client-side cap in `wait_for_fresh`.
-        #[arg(long, default_value_t = 60)]
-        wait_secs: u64,
+        #[command(flatten)]
+        args: WaitFreshArgs,
     },
     /// Show help
     Help,
@@ -376,7 +367,26 @@ pub(crate) enum BatchCmd {
     },
 }
 
-/// Per-variant pipeability table — single source of truth for `BatchCmd::is_pipeable`.
+/// Per-variant dispatch table — single source of truth for both
+/// `BatchCmd::is_pipeable` and `dispatch()`. (#1216, EX-V1.30.1-2.)
+///
+/// Each row carries `(Variant, handler_fn, pipeable)`. Three buckets:
+/// - `args_variants`: struct variants with `args: XArgs`. Handler signature
+///   is `fn(ctx: &BatchView, args: &XArgs) -> Result<Value>`.
+/// - `ctx_only_variants`: struct variants without `args` (e.g. `Stats`,
+///   `Health` — output-flag-only). Handler signature is `fn(ctx: &BatchView)`.
+/// - `unit_variants`: zero-field variants (e.g. `Refresh`, `Ping`).
+///   Handler signature is `fn(ctx: &BatchView)`.
+///
+/// Adding a new variant requires:
+/// 1. Adding the variant to `BatchCmd`.
+/// 2. Writing the handler.
+/// 3. Adding one row to this macro.
+///
+/// All three steps are compile-enforced by the exhaustive match the macro
+/// emits — a missing row produces a `non-exhaustive patterns` error, not a
+/// silent drop. The previous design had three coordinated edits + zero
+/// compile-time check that the dispatch arm matched the pipeability row.
 ///
 /// Issue #1137 (audit finding EX-V1.30-1): the pipeability classification used
 /// to live in a hand-maintained match arm, decoupled from the variant declaration.
@@ -392,54 +402,65 @@ pub(crate) enum BatchCmd {
 ///
 /// Pipeable: primary input is a function name (so a previous segment's output
 /// can be piped in). Not pipeable: queries, paths, git refs, or no positional arg.
-macro_rules! for_each_batch_cmd_pipeability {
+/// #1216 (EX-V1.30.1-2): single source of truth for both
+/// `BatchCmd::is_pipeable` AND `dispatch()`. Each row is
+/// `(Variant, handler_fn, pipeable)`.
+///
+/// Adding a new variant: declare it on `BatchCmd`, write the handler,
+/// add one row here. The macro emits exhaustive matches for both
+/// consumers, so a missing row fails to compile.
+macro_rules! for_each_batch_cmd {
     ($emit:ident) => {
         $emit! {
-            struct_variants: {
+            args_variants: {
                 // Pipeable — primary input is a function name.
-                (Blame, true)
-                (Callers, true)
-                (Callees, true)
-                (Deps, true)
-                (Explain, true)
-                (Similar, true)
-                (Impact, true)
-                (TestMap, true)
-                (Related, true)
-                (Scout, true)
+                (Blame,      dispatch_blame,        true)
+                (Callers,    dispatch_callers,      true)
+                (Callees,    dispatch_callees,      true)
+                (Deps,       dispatch_deps,         true)
+                (Explain,    dispatch_explain,      true)
+                (Similar,    dispatch_similar,      true)
+                (Impact,     dispatch_impact,       true)
+                (TestMap,    dispatch_test_map,     true)
+                (Related,    dispatch_related,      true)
+                (Scout,      dispatch_scout,        true)
 
-                // Not pipeable — queries, paths, git refs, or no positional arg.
-                (Search, false)
-                (Gather, false)
-                (Trace, false)
-                (Dead, false)
-                (Context, false)
-                (Stats, false)
-                (Onboard, false)
-                (Where, false)
-                (Read, false)
-                (Stale, false)
-                (Health, false)
-                (Drift, false)
-                (Notes, false)
-                (Task, false)
-                (Review, false)
-                (Ci, false)
-                (Diff, false)
-                (ImpactDiff, false)
-                (Plan, false)
-                (Suggest, false)
-                (Gc, false)
-                (Reconcile, false)
-                // #1228 (RM-2): not pipeable — wait_secs is the only
-                // arg, no positional function name to receive a pipe.
-                (WaitFresh, false)
+                // Not pipeable — queries, paths, git refs.
+                (Search,     dispatch_search,       false)
+                (Gather,     dispatch_gather,       false)
+                (Trace,      dispatch_trace,        false)
+                (Dead,       dispatch_dead,         false)
+                (Context,    dispatch_context,      false)
+                (Onboard,    dispatch_onboard,      false)
+                (Where,      dispatch_where,        false)
+                (Read,       dispatch_read,         false)
+                (Stale,      dispatch_stale,        false)
+                (Drift,      dispatch_drift,        false)
+                (Notes,      dispatch_notes,        false)
+                (Task,       dispatch_task,         false)
+                (Review,     dispatch_review,       false)
+                (Ci,         dispatch_ci,           false)
+                (Diff,       dispatch_diff,         false)
+                (ImpactDiff, dispatch_impact_diff,  false)
+                (Plan,       dispatch_plan,         false)
+                (Suggest,    dispatch_suggest,      false)
+                (Reconcile,  dispatch_reconcile,    false)
+                // #1228 (RM-2): wait_secs-only — no positional function
+                // name to receive a pipe.
+                (WaitFresh,  dispatch_wait_fresh,   false)
+            }
+            ctx_only_variants: {
+                // Struct variants with only `output: TextJsonArgs` (no
+                // primary `args` payload). Dispatched as `handler(ctx)`.
+                (Stats,   dispatch_stats,   false)
+                (Health,  dispatch_health,  false)
+                (Gc,      dispatch_gc,      false)
             }
             unit_variants: {
-                (Refresh, false)
-                (Ping, false)
-                (Status, false)
-                (Help, false)
+                (Refresh,  dispatch_refresh,  false)
+                (Ping,     dispatch_ping,     false)
+                (Status,   dispatch_status,   false)
+                (Help,     dispatch_help,     false)
             }
         }
     };
@@ -447,21 +468,26 @@ macro_rules! for_each_batch_cmd_pipeability {
 
 /// Emits `BatchCmd::is_pipeable` from the table above.
 ///
-/// API-V1.25-6: the generated `match` is intentionally exhaustive (no wildcard
-/// arm), so a new `BatchCmd` variant without a pipeability row fails to compile.
-/// `test_is_pipeable_exhaustive` below double-pins this behaviour.
+/// API-V1.25-6: the generated `match` is intentionally exhaustive (no
+/// wildcard arm), so a new `BatchCmd` variant without a row fails to
+/// compile. `test_is_pipeable_exhaustive` below double-pins this.
 macro_rules! gen_is_pipeable_impl {
     (
-        struct_variants: { $(($svar:ident, $sp:expr))* }
-        unit_variants:   { $(($uvar:ident, $up:expr))* }
+        args_variants:     { $(($v:ident, $h:ident, $p:expr))* }
+        ctx_only_variants: { $(($v2:ident, $h2:ident, $p2:expr))* }
+        unit_variants:     { $(($v3:ident, $h3:ident, $p3:expr))* }
     ) => {
         impl BatchCmd {
             /// Whether this command accepts a piped function name as its first positional arg.
             /// Used by pipeline execution to validate downstream segments.
             pub(crate) fn is_pipeable(&self) -> bool {
+                // The handler-fn idents are consumed by `gen_dispatch_impl`,
+                // not this one — `let _` arms keep them in scope without
+                // tripping the unused-ident lint.
                 match self {
-                    $(BatchCmd::$svar { .. } => $sp,)*
-                    $(BatchCmd::$uvar => $up,)*
+                    $(BatchCmd::$v { .. } => { let _ = stringify!($h); $p },)*
+                    $(BatchCmd::$v2 { .. } => { let _ = stringify!($h2); $p2 },)*
+                    $(BatchCmd::$v3 => { let _ = stringify!($h3); $p3 },)*
                     #[cfg(test)]
                     BatchCmd::TestSleep { .. } => false,
                 }
@@ -470,7 +496,63 @@ macro_rules! gen_is_pipeable_impl {
     };
 }
 
-for_each_batch_cmd_pipeability!(gen_is_pipeable_impl);
+for_each_batch_cmd!(gen_is_pipeable_impl);
+
+/// Emits `dispatch(ctx, cmd)` from the same table. One arm per row;
+/// the exhaustive match is the compile-time guarantee that every variant
+/// has a handler.
+macro_rules! gen_dispatch_impl {
+    (
+        args_variants:     { $(($v:ident, $h:ident, $p:expr))* }
+        ctx_only_variants: { $(($v2:ident, $h2:ident, $p2:expr))* }
+        unit_variants:     { $(($v3:ident, $h3:ident, $p3:expr))* }
+    ) => {
+        /// Execute a batch command and return a JSON value. The
+        /// BatchCmd → handler mapping lives in `for_each_batch_cmd!`
+        /// — the only edit needed when adding a new command is one row
+        /// in that table plus the handler implementation.
+        ///
+        /// #1127: takes a [`BatchView`] (snapshot of BatchContext caches built
+        /// under a brief critical section) instead of `&BatchContext`.
+        pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Value> {
+            let _span = tracing::debug_span!("batch_dispatch").entered();
+            // EX-V1.30.1-3 (P3-EX-1): single table-driven query-log call
+            // replaces six hand-sprinkled `log_query(...)` invocations.
+            log_query_for(&cmd);
+            // `output` field on each variant is intentionally dropped —
+            // batch always emits JSON. Pattern-match `..` so the
+            // destructure stays exhaustive even if future fields are
+            // added to a variant.
+            match cmd {
+                $(BatchCmd::$v { args, .. } => {
+                    let _ = $p; // keep the pipeability column referenced
+                    handlers::$h(ctx, &args)
+                },)*
+                $(BatchCmd::$v2 { .. } => {
+                    let _ = $p2;
+                    handlers::$h2(ctx)
+                },)*
+                $(BatchCmd::$v3 => {
+                    let _ = $p3;
+                    handlers::$h3(ctx)
+                },)*
+                #[cfg(test)]
+                BatchCmd::TestSleep { ms } => {
+                    // #1127 regression test fixture. Sleeps the dispatcher
+                    // thread for `ms` milliseconds, then returns a tiny
+                    // envelope. Two concurrent daemon connections both
+                    // running `test-sleep --ms N` must finish in
+                    // ~max(N, N) — *not* 2*N — when the lock is held only
+                    // across checkout_view.
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    Ok(serde_json::json!({"slept_ms": ms}))
+                }
+            }
+        }
+    };
+}
+
+for_each_batch_cmd!(gen_dispatch_impl);
 
 // ─── Query logging ───────────────────────────────────────────────────────────
 
@@ -556,165 +638,6 @@ fn log_query(command: &str, query: &str) {
         command,
         serde_json::to_string(query).unwrap_or_else(|_| "\"\"".to_string())
     );
-}
-
-// ─── Dispatch ────────────────────────────────────────────────────────────────
-
-/// Execute a batch command and return a JSON value.
-/// This is the seam for step 3 (REPL): import `BatchView` + `dispatch`, wrap
-/// with readline.
-///
-/// #1127: takes a [`BatchView`] (snapshot of BatchContext caches built under a
-/// brief critical section) instead of `&BatchContext`. Handlers operate on the
-/// view's `Arc`-cloned data; the daemon's outer mutex is released before
-/// dispatch, so concurrent reads no longer serialize through one lock.
-pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Value> {
-    let _span = tracing::debug_span!("batch_dispatch").entered();
-    // EX-V1.30.1-3 (P3-EX-1): single table-driven query-log call replaces
-    // six hand-sprinkled `log_query(...)` invocations inside the match arms.
-    // The `for_each_logged_batch_cmd!` table at the top of this module
-    // owns the variant → log-name + field-accessor mapping.
-    log_query_for(&cmd);
-    // Task #8: every variant now also carries `output` (TextJsonArgs or
-    // OutputArgs) for CLI flag parity, but batch always emits JSON via the
-    // socket framer / stdout JSONL — the output field is intentionally
-    // dropped here. Pattern-match `..` so the destructure stays exhaustive
-    // even if future fields are added to the variant.
-    match cmd {
-        BatchCmd::Blame { args, .. } => {
-            handlers::dispatch_blame(ctx, &args.name, args.commits, args.callers)
-        }
-        BatchCmd::Search { args, .. } => handlers::dispatch_search(ctx, &args),
-        BatchCmd::Deps { args, .. } => handlers::dispatch_deps(
-            ctx,
-            &args.name,
-            args.reverse,
-            args.limit_arg.limit,
-            args.cross_project,
-        ),
-        BatchCmd::Callers { args, .. } => {
-            handlers::dispatch_callers(ctx, &args.name, args.limit_arg.limit, args.cross_project)
-        }
-        BatchCmd::Callees { args, .. } => {
-            handlers::dispatch_callees(ctx, &args.name, args.limit_arg.limit, args.cross_project)
-        }
-        BatchCmd::Explain { args, .. } => {
-            handlers::dispatch_explain(ctx, &args.name, args.limit_arg.limit, args.tokens)
-        }
-        BatchCmd::Similar { args, .. } => {
-            handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
-        }
-        BatchCmd::Gather { args, .. } => handlers::dispatch_gather(ctx, &args),
-        BatchCmd::Impact { args, .. } => handlers::dispatch_impact(
-            ctx,
-            &args.name,
-            args.depth,
-            args.limit_arg.limit,
-            args.suggest_tests,
-            args.type_impact,
-            args.cross_project,
-        ),
-        BatchCmd::TestMap { args, .. } => handlers::dispatch_test_map(
-            ctx,
-            &args.name,
-            args.depth,
-            args.limit_arg.limit,
-            args.cross_project,
-        ),
-        BatchCmd::Trace { args, .. } => handlers::dispatch_trace(
-            ctx,
-            &args.source,
-            &args.target,
-            args.max_depth as usize,
-            args.limit_arg.limit,
-            args.cross_project,
-        ),
-        BatchCmd::Dead { args, .. } => {
-            handlers::dispatch_dead(ctx, args.include_pub, &args.min_confidence)
-        }
-        BatchCmd::Related { args, .. } => handlers::dispatch_related(ctx, &args.name, args.limit),
-        BatchCmd::Context { args, .. } => {
-            handlers::dispatch_context(ctx, &args.path, args.summary, args.compact, args.tokens)
-        }
-        BatchCmd::Stats { .. } => handlers::dispatch_stats(ctx),
-        BatchCmd::Onboard { args, .. } => handlers::dispatch_onboard(
-            ctx,
-            &args.query,
-            args.depth,
-            args.limit_arg.limit,
-            args.tokens,
-        ),
-        BatchCmd::Scout { args, .. } => {
-            handlers::dispatch_scout(ctx, &args.query, args.limit, args.tokens)
-        }
-        BatchCmd::Where { args, .. } => {
-            handlers::dispatch_where(ctx, &args.description, args.limit)
-        }
-        BatchCmd::Read { args, .. } => {
-            handlers::dispatch_read(ctx, &args.path, args.focus.as_deref())
-        }
-        BatchCmd::Stale { args, .. } => handlers::dispatch_stale(ctx, args.count_only),
-        BatchCmd::Health { .. } => handlers::dispatch_health(ctx),
-        BatchCmd::Drift { args, .. } => handlers::dispatch_drift(
-            ctx,
-            &args.reference,
-            args.threshold,
-            args.min_drift,
-            args.lang.as_deref(),
-            args.limit,
-        ),
-        BatchCmd::Notes { args, .. } => {
-            // API-V1.29-4: pass `check` through so the daemon path matches
-            // `cqs notes list --check` when routed via the socket.
-            handlers::dispatch_notes(
-                ctx,
-                args.warnings,
-                args.patterns,
-                args.kind.as_deref(),
-                args.check,
-            )
-        }
-        BatchCmd::Task { args, .. } => {
-            handlers::dispatch_task(ctx, &args.description, args.limit, args.tokens)
-        }
-        BatchCmd::Review { args, .. } => {
-            handlers::dispatch_review(ctx, args.base.as_deref(), args.tokens)
-        }
-        BatchCmd::Ci { args, .. } => {
-            handlers::dispatch_ci(ctx, args.base.as_deref(), &args.gate, args.tokens)
-        }
-        BatchCmd::Diff { args, .. } => handlers::dispatch_diff(
-            ctx,
-            &args.source,
-            args.target.as_deref(),
-            args.threshold,
-            args.lang.as_deref(),
-        ),
-        BatchCmd::ImpactDiff { args, .. } => {
-            handlers::dispatch_impact_diff(ctx, args.base.as_deref())
-        }
-        BatchCmd::Plan { args, .. } => {
-            handlers::dispatch_plan(ctx, &args.description, args.limit, args.tokens)
-        }
-        BatchCmd::Suggest { args, .. } => handlers::dispatch_suggest(ctx, args.apply),
-        BatchCmd::Gc { .. } => handlers::dispatch_gc(ctx),
-        BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
-        BatchCmd::Ping => handlers::dispatch_ping(ctx),
-        BatchCmd::Status => handlers::dispatch_status(ctx),
-        BatchCmd::Reconcile { hook, args } => handlers::dispatch_reconcile(ctx, hook, args),
-        BatchCmd::WaitFresh { wait_secs } => handlers::dispatch_wait_fresh(ctx, wait_secs),
-        BatchCmd::Help => handlers::dispatch_help(),
-        #[cfg(test)]
-        BatchCmd::TestSleep { ms } => {
-            // #1127 regression test fixture. Sleeps the dispatcher thread for
-            // `ms` milliseconds, then returns a tiny envelope. Two concurrent
-            // daemon connections both running `test-sleep --ms N` must finish
-            // in ~max(N, N) — *not* 2*N — when the lock is held only across
-            // checkout_view.
-            std::thread::sleep(std::time::Duration::from_millis(ms));
-            Ok(serde_json::json!({"slept_ms": ms}))
-        }
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

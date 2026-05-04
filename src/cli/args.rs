@@ -778,3 +778,32 @@ pub(crate) struct IndexArgs {
     #[arg(long)]
     pub json: bool,
 }
+
+/// #1216: args for `BatchCmd::Reconcile`. Wrapped in a struct so the
+/// dispatch table can hand the variant straight to its handler the same
+/// way every other variant does (`dispatch_x(ctx, &args)`). Fields are
+/// advisory — they ride along for tracing/logging and don't change the
+/// reconcile algorithm itself.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct ReconcileArgs {
+    /// Name of the hook that fired this reconcile (e.g. `post-checkout`).
+    /// Logged for operator diagnostics; not used for the walk itself.
+    #[arg(long)]
+    pub hook: Option<String>,
+    /// Free-form positional payload from the hook (e.g. previous and
+    /// current commit SHAs). Captured for tracing only.
+    #[arg(long = "arg", value_name = "ARG")]
+    pub args: Vec<String>,
+}
+
+/// #1216 + #1228: args for `BatchCmd::WaitFresh`. Wrapped in a struct
+/// (originally inline `wait_secs: u64`) so the dispatch table can hand
+/// the variant straight to its handler under the uniform `&args` shape.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct WaitFreshArgs {
+    /// Maximum seconds to block before returning the current
+    /// (still-stale) snapshot. Capped server-side at 86_400 (24 h) for
+    /// parity with the client-side cap in `wait_for_fresh`.
+    #[arg(long, default_value_t = 60)]
+    pub wait_secs: u64,
+}
