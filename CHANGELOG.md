@@ -5,7 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.36.0] - 2026-05-03
+## [1.36.1] - 2026-05-04
+
+Patch release. No schema bump. Headline: **Qwen3-Embedding-4B preset + FP16/BF16 ONNX output dispatch** (#1441, #1442) — extends the embedder to decoder-only architectures with `position_ids` input and 16-bit output tensors. Plus daemon ergonomics (server-side `wait_fresh` and idle-shutdown), HNSW perf scaling for large corpora, and 9 audit-driven fixes.
+
+### Added
+
+- **Qwen3-Embedding-4B preset** (#1441). 2560-dim, decoder-only architecture with `LastToken` pooling, `position_ids` ONNX input, and `Instruct: Find the code chunk… / Query:` prefix template. New `InputNames::decoder_only_with_position_ids()` constructor; `position_ids` is now first-class in the embed loop alongside `input_ids`/`attention_mask`/`token_type_ids`.
+- **FP16 / BF16 ONNX output extraction** (#1442). The embed loop tries `Tensor<f32>` first, then falls back to `half::f16` and `half::bf16`, converting to `f32` for the rest of the pipeline. Required for FP16-quantized exports like `zhiqing/Qwen3-Embedding-4B-ONNX` where ORT's strict `try_extract_tensor::<f32>()` previously surfaced `Cannot extract Tensor<f32> from Tensor<f16>`. Added direct `half = "2"` dep + `ort` `half` feature.
+- **Server-side `wait_fresh` for daemon clients** (#1228, #1436). One round-trip, zero polling — the daemon blocks until the index advances past the requested generation. Replaces the prior client-side poll loop on `cqs status --watch-fresh` and the `--wait` API.
+- **Daemon idle-shutdown** (#1345, #1434). `CQS_SERVE_IDLE_MINUTES` triggers graceful shutdown after no activity for N minutes; pairs with systemd `Restart=on-failure` for zero-cost idle.
+
+### Changed
+
+- **`qwen3-embedding-{4b,8b}` `max_seq_length` capped at 4096** (was 8192). Quadratic attention memory at seq=8192 OOM'd a 49 GB GPU at production batch sizes; 4096 keeps the working set manageable while still 8× the BERT-family default. Prompted by the in-progress 4B/8B ceiling probe.
+- **HNSW defaults scale by corpus size** (#1370, #1425). `M`, `ef_construction`, and `ef_search` now interpolate between small/medium/large tiers — recall at 100k+ chunks improves materially without inflating build time on small corpora.
+- **Library-wide perf pass** (#1377, #1424, #1429): `bytemuck` cache I/O, sparse-row borrow, zero-copy `mask` `Array2`, `Arc<str>` keys in reverse-BFS / `build_test_map`. ~3 of 4 hot-path improvements in the audit-tracked perf umbrella issue.
+- **HNSW shadow snapshot**: 17 MB `HashMap` collapsed to a `HashSet<u64>` fingerprint set (#1244, #1427) — same dedup semantics, fraction of the RAM cost.
+- **Internal refactors** (no user-visible API change): batch-provider macro-table dispatch (#1216), `BatchKind` enum collapsing the `submit_*_batch` trio (#1347), `register_index_backends!` macro (#1348), `with_blocking` async helper extracted from 6 serve handlers (#1376), `append_telemetry` helper (#1352), `SearchFilter` marked `#[non_exhaustive]` (#1349).
+
+### Fixed
+
+- **Reconcile/walk perf at startup** (#1229, #1439): `enumerate_files` now streams + batched mtime lookup. Cuts `cqs status` and watch-startup time on large corpora.
+- **Windows hook script `cqs.exe` path** (#1354, #1433): pre-commit hooks now embed a POSIX-translated path that survives bash → PowerShell handoff.
+- **`cqs serve --open` under auth** (#1337, #1430): suppressed when the auth token is required, keeping it off the subprocess argv where it could leak via `ps`.
+- **Watch HNSW rebuild Store mmap** (#1344, #1419): cut from full DB size to 64 MiB — the rebuild path doesn't need every page resident.
+- **Embedding cache WAL checkpoint on Drop** (#1343, #1417): bounded checkpoint avoids unbounded WAL growth on long-running daemons; explicit `checkpoint_wal` helper for tests.
+- **Test-stability**: `serve_blocking_permits` cohort serialized against env races (#1416), `test_build_batched` search windows widened post-#1370 small-tier flake (#1431).
+
+### Tests
+
+- **`cqs serve` end-to-end smoke test** (#1359, #1438) — full daemon-roundtrip coverage, closes the integration gap left after the daemon split.
+- **`cmd_gc` end-to-end** (#1358, #1432) — locks the GC contract.
+- **UMAP graceful-skip + empty-corpus paths** (#1357, #1418) — pins the projection no-op cases.
+
+
 
 Minor release. **Schema bump v25 → v26** (composite `(source_type, origin)` index on `chunks`; auto-migrated on first read-write open). Headline change: per-category SPLADE α defaults retuned for EmbeddingGemma — agg R@5 lifts from 72.5% → **76.2%** (test 68.8 → 72.5; dev 76.1 → 79.8) on the v3.v2 fixture. Plus 13 audit follow-up fixes and a critical migration bug.
 
