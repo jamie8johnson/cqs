@@ -143,7 +143,7 @@ impl CachePurpose {
 /// P2.3 (scope=structural): both [`EmbeddingCache::open_with_runtime`] and
 /// [`QueryCache::open_with_runtime`] share ~90 lines of parent-dir prep,
 /// runtime fallback, pool open, schema create, and 0o600 chmod loop with
-/// only `busy_timeout` (5000 vs 2000 ms) and the schema SQL differing.
+/// only `busy_timeout` (30000 vs 15000 ms) and the schema SQL differing.
 ///
 /// A full extraction would yield three private helpers (`prepare_cache_dir_perms`,
 /// `apply_db_file_perms`, `connect_cache_pool(path, busy_ms, runtime, schema_sql)`)
@@ -280,12 +280,16 @@ impl EmbeddingCache {
 
         // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
         // SHL-V1.25-12: honour CQS_BUSY_TIMEOUT_MS like the main Store pool
-        // so the cache doesn't surrender at 5s while the store still waits.
+        // so the cache doesn't surrender while the store still waits.
+        // V1.36.2: default 5000→30000 — long-running `cqs index` runs on WSL
+        // surfaced `(code: 5) database is locked` at the 5s ceiling when WAL
+        // checkpoint pressure raced concurrent reads. 30s gives transient
+        // contention room without making real deadlocks invisible.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(busy_timeout_from_env(5000))
+            .busy_timeout(busy_timeout_from_env(30_000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         // SEC-V1.33-2: tighten umask to 0o077 around pool creation so the DB
@@ -2435,14 +2439,14 @@ impl QueryCache {
             )
         };
 
-        // SHL-V1.25-12: query cache honours CQS_BUSY_TIMEOUT_MS too. Default
-        // here is 2s because the query cache is write-lighter than the
-        // embedding cache — still tunable by the global env knob.
+        // SHL-V1.25-12: query cache honours CQS_BUSY_TIMEOUT_MS too. V1.36.2:
+        // default 2000→15000 — same WAL-checkpoint contention class as the
+        // embedding cache, halved because the query cache is write-lighter.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(busy_timeout_from_env(2000))
+            .busy_timeout(busy_timeout_from_env(15_000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         // SEC-V1.33-2: same umask wrap as `EmbeddingCache::open_with_runtime`.

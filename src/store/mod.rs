@@ -50,7 +50,7 @@ use std::sync::{Arc, Mutex, RwLock};
 /// when the transaction commits/rolls back.
 ///
 /// Note: this serializes writes within a single process only. Cross-process
-/// serialization relies on SQLite's busy_timeout (5s) and the index lock file.
+/// serialization relies on SQLite's busy_timeout (30s) and the index lock file.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -934,7 +934,7 @@ fn open_with_config_impl<Mode>(
         .filename(path)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(helpers::sql::busy_timeout_from_env(5000))
+        .busy_timeout(helpers::sql::busy_timeout_from_env(30_000))
         // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
         // Trade-off: a crash can lose the last few committed transactions (WAL
         // tail not yet fsynced), but the database remains consistent. Acceptable
