@@ -9,7 +9,7 @@
 //!
 //! 1. A `cqs index` reindex running in the same process as a streaming
 //!    LLM batch could collide with the per-row implicit-tx writes the
-//!    callback fired. With WAL mode and a 5s `busy_timeout`, either side
+//!    callback fired. With WAL mode and a 30s `busy_timeout`, either side
 //!    could `SQLITE_BUSY` and abort.
 //! 2. Multiple concurrent LLM streams (Haiku + doc-comments + hyde) each
 //!    fired one INSERT-OR-IGNORE per item. sqlx wraps a bare statement in
