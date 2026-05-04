@@ -1227,6 +1227,28 @@ impl Embedder {
                 SessionInputValue::from(token_type_ids_tensor),
             ));
         }
+        if let Some(ref pos_name) = names.position_ids {
+            // #1442: third-party Qwen3-Embedding-4B ONNX exports require
+            // an explicit `position_ids` input. We use right-padding
+            // (BERT-style — the same shape `pad_2d_i64_from_encodings`
+            // emits via the tokenizer's default), so positions are simply
+            // `[0, 1, ..., max_len-1]` for every row. Padding tokens get
+            // positions too; they're masked out by `attention_mask` at
+            // attention time, same as for `input_ids`.
+            let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len() * max_len);
+            for _ in 0..texts.len() {
+                pos_data.extend((0..max_len as i64).collect::<Vec<i64>>());
+            }
+            let position_ids_arr = Array2::<i64>::from_shape_vec((texts.len(), max_len), pos_data)
+                .map_err(|e| {
+                    EmbedderError::InferenceFailed(format!("position_ids shape failed: {e}"))
+                })?;
+            let position_ids_tensor = Tensor::from_array(position_ids_arr).map_err(ort_err)?;
+            inputs.push((
+                Cow::Borrowed(pos_name.as_str()),
+                SessionInputValue::from(position_ids_tensor),
+            ));
+        }
 
         // Run inference (lazy init session)
         let mut guard = self.session()?;

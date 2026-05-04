@@ -27,6 +27,9 @@ fn default_output_name() -> String {
 /// - `ids`: `"input_ids"`
 /// - `mask`: `"attention_mask"`
 /// - `token_types`: `None` — set to `Some("token_type_ids")` for BERT.
+/// - `position_ids`: `None` — set to `Some("position_ids")` for
+///   decoder-only embedders whose ONNX export doesn't generate them
+///   internally (e.g. `Qwen3-Embedding-4B`'s third-party exports).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct InputNames {
     /// Name of the token-id tensor (default `"input_ids"`).
@@ -39,6 +42,14 @@ pub struct InputNames {
     /// `None` means the input is not supplied to `session.run`.
     #[serde(default)]
     pub token_types: Option<String>,
+    /// Name of the position-id tensor, if the model consumes it.
+    /// `None` (default) means the ONNX graph either doesn't have a
+    /// position-ids input or generates positions internally
+    /// (`onnx-community/Qwen3-Embedding-8B-ONNX` is the latter case).
+    /// When set, the embed loop materializes `[[0, 1, ..., seq_len-1]]
+    /// × batch_size` and binds it under this tensor name. (#1442)
+    #[serde(default)]
+    pub position_ids: Option<String>,
 }
 
 impl Default for InputNames {
@@ -59,6 +70,7 @@ impl InputNames {
             ids: default_ids_name(),
             mask: default_mask_name(),
             token_types: Some("token_type_ids".to_string()),
+            position_ids: None,
         }
     }
 
@@ -71,6 +83,20 @@ impl InputNames {
             ids: default_ids_name(),
             mask: default_mask_name(),
             token_types: None,
+            position_ids: None,
+        }
+    }
+
+    /// Decoder-only embedder inputs: `input_ids`, `attention_mask`,
+    /// `position_ids`. No `token_type_ids`. Used by third-party
+    /// `Qwen3-Embedding-{4B,8B}` ONNX exports that expose `position_ids`
+    /// as an explicit input rather than generating it internally. (#1442)
+    pub fn decoder_only_with_position_ids() -> Self {
+        Self {
+            ids: default_ids_name(),
+            mask: default_mask_name(),
+            token_types: None,
+            position_ids: Some("position_ids".to_string()),
         }
     }
 }
@@ -484,9 +510,17 @@ define_embedder_presets! {
     /// dim. MRL (Matryoshka Representation Learning) truncation to 1024-dim
     /// for storage parity is a future option but cqs's current pipeline
     /// returns whatever the model produces.
+    // max_seq_length=4096 (vs 8192 historical): same rationale as the
+    // 4B preset below — at seq=8192 the attention quadratic
+    // [batch, heads, seq, seq] requested 15-55 GB allocations on
+    // long-doc batches, far past the A6000's 49 GB. Each OOM cascaded
+    // to a 95 s/batch CPU fallback that dominated ETA. seq=4096 cuts
+    // attention buffers 4× and keeps allocations in the 4-15 GB range
+    // (still tight on 8B but feasible). Content windowing splits any
+    // longer chunks across multiple windows automatically. (#1442)
     qwen3_embedding_8b => name = "qwen3-embedding-8b", repo = "onnx-community/Qwen3-Embedding-8B-ONNX",
         onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
-        dim = 4096, max_seq_length = 8192,
+        dim = 4096, max_seq_length = 4096,
         query_prefix = "Instruct: Find the code chunk that best matches the query.\nQuery: ", doc_prefix = "",
         input_names = InputNames::bert_no_token_types(),
         output_name = "sentence_embedding".to_string(),
@@ -497,6 +531,59 @@ define_embedder_presets! {
         // `<onnx_path>_data` fetch in `download_model_files` (added in
         // PR #1385 alongside the gemma swap).
         approx_download_bytes = Some(30_300 * 1024 * 1024),
+        pad_id = 151643;
+
+    /// Qwen3-Embedding-4B — mid-tier of the Qwen3 family. Same upstream
+    /// weights as `qwen3_embedding_8b`'s parent (Qwen/Qwen3-Embedding-4B)
+    /// but at 4B params: hidden dim 2560 vs 4096 on the 8B, 36 layers
+    /// (same), 32K context capacity (cap'd at 4096 for memory budget).
+    ///
+    /// The 8B run on this rig (A6000 48 GB) crashed WSL when GPU OOMs
+    /// triggered CPU-fallback init alongside the GPU-side ~30 GB ONNX
+    /// mmap — combined RSS spikes past the 94 GB host budget. The 4B
+    /// halves both:
+    /// * ONNX mmap: ~16 GB FP32 vs ~30 GB.
+    /// * GPU steady-state: ~26 GB vs ~48 GB.
+    ///
+    /// max_seq_length=4096 (vs the 8B's 8192): empirically, the 4B at
+    /// seq=8192 hit GPU OOMs every long-doc batch, with the attention
+    /// quadratic [batch, heads, seq, seq] requesting 15-55 GB
+    /// allocations — way past the 49 GB GPU budget. Each OOM cascades
+    /// to a CPU fallback that takes ~95 s/batch and dominates ETA.
+    /// Cutting seq to 4096 reduces the attention buffer 4× (quadratic
+    /// in seq); allocations land in the 4-15 GB range, well inside
+    /// the GPU envelope. cqs's content windowing splits longer chunks
+    /// across multiple windows automatically — no information loss,
+    /// just extra forward passes per long file.
+    ///
+    /// FP32 vs FP16 note: `zhiqing/Qwen3-Embedding-4B-ONNX` ships an
+    /// 8 GB FP16 sidecar that's tempting on disk, but its
+    /// `last_hidden_state` output tensor is `Tensor<f16>`. cqs's embed
+    /// loop calls `try_extract_tensor::<f32>()` and fails fast with
+    /// "Cannot extract Tensor<f32> from Tensor<f16>" before producing
+    /// any output. `sigalr/Qwen3-Embedding-4B-ONNX-ST` keeps the
+    /// weights FP32 and emits a `Tensor<f32>` last_hidden_state — uses
+    /// 2× the disk + GPU but works without an ORT-side dtype shim.
+    ///
+    /// Pooling note: the third-party export does NOT bake pooling into
+    /// the ONNX graph (unlike `onnx-community`'s 8B variant which
+    /// exposes `sentence_embedding`). Output is raw `last_hidden_state`
+    /// shape `[batch, seq, 2560]`; cqs applies last-token pooling
+    /// (Qwen3 is decoder-only) + L2-normalize externally.
+    ///
+    /// Position-ids note: the export exposes `position_ids` as an
+    /// explicit ONNX input. cqs's `decoder_only_with_position_ids` shape
+    /// materialises `[[0, 1, …, seq_len-1]] × batch` per call. (#1442)
+    qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "sigalr/Qwen3-Embedding-4B-ONNX-ST",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 2560, max_seq_length = 4096,
+        query_prefix = "Instruct: Find the code chunk that best matches the query.\nQuery: ", doc_prefix = "",
+        input_names = InputNames::decoder_only_with_position_ids(),
+        output_name = "last_hidden_state".to_string(),
+        pooling = PoolingStrategy::LastToken,
+        // FP32 ONNX bundle: ~1.6 MB graph + ~16.1 GB external-data
+        // weights file at `onnx/model.onnx_data`. Plus ~14 MB tokenizer.
+        approx_download_bytes = Some(16_200 * 1024 * 1024),
         pad_id = 151643;
 }
 
@@ -957,6 +1044,49 @@ mod tests {
     #[test]
     fn input_names_default_matches_bert() {
         assert_eq!(InputNames::default(), InputNames::bert());
+    }
+
+    /// #1442: decoder-only embedders (third-party Qwen3-Embedding-4B
+    /// ONNX exports) need `position_ids` as an explicit input.
+    #[test]
+    fn input_names_decoder_only_with_position_ids() {
+        let n = InputNames::decoder_only_with_position_ids();
+        assert_eq!(n.ids, "input_ids");
+        assert_eq!(n.mask, "attention_mask");
+        assert!(n.token_types.is_none());
+        assert_eq!(n.position_ids.as_deref(), Some("position_ids"));
+    }
+
+    /// `bert()` and `bert_no_token_types()` must NOT bind `position_ids`
+    /// — adding the field broke the existing constructors silently
+    /// before the explicit assertion below.
+    #[test]
+    fn input_names_bert_constructors_have_no_position_ids() {
+        assert!(InputNames::bert().position_ids.is_none());
+        assert!(InputNames::bert_no_token_types().position_ids.is_none());
+    }
+
+    /// Pin the `qwen3-embedding-4b` preset's wire shape so a config
+    /// regression (wrong dim, wrong pooling, missing position_ids
+    /// binding) trips this test instead of a runtime ORT error during
+    /// the next 5-7 hour reindex.
+    #[test]
+    fn qwen3_embedding_4b_preset_shape() {
+        let cfg = ModelConfig::from_preset("qwen3-embedding-4b")
+            .expect("qwen3-embedding-4b preset must be registered");
+        assert_eq!(cfg.dim, 2560);
+        // #1442: 4096 (not the 8B's 8192) — Qwen3-4B FP32 attention
+        // [batch, heads, seq, seq] at seq=8192 OOMs the 49 GB GPU on
+        // long-doc batches; cutting to 4096 keeps allocations inside
+        // the envelope. cqs's content windowing handles longer chunks.
+        assert_eq!(cfg.max_seq_length, 4096);
+        assert_eq!(cfg.output_name, "last_hidden_state");
+        assert_eq!(cfg.pooling, PoolingStrategy::LastToken);
+        assert_eq!(
+            cfg.input_names,
+            InputNames::decoder_only_with_position_ids()
+        );
+        assert_eq!(cfg.pad_id, 151643);
     }
 
     #[test]
