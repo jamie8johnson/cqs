@@ -2,7 +2,11 @@
 
 ## Right Now
 
-**v1.36.0 release in flight** — 2026-05-03 evening. Per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge. Schema v25→v26 (composite `(source_type, origin)` index on chunks) auto-migrated on first read-write open. Plus a critical bug fix: readonly opens with stale schema were trying to migrate and failing with SQLite "attempt to write a readonly database" errors, scattering `index.bak-v25-v26-*` files.
+**v1.36.1 shipped** — 2026-05-04 afternoon. Patch release. Headline: Qwen3-Embedding-4B preset (#1441) + FP16/BF16 ONNX output dispatch (#1442) — extends embedder to decoder-only architectures with `position_ids` input and 16-bit output tensors. Plus daemon ergonomics (server-side `wait_fresh`, idle-shutdown), HNSW perf scaling for large corpora, and 9 audit-driven fixes. 26 commits since v1.36.0; no schema bump. Tag pushed; crates.io published; GitHub Release auto-build in flight.
+
+**Qwen3-Embedding-4B ceiling probe — Phase 1 done** (2026-05-04). Earlier tries with the FP32 sigalr export crashed WSL2 mid-load (~16 GB single-file mmap ceiling). Switched to FP16 zhiqing export (~8 GB) plus the new FP16 dispatch in #1442. Default `CQS_EMBED_BATCH_SIZE=8` then OOM'd at 48.5/49 GB GPU on Qwen3-4B FP16 — diagnosis: per-layer attention `[8,32,4096,4096]×fp16 ≈ 8.6 GB` plus model weights ~8-10 GB plus ORT arenas hits the A6000 ceiling. Dropped to `batch=2`: clean run, **2161 chunks, 0 GPU failures, 8m11s** on the cqs corpus (slot `qwen3-4b`, 702 files, 867 cached + 1294 fresh embeds). Note: 2161 vs the BGE-large slot's ~19,500 because Qwen3-4B's `max_seq_length=4096` produces ~8× larger chunks. Phase 2/3 (LLM summary copy + eval matrix vs gemma) parked until next session.
+
+**v1.36.0 (one day prior)** — Per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge. Schema v25→v26 (composite `(source_type, origin)` index on chunks). Plus the critical readonly-migration bug fix.
 
 **Eval baseline (post-α-retune, v1.36.0 default):**
 
@@ -41,6 +45,7 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
 
 ### Recent release history (compressed)
 
+- **v1.36.1** — Qwen3-Embedding-4B preset + position_ids ONNX input (#1441); FP16/BF16 output tensor dispatch (#1442); daemon server-side `wait_fresh` (#1436); daemon idle-shutdown (#1434); HNSW defaults scale by corpus size (#1425); reconcile streaming + batched mtime (#1439); plus 9 audit fixes. No schema bump.
 - **v1.36.0** — per-category SPLADE α retuned for EmbeddingGemma (test/dev R@5 +3.7pp); schema v25→v26 composite chunks index; `--reranker <none|onnx|llm>` exposed on `cqs search`; readonly migration bug (#1413) caught during eval validation. 13 audit follow-up fixes bundled.
 - **v1.35.0** — default embedder swap to embeddinggemma-300m + tokenizer truncation fix (#1384). Truncation fix surfaced via apples-to-apples comparison; bge-large-ft / v9-200k / coderank had been silently dropping ~90% of long-section content.
 - **v1.34.0** — bundled the post-v1.33.0 audit close-out (24 fix PRs) + EmbeddingGemma-300m preset (#1301), `cqs eval --reranker` (#1303), `slow-tests` Phase 2 (#1302), ci-slow.yml stabilization. Same day as v1.33.0.
