@@ -1435,19 +1435,40 @@ impl<Mode> Drop for Store<Mode> {
         if self.closed.load(Ordering::Acquire) {
             return; // Already checkpointed in close()
         }
-        // Best-effort WAL checkpoint on drop to avoid leaving large WAL files.
-        // Errors are logged but not propagated (Drop can't fail).
+        // Best-effort WAL checkpoint on drop to bound the WAL.
+        //
+        // V1.36.2: PASSIVE + 1s cap, replacing the prior unbounded TRUNCATE.
+        // The previous TRUNCATE acquired the EXCLUSIVE lock, so a transient
+        // `cqs stats` (or any other read-only Store handle) drop could block
+        // the long-running `cqs index` writer until completion. Under WSL
+        // 9P/NTFS the checkpoint sometimes took long enough that the
+        // indexer's next write hit `(code: 5) database is locked` even
+        // with the 30s busy_timeout — fatal because mid-transaction BUSY
+        // isn't recoverable. PASSIVE bails immediately when active
+        // readers/writers exist (no copy), and the 1s timeout caps every
+        // other case. Operators who want truncate semantics call
+        // [`Store::close`] from the structured-shutdown path before drop.
+        // Mirrors `EmbeddingCache::drop` (#1343 / RM-V1.33-3).
+        //
         // catch_unwind guards against block_on panicking when called from
         // within an async context (e.g., if Store is dropped inside a tokio runtime).
-        // v1.22.0 audit EH-9: previously `let _ =` silently swallowed the
-        // panic payload. Now logs it so the caught panic is visible.
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Err(e) = self.rt.block_on(async {
-                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                    .execute(&self.pool)
-                    .await
-            }) {
-                tracing::warn!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
+            let res = self.rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(&self.pool),
+                )
+                .await
+            });
+            match res {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    error = %e,
+                    "Store WAL checkpoint(PASSIVE) on drop failed (non-fatal)"
+                ),
+                Err(_) => tracing::warn!(
+                    "Store WAL checkpoint(PASSIVE) on drop timed out after 1s (non-fatal)"
+                ),
             }
         })) {
             let msg = crate::panic_message(&payload);
