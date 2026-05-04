@@ -58,7 +58,7 @@ pub fn compute_hints_with_graph(
     let ancestors = reverse_bfs(graph, function_name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
     let test_count = test_chunks
         .iter()
-        .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
+        .filter(|t| ancestors.get(t.name.as_str()).is_some_and(|&d| d > 0))
         .count();
 
     FunctionHints {
@@ -230,7 +230,7 @@ pub fn compute_risk_and_tests(
         vec![std::collections::HashSet::new(); targets.len()];
 
     for test in test_chunks {
-        if let Some(&(depth, source_idx)) = ancestors.get(&test.name) {
+        if let Some(&(depth, source_idx)) = ancestors.get(test.name.as_str()) {
             if depth > 0 {
                 if source_idx < targets.len() {
                     tests_per_target[source_idx].insert(&test.name);

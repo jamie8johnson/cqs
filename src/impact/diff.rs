@@ -248,7 +248,7 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         reverse_bfs_multi_attributed(graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
     for test in test_chunks {
-        if let Some(&(depth, source_idx)) = attributed.get(&test.name) {
+        if let Some(&(depth, source_idx)) = attributed.get(test.name.as_str()) {
             if depth > 0 {
                 let via = changed
                     .get(source_idx)
