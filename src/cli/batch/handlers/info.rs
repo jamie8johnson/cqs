@@ -1,8 +1,12 @@
 //! Info dispatch handlers: stats, context, explain, similar, read, blame, onboard.
+//!
+//! #1216: handlers take a single `&XArgs` argument so the macro-driven
+//! `BatchCmd::dispatch` calls every row uniformly.
 
 use anyhow::Result;
 
 use super::super::BatchView;
+use crate::cli::args::{BlameArgs, ContextArgs, ExplainArgs, OnboardArgs, ReadArgs, SimilarArgs};
 use crate::cli::validate_finite_f32;
 use cqs::normalize_path;
 
@@ -19,10 +23,11 @@ use cqs::normalize_path;
 /// Returns an error if building the blame data fails, such as when the target cannot be found or accessed in the store.
 pub(in crate::cli::batch) fn dispatch_blame(
     ctx: &BatchView,
-    target: &str,
-    depth: usize,
-    show_callers: bool,
+    args: &BlameArgs,
 ) -> Result<serde_json::Value> {
+    let target = args.name.as_str();
+    let depth = args.commits;
+    let show_callers = args.callers;
     let _span = tracing::info_span!("batch_blame", target).entered();
     let data = crate::cli::commands::blame::build_blame_data(
         &ctx.store(),
@@ -45,14 +50,15 @@ pub(in crate::cli::batch) fn dispatch_blame(
 /// Returns an error if the vector index cannot be retrieved, the embedder fails to initialize (when tokens are specified), or if the explanation data cannot be built or converted to JSON.
 pub(in crate::cli::batch) fn dispatch_explain(
     ctx: &BatchView,
-    target: &str,
-    limit: usize,
-    tokens: Option<usize>,
+    args: &ExplainArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_explain", target, limit).entered();
+    let target = args.name.as_str();
+    let tokens = args.tokens;
+    let _span =
+        tracing::info_span!("batch_explain", target, limit = args.limit_arg.limit).entered();
     // Task A3: shared cap with `cmd_explain`. Truncates the per-section
     // lists (callers / callees / similar) before serialization.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     let index = ctx.vector_index()?;
     let index = index.as_deref();
@@ -99,16 +105,15 @@ pub(in crate::cli::batch) fn dispatch_explain(
 /// * The vector index is unavailable or search fails
 pub(in crate::cli::batch) fn dispatch_similar(
     ctx: &BatchView,
-    name: &str,
-    limit: usize,
-    threshold: f32,
+    args: &SimilarArgs,
 ) -> Result<serde_json::Value> {
+    let name = args.name.as_str();
     let _span = tracing::info_span!("batch_similar", name).entered();
-    let threshold = validate_finite_f32(threshold, "threshold")?;
+    let threshold = validate_finite_f32(args.threshold, "threshold")?;
     // CQ-V1.25-2: shared with CLI's cmd_similar (which currently does not
     // clamp — adding clamp here + constant would regress; keep parity and
     // let CLI gain its clamp in a separate fix).
-    let limit = limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
+    let limit = args.limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;
@@ -161,11 +166,12 @@ pub(in crate::cli::batch) fn dispatch_similar(
 /// Returns an error if the file at `path` is not indexed or if data retrieval from the store fails.
 pub(in crate::cli::batch) fn dispatch_context(
     ctx: &BatchView,
-    path: &str,
-    summary: bool,
-    compact: bool,
-    tokens: Option<usize>,
+    args: &ContextArgs,
 ) -> Result<serde_json::Value> {
+    let path = args.path.as_str();
+    let summary = args.summary;
+    let compact = args.compact;
+    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_context", path).entered();
 
     // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
@@ -313,16 +319,21 @@ pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchView) -> Result<serde_jso
 /// Returns an error if embedder initialization fails, onboarding query fails, or serialization fails.
 pub(in crate::cli::batch) fn dispatch_onboard(
     ctx: &BatchView,
-    query: &str,
-    depth: usize,
-    limit: usize,
-    tokens: Option<usize>,
+    args: &OnboardArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_onboard", query, depth, limit).entered();
+    let query = args.query.as_str();
+    let tokens = args.tokens;
+    let _span = tracing::info_span!(
+        "batch_onboard",
+        query,
+        depth = args.depth,
+        limit = args.limit_arg.limit
+    )
+    .entered();
     let embedder = ctx.embedder()?;
-    let depth = depth.clamp(1, 5);
+    let depth = args.depth.clamp(1, 5);
     // Task A3: cap on call_chain + callers + tests. entry_point always kept.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     let mut result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth)?;
     result.call_chain.truncate(limit);
@@ -363,9 +374,10 @@ pub(in crate::cli::batch) fn dispatch_onboard(
 /// Returns an error if file validation or reading fails.
 pub(in crate::cli::batch) fn dispatch_read(
     ctx: &BatchView,
-    path: &str,
-    focus: Option<&str>,
+    args: &ReadArgs,
 ) -> Result<serde_json::Value> {
+    let path = args.path.as_str();
+    let focus = args.focus.as_deref();
     let _span = tracing::info_span!("batch_read", path).entered();
 
     // Focused read mode

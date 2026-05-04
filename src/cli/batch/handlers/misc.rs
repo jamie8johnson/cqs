@@ -1,10 +1,16 @@
 //! Misc dispatch handlers: notes, gc, plan, task, scout, where, gather, diff, drift, refresh, help.
+//!
+//! #1216: handlers take a single `&XArgs` argument so the macro-driven
+//! `BatchCmd::dispatch` calls every row uniformly.
 
 use anyhow::{Context, Result};
 
 use super::super::commands::BatchInput;
 use super::super::BatchView;
-use crate::cli::args::GatherArgs;
+use crate::cli::args::{
+    DiffArgs, DriftArgs, GatherArgs, NotesListArgs, PlanArgs, ReconcileArgs, ScoutArgs, TaskArgs,
+    WaitFreshArgs, WhereArgs,
+};
 use crate::cli::validate_finite_f32;
 
 /// Performs a semantic search gather operation with optional cross-index querying and token budget constraints.
@@ -100,11 +106,12 @@ pub(in crate::cli::batch) fn dispatch_gather(
 /// Returns an error if JSON serialization or the staleness check fails.
 pub(in crate::cli::batch) fn dispatch_notes(
     ctx: &BatchView,
-    warnings: bool,
-    patterns: bool,
-    kind: Option<&str>,
-    check: bool,
+    args: &NotesListArgs,
 ) -> Result<serde_json::Value> {
+    let warnings = args.warnings;
+    let patterns = args.patterns;
+    let kind = args.kind.as_deref();
+    let check = args.check;
     let _span = tracing::info_span!("batch_notes", warnings, patterns, kind, check).entered();
 
     let notes = ctx.notes();
@@ -181,13 +188,13 @@ pub(in crate::cli::batch) fn dispatch_notes(
 /// Returns an error if the embedder, call graph, test chunks cannot be retrieved from the context, or if task execution fails.
 pub(in crate::cli::batch) fn dispatch_task(
     ctx: &BatchView,
-    description: &str,
-    limit: usize,
-    tokens: Option<usize>,
+    args: &TaskArgs,
 ) -> Result<serde_json::Value> {
+    let description = args.description.as_str();
+    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_task", description).entered();
     let embedder = ctx.embedder()?;
-    let limit = limit.clamp(1, 10);
+    let limit = args.limit.clamp(1, 10);
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.test_chunks()?;
     let result = cqs::task_with_resources(
@@ -223,14 +230,14 @@ pub(in crate::cli::batch) fn dispatch_task(
 /// Returns an error if embedder initialization fails or if the core scout search operation fails.
 pub(in crate::cli::batch) fn dispatch_scout(
     ctx: &BatchView,
-    query: &str,
-    limit: usize,
-    tokens: Option<usize>,
+    args: &ScoutArgs,
 ) -> Result<serde_json::Value> {
+    let query = args.query.as_str();
+    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
     // CQ-V1.25-2: shared with CLI's cmd_scout.
-    let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
+    let limit = args.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let (content_map, token_info) = if let Some(budget) = tokens {
@@ -263,12 +270,12 @@ pub(in crate::cli::batch) fn dispatch_scout(
 /// Returns an error if the embedder cannot be initialized or if the placement suggestion operation fails.
 pub(in crate::cli::batch) fn dispatch_where(
     ctx: &BatchView,
-    description: &str,
-    limit: usize,
+    args: &WhereArgs,
 ) -> Result<serde_json::Value> {
+    let description = args.description.as_str();
     let _span = tracing::info_span!("batch_where", description).entered();
     let embedder = ctx.embedder()?;
-    let limit = limit.clamp(1, 10);
+    let limit = args.limit.clamp(1, 10);
     let result = cqs::suggest_placement(&ctx.store(), embedder, description, limit)?;
 
     let output = crate::cli::commands::build_where_output(&result, description, &ctx.root);
@@ -298,15 +305,14 @@ pub(in crate::cli::batch) fn dispatch_where(
 /// - Drift detection fails during comparison
 pub(in crate::cli::batch) fn dispatch_drift(
     ctx: &BatchView,
-    reference: &str,
-    threshold: f32,
-    min_drift: f32,
-    lang: Option<&str>,
-    limit: Option<usize>,
+    args: &DriftArgs,
 ) -> Result<serde_json::Value> {
+    let reference = args.reference.as_str();
+    let lang = args.lang.as_deref();
+    let limit = args.limit;
     let _span = tracing::info_span!("batch_drift", reference).entered();
-    let threshold = validate_finite_f32(threshold, "threshold")?;
-    let min_drift = validate_finite_f32(min_drift, "min_drift")?;
+    let threshold = validate_finite_f32(args.threshold, "threshold")?;
+    let min_drift = validate_finite_f32(args.min_drift, "min_drift")?;
 
     // Use cached reference store (PERF-27/RM-17)
     ctx.get_ref(reference)?;
@@ -356,13 +362,13 @@ pub(in crate::cli::batch) fn dispatch_drift(
 /// Runs semantic diff between a reference and the project (or another reference).
 pub(in crate::cli::batch) fn dispatch_diff(
     ctx: &BatchView,
-    source: &str,
-    target: Option<&str>,
-    threshold: f32,
-    lang: Option<&str>,
+    args: &DiffArgs,
 ) -> Result<serde_json::Value> {
+    let source = args.source.as_str();
+    let target = args.target.as_deref();
+    let lang = args.lang.as_deref();
     let _span = tracing::info_span!("batch_diff", source).entered();
-    let threshold = validate_finite_f32(threshold, "threshold")?;
+    let threshold = validate_finite_f32(args.threshold, "threshold")?;
 
     let source_store = crate::cli::commands::resolve::resolve_reference_store(&ctx.root, source)?;
 
@@ -449,14 +455,14 @@ pub(in crate::cli::batch) fn dispatch_diff(
 /// Runs task planning with template classification and returns results as JSON.
 pub(in crate::cli::batch) fn dispatch_plan(
     ctx: &BatchView,
-    description: &str,
-    limit: usize,
-    tokens: Option<usize>,
+    args: &PlanArgs,
 ) -> Result<serde_json::Value> {
+    let description = args.description.as_str();
+    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_plan", description).entered();
 
     let embedder = ctx.embedder()?;
-    let result = cqs::plan::plan(&ctx.store(), embedder, description, &ctx.root, limit)
+    let result = cqs::plan::plan(&ctx.store(), embedder, description, &ctx.root, args.limit)
         .context("Plan generation failed")?;
 
     let mut json = serde_json::to_value(&result)?;
@@ -506,7 +512,10 @@ pub(in crate::cli::batch) fn dispatch_refresh(ctx: &BatchView) -> Result<serde_j
 /// A Result containing a JSON object with a "help" key mapped to the formatted help text for the BatchInput command.
 /// # Errors
 /// Returns an error if writing help text to the buffer fails or if UTF-8 conversion fails.
-pub(in crate::cli::batch) fn dispatch_help() -> Result<serde_json::Value> {
+pub(in crate::cli::batch) fn dispatch_help(_ctx: &BatchView) -> Result<serde_json::Value> {
+    // #1216: takes `&BatchView` to match the unit-variant handler shape
+    // even though help generation is fully static. Keeps the macro-driven
+    // dispatch table uniform.
     use clap::CommandFactory;
     let mut buf = Vec::new();
     BatchInput::command().write_help(&mut buf)?;
@@ -567,8 +576,9 @@ pub(in crate::cli::batch) fn dispatch_status(ctx: &BatchView) -> Result<serde_js
 /// with the client-side `wait_for_fresh` cap.
 pub(in crate::cli::batch) fn dispatch_wait_fresh(
     ctx: &BatchView,
-    wait_secs: u64,
+    args: &WaitFreshArgs,
 ) -> Result<serde_json::Value> {
+    let wait_secs = args.wait_secs;
     let bounded_secs = wait_secs.min(86_400);
     let _span = tracing::info_span!("batch_wait_fresh", wait_secs, bounded_secs,).entered();
     let start = std::time::Instant::now();
@@ -622,18 +632,15 @@ pub(in crate::cli::batch) fn dispatch_wait_fresh(
 /// per replayed commit).
 pub(in crate::cli::batch) fn dispatch_reconcile(
     ctx: &BatchView,
-    hook: Option<String>,
-    args: Vec<String>,
+    args: &ReconcileArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!(
-        "batch_reconcile",
-        hook = hook.as_deref().unwrap_or("(unknown)")
-    )
-    .entered();
+    let hook = args.hook.as_deref();
+    let _span =
+        tracing::info_span!("batch_reconcile", hook = hook.unwrap_or("(unknown)")).entered();
     let was_pending = ctx.request_reconcile();
     tracing::info!(
-        hook = hook.as_deref().unwrap_or("(unknown)"),
-        args_count = args.len(),
+        hook = hook.unwrap_or("(unknown)"),
+        args_count = args.args.len(),
         was_pending,
         "Reconcile requested"
     );
@@ -641,8 +648,8 @@ pub(in crate::cli::batch) fn dispatch_reconcile(
     // already conveys "accepted by daemon". Dropped from the wire.
     Ok(serde_json::json!({
         "was_pending": was_pending,
-        "hook": hook,
-        "args": args,
+        "hook": args.hook,
+        "args": args.args,
     }))
 }
 
@@ -720,7 +727,8 @@ mod tests {
 
         let start = std::time::Instant::now();
         // wait_secs=10 — handler should return well before this.
-        let json = dispatch_wait_fresh(&view, 10).expect("dispatch_wait_fresh");
+        let args = WaitFreshArgs { wait_secs: 10 };
+        let json = dispatch_wait_fresh(&view, &args).expect("dispatch_wait_fresh");
         let elapsed_ms = start.elapsed().as_millis();
 
         assert!(
@@ -772,7 +780,8 @@ mod tests {
         });
 
         let start = std::time::Instant::now();
-        let json = dispatch_wait_fresh(&view, 5).expect("dispatch_wait_fresh");
+        let args = WaitFreshArgs { wait_secs: 5 };
+        let json = dispatch_wait_fresh(&view, &args).expect("dispatch_wait_fresh");
         let elapsed_ms = start.elapsed().as_millis();
         publisher.join().expect("publisher thread");
 
@@ -812,7 +821,8 @@ mod tests {
         view.test_overwrite_watch_snapshot(stale);
 
         let start = std::time::Instant::now();
-        let json = dispatch_wait_fresh(&view, 1).expect("dispatch_wait_fresh");
+        let args = WaitFreshArgs { wait_secs: 1 };
+        let json = dispatch_wait_fresh(&view, &args).expect("dispatch_wait_fresh");
         let elapsed = start.elapsed();
 
         // Handler must wait the full second (within scheduler jitter)
@@ -896,12 +906,11 @@ mod tests {
         assert!(!signal.load(std::sync::atomic::Ordering::Acquire));
 
         // First dispatch flips it; was_pending must be false.
-        let json = dispatch_reconcile(
-            &view,
-            Some("post-checkout".to_string()),
-            vec!["abc".to_string(), "def".to_string(), "1".to_string()],
-        )
-        .expect("dispatch_reconcile #1");
+        let args1 = ReconcileArgs {
+            hook: Some("post-checkout".to_string()),
+            args: vec!["abc".to_string(), "def".to_string(), "1".to_string()],
+        };
+        let json = dispatch_reconcile(&view, &args1).expect("dispatch_reconcile #1");
         // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
         assert!(
             json.get("queued").is_none(),
@@ -920,8 +929,11 @@ mod tests {
 
         // Second dispatch (without the loop draining the flag in
         // between) coalesces — was_pending must be true.
-        let json2 = dispatch_reconcile(&view, Some("post-merge".to_string()), Vec::new())
-            .expect("dispatch_reconcile #2");
+        let args2 = ReconcileArgs {
+            hook: Some("post-merge".to_string()),
+            args: Vec::new(),
+        };
+        let json2 = dispatch_reconcile(&view, &args2).expect("dispatch_reconcile #2");
         assert_eq!(
             json2.get("was_pending").and_then(|v| v.as_bool()),
             Some(true),
@@ -935,7 +947,11 @@ mod tests {
         // must not require one — hand-rolled `cqs batch reconcile`
         // sessions skip it.
         let (_dir, _ctx, view) = empty_view();
-        let json = dispatch_reconcile(&view, None, Vec::new()).expect("dispatch_reconcile");
+        let args = ReconcileArgs {
+            hook: None,
+            args: Vec::new(),
+        };
+        let json = dispatch_reconcile(&view, &args).expect("dispatch_reconcile");
         // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
         assert!(
             json.get("queued").is_none(),
@@ -946,7 +962,8 @@ mod tests {
 
     #[test]
     fn dispatch_help_carries_help_text() {
-        let json = dispatch_help().expect("dispatch_help");
+        let (_dir, _ctx, view) = empty_view();
+        let json = dispatch_help(&view).expect("dispatch_help");
         let help = json
             .get("help")
             .and_then(|v| v.as_str())

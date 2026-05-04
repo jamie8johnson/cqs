@@ -1,8 +1,15 @@
 //! Call graph dispatch handlers: callers, callees, deps, impact, test-map, trace, related, impact-diff.
+//!
+//! #1216: handlers take a single `&XArgs` argument (not destructured
+//! positionals) so the macro-driven `BatchCmd::dispatch` can call every
+//! row uniformly.
 
 use anyhow::Result;
 
 use super::super::BatchView;
+use crate::cli::args::{
+    CallersArgs, DepsArgs, ImpactArgs, ImpactDiffArgs, RelatedArgs, TestMapArgs, TraceArgs,
+};
 
 /// Dispatches a dependency query for a given name, returning either the types used by it or the code locations that use it.
 ///
@@ -23,18 +30,25 @@ use super::super::BatchView;
 /// Returns an error if the store query fails.
 pub(in crate::cli::batch) fn dispatch_deps(
     ctx: &BatchView,
-    name: &str,
-    reverse: bool,
-    limit: usize,
-    cross_project: bool,
+    args: &DepsArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_deps", name, reverse, limit, cross_project).entered();
+    let name = args.name.as_str();
+    let reverse = args.reverse;
+    let cross_project = args.cross_project;
+    let _span = tracing::info_span!(
+        "batch_deps",
+        name,
+        reverse,
+        limit = args.limit_arg.limit,
+        cross_project
+    )
+    .entered();
     if cross_project {
         tracing::warn!("cross-project deps not yet supported, returning local result");
     }
     // Task A3: shared cap with `cmd_deps`. Truncates after fetch so the
     // fetched set is bounded by the same value the CLI path would.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     if reverse {
         // P2 #65: bind the limit at SQL time.
@@ -62,13 +76,19 @@ pub(in crate::cli::batch) fn dispatch_deps(
 /// A `Result` containing a JSON array of caller objects, each with `name`, `file`, and `line` fields. Returns an error if the store query fails.
 pub(in crate::cli::batch) fn dispatch_callers(
     ctx: &BatchView,
-    name: &str,
-    limit: usize,
-    cross_project: bool,
+    args: &CallersArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_callers", name, limit, cross_project).entered();
+    let name = args.name.as_str();
+    let cross_project = args.cross_project;
+    let _span = tracing::info_span!(
+        "batch_callers",
+        name,
+        limit = args.limit_arg.limit,
+        cross_project
+    )
+    .entered();
     // Task A3: shared cap with `cmd_callers`. Truncate before serialization.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -102,13 +122,19 @@ pub(in crate::cli::batch) fn dispatch_callers(
 /// Returns an error if the store fails to retrieve the callees for the given function name.
 pub(in crate::cli::batch) fn dispatch_callees(
     ctx: &BatchView,
-    name: &str,
-    limit: usize,
-    cross_project: bool,
+    args: &CallersArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_callees", name, limit, cross_project).entered();
+    let name = args.name.as_str();
+    let cross_project = args.cross_project;
+    let _span = tracing::info_span!(
+        "batch_callees",
+        name,
+        limit = args.limit_arg.limit,
+        cross_project
+    )
+    .entered();
     // Task A3: shared cap with `cmd_callees`.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -142,19 +168,24 @@ pub(in crate::cli::batch) fn dispatch_callees(
 /// Returns an error if the target cannot be resolved or if the impact analysis fails.
 pub(in crate::cli::batch) fn dispatch_impact(
     ctx: &BatchView,
-    name: &str,
-    depth: usize,
-    limit: usize,
-    do_suggest_tests: bool,
-    include_types: bool,
-    cross_project: bool,
+    args: &ImpactArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_impact", name, limit, cross_project).entered();
-    let depth = depth.clamp(1, 10);
+    let name = args.name.as_str();
+    let do_suggest_tests = args.suggest_tests;
+    let include_types = args.type_impact;
+    let cross_project = args.cross_project;
+    let _span = tracing::info_span!(
+        "batch_impact",
+        name,
+        limit = args.limit_arg.limit,
+        cross_project
+    )
+    .entered();
+    let depth = args.depth.clamp(1, 10);
     // Task A3: shared per-section cap with `cmd_impact`. Test suggestions are
     // computed off the un-truncated result so the engine sees every untested
     // caller; truncation happens immediately before serialization.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -232,14 +263,20 @@ fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
 /// Returns an error if the target chunk cannot be resolved, if the call graph cannot be built, or if test chunks cannot be retrieved from the store.
 pub(in crate::cli::batch) fn dispatch_test_map(
     ctx: &BatchView,
-    name: &str,
-    max_depth: usize,
-    limit: usize,
-    cross_project: bool,
+    args: &TestMapArgs,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_test_map", name, limit, cross_project).entered();
+    let name = args.name.as_str();
+    let max_depth = args.depth;
+    let cross_project = args.cross_project;
+    let _span = tracing::info_span!(
+        "batch_test_map",
+        name,
+        limit = args.limit_arg.limit,
+        cross_project
+    )
+    .entered();
     // Task A3: shared cap with `cmd_test_map`.
-    let limit = limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -291,16 +328,16 @@ pub(in crate::cli::batch) fn dispatch_test_map(
 /// Returns an error if target resolution fails or if the call graph cannot be constructed.
 pub(in crate::cli::batch) fn dispatch_trace(
     ctx: &BatchView,
-    source: &str,
-    target: &str,
-    max_depth: usize,
-    _limit: usize,
-    cross_project: bool,
+    args: &TraceArgs,
 ) -> Result<serde_json::Value> {
+    let source = args.source.as_str();
+    let target = args.target.as_str();
+    let max_depth = args.max_depth as usize;
+    let cross_project = args.cross_project;
     let _span = tracing::info_span!("batch_trace", source, target, cross_project).entered();
     // Task A3: `--limit` is accepted for parity with other graph commands. See
     // `cmd_trace` for rationale (single shortest path today; reserved for
-    // future k-shortest-paths variants).
+    // future k-shortest-paths variants). args.limit_arg.limit intentionally unused.
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -374,14 +411,14 @@ pub(in crate::cli::batch) fn dispatch_trace(
 /// Returns an error if the database query fails.
 pub(in crate::cli::batch) fn dispatch_related(
     ctx: &BatchView,
-    name: &str,
-    limit: usize,
+    args: &RelatedArgs,
 ) -> Result<serde_json::Value> {
+    let name = args.name.as_str();
     let _span = tracing::info_span!("batch_related", name).entered();
     // CQ-V1.25-2: shared with CLI's cmd_related. Previously 100 here vs
     // unbounded in CLI — lowered to 50 (per-category) to match and stop
     // quadratic blow-up on related-related queries.
-    let limit = limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
+    let limit = args.limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
 
     let result = cqs::find_related(&ctx.store(), name, limit)?;
     let output = crate::cli::commands::build_related_output(&result, &ctx.root);
@@ -391,8 +428,9 @@ pub(in crate::cli::batch) fn dispatch_related(
 /// Runs diff-aware impact analysis and returns results as JSON.
 pub(in crate::cli::batch) fn dispatch_impact_diff(
     ctx: &BatchView,
-    base: Option<&str>,
+    args: &ImpactDiffArgs,
 ) -> Result<serde_json::Value> {
+    let base = args.base.as_deref();
     let _span = tracing::info_span!("batch_impact_diff", ?base).entered();
 
     let diff_text = crate::cli::commands::run_git_diff(base)?;
@@ -511,8 +549,12 @@ mod tests {
     #[test]
     fn dispatch_callers_returns_seeded_caller() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let json = dispatch_callers(&ctx.build_view(None), "callee_fn", 10, false)
-            .expect("dispatch_callers");
+        let args = CallersArgs {
+            name: "callee_fn".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         // `build_callers` returns `Vec<CallerEntry>`, which serializes as a
         // bare JSON array (no enclosing key).
         let callers = json
@@ -527,8 +569,12 @@ mod tests {
     #[test]
     fn dispatch_callees_returns_seeded_callee() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let json = dispatch_callees(&ctx.build_view(None), "caller_fn", 10, false)
-            .expect("dispatch_callees");
+        let args = CallersArgs {
+            name: "caller_fn".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         // `build_callees` emits `CalleesOutput { name, calls, count }` —
         // `name` field, not `function`.
         assert_eq!(json["name"], "caller_fn");
@@ -544,8 +590,11 @@ mod tests {
     #[test]
     fn dispatch_related_returns_envelope_for_seeded_chunk() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let json =
-            dispatch_related(&ctx.build_view(None), "caller_fn", 10).expect("dispatch_related");
+        let args = RelatedArgs {
+            name: "caller_fn".into(),
+            limit: 10,
+        };
+        let json = dispatch_related(&ctx.build_view(None), &args).expect("dispatch_related");
         // build_related_output structure varies — pin envelope shape only:
         // it must be an object (not an array, not null) with at least one
         // top-level key.
@@ -565,6 +614,10 @@ mod tests {
         // either succeeds (returning empty) or errors. Either way the
         // handler returns Result, so this test simply asserts no-panic and
         // a Result outcome.
-        let _ = dispatch_impact_diff(&ctx.build_view(None), None);
+        let args = ImpactDiffArgs {
+            base: None,
+            stdin: false,
+        };
+        let _ = dispatch_impact_diff(&ctx.build_view(None), &args);
     }
 }

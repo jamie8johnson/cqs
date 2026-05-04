@@ -1,9 +1,12 @@
 //! Analysis dispatch handlers: dead, health, stale, suggest, review, ci.
+//!
+//! #1216: handlers take a single `&XArgs` argument so the macro-driven
+//! `BatchCmd::dispatch` calls every row uniformly.
 
 use anyhow::Result;
 
 use super::super::BatchView;
-use cqs::store::DeadConfidence;
+use crate::cli::args::{CiArgs, DeadArgs, ReviewArgs, StaleArgs, SuggestArgs};
 
 /// Identifies and reports dead code in a codebase.
 /// Analyzes code to find functions that are never called, filtering results based on confidence level and visibility. Returns structured JSON containing categorized dead code findings.
@@ -22,9 +25,10 @@ use cqs::store::DeadConfidence;
 /// Returns an error if the code store query fails.
 pub(in crate::cli::batch) fn dispatch_dead(
     ctx: &BatchView,
-    include_pub: bool,
-    min_confidence: &DeadConfidence,
+    args: &DeadArgs,
 ) -> Result<serde_json::Value> {
+    let include_pub = args.include_pub;
+    let min_confidence = &args.min_confidence;
     let _span = tracing::info_span!("batch_dead").entered();
 
     let (confident, possibly_pub) = ctx.store().find_dead_code(include_pub)?;
@@ -60,8 +64,9 @@ pub(in crate::cli::batch) fn dispatch_dead(
 /// Returns an error if the file set cannot be retrieved from the context or if the store query fails.
 pub(in crate::cli::batch) fn dispatch_stale(
     ctx: &BatchView,
-    count_only: bool,
+    args: &StaleArgs,
 ) -> Result<serde_json::Value> {
+    let count_only = args.count_only;
     let _span = tracing::info_span!("batch_stale", count_only).entered();
 
     // P3 #123: `file_set` is now `Arc<HashSet<PathBuf>>`. Auto-deref hands
@@ -112,8 +117,9 @@ pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchView) -> Result<serde_js
 /// invariant instead of silently producing a stale (unapplied) result.
 pub(in crate::cli::batch) fn dispatch_suggest(
     ctx: &BatchView,
-    apply: bool,
+    args: &SuggestArgs,
 ) -> Result<serde_json::Value> {
+    let apply = args.apply;
     let _span = tracing::info_span!("batch_suggest", apply).entered();
 
     if apply {
@@ -150,9 +156,10 @@ pub(in crate::cli::batch) fn dispatch_suggest(
 /// review pipeline: diff impact, risk scoring, note matching, staleness.
 pub(in crate::cli::batch) fn dispatch_review(
     ctx: &BatchView,
-    base: Option<&str>,
-    tokens: Option<usize>,
+    args: &ReviewArgs,
 ) -> Result<serde_json::Value> {
+    let base = args.base.as_deref();
+    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_review", ?base).entered();
 
     let diff_text = crate::cli::commands::run_git_diff(base)?;
@@ -184,10 +191,11 @@ pub(in crate::cli::batch) fn dispatch_review(
 /// causing a process exit, since the batch session must continue.
 pub(in crate::cli::batch) fn dispatch_ci(
     ctx: &BatchView,
-    base: Option<&str>,
-    gate: &crate::cli::GateThreshold,
-    tokens: Option<usize>,
+    args: &CiArgs,
 ) -> Result<serde_json::Value> {
+    let base = args.base.as_deref();
+    let gate = &args.gate;
+    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_ci", ?gate).entered();
 
     let diff_text = crate::cli::commands::run_git_diff(base)?;
