@@ -1175,20 +1175,12 @@ impl Embedder {
                 .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?
         };
 
-        // Prepare inputs - INT64 (i64) for ONNX model
-        let input_ids: Vec<Vec<i64>> = encodings
+        // Pad to max length in batch. PERF-V1.33-3 / #1377: compute max_len
+        // directly from encodings (no allocation), then build Array2 from
+        // encodings in one pass instead of through `Vec<Vec<i64>>`.
+        let max_len = encodings
             .iter()
-            .map(|e| e.get_ids().iter().map(|&id| id as i64).collect())
-            .collect();
-        let attention_mask: Vec<Vec<i64>> = encodings
-            .iter()
-            .map(|e| e.get_attention_mask().iter().map(|&m| m as i64).collect())
-            .collect();
-
-        // Pad to max length in batch
-        let max_len = input_ids
-            .iter()
-            .map(|v| v.len())
+            .map(|e| e.get_ids().len())
             .max()
             .unwrap_or(0)
             .min(self.max_length);
@@ -1199,12 +1191,18 @@ impl Embedder {
         // padded position at attention time, which is the whole point of the
         // mask.
         let input_pad_id = self.pad_id()?;
-        let input_ids_arr = pad_2d_i64(&input_ids, max_len, input_pad_id);
-        let attention_mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
+        let input_ids_arr =
+            pad_2d_i64_from_encodings(&encodings, |e| e.get_ids(), max_len, input_pad_id);
+        let attention_mask_arr =
+            pad_2d_i64_from_encodings(&encodings, |e| e.get_attention_mask(), max_len, 0);
 
-        // Create tensors
+        // Create tensors. PERF-V1.33-3 / #1377: clone the mask Array2 for
+        // the tensor so the post-inference pooling can still read the
+        // original. Net: 1 i64-Array2 clone (memcpy) replaces the prior
+        // `Vec<Vec<i64>>` + per-element u32→i64 conversion in mean_pool.
         let input_ids_tensor = Tensor::from_array(input_ids_arr).map_err(ort_err)?;
-        let attention_mask_tensor = Tensor::from_array(attention_mask_arr).map_err(ort_err)?;
+        let attention_mask_tensor =
+            Tensor::from_array(attention_mask_arr.clone()).map_err(ort_err)?;
 
         // Build the named input map. Tensor names come from `ModelConfig::input_names`
         // so non-BERT models (different naming) and distilled variants (no
@@ -1342,9 +1340,9 @@ impl Embedder {
         // uniformly after to keep the contract (unit-length embeddings)
         // invariant across strategies.
         let pooled_batch: Vec<Vec<f32>> = match self.model_config.pooling {
-            PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask, embedding_dim),
+            PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask_arr, embedding_dim),
             PoolingStrategy::Cls => cls_pool(&hidden),
-            PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask),
+            PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask_arr),
             // Already handled by the early-return above; this arm is only
             // reachable if the model output had 3 dims AND pooling = Identity,
             // which is a config error (Identity expects 2D).
@@ -1524,13 +1522,52 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
-/// Pad 2D sequences to a fixed length
+/// Pad 2D sequences to a fixed length.
+///
+/// PERF-V1.33-3 / #1377: production embed/rerank now uses
+/// [`pad_2d_i64_from_encodings`] which fills the `Array2` directly from
+/// tokenizer encodings. This helper stays for tests + future callers
+/// that have a `&[Vec<i64>]` already in hand.
+#[allow(dead_code)]
 pub(crate) fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
     let batch_size = inputs.len();
     let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
     for (i, seq) in inputs.iter().enumerate() {
         for (j, &val) in seq.iter().take(max_len).enumerate() {
             arr[[i, j]] = val;
+        }
+    }
+    arr
+}
+
+/// PERF-V1.33-3 / #1377: build the padded `Array2<i64>` directly from
+/// tokenizer encodings, skipping the per-batch `Vec<Vec<i64>>` intermediate
+/// that [`pad_2d_i64`] previously consumed.
+///
+/// `extract` selects which encoding field to pull (`get_ids`,
+/// `get_attention_mask`, `get_type_ids`); the function is generic over `&[u32]`
+/// vs `&[u32]` so the same helper covers all three fields. The cast from
+/// `u32` → `i64` happens in the inner loop alongside the array write —
+/// no intermediate `Vec<i64>` is allocated.
+///
+/// At `CQS_EMBED_BATCH_SIZE=64` and `seq_len=512`, the prior
+/// `Vec<Vec<i64>>` shape allocated ~98K i64 conversions + 192 inner Vecs
+/// per batch (3 fields × 64 batch × ~512 seq + 3 outer Vecs). This helper
+/// drops to zero auxiliary heap allocations beyond the final `Array2`.
+pub(crate) fn pad_2d_i64_from_encodings<F>(
+    encodings: &[tokenizers::Encoding],
+    extract: F,
+    max_len: usize,
+    pad_value: i64,
+) -> Array2<i64>
+where
+    F: Fn(&tokenizers::Encoding) -> &[u32],
+{
+    let batch_size = encodings.len();
+    let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
+    for (i, enc) in encodings.iter().enumerate() {
+        for (j, &val) in extract(enc).iter().take(max_len).enumerate() {
+            arr[[i, j]] = val as i64;
         }
     }
     arr
@@ -1567,12 +1604,15 @@ fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
 /// warning — this preserves pre-refactor behavior.
 fn mean_pool(
     hidden: &Array3<f32>,
-    attention_mask: &[Vec<i64>],
+    attention_mask: &Array2<i64>,
     embedding_dim: usize,
 ) -> Vec<Vec<f32>> {
+    // PERF-V1.33-3 / #1377: takes the already-built `Array2<i64>` directly
+    // (was `&[Vec<i64>]`) so the embed pipeline doesn't have to keep a
+    // parallel `Vec<Vec<i64>>` of the mask alongside the tensor.
     let (batch_size, seq_len, _) = hidden.dim();
     let mask_2d = Array2::from_shape_fn((batch_size, seq_len), |(i, j)| {
-        attention_mask[i].get(j).copied().unwrap_or(0) as f32
+        attention_mask.get([i, j]).copied().unwrap_or(0) as f32
     });
     let mask_3d = mask_2d.clone().insert_axis(Axis(2));
 
@@ -1616,23 +1656,40 @@ fn cls_pool(hidden: &Array3<f32>) -> Vec<Vec<f32>> {
 /// If the mask is all zero (pathological) the function falls back to the
 /// first token and logs a warning. If a batch item's mask has no `1`s we
 /// use index 0.
-fn last_token_pool(hidden: &Array3<f32>, attention_mask: &[Vec<i64>]) -> Vec<Vec<f32>> {
+fn last_token_pool(hidden: &Array3<f32>, attention_mask: &Array2<i64>) -> Vec<Vec<f32>> {
+    // PERF-V1.33-3 / #1377: takes the `Array2<i64>` directly — see
+    // `mean_pool` above for the rationale.
     let (batch_size, seq_len, _) = hidden.dim();
+    let (mask_batch, mask_seq) = attention_mask.dim();
     (0..batch_size)
         .map(|i| {
-            // Find the last position where the mask is set.
-            let mask_row = attention_mask.get(i);
-            let last_idx = mask_row
-                .and_then(|row| {
-                    row.iter().take(seq_len).rposition(|&m| m != 0).or_else(|| {
-                        tracing::warn!(
-                            batch_idx = i,
-                            "last_token_pool: zero attention mask — using index 0"
-                        );
-                        None
-                    })
+            // Find the last position where the mask is set. `i` may be
+            // beyond the mask Array2's first dim only if a caller passes a
+            // mismatched shape — fall back to index 0 and warn, mirroring
+            // the prior `attention_mask.get(i)` defensive read.
+            let last_idx = if i < mask_batch {
+                let bound = seq_len.min(mask_seq);
+                let mut found = None;
+                for j in (0..bound).rev() {
+                    if attention_mask[[i, j]] != 0 {
+                        found = Some(j);
+                        break;
+                    }
+                }
+                found.unwrap_or_else(|| {
+                    tracing::warn!(
+                        batch_idx = i,
+                        "last_token_pool: zero attention mask — using index 0"
+                    );
+                    0
                 })
-                .unwrap_or(0);
+            } else {
+                tracing::warn!(
+                    batch_idx = i,
+                    "last_token_pool: mask shorter than batch — using index 0"
+                );
+                0
+            };
             hidden.slice(ndarray::s![i, last_idx, ..]).to_vec()
         })
         .collect()
@@ -1874,6 +1931,16 @@ mod tests {
         Array3::from_shape_vec((batch, seq, dim), flat).expect("synthetic shape mismatch")
     }
 
+    /// PERF-V1.33-3 / #1377: pooling now consumes `&Array2<i64>` instead of
+    /// `&[Vec<i64>]`. Tests build the mask as a flat `Vec<Vec<i64>>` for
+    /// readability and convert here.
+    fn mask_2d(rows: Vec<Vec<i64>>) -> Array2<i64> {
+        let batch = rows.len();
+        let seq = rows.first().map(|r| r.len()).unwrap_or(0);
+        let flat: Vec<i64> = rows.into_iter().flatten().collect();
+        Array2::from_shape_vec((batch, seq), flat).expect("test mask shape mismatch")
+    }
+
     #[test]
     fn mean_pool_respects_mask() {
         // 1 batch, 3 tokens, 2-dim hidden state. Mask: [1, 1, 0] — last
@@ -1883,7 +1950,7 @@ mod tests {
             vec![3.0, 4.0],
             vec![100.0, 200.0], // should be ignored
         ]]);
-        let mask = vec![vec![1i64, 1, 0]];
+        let mask = mask_2d(vec![vec![1i64, 1, 0]]);
         let pooled = mean_pool(&hidden, &mask, 2);
         assert_eq!(pooled.len(), 1, "one batch item");
         // Mean of [1,2] and [3,4] = [2,3]
@@ -1894,7 +1961,7 @@ mod tests {
     #[test]
     fn mean_pool_zero_mask_returns_zero_vector() {
         let hidden = make_hidden(vec![vec![vec![5.0, 5.0], vec![6.0, 6.0]]]);
-        let mask = vec![vec![0i64, 0]];
+        let mask = mask_2d(vec![vec![0i64, 0]]);
         let pooled = mean_pool(&hidden, &mask, 2);
         assert_eq!(pooled[0], vec![0.0, 0.0]);
     }
@@ -1930,7 +1997,7 @@ mod tests {
                 vec![0.0, 0.0],
             ],
         ]);
-        let mask = vec![vec![1i64, 1, 1, 0], vec![1i64, 0, 0, 0]];
+        let mask = mask_2d(vec![vec![1i64, 1, 1, 0], vec![1i64, 0, 0, 0]]);
         let pooled = last_token_pool(&hidden, &mask);
         assert_eq!(pooled[0], vec![42.0, 43.0]);
         assert_eq!(pooled[1], vec![11.0, 12.0]);
@@ -1939,7 +2006,7 @@ mod tests {
     #[test]
     fn last_token_pool_zero_mask_falls_back_to_index_0() {
         let hidden = make_hidden(vec![vec![vec![7.0, 8.0], vec![9.0, 10.0]]]);
-        let mask = vec![vec![0i64, 0]];
+        let mask = mask_2d(vec![vec![0i64, 0]]);
         let pooled = last_token_pool(&hidden, &mask);
         assert_eq!(pooled[0], vec![7.0, 8.0]);
     }

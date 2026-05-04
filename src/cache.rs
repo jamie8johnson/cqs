@@ -512,11 +512,16 @@ impl EmbeddingCache {
                         continue;
                     }
 
-                    // Decode blob to Vec<f32>
-                    let embedding: Vec<f32> = blob
-                        .chunks_exact(4)
-                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                        .collect();
+                    // PERF-V1.33-2 / #1377: zero-copy LE cast instead of the
+                    // per-element `from_le_bytes` loop. `bytemuck::cast_slice`
+                    // is sound here because (a) `embedding_to_bytes` is the
+                    // only producer and stamps blobs as `&[f32] → &[u8]` so
+                    // alignment + endianness match, and (b) the surrounding
+                    // length check below catches truncation. cqs ships
+                    // little-endian targets only; bytemuck's cast is a no-op
+                    // memcpy-equivalent on those platforms. Mirrors the fast
+                    // path in `helpers/embeddings.rs::bytes_to_embedding`.
+                    let embedding: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&blob).to_vec();
 
                     if embedding.len() != expected_dim {
                         tracing::debug!(
@@ -635,9 +640,11 @@ impl EmbeddingCache {
                     continue;
                 }
 
-                // Encode &[f32] to blob (PF-6: reuse buffer)
+                // Encode &[f32] to blob (PF-6: reuse buffer).
+                // PERF-V1.33-2 / #1377: bytemuck zero-copy cast instead of
+                // the per-element `to_le_bytes` chain.
                 blob.clear();
-                blob.extend(embedding.iter().flat_map(|f| f.to_le_bytes()));
+                blob.extend_from_slice(bytemuck::cast_slice::<f32, u8>(embedding));
 
                 let result = sqlx::query(
                     "INSERT OR IGNORE INTO embedding_cache \
@@ -2664,10 +2671,9 @@ impl QueryCache {
                 }
                 return None;
             }
-            let floats: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
+            // PERF-V1.33-2 / #1377: see `read_batch` above for the zero-copy
+            // cast rationale. Same producer/consumer invariants apply here.
+            let floats: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&bytes).to_vec();
             Some(crate::embedder::Embedding::new(floats))
         })
     }
@@ -2683,11 +2689,8 @@ impl QueryCache {
             );
             return;
         }
-        let bytes: Vec<u8> = embedding
-            .as_slice()
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        // PERF-V1.33-2 / #1377: bytemuck zero-copy encode.
+        let bytes: Vec<u8> = bytemuck::cast_slice::<f32, u8>(embedding.as_slice()).to_vec();
         if let Err(e) = self.rt.block_on(async {
             sqlx::query(
                 "INSERT OR REPLACE INTO query_cache (query, model_fp, embedding, ts)
