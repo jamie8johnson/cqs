@@ -200,6 +200,116 @@ pub fn shared_reconcile_signal() -> SharedReconcileSignal {
     Arc::new(AtomicBool::new(false))
 }
 
+/// #1228 (RM-2): event-driven freshness notifier. Replaces the
+/// client-side 250 ms-poll loop in `wait_for_fresh` with a single
+/// server-side park-and-wake.
+///
+/// The watch loop calls [`FreshNotifier::set_fresh`] on every
+/// `publish_watch_snapshot` cycle (cheap when the value is unchanged —
+/// just acquires the mutex, compares, releases). On a `false → true`
+/// transition the inner `Condvar` notifies all parked waiters in one
+/// shot. The daemon's `wait_fresh` handler parks on
+/// [`FreshNotifier::wait_until_fresh`] until the notifier flips or the
+/// caller's deadline expires.
+///
+/// Predicate-under-the-mutex pattern (not a generation counter): the
+/// `is_fresh` boolean is mutated under the same lock the waiters park
+/// on, so a publish that flips `false → true` between a waiter's
+/// initial predicate read and its `wait_timeout` cannot be missed.
+/// `Condvar::wait_timeout` re-checks the predicate after spurious
+/// wake-ups (per `wait_until_fresh`'s loop body).
+#[derive(Debug, Default)]
+pub struct FreshNotifier {
+    /// `true` ⇔ the most recent watch publish was `FreshnessState::Fresh`.
+    is_fresh: std::sync::Mutex<bool>,
+    /// Notified on every `false → true` transition. `notify_all` because
+    /// the daemon may have multiple parked `wait_fresh` clients (one per
+    /// blocked CLI eval gate); we want the lot to wake at once.
+    cv: std::sync::Condvar,
+}
+
+impl FreshNotifier {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Update the cached freshness state. Notifies parked waiters when
+    /// the value transitions `false → true`. Idempotent on
+    /// `true → true` and `false → false` — the watch loop calls this
+    /// every cycle (~100 ms) and the no-op path costs one mutex
+    /// acquire + boolean compare.
+    ///
+    /// On a `RwLock` poison the function logs and returns without
+    /// notifying — a poisoned mutex means a parked waiter panicked
+    /// while holding the predicate, in which case the safest behaviour
+    /// is silence rather than re-entering and risking a double panic.
+    /// The waiter's own `wait_timeout` deadline still triggers a clean
+    /// timeout.
+    pub fn set_fresh(&self, fresh: bool) {
+        let mut guard = match self.is_fresh.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("FreshNotifier mutex poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        if !*guard && fresh {
+            *guard = fresh;
+            // Drop guard before notify so a freshly-woken waiter doesn't
+            // immediately block on us re-acquiring the lock.
+            drop(guard);
+            self.cv.notify_all();
+        } else {
+            *guard = fresh;
+        }
+    }
+
+    /// Park until either the cached state is `fresh` or `deadline`
+    /// expires. Returns `true` if the wake happened because the state
+    /// flipped to fresh; `false` on deadline.
+    ///
+    /// Race-free against `set_fresh`: the predicate is read under the
+    /// same mutex the notifier writes under, so a `false → true`
+    /// transition between the initial read and the `wait_timeout` call
+    /// would be observed by the predicate check inside the loop.
+    /// Spurious wake-ups (allowed by `Condvar`) re-enter the loop and
+    /// re-check.
+    pub fn wait_until_fresh(&self, deadline: std::time::Instant) -> bool {
+        let mut guard = match self.is_fresh.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        loop {
+            if *guard {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let timeout = deadline - now;
+            let (g, result) = match self.cv.wait_timeout(guard, timeout) {
+                Ok(pair) => pair,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard = g;
+            if result.timed_out() && !*guard {
+                return false;
+            }
+        }
+    }
+}
+
+/// Shared notifier handle for the watch loop (writer) and the daemon
+/// thread (waiters). Cloned at startup, mirrors [`SharedWatchSnapshot`].
+pub type SharedFreshNotifier = Arc<FreshNotifier>;
+
+/// Build the canonical handle, initialised to `not fresh` (the watch
+/// loop's first publish updates it).
+pub fn shared_fresh_notifier() -> SharedFreshNotifier {
+    Arc::new(FreshNotifier::new())
+}
+
 /// Inputs the watch loop hands to [`WatchSnapshot::compute`] every cycle.
 ///
 /// All fields are cheap reads off the loop's owned `WatchState`. Keep

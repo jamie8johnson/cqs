@@ -351,6 +351,14 @@ pub(crate) struct BatchContext {
     /// is a fresh `Arc<AtomicBool>` with no listener — outside `cqs watch
     /// --serve`, dispatching `reconcile` is a no-op rather than an error.
     pub(crate) reconcile_signal: cqs::watch_status::SharedReconcileSignal,
+    /// #1228 (RM-2): event-driven freshness wake-up. The watch loop's
+    /// `publish_watch_snapshot` calls `set_fresh` every cycle; the
+    /// daemon's `wait_fresh` handler parks on `wait_until_fresh` until
+    /// the state flips. Default outside `cqs watch --serve` is a fresh
+    /// notifier whose `is_fresh` flag stays `false` forever — a stray
+    /// `wait_fresh` request without an active watch loop hits the
+    /// caller's deadline naturally.
+    pub(crate) fresh_notifier: cqs::watch_status::SharedFreshNotifier,
 }
 
 /// #1127: a number of `BatchContext` accessors are unreachable from non-test
@@ -898,6 +906,14 @@ impl BatchContext {
         self.reconcile_signal = shared;
     }
 
+    /// #1228 (RM-2): install the shared `FreshNotifier`. Called from
+    /// the daemon thread alongside `adopt_watch_snapshot` so the
+    /// `wait_fresh` handler parks on the same notifier the watch loop
+    /// updates from `publish_watch_snapshot`.
+    pub fn adopt_fresh_notifier(&mut self, shared: cqs::watch_status::SharedFreshNotifier) {
+        self.fresh_notifier = shared;
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
@@ -1409,6 +1425,7 @@ impl BatchContext {
             outer_lock,
             watch_snapshot: Arc::clone(&self.watch_snapshot),
             reconcile_signal: Arc::clone(&self.reconcile_signal),
+            fresh_notifier: Arc::clone(&self.fresh_notifier),
         }
     }
 }
@@ -1714,6 +1731,11 @@ pub(crate) struct BatchView {
     /// `true` on the daemon's behalf; the watch loop swaps it back to
     /// `false` and runs an immediate reconcile pass.
     reconcile_signal: cqs::watch_status::SharedReconcileSignal,
+    /// #1228 (RM-2): shared event-driven freshness notifier. Cloned
+    /// the same way; `dispatch_wait_fresh` parks on this until the
+    /// watch loop publishes a Fresh transition or the caller's deadline
+    /// runs out.
+    fresh_notifier: cqs::watch_status::SharedFreshNotifier,
 }
 
 impl BatchView {
@@ -1982,6 +2004,33 @@ impl BatchView {
     pub fn request_reconcile(&self) -> bool {
         self.reconcile_signal
             .swap(true, std::sync::atomic::Ordering::Release)
+    }
+
+    /// #1228 (RM-2): borrow the shared freshness notifier so a
+    /// `wait_fresh` handler can park on it. Returns the `Arc` clone
+    /// so the daemon thread can call `wait_until_fresh` without
+    /// holding the BatchContext mutex (the wait can be minutes).
+    pub fn fresh_notifier(&self) -> cqs::watch_status::SharedFreshNotifier {
+        Arc::clone(&self.fresh_notifier)
+    }
+
+    /// #1228 (RM-2): test-only helpers used by `dispatch_wait_fresh`'s
+    /// unit suite to seed the shared snapshot. Production code reaches
+    /// the snapshot through the watch loop's `publish_watch_snapshot`,
+    /// not these accessors. `pub(crate)` keeps the test wiring out of
+    /// the public API.
+    #[cfg(test)]
+    pub(crate) fn test_overwrite_watch_snapshot(&self, snap: cqs::watch_status::WatchSnapshot) {
+        let mut guard = self
+            .watch_snapshot
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        *guard = snap;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_watch_snapshot_handle(&self) -> cqs::watch_status::SharedWatchSnapshot {
+        Arc::clone(&self.watch_snapshot)
     }
 
     /// Build a [`cqs::daemon_translate::PingResponse`] from the snapshot.
@@ -2349,6 +2398,10 @@ pub(crate) fn create_context_with_runtime(
         // is harmless (the watch loop that would consume the signal
         // simply isn't running).
         reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
+        // #1228 (RM-2): default no-op notifier. Outside `cqs watch
+        // --serve` the watch loop never calls `set_fresh`, so a stray
+        // `wait_fresh` request hits the caller's deadline naturally.
+        fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
     })
 }
 
@@ -2412,6 +2465,9 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         // Tests that need to assert the daemon flipped it pull the
         // field clone before invoking dispatch.
         reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
+        // #1228 (RM-2): tests get a fresh notifier; freshness-API tests
+        // pull the field clone and call `set_fresh` directly.
+        fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
     })
 }
 

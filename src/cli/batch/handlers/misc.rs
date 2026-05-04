@@ -541,6 +541,70 @@ pub(in crate::cli::batch) fn dispatch_status(ctx: &BatchView) -> Result<serde_js
         .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"))
 }
 
+/// #1228 (RM-2): block until the watch loop transitions to Fresh, or
+/// `wait_secs` elapses. Replaces the prior 250 ms-poll loop in
+/// `wait_for_fresh` — one round-trip, zero busy-poll.
+///
+/// Behaviour:
+/// 1. Read the current snapshot. If already Fresh, return it immediately
+///    (no parking) — preserves the "already fresh tree pays no latency"
+///    contract from the old polling implementation.
+/// 2. Otherwise park on the shared [`cqs::watch_status::FreshNotifier`]
+///    until either the next `false → true` transition fires
+///    `notify_all`, or `deadline` expires. The waiter loop in
+///    `FreshNotifier::wait_until_fresh` re-checks the predicate after
+///    every wake (handles spurious wake-ups + the rare `true → false`
+///    flip mid-wait).
+/// 3. Return the snapshot in either case — the caller distinguishes
+///    "Fresh" vs "Timeout" by inspecting the snapshot's `state` field.
+///    On wake the snapshot is read AFTER the wait, so the returned
+///    payload reflects the latest publish — not whatever was visible
+///    when the request first parked.
+///
+/// `wait_secs == 0` returns immediately with the current snapshot,
+/// matching how the prior client-side loop's deadline-first check
+/// behaves on a zero budget. Capped at 86_400 s (24 h) for parity
+/// with the client-side `wait_for_fresh` cap.
+pub(in crate::cli::batch) fn dispatch_wait_fresh(
+    ctx: &BatchView,
+    wait_secs: u64,
+) -> Result<serde_json::Value> {
+    let bounded_secs = wait_secs.min(86_400);
+    let _span = tracing::info_span!("batch_wait_fresh", wait_secs, bounded_secs,).entered();
+    let start = std::time::Instant::now();
+
+    let initial = ctx.watch_snapshot();
+    if initial.is_fresh() {
+        tracing::info!("wait_fresh: already fresh on entry");
+        return serde_json::to_value(&initial)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"));
+    }
+
+    let deadline = start + std::time::Duration::from_secs(bounded_secs);
+    let notifier = ctx.fresh_notifier();
+    let woke_fresh = notifier.wait_until_fresh(deadline);
+
+    let snap = ctx.watch_snapshot();
+    if woke_fresh {
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            modified_files = snap.modified_files,
+            "wait_fresh: woke on Fresh transition"
+        );
+    } else {
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            modified_files = snap.modified_files,
+            pending_notes = snap.pending_notes,
+            rebuild_in_flight = snap.rebuild_in_flight,
+            "wait_fresh: deadline reached without Fresh transition"
+        );
+    }
+
+    serde_json::to_value(&snap)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"))
+}
+
 /// #1182 — Layer 1: git-hook-driven reconcile request. Flips the shared
 /// `SharedReconcileSignal` AtomicBool to `true`; the watch loop swaps it
 /// back to `false` and runs an immediate reconcile pass on its next tick.
@@ -624,6 +688,151 @@ mod tests {
         );
         let obj = json.as_object().unwrap();
         assert!(!obj.is_empty(), "ping snapshot must not be empty");
+    }
+
+    /// #1228 (RM-2): `dispatch_wait_fresh` returns immediately when the
+    /// snapshot is already Fresh on entry — no parking, no Condvar wait.
+    /// Pins the "already-fresh tree pays no latency" contract from the
+    /// pre-#1228 polling implementation.
+    #[test]
+    fn dispatch_wait_fresh_returns_immediately_when_already_fresh() {
+        let (_dir, _ctx, view) = empty_view();
+        // Seed the shared snapshot with a Fresh state. The handler reads
+        // through the same `Arc<RwLock<...>>`, so updates here are
+        // immediately visible.
+        let fresh_snap = cqs::watch_status::WatchSnapshot {
+            state: cqs::watch_status::FreshnessState::Fresh,
+            modified_files: 0,
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 42,
+            dropped_this_cycle: 0,
+            last_event_unix_secs: 1_700_000_000,
+            last_synced_at: Some(1_700_000_000),
+            snapshot_at: Some(1_700_000_001),
+            active_slot: None,
+        };
+        // Reach into the lock through the view's clone of the Arc.
+        // (Tests under `cqs::watch_status` write directly; here we
+        // mutate via the `BatchView`-internal field by name.)
+        view.test_overwrite_watch_snapshot(fresh_snap.clone());
+
+        let start = std::time::Instant::now();
+        // wait_secs=10 — handler should return well before this.
+        let json = dispatch_wait_fresh(&view, 10).expect("dispatch_wait_fresh");
+        let elapsed_ms = start.elapsed().as_millis();
+
+        assert!(
+            elapsed_ms < 100,
+            "dispatch_wait_fresh on already-fresh snapshot must return immediately; took {elapsed_ms}ms"
+        );
+        assert_eq!(json.get("state").and_then(|v| v.as_str()), Some("fresh"));
+        assert_eq!(
+            json.get("incremental_count").and_then(|v| v.as_u64()),
+            Some(42)
+        );
+    }
+
+    /// #1228 (RM-2): `dispatch_wait_fresh` parks until a `false → true`
+    /// transition fires `notify_all`. Spawns a "watch loop" thread that
+    /// flips the notifier after a short sleep; the handler must wake
+    /// promptly and return the freshly-published snapshot.
+    #[test]
+    fn dispatch_wait_fresh_wakes_on_notifier_flip() {
+        let (_dir, _ctx, view) = empty_view();
+        // Clone the Arc handles that the publisher thread will use.
+        // BatchView itself is not Clone (it caches a few inner Arcs),
+        // but the shared notifier and snapshot are exactly what the
+        // watch loop holds — so cloning those is sufficient.
+        let notifier_for_publisher = view.fresh_notifier();
+        let snap_handle_for_publisher = view.test_watch_snapshot_handle();
+        let publisher = std::thread::spawn(move || {
+            // Wall-clock gap chosen to be >> the handler's 0 → park time
+            // but small enough to keep the test fast.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Flip the cached snapshot to Fresh, then notify.
+            let fresh = cqs::watch_status::WatchSnapshot {
+                state: cqs::watch_status::FreshnessState::Fresh,
+                modified_files: 0,
+                pending_notes: false,
+                rebuild_in_flight: false,
+                delta_saturated: false,
+                incremental_count: 99,
+                dropped_this_cycle: 0,
+                last_event_unix_secs: 1_700_000_000,
+                last_synced_at: Some(1_700_000_000),
+                snapshot_at: Some(1_700_000_002),
+                active_slot: None,
+            };
+            *snap_handle_for_publisher
+                .write()
+                .unwrap_or_else(|p| p.into_inner()) = fresh;
+            notifier_for_publisher.set_fresh(true);
+        });
+
+        let start = std::time::Instant::now();
+        let json = dispatch_wait_fresh(&view, 5).expect("dispatch_wait_fresh");
+        let elapsed_ms = start.elapsed().as_millis();
+        publisher.join().expect("publisher thread");
+
+        // Should have woken on the notifier well within the 5 s budget,
+        // and well after the publisher's 50 ms sleep.
+        assert!(
+            (40..2000).contains(&elapsed_ms),
+            "dispatch_wait_fresh wake latency outside expected window: {elapsed_ms}ms"
+        );
+        assert_eq!(json.get("state").and_then(|v| v.as_str()), Some("fresh"));
+        assert_eq!(
+            json.get("incremental_count").and_then(|v| v.as_u64()),
+            Some(99)
+        );
+    }
+
+    /// #1228 (RM-2): `dispatch_wait_fresh` returns the still-stale
+    /// snapshot when `wait_secs` runs out without a Fresh transition.
+    /// Tight `wait_secs=1` keeps the test fast; the handler returns
+    /// after ~1 s.
+    #[test]
+    fn dispatch_wait_fresh_returns_stale_snapshot_on_deadline() {
+        let (_dir, _ctx, view) = empty_view();
+        let stale = cqs::watch_status::WatchSnapshot {
+            state: cqs::watch_status::FreshnessState::Stale,
+            modified_files: 7,
+            pending_notes: false,
+            rebuild_in_flight: false,
+            delta_saturated: false,
+            incremental_count: 0,
+            dropped_this_cycle: 0,
+            last_event_unix_secs: 1_700_000_000,
+            last_synced_at: Some(1_700_000_000),
+            snapshot_at: Some(1_700_000_003),
+            active_slot: None,
+        };
+        view.test_overwrite_watch_snapshot(stale);
+
+        let start = std::time::Instant::now();
+        let json = dispatch_wait_fresh(&view, 1).expect("dispatch_wait_fresh");
+        let elapsed = start.elapsed();
+
+        // Handler must wait the full second (within scheduler jitter)
+        // before returning the stale snapshot.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "dispatch_wait_fresh exited too early: {}ms",
+            elapsed.as_millis()
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "dispatch_wait_fresh exited too late: {}ms",
+            elapsed.as_millis()
+        );
+        assert_eq!(
+            json.get("state").and_then(|v| v.as_str()),
+            Some("stale"),
+            "must return the post-deadline snapshot, got: {json}"
+        );
+        assert_eq!(json.get("modified_files").and_then(|v| v.as_u64()), Some(7));
     }
 
     /// #1182: `dispatch_status` against an empty `BatchContext` (no watch
