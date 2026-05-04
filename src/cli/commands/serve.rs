@@ -80,19 +80,33 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
     };
 
     if open {
-        // The launched URL embeds the token as a query parameter; the
-        // post-auth redirect strips it from the address bar and hands
-        // it off to a `cqs_token_<port>` cookie, so reload + bookmark
-        // stay working without leaving the token visible. With
-        // --no-auth the URL is the bare bind addr.
-        let url = match auth.token() {
-            Some(token) => format!("http://{bind_addr}/?token={}", token.as_str()),
-            None => format!("http://{bind_addr}"),
-        };
-        if let Err(e) = open_browser(&url) {
-            tracing::warn!(error = %e, "failed to open browser");
-            eprintln!("WARN: --open requested but failed to launch browser: {e}");
-            eprintln!("       open the URL printed in the listening banner manually");
+        // SEC-V1.33-1 (#1337): with auth on, the token-bearing URL would
+        // land in the spawned browser-launcher's argv (`xdg-open`,
+        // `cmd /C start`, `open`), readable by any local user via
+        // `/proc/<pid>/cmdline` / `wmic process get CommandLine` and
+        // typically captured by audit subsystems (auditd, ETW). Banner
+        // routing already pulled the token off journald/stdout for the
+        // same threat model; spawning a subprocess re-leaks it through
+        // a parallel surface. Min-viable mitigation: skip the launch
+        // when the URL would carry a token, and tell the user to paste
+        // the banner URL manually. With `--no-auth` the URL is bare,
+        // nothing to leak — proceed normally.
+        match auth.token() {
+            Some(_) => {
+                eprintln!(
+                    "NOTE: --open suppressed under auth (token in argv would be readable\n       \
+                     to other local users via /proc/<pid>/cmdline). Paste the URL\n       \
+                     printed in the listening banner into your browser instead."
+                );
+            }
+            None => {
+                let url = format!("http://{bind_addr}");
+                if let Err(e) = open_browser(&url) {
+                    tracing::warn!(error = %e, "failed to open browser");
+                    eprintln!("WARN: --open requested but failed to launch browser: {e}");
+                    eprintln!("       open the URL printed in the listening banner manually");
+                }
+            }
         }
     }
 
