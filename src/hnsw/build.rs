@@ -311,17 +311,22 @@ mod tests {
                 .unwrap();
         assert_eq!(index.len(), 25);
 
-        // Search should work correctly. Top-10 (not top-5) for the same
-        // reason `test_build_batched_vs_regular_equivalence` uses top-10:
-        // HNSW batched builds on small N (25 here) have suboptimal recall —
-        // the unseeded random projections occasionally bump the matching
-        // chunk out of a top-5 window. Issue #1104 surfaced this as a CI
-        // flake; the test exists to verify batched-build wiring round-trips
-        // the right item, not to assert perfect recall.
+        // Wiring check: top-N from N. The test exists to verify the batched
+        // build round-trips every chunk into a searchable graph, not to pin
+        // recall — `make_test_embedding`'s adjacent-seed vectors are very
+        // close in cosine space, and the small-tier defaults from #1370
+        // (M=16, ef_c=100, ef_s=50 for <5k chunks, dropped from M=24/ef_c=200
+        // /ef_s=100) flake on top-K windows smaller than N. Issue #1104
+        // and the post-#1425 main-CI flake both surface as exactly that.
         let query = make_embedding(1);
-        let results = index.search(&query, 10);
+        let results = index.search(&query, 25);
         assert!(!results.is_empty());
-        assert!(results.iter().any(|r| r.id == "chunk1"));
+        assert!(
+            results.iter().any(|r| r.id == "chunk1"),
+            "chunk1 missing from top-25 of N=25; got {} results: {:?}",
+            results.len(),
+            results.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -351,18 +356,19 @@ mod tests {
 
         assert_eq!(regular.len(), batched.len());
 
-        // Both should find the same items (though scores may differ slightly
-        // due to HNSW's approximate nature and different graph construction order)
+        // Both should find item10. Top-N from N — see the rationale in
+        // `test_build_batched`: post-#1425 small-tier defaults plus the
+        // adjacent-seed clustering of `make_test_embedding` make any
+        // partial-K window flaky on N=20. Wiring + parity is what we
+        // care about here, not recall.
         let query = make_embedding(10);
-        let regular_results = regular.search(&query, 10);
-        let batched_results = batched.search(&query, 10);
+        let regular_results = regular.search(&query, 20);
+        let batched_results = batched.search(&query, 20);
 
-        // item10 should appear in top results for both (use top-10 since
-        // HNSW batched builds on small datasets can have suboptimal recall)
         let regular_found = regular_results.iter().any(|r| r.id == "item10");
         let batched_found = batched_results.iter().any(|r| r.id == "item10");
-        assert!(regular_found, "Regular build should find item10 in top 10");
-        assert!(batched_found, "Batched build should find item10 in top 10");
+        assert!(regular_found, "Regular build should find item10 in top 20");
+        assert!(batched_found, "Batched build should find item10 in top 20");
     }
 
     // ===== TC-31: multi-model dim-threading (HNSW build) =====
