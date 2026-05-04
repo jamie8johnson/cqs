@@ -1267,7 +1267,33 @@ impl Embedder {
                 outputs.keys().collect::<Vec<_>>()
             ))
         })?;
-        let (shape, data) = output.try_extract_tensor::<f32>().map_err(ort_err)?;
+        // #1442 follow-up: dispatch on output dtype. Most ONNX exports
+        // emit `Tensor<f32>`, but FP16 / bfloat16 quantized exports
+        // (e.g. zhiqing/Qwen3-Embedding-4B-ONNX) emit `Tensor<f16>` or
+        // `Tensor<bf16>` and the f32 extract fails fast with
+        // "Cannot extract Tensor<f32> from Tensor<f16>" — strict
+        // dtype check, not a silent reinterpret. Try f32 first
+        // (zero-copy fast path), then half-precision variants on
+        // mismatch and convert each element to f32 in software.
+        // The conversion cost (one map per inference) is negligible
+        // next to the model forward pass.
+        //
+        // `shape` and `data` after this block are owned `Vec<i64>` /
+        // `Vec<f32>`; the f32 fast path pays one extra `.to_vec()`
+        // (~few MB/batch) for shape uniformity vs branching the rest
+        // of the function body.
+        let (shape_vec, data_vec): (Vec<i64>, Vec<f32>) = match output.try_extract_tensor::<f32>() {
+            Ok((s, d)) => (s.to_vec(), d.to_vec()),
+            Err(_) => match output.try_extract_tensor::<half::f16>() {
+                Ok((s, d)) => (s.to_vec(), d.iter().map(|h| h.to_f32()).collect()),
+                Err(_) => {
+                    let (s, d) = output.try_extract_tensor::<half::bf16>().map_err(ort_err)?;
+                    (s.to_vec(), d.iter().map(|h| h.to_f32()).collect())
+                }
+            },
+        };
+        let shape: &[i64] = &shape_vec;
+        let data: &[f32] = &data_vec;
 
         let batch_size = texts.len();
         let seq_len = max_len;
@@ -1720,6 +1746,44 @@ fn last_token_pool(hidden: &Array3<f32>, attention_mask: &Array2<i64>) -> Vec<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== FP16 / BF16 conversion smoke tests =====
+    //
+    // #1442 follow-up: the embed loop dispatches output extraction on
+    // dtype (`try_extract_tensor::<f32>` → fall back to `f16` then
+    // `bf16`). The actual ORT extraction needs a live session, but
+    // the half-crate conversion arithmetic that we depend on is
+    // worth pinning at the unit level so a future `half` crate bump
+    // (or a precision regression in the representation) trips a fast
+    // local test instead of a 5-7 hour reindex.
+    #[test]
+    fn f16_round_trip_preserves_chunk_embedding_range() {
+        // Embedding values are normalized to [-1, 1] (cosine-comparable
+        // unit vectors); pin a few representative points across that
+        // range. f16 has ~3 decimal digits of precision; tolerance 1e-3.
+        for v in [-1.0_f32, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0] {
+            let h = half::f16::from_f32(v);
+            let back = h.to_f32();
+            assert!(
+                (back - v).abs() < 1e-3,
+                "f16 round-trip lost precision: {v} → {h:?} → {back}"
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_round_trip_preserves_chunk_embedding_range() {
+        // bf16 has ~2-3 decimal digits — coarser mantissa than f16 but
+        // wider exponent range. Same value sweep, looser tolerance.
+        for v in [-1.0_f32, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0] {
+            let h = half::bf16::from_f32(v);
+            let back = h.to_f32();
+            assert!(
+                (back - v).abs() < 1e-2,
+                "bf16 round-trip lost precision: {v} → {h:?} → {back}"
+            );
+        }
+    }
 
     // ===== Embedding tests =====
 

@@ -556,14 +556,16 @@ define_embedder_presets! {
     /// across multiple windows automatically — no information loss,
     /// just extra forward passes per long file.
     ///
-    /// FP32 vs FP16 note: `zhiqing/Qwen3-Embedding-4B-ONNX` ships an
-    /// 8 GB FP16 sidecar that's tempting on disk, but its
-    /// `last_hidden_state` output tensor is `Tensor<f16>`. cqs's embed
-    /// loop calls `try_extract_tensor::<f32>()` and fails fast with
-    /// "Cannot extract Tensor<f32> from Tensor<f16>" before producing
-    /// any output. `sigalr/Qwen3-Embedding-4B-ONNX-ST` keeps the
-    /// weights FP32 and emits a `Tensor<f32>` last_hidden_state — uses
-    /// 2× the disk + GPU but works without an ORT-side dtype shim.
+    /// FP16 export note: `zhiqing/Qwen3-Embedding-4B-ONNX` ships an
+    /// 8 GB FP16 sidecar — half the size of the equivalent FP32 export
+    /// `sigalr/Qwen3-Embedding-4B-ONNX-ST`. cqs's embed loop now
+    /// dispatches on output dtype (#1442 follow-up): tries f32 first
+    /// (zero-copy), falls back to f16 / bf16 with software conversion
+    /// to f32 on extract. The 8 GB mmap is the deciding factor on
+    /// memory-tight rigs (WSL2 + 49 GB GPU, where the 16 GB FP32 sidecar
+    /// crashed the VM repeatedly during model load). FP16 inference
+    /// quality is empirically indistinguishable from FP32 on Qwen3
+    /// embeddings at the chunk lengths cqs sees.
     ///
     /// Pooling note: the third-party export does NOT bake pooling into
     /// the ONNX graph (unlike `onnx-community`'s 8B variant which
@@ -574,16 +576,18 @@ define_embedder_presets! {
     /// Position-ids note: the export exposes `position_ids` as an
     /// explicit ONNX input. cqs's `decoder_only_with_position_ids` shape
     /// materialises `[[0, 1, …, seq_len-1]] × batch` per call. (#1442)
-    qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "sigalr/Qwen3-Embedding-4B-ONNX-ST",
-        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
+    qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "zhiqing/Qwen3-Embedding-4B-ONNX",
+        onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
         dim = 2560, max_seq_length = 4096,
         query_prefix = "Instruct: Find the code chunk that best matches the query.\nQuery: ", doc_prefix = "",
         input_names = InputNames::decoder_only_with_position_ids(),
         output_name = "last_hidden_state".to_string(),
         pooling = PoolingStrategy::LastToken,
-        // FP32 ONNX bundle: ~1.6 MB graph + ~16.1 GB external-data
-        // weights file at `onnx/model.onnx_data`. Plus ~14 MB tokenizer.
-        approx_download_bytes = Some(16_200 * 1024 * 1024),
+        // FP16 ONNX bundle: ~1.6 MB graph + ~8.04 GB external-data
+        // weights file at `model.onnx_data`. Plus ~14 MB tokenizer.
+        // Half the FP32 footprint — the deciding factor on rigs that
+        // crashed under the 16 GB single-mmap pressure.
+        approx_download_bytes = Some(8_100 * 1024 * 1024),
         pad_id = 151643;
 }
 

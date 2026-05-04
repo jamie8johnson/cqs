@@ -90,7 +90,13 @@ tree-sitter-structured-text = { version = "0.1", optional = true }
 tree-sitter-dart = { version = "0.1", optional = true }
 
 # ML (CUDA/TensorRT added for non-macOS targets below)
-ort = "2.0.0-rc.12"
+# `half` feature gates ort's f16 / bf16 tensor-extraction support; cqs uses
+# it to consume FP16 ONNX exports (e.g. zhiqing/Qwen3-Embedding-4B-ONNX)
+# whose `last_hidden_state` is `Tensor<f16>`. The embed loop converts to f32
+# in software after extract — see `src/embedder/mod.rs` extraction site.
+# `half` is a direct dep too because ort doesn't re-export the type.
+ort = { version = "2.0.0-rc.12", features = ["half"] }
+half = "2"
 tokenizers = { version = "0.23", features = ["http"] }
 hf-hub = "0.4.3"
 ndarray = "0.17"
@@ -175,7 +181,7 @@ libc = "0.2"
 
 # CUDA/TensorRT only available on Linux and Windows (no prebuilt binaries for macOS)
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
+ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt", "half"] }
 
 [features]
 default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-dart", "convert", "llm-summaries", "serve"]
