@@ -106,10 +106,11 @@ fn test_search_filtered_by_language() {
         .unwrap();
 
     // Search for Rust only
-    let filter = SearchFilter {
-        languages: Some(vec![Language::Rust]),
-        path_pattern: None,
-        ..Default::default()
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.languages = Some(vec![Language::Rust]);
+        f.path_pattern = None;
+        f
     };
     let results = store
         .search_filtered(&mock_embedding(1.0), &filter, 10, 0.0)
@@ -375,10 +376,11 @@ fn test_rrf_search() {
         .unwrap();
 
     // Search with RRF enabled
-    let filter = SearchFilter {
-        enable_rrf: true,
-        query_text: "error handling".to_string(),
-        ..Default::default()
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.enable_rrf = true;
+        f.query_text = "error handling".to_string();
+        f
     };
 
     let results = store

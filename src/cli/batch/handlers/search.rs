@@ -141,19 +141,24 @@ pub(in crate::cli::batch) fn dispatch_search(
         cqs::search::router::SearchStrategy::DenseBase
     ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
 
-    let filter = cqs::SearchFilter {
-        languages,
-        include_types,
-        exclude_types,
-        path_pattern: args.path.clone(),
-        name_boost: args.name_boost,
-        query_text: args.query.clone(),
-        enable_rrf: args.rrf,
-        enable_demotion: !args.no_demote,
-        enable_splade: use_splade,
-        splade_alpha,
-        type_boost_types: classification.type_hints.clone(),
-        mmr_lambda: None, // Resolved by finalize_results via CQS_MMR_LAMBDA fallback.
+    // mmr_lambda intentionally left at default (None) — finalize_results
+    // resolves it via CQS_MMR_LAMBDA fallback. #1349: SearchFilter is
+    // `#[non_exhaustive]`, so external-crate construction goes through
+    // `Default` + field assignment.
+    let filter = {
+        let mut f = cqs::SearchFilter::default();
+        f.languages = languages;
+        f.include_types = include_types;
+        f.exclude_types = exclude_types;
+        f.path_pattern = args.path.clone();
+        f.name_boost = args.name_boost;
+        f.query_text = args.query.clone();
+        f.enable_rrf = args.rrf;
+        f.enable_demotion = !args.no_demote;
+        f.enable_splade = use_splade;
+        f.splade_alpha = splade_alpha;
+        f.type_boost_types = classification.type_hints.clone();
+        f
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 

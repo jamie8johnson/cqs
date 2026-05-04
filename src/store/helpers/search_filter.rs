@@ -13,6 +13,17 @@ pub const DEFAULT_NAME_BOOST: f32 = 0.2;
 ///
 /// All fields are optional. Unset filters match all chunks.
 /// Use [`SearchFilter::validate()`] to check constraints before searching.
+///
+/// #1349 / EX-V1.33-4: marked `#[non_exhaustive]` so external crates and the
+/// binary crate (`src/main.rs` + `src/cli/*`) cannot construct via struct
+/// literal without `..Default::default()`. The audit found 37+ enumerating
+/// sites pre-2026-05-02; the post-fix invariant is that every binary-crate
+/// site spreads from `Default`, so adding a new field is a one-line struct
+/// edit instead of a 37-site chase. In-crate (lib-side) construction still
+/// allows full enumeration — those sites already use `..SearchFilter::default()`
+/// by convention, but the compiler can't enforce it within the same crate.
+/// Tests living under `tests/*.rs` are external crates and ARE constrained.
+#[non_exhaustive]
 pub struct SearchFilter {
     /// Filter by programming language(s)
     pub languages: Option<Vec<Language>>,

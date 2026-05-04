@@ -83,9 +83,10 @@ fn test_recall_at_5() {
             .expect("Failed to embed query");
 
         // Search with language filter
-        let filter = SearchFilter {
-            languages: Some(vec![case.language]),
-            ..Default::default()
+        let filter = {
+            let mut f = SearchFilter::default();
+            f.languages = Some(vec![case.language]);
+            f
         };
         let results = store
             .search_filtered(&query_embedding, &filter, 5, 0.0)

@@ -156,9 +156,10 @@ fn test_search_by_candidate_ids_with_glob_filter() {
 
     let ids = insert_chunks(&store, &[c1, c2], 1.0);
     let query = mock_embedding(1.0);
-    let filter = SearchFilter {
-        path_pattern: Some("src/**".to_string()),
-        ..Default::default()
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.path_pattern = Some("src/**".to_string());
+        f
     };
 
     let candidate_ids: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
@@ -289,9 +290,10 @@ fn test_search_filtered_glob_pattern() {
     insert_chunks(&store, &[c1, c2, c3], 1.0);
 
     let query = mock_embedding(1.0);
-    let filter = SearchFilter {
-        path_pattern: Some("src/**".to_string()),
-        ..Default::default()
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.path_pattern = Some("src/**".to_string());
+        f
     };
 
     let results = store.search_filtered(&query, &filter, 10, 0.0).unwrap();
@@ -311,9 +313,10 @@ fn test_search_filtered_language() {
     insert_chunks(&store, &[c1, c2], 1.0);
 
     let query = mock_embedding(1.0);
-    let filter = SearchFilter {
-        languages: Some(vec![Language::Rust]),
-        ..SearchFilter::default()
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.languages = Some(vec![Language::Rust]);
+        f
     };
 
     let results = store.search_filtered(&query, &filter, 10, 0.0).unwrap();
