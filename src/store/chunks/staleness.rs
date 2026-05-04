@@ -840,6 +840,71 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// #1229: batched per-origin fingerprint lookup. Mirror of
+    /// [`indexed_file_origins`] but bounded by the supplied `origins`
+    /// list rather than the full file table — lets `run_daemon_reconcile`
+    /// stream a 1M-file walk in 1k-row batches without materializing the
+    /// whole-tree origin map (`Vec<PathBuf>` + `HashMap<String,
+    /// FileFingerprint>` was ~12 MB transient on a 100k-file repo,
+    /// scaling linearly to ~120 MB on 1M-file).
+    ///
+    /// Same `MAX(...)` deduplication semantics as `indexed_file_origins`:
+    /// if a row briefly carries two mtimes for the same origin during an
+    /// in-flight reindex (RM-17 / #1227), `MAX` picks the newer one and
+    /// dedupes to one entry per origin.
+    ///
+    /// Origins not present in the index are simply absent from the map —
+    /// the caller treats those as `Added` (no stored fingerprint) just as
+    /// `indexed.get(origin)` returning `None` does in the eager path.
+    pub fn fingerprints_for_origins(
+        &self,
+        origins: &[&str],
+    ) -> Result<HashMap<String, FileFingerprint>, StoreError> {
+        let _span =
+            tracing::debug_span!("fingerprints_for_origins", count = origins.len()).entered();
+        if origins.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.rt.block_on(async {
+            use crate::store::helpers::sql::max_rows_per_statement;
+            // Each origin binds a single placeholder, so the per-row
+            // budget is the parameter limit divided by 1.
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
+            type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
+            let mut out: HashMap<String, FileFingerprint> = HashMap::with_capacity(origins.len());
+            for batch in origins.chunks(BATCH_SIZE) {
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                let sql = format!(
+                    "SELECT origin, \
+                            MAX(source_mtime) AS mtime, \
+                            MAX(source_size) AS size, \
+                            MAX(source_content_hash) AS content_hash \
+                     FROM chunks \
+                     WHERE source_type = 'file' AND origin IN ({}) \
+                     GROUP BY origin",
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, FpRow>(&sql);
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
+                for (origin, mtime, size, hash) in query.fetch_all(&self.pool).await? {
+                    let content_hash =
+                        hash.and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+                    out.insert(
+                        origin,
+                        FileFingerprint {
+                            mtime,
+                            size: size.and_then(|s| u64::try_from(s).ok()),
+                            content_hash,
+                        },
+                    );
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Check if specific origins are stale (mtime changed on disk).
     /// Lightweight per-query check: only examines the given origins, not the
     /// entire index. O(result_count), not O(index_size).
