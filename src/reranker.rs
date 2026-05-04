@@ -14,7 +14,9 @@ use ort::session::Session;
 
 use crate::aux_model::{self, AuxModelKind};
 use crate::config::AuxModelSection;
-use crate::embedder::{create_session, pad_2d_i64, select_provider, ExecutionProvider};
+use crate::embedder::{
+    create_session, pad_2d_i64_from_encodings, select_provider, ExecutionProvider,
+};
 use crate::store::SearchResult;
 
 /// Filename within the HF repo layout — kept local so
@@ -290,18 +292,13 @@ impl OnnxReranker {
         let batch_size = chunk.len();
         debug_assert!(batch_size > 0, "run_chunk called with empty chunk");
 
-        // Build per-chunk padded tensors.
-        let input_ids: Vec<Vec<i64>> = chunk
+        // Build per-chunk padded tensors. PERF-V1.33-3 / #1377: pull
+        // `max_len` from encodings directly and feed the encodings to
+        // `pad_2d_i64_from_encodings` below — no intermediate
+        // `Vec<Vec<i64>>` per field.
+        let max_len = chunk
             .iter()
-            .map(|e| e.get_ids().iter().map(|&id| id as i64).collect())
-            .collect();
-        let attention_mask: Vec<Vec<i64>> = chunk
-            .iter()
-            .map(|e| e.get_attention_mask().iter().map(|&m| m as i64).collect())
-            .collect();
-        let max_len = input_ids
-            .iter()
-            .map(|v| v.len())
+            .map(|e| e.get_ids().len())
             .max()
             .unwrap_or(0)
             .min(self.max_length);
@@ -336,19 +333,15 @@ impl OnnxReranker {
         let _chunk_span =
             tracing::debug_span!("reranker_run_chunk", batch_size, max_len, expects_tti).entered();
 
-        let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
-        let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
+        let ids_arr = pad_2d_i64_from_encodings(chunk, |e| e.get_ids(), max_len, 0);
+        let mask_arr = pad_2d_i64_from_encodings(chunk, |e| e.get_attention_mask(), max_len, 0);
 
         use ort::value::Tensor;
         let ids_tensor = Tensor::from_array(ids_arr).map_err(ort_err)?;
         let mask_tensor = Tensor::from_array(mask_arr).map_err(ort_err)?;
 
         let outputs = if expects_tti {
-            let token_type_ids: Vec<Vec<i64>> = chunk
-                .iter()
-                .map(|e| e.get_type_ids().iter().map(|&t| t as i64).collect())
-                .collect();
-            let type_arr = pad_2d_i64(&token_type_ids, max_len, 0);
+            let type_arr = pad_2d_i64_from_encodings(chunk, |e| e.get_type_ids(), max_len, 0);
             let type_tensor = Tensor::from_array(type_arr).map_err(ort_err)?;
             session
                 .run(ort::inputs![

@@ -360,28 +360,39 @@ impl<Mode> Store<Mode> {
                 // so we can stream through linearly). Each chunk_id belongs
                 // entirely to this batch — the subquery guarantees complete
                 // groups, never splitting a chunk across pages.
-                let mut current_id: Option<String> = None;
+                //
+                // PERF-V1.33-6 / #1377: borrow `chunk_id` as `&str` from the
+                // sqlx row buffer instead of allocating a fresh `String` for
+                // every row. Pre-fix, a 60k-chunk index averaging ~100 sparse
+                // tokens per chunk allocated ~6M Strings per call (called on
+                // every watch reload + daemon startup); only the
+                // chunk-boundary transition needs an owned id (~60k Strings,
+                // 100× reduction). `last_id_in_batch` keeps an owned String
+                // because it crosses the loop body for the post-loop
+                // dump-counting log.
+                let mut current_id: Option<&str> = None;
                 let mut current_vec: SparseVector = Vec::new();
                 let mut last_id_in_batch = String::new();
                 let mut distinct_ids_in_batch: i64 = 0;
 
                 for row in &rows {
-                    let chunk_id: String = row.get("chunk_id");
+                    let chunk_id: &str = row.get("chunk_id");
                     let token_id: i64 = row.get("token_id");
                     let weight: f64 = row.get("weight");
 
-                    if current_id.as_ref() != Some(&chunk_id) {
+                    if current_id != Some(chunk_id) {
                         if let Some(id) = current_id.take() {
-                            result.push((id, std::mem::take(&mut current_vec)));
+                            result.push((id.to_string(), std::mem::take(&mut current_vec)));
                         }
-                        last_id_in_batch = chunk_id.clone();
+                        last_id_in_batch.clear();
+                        last_id_in_batch.push_str(chunk_id);
                         distinct_ids_in_batch += 1;
                         current_id = Some(chunk_id);
                     }
                     if token_id < 0 || token_id > u32::MAX as i64 {
                         tracing::warn!(
                             token_id,
-                            chunk_id = %current_id.as_deref().unwrap_or("?"),
+                            chunk_id = %current_id.unwrap_or("?"),
                             "Invalid token_id, skipping"
                         );
                         continue;
@@ -389,7 +400,7 @@ impl<Mode> Store<Mode> {
                     current_vec.push((token_id as u32, weight as f32));
                 }
                 if let Some(id) = current_id {
-                    result.push((id, current_vec));
+                    result.push((id.to_string(), current_vec));
                 }
 
                 // If the batch returned fewer distinct chunk_ids than the
