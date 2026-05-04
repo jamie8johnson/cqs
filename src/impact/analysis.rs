@@ -205,7 +205,7 @@ pub(crate) fn find_affected_tests_with_chunks(
     let mut tests: Vec<TestInfo> = test_chunks
         .iter()
         .filter_map(|test| {
-            ancestors.get(&test.name).and_then(|&d| {
+            ancestors.get(test.name.as_str()).and_then(|&d| {
                 if d > 0 {
                     Some(TestInfo {
                         name: test.name.clone(),
@@ -239,11 +239,12 @@ fn find_transitive_callers<Mode>(
     // Single graph traversal to collect all ancestors + depths
     let ancestors = reverse_bfs(graph, target_name, depth);
 
-    // Filter out the target itself and depth-0 entries
+    // Filter out the target itself and depth-0 entries.
+    // #1377/P3-55: keys are `Arc<str>`; use `as_ref()` to borrow `&str`.
     let caller_entries: Vec<(&str, usize)> = ancestors
         .iter()
-        .filter(|(name, &d)| d > 0 && name.as_str() != target_name)
-        .map(|(name, &d)| (name.as_str(), d))
+        .filter(|(name, &d)| d > 0 && name.as_ref() != target_name)
+        .map(|(name, &d)| (name.as_ref(), d))
         .collect();
 
     if caller_entries.is_empty() {

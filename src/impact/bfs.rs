@@ -39,15 +39,24 @@ pub(super) fn bfs_max_nodes() -> usize {
 /// Expansion stops when either `max_depth` or `bfs_max_nodes()` is reached.
 ///
 /// When `max_depth == 0`, returns only the target node at depth 0 (no traversal).
+///
+/// PERF-V1.33-1 / #1377 / P3-55: keys are `Arc<str>` so the BFS reuses the
+/// already-interned names from `graph.reverse` instead of allocating a
+/// fresh `String` per visit. On a hub function with thousands of
+/// transitive callers (default cap = 10k), pre-fix this was ~10k
+/// `caller.to_string()` heap allocations per call; post-fix it's
+/// `Arc::clone` (RC bump only). Lookup callers can still index by `&str`
+/// because `Arc<str>: Borrow<str>`.
 pub(super) fn reverse_bfs(
     graph: &CallGraph,
     target: &str,
     max_depth: usize,
-) -> HashMap<String, usize> {
-    let mut ancestors: HashMap<String, usize> = HashMap::new();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    ancestors.insert(target.to_string(), 0);
-    queue.push_back((target.to_string(), 0));
+) -> HashMap<Arc<str>, usize> {
+    let mut ancestors: HashMap<Arc<str>, usize> = HashMap::new();
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
+    let target_arc: Arc<str> = Arc::from(target);
+    ancestors.insert(Arc::clone(&target_arc), 0);
+    queue.push_back((target_arc, 0));
 
     while let Some((current, d)) = queue.pop_front() {
         if d >= max_depth {
@@ -61,14 +70,14 @@ pub(super) fn reverse_bfs(
             );
             break;
         }
-        if let Some(callers) = graph.reverse.get(current.as_str()) {
+        if let Some(callers) = graph.reverse.get(current.as_ref()) {
             for caller in callers {
                 if ancestors.len() >= bfs_max_nodes() {
                     break;
                 }
                 if !ancestors.contains_key(caller.as_ref()) {
-                    ancestors.insert(caller.to_string(), d + 1);
-                    queue.push_back((caller.to_string(), d + 1));
+                    ancestors.insert(Arc::clone(caller), d + 1);
+                    queue.push_back((Arc::clone(caller), d + 1));
                 }
             }
         }
@@ -145,18 +154,22 @@ pub(super) fn forward_bfs_multi(
 ///
 /// Production code uses `reverse_bfs_multi_attributed` instead (same traversal
 /// but also tracks which source produced each path). Kept for tests.
+///
+/// PERF-V1.33-1 / #1377 / P3-55: same `Arc<str>` rationale as
+/// [`reverse_bfs`].
 #[cfg(test)]
 pub(super) fn reverse_bfs_multi(
     graph: &CallGraph,
     targets: &[&str],
     max_depth: usize,
-) -> HashMap<String, usize> {
-    let mut ancestors: HashMap<String, usize> = HashMap::new();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+) -> HashMap<Arc<str>, usize> {
+    let mut ancestors: HashMap<Arc<str>, usize> = HashMap::new();
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
 
     for &target in targets {
-        ancestors.insert(target.to_string(), 0);
-        queue.push_back((target.to_string(), 0));
+        let arc: Arc<str> = Arc::from(target);
+        ancestors.insert(Arc::clone(&arc), 0);
+        queue.push_back((arc, 0));
     }
 
     while let Some((current, d)) = queue.pop_front() {
@@ -176,21 +189,21 @@ pub(super) fn reverse_bfs_multi(
         if ancestors.get(&current).is_some_and(|&stored| d > stored) {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(current.as_str()) {
+        if let Some(callers) = graph.reverse.get(current.as_ref()) {
             for caller in callers {
                 if ancestors.len() >= bfs_max_nodes() {
                     break;
                 }
-                match ancestors.entry(caller.to_string()) {
+                match ancestors.entry(Arc::clone(caller)) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert(d + 1);
-                        queue.push_back((caller.to_string(), d + 1));
+                        queue.push_back((Arc::clone(caller), d + 1));
                     }
                     std::collections::hash_map::Entry::Occupied(mut e) => {
                         // Update if we found a shorter path
                         if d + 1 < *e.get() {
                             *e.get_mut() = d + 1;
-                            queue.push_back((caller.to_string(), d + 1));
+                            queue.push_back((Arc::clone(caller), d + 1));
                         }
                     }
                 }
@@ -209,21 +222,26 @@ pub(super) fn reverse_bfs_multi(
 ///
 /// Returns `HashMap<node_name, (min_depth, source_index)>` where `source_index` is
 /// the index into `targets` that first reached the node at minimum depth.
+///
+/// PERF-V1.33-1 / #1377 / P3-55: keys are `Arc<str>` so the BFS reuses
+/// the already-interned names from `graph.reverse`. See [`reverse_bfs`]
+/// for the full rationale.
 pub(super) fn reverse_bfs_multi_attributed(
     graph: &CallGraph,
     targets: &[&str],
     max_depth: usize,
-) -> HashMap<String, (usize, usize)> {
+) -> HashMap<Arc<str>, (usize, usize)> {
     // (depth, source_index)
-    let mut ancestors: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut ancestors: HashMap<Arc<str>, (usize, usize)> = HashMap::new();
     // Queue entries: (node_name, depth, source_index)
-    let mut queue: VecDeque<(String, usize, usize)> = VecDeque::new();
+    let mut queue: VecDeque<(Arc<str>, usize, usize)> = VecDeque::new();
 
     for (idx, &target) in targets.iter().enumerate() {
-        match ancestors.entry(target.to_string()) {
+        let arc: Arc<str> = Arc::from(target);
+        match ancestors.entry(Arc::clone(&arc)) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert((0, idx));
-                queue.push_back((target.to_string(), 0, idx));
+                queue.push_back((arc, 0, idx));
             }
             std::collections::hash_map::Entry::Occupied(_) => {
                 // Duplicate target name — first occurrence wins at depth 0
@@ -249,20 +267,20 @@ pub(super) fn reverse_bfs_multi_attributed(
         {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(current.as_str()) {
+        if let Some(callers) = graph.reverse.get(current.as_ref()) {
             for caller in callers {
                 if ancestors.len() >= bfs_max_nodes() {
                     break;
                 }
-                match ancestors.entry(caller.to_string()) {
+                match ancestors.entry(Arc::clone(caller)) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((d + 1, src));
-                        queue.push_back((caller.to_string(), d + 1, src));
+                        queue.push_back((Arc::clone(caller), d + 1, src));
                     }
                     std::collections::hash_map::Entry::Occupied(mut e) => {
                         if d + 1 < e.get().0 {
                             *e.get_mut() = (d + 1, src);
-                            queue.push_back((caller.to_string(), d + 1, src));
+                            queue.push_back((Arc::clone(caller), d + 1, src));
                         }
                     }
                 }

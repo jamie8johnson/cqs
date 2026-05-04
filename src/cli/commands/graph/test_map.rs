@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 
@@ -87,11 +88,20 @@ pub(crate) fn build_test_map(
     let _span = tracing::info_span!("build_test_map", target_name, max_depth).entered();
     let max_nodes = test_map_max_nodes();
 
-    // Reverse BFS from target
-    let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    ancestors.insert(target_name.to_string(), (0, String::new()));
-    queue.push_back((target_name.to_string(), 0));
+    // Reverse BFS from target.
+    // PERF-V1.33-1 / #1377 / P3-55: keys + parent-pointers are `Arc<str>`
+    // so the BFS reuses the already-interned names from `graph.reverse`
+    // instead of allocating a fresh `String` per visit. The chain walk
+    // also clones via `Arc::clone` (RC bump) instead of full `String`
+    // duplication. Pre-fix: ~10k `caller.to_string()` + `current.clone()`
+    // allocations per call on hub functions; post-fix: `Arc::clone`.
+    // `None` parent encodes "this is the target" — replaces the
+    // `String::new()` sentinel.
+    let mut ancestors: HashMap<Arc<str>, (usize, Option<Arc<str>>)> = HashMap::new();
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
+    let target_arc: Arc<str> = Arc::from(target_name);
+    ancestors.insert(Arc::clone(&target_arc), (0, None));
+    queue.push_back((target_arc, 0));
 
     while let Some((current, depth)) = queue.pop_front() {
         if depth >= max_depth {
@@ -105,14 +115,14 @@ pub(crate) fn build_test_map(
             );
             break;
         }
-        if let Some(callers) = graph.reverse.get(current.as_str()) {
+        if let Some(callers) = graph.reverse.get(current.as_ref()) {
             for caller in callers {
                 if ancestors.len() >= max_nodes {
                     break;
                 }
                 if !ancestors.contains_key(caller.as_ref()) {
-                    ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
-                    queue.push_back((caller.to_string(), depth + 1));
+                    ancestors.insert(Arc::clone(caller), (depth + 1, Some(Arc::clone(&current))));
+                    queue.push_back((Arc::clone(caller), depth + 1));
                 }
             }
         }
@@ -121,20 +131,24 @@ pub(crate) fn build_test_map(
     // Collect matching tests
     let mut matches: Vec<TestMatch> = Vec::new();
     for test in test_chunks.iter() {
-        if let Some((depth, _)) = ancestors.get(&test.name) {
+        if let Some((depth, _)) = ancestors.get(test.name.as_str()) {
             if *depth > 0 {
-                let mut chain = Vec::new();
-                let mut current = test.name.clone();
+                let mut chain: Vec<String> = Vec::new();
+                // The chain walk needs an owned `Arc<str>` cursor to iterate
+                // parent pointers. Each step clones via `Arc::clone` (RC
+                // bump only); the rendered chain entries are `String` for
+                // the public TestMatch API.
+                let mut cursor: Arc<str> = Arc::from(test.name.as_str());
                 let chain_limit = max_depth + 1;
-                while !current.is_empty() && chain.len() < chain_limit {
-                    chain.push(current.clone());
-                    if current == target_name {
+                while chain.len() < chain_limit {
+                    chain.push(cursor.as_ref().to_string());
+                    if cursor.as_ref() == target_name {
                         break;
                     }
-                    current = match ancestors.get(&current) {
-                        Some((_, p)) if !p.is_empty() => p.clone(),
+                    cursor = match ancestors.get(&cursor) {
+                        Some((_, Some(p))) => Arc::clone(p),
                         _ => {
-                            tracing::debug!(node = %current, "Chain walk hit dead end");
+                            tracing::debug!(node = %cursor, "Chain walk hit dead end");
                             break;
                         }
                     };
