@@ -1522,7 +1522,13 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
-/// Pad 2D sequences to a fixed length
+/// Pad 2D sequences to a fixed length.
+///
+/// PERF-V1.33-3 / #1377: production embed/rerank now uses
+/// [`pad_2d_i64_from_encodings`] which fills the `Array2` directly from
+/// tokenizer encodings. This helper stays for tests + future callers
+/// that have a `&[Vec<i64>]` already in hand.
+#[allow(dead_code)]
 pub(crate) fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
     let batch_size = inputs.len();
     let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
