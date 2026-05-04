@@ -413,9 +413,10 @@ fn test_fixture_eval_296q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f
             };
             let results = match store.search_filtered(&query_embeddings[i], &filter, 10, 0.0) {
                 Ok(r) => r,
@@ -499,11 +500,12 @@ fn test_fixture_eval_296q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                enable_rrf: true,
-                query_text: case.query.to_string(),
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.enable_rrf = true;
+                f.query_text = case.query.to_string();
+                f
             };
             let results = match store.search_filtered(&query_embeddings[i], &filter, 10, 0.0) {
                 Ok(r) => r,
@@ -560,12 +562,13 @@ fn test_fixture_eval_296q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                enable_rrf: true,
-                name_boost: 0.2,
-                query_text: case.query.to_string(),
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.enable_rrf = true;
+                f.name_boost = 0.2;
+                f.query_text = case.query.to_string();
+                f
             };
             let results = match store.search_filtered(&query_embeddings[i], &filter, 10, 0.0) {
                 Ok(r) => r,
@@ -622,11 +625,12 @@ fn test_fixture_eval_296q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                name_boost: 0.2,
-                query_text: case.query.to_string(),
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.name_boost = 0.2;
+                f.query_text = case.query.to_string();
+                f
             };
             let results = store
                 .search_filtered_with_index(
@@ -681,10 +685,11 @@ fn test_fixture_eval_296q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                enable_demotion: true,
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.enable_demotion = true;
+                f
             };
             let results = match store.search_filtered(&query_embeddings[i], &filter, 10, 0.0) {
                 Ok(r) => r,
@@ -741,12 +746,13 @@ fn test_fixture_eval_296q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                name_boost: 0.2,
-                query_text: case.query.to_string(),
-                enable_demotion: true,
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.name_boost = 0.2;
+                f.query_text = case.query.to_string();
+                f.enable_demotion = true;
+                f
             };
             let results = store
                 .search_filtered_with_index(
@@ -807,11 +813,12 @@ fn test_fixture_eval_296q() {
             .collect();
 
         for (i, case) in all_cases.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                enable_splade: true,
-                splade_alpha: 0.0, // pure rerank
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.enable_splade = true;
+                f.splade_alpha = 0.0; // pure rerank
+                f
             };
             let splade_arg = Some((splade_idx, &splade_queries[i]));
             let results = match store.search_hybrid(
@@ -1084,13 +1091,14 @@ fn test_holdout_eval() {
     let mut results_per_case = Vec::new();
 
     for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
-        let filter = SearchFilter {
-            languages: Some(vec![case.language]),
-            include_types: Some(ChunkType::code_types()),
-            name_boost: 0.2,
-            query_text: case.query.to_string(),
-            enable_demotion: true,
-            ..Default::default()
+        let filter = {
+            let mut f = SearchFilter::default();
+            f.languages = Some(vec![case.language]);
+            f.include_types = Some(ChunkType::code_types());
+            f.name_boost = 0.2;
+            f.query_text = case.query.to_string();
+            f.enable_demotion = true;
+            f
         };
         let results = store
             .search_filtered_with_index(
@@ -1391,14 +1399,15 @@ fn test_noise_eval_143q() {
         let mut results_per_case = Vec::new();
 
         for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
-            let filter = SearchFilter {
-                languages: Some(vec![case.language]),
-                include_types: Some(ChunkType::code_types()),
-                name_boost: boost,
-                query_text: case.query.to_string(),
-                enable_demotion: true,
-                enable_rrf: true,
-                ..Default::default()
+            let filter = {
+                let mut f = SearchFilter::default();
+                f.languages = Some(vec![case.language]);
+                f.include_types = Some(ChunkType::code_types());
+                f.name_boost = boost;
+                f.query_text = case.query.to_string();
+                f.enable_demotion = true;
+                f.enable_rrf = true;
+                f
             };
             let results = store
                 .search_filtered_with_index(

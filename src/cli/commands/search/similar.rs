@@ -56,10 +56,13 @@ pub(crate) fn cmd_similar(
         None => None,
     };
 
-    let filter = SearchFilter {
-        languages,
-        path_pattern: ctx.cli.path.clone(),
-        ..Default::default()
+    // #1349: SearchFilter is `#[non_exhaustive]`; external-crate construction
+    // goes through `Default` + field assignment.
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.languages = languages;
+        f.path_pattern = ctx.cli.path.clone();
+        f
     };
 
     // Load vector index

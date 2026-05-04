@@ -228,20 +228,24 @@ pub(crate) fn cmd_query(
         splade_alpha = splade_alpha.max(0.7);
     }
 
-    #[allow(clippy::needless_update)]
-    let filter = SearchFilter {
-        languages,
-        include_types,
-        exclude_types,
-        path_pattern: cli.path.clone(),
-        name_boost: cli.name_boost,
-        query_text: query.to_string(),
-        enable_rrf: cli.rrf,
-        enable_demotion: !cli.no_demote,
-        enable_splade: use_splade,
-        splade_alpha,
-        type_boost_types,
-        ..Default::default()
+    // #1349: SearchFilter is `#[non_exhaustive]`, so external-crate construction
+    // goes through `Default` + field assignment instead of a struct expression.
+    // Adding a new field stays one-line on the struct definition; this site
+    // doesn't need to know.
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.languages = languages;
+        f.include_types = include_types;
+        f.exclude_types = exclude_types;
+        f.path_pattern = cli.path.clone();
+        f.name_boost = cli.name_boost;
+        f.query_text = query.to_string();
+        f.enable_rrf = cli.rrf;
+        f.enable_demotion = !cli.no_demote;
+        f.enable_splade = use_splade;
+        f.splade_alpha = splade_alpha;
+        f.type_boost_types = type_boost_types;
+        f
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 

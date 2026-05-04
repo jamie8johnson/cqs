@@ -134,9 +134,10 @@ fn eval_single_query<Mode>(
     };
 
     // Build search filter
-    let filter = cqs::SearchFilter {
-        query_text: query.query.clone(),
-        ..Default::default()
+    let filter = {
+        let mut f = cqs::SearchFilter::default();
+        f.query_text = query.query.clone();
+        f
     };
 
     // Search with limit=100 for deep rank tracking

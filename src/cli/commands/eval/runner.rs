@@ -316,19 +316,21 @@ fn search_for_rank(
     }
     let use_splade = true; // Always on when classification produced a category — same as production.
 
-    let filter = SearchFilter {
-        languages: None,
-        include_types: Some(ChunkType::code_types()),
-        exclude_types: None,
-        path_pattern: None,
-        name_boost: 0.2,
-        query_text: query.to_string(),
-        enable_rrf: false,
-        enable_demotion: true,
-        enable_splade: use_splade,
-        splade_alpha,
-        type_boost_types: classification.type_hints.clone(),
-        mmr_lambda: None, // Resolved by finalize_results via CQS_MMR_LAMBDA fallback.
+    // #1349: SearchFilter is `#[non_exhaustive]`; external-crate construction
+    // goes through `Default` + field assignment. Only fields that differ from
+    // the struct default are set here (defaults preserved: languages,
+    // exclude_types, path_pattern, enable_rrf, enable_demotion, mmr_lambda).
+    // `name_boost = 0.2` is retained because the struct default is 0.0
+    // (CLI applies 0.2 via DEFAULT_NAME_BOOST; eval mirrors that here).
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.include_types = Some(ChunkType::code_types());
+        f.name_boost = 0.2;
+        f.query_text = query.to_string();
+        f.enable_splade = use_splade;
+        f.splade_alpha = splade_alpha;
+        f.type_boost_types = classification.type_hints.clone();
+        f
     };
     filter
         .validate()

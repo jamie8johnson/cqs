@@ -44,12 +44,15 @@
 //!     &chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>()
 //! )?;
 //!
-//! // Search for similar code (hybrid RRF search)
+//! // Search for similar code (hybrid RRF search). #1349: SearchFilter is
+//! // `#[non_exhaustive]`, so external callers construct via `Default` and
+//! // assign fields — adding a new field is a one-line struct edit upstream.
 //! let query_embedding = embedder.embed_query("parse configuration file")?;
-//! let filter = SearchFilter {
-//!     enable_rrf: true,
-//!     query_text: "parse configuration file".to_string(),
-//!     ..Default::default()
+//! let filter = {
+//!     let mut f = SearchFilter::default();
+//!     f.enable_rrf = true;
+//!     f.query_text = "parse configuration file".to_string();
+//!     f
 //! };
 //! let results = store.search_filtered(&query_embedding, &filter, 5, 0.3)?;
 //! # Ok(())
