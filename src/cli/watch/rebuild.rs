@@ -64,14 +64,18 @@ pub(super) struct PendingRebuild {
 }
 
 /// P1.17 / #1124: the rebuild thread reports both the freshly-built
-/// `HnswIndex` AND the per-id `content_hash` snapshot the build consumed.
-/// The drain path needs the snapshot map to detect mid-rebuild
+/// `HnswIndex` AND a fingerprint of every (id, content_hash) the build
+/// consumed. The drain path needs the snapshot to detect mid-rebuild
 /// re-embeddings — without it, a hash-aware dedup would have to issue a
 /// second SQL query (and lose snapshot consistency under concurrent
 /// writers).
+///
+/// #1244 / RM-4: pre-fix this was `HashMap<String, String>` (~3 MB on
+/// a 17 k-chunk corpus, held across the full rebuild window). Now a
+/// `HashSet<u64>` of `snapshot_fingerprint(id, hash)` — ~7× smaller.
 pub(crate) struct RebuildResult {
     pub index: HnswIndex,
-    pub snapshot_hashes: std::collections::HashMap<String, String>,
+    pub snapshot_keys: std::collections::HashSet<u64>,
 }
 
 /// P2.72: cap on per-rebuild delta size. A stale-rebuild that runs longer
@@ -268,11 +272,12 @@ pub(super) fn spawn_hnsw_rebuild(
                         "base HNSW rebuild failed in background; router falls back to enriched-only"
                     ),
                 }
-                // P1.17 / #1124: package the (index, snapshot_hashes) pair
-                // so the drain can detect mid-rebuild re-embeddings.
-                Ok(enriched.map(|(index, snapshot_hashes)| RebuildResult {
+                // P1.17 / #1124 + #1244 / RM-4: package the
+                // (index, snapshot_keys) pair so the drain can detect
+                // mid-rebuild re-embeddings via fingerprint set.
+                Ok(enriched.map(|(index, snapshot_keys)| RebuildResult {
                     index,
-                    snapshot_hashes,
+                    snapshot_keys,
                 }))
             })();
             let elapsed_ms = started_at.elapsed().as_millis();
@@ -352,7 +357,7 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
     match outcome {
         Ok(Some(RebuildResult {
             index: mut new_index,
-            snapshot_hashes,
+            snapshot_keys,
         })) => {
             // P2.72: if the delta saturated, the rebuilt index is missing
             // events that we dropped on the floor; swapping it in would
@@ -392,7 +397,13 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                 .delta
                 .into_iter()
                 .filter(|(id, _, hash)| {
-                    snapshot_hashes.get(id.as_str()).is_none_or(|sh| sh != hash)
+                    // #1244 / RM-4: fingerprint round-trip replaces the prior
+                    // `HashMap<id, hash>` lookup. `snapshot_keys` contains
+                    // the fingerprint for every (id, hash) the rebuild
+                    // consumed; replay only when the (id, hash) we observed
+                    // mid-rebuild was NOT in the rebuild's snapshot.
+                    let fp = crate::cli::commands::snapshot_fingerprint(id, hash);
+                    !snapshot_keys.contains(&fp)
                 })
                 .map(|(id, emb, _)| (id, emb))
                 .collect();

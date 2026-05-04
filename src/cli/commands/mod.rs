@@ -80,6 +80,7 @@ pub(crate) use index::cmd_gc;
 pub(crate) use index::cmd_index;
 pub(crate) use index::cmd_stale;
 pub(crate) use index::cmd_stats;
+pub(crate) use index::snapshot_fingerprint;
 
 // -- io --
 pub(crate) use io::cmd_blame;
