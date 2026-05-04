@@ -27,6 +27,9 @@ fn default_output_name() -> String {
 /// - `ids`: `"input_ids"`
 /// - `mask`: `"attention_mask"`
 /// - `token_types`: `None` — set to `Some("token_type_ids")` for BERT.
+/// - `position_ids`: `None` — set to `Some("position_ids")` for
+///   decoder-only embedders whose ONNX export doesn't generate them
+///   internally (e.g. `Qwen3-Embedding-4B`'s third-party exports).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct InputNames {
     /// Name of the token-id tensor (default `"input_ids"`).
@@ -39,6 +42,14 @@ pub struct InputNames {
     /// `None` means the input is not supplied to `session.run`.
     #[serde(default)]
     pub token_types: Option<String>,
+    /// Name of the position-id tensor, if the model consumes it.
+    /// `None` (default) means the ONNX graph either doesn't have a
+    /// position-ids input or generates positions internally
+    /// (`onnx-community/Qwen3-Embedding-8B-ONNX` is the latter case).
+    /// When set, the embed loop materializes `[[0, 1, ..., seq_len-1]]
+    /// × batch_size` and binds it under this tensor name. (#1442)
+    #[serde(default)]
+    pub position_ids: Option<String>,
 }
 
 impl Default for InputNames {
@@ -59,6 +70,7 @@ impl InputNames {
             ids: default_ids_name(),
             mask: default_mask_name(),
             token_types: Some("token_type_ids".to_string()),
+            position_ids: None,
         }
     }
 
@@ -71,6 +83,20 @@ impl InputNames {
             ids: default_ids_name(),
             mask: default_mask_name(),
             token_types: None,
+            position_ids: None,
+        }
+    }
+
+    /// Decoder-only embedder inputs: `input_ids`, `attention_mask`,
+    /// `position_ids`. No `token_type_ids`. Used by third-party
+    /// `Qwen3-Embedding-{4B,8B}` ONNX exports that expose `position_ids`
+    /// as an explicit input rather than generating it internally. (#1442)
+    pub fn decoder_only_with_position_ids() -> Self {
+        Self {
+            ids: default_ids_name(),
+            mask: default_mask_name(),
+            token_types: None,
+            position_ids: Some("position_ids".to_string()),
         }
     }
 }
@@ -497,6 +523,40 @@ define_embedder_presets! {
         // `<onnx_path>_data` fetch in `download_model_files` (added in
         // PR #1385 alongside the gemma swap).
         approx_download_bytes = Some(30_300 * 1024 * 1024),
+        pad_id = 151643;
+
+    /// Qwen3-Embedding-4B — mid-tier of the Qwen3 family. Same upstream
+    /// weights as `qwen3_embedding_8b`'s parent (Qwen/Qwen3-Embedding-4B)
+    /// but at 4B params: hidden dim 2560 vs 4096 on the 8B, 36 layers
+    /// (same), 32K context capacity (cap'd at 8192 for parity).
+    ///
+    /// The 8B run on this rig (A6000 48 GB) crashed WSL when GPU OOMs
+    /// triggered CPU-fallback init alongside the GPU-side ~30 GB ONNX
+    /// mmap — combined RSS spikes past the 94 GB host budget. The 4B
+    /// halves both:
+    /// * ONNX mmap: ~8 GB (FP16 export from `zhiqing/...`) vs ~30 GB.
+    /// * GPU steady-state: ~13 GB vs ~48 GB. No OOMs expected.
+    /// * Indexing rate: ~2-3× faster (smaller KV cache + matmul).
+    ///
+    /// Pooling note: the third-party export does NOT bake pooling into
+    /// the ONNX graph (unlike `onnx-community`'s 8B variant which
+    /// exposes `sentence_embedding`). Output is raw `last_hidden_state`
+    /// shape `[batch, seq, 2560]`; cqs applies last-token pooling
+    /// (Qwen3 is decoder-only) + L2-normalize externally.
+    ///
+    /// Position-ids note: the export exposes `position_ids` as an
+    /// explicit ONNX input. cqs's `decoder_only_with_position_ids` shape
+    /// materialises `[[0, 1, …, seq_len-1]] × batch` per call. (#1442)
+    qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "zhiqing/Qwen3-Embedding-4B-ONNX",
+        onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 2560, max_seq_length = 8192,
+        query_prefix = "Instruct: Find the code chunk that best matches the query.\nQuery: ", doc_prefix = "",
+        input_names = InputNames::decoder_only_with_position_ids(),
+        output_name = "last_hidden_state".to_string(),
+        pooling = PoolingStrategy::LastToken,
+        // FP16 ONNX bundle: ~1.6 MB graph + ~8.04 GB external-data
+        // weights file at `model.onnx_data`. Plus ~14 MB tokenizer/vocab.
+        approx_download_bytes = Some(8_100 * 1024 * 1024),
         pad_id = 151643;
 }
 
@@ -957,6 +1017,45 @@ mod tests {
     #[test]
     fn input_names_default_matches_bert() {
         assert_eq!(InputNames::default(), InputNames::bert());
+    }
+
+    /// #1442: decoder-only embedders (third-party Qwen3-Embedding-4B
+    /// ONNX exports) need `position_ids` as an explicit input.
+    #[test]
+    fn input_names_decoder_only_with_position_ids() {
+        let n = InputNames::decoder_only_with_position_ids();
+        assert_eq!(n.ids, "input_ids");
+        assert_eq!(n.mask, "attention_mask");
+        assert!(n.token_types.is_none());
+        assert_eq!(n.position_ids.as_deref(), Some("position_ids"));
+    }
+
+    /// `bert()` and `bert_no_token_types()` must NOT bind `position_ids`
+    /// — adding the field broke the existing constructors silently
+    /// before the explicit assertion below.
+    #[test]
+    fn input_names_bert_constructors_have_no_position_ids() {
+        assert!(InputNames::bert().position_ids.is_none());
+        assert!(InputNames::bert_no_token_types().position_ids.is_none());
+    }
+
+    /// Pin the `qwen3-embedding-4b` preset's wire shape so a config
+    /// regression (wrong dim, wrong pooling, missing position_ids
+    /// binding) trips this test instead of a runtime ORT error during
+    /// the next 5-7 hour reindex.
+    #[test]
+    fn qwen3_embedding_4b_preset_shape() {
+        let cfg = ModelConfig::from_preset("qwen3-embedding-4b")
+            .expect("qwen3-embedding-4b preset must be registered");
+        assert_eq!(cfg.dim, 2560);
+        assert_eq!(cfg.max_seq_length, 8192);
+        assert_eq!(cfg.output_name, "last_hidden_state");
+        assert_eq!(cfg.pooling, PoolingStrategy::LastToken);
+        assert_eq!(
+            cfg.input_names,
+            InputNames::decoder_only_with_position_ids()
+        );
+        assert_eq!(cfg.pad_id, 151643);
     }
 
     #[test]
