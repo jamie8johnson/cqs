@@ -149,6 +149,13 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | Operation | Purpose |
 |-----------|---------|
 | `libc::kill(pid, 0)` | Check if watch process is running (signal 0 = existence check only) |
+| `cmd /C start "" <url>` (Windows / WSL) / `xdg-open <url>` (Linux) / `open <url>` (macOS) | Browser launch for `cqs serve --open`. Token-bearing URLs are suppressed from argv (see below). |
+
+#### Browser-launch token handling (`cqs serve --open`)
+
+`cqs serve --open` historically spawned the OS browser launcher with the full `http://<bind>/?token=<token>` URL on argv. That places the token in `/proc/<pid>/cmdline` (Linux) / `wmic process get CommandLine` (Windows) for any local user to read until the launcher exits, and audit subsystems (auditd, ETW) typically capture exec command lines independently of process lifetime — same surface the per-launch banner already avoids by routing the token to stderr instead of journald.
+
+**Mitigation (#1337 / SEC-V1.33-1):** when `cqs serve` runs with auth enabled (the default), `--open` no longer spawns a browser. The CLI prints a notice instructing the user to paste the banner URL manually; the token is never written to a subprocess argv. With `--no-auth` there is no token to leak and `--open` continues to launch the browser normally.
 
 ### Document Conversion (`cqs convert`)
 
