@@ -43,27 +43,103 @@ use crate::index::{IndexResult, VectorIndex};
 
 // HNSW tuning parameters
 //
-// These values are optimized for code search workloads (10k-100k chunks):
-// - M=24: Higher connectivity for better recall on semantic similarity
-// - ef_construction=200: Thorough graph construction (one-time cost)
-// - ef_search=100: Good accuracy/speed tradeoff for interactive search
+// #1370 / SHL-V1.33-12: defaults are corpus-size-aware. The tier table
+// below mirrors the recommendation in the v1.33 audit (and the inline
+// comment that pre-dated the audit) — small projects pay less build cost,
+// large monorepos get the recall headroom they need at search time.
 //
-// For different workloads, consider:
-// - Smaller codebases (<5k): M=16, ef_construction=100, ef_search=50
-// - Larger codebases (>100k): M=32, ef_construction=400, ef_search=200
-// - Batch processing: Lower ef_search for speed
-// - Maximum accuracy: Higher ef_search (up to ef_construction)
+// | corpus       | M  | ef_construction | ef_search |
+// |--------------|----|-----------------|-----------|
+// | < 5k         | 16 |             100 |        50 |
+// | 5k–100k      | 24 |             200 |       100 |
+// | ≥ 100k       | 32 |             400 |       200 |
 //
-// All three parameters are overridable via environment variables:
-// - CQS_HNSW_M (default 24)
-// - CQS_HNSW_EF_CONSTRUCTION (default 200)
-// - CQS_HNSW_EF_SEARCH (default 100)
+// Env vars (`CQS_HNSW_M`, `CQS_HNSW_EF_CONSTRUCTION`, `CQS_HNSW_EF_SEARCH`)
+// still win — set explicitly, the override is taken verbatim. The
+// `chunk_count`-aware path is used by the build (`hnsw/build.rs`) where
+// the corpus size is in scope; the legacy zero-arg `max_nb_connection`
+// / `ef_construction` / `ef_search` helpers stay for callers that don't
+// know the corpus size yet (CLI knob parsing, ref-only paths) and use
+// the middle tier (`MID_*`) as their default.
+//
+// CAGRA already scales analogously via `cagra_itopk_max_default(n_vectors)`
+// (`src/cagra.rs`).
 
 pub(crate) const MAX_LAYER: usize = 16; // Maximum layers in the graph
 
-const DEFAULT_M: usize = 24;
-const DEFAULT_EF_CONSTRUCTION: usize = 200;
-const DEFAULT_EF_SEARCH: usize = 100;
+/// Mid-tier default M. Used when the legacy (no-corpus-size) path is
+/// the only available context; matches the pre-#1370 default of 24.
+const MID_M: usize = 24;
+/// Mid-tier default ef_construction.
+const MID_EF_CONSTRUCTION: usize = 200;
+/// Mid-tier default ef_search.
+const MID_EF_SEARCH: usize = 100;
+
+/// Legacy alias retained for tests + any caller that still pins exact
+/// values. New code should consult [`hnsw_tier_defaults`] with a corpus
+/// size when one is available.
+const DEFAULT_M: usize = MID_M;
+const DEFAULT_EF_CONSTRUCTION: usize = MID_EF_CONSTRUCTION;
+const DEFAULT_EF_SEARCH: usize = MID_EF_SEARCH;
+
+/// #1370 / SHL-V1.33-12: pick `(M, ef_construction, ef_search)` for the
+/// given corpus size. Pure function — no env reads, no I/O. Callers
+/// layer env overrides on top via [`max_nb_connection_for`] /
+/// [`ef_construction_for`] / [`ef_search_for`].
+pub(crate) fn hnsw_tier_defaults(chunk_count: usize) -> (usize, usize, usize) {
+    if chunk_count < 5_000 {
+        (16, 100, 50)
+    } else if chunk_count < 100_000 {
+        (MID_M, MID_EF_CONSTRUCTION, MID_EF_SEARCH)
+    } else {
+        (32, 400, 200)
+    }
+}
+
+/// `M` for `chunk_count`. Env `CQS_HNSW_M` wins.
+pub(crate) fn max_nb_connection_for(chunk_count: usize) -> usize {
+    let (m, _, _) = hnsw_tier_defaults(chunk_count);
+    let resolved = parse_hnsw_env_knob("CQS_HNSW_M", m);
+    if std::env::var_os("CQS_HNSW_M").is_some() && resolved != m {
+        tracing::info!(
+            chunk_count,
+            tier_default = m,
+            override_value = resolved,
+            "CQS_HNSW_M override active"
+        );
+    }
+    resolved
+}
+
+/// `ef_construction` for `chunk_count`. Env `CQS_HNSW_EF_CONSTRUCTION` wins.
+pub(crate) fn ef_construction_for(chunk_count: usize) -> usize {
+    let (_, ef, _) = hnsw_tier_defaults(chunk_count);
+    let resolved = parse_hnsw_env_knob("CQS_HNSW_EF_CONSTRUCTION", ef);
+    if std::env::var_os("CQS_HNSW_EF_CONSTRUCTION").is_some() && resolved != ef {
+        tracing::info!(
+            chunk_count,
+            tier_default = ef,
+            override_value = resolved,
+            "CQS_HNSW_EF_CONSTRUCTION override active"
+        );
+    }
+    resolved
+}
+
+/// `ef_search` for `chunk_count`. Env `CQS_HNSW_EF_SEARCH` wins.
+pub(crate) fn ef_search_for(chunk_count: usize) -> usize {
+    let (_, _, ef) = hnsw_tier_defaults(chunk_count);
+    let resolved = parse_hnsw_env_knob("CQS_HNSW_EF_SEARCH", ef);
+    if std::env::var_os("CQS_HNSW_EF_SEARCH").is_some() && resolved != ef {
+        tracing::info!(
+            chunk_count,
+            tier_default = ef,
+            override_value = resolved,
+            "CQS_HNSW_EF_SEARCH override active"
+        );
+    }
+    resolved
+}
 
 /// Parse an env-var-overridable HNSW knob, validating that the value is `>= 1`.
 /// AC-V1.33-7: a value of `0` (or unparseable garbage) produces a degenerate
@@ -97,7 +173,20 @@ fn parse_hnsw_env_knob(env_name: &str, default: usize) -> usize {
     }
 }
 
+// Legacy zero-arg HNSW knob helpers. Pre-#1370 these were called from
+// build sites; production code now calls the corpus-size-aware
+// `*_for(chunk_count)` variants above. The legacy entry points stay
+// because the existing test cohort exercises env-override + default
+// behaviour against the mid-tier static defaults — useful coverage
+// that belongs in `mod tests` (and would be lost if the helpers were
+// deleted outright). `#[cfg(test)]` would also work but `pub(crate)`
+// keeps the cohort grep-discoverable for a future test that reaches
+// into them.
+
 /// M parameter — connections per node. Override with `CQS_HNSW_M`.
+/// Defaults to the mid-tier static `DEFAULT_M`; production code uses
+/// [`max_nb_connection_for`] which scales by corpus size.
+#[allow(dead_code)]
 pub(crate) fn max_nb_connection() -> usize {
     let m = parse_hnsw_env_knob("CQS_HNSW_M", DEFAULT_M);
     if m != DEFAULT_M {
@@ -107,6 +196,8 @@ pub(crate) fn max_nb_connection() -> usize {
 }
 
 /// Construction-time search width. Override with `CQS_HNSW_EF_CONSTRUCTION`.
+/// See [`ef_construction_for`] for the corpus-size-aware variant.
+#[allow(dead_code)]
 pub(crate) fn ef_construction() -> usize {
     let ef = parse_hnsw_env_knob("CQS_HNSW_EF_CONSTRUCTION", DEFAULT_EF_CONSTRUCTION);
     if ef != DEFAULT_EF_CONSTRUCTION {
@@ -116,7 +207,8 @@ pub(crate) fn ef_construction() -> usize {
 }
 
 /// Search width for queries (higher = more accurate but slower).
-/// Override with `CQS_HNSW_EF_SEARCH`.
+/// Override with `CQS_HNSW_EF_SEARCH`. See [`ef_search_for`] for the
+/// corpus-size-aware variant used by the build path.
 pub(crate) fn ef_search() -> usize {
     let ef = parse_hnsw_env_knob("CQS_HNSW_EF_SEARCH", DEFAULT_EF_SEARCH);
     if ef != DEFAULT_EF_SEARCH {
@@ -554,6 +646,50 @@ mod send_sync_tests {
     fn test_loaded_hnsw_is_send_sync() {
         assert_send::<LoadedHnsw>();
         assert_sync::<LoadedHnsw>();
+    }
+
+    /// #1370 / SHL-V1.33-12: tier table — pure function, no env reads.
+    #[test]
+    fn test_hnsw_tier_defaults_small_corpus() {
+        // Pre-5k tier — tighter graph, faster build.
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(0);
+        assert_eq!((m, ef_c, ef_s), (16, 100, 50));
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(4_999);
+        assert_eq!((m, ef_c, ef_s), (16, 100, 50));
+    }
+
+    #[test]
+    fn test_hnsw_tier_defaults_medium_corpus() {
+        // 5k–100k mid-tier — pre-#1370 production default.
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(5_000);
+        assert_eq!((m, ef_c, ef_s), (24, 200, 100));
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(50_000);
+        assert_eq!((m, ef_c, ef_s), (24, 200, 100));
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(99_999);
+        assert_eq!((m, ef_c, ef_s), (24, 200, 100));
+    }
+
+    #[test]
+    fn test_hnsw_tier_defaults_large_corpus() {
+        // ≥100k — bumps M and ef for monorepo-scale recall.
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(100_000);
+        assert_eq!((m, ef_c, ef_s), (32, 400, 200));
+        let (m, ef_c, ef_s) = super::hnsw_tier_defaults(1_000_000);
+        assert_eq!((m, ef_c, ef_s), (32, 400, 200));
+    }
+
+    #[test]
+    fn test_hnsw_for_helpers_pick_tier() {
+        // No env override: helper returns the tier value verbatim.
+        std::env::remove_var("CQS_HNSW_M");
+        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
+        std::env::remove_var("CQS_HNSW_EF_SEARCH");
+        assert_eq!(super::max_nb_connection_for(2_000), 16);
+        assert_eq!(super::ef_construction_for(2_000), 100);
+        assert_eq!(super::ef_search_for(2_000), 50);
+        assert_eq!(super::max_nb_connection_for(20_000), 24);
+        assert_eq!(super::max_nb_connection_for(500_000), 32);
+        assert_eq!(super::ef_search_for(500_000), 200);
     }
 }
 

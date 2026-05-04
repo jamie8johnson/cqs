@@ -56,18 +56,19 @@ impl HnswIndex {
             return Err(HnswError::Build("Embedding dimension must be > 0".into()));
         }
         if embeddings.is_empty() {
-            // Create empty index
+            // Create empty index — fall back to the small-tier default
+            // (#1370 / SHL-V1.33-12).
             let hnsw = Hnsw::new(
-                super::max_nb_connection(),
+                super::max_nb_connection_for(0),
                 1,
                 MAX_LAYER,
-                super::ef_construction(),
+                super::ef_construction_for(0),
                 DistCosine,
             );
             return Ok(Self {
                 inner: HnswInner::Owned(hnsw),
                 id_map: Vec::new(),
-                ef_search: super::ef_search(),
+                ef_search: super::ef_search_for(0),
                 dim,
                 _lock_file: None,
             });
@@ -77,12 +78,13 @@ impl HnswIndex {
 
         tracing::info!(count = nb_elem, "Building HNSW index");
 
-        // Create HNSW with cosine distance
+        // #1370 / SHL-V1.33-12: corpus-size-aware tier defaults. Env
+        // overrides still win — see `hnsw_tier_defaults` for the table.
         let mut hnsw = Hnsw::new(
-            super::max_nb_connection(),
+            super::max_nb_connection_for(nb_elem),
             nb_elem,
             MAX_LAYER,
-            super::ef_construction(),
+            super::ef_construction_for(nb_elem),
             DistCosine,
         );
 
@@ -100,8 +102,8 @@ impl HnswIndex {
 
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
+            ef_search: super::ef_search_for(id_map.len()),
             id_map,
-            ef_search: super::ef_search(),
             dim,
             _lock_file: None,
         })
@@ -154,11 +156,13 @@ impl HnswIndex {
             capacity
         );
 
+        // #1370 / SHL-V1.33-12: tier defaults read from `capacity`, the
+        // estimated vector count for this build.
         let mut hnsw = Hnsw::new(
-            super::max_nb_connection(),
+            super::max_nb_connection_for(capacity),
             capacity,
             MAX_LAYER,
-            super::ef_construction(),
+            super::ef_construction_for(capacity),
             DistCosine,
         );
 
@@ -226,14 +230,14 @@ impl HnswIndex {
             tracing::info!("HNSW index built (empty)");
             return Ok(Self {
                 inner: HnswInner::Owned(Hnsw::new(
-                    super::max_nb_connection(),
+                    super::max_nb_connection_for(0),
                     1,
                     MAX_LAYER,
-                    super::ef_construction(),
+                    super::ef_construction_for(0),
                     DistCosine,
                 )),
                 id_map: Vec::new(),
-                ef_search: super::ef_search(),
+                ef_search: super::ef_search_for(0),
                 dim,
                 _lock_file: None,
             });
@@ -243,8 +247,8 @@ impl HnswIndex {
 
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
+            ef_search: super::ef_search_for(id_map.len()),
             id_map,
-            ef_search: super::ef_search(),
             dim,
             _lock_file: None,
         })
