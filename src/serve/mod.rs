@@ -60,10 +60,17 @@ pub use error::ServeError;
 /// of working set across SQLite per-connection scratch buffers.
 /// Default 32 permits is plenty for an interactive single-user UI;
 /// `CQS_SERVE_BLOCKING_PERMITS` overrides per-launch (clamped 1..1024).
+///
+/// #1345 / RM-V1.33-5: `last_request_epoch` is an epoch-seconds timestamp
+/// touched by every incoming request via [`touch_idle_clock`]. The
+/// idle-eviction future in `run_server` polls it; when the gap exceeds
+/// `CQS_SERVE_IDLE_MINUTES`, the server shuts down gracefully so the
+/// `Store<ReadOnly>` mmap and tokio runtime release. `0` disables.
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) store: Arc<Store<ReadOnly>>,
     pub(crate) blocking_permits: Arc<tokio::sync::Semaphore>,
+    pub(crate) last_request_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Allowed `Host` header values, built at router-build time from the
@@ -109,11 +116,17 @@ pub fn run_server(
     // handlers. See `AppState` doc comment.
     let permits = crate::limits::serve_blocking_permits();
     tracing::info!(permits, "serve: spawn_blocking semaphore initialised");
+    // #1345 / RM-V1.33-5: prime the idle clock to "now" so a startup that
+    // immediately backgrounds doesn't fire eviction before the first
+    // request arrives.
+    let last_request_epoch = Arc::new(std::sync::atomic::AtomicU64::new(now_epoch_secs()));
     let state = AppState {
         store: Arc::new(store),
         blocking_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
+        last_request_epoch: Arc::clone(&last_request_epoch),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
+    let idle_minutes = crate::limits::serve_idle_minutes();
     let app = build_router(state, allowed_hosts, auth.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -172,8 +185,12 @@ pub fn run_server(
         }
         tracing::info!(addr = %actual, auth_enabled = auth.token().is_some(), "cqs serve started");
 
+        // #1345 / RM-V1.33-5: race the SIGINT/SIGTERM signal future
+        // against an idle-eviction future. With `idle_minutes == 0` the
+        // idle future is `pending::<()>()` and the server only exits on
+        // signal — preserves prior behavior under the explicit opt-out.
         axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(idle_or_signal(last_request_epoch, idle_minutes))
             .await
             .context("axum server failed")?;
 
@@ -182,6 +199,78 @@ pub fn run_server(
     })?;
 
     Ok(())
+}
+
+/// Race a signal-driven shutdown against an idle-driven shutdown. With
+/// `idle_minutes == 0` the idle arm is `pending::<()>()` so only signals
+/// can resolve the future — matches the pre-#1345 behavior under explicit
+/// opt-out. Otherwise the server shuts down on whichever fires first.
+async fn idle_or_signal(last_request_epoch: Arc<std::sync::atomic::AtomicU64>, idle_minutes: u64) {
+    if idle_minutes == 0 {
+        tracing::info!("serve: idle eviction disabled (CQS_SERVE_IDLE_MINUTES=0)");
+        shutdown_signal().await;
+        return;
+    }
+    tracing::info!(
+        idle_minutes,
+        "serve: idle eviction armed; server will exit after this many minutes of no requests"
+    );
+    // 1-minute resolution is plenty for a 30-minute idle window. Polling
+    // faster gives no operator-visible benefit and only burns wakeups.
+    let poll = std::time::Duration::from_secs(60);
+    tokio::select! {
+        _ = shutdown_signal() => {}
+        _ = wait_for_idle(last_request_epoch, idle_minutes * 60, poll) => {
+            tracing::info!(idle_minutes, "serve: idle threshold reached, beginning graceful shutdown");
+        }
+    }
+}
+
+/// Poll `last_request_epoch` at `poll` cadence. Returns when the gap
+/// between "now" (epoch seconds) and the most recent touch exceeds
+/// `idle_secs`. `poll` is parameterized so tests can drive the loop on
+/// millisecond cadence; production passes 60 s.
+pub(crate) async fn wait_for_idle(
+    last_request_epoch: Arc<std::sync::atomic::AtomicU64>,
+    idle_secs: u64,
+    poll: std::time::Duration,
+) {
+    use std::sync::atomic::Ordering;
+    let mut tick = tokio::time::interval(poll);
+    // Skip the first immediate-fire tick; the first poll happens after
+    // one full poll interval.
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let now = now_epoch_secs();
+        let last = last_request_epoch.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= idle_secs {
+            return;
+        }
+    }
+}
+
+/// Wall-clock epoch seconds. Saturates at 0 if the system clock is set
+/// before the unix epoch (effectively never on a real host, but the
+/// `SystemTimeError` path costs nothing to handle).
+pub(crate) fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Middleware that updates `AppState.last_request_epoch` on every request.
+/// Sits outside auth so the idle clock advances even on unauthenticated
+/// pings — the threat model is "user walked away," not "adversary keeps
+/// the server alive with 401s." Keepalive cost is negligible: an attacker
+/// who can connect already pays the request budget elsewhere (host
+/// allowlist, body limit, blocking_permits semaphore).
+async fn touch_idle_clock(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    state
+        .last_request_epoch
+        .store(now_epoch_secs(), std::sync::atomic::Ordering::Relaxed);
+    next.run(request).await
 }
 
 /// Build the axum router. Public-in-crate so integration tests can
@@ -198,6 +287,7 @@ pub fn run_server(
 /// [`NoAuthAcknowledgement`] proof token inside that variant
 /// guarantees an explicit opt-in (#1136).
 pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: AuthMode) -> Router {
+    let touch_state = state.clone();
     let mut app = Router::new()
         .route("/health", get(handlers::health))
         .route("/api/stats", get(handlers::stats))
@@ -209,6 +299,12 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
         .route("/", get(assets::index_html))
         .route("/static/{*path}", get(assets::static_asset))
         .with_state(state);
+
+    // #1345 / RM-V1.33-5: touch the idle clock on every request. Sits
+    // inside auth (after this layer order is finalized below) so even
+    // unauthenticated pings count as activity — the threat model is "user
+    // walked away," not "adversary keeps the server alive."
+    app = app.layer(from_fn_with_state(touch_state, touch_idle_clock));
 
     // #1096 SEC-7: per-launch auth. Sits inside the host-header
     // allowlist (rejected hosts skip auth — saves a constant-time

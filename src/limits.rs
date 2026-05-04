@@ -415,6 +415,29 @@ pub fn parse_env_duration_secs(key: &str, default_secs: u64) -> std::time::Durat
     std::time::Duration::from_secs(parse_env_u64(key, default_secs))
 }
 
+// ============ #1345 cqs serve idle eviction ============
+
+/// Default idle-shutdown threshold for `cqs serve` in minutes. After this
+/// many minutes of no incoming requests, the server shuts down gracefully
+/// to release the `Store<ReadOnly>` mmap, the spawn-blocking semaphore,
+/// and the tokio runtime. `0` disables the idle shutdown entirely.
+pub const SERVE_IDLE_MINUTES_DEFAULT: u64 = 30;
+
+/// Resolve the idle-shutdown threshold for `cqs serve` in minutes.
+/// `CQS_SERVE_IDLE_MINUTES=0` disables idle eviction (server runs until
+/// killed). Garbage / missing values fall back to
+/// [`SERVE_IDLE_MINUTES_DEFAULT`].
+///
+/// `0` is the only special value: any other parseable u64 wins (no upper
+/// clamp — operators may legitimately want a multi-day idle window for a
+/// dashboard left open across a weekend).
+pub fn serve_idle_minutes() -> u64 {
+    match std::env::var("CQS_SERVE_IDLE_MINUTES") {
+        Ok(v) => v.parse::<u64>().unwrap_or(SERVE_IDLE_MINUTES_DEFAULT),
+        Err(_) => SERVE_IDLE_MINUTES_DEFAULT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,7 +11,8 @@ use axum::{
 use tower::util::ServiceExt;
 
 use super::{
-    allowed_host_set, build_router, AllowedHosts, AppState, AuthMode, NoAuthAcknowledgement,
+    allowed_host_set, build_router, now_epoch_secs, wait_for_idle, AllowedHosts, AppState,
+    AuthMode, NoAuthAcknowledgement,
 };
 use crate::embedder::Embedding;
 use crate::parser::{Chunk, ChunkType, Language};
@@ -92,6 +93,10 @@ fn fixture_state() -> Fixture {
             blocking_permits: Arc::new(tokio::sync::Semaphore::new(
                 crate::limits::serve_blocking_permits(),
             )),
+            // #1345: idle clock is just an `Arc<AtomicU64>` — the tests
+            // exercise handler shape, not the wall-clock-driven eviction
+            // future, so any starting value is fine.
+            last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }),
         _dir: Some(dir),
     }
@@ -227,6 +232,10 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
             blocking_permits: Arc::new(tokio::sync::Semaphore::new(
                 crate::limits::serve_blocking_permits(),
             )),
+            // #1345: idle clock is just an `Arc<AtomicU64>` — the tests
+            // exercise handler shape, not the wall-clock-driven eviction
+            // future, so any starting value is fine.
+            last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }),
         _dir: Some(dir),
     }
@@ -1766,5 +1775,100 @@ mod auth_tests {
             cookie.starts_with(&format!("cqs_token_8081={token_str};")),
             "Set-Cookie must use per-port name: {cookie}"
         );
+    }
+
+    // ─── #1345 idle eviction ──────────────────────────────────────────────
+
+    /// `wait_for_idle` returns when the gap between "now" and the
+    /// last-request timestamp meets `idle_secs`. Drives the loop with a
+    /// 1 ms tick and a stale `last_request_epoch` so the future resolves
+    /// in the first poll iteration after the initial skip.
+    #[tokio::test]
+    async fn wait_for_idle_returns_when_gap_exceeds_threshold() {
+        use std::sync::atomic::AtomicU64;
+        // Stale clock: 600 seconds in the past, beyond any sensible
+        // idle window the test would set.
+        let last = Arc::new(AtomicU64::new(now_epoch_secs().saturating_sub(600)));
+        // 1-second idle threshold — the gap is ~600 s, so the very first
+        // post-skip tick resolves the future.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            wait_for_idle(last, 1, std::time::Duration::from_millis(1)),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "wait_for_idle did not resolve within timeout"
+        );
+    }
+
+    /// While `last_request_epoch` keeps advancing, `wait_for_idle` must
+    /// never resolve. Touch the clock from a separate task on a faster
+    /// cadence than the poll, run for ~50 ms, and assert the future is
+    /// still pending — the timeout *expiring* is the pass condition.
+    #[tokio::test]
+    async fn wait_for_idle_blocks_while_clock_advances() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let last = Arc::new(AtomicU64::new(now_epoch_secs()));
+        let last_for_toucher = Arc::clone(&last);
+        let toucher = tokio::spawn(async move {
+            for _ in 0..20 {
+                last_for_toucher.store(now_epoch_secs(), Ordering::Relaxed);
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            wait_for_idle(last, 5, std::time::Duration::from_millis(1)),
+        )
+        .await;
+        toucher.abort();
+        assert!(
+            result.is_err(),
+            "wait_for_idle resolved while the clock was being touched — it should have stayed pending"
+        );
+    }
+
+    /// The touch middleware (`touch_idle_clock`) updates the timestamp
+    /// on every request. Drive a single `oneshot` through the router and
+    /// assert `last_request_epoch` advanced.
+    #[tokio::test]
+    async fn touch_idle_clock_updates_timestamp_on_each_request() {
+        use std::sync::atomic::Ordering;
+        // Keep `fixture` alive through end-of-test so its OS-thread Drop
+        // takes the last `Arc<Store>` out of the tokio context. Cloning
+        // via `fixture.state()` (instead of `fixture.state.take()`)
+        // preserves the Fixture's own Arc copy.
+        let fixture = fixture_state();
+        let state = fixture.state();
+        let last = Arc::clone(&state.last_request_epoch);
+        // Force an obviously-stale starting value so the post-request
+        // value can't come from the start-of-test clock alone.
+        last.store(0, Ordering::Relaxed);
+
+        let app = build_router(
+            state,
+            allowed_host_set(&"127.0.0.1:8080".parse().unwrap()),
+            AuthMode::disabled(NoAuthAcknowledgement::for_test()),
+        );
+
+        let _ = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot /health");
+
+        let stored = last.load(Ordering::Relaxed);
+        assert!(
+            stored >= now_epoch_secs().saturating_sub(2),
+            "touch middleware did not advance idle clock: stored={stored}, now={}",
+            now_epoch_secs()
+        );
+        drop(fixture);
     }
 }
