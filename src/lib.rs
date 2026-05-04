@@ -748,12 +748,47 @@ fn max_file_size() -> u64 {
 /// both disabled by `no_ignore=true`); skips hidden files and files larger
 /// than `CQS_MAX_FILE_SIZE` bytes (default 1 MiB — generated code can
 /// exceed this). Returns relative paths from the project root.
+///
+/// Backed by [`enumerate_files_iter`] — this is a `.collect::<Vec<_>>()`
+/// wrapper that materializes the whole walk into a single allocation.
+/// Callers that don't need the count or random access (`run_daemon_reconcile`,
+/// 1k-file streaming queries) should consume the iterator directly to keep
+/// peak heap bounded by batch size rather than tree size. (#1229)
 pub fn enumerate_files(
     root: &Path,
     extensions: &[&str],
     no_ignore: bool,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let _span = tracing::debug_span!("enumerate_files", root = %root.display()).entered();
+    let iter = enumerate_files_iter(root, extensions, no_ignore)?;
+    let files: Vec<PathBuf> = iter.collect();
+    tracing::info!(file_count = files.len(), "File enumeration complete");
+    Ok(files)
+}
+
+/// Streaming variant of [`enumerate_files`]. Returns an iterator of
+/// project-relative paths under `root`, applying the same `.gitignore` /
+/// `.cqsignore` / size-cap / hidden-file filters as the eager wrapper.
+///
+/// `extensions` is borrowed and converted to owned `Vec<String>` so the
+/// returned iterator outlives the call and can be threaded into
+/// long-lived loops (the watch reconcile path is the canonical consumer).
+///
+/// Failures in the walk surface via `tracing::warn!` (first three) /
+/// `tracing::debug!` (rest), matching the pre-#1229 silent-skip-with-log
+/// contract. The iterator yields *only* the paths that successfully
+/// passed every filter — operators inspecting the walk count vs `find`
+/// output can grep journalctl for the "Skipping …" lines if the counts
+/// disagree.
+///
+/// Memory: O(WalkBuilder internals + per-iteration scratch). The
+/// `ignore` crate keeps a small per-directory ignore stack; everything
+/// else is stack-local. Peak heap is independent of tree size.
+pub fn enumerate_files_iter(
+    root: &Path,
+    extensions: &[&str],
+    no_ignore: bool,
+) -> anyhow::Result<impl Iterator<Item = PathBuf>> {
+    let _span = tracing::debug_span!("enumerate_files_iter", root = %root.display()).entered();
     use anyhow::Context;
     use ignore::WalkBuilder;
 
@@ -797,8 +832,19 @@ pub fn enumerate_files(
     // then-debug shape used by the canonicalize arm below. Silently dropping
     // files leaves operators staring at fewer chunks than expected with no
     // diagnostic trail.
-    let metadata_failures = std::sync::atomic::AtomicUsize::new(0);
-    let files: Vec<PathBuf> = walker
+    //
+    // #1229: counters live in `Arc<AtomicUsize>` so the per-row closures can
+    // each hold their own clone. The walker outlives the function call (it's
+    // returned via `impl Iterator`), so `&AtomicUsize` lifetimes wouldn't
+    // work — Arc is the cheapest move-into-closure shape.
+    let metadata_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let canonicalize_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Owned ext list so the iterator doesn't borrow caller storage.
+    let exts_owned: Vec<String> = extensions.iter().map(|s| (*s).to_string()).collect();
+    let metadata_failures_for_filter = std::sync::Arc::clone(&metadata_failures);
+    let exts_for_filter = exts_owned.clone();
+    let root_for_filter = root.clone();
+    Ok(walker
         .filter_map(|e| {
             e.map_err(|err| {
                 tracing::debug!(error = %err, "Failed to read directory entry during walk");
@@ -806,7 +852,7 @@ pub fn enumerate_files(
             .ok()
         })
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| match e.metadata() {
+        .filter(move |e| match e.metadata() {
             Ok(m) => {
                 let len = m.len();
                 if len > size_cap {
@@ -829,8 +875,8 @@ pub fn enumerate_files(
                 // underlying io kind (e.g., "permission denied", "no such
                 // file or directory"), so the operator gets the kind
                 // implicitly via `error = %err`.
-                let count =
-                    metadata_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let count = metadata_failures_for_filter
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if count < 3 {
                     tracing::warn!(
                         path = %e.path().display(),
@@ -847,78 +893,125 @@ pub fn enumerate_files(
                 false
             }
         })
-        .filter(|e| {
+        .filter(move |e| {
             // P3 #141: `to_ascii_lowercase` allocated a fresh `String` per
             // candidate file. `eq_ignore_ascii_case` compares case-insensitively
             // without an allocation.
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| extensions.iter().any(|e| ext.eq_ignore_ascii_case(e)))
+                .map(|ext| {
+                    exts_for_filter
+                        .iter()
+                        .any(|e| ext.eq_ignore_ascii_case(e.as_str()))
+                })
                 .unwrap_or(false)
         })
-        .filter_map({
-            let failure_count = std::sync::atomic::AtomicUsize::new(0);
-            move |e| {
-                let path = match dunce::canonicalize(e.path()) {
-                    Ok(p) => p,
-                    Err(err) => {
-                        let count =
-                            failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if count < 3 {
-                            tracing::warn!(
-                                path = %e.path().display(),
-                                error = %err,
-                                "Failed to canonicalize path, skipping"
-                            );
-                        } else {
-                            tracing::debug!(
-                                path = %e.path().display(),
-                                error = %err,
-                                "Failed to canonicalize path, skipping"
-                            );
-                        }
-                        return None;
+        .filter_map(move |e| {
+            let path = match dunce::canonicalize(e.path()) {
+                Ok(p) => p,
+                Err(err) => {
+                    let count = canonicalize_failures
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if count < 3 {
+                        tracing::warn!(
+                            path = %e.path().display(),
+                            error = %err,
+                            "Failed to canonicalize path, skipping"
+                        );
+                    } else {
+                        tracing::debug!(
+                            path = %e.path().display(),
+                            error = %err,
+                            "Failed to canonicalize path, skipping"
+                        );
                     }
-                };
-                if path.starts_with(&root) {
-                    // RB-6: `starts_with` and `strip_prefix` can disagree on
-                    // case-insensitive filesystems (NTFS, HFS+) — `Cqs` vs
-                    // `cqs` matches under `starts_with` but `strip_prefix`
-                    // does byte-equal segment compare and refuses. The old
-                    // `unwrap_or(&path).to_path_buf()` then silently leaked
-                    // the absolute path into the relative-path workflow,
-                    // breaking every downstream lookup keyed by relative
-                    // origin. Skipping with a warn surfaces the
-                    // disagreement so the operator can fix the case skew
-                    // (or re-canonicalize the project root).
-                    match path.strip_prefix(&root) {
-                        Ok(rel) => Some(rel.to_path_buf()),
-                        Err(_) => {
-                            tracing::warn!(
-                                path = %path.display(),
-                                root = %root.display(),
-                                "enumerate_files: starts_with passed but strip_prefix failed (case-insensitive filesystem?) — skipping"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    tracing::warn!(path = %e.path().display(), "Skipping path outside project");
-                    None
+                    return None;
                 }
+            };
+            if path.starts_with(&root_for_filter) {
+                // RB-6: `starts_with` and `strip_prefix` can disagree on
+                // case-insensitive filesystems (NTFS, HFS+) — `Cqs` vs
+                // `cqs` matches under `starts_with` but `strip_prefix`
+                // does byte-equal segment compare and refuses. The old
+                // `unwrap_or(&path).to_path_buf()` then silently leaked
+                // the absolute path into the relative-path workflow,
+                // breaking every downstream lookup keyed by relative
+                // origin. Skipping with a warn surfaces the
+                // disagreement so the operator can fix the case skew
+                // (or re-canonicalize the project root).
+                match path.strip_prefix(&root_for_filter) {
+                    Ok(rel) => Some(rel.to_path_buf()),
+                    Err(_) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            root = %root_for_filter.display(),
+                            "enumerate_files: starts_with passed but strip_prefix failed (case-insensitive filesystem?) — skipping"
+                        );
+                        None
+                    }
+                }
+            } else {
+                tracing::warn!(path = %e.path().display(), "Skipping path outside project");
+                None
             }
-        })
-        .collect();
-
-    tracing::info!(file_count = files.len(), "File enumeration complete");
-
-    Ok(files)
+        }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1229 (RM-5): the iterator API yields the same set of files as the
+    /// eager wrapper for a small synthetic tree. Pins the contract that
+    /// `enumerate_files = enumerate_files_iter.collect()`.
+    #[test]
+    fn enumerate_files_iter_matches_eager_for_small_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).expect("mkdir src");
+        std::fs::write(src.join("a.rs"), "fn a() {}").expect("write a.rs");
+        std::fs::write(src.join("b.rs"), "fn b() {}").expect("write b.rs");
+        std::fs::write(src.join("c.txt"), "ignored").expect("write c.txt");
+
+        let exts = ["rs"];
+        let eager: std::collections::BTreeSet<PathBuf> = enumerate_files(dir.path(), &exts, true)
+            .expect("enumerate_files")
+            .into_iter()
+            .collect();
+        let streamed: std::collections::BTreeSet<PathBuf> =
+            enumerate_files_iter(dir.path(), &exts, true)
+                .expect("enumerate_files_iter")
+                .collect();
+        assert_eq!(
+            eager, streamed,
+            "iter and eager paths must yield the same files"
+        );
+        assert_eq!(eager.len(), 2, "expected 2 .rs files, got {eager:?}");
+    }
+
+    /// #1229 (RM-5): the iterator yields paths *one at a time* — calling
+    /// `.next()` materializes a single PathBuf, not the whole walk. Pins
+    /// the contract by counting yields against an explicit `take(N)`.
+    /// Memory bounding is impractical to assert directly without a
+    /// custom allocator, but this proves the iterator surface accepts
+    /// partial consumption.
+    #[test]
+    fn enumerate_files_iter_supports_partial_consumption() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).expect("mkdir src");
+        for i in 0..50 {
+            std::fs::write(src.join(format!("f{i}.rs")), "fn f() {}").expect("write");
+        }
+        let exts = ["rs"];
+        let mut iter = enumerate_files_iter(dir.path(), &exts, true).expect("iter");
+        // Consume exactly 5 — the rest of the walk should never run.
+        let first_five: Vec<_> = iter.by_ref().take(5).collect();
+        assert_eq!(first_five.len(), 5);
+        // Iterator is still alive and can produce more.
+        assert!(iter.next().is_some(), "iterator must yield more on demand");
+    }
 
     #[test]
     fn test_is_test_chunk_name_patterns() {

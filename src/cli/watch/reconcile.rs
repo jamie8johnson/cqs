@@ -64,6 +64,102 @@ pub(super) fn normalize_pending_path(p: &Path) -> PathBuf {
     }
 }
 
+/// #1229 (RM-5): per-batch fingerprint lookup + queue-divergent helper
+/// for the streaming reconcile path. Mirrors the per-file body of the
+/// pre-walked path but consumes its origin map from a 1k-wide batch
+/// rather than the full-tree `indexed_file_origins` HashMap.
+#[allow(clippy::too_many_arguments)]
+fn process_batch(
+    store: &Store,
+    root: &Path,
+    pending_files: &mut HashSet<PathBuf>,
+    max_pending: usize,
+    batch: &[PathBuf],
+    added: &mut usize,
+    modified: &mut usize,
+    queued: &mut usize,
+    skipped_at_cap: &mut usize,
+) {
+    // Build the origin string set the SQL helper expects. `Cow` saves
+    // the `replace('\\', "/")` allocation on POSIX paths (PF-V1.30.1-4).
+    let mut origins_strs: Vec<std::borrow::Cow<'_, str>> = Vec::with_capacity(batch.len());
+    let mut origins_for_sql: Vec<&str> = Vec::with_capacity(batch.len());
+    for rel in batch {
+        let cow: std::borrow::Cow<'_, str> = match rel.to_str() {
+            Some(s) if s.contains('\\') => std::borrow::Cow::Owned(s.replace('\\', "/")),
+            Some(s) => std::borrow::Cow::Borrowed(s),
+            None => continue, // non-UTF-8 — handled per-file below
+        };
+        origins_strs.push(cow);
+    }
+    for cow in &origins_strs {
+        origins_for_sql.push(cow.as_ref());
+    }
+
+    let indexed = match store.fingerprints_for_origins(&origins_for_sql) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Reconcile: fingerprints_for_origins failed");
+            return;
+        }
+    };
+
+    for rel in batch {
+        if pending_files.len() >= max_pending {
+            *skipped_at_cap += 1;
+            continue;
+        }
+        let origin: std::borrow::Cow<'_, str> = match rel.to_str() {
+            Some(s) if s.contains('\\') => std::borrow::Cow::Owned(s.replace('\\', "/")),
+            Some(s) => std::borrow::Cow::Borrowed(s),
+            None => {
+                tracing::warn!(
+                    path = %rel.display(),
+                    "Reconcile: skipping non-UTF-8 path (will not be indexed until renamed)"
+                );
+                continue;
+            }
+        };
+        match indexed.get(origin.as_ref()) {
+            None => {
+                let normalized = normalize_pending_path(rel);
+                if pending_files.insert(normalized) {
+                    *added += 1;
+                    *queued += 1;
+                }
+            }
+            Some(stored_fp) => {
+                let lookup_path: PathBuf = if rel.is_absolute() {
+                    rel.clone()
+                } else {
+                    root.join(rel)
+                };
+                let needs_reindex = match FileFingerprint::read_disk(
+                    &lookup_path,
+                    stored_fp,
+                    FingerprintPolicy::MtimeOrHash,
+                ) {
+                    None => {
+                        tracing::debug!(
+                            path = %lookup_path.display(),
+                            "Reconcile: read_disk returned None, leaving file to GC"
+                        );
+                        false
+                    }
+                    Some(disk_fp) => !stored_fp.matches(&disk_fp, FingerprintPolicy::MtimeOrHash),
+                };
+                if needs_reindex {
+                    let normalized = normalize_pending_path(rel);
+                    if pending_files.insert(normalized) {
+                        *modified += 1;
+                        *queued += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Walk the project tree and queue any files that diverge from the
 /// indexed state into `pending_files`. Returns the count of files queued
 /// so the watch loop can log a summary line.
@@ -124,128 +220,165 @@ pub(super) fn run_daemon_reconcile_with_walk(
     // journalctl. Pattern matches the HNSW build sites already in tree.
     let start = std::time::Instant::now();
 
-    // Walk disk → set of relative paths visible to indexing. PF-V1.30.1-3:
-    // reuse the caller-supplied walk when present (saves one full
-    // `enumerate_files` pass on ticks that fire both gc and reconcile).
     let exts = parser.supported_extensions();
-    let walked: Option<HashSet<PathBuf>> = if disk_files.is_none() {
-        match cqs::enumerate_files(root, &exts, no_ignore) {
-            Ok(v) => Some(v.into_iter().collect()),
-            Err(e) => {
-                tracing::warn!(error = %e, "Reconcile: enumerate_files failed");
-                return 0;
-            }
-        }
-    } else {
-        None
-    };
-    let disk_files: &HashSet<PathBuf> = disk_files.unwrap_or_else(|| {
-        walked
-            .as_ref()
-            .expect("walked is Some when disk_files was None and walk succeeded")
-    });
 
-    // One SELECT pulls every indexed source-file origin + its stored
-    // mtime. Map keyed by origin string for cheap lookups in the loop.
-    let indexed = match store.indexed_file_origins() {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Reconcile: indexed_file_origins failed");
-            return 0;
-        }
-    };
-
+    // #1229 (RM-5): two-mode dispatch. The pre-walked path retains the
+    // legacy "fully-materialized HashSet + full-tree fingerprint map"
+    // shape because the caller (idle-tick GC + reconcile share-a-walk)
+    // already paid the materialization cost. The streaming path
+    // consumes `enumerate_files_iter` in 1k-file batches so peak heap
+    // is `O(batch_size)`, independent of tree size.
     let mut added = 0usize;
     let mut modified = 0usize;
     let mut queued = 0usize;
     let mut skipped_at_cap = 0usize;
-    for rel in disk_files {
-        // DS-V1.30.1-D2: respect the same cap as the inotify path so a
-        // bulk branch switch (50k files) doesn't drown the next
-        // `process_file_changes` cycle. Files we skip here are picked
-        // up by the next reconcile pass — the walk is idempotent.
-        if pending_files.len() >= max_pending {
-            skipped_at_cap += 1;
-            continue;
-        }
-        // Stored origins are typically relative; normalize to forward
-        // slashes for cross-platform matching parity with the rest of the
-        // store layer.
-        //
-        // RB-1: explicit `to_str()` instead of `to_string_lossy()`. Non-UTF-8
-        // path bytes get U+FFFD substitution under `to_string_lossy`, and the
-        // indexer's own lossy conversion may emit a different replacement
-        // (or skip the file entirely), so the lookup-key never matches the
-        // stored origin and the file gets requeued forever — every reconcile
-        // pass (default 30 s) wastes a parse + rewarn loop on WSL `/mnt/c/`
-        // mounts where filenames can carry stray bytes from Windows tools.
-        // Skipping with a warn is strictly better than re-queuing.
-        //
-        // PF-V1.30.1-4: skip the `replace('\\', "/")` allocation on POSIX
-        // paths (the common case on Linux/WSL/macOS). Backslashes only
-        // appear on native Windows; on Linux the path is already clean.
-        // Use `Cow::Borrowed` to reuse `&str` for the `HashMap` lookup.
-        let origin: std::borrow::Cow<'_, str> = match rel.to_str() {
-            Some(s) if s.contains('\\') => std::borrow::Cow::Owned(s.replace('\\', "/")),
-            Some(s) => std::borrow::Cow::Borrowed(s),
-            None => {
-                tracing::warn!(
-                    path = %rel.display(),
-                    "Reconcile: skipping non-UTF-8 path (will not be indexed until renamed)"
-                );
-                continue;
+
+    if let Some(disk_files) = disk_files {
+        // PF-V1.30.1-3: caller pre-walked. Reuse the materialized
+        // origins-map approach since the HashSet is already in memory.
+        let indexed = match store.indexed_file_origins() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "Reconcile: indexed_file_origins failed");
+                return 0;
             }
         };
-        match indexed.get(origin.as_ref()) {
-            None => {
-                // ADDED: no chunks for this file in the index. Queue.
-                // PF-V1.30.1-9 / #1245: keep the queue keyed by the same
-                // slash-normalized form the chunks table uses, so a
-                // Windows-side reconcile and a WSL-side watcher don't
-                // double-queue the same file under both separators.
-                let normalized = normalize_pending_path(rel);
-                if pending_files.insert(normalized) {
-                    added += 1;
-                    queued += 1;
-                }
+        for rel in disk_files {
+            // DS-V1.30.1-D2: respect the same cap as the inotify path so a
+            // bulk branch switch (50k files) doesn't drown the next
+            // `process_file_changes` cycle. Files we skip here are picked
+            // up by the next reconcile pass — the walk is idempotent.
+            if pending_files.len() >= max_pending {
+                skipped_at_cap += 1;
+                continue;
             }
-            Some(stored_fp) => {
-                // MODIFIED: same path indexed, but disk content may have
-                // diverged. Use the v23 reconcile fingerprint (mtime+size
-                // fast path; BLAKE3 tiebreak on coarse-mtime FSes or
-                // content-identical-mtime-bumped flips). #1219.
-                let lookup_path: PathBuf = if rel.is_absolute() {
-                    rel.clone()
-                } else {
-                    root.join(rel)
-                };
-                let needs_reindex = match FileFingerprint::read_disk(
-                    &lookup_path,
-                    stored_fp,
-                    FingerprintPolicy::MtimeOrHash,
-                ) {
-                    // EH-V1.30.1-7 / TC-ADV-1.30.1-6: stat failures
-                    // (permission flip, transient AV scan, deleted-since-
-                    // walk) leave the file to the GC pass — we don't want
-                    // to trigger a reindex burst on a file we can't even
-                    // read.
-                    None => {
-                        tracing::debug!(
-                            path = %lookup_path.display(),
-                            "Reconcile: read_disk returned None, leaving file to GC"
-                        );
-                        false
-                    }
-                    Some(disk_fp) => !stored_fp.matches(&disk_fp, FingerprintPolicy::MtimeOrHash),
-                };
-                if needs_reindex {
+            // Stored origins are typically relative; normalize to forward
+            // slashes for cross-platform matching parity with the rest of the
+            // store layer.
+            //
+            // RB-1: explicit `to_str()` instead of `to_string_lossy()`. Non-UTF-8
+            // path bytes get U+FFFD substitution under `to_string_lossy`, and the
+            // indexer's own lossy conversion may emit a different replacement
+            // (or skip the file entirely), so the lookup-key never matches the
+            // stored origin and the file gets requeued forever — every reconcile
+            // pass (default 30 s) wastes a parse + rewarn loop on WSL `/mnt/c/`
+            // mounts where filenames can carry stray bytes from Windows tools.
+            // Skipping with a warn is strictly better than re-queuing.
+            //
+            // PF-V1.30.1-4: skip the `replace('\\', "/")` allocation on POSIX
+            // paths (the common case on Linux/WSL/macOS). Backslashes only
+            // appear on native Windows; on Linux the path is already clean.
+            // Use `Cow::Borrowed` to reuse `&str` for the `HashMap` lookup.
+            let origin: std::borrow::Cow<'_, str> = match rel.to_str() {
+                Some(s) if s.contains('\\') => std::borrow::Cow::Owned(s.replace('\\', "/")),
+                Some(s) => std::borrow::Cow::Borrowed(s),
+                None => {
+                    tracing::warn!(
+                        path = %rel.display(),
+                        "Reconcile: skipping non-UTF-8 path (will not be indexed until renamed)"
+                    );
+                    continue;
+                }
+            };
+            match indexed.get(origin.as_ref()) {
+                None => {
+                    // ADDED: no chunks for this file in the index. Queue.
+                    // PF-V1.30.1-9 / #1245: keep the queue keyed by the same
+                    // slash-normalized form the chunks table uses, so a
+                    // Windows-side reconcile and a WSL-side watcher don't
+                    // double-queue the same file under both separators.
                     let normalized = normalize_pending_path(rel);
                     if pending_files.insert(normalized) {
-                        modified += 1;
+                        added += 1;
                         queued += 1;
                     }
                 }
+                Some(stored_fp) => {
+                    // MODIFIED: same path indexed, but disk content may have
+                    // diverged. Use the v23 reconcile fingerprint (mtime+size
+                    // fast path; BLAKE3 tiebreak on coarse-mtime FSes or
+                    // content-identical-mtime-bumped flips). #1219.
+                    let lookup_path: PathBuf = if rel.is_absolute() {
+                        rel.clone()
+                    } else {
+                        root.join(rel)
+                    };
+                    let needs_reindex = match FileFingerprint::read_disk(
+                        &lookup_path,
+                        stored_fp,
+                        FingerprintPolicy::MtimeOrHash,
+                    ) {
+                        // EH-V1.30.1-7 / TC-ADV-1.30.1-6: stat failures
+                        // (permission flip, transient AV scan, deleted-since-
+                        // walk) leave the file to the GC pass — we don't want
+                        // to trigger a reindex burst on a file we can't even
+                        // read.
+                        None => {
+                            tracing::debug!(
+                                path = %lookup_path.display(),
+                                "Reconcile: read_disk returned None, leaving file to GC"
+                            );
+                            false
+                        }
+                        Some(disk_fp) => {
+                            !stored_fp.matches(&disk_fp, FingerprintPolicy::MtimeOrHash)
+                        }
+                    };
+                    if needs_reindex {
+                        let normalized = normalize_pending_path(rel);
+                        if pending_files.insert(normalized) {
+                            modified += 1;
+                            queued += 1;
+                        }
+                    }
+                }
             }
+        }
+    } else {
+        // #1229 (RM-5): streaming path. Walk the tree, buffer 1k paths
+        // at a time, query the store for that batch's fingerprints,
+        // compare disk vs stored per-file. Peak heap is `O(BATCH)` —
+        // independent of tree size.
+        const BATCH: usize = 1000;
+        let iter = match cqs::enumerate_files_iter(root, &exts, no_ignore) {
+            Ok(it) => it,
+            Err(e) => {
+                tracing::warn!(error = %e, "Reconcile: enumerate_files_iter failed");
+                return 0;
+            }
+        };
+        let mut buffer: Vec<PathBuf> = Vec::with_capacity(BATCH);
+        for rel in iter {
+            buffer.push(rel);
+            if buffer.len() < BATCH {
+                continue;
+            }
+            process_batch(
+                store,
+                root,
+                pending_files,
+                max_pending,
+                &buffer,
+                &mut added,
+                &mut modified,
+                &mut queued,
+                &mut skipped_at_cap,
+            );
+            buffer.clear();
+        }
+        // Drain the remainder.
+        if !buffer.is_empty() {
+            process_batch(
+                store,
+                root,
+                pending_files,
+                max_pending,
+                &buffer,
+                &mut added,
+                &mut modified,
+                &mut queued,
+                &mut skipped_at_cap,
+            );
         }
     }
 
