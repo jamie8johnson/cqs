@@ -6,6 +6,7 @@
 //! fire when the Store's internal `block_on` is invoked from axum's
 //! async context. Heavy SQL queries live in `super::data::build_*`.
 
+use crate::store::{ReadOnly, Store};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -19,6 +20,67 @@ use super::data::{
 };
 use super::error::ServeError;
 use super::AppState;
+
+/// #1376 / CQ-V1.33.0-5: shared scaffolding for every async handler that
+/// runs a sync `Store` call inside `spawn_blocking`. Centralizes the
+/// `Span::current()` capture, `state.blocking_permits` acquire (with the
+/// canonical `"blocking permit: {e}"` error string), `spawn_blocking`
+/// dispatch, span re-entry inside the closure, permit-hold-via-move,
+/// `await`, and join-error mapping. Each handler shrinks from ~30 LOC
+/// of scaffolding to one `with_blocking(...)` call plus its actual
+/// per-handler arg shaping.
+///
+/// `label` is used in the join-error string only (`"{label} join: ..."`).
+/// Pre-fix the per-handler labels were `"stats join"` / `"graph join"` /
+/// etc. — kept stable so existing log greps still match.
+///
+/// The closure receives `&Store<ReadOnly>` and returns
+/// `Result<T, E: Into<ServeError>>` so callers can pass either
+/// `build_*` functions (which return `Result<_, StoreError>`) or
+/// direct `store.search_by_name(...)` calls without per-call-site error
+/// conversions.
+async fn with_blocking<T, E, F>(
+    state: &AppState,
+    label: &'static str,
+    f: F,
+) -> Result<T, ServeError>
+where
+    F: FnOnce(&Store<ReadOnly>) -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: Into<ServeError> + Send + 'static,
+{
+    // P2.25: capture the per-request span (TraceLayer assigns one) and
+    // re-enter it inside the blocking closure so the inner `build_*`
+    // span lands as a child of the http_request span. Without this,
+    // `RUST_LOG=info` shows `build_*` orphaned from the request and
+    // operators can't correlate slow handler latency.
+    let span = tracing::Span::current();
+    let store = state.store.clone();
+
+    // P2.76: acquire a semaphore permit before queueing the blocking
+    // job. Caps concurrent SQL-bound work at `serve_blocking_permits()`
+    // so a fan-out client can't pin the full 512-thread axum default
+    // blocking pool with idle SQLite handles. Permit is held for the
+    // life of the spawned closure via `acquire_owned()` + closure move.
+    let permit = state
+        .blocking_permits
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
+
+    // Store's sync API uses its own internal `block_on`. Wrap in
+    // `spawn_blocking` to avoid the "runtime within a runtime" panic
+    // when called from axum's async context.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _entered = span.enter();
+        f(&store)
+    })
+    .await
+    .map_err(|e| ServeError::Internal(format!("{label} join: {e}")))?
+    .map_err(Into::into)
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct GraphQuery {
@@ -78,39 +140,7 @@ pub(crate) async fn stats(
     State(state): State<AppState>,
 ) -> Result<Json<StatsResponse>, ServeError> {
     tracing::info!("serve::stats");
-
-    // P2.25: capture the per-request span and re-enter it inside the
-    // blocking closure so the inner `build_*` span lands as a child of
-    // the http_request span (TraceLayer) rather than a detached root.
-    // Without this, RUST_LOG=info shows `build_stats` orphaned from
-    // its request and operators can't correlate slow handler latency.
-    //
-    // P2.76: acquire a semaphore permit before queueing the blocking
-    // job. Caps concurrent SQL-bound work at `serve_blocking_permits()`
-    // so a fan-out client can't pin the full 512-thread axum default
-    // blocking pool with idle SQLite handles. Permit is held for the
-    // life of the spawned closure via `acquire_owned()` + closure move.
-    //
-    // Store's sync API uses its own internal `block_on`. Wrap in
-    // `spawn_blocking` to avoid the "runtime within a runtime" panic
-    // when called from axum's async context.
-    let span = tracing::Span::current();
-    let store = state.store.clone();
-    let permit = state
-        .blocking_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
-    let stats = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _entered = span.enter();
-        super::data::build_stats(&store)
-    })
-    .await
-    .map_err(|e| ServeError::Internal(format!("stats join: {e}")))?
-    .map_err(ServeError::from)?;
-
+    let stats = with_blocking(&state, "stats", super::data::build_stats).await?;
     Ok(Json(stats))
 }
 
@@ -127,27 +157,15 @@ pub(crate) async fn graph(
         "serve::graph"
     );
 
-    // P2.25 + P2.76: see `stats` for span/permit rationale.
-    let span = tracing::Span::current();
-    let store = state.store.clone();
-    let file = params.file.clone();
-    let kind = params.kind.clone();
-    let max_nodes = params.max_nodes;
-    let permit = state
-        .blocking_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
-    let graph = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _entered = span.enter();
-        super::data::build_graph(&store, file.as_deref(), kind.as_deref(), max_nodes)
+    let GraphQuery {
+        file,
+        kind,
+        max_nodes,
+    } = params;
+    let graph = with_blocking(&state, "graph", move |store| {
+        super::data::build_graph(store, file.as_deref(), kind.as_deref(), max_nodes)
     })
-    .await
-    .map_err(|e| ServeError::Internal(format!("graph join: {e}")))?
-    .map_err(ServeError::from)?;
-
+    .await?;
     Ok(Json(graph))
 }
 
@@ -158,24 +176,11 @@ pub(crate) async fn chunk_detail(
 ) -> Result<Json<ChunkDetail>, ServeError> {
     tracing::info!(chunk_id = %id, "serve::chunk_detail");
 
-    // P2.25 + P2.76: see `stats` for span/permit rationale.
-    let span = tracing::Span::current();
-    let store = state.store.clone();
     let id_clone = id.clone();
-    let permit = state
-        .blocking_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
-    let detail = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _entered = span.enter();
-        super::data::build_chunk_detail(&store, &id_clone)
+    let detail = with_blocking(&state, "chunk_detail", move |store| {
+        super::data::build_chunk_detail(store, &id_clone)
     })
-    .await
-    .map_err(|e| ServeError::Internal(format!("chunk_detail join: {e}")))?
-    .map_err(ServeError::from)?;
+    .await?;
 
     detail
         .map(Json)
@@ -209,25 +214,12 @@ pub(crate) async fn search(
         }));
     }
 
-    // P2.25 + P2.76: see `stats` for span/permit rationale.
-    let span = tracing::Span::current();
-    let store = state.store.clone();
     let q = params.q.clone();
     let limit = params.limit.clamp(1, 200);
-    let permit = state
-        .blocking_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
-    let results = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _entered = span.enter();
+    let results = with_blocking(&state, "search", move |store| {
         store.search_by_name(&q, limit)
     })
-    .await
-    .map_err(|e| ServeError::Internal(format!("search join: {e}")))?
-    .map_err(ServeError::from)?;
+    .await?;
 
     let matches: Vec<NodeRef> = results
         .into_iter()
@@ -272,24 +264,11 @@ pub(crate) async fn hierarchy(
         "serve::hierarchy"
     );
 
-    // P2.25 + P2.76: see `stats` for span/permit rationale.
-    let span = tracing::Span::current();
-    let store = state.store.clone();
     let id_clone = id.clone();
-    let permit = state
-        .blocking_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
-    let response = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _entered = span.enter();
-        super::data::build_hierarchy(&store, &id_clone, direction, depth)
+    let response = with_blocking(&state, "hierarchy", move |store| {
+        super::data::build_hierarchy(store, &id_clone, direction, depth)
     })
-    .await
-    .map_err(|e| ServeError::Internal(format!("hierarchy join: {e}")))?
-    .map_err(ServeError::from)?;
+    .await?;
 
     response
         .map(Json)
@@ -307,24 +286,11 @@ pub(crate) async fn cluster_2d(
 ) -> Result<Json<ClusterResponse>, ServeError> {
     tracing::info!(max_nodes = ?params.max_nodes, "serve::cluster_2d");
 
-    // P2.25 + P2.76: see `stats` for span/permit rationale.
-    let span = tracing::Span::current();
-    let store = state.store.clone();
     let max_nodes = params.max_nodes;
-    let permit = state
-        .blocking_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
-    let cluster = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _entered = span.enter();
-        super::data::build_cluster(&store, max_nodes)
+    let cluster = with_blocking(&state, "cluster", move |store| {
+        super::data::build_cluster(store, max_nodes)
     })
-    .await
-    .map_err(|e| ServeError::Internal(format!("cluster join: {e}")))?
-    .map_err(ServeError::from)?;
+    .await?;
 
     Ok(Json(cluster))
 }
