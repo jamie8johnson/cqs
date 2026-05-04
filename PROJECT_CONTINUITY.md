@@ -21,8 +21,16 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
 **In parallel, qwen3-8b ceiling probe waiting for an overnight window.** Engineering envelope is unblocked (#1394 retries + CPU-warm gate, #1396 routing-threshold scaling); a single bare reindex pass is ~5–7 hours, plus another ~5–7 for the summary reindex. Full restart protocol in `~/training-data/research/models.md` "Qwen3-Embedding-8B ceiling probe — overnight restart protocol" section.
 
 **Recent shipped (today, 2026-05-03):**
-- v1.36.0 release prep (this session). Headline: per-category α retune + Unknown hedge + schema v26.
+- v1.36.0 release prep (earlier session). Headline: per-category α retune + Unknown hedge + schema v26.
 - 13 audit follow-up PRs landed (#1398 #1399 #1400 #1401 #1402 #1403 #1404 #1405 #1406 #1407 #1408 #1409 #1410 #1411 #1412 #1413 #1414).
+- **Post-release autopilot wave (this session, 2026-05-03 evening, 7 PRs)**:
+  - #1428 — `.claude/scheduled_tasks.lock` removed from repo + gitignored
+  - #1429 — perf(impact): `Arc<str>` keys in reverse-BFS + build_test_map (closes #1377 — P3-55, finalizes the umbrella)
+  - #1430 — fix(serve): `--open` suppressed under auth to keep token off subprocess argv (closes #1337)
+  - #1431 — fix(hnsw): widen `test_build_batched` search windows to top-N (post-#1370 small-tier flake; unblocked main CI)
+  - #1432 — test(gc): `cmd_gc` end-to-end test (closes #1358)
+  - #1433 — fix(hook): embed POSIX-translated `cqs.exe` path on Windows installs (closes #1354)
+  - #1434 — feat(serve): idle-shutdown after `CQS_SERVE_IDLE_MINUTES` (closes #1345)
 
 ### Recent release history (compressed)
 
@@ -57,17 +65,14 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
 
 | Range | Theme |
 |-------|-------|
-| #1337-#1359 | P4 batch (23 issues) — security defense-in-depth, RM eviction/idle-state, Extensibility refactors, Platform Behavior on Windows, missing e2e smoke tests |
-| #1365 | P3-27: clap `--slot` help-text mismatch on slot/cache subcommands |
-| #1366 | P3-49: structural CLI registry — top-level command needs three coordinated edits |
-| #1370 | P2-9: HNSW M/ef defaults static — auto-scale with corpus |
-| #1371 | P2-37: SQLite chunks missing composite index `(source_type, origin)` |
-| #1372 | P2-14: `--rerank` (bool) on search vs `--reranker <mode>` on eval |
-| #1373 | P2-13: `--depth` flag four defaults across five commands |
-| #1374 | P2-4: `IndexBackend` trait uses `anyhow::Result` instead of `thiserror` |
-| #1375 | P3-52: `lib.rs` wildcard `pub use diff::* / gather::* / ...` |
-| #1376 | P2-8: `serve` async handlers duplicate ~15-20 LOC × 6 |
-| #1377 | Umbrella: P2-36, P3-53, P3-54, P3-55 — perf micro-opts |
+| #1337-#1359 | P4 batch — partially landed: #1337 #1345 #1354 #1358 closed this session; remaining P4 items (#1350 #1351 #1359 #1366) are architecture-class or "hard" labelled |
+| #1359 | P4-23: `cqs serve` end-to-end smoke test — labelled hard, needs spawn+listen+reqwest harness |
+| #1366 | P3-49: structural CLI registry — design-discussion (issue itself defers to a discussion) |
+| #1377 | ✅ Closed by #1429 (P3-55 BFS Arc<str> finalized the umbrella) |
+| #1345 | ✅ Closed by #1434 (idle eviction) |
+| #1354 | ✅ Closed by #1433 (Windows hook PATH) |
+| #1358 | ✅ Closed by #1432 (cmd_gc e2e test) |
+| #1337 | ✅ Closed by #1430 (token leak via xdg-open argv) |
 
 **Filed during today's qwen3 work (deferred):**
 

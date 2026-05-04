@@ -1750,3 +1750,17 @@ mentions = [
     "ci",
     "env-vars",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "Autopilot post-v1.36.0 wave (2026-05-03 evening): 7 PRs landed (#1428-#1434). #1429 finalizes the #1377 perf umbrella (closes it). #1430 closes #1337. #1431 unblocks main CI from a #1425-induced HNSW small-tier flake. #1432 closes #1358. #1433 closes #1354. #1434 closes #1345. Remaining open P4 audit issues are architecture-class (#1350 #1351) or design-discussion (#1366) or 'hard' labelled (#1359). #1228 #1229 #1216 are tier-3 perf/refactor that need protocol or signature changes — not autopilot-fit."
+mentions = [
+    "PROJECT_CONTINUITY.md",
+    "1428",
+    "1429",
+    "1430",
+    "1431",
+    "1432",
+    "1433",
+    "1434",
+]
