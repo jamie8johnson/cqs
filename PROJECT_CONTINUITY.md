@@ -23,7 +23,7 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
 **Recent shipped (today, 2026-05-03):**
 - v1.36.0 release prep (earlier session). Headline: per-category α retune + Unknown hedge + schema v26.
 - 13 audit follow-up PRs landed (#1398 #1399 #1400 #1401 #1402 #1403 #1404 #1405 #1406 #1407 #1408 #1409 #1410 #1411 #1412 #1413 #1414).
-- **Post-release autopilot wave (this session, 2026-05-03 evening, 7 PRs)**:
+- **Post-release autopilot wave 1 (2026-05-03 evening, 7 PRs)**:
   - #1428 — `.claude/scheduled_tasks.lock` removed from repo + gitignored
   - #1429 — perf(impact): `Arc<str>` keys in reverse-BFS + build_test_map (closes #1377 — P3-55, finalizes the umbrella)
   - #1430 — fix(serve): `--open` suppressed under auth to keep token off subprocess argv (closes #1337)
@@ -31,6 +31,13 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
   - #1432 — test(gc): `cmd_gc` end-to-end test (closes #1358)
   - #1433 — fix(hook): embed POSIX-translated `cqs.exe` path on Windows installs (closes #1354)
   - #1434 — feat(serve): idle-shutdown after `CQS_SERVE_IDLE_MINUTES` (closes #1345)
+- **Luxury route (this session, 2026-05-04 early morning, 4 PRs of the 5 picks)**:
+  Highest-taste open items, picked by aesthetic merit not effort:
+  - #1436 — feat(daemon): server-side `wait_fresh` — single round-trip, zero polling (closes #1228 / RM-2). New `FreshNotifier` (`Mutex<bool> + Condvar`); watch loop publishes, daemon parks parked clients on `Condvar::wait_timeout` until next `false → true` transition. Replaces the 250 ms-poll loop (4-5k connect/parse round-trips per 60 s wait at default budget).
+  - #1437 — refactor(batch): macro-table dispatch + uniform `&args` handlers (closes #1216). Collapses 33-arm hand-written dispatch into single `for_each_batch_cmd!` table that emits both `is_pipeable` and `dispatch`. Adding a new variant: declare on `BatchCmd` + write handler + add one row, all compile-enforced. Refactored ~30 handlers to uniform `fn(ctx, &XArgs)` signature; `Reconcile` + `WaitFresh` wrapped in `ReconcileArgs` / `WaitFreshArgs` for shape uniformity.
+  - #1438 — test(serve): `cqs serve` end-to-end smoke test (closes #1359). Spawns `cqs serve --port 0`, parses banner for token + ephemeral port, runs three real HTTP/1.1 GETs (Bearer 200, no auth 401, /api/graph 200+JSON). Pins the SEC-1.30-V1 layer-composition order — auth + host-allowlist + body-limit + trace + compression. Uncovered gotchas pinned in code comments: banner-reader threads must keep draining (else server hits EPIPE); Bearer auth dodges the `?token=` 303 redirect; bare `127.0.0.1` Host header beats the port-0 allowlist mismatch.
+  - #1439 — perf(reconcile): stream `enumerate_files` + batched mtime lookup (closes #1229 / RM-5). New `enumerate_files_iter() -> impl Iterator<Item = PathBuf>` and `Store::fingerprints_for_origins(origins: &[&str])`. Reconcile no-pre-walk path streams 1k-file batches; peak heap is `O(batch_size)` regardless of tree size. ~12 MB transient → bounded ~per-batch on a 100k-file repo.
+- **Skipped from luxury picks: #1366(b)** — `cqs-cli-derive` proc-macro crate. Deferred: the proper version requires extracting ~50 variant bodies into uniform handlers + new proc-macro crate (~6 hours of single-mega-PR work). Better fit for a dedicated session — the four merged PRs don't block it.
 
 ### Recent release history (compressed)
 
@@ -66,13 +73,16 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
 | Range | Theme |
 |-------|-------|
 | #1337-#1359 | P4 batch — partially landed: #1337 #1345 #1354 #1358 closed this session; remaining P4 items (#1350 #1351 #1359 #1366) are architecture-class or "hard" labelled |
-| #1359 | P4-23: `cqs serve` end-to-end smoke test — labelled hard, needs spawn+listen+reqwest harness |
-| #1366 | P3-49: structural CLI registry — design-discussion (issue itself defers to a discussion) |
+| #1366 | P3-49: structural CLI registry — proc-macro crate; needs dedicated session for body extraction across ~50 variants |
 | #1377 | ✅ Closed by #1429 (P3-55 BFS Arc<str> finalized the umbrella) |
 | #1345 | ✅ Closed by #1434 (idle eviction) |
 | #1354 | ✅ Closed by #1433 (Windows hook PATH) |
 | #1358 | ✅ Closed by #1432 (cmd_gc e2e test) |
 | #1337 | ✅ Closed by #1430 (token leak via xdg-open argv) |
+| #1228 | ✅ Closed by #1436 (server-side wait_fresh) |
+| #1216 | ✅ Closed by #1437 (macro-table dispatch) |
+| #1359 | ✅ Closed by #1438 (cqs serve smoke test) |
+| #1229 | ✅ Closed by #1439 (streaming enumerate_files_iter) |
 
 **Filed during today's qwen3 work (deferred):**
 
@@ -93,9 +103,9 @@ Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points o
 | 1043 | `is_slow_mmap_fs` ignores Windows network drives | Linux/WSL unaffected; needs Windows test runner |
 | 1139 | EX-V1.30-3: structural_matchers shared library | Touches 50+ language modules; explicitly skipped per autopilot directive |
 | 1140 | EX-V1.30-4: Embedder preset extras map | Skipped per autopilot directive |
-| 1216 | EX-V1.30.1-2: BatchCmd dispatch macro table | 33-handler refactor; current dispatch already exhaustive |
-| 1228 | RM-2: wait_for_fresh persistent connection | Daemon side reads one request per connection — option (a) is bigger than the issue's "30-line" estimate |
-| 1229 | RM-5: stream enumerate_files walk | Real win at 1M-file repos; needs `enumerate_files_iter` API + batched SQL lookup |
+| 1216 | ✅ Closed by #1437 — macro-table dispatch + uniform `&args` handlers |
+| 1228 | ✅ Closed by #1436 — server-side `wait_fresh` parks on `FreshNotifier`, single round-trip |
+| 1229 | ✅ Closed by #1439 — `enumerate_files_iter` + batched fingerprints, O(batch) heap |
 | 1244 | RM-4: HNSW snapshot 17 MB | Audit's "240×" claim assumed nonexistent u32 chunk_ids; actual win ~1 MB via `[u8; 32]` repr |
 | 1286 | Overnight CI workflow Phase 3 | Phase 1 (#1293) + Phase 2 (#1302) shipped; Phase 3 (CLI subprocess test binary collapse) lower priority after #1288's PR-time CI win |
 

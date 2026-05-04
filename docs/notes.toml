@@ -1764,3 +1764,20 @@ mentions = [
     "1433",
     "1434",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "Luxury route session 2026-05-04 ran #1228(b)+#1216(a)+#1359+#1229 to merge. Highlights: FreshNotifier (Mutex<bool>+Condvar) replaces wait_for_fresh polling — predicate-under-mutex pattern; macro-table dispatch collapses 33-arm BatchCmd match into for_each_batch_cmd! single source of truth for is_pipeable + dispatch; cqs serve smoke test pins SEC-1.30-V1 layer composition + uncovers EPIPE/banner-reader/Bearer-vs-redirect/port-0-Host-allowlist gotchas; enumerate_files_iter + Store::fingerprints_for_origins streams reconcile at O(batch) heap. #1366(b) proc-macro deferred — needs dedicated session for ~50-variant body extraction."
+mentions = [
+    "1228",
+    "1216",
+    "1359",
+    "1229",
+    "1436",
+    "1437",
+    "1438",
+    "1439",
+    "FreshNotifier",
+    "for_each_batch_cmd",
+    "enumerate_files_iter",
+]
