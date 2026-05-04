@@ -41,9 +41,9 @@ pub struct BatchSubmitItem {
     ///
     /// | Submission path                          | Field carries           |
     /// |------------------------------------------|-------------------------|
-    /// | `submit_batch_prebuilt` (contrastive)    | unused (`String::new`)  |
-    /// | `submit_doc_batch` (doc comments)        | function signature      |
-    /// | `submit_hyde_batch` (HyDE queries)       | unused (`String::new`)  |
+    /// | `BatchKind::Prebuilt` (contrastive)      | unused (`String::new`)  |
+    /// | `BatchKind::DocComment` (doc comments)   | function signature      |
+    /// | `BatchKind::Hyde` (HyDE queries)         | unused (`String::new`)  |
     /// | summary batches (`llm_summary_pass`)     | chunk type label        |
     ///
     /// The receiver decides; a typo at the call site silently sends
@@ -55,28 +55,57 @@ pub struct BatchSubmitItem {
     pub language: String,
 }
 
+/// Which prompt builder a batch submission uses.
+///
+/// #1347 / EX-V1.33-1: replaces the three `submit_*_batch` trait methods
+/// (`Prebuilt` / `DocComment` / `Hyde`) that differed only in which
+/// `build_*_prompt` closure was passed to `submit_batch_inner` /
+/// `submit_via_chat_completions`. Adding a fourth purpose (e.g.
+/// `Classification`, `ContrastiveRepair`, `CodeReview`) is now a single new
+/// variant + the impl's `match` arm — instead of: a new trait method × a
+/// new impl on every `BatchProvider` (4 sites: `LlmClient`, `LocalProvider`,
+/// `MockBatchProvider`, `DefaultValidationProvider`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchKind {
+    /// Pre-built prompts — `BatchSubmitItem::content` IS the user message.
+    /// Used by the contrastive summary path which pre-builds prompts with
+    /// neighbor context. `context` / `language` fields ignored.
+    Prebuilt,
+    /// Doc-comment generation — uses `LlmClient::build_doc_prompt`.
+    /// `BatchSubmitItem::context` carries the function signature.
+    DocComment,
+    /// HyDE query prediction — uses `LlmClient::build_hyde_prompt`.
+    /// `BatchSubmitItem::context` carries the function signature.
+    Hyde,
+}
+
+impl BatchKind {
+    /// Short label for logging / error messages
+    /// (`"Batch"` / `"Doc batch"` / `"Hyde batch"` historically — kept
+    /// stable so log greps don't break).
+    pub fn purpose_label(&self) -> &'static str {
+        match self {
+            Self::Prebuilt => "Batch",
+            Self::DocComment => "Doc batch",
+            Self::Hyde => "Hyde batch",
+        }
+    }
+}
+
 /// Trait for LLM batch API providers.
 /// Abstracts the batch submission, polling, and result fetching lifecycle.
 /// Currently implemented for Anthropic's Messages Batches API.
 pub trait BatchProvider {
-    /// Submit a batch where prompts are already built (content field IS the prompt).
-    /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
-    fn submit_batch_prebuilt(
+    /// Submit a batch under the given `kind`. The kind selects which prompt
+    /// builder constructs the user message from each `BatchSubmitItem`'s
+    /// `(content, context, language)` triple (or, for [`BatchKind::Prebuilt`],
+    /// uses `content` directly).
+    ///
+    /// #1347 / EX-V1.33-1: collapses the previous trio of `submit_batch_prebuilt`
+    /// / `submit_doc_batch` / `submit_hyde_batch` methods into one.
+    fn submit_batch(
         &self,
-        items: &[BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError>;
-
-    /// Submit a batch of doc-comment requests. Returns the batch ID.
-    fn submit_doc_batch(
-        &self,
-        items: &[BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError>;
-
-    /// Submit a batch of HyDE query prediction requests. Returns the batch ID.
-    fn submit_hyde_batch(
-        &self,
+        kind: BatchKind,
         items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError>;
@@ -142,24 +171,9 @@ impl MockBatchProvider {
 
 #[cfg(test)]
 impl BatchProvider for MockBatchProvider {
-    fn submit_batch_prebuilt(
+    fn submit_batch(
         &self,
-        _items: &[BatchSubmitItem],
-        _max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        Ok(self.batch_id.clone())
-    }
-
-    fn submit_doc_batch(
-        &self,
-        _items: &[BatchSubmitItem],
-        _max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        Ok(self.batch_id.clone())
-    }
-
-    fn submit_hyde_batch(
-        &self,
+        _kind: BatchKind,
         _items: &[BatchSubmitItem],
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
@@ -196,24 +210,9 @@ mod tests {
     struct DefaultValidationProvider;
 
     impl BatchProvider for DefaultValidationProvider {
-        fn submit_batch_prebuilt(
+        fn submit_batch(
             &self,
-            _items: &[BatchSubmitItem],
-            _max_tokens: u32,
-        ) -> Result<String, LlmError> {
-            Ok(String::new())
-        }
-
-        fn submit_doc_batch(
-            &self,
-            _items: &[BatchSubmitItem],
-            _max_tokens: u32,
-        ) -> Result<String, LlmError> {
-            Ok(String::new())
-        }
-
-        fn submit_hyde_batch(
-            &self,
+            _kind: BatchKind,
             _items: &[BatchSubmitItem],
             _max_tokens: u32,
         ) -> Result<String, LlmError> {

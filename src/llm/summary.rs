@@ -133,7 +133,9 @@ pub fn llm_summary_pass(
         &batch_items,
         &|s| s.get_pending_batch_id(),
         &|s, id| s.set_pending_batch_id(id),
-        &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        &|c, items, max_tok| {
+            c.submit_batch(crate::llm::provider::BatchKind::Prebuilt, items, max_tok)
+        },
     );
 
     // #1126 / P2.60: drain the per-Store summary queue regardless of

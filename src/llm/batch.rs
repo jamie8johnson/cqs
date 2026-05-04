@@ -107,43 +107,6 @@ impl LlmClient {
         Ok(batch.id)
     }
 
-    /// Submit a batch where prompts are already built (content field IS the prompt).
-    /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
-    pub(super) fn submit_batch_prebuilt(
-        &self,
-        items: &[super::provider::BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        // Identity: content is already the full prompt, ignore field3/language
-        self.submit_batch_inner(items, max_tokens, "Batch", |content, _, _| {
-            content.to_string()
-        })
-    }
-
-    /// Submit a batch of doc-comment requests to the Batches API.
-    /// Like `submit_batch` but uses `build_doc_prompt` instead of `build_prompt`.
-    /// `items` is a list of (custom_id, content, chunk_type, language).
-    /// Returns the batch ID for polling.
-    pub(super) fn submit_doc_batch(
-        &self,
-        items: &[super::provider::BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        self.submit_batch_inner(items, max_tokens, "Doc batch", Self::build_doc_prompt)
-    }
-
-    /// Submit a batch of HyDE query prediction requests to the Batches API.
-    /// Like `submit_doc_batch` but uses `build_hyde_prompt` instead of `build_doc_prompt`.
-    /// `items` is a list of (custom_id, content, signature, language).
-    /// Returns the batch ID for polling.
-    pub(super) fn submit_hyde_batch(
-        &self,
-        items: &[super::provider::BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        self.submit_batch_inner(items, max_tokens, "Hyde batch", Self::build_hyde_prompt)
-    }
-
     /// Check the current status of a batch without polling.
     pub(super) fn check_batch_status(&self, batch_id: &str) -> Result<String, LlmError> {
         let _span = tracing::debug_span!("check_batch_status", batch_id).entered();
@@ -376,28 +339,30 @@ impl LlmClient {
 }
 
 impl BatchProvider for LlmClient {
-    fn submit_batch_prebuilt(
+    fn submit_batch(
         &self,
+        kind: super::provider::BatchKind,
         items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        LlmClient::submit_batch_prebuilt(self, items, max_tokens)
-    }
-
-    fn submit_doc_batch(
-        &self,
-        items: &[super::provider::BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        LlmClient::submit_doc_batch(self, items, max_tokens)
-    }
-
-    fn submit_hyde_batch(
-        &self,
-        items: &[super::provider::BatchSubmitItem],
-        max_tokens: u32,
-    ) -> Result<String, LlmError> {
-        LlmClient::submit_hyde_batch(self, items, max_tokens)
+        // #1347: dispatch on `BatchKind` once; the inner submit_batch_inner
+        // takes the chosen prompt builder + log purpose verbatim. Adding a
+        // fourth kind is one new variant + one new arm.
+        use super::provider::BatchKind;
+        let purpose = kind.purpose_label();
+        match kind {
+            BatchKind::Prebuilt => {
+                self.submit_batch_inner(items, max_tokens, purpose, |content, _ctx, _lang| {
+                    content.to_string()
+                })
+            }
+            BatchKind::DocComment => {
+                self.submit_batch_inner(items, max_tokens, purpose, Self::build_doc_prompt)
+            }
+            BatchKind::Hyde => {
+                self.submit_batch_inner(items, max_tokens, purpose, Self::build_hyde_prompt)
+            }
+        }
     }
 
     fn check_batch_status(&self, batch_id: &str) -> Result<String, LlmError> {
@@ -884,7 +849,9 @@ mod tests {
             &items,
             &|s| s.get_pending_batch_id(),
             &|s, id| s.set_pending_batch_id(id),
-            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+            &|c, items, max_tok| {
+                c.submit_batch(crate::llm::provider::BatchKind::Prebuilt, items, max_tok)
+            },
         );
 
         let map = result.unwrap();
@@ -924,7 +891,9 @@ mod tests {
             &[], // empty batch items
             &|s| s.get_pending_batch_id(),
             &|s, id| s.set_pending_batch_id(id),
-            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+            &|c, items, max_tok| {
+                c.submit_batch(crate::llm::provider::BatchKind::Prebuilt, items, max_tok)
+            },
         );
 
         let map = result.unwrap();
@@ -1003,7 +972,9 @@ mod tests {
             &items,
             &|s| s.get_pending_batch_id(),
             &|s, id| s.set_pending_batch_id(id),
-            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+            &|c, items, max_tok| {
+                c.submit_batch(crate::llm::provider::BatchKind::Prebuilt, items, max_tok)
+            },
         );
 
         let map = result.unwrap();
@@ -1041,7 +1012,9 @@ mod tests {
             &[],
             &|s| s.get_pending_batch_id(),
             &|s, id| s.set_pending_batch_id(id),
-            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+            &|c, items, max_tok| {
+                c.submit_batch(crate::llm::provider::BatchKind::Prebuilt, items, max_tok)
+            },
         );
 
         let map = result.unwrap();
