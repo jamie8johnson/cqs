@@ -374,10 +374,10 @@ pub fn parse_env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
-// `freshness_poll_ms_initial` and `FRESHNESS_POLL_MS_INITIAL_DEFAULT`
-// were removed in #1228 (RM-2): `wait_for_fresh` is now a single
-// server-parked round-trip, so the poll-cadence knob has no semantic.
-// The `CQS_FRESHNESS_POLL_MS` env var that drove them is also gone.
+// Removed in #1228 (RM-2): `wait_for_fresh` is now a single
+// server-parked round-trip, so the poll-cadence knob (formerly
+// `freshness_poll_ms_initial` + matching env override) has no
+// semantic in the new architecture.
 
 /// Parse a duration-in-seconds env var into a `std::time::Duration`,
 /// falling back to `default_secs` on missing/empty/garbage/zero values.
