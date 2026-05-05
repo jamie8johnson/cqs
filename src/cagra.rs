@@ -743,8 +743,19 @@ impl CagraIndex {
             )));
         }
 
+        // RM-V1.36-10: sanity-bound chunk_count before with_capacity in case
+        // a corrupt store reports usize::MAX (matching SPLADE's defensive
+        // pattern in splade/index.rs). 1<<28 = ~268M chunks, well above any
+        // realistic corpus.
+        const MAX_CHUNKS_SANITY: usize = 1 << 28;
+        if chunk_count > MAX_CHUNKS_SANITY {
+            return Err(CagraError::Io(format!(
+                "Refusing to allocate id_map for chunk_count={} > {}",
+                chunk_count, MAX_CHUNKS_SANITY
+            )));
+        }
         let mut id_map = Vec::with_capacity(chunk_count);
-        let mut flat_data = Vec::with_capacity(chunk_count * dim);
+        let mut flat_data = Vec::with_capacity(chunk_count.saturating_mul(dim));
 
         // SHL-V1.33-9: streaming batch size is env-overridable so future
         // higher-dim models can shrink the per-batch heap footprint without

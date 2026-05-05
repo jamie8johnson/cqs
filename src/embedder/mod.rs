@@ -1235,9 +1235,13 @@ impl Embedder {
             // `[0, 1, ..., max_len-1]` for every row. Padding tokens get
             // positions too; they're masked out by `attention_mask` at
             // attention time, same as for `input_ids`.
-            let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len() * max_len);
+            // RM-V1.36-3: extend directly from the range iterator instead of
+            // collecting into a throwaway `Vec<i64>` per row. saturating_mul
+            // guards the with_capacity arg consistent with the rest of the
+            // codebase.
+            let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len().saturating_mul(max_len));
             for _ in 0..texts.len() {
-                pos_data.extend((0..max_len as i64).collect::<Vec<i64>>());
+                pos_data.extend(0..max_len as i64);
             }
             let position_ids_arr = Array2::<i64>::from_shape_vec((texts.len(), max_len), pos_data)
                 .map_err(|e| {

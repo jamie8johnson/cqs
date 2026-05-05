@@ -152,35 +152,30 @@ impl Bm25Index {
         let positive_content_hash = blake3::hash(positive_content.as_bytes());
         let scored = self.score(query);
 
+        // AC-V1.36-4 / P3: move the empty-content drop ahead of `take(k)`
+        // so empty rows don't count toward the budget. Pre-fix the docstring
+        // promised "top-k negatives" but a stretch of empty-content rows in
+        // the top-k slice silently shrank the result below k.
         scored
             .into_iter()
             .filter(|(hash, _score)| hash != positive_hash)
-            .filter(|(hash, _score)| {
-                // Find the content for this hash and check content hash guard
-                if let Some((_h, content)) = self.docs.iter().find(|(h, _)| h == hash) {
-                    let candidate_hash = blake3::hash(content.as_bytes());
-                    candidate_hash != positive_content_hash
-                } else {
-                    false
-                }
-            })
-            .take(k)
             .filter_map(|(hash, _score)| {
                 let content = self
                     .docs
                     .iter()
                     .find(|(h, _)| h == &hash)
-                    .map(|(_, c)| c.clone())
-                    .unwrap_or_default();
-                // EH-30: Skip negatives with empty content (from unwrap_or_default
-                // when hash lookup fails, or genuinely empty docs).
+                    .map(|(_, c)| c.clone())?;
                 if content.is_empty() {
                     tracing::trace!(hash = %hash, "Skipping empty negative");
-                    None
-                } else {
-                    Some((hash, content))
+                    return None;
                 }
+                let candidate_hash = blake3::hash(content.as_bytes());
+                if candidate_hash == positive_content_hash {
+                    return None;
+                }
+                Some((hash, content))
             })
+            .take(k)
             .collect()
     }
 }
