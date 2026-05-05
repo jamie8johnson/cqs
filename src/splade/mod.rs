@@ -124,6 +124,11 @@ fn probe_model_vocab(
     tokenizer: &tokenizers::Tokenizer,
     onnx_path: &Path,
 ) -> Result<usize, SpladeError> {
+    // OB-V1.36-9 / P3: span + completion event with elapsed_ms / vocab_size.
+    // The probe involves a header-load + ONNX forward pass which is
+    // non-trivial IO + parse; cold-start "why is SPLADE slow" investigations
+    // can now see this.
+    let started = std::time::Instant::now();
     let _span = tracing::debug_span!("probe_model_vocab", path = %onnx_path.display()).entered();
 
     // Tokenize a short fixed string. Content doesn't matter — we only care
@@ -184,7 +189,11 @@ fn probe_model_vocab(
         )));
     };
 
-    tracing::debug!(model_vocab = vocab, "Probed SPLADE model vocab");
+    tracing::debug!(
+        model_vocab = vocab,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Probed SPLADE model vocab"
+    );
     Ok(vocab)
 }
 

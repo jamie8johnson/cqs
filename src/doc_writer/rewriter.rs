@@ -244,6 +244,15 @@ pub fn compute_rewrite(
     edits: &[DocCommentResult],
     parser: &Parser,
 ) -> Result<Option<RewriteOutcome>, DocWriterError> {
+    // OB-V1.36-4 / P3: span on the parse-resolve-apply hot path. The two
+    // wrappers (rewrite_file, write_proposed_patch) carry their own spans,
+    // but direct callers of compute_rewrite (and tests) bypassed both.
+    let _span = tracing::info_span!(
+        "compute_rewrite",
+        path = %path.display(),
+        edit_count = edits.len()
+    )
+    .entered();
     if edits.is_empty() {
         return Ok(None);
     }

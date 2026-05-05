@@ -757,17 +757,15 @@ async fn chunk_detail_handles_oversized_id_path() {
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await;
-    // axum may reject builder URI itself before oneshot runs; tolerate that.
-    if let Ok(resp) = resp {
-        let st = resp.status();
-        assert!(
-            st == StatusCode::NOT_FOUND
-                || st == StatusCode::BAD_REQUEST
-                || st == StatusCode::URI_TOO_LONG,
-            "oversized id must surface 404 / 400 / 414; got {st}"
-        );
-    }
+        .await
+        .expect("oneshot");
+    let st = resp.status();
+    assert!(
+        st == StatusCode::NOT_FOUND
+            || st == StatusCode::BAD_REQUEST
+            || st == StatusCode::URI_TOO_LONG,
+        "oversized id must surface 404 / 400 / 414; got {st}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

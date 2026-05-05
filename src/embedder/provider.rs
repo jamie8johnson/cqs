@@ -120,10 +120,27 @@ fn find_ort_provider_dir() -> Option<PathBuf> {
 fn find_ld_library_dir(ort_lib_dir: &Path) -> Option<PathBuf> {
     let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     let ort_cache_str = ort_lib_dir.to_string_lossy();
-    ld_path
+    let result = ld_path
         .split(':')
         .find(|p| !p.is_empty() && Path::new(p).is_dir() && !ort_cache_str.starts_with(p))
-        .map(PathBuf::from)
+        .map(PathBuf::from);
+    // OB-V1.36-6 / P3: log both branches at debug. CUDA-detection failures
+    // downstream report "no GPU detected" with no breadcrumb of whether the
+    // LD-resolve step ran or what it saw — these debug lines close that gap.
+    match &result {
+        Some(dir) => tracing::debug!(
+            ld_path = %ld_path,
+            ort_lib_dir = %ort_lib_dir.display(),
+            selected = %dir.display(),
+            "find_ld_library_dir: selected dir for provider symlinks"
+        ),
+        None => tracing::debug!(
+            ld_path_set = !ld_path.is_empty(),
+            entries = ld_path.matches(':').count() + 1,
+            "find_ld_library_dir: no qualifying LD_LIBRARY_PATH entry"
+        ),
+    }
+    result
 }
 
 /// Create symlinks for provider libraries in the target directory
