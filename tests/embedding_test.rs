@@ -190,3 +190,48 @@ fn test_embed_query_cached() {
 
     assert_eq!(result1.as_slice(), result2.as_slice());
 }
+
+/// P1-23 / TC-V1.36-3: pin that ONNX inference output is finite. Embedding
+/// is constructed via the unchecked `Embedding::new` (not `try_new`) inside
+/// `embed_batch`; if a future ORT upgrade or driver bug produced NaN/Inf for
+/// any reason it would sail through to HNSW insert, polluting the index.
+/// Cheap regression catcher.
+#[test]
+#[ignore]
+fn test_embed_documents_output_is_finite() {
+    let Some(embedder) = cpu_embedder() else {
+        return;
+    };
+    let long = "really really really long input ".repeat(50);
+    let docs = [
+        "fn main() { println!(\"hi\"); }",
+        "struct Foo { bar: i32 }",
+        "// edge: empty-ish input",
+        long.as_str(),
+    ];
+    let results = embedder
+        .embed_documents(&docs)
+        .expect("embed_documents failed");
+    for (i, r) in results.iter().enumerate() {
+        for (j, &v) in r.as_slice().iter().enumerate() {
+            assert!(
+                v.is_finite(),
+                "embed_documents[{i}][{j}] = {v} (not finite)"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_embed_query_output_is_finite() {
+    let Some(embedder) = cpu_embedder() else {
+        return;
+    };
+    let r = embedder
+        .embed_query("test query")
+        .expect("embed_query failed");
+    for (j, &v) in r.as_slice().iter().enumerate() {
+        assert!(v.is_finite(), "embed_query[{j}] = {v} (not finite)");
+    }
+}

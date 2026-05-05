@@ -281,7 +281,9 @@ pub(crate) fn scout_core<Mode>(
         .into_iter()
         .map(|(file, chunks)| {
             let relevance_score = chunks.iter().map(|(s, _)| s).sum::<f32>() / chunks.len() as f32;
-            let is_stale = stale_set.contains(&file.to_string_lossy().to_string());
+            // PERF-V1.36-11: HashSet<String>::contains accepts &str via Borrow,
+            // so the second to_string() is wasted allocation.
+            let is_stale = stale_set.contains(file.to_string_lossy().as_ref());
 
             let scout_chunks: Vec<ScoutChunk> = chunks
                 .iter()
@@ -316,7 +318,7 @@ pub(crate) fn scout_core<Mode>(
                 .collect();
 
             FileGroup {
-                file: file.strip_prefix(root).unwrap_or(&file).to_path_buf(),
+                file: crate::relativize_or_warn(&file, root),
                 relevance_score,
                 chunks: scout_chunks,
                 is_stale,

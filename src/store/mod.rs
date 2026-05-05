@@ -731,10 +731,18 @@ impl Store<ReadWrite> {
     /// lockstep with the standalone version as pool / mmap / cache defaults
     /// evolve.
     fn default_open_config(path: &Path, runtime: Option<Arc<Runtime>>) -> StoreOpenConfig {
+        // SHL-V1.36-1: scale with available parallelism instead of a fixed 4.
+        // The pool size also gates `serve_blocking_permits()` (limits.rs), so
+        // a fixed 4 caps the entire serve concurrency budget at 4 even on
+        // 32-core hosts. Mirrors the v1.33 SHL-V1.33-10 fix in project.rs:260.
         let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(4);
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| (n.get() as u32).min(8))
+                    .unwrap_or(4)
+            });
         StoreOpenConfig {
             read_only: false,
             use_current_thread: false,
@@ -970,7 +978,21 @@ fn open_with_config_impl<Mode>(
         .unwrap_or(1000);
     let wal_pragma = format!("PRAGMA wal_autocheckpoint = {}", wal_autocheckpoint_pages);
 
-    let pool = rt.block_on(async {
+    // SEC-V1.36-1: tighten umask to 0o077 around pool creation so the DB
+    // (and WAL/SHM sidecars) are born 0o600 instead of inheriting the user's
+    // umask (typically 0o644). Without this, there's a window between SQLite's
+    // first commit and the post-open `set_permissions` block below where the
+    // sidecar files are world-readable on multi-user hosts. Mirrors the
+    // SEC-V1.33-2 fix to `cache.rs::open` (the cache had this; the main
+    // store had drifted). Write opens only — read-only opens never create
+    // files. Process-global; the surrounding open path is synchronous.
+    #[cfg(unix)]
+    let prev_umask = if !config.read_only {
+        Some(unsafe { libc::umask(0o077) })
+    } else {
+        None
+    };
+    let pool_result = rt.block_on(async {
         SqlitePoolOptions::new()
             .max_connections(config.max_connections)
             .idle_timeout(std::time::Duration::from_secs(
@@ -993,7 +1015,12 @@ fn open_with_config_impl<Mode>(
             })
             .connect_with(connect_opts)
             .await
-    })?;
+    });
+    #[cfg(unix)]
+    if let Some(prev) = prev_umask {
+        unsafe { libc::umask(prev) };
+    }
+    let pool = pool_result?;
 
     // Set restrictive permissions on database files (Unix only, write mode only)
     #[cfg(unix)]
@@ -1289,11 +1316,30 @@ impl<Mode> Store<Mode> {
     pub fn close(self) -> Result<(), StoreError> {
         self.closed.store(true, Ordering::Release);
         self.rt.block_on(async {
-            // TRUNCATE mode: checkpoint and delete WAL file
-            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                .execute(&self.pool)
-                .await?;
-            tracing::debug!("WAL checkpoint completed");
+            // DS-V1.36-7: bound the TRUNCATE checkpoint with a 30s timeout and
+            // fall back to PASSIVE on expiry. PR #1450 added the same shape to
+            // Store::drop because TRUNCATE acquires SQLite's EXCLUSIVE lock and
+            // can stall under WSL 9P / NTFS contention; close() had drifted.
+            let truncate_result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&self.pool),
+            )
+            .await;
+            match truncate_result {
+                Ok(Ok(_)) => tracing::debug!("WAL checkpoint (TRUNCATE) completed"),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "TRUNCATE checkpoint failed; trying PASSIVE");
+                    let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                        .execute(&self.pool)
+                        .await;
+                }
+                Err(_) => {
+                    tracing::warn!("TRUNCATE checkpoint timed out (30s); falling back to PASSIVE");
+                    let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                        .execute(&self.pool)
+                        .await;
+                }
+            }
             self.pool.close().await;
             Ok(())
         })
@@ -1511,7 +1557,7 @@ mod tests {
         #[test]
         fn fuzz_normalize_for_fts_special_chars(
             prefix in "[a-z]{0,10}",
-            special in prop::sample::select(vec!['*', '"', ':', '^', '(', ')', '-', '+']),
+            special in prop::sample::select(vec!['*', '"', ':', '^', '(', ')', '-', '+', '{', '}']),
             suffix in "[a-z]{0,10}"
         ) {
             let input = format!("{}{}{}", prefix, special, suffix);
@@ -1537,7 +1583,7 @@ mod tests {
             let result = sanitize_fts_query(&input);
             for c in result.chars() {
                 prop_assert!(
-                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'),
                     "FTS5 special char '{}' in sanitized output: {}",
                     c, result
                 );
@@ -1564,7 +1610,7 @@ mod tests {
             // No FTS5 special chars
             for c in result.chars() {
                 prop_assert!(
-                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'),
                     "Special char '{}' in pipeline output: {}",
                     c, result
                 );
@@ -1583,7 +1629,7 @@ mod tests {
         #[test]
         fn prop_sanitize_all_special(
             chars in prop::collection::vec(
-                prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':']),
+                prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':', '{', '}']),
                 1..50
             )
         ) {
@@ -1619,14 +1665,14 @@ mod tests {
         #[test]
         fn prop_sanitize_adversarial(
             normal in "[a-z]{1,10}",
-            special in prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':']),
+            special in prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':', '{', '}']),
             op in prop::sample::select(vec!["OR", "AND", "NOT", "NEAR"]),
         ) {
             let input = format!("{}{} {} {}{}", special, normal, op, normal, special);
             let result = sanitize_fts_query(&input);
             for c in result.chars() {
                 prop_assert!(
-                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'),
                     "Special char '{}' in adversarial output: {}",
                     c, result
                 );

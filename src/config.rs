@@ -579,17 +579,15 @@ impl Config {
         // into fewer indexes — or override via `CQS_MAX_REFERENCES`.
         let max_references = max_references();
         if self.references.len() > max_references {
-            eprintln!(
-                "Warning: {} references configured, exceeding limit of {}. \
-                 Only the first {} will be loaded. Each reference consumes ~50-100MB RAM.",
-                self.references.len(),
-                max_references,
-                max_references
-            );
+            // OB-V1.36-2: tracing::warn! only — daemons (cqs watch / serve)
+            // have no TTY, eprintln! either lands as unstructured stderr in
+            // journald or vanishes. Matches the OB-V1.30.1-9 contract used
+            // elsewhere; CLI runs still surface this via the default subscriber.
             tracing::warn!(
                 count = self.references.len(),
                 max = max_references,
-                "Too many references configured, truncating"
+                "Too many references configured, truncating; \
+                 each reference consumes ~50-100MB RAM"
             );
             self.references.truncate(max_references);
         }

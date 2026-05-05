@@ -30,13 +30,6 @@ pub(in crate::cli::batch) fn dispatch_search(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %args.query).entered();
 
-    // #1372: --reranker llm not wired in search yet — eval has the same gate.
-    if matches!(args.rerank_mode(), crate::cli::args::RerankerMode::Llm) {
-        anyhow::bail!(
-            "--reranker llm is reserved for #1220 (LLM-judge reranker) and not yet wired into search. Use --reranker onnx (or --rerank for the same effect)."
-        );
-    }
-
     // Accepted for CLI parity; batch JSON doesn't use line-context, parent
     // expansion, include-docs, pattern, or no-stale-check yet. Assigning to
     // `_` avoids clippy unused-field warnings while preserving forwards

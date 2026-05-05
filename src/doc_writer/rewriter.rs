@@ -244,10 +244,32 @@ pub fn compute_rewrite(
     edits: &[DocCommentResult],
     parser: &Parser,
 ) -> Result<Option<RewriteOutcome>, DocWriterError> {
+    // OB-V1.36-4 / P3: span on the parse-resolve-apply hot path. The two
+    // wrappers (rewrite_file, write_proposed_patch) carry their own spans,
+    // but direct callers of compute_rewrite (and tests) bypassed both.
+    let _span = tracing::info_span!(
+        "compute_rewrite",
+        path = %path.display(),
+        edit_count = edits.len()
+    )
+    .entered();
     if edits.is_empty() {
         return Ok(None);
     }
 
+    // RB-V1.36-1: gate by file size before slurping into a String.
+    let max_bytes = crate::limits::small_file_max_bytes();
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > max_bytes {
+            tracing::warn!(
+                path = %path.display(),
+                size = meta.len(),
+                cap = max_bytes,
+                "Skipping oversize file (CQS_SMALL_FILE_MAX_BYTES) for doc rewrite"
+            );
+            return Ok(None);
+        }
+    }
     let content = std::fs::read_to_string(path)?;
     let new_content = compute_rewrite_from_content(&content, path, edits, parser)?;
     Ok(new_content.map(|(new, applied)| RewriteOutcome {
@@ -315,7 +337,19 @@ pub fn rewrite_file(
 
     // Read current file content (under the lock so the parse + write cycle
     // sees a consistent snapshot — same rationale as the original inline
-    // implementation).
+    // implementation). RB-V1.36-1: size-gate before slurping.
+    let max_bytes = crate::limits::small_file_max_bytes();
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > max_bytes {
+            tracing::warn!(
+                path = %path.display(),
+                size = meta.len(),
+                cap = max_bytes,
+                "Skipping oversize file (CQS_SMALL_FILE_MAX_BYTES) for doc rewrite"
+            );
+            return Ok(0);
+        }
+    }
     let content = std::fs::read_to_string(path)?;
     let outcome = compute_rewrite_from_content(&content, path, edits, parser)?;
     let Some((new_content, count)) = outcome else {
@@ -475,6 +509,15 @@ fn resolve_edits(
 /// Apply resolved edits to source content, returning the post-edit string.
 /// Edits are sorted bottom-up so earlier-line edits don't shift line numbers
 /// for later ones.
+///
+/// PB-V1.36-1: preserve the source file's line-ending convention (mirror of
+/// PB-V1.33-9 / #1356 in note.rs::write_notes_file). `str::lines()` strips
+/// both `\r\n` and `\n`; the previous re-emit was always `\n`, so every
+/// `cqs index --improve-docs` run on a Windows / CRLF source rewrote every
+/// line of the file as a side effect — fighting `core.autocrlf=true` and
+/// producing huge spurious diffs that swamp the actual doc-comment changes.
+/// Sniff once from `content`; on CRLF, translate the bare-LF re-emit back
+/// to CRLF so the round trip is byte-stable.
 fn apply_resolved_edits(content: &str, resolved: &[ResolvedEdit]) -> String {
     let mut resolved: Vec<&ResolvedEdit> = resolved.iter().collect();
     resolved.sort_by_key(|r| std::cmp::Reverse(r.insert_at));
@@ -508,7 +551,14 @@ fn apply_resolved_edits(content: &str, resolved: &[ResolvedEdit]) -> String {
         }
     }
 
-    lines.concat()
+    let joined = lines.concat();
+    if content.contains("\r\n") {
+        // Bytewise translate bare LF → CRLF. We never double-up because
+        // the re-emit and the new_lines both use bare `\n` only.
+        joined.replace('\n', "\r\n")
+    } else {
+        joined
+    }
 }
 
 /// Compute the proposed doc-comment edits for `path` against the project
@@ -624,15 +674,26 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
                     Ok(())
                 }
                 Err(write_err) => {
-                    // Restore from backup if we made one
-                    if has_backup {
-                        let _ = std::fs::rename(&backup_path, path);
-                    }
+                    // EH-V1.36-3: capture the restore-rename result so
+                    // operators see *which* recovery branch failed and where
+                    // the salvageable backup is. Pre-fix, a failed restore
+                    // silently dropped the backup_path on the floor and the
+                    // user got only the original write error — couldn't
+                    // recover from the leftover .bak.
+                    let restore_err = if has_backup {
+                        std::fs::rename(&backup_path, path).err()
+                    } else {
+                        None
+                    };
                     tracing::warn!(
                         path = %path.display(),
                         rename_error = %rename_err,
                         write_error = %write_err,
-                        "Atomic write failed: both rename and fallback write failed"
+                        restore_error = restore_err.as_ref().map(|e| e.to_string()),
+                        backup_remaining_at = if restore_err.is_some() { Some(backup_path.display().to_string()) } else { None },
+                        "Atomic write failed: rename + fallback write failed; \
+                         restore from backup also failed if `restore_error` is set; \
+                         original content is at `backup_remaining_at` if so"
                     );
                     Err(write_err)
                 }
@@ -1227,5 +1288,24 @@ impl Beta {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_apply_resolved_edits_preserves_crlf() {
+        // PB-V1.36-1: source file with CRLF line endings round-trips with
+        // CRLF preserved. Pre-fix, every doc rewrite flipped the entire
+        // file to bare LF.
+        let crlf_content = "fn hello() {\r\n    println!(\"hi\");\r\n}\r\n";
+        let resolved: Vec<ResolvedEdit> = Vec::new(); // empty edits — pure round-trip
+        let out = apply_resolved_edits(crlf_content, &resolved);
+        assert_eq!(out, crlf_content, "CRLF source must round-trip CRLF");
+    }
+
+    #[test]
+    fn test_apply_resolved_edits_preserves_lf() {
+        let lf_content = "fn hello() {\n    println!(\"hi\");\n}\n";
+        let resolved: Vec<ResolvedEdit> = Vec::new();
+        let out = apply_resolved_edits(lf_content, &resolved);
+        assert_eq!(out, lf_content, "LF source must round-trip LF");
     }
 }

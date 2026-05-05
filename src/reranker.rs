@@ -303,10 +303,20 @@ impl OnnxReranker {
             .unwrap_or(0)
             .min(self.max_length);
         if max_len == 0 {
-            // This chunk's passages all tokenized empty but the aggregate
-            // check in compute_scores_opt already guaranteed overall_max > 0.
-            // Return zero scores for this chunk; the non-empty chunks carry
-            // the ranking signal.
+            // AC-V1.36-3 / P2-9 / P2-11: this chunk's passages all tokenized
+            // empty but the aggregate check in compute_scores_opt already
+            // guaranteed overall_max > 0. Return sigmoid(0)=0.5 for these rows
+            // so the surviving non-empty cohort still carries ranking signal,
+            // BUT warn so operators know the resulting rank order may
+            // interleave 0.5 synthetic scores into the middle of the
+            // cross-encoder distribution. Proper fix (return Option<f32>
+            // through to apply_rerank_scores so we can fall back to the
+            // input cosine for empty rows) is follow-up.
+            tracing::warn!(
+                batch_size,
+                "Reranker chunk all-empty after tokenization — emitting sigmoid(0)=0.5 fallback; \
+                 ranking may interleave synthetic scores with cross-encoder scores"
+            );
             return Ok(vec![sigmoid(0.0); batch_size]);
         }
 

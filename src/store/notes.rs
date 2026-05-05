@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn test_replace_notes_replaces_not_appends() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/notes.toml");
+        let source = Path::new("notes.toml");
 
         // Insert 2 notes
         let notes = vec![
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn test_replace_notes_with_empty_deletes() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/notes.toml");
+        let source = Path::new("notes.toml");
 
         let notes = vec![
             make_note("n1", "first", 0.0),
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn test_note_count() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/notes.toml");
+        let source = Path::new("notes.toml");
 
         assert_eq!(store.note_count().unwrap(), 0);
 
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn test_note_stats_sentiment() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/notes.toml");
+        let source = Path::new("notes.toml");
 
         // -1 = warning, 0 = neutral, 0.5 = pattern
         let notes = vec![
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn test_upsert_notes_nan_sentiment_rejected_by_schema() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/nan.toml");
+        let source = Path::new("nan.toml");
 
         let notes = vec![make_note("nan1", "nan sentiment note", f32::NAN)];
         let result = store.upsert_notes_batch(&notes, source, 100);
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn test_upsert_notes_infinity_sentiment_roundtrips() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/inf.toml");
+        let source = Path::new("inf.toml");
 
         let notes = vec![
             make_note("pos_inf", "huge positive", f32::INFINITY),
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn test_upsert_notes_empty_mentions_roundtrip() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/empty_mentions.toml");
+        let source = Path::new("empty_mentions.toml");
 
         let notes = vec![Note {
             id: "em1".to_string(),
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn test_upsert_notes_large_batch_single_transaction() {
         let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/bulk.toml");
+        let source = Path::new("bulk.toml");
 
         // 500 notes — large enough to exercise the per-note INSERT loop
         // without making the test slow. Unique ids + text guarantee no

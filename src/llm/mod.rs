@@ -183,6 +183,15 @@ pub enum LlmError {
     BatchFailed(String),
     #[error("Invalid batch ID: {0}")]
     InvalidBatchId(String),
+    /// EXT-V1.36-1 / P3: client-side rejection of a model name that
+    /// doesn't match the provider's expected shape. Surfaced before any
+    /// API roundtrip so wrong-provider/model combos fail fast.
+    #[error("Invalid model for provider: {0}")]
+    InvalidModel(String),
+    /// EXT-V1.36-1 / P3: provider-side configuration error (empty model,
+    /// missing endpoint, etc.).
+    #[error("LLM configuration error: {message}")]
+    Configuration { message: String },
     /// P2.18: a `fetch_batch_results` call could not locate the requested
     /// `batch_id` in its in-memory stash. Distinguished from transient
     /// `Http`/`Api` errors so callers can decide whether to retry.

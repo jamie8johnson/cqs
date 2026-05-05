@@ -706,6 +706,68 @@ async fn chunk_detail_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+/// TC-V1.36-5 / P2-6: adversarial chunk_id path parameters. axum/tower
+/// percent-decode the path before it reaches the handler; pin behavior
+/// (404 / 400 + no panic + bounded log line) for adversarial unicode and
+/// oversized ids so a future axum upgrade or post-decode normalization
+/// surfaces here instead of in production.
+#[tokio::test(flavor = "multi_thread")]
+async fn chunk_detail_handles_adversarial_unicode_id() {
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = test_router(state);
+
+    // Zero-width joiner + RTL override + assorted format characters. None
+    // of these match a real chunk id; assert 404 and that nothing panics.
+    let adversarial_id = "%E2%80%8D%E2%80%AE%E2%80%AA";
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/chunk/{adversarial_id}"))
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "adversarial unicode id must surface as 404, not panic"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chunk_detail_handles_oversized_id_path() {
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = test_router(state);
+
+    // 10 KiB of `a` characters in the path segment. axum's default URI
+    // length cap is configurable per server; behavior here should be
+    // either 404 (id never matches) or 400 (URI rejected by the layer)
+    // — never a panic and never a 500.
+    let oversized = "a".repeat(10_240);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/chunk/{oversized}"))
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let st = resp.status();
+    assert!(
+        st == StatusCode::NOT_FOUND
+            || st == StatusCode::BAD_REQUEST
+            || st == StatusCode::URI_TOO_LONG,
+        "oversized id must surface 404 / 400 / 414; got {st}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn hierarchy_unknown_root_returns_404() {
     // Empty fixture has no chunks, so any root id is unknown — we expect
@@ -1088,6 +1150,31 @@ fn build_chunk_detail_returns_callers_callees_tests() {
     assert_eq!(detail.callees.len(), 1, "one callee (func_0002)");
     assert_eq!(detail.callees[0].name, "func_0002");
     assert_eq!(detail.tests.len(), 0, "no test chunks seeded");
+}
+
+/// TC-HAP-V1.36-1 / P3: positive test for `build_stats`. Pre-existing
+/// coverage was indirect through the `/api/stats` HTTP layer. A schema
+/// regression (column rename, count miscount) would slip through the
+/// existing fixture; this asserts the four numeric fields directly.
+#[test]
+fn build_stats_returns_correct_counts_for_populated_store() {
+    // populated_fixture(3, false) seeds 3 chunks across 1 origin file with
+    // a 3-ring of function_calls (3 edges) and zero type_edges.
+    let fixture = populated_fixture(3, false);
+    let state = fixture.state();
+    let store = state.store.clone();
+
+    let stats = std::thread::spawn(move || super::data::build_stats(&store))
+        .join()
+        .expect("build_stats join")
+        .expect("build_stats ok");
+
+    assert_eq!(stats.total_chunks, 3, "3 chunks seeded");
+    // populated_fixture seeds each chunk under its own origin so this
+    // matches total_chunks.
+    assert_eq!(stats.total_files, 3, "fixture: one origin per chunk");
+    assert_eq!(stats.call_edges, 3, "3-ring = 3 edges");
+    assert_eq!(stats.type_edges, 0, "no type_edges seeded");
 }
 
 #[test]

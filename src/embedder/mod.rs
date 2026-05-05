@@ -331,10 +331,16 @@ pub struct Embedder {
 }
 
 /// Default query cache size (entries). Each entry is roughly `4 * dim` bytes
-/// of vector data plus the cache key; with the default BGE-large (1024-dim) that
-/// is ~4 KB/entry, with E5-base / v9-200k (768-dim) it is ~3 KB/entry, and scales
-/// accordingly for custom models. Override with `CQS_QUERY_CACHE_SIZE`.
-const DEFAULT_QUERY_CACHE_SIZE: usize = 128;
+/// of vector data plus the cache key; with the default embeddinggemma-300m
+/// (768-dim) that is ~3 KB/entry, with bge-large (1024-dim) ~4 KB/entry,
+/// and qwen3-embedding (2560/4096-dim) 10-16 KB/entry. Override with
+/// `CQS_QUERY_CACHE_SIZE`.
+///
+/// SHL-V1.36-9 / P3: bumped 128 → 1024. Daemon-mode agent fleets routinely
+/// hit 30+ unique queries per task (scout, gather, where, task) so 128 was
+/// a coin toss for hit rate. 1024 is ~3 MB at default, ~16 MB at qwen3-8B
+/// — still trivial vs the model footprint.
+const DEFAULT_QUERY_CACHE_SIZE: usize = 1024;
 
 impl Embedder {
     /// Create a new embedder with lazy model loading.
@@ -688,10 +694,24 @@ impl Embedder {
             return Ok(cached);
         }
         let tokenizer = self.tokenizer()?;
-        let resolved: i64 = tokenizer
-            .get_padding()
-            .map(|p| p.pad_id as i64)
-            .unwrap_or(self.model_config.pad_id);
+        let resolved: i64 = match tokenizer.get_padding() {
+            Some(p) => p.pad_id as i64,
+            None => {
+                // EH-V1.36-4 / P3: warn once when the tokenizer.json has no
+                // [padding] section and we fall back to model_config.pad_id.
+                // Most HF tokenizer.json exports include padding; missing
+                // sections silently skewed attention masks for custom models.
+                static WARN_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                if WARN_ONCE.set(()).is_ok() {
+                    tracing::warn!(
+                        model = %self.model_config.name,
+                        fallback_pad_id = self.model_config.pad_id,
+                        "tokenizer.json has no padding section — using model_config.pad_id"
+                    );
+                }
+                self.model_config.pad_id
+            }
+        };
         // Last-writer wins is acceptable — get_padding() is deterministic
         // for the tokenizer, and `model_config.pad_id` is immutable, so
         // every racer computes the same value.
@@ -713,6 +733,10 @@ impl Embedder {
     ///
     /// Returns `EmbedderError::Tokenizer` if the tokenizer is unavailable or if encoding the text fails.
     pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
+        // OB-V1.36-7 / P3: debug span — per-chunk during indexing, per-query
+        // during retrieval. Slow indexing on large files is hard to attribute
+        // between token_count vs the ONNX forward without per-call timing.
+        let _span = tracing::debug_span!("token_count", text_len = text.len()).entered();
         // Same truncation-bypass as `split_into_windows`: count actual
         // tokens, not whatever the tokenizer's `truncation` cap returns.
         // bge-large-ft and v9-200k ship tokenizer.json with
@@ -738,6 +762,7 @@ impl Embedder {
         if texts.is_empty() {
             return Ok(vec![]);
         }
+        let _span = tracing::debug_span!("token_counts_batch", count = texts.len()).entered();
         // Same truncation-bypass as `token_count` — count actual tokens
         // for accurate windowing decisions.
         let tokenizer_arc = self.tokenizer()?;
@@ -1110,7 +1135,18 @@ impl Embedder {
         // on first GPU inference) and previously emitted nothing of its own.
         let _span = tracing::info_span!("embedder_warm", model = %self.model_config.name).entered();
         let start = std::time::Instant::now();
-        let _ = self.embed_query("warmup")?;
+        // EH-V1.36-1 / P3: validate the warmup result has the declared
+        // dimension so a misconfigured ONNX session that returns shape [1,0]
+        // surfaces here instead of "warmed" + a confusing dim-mismatch error
+        // on the first user query.
+        let warm_vec = self.embed_query("warmup")?;
+        if warm_vec.as_slice().len() != self.embedding_dim() {
+            return Err(EmbedderError::InferenceFailed(format!(
+                "warmup output dim {} != declared embedding_dim {}",
+                warm_vec.as_slice().len(),
+                self.embedding_dim()
+            )));
+        }
         tracing::info!(
             elapsed_ms = start.elapsed().as_millis() as u64,
             model = %self.model_config.name,
@@ -1235,9 +1271,13 @@ impl Embedder {
             // `[0, 1, ..., max_len-1]` for every row. Padding tokens get
             // positions too; they're masked out by `attention_mask` at
             // attention time, same as for `input_ids`.
-            let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len() * max_len);
+            // RM-V1.36-3: extend directly from the range iterator instead of
+            // collecting into a throwaway `Vec<i64>` per row. saturating_mul
+            // guards the with_capacity arg consistent with the rest of the
+            // codebase.
+            let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len().saturating_mul(max_len));
             for _ in 0..texts.len() {
-                pos_data.extend((0..max_len as i64).collect::<Vec<i64>>());
+                pos_data.extend(0..max_len as i64);
             }
             let position_ids_arr = Array2::<i64>::from_shape_vec((texts.len(), max_len), pos_data)
                 .map_err(|e| {
@@ -1391,12 +1431,21 @@ impl Embedder {
             PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask_arr, embedding_dim),
             PoolingStrategy::Cls => cls_pool(&hidden),
             PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask_arr),
-            // Already handled by the early-return above; this arm is only
-            // reachable if the model output had 3 dims AND pooling = Identity,
-            // which is a config error (Identity expects 2D).
-            PoolingStrategy::Identity => unreachable!(
-                "PoolingStrategy::Identity should be handled before the 3D pool dispatch"
-            ),
+            // EXT-V1.36-3 / P3: surface as a structured error rather than
+            // panic. Identity is supposed to be intercepted by the 2D
+            // shortcut at line 1309 — reaching here implies the ONNX model
+            // emitted 3D output AND configured Identity pooling, which is a
+            // config-shape mismatch. A future model exposing Identity on a
+            // 3D output should error cleanly, not crash the daemon.
+            PoolingStrategy::Identity => {
+                return Err(EmbedderError::InferenceFailed(
+                    "PoolingStrategy::Identity is not supported on 3D model outputs — \
+                     the ONNX model must already produce a 2D [batch, dim] tensor \
+                     for Identity pooling. Re-export with mean/cls/last-token pooling \
+                     baked in, or change the model_config pooling value."
+                        .to_string(),
+                ));
+            }
         };
 
         let results = pooled_batch
@@ -1524,8 +1573,16 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
             if !TOKENIZER_BLAKE3.is_empty() {
                 verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
             }
-            // Write marker after successful verification
-            let _ = std::fs::write(&marker, &expected_marker);
+            // Write marker after successful verification. EH-V1.36-5 / P3:
+            // surface failure at warn so operators see why subsequent cold
+            // starts re-blake3 the model file (~600 MB at 4s+ per startup).
+            if let Err(e) = std::fs::write(&marker, &expected_marker) {
+                tracing::warn!(
+                    path = %marker.display(),
+                    error = %e,
+                    "Failed to write checksum-verified marker — model will be re-verified on next session"
+                );
+            }
         }
     }
 
@@ -2487,6 +2544,33 @@ mod tests {
                 any_has_camel,
                 "no window contains `CagraError` — decoding lowercased the text"
             );
+        }
+
+        /// TC-V1.36-9 / P3: max_tokens == 0 short-circuits to empty Vec
+        /// without touching the tokenizer.
+        #[test]
+        #[ignore]
+        fn split_into_windows_max_tokens_zero_returns_empty() {
+            let embedder = match Embedder::new(ModelConfig::e5_base()) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let windows = embedder.split_into_windows("any text", 0, 0).unwrap();
+            assert!(windows.is_empty());
+        }
+
+        /// TC-V1.36-9 / P3: overlap >= max_tokens/2 must error out, not
+        /// produce O(2n/max_tokens) windows.
+        #[test]
+        #[ignore]
+        fn split_into_windows_overlap_too_large_errors() {
+            let embedder = match Embedder::new(ModelConfig::e5_base()) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            // overlap=64 with max_tokens=128 → overlap >= max_tokens/2.
+            let res = embedder.split_into_windows("any text", 128, 64);
+            assert!(res.is_err(), "overlap >= max_tokens/2 must error");
         }
     }
 

@@ -169,23 +169,14 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     require_fresh_gate(&args.no_require_fresh, args.require_fresh_secs)?;
 
     // Resolve the reranker once before the search loop. `None` short-circuits
-    // the entire stage-2 path; `Onnx` / `Llm` build via the same lazy factory
-    // the CLI search path uses (`CommandContext::reranker`), so the eval
-    // path doesn't accidentally diverge from production reranker config.
+    // the entire stage-2 path; `Onnx` builds via the same lazy factory the
+    // CLI search path uses (`CommandContext::reranker`), so eval doesn't
+    // accidentally diverge from production reranker config.
+    // API-V1.36-2: `Llm` was previously a placeholder for #1220 but errored
+    // at runtime; the variant has been dropped from the CLI surface (v1.36.2).
     let reranker = match args.reranker {
         RerankerMode::None => None,
         RerankerMode::Onnx => Some(ctx.reranker()?),
-        RerankerMode::Llm => {
-            // CQ-V1.33.0-8: the underlying `LlmReranker` is a SCAFFOLD-ONLY
-            // crate-private stub (every score call returns Err). Bail before
-            // the search loop spins up so the eval user sees the unsupported
-            // mode immediately instead of after minutes of retrieval. When
-            // the production wiring lands (#1220), this branch goes back to
-            // constructing the real reranker.
-            anyhow::bail!(
-                "--reranker llm is not yet implemented (#1220). Use `--reranker onnx` or omit the flag."
-            );
-        }
     };
 
     let report = runner::run_eval(
@@ -745,11 +736,7 @@ mod tests {
             #[command(flatten)]
             args: EvalCmdArgs,
         }
-        for (input, expected) in [
-            ("none", RerankerMode::None),
-            ("onnx", RerankerMode::Onnx),
-            ("llm", RerankerMode::Llm),
-        ] {
+        for (input, expected) in [("none", RerankerMode::None), ("onnx", RerankerMode::Onnx)] {
             let w = Wrapper::try_parse_from(["test", "queries.json", "--reranker", input]).unwrap();
             assert_eq!(
                 w.args.reranker, expected,

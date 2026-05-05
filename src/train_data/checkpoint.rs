@@ -53,26 +53,50 @@ pub fn write_checkpoint(path: &Path, repo: &str, sha: &str) -> Result<(), TrainD
 
 /// If a file doesn't end with `\n`, truncate to the last `\n`.
 /// Used for crash recovery: partial JSONL lines from interrupted writes.
+///
+/// RM-V1.36-1: previously read the whole file into memory, then scanned for
+/// the last newline. Training-data JSONL files routinely run multi-GB; the
+/// in-memory scan allocated 2× file size at peak. Replaced with a tail-seek
+/// scan of the last 64 KiB (chosen to comfortably cover any realistic JSONL
+/// line; we widen iteratively for the long-line edge case).
 pub fn truncate_incomplete_line(path: &Path) -> Result<(), TrainDataError> {
+    use io::{Read, Seek, SeekFrom};
     let _span = tracing::info_span!("truncate_incomplete_line", path = %path.display()).entered();
-    let content = match fs::read(path) {
-        Ok(c) => c,
+    let mut f = match fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-
-    if content.is_empty() || content.last() == Some(&b'\n') {
+    let len = f.metadata()?.len();
+    if len == 0 {
         return Ok(());
     }
-
-    // Find last newline and truncate after it
-    if let Some(pos) = content.iter().rposition(|&b| b == b'\n') {
-        fs::write(path, &content[..=pos])?;
-    } else {
-        // No newline at all — entire file is one incomplete line, truncate to empty
-        fs::write(path, b"")?;
+    // Read the trailing byte first to short-circuit the common (clean) case.
+    f.seek(SeekFrom::End(-1))?;
+    let mut tail = [0u8; 1];
+    f.read_exact(&mut tail)?;
+    if tail[0] == b'\n' {
+        return Ok(());
     }
-
+    // Walk back in 64 KiB chunks until we find a newline or hit the start.
+    const CHUNK: u64 = 64 * 1024;
+    let mut window_end = len;
+    while window_end > 0 {
+        let read_len = CHUNK.min(window_end);
+        let read_start = window_end - read_len;
+        f.seek(SeekFrom::Start(read_start))?;
+        let mut buf = vec![0u8; read_len as usize];
+        f.read_exact(&mut buf)?;
+        if let Some(rel) = buf.iter().rposition(|&b| b == b'\n') {
+            // Truncate to the byte after the newline.
+            let truncate_to = read_start + rel as u64 + 1;
+            f.set_len(truncate_to)?;
+            return Ok(());
+        }
+        window_end = read_start;
+    }
+    // No newline anywhere in the file — entire file is one incomplete line.
+    f.set_len(0)?;
     Ok(())
 }
 

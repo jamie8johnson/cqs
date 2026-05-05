@@ -537,7 +537,18 @@ pub fn cmd_watch(
         // active at startup, but the socket is per-project not per-slot.
         let sock_path = super::daemon_socket_path(&project_cqs_dir);
         if sock_path.exists() {
-            match std::os::unix::net::UnixStream::connect(&sock_path) {
+            // RM-V1.36-4: connect to the existing socket with a bounded
+            // timeout. A wedged peer (mid-shutdown / paused) that never
+            // accepts would otherwise hang `cqs watch --serve` startup
+            // indefinitely.
+            let probe_timeout = std::time::Duration::from_millis(2_000);
+            let probe_result = (|| -> std::io::Result<std::os::unix::net::UnixStream> {
+                let s = std::os::unix::net::UnixStream::connect(&sock_path)?;
+                let _ = s.set_read_timeout(Some(probe_timeout));
+                let _ = s.set_write_timeout(Some(probe_timeout));
+                Ok(s)
+            })();
+            match probe_result {
                 Ok(_) => {
                     anyhow::bail!(
                         "Another daemon is already listening on {}",
@@ -636,15 +647,34 @@ pub fn cmd_watch(
         // subprocesses do NOT affect daemon-served queries; only the
         // daemon's own env applies.
         //
-        // Redact secrets — any var whose name suffix matches a known
-        // secret marker is logged with `<redacted len=N>` instead of
-        // the value. With OB-V1.30-1 surfacing info-level to journald,
-        // an unredacted log lands in a 30-day journal artifact.
-        const SECRET_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"];
+        // Redact secrets — any var whose name *contains* a known secret
+        // marker is logged with `<redacted len=N>` instead of the value.
+        // SEC-V1.36-2: switched from suffix-only to substring matching,
+        // added BEARER/AUTH/CRED/PASS to the marker set, and added a
+        // value-shape check that redacts any URL with embedded userinfo
+        // (`scheme://user:pass@host`). Suffix-only missed names that bury
+        // the marker mid-name (an _AUTH_TOKEN_HEADER suffix, a _BEARER
+        // suffix on an unrelated prefix, etc.), plus any URL carrying
+        // creds in CQS_LLM_API_BASE.
+        const SECRET_MARKERS: &[&str] = &[
+            "KEY", "TOKEN", "SECRET", "PASSWORD", "BEARER", "AUTH", "CRED", "PASS",
+        ];
+        let value_has_userinfo = |v: &str| -> bool {
+            // Match "scheme://user:pass@host..." — the `:` between user and
+            // pass plus the `@` separator. Cheap heuristic, no URL parser.
+            if let Some(after_scheme) = v.split_once("://").map(|(_, rest)| rest) {
+                if let Some(at_pos) = after_scheme.find('@') {
+                    return after_scheme[..at_pos].contains(':');
+                }
+            }
+            false
+        };
         let cqs_vars: Vec<(String, String)> = std::env::vars()
             .filter(|(k, _)| k.starts_with("CQS_"))
             .map(|(k, v)| {
-                let is_secret = SECRET_SUFFIXES.iter().any(|suffix| k.ends_with(suffix));
+                let upper = k.to_ascii_uppercase();
+                let is_secret =
+                    SECRET_MARKERS.iter().any(|m| upper.contains(m)) || value_has_userinfo(&v);
                 let value = if is_secret {
                     format!("<redacted len={}>", v.len())
                 } else {

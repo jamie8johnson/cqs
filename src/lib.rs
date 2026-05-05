@@ -6,7 +6,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, and custom ONNX presets). High recall on the curated fixture eval; see README.md#retrieval-quality for current numbers.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, qwen3-embedding-4b, qwen3-embedding-8b, and custom ONNX presets). High recall on the curated fixture eval; see README.md#retrieval-quality for current numbers.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -108,7 +108,7 @@ pub use drift::{detect_drift, DriftEntry, DriftResult};
 pub(crate) mod focused_read;
 pub(crate) mod gather;
 pub(crate) mod impact;
-pub(crate) mod limits;
+pub mod limits;
 pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod onboard;
@@ -470,26 +470,23 @@ pub fn unix_secs_i64() -> Option<i64> {
 
 // # Batch Size Constants (#683)
 //
-// ~25 `const BATCH_SIZE` definitions across store/pipeline/search modules.
-// Intentionally local — each is tuned for its SQL query shape:
+// `const BATCH_SIZE` definitions across store/pipeline/search modules,
+// intentionally local — each is tuned for its SQL query shape.
 //
-// SQLite limit: max 999 bind parameters per statement. A query with N columns
-// per row can batch `floor(999 / N)` rows.
+// SQLite host-parameter ceiling: 32766 (SQLite ≥3.32.0; previously 999).
+// Compute the per-statement row cap via
+// `crate::store::helpers::sql::max_rows_per_statement(params_per_row)`,
+// which returns `min(rows, SQLITE_MAX_VARIABLES / params_per_row)`. New
+// batched SQL should call this helper rather than hard-coding sizes.
 //
-// Common sizes:
-//   500   — 1-2 param queries (chunks, embeddings, calls)
-//   200   — 4-5 params per row (type edges, call graph)
-//   132   — upsert_chunk (5 params, 132 × 5 = 660)
-//   100   — staleness checks with path matching
-//   20    — enrichment hash (many columns)
-//
-// Non-SQL:
+// Non-SQL pinned defaults:
 //   EMBED_BATCH_SIZE = 64    — ONNX inference (CQS_EMBED_BATCH_SIZE)
 //   FILE_BATCH_SIZE = 5000   — pipeline file processing (CQS_FILE_BATCH_SIZE)
 //   HNSW_BATCH_SIZE = 10000  — HNSW insert
 //   MAX_BATCH_SIZE = 10000   — Claude Batches API limit
 //
-// Do not centralize. If adding a batched SQL query: floor(999 / params_per_row).
+// Do not centralize. If adding a batched SQL query, call
+// `max_rows_per_statement(N)` rather than picking a number.
 
 /// Unified test-chunk detection heuristic.
 ///
@@ -670,6 +667,28 @@ where
 /// Strips `root` prefix if present, converts backslashes to forward slashes.
 pub fn rel_display(path: &Path, root: &Path) -> String {
     normalize_path(path.strip_prefix(root).unwrap_or(path))
+}
+
+/// Relativize `file` against `root`. On case-insensitive filesystems
+/// (Windows NTFS, macOS HFS+/APFS default), `path.starts_with(root)` can
+/// pass while `path.strip_prefix(root)` byte-equals fails — case skew
+/// between the canonicalized project root and the indexed chunk path.
+/// PB-V1.36-5 / P2-13: this helper centralizes the "warn-and-fall-back"
+/// shim that `enumerate_files` already learned (lib.rs:940), so caller
+/// sites don't keep silently leaking absolute paths into JSON envelopes
+/// documented as "relative to project root".
+pub fn relativize_or_warn(file: &Path, root: &Path) -> std::path::PathBuf {
+    match file.strip_prefix(root) {
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => {
+            tracing::warn!(
+                file = %file.display(),
+                root = %root.display(),
+                "relativize: file does not have root as prefix (case-insensitive FS skew?) — emitting absolute path"
+            );
+            file.to_path_buf()
+        }
+    }
 }
 
 // ============ Note Indexing Helper ============

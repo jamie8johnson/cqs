@@ -150,14 +150,38 @@ impl<Mode> Store<Mode> {
 
     /// Read the stored model name from metadata, if set.
     /// Returns `None` for fresh databases or pre-model indexes.
+    ///
+    /// EH-V1.36-6: this lossy form swallows real SQLite errors as `None`,
+    /// which every caller interprets as "fresh DB, no model recorded — treat
+    /// as new". For decision sites that care about distinguishing "metadata
+    /// row absent" from "metadata table unreadable", call
+    /// [`Self::try_stored_model_name`] and branch on the `Result`. Failures
+    /// here now log at `error!` (not `warn!`) so a corrupted index surfaces
+    /// in journald instead of being absorbed silently.
     pub fn stored_model_name(&self) -> Option<String> {
-        match self.get_metadata_opt("model_name") {
-            Ok(val) => val.filter(|s| !s.is_empty()),
+        match self.try_stored_model_name() {
+            Ok(val) => val,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to read model_name from metadata");
+                tracing::error!(
+                    error = %e,
+                    "Failed to read model_name from metadata — treating as fresh DB. \
+                     If the index file exists this likely indicates corruption; \
+                     re-running `cqs index --force` will overwrite the prior data."
+                );
                 None
             }
         }
+    }
+
+    /// Strict variant of [`Self::stored_model_name`] that distinguishes
+    /// "no row" (`Ok(None)`) from "query failed" (`Err`). New decision-path
+    /// callers should use this — destructive operations (rebuild, slot
+    /// promote, model swap) shouldn't conflate "fresh DB" with "unreadable
+    /// metadata".
+    pub fn try_stored_model_name(&self) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .get_metadata_opt("model_name")?
+            .filter(|s| !s.is_empty()))
     }
 
     /// Read the stored SPLADE model identifier from metadata, if set.
@@ -437,6 +461,10 @@ impl Store<ReadWrite> {
     pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
         let val = if dirty { "1" } else { "0" };
         let key = kind.metadata_key();
+        let other_key = match kind {
+            HnswKind::Enriched => HnswKind::Base.metadata_key(),
+            HnswKind::Base => HnswKind::Enriched.metadata_key(),
+        };
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
@@ -444,6 +472,35 @@ impl Store<ReadWrite> {
                 .bind(val)
                 .execute(&mut *tx)
                 .await?;
+            // DS-V1.36-3: split the legacy single `hnsw_dirty` key into per-kind
+            // keys atomically. If a legacy value exists and the other kind has
+            // no per-kind key yet, seed the other per-kind from legacy so the
+            // un-touched kind keeps its prior dirty state. Then drop legacy so
+            // future is_hnsw_dirty calls don't fall back to stale data. The
+            // doc on is_hnsw_dirty had promised this split since v1.20; only
+            // set_hnsw_dirty had drifted from doing it.
+            let legacy: Option<String> = sqlx::query_scalar::<_, String>(
+                "SELECT value FROM metadata WHERE key = 'hnsw_dirty'",
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(legacy_val) = legacy {
+                let other_exists: Option<i64> =
+                    sqlx::query_scalar::<_, i64>("SELECT 1 FROM metadata WHERE key = ?1")
+                        .bind(other_key)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                if other_exists.is_none() {
+                    sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                        .bind(other_key)
+                        .bind(&legacy_val)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                sqlx::query("DELETE FROM metadata WHERE key = 'hnsw_dirty'")
+                    .execute(&mut *tx)
+                    .await?;
+            }
             tx.commit().await?;
             Ok(())
         })

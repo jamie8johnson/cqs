@@ -1,61 +1,69 @@
 ## Documentation
 
-#### DOC-V1.30-1: PRIVACY.md and SECURITY.md falsely claim `~/.cache/cqs/query_log.jsonl` is opt-in
+#### lib.rs Features list omits qwen3-embedding-{4b,8b} presets
 - **Difficulty:** easy
-- **Location:** `PRIVACY.md:22`, `SECURITY.md:101`, vs `src/cli/batch/commands.rs:371-391` (`log_query`)
-- **Description:** **P1: Docs Lying.** Both docs state the per-user query log is "opt-in, written only when `CQS_TELEMETRY=1` or the file already exists." `log_query` in `src/cli/batch/commands.rs` is called unconditionally from `BatchCmd::Search/Gather/Onboard/Scout/Where/Task` dispatch arms (`commands.rs:418, 441, 477, 487, 491, 513`) and uses `OpenOptions::new().create(true).append(true)` — it creates the file on first batch query regardless of env var or prior file presence. Every `cqs chat` / `cqs batch` user is silently building a search-history file at `~/.cache/cqs/query_log.jsonl` despite the privacy/security docs promising opt-in behaviour. Search queries can contain code snippets, identifiers, internal hostnames.
-- **Suggested fix:** Either gate `log_query` on `std::env::var("CQS_TELEMETRY") == Ok("1")` plus existing-file check (matching the documented contract and the `cli/telemetry.rs::record` pattern), or rewrite both docs to state that the log is unconditional. The privacy contract is the more defensible direction — fix the code, keep the docs.
+- **Location:** src/lib.rs:9
+- **Description:** The `## Features` list in the crate-top docstring enumerates configurable embedding presets as "embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, and custom ONNX presets". `src/embedder/models.rs` registers two more first-class presets — `qwen3-embedding-8b` (line 521, #1392 ceiling probe) and `qwen3-embedding-4b` (line 579, shipped in v1.36.1 PRs #1441 + #1442). Missing them in the most-public docstring (the rustdoc landing) is a lying-docs P1: a developer reading the lib root won't discover the two largest-context presets the crate actually exposes.
+- **Suggested fix:** Append `qwen3-embedding-8b, qwen3-embedding-4b` to the preset enumeration on line 9 (and mirror the same enumeration in `README.md:672` and `README.md:780` — see follow-up finding).
 
-#### DOC-V1.30-2: PRIVACY.md claims `query_cache.db` has a 7-day TTL — code only enforces a 100 MiB size cap
+#### README "How It Works" + CQS_EMBEDDING_MODEL row omit qwen3 presets
 - **Difficulty:** easy
-- **Location:** `PRIVACY.md:21` vs `src/cache.rs:1536-1606` (`QueryCache::evict`) and `src/cli/batch/mod.rs:1351-1376`
-- **Description:** **P1: Docs Lying.** Privacy doc says "recent query embeddings with a 7-day TTL." There is no time-based TTL anywhere in `QueryCache`. `evict()` looks at `CQS_QUERY_CACHE_MAX_SIZE` (100 MiB default) and trims oldest rows by `ts ASC` only when the disk size exceeds the cap. `prune_older_than(days)` exists but is only invoked by the user-typed `cqs cache prune <days>` command, never automatically. A user who runs `cqs` daily for months will retain every unique search query embedding indefinitely up to the size cap, not for "7 days."
-- **Suggested fix:** Replace the line in PRIVACY.md with: "recent query embeddings, evicted oldest-first when the DB exceeds `CQS_QUERY_CACHE_MAX_SIZE` (100 MiB default). Prune older entries with `cqs cache prune <DAYS>`."
+- **Location:** README.md:672, README.md:780
+- **Description:** `README.md:672` (How It Works → Embed) lists "embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank presets". `README.md:780` (CQS_EMBEDDING_MODEL row) advertises the accepted values as `embeddinggemma-300m, bge-large, bge-large-ft, v9-200k, e5-base, nomic-coderank`. Both miss `qwen3-embedding-8b` and `qwen3-embedding-4b`, which are accepted by `ModelConfig::from_preset` and ship with built-in pin tests (`models.rs:1078 qwen3_embedding_4b_preset_shape`). CONTRIBUTING.md has the same gap at lines 237 / 239 / 353. PRIVACY.md "Model Download" (lines 30-36) likewise stops at `nomic-coderank` and omits the qwen3 family despite both repos being downloaded by users who pick them.
+- **Suggested fix:** Update README.md:672, README.md:780, CONTRIBUTING.md:237/239/353, and PRIVACY.md "Model Download" bullets to include both qwen3 presets, with a short note on context length (qwen3 is 4096-cap per the v1.36.1 cap change in CHANGELOG).
 
-#### DOC-V1.30-3: CHANGELOG v1.30.0 names `CQS_LLM_ENDPOINT` for local LLM provider — actual env var is `CQS_LLM_API_BASE`
+#### Cargo.toml `lang-all` feature missing `lang-elm` (54-vs-53 mismatch)
 - **Difficulty:** easy
-- **Location:** `CHANGELOG.md:19`
-- **Description:** v1.30.0 release entry says "`cqs index --llm-summaries` accepts a local OpenAI-compatible endpoint via `CQS_LLM_ENDPOINT`." `CQS_LLM_ENDPOINT` does not exist in the codebase. The actual env vars are `CQS_LLM_PROVIDER=local` plus `CQS_LLM_API_BASE=http://...` (`src/llm/mod.rs:227, 378-385`). README/SECURITY both document `CQS_LLM_API_BASE` correctly. A user copy-pasting the CHANGELOG instructions will get "CQS_LLM_PROVIDER=local requires CQS_LLM_API_BASE" at runtime.
-- **Suggested fix:** Rewrite the line as: "...accepts a local OpenAI-compatible endpoint via `CQS_LLM_PROVIDER=local` + `CQS_LLM_API_BASE=...`." Same fix mirrors how the README env-var table phrases it (`README.md:740-745`).
+- **Location:** Cargo.toml:244
+- **Description:** The `lang-all` umbrella feature lists 53 entries: `lang-rust … lang-st, lang-dart`. `lang-elm` is intentionally a registered language (`Elm` variant in `src/language/mod.rs`, definition shipped, `lang-elm` is in `default = […]` on line 187), but `lang-all` does **not** include it. A user running `cargo build --no-default-features --features lang-all` will get a 53-language build that silently drops Elm. README/Cargo.toml otherwise advertise "54 languages" everywhere.
+- **Suggested fix:** Insert `"lang-elm"` into the `lang-all` array on line 244 (between `lang-elixir` and `lang-erlang` to match registry order).
 
-#### DOC-V1.30-4: CONTRIBUTING.md "Adding a New CLI Command" still tells contributors to add a match arm in `dispatch.rs` — that hasn't been the procedure since #1097
+#### `src/language/mod.rs` crate-doc Feature Flags list missing `lang-dart`
 - **Difficulty:** easy
-- **Location:** `CONTRIBUTING.md:339-355` vs `src/cli/registry.rs:1-29` (header doc)
-- **Description:** **P1: Docs Lying.** v1.30.0 #1097/#1114 collapsed five exhaustive matches (`Commands::batch_support`, `variant_name`, dispatch Group A, dispatch Group B, batch classification) into one `for_each_command!` table in `src/cli/registry.rs`. registry.rs:8-21 says: "Adding a new command now means: declare the variant in `definitions.rs::Commands`, add one row to either `group_a` or `group_b` list below, implement the handler. A missing row is a compile error." The contributing checklist still says: "**Dispatch** — match arm in `src/cli/dispatch.rs`" with no mention of `registry.rs`. A new contributor following the checklist will edit dispatch.rs (which now generates from registry) and either fail to compile or paste an arm into the wrong file. Architecture Overview at line 154-158 also lists `dispatch.rs` but never mentions `registry.rs`.
-- **Suggested fix:** (1) Replace step 4 with: "**Registry row** — add a `(bind, wild, name, batch_support, body)` row to `group_a` or `group_b` in `src/cli/registry.rs`; the macro generates dispatch + variant_name + batch_support". (2) Add `registry.rs - for_each_command! table; single source of truth for dispatch + variant_name + batch_support` next to `dispatch.rs` in the Architecture Overview block.
+- **Location:** src/language/mod.rs:10-65
+- **Description:** The `# Feature Flags` enumeration in the module-top docstring lists 53 `lang-*` features (lang-rust through lang-aspx, lang-st, then `lang-all`). It is missing `lang-dart`, which is registered at `src/language/mod.rs:1094` (`Dart => "dart", feature = "lang-dart"`) and shipped as a default feature in `Cargo.toml:243/187`. Currently 54 lang features in the registry; docstring lists 53.
+- **Suggested fix:** Add `//! - \`lang-dart\` - Dart support (enabled by default)` immediately above the `lang-all` line at src/language/mod.rs:65.
 
-#### DOC-V1.30-5: README "Claude Code Integration" command list missing 5 user-facing commands (`ping`, `eval`, `model`, `serve`, `refresh`)
+#### CHANGELOG.md `[Unreleased]` section is at wrong position (between 1.34.0 and 1.33.0)
 - **Difficulty:** easy
-- **Location:** `README.md:467-525`
-- **Description:** The `<claude>` integration block tells agents to install this list as their CLAUDE.md command reference. `cqs --help` shows 53 top-level commands; the README list omits: `cqs ping` (daemon healthcheck), `cqs eval` (eval harness, v1.29.x first-class), `cqs model` (show/list/swap embedding model — referenced by `audit-mode.json` doc and CHANGELOG), `cqs serve` (flagship v1.29.0 web UI; DOC-V1.29-2 noted absence in usage section but it's also missing from the agent-facing list), `cqs refresh` / `cqs invalidate` (added v1.30.0 per CHANGELOG line 22). Agents whose CLAUDE.md is bootstrapped from this list won't know these commands exist.
-- **Suggested fix:** Append five lines mirroring the existing format, with a one-sentence summary each. `serve` should link to the auth-token launch banner.
+- **Location:** CHANGELOG.md:194
+- **Description:** Per Keep-a-Changelog (which the file's own header points to), `[Unreleased]` lives at the top above the latest released version. cqs's CHANGELOG has versioning order `[1.36.2] (line 8) → [1.36.1] (25) → [1.35.0] (116) → [1.34.0] (144) → [Unreleased] (194) → [1.33.0] (196) → …`. `[Unreleased]` is empty and orphaned between two released versions. Either it was forgotten when 1.34.0 was cut, or it was meant to be deleted. Tools that parse the changelog (release notes generators, dependabot) will see an empty `[Unreleased]` ordered below released versions and can produce broken release notes.
+- **Suggested fix:** Either delete the empty `[Unreleased]` block at line 194-195, or move it above `## [1.36.2] - 2026-05-04` on line 8. Given the project ships fast and unreleased changes accumulate, moving it to the top is the right answer.
 
-#### DOC-V1.30-6: README "Claude Code Integration" lists `cqs cache stats/prune/compact` — actual subcommands are `stats/clear/prune/compact`
+#### Cargo.toml description over-rounds eval R@20 (89% claimed, 88.6% measured)
 - **Difficulty:** easy
-- **Location:** `README.md:521`
-- **Description:** `cqs cache --help` shows four subcommands: `stats`, `clear`, `prune`, `compact`. README and CLAUDE-Code line says only `stats/prune/compact`. `clear` is the destructive "delete all cached embeddings (or only for a model fingerprint)" — useful and dangerous, should be in agent docs.
-- **Suggested fix:** Change `cqs cache stats/prune/compact` to `cqs cache stats/clear/prune/compact` and document `clear --model <fp>` semantics in the trailing sentence.
+- **Location:** Cargo.toml:6
+- **Description:** Crate description at line 6 reads: "51% R@1 / 76% R@5 / 89% R@20 on v3.v2 dual-judge code-search (218 queries, EmbeddingGemma-300m default …)". README's matching TL;DR on line 5 cites "50.9% R@1 / 76.2% R@5 / 88.6% R@20" — same eval, same fixture, same date. 88.6% rounds to 89% only by typical rounding; 50.9 rounds to 51 cleanly and 76.2 rounds to 76. The 89% value will be cited verbatim by crates.io users who don't read the README, and overstates the result by 0.4pp. This is exactly the lying-docs cluster (docs that promise behavior the code/eval doesn't deliver) that team policy flags as P1.
+- **Suggested fix:** Either round all three consistently (51% / 76% / 89% → keep, but note in description "≈"), or use the README's precise numbers (51% / 76% / 89% → 50.9% / 76.2% / 88.6%). Recommend matching the README exactly: "50.9% R@1 / 76.2% R@5 / 88.6% R@20".
 
-#### DOC-V1.30-7: README claims "544-query dual-judge eval" in TL;DR — actual eval is 218 queries (109 test + 109 dev)
+#### SECURITY.md cites stale `src/lib.rs:601` for `enumerate_files` follow_links
 - **Difficulty:** easy
-- **Location:** `README.md:5` (TL;DR) vs `README.md:649` (eval section)
-- **Description:** TL;DR headline boasts "**42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 544-query dual-judge eval against the cqs codebase itself**". The actual Retrieval Quality section twelve hundred lines later says "**Live codebase eval** — 218 queries (109 test + 109 dev)". 544 doesn't appear anywhere else in the codebase or eval scripts; per memory the v3.v2 fixture is 109/109. Per memory + CHANGELOG #1109 "v3.v2 fixture refreshed 2026-04-25", the test R@5 is now 63.3% (74.3% dev) — the 67.0% is also the canonical pre-refresh number, not current. The "544" is likely a hangover from an earlier fixture (v2 had ~272 each split = 544 total).
-- **Suggested fix:** Replace "544-query" with "218-query (109 test + 109 dev) v3.v2" and either pin the metrics to a specific commit ("on commit X") or refresh to the current 63.3% / 74.3% (test R@5 / dev R@5). Both numbers should match between TL;DR and the table.
+- **Location:** SECURITY.md:223
+- **Description:** SECURITY.md "Symlink Behavior → Directory walks" promises: "`enumerate_files` (`src/lib.rs:601`) sets `WalkBuilder::follow_links(false)`". The function `enumerate_files` is now at `src/lib.rs:757` (eager wrapper) and `enumerate_files_iter` at `src/lib.rs:786`; the actual `.follow_links(false)` call lives at `src/lib.rs:813`. A reader auditing the security claim by jumping to line 601 lands in the middle of an unrelated section and is left wondering whether the claim is still true. P1 lying-docs (the behavior is correct, the citation is wrong).
+- **Suggested fix:** Update the citation to `src/lib.rs:813` (the `follow_links(false)` line) — that's the load-bearing line. Or to `src/lib.rs:786` if pointing at the function rather than the line. Both `enumerate_files` and `enumerate_files_iter` exist now, so the "function name" citation is also slightly stale.
 
-#### DOC-V1.30-8: README "54 languages" claim conflicts with Cargo.toml (lang-elm now in default features) and source code (52 lang variants)
+#### `src/schema.sql` header still says "schema v22" — actual is v26
 - **Difficulty:** easy
-- **Location:** `README.md:5`, `README.md:530-585` (Supported Languages list), `CONTRIBUTING.md:135,187` vs `src/language/mod.rs` (`define_languages!`) and `Cargo.toml:179` (`default = [..., "lang-elm", ...]`)
-- **Description:** README repeats "54 languages" three times (TL;DR, Supported Languages header, How It Works step 1). The Supported Languages list itself shows 53 bullet items and never mentions Elm, despite `lang-elm` being in Cargo.toml's default feature list and `Elm => "elm", feature = "lang-elm"` registered in `src/language/mod.rs`. `define_languages!` macro emits 52 language variants when grepped (count includes Markdown but excludes ASPX/Razor/Vue/Svelte/HTML which delegate to other grammars per existing readme prose). Mismatch is small but the README list literally omits Elm — search for "Elm" returns zero hits in README.md.
-- **Suggested fix:** Either (a) recount and replace "54" with the audited count (likely 53 or 52 depending on whether Markdown / multi-grammar dispatch counts) and add an Elm bullet to the alphabetical list, or (b) remove `lang-elm` from default if Elm support is not actually shipping. Plumb the count through `language/mod.rs` registry length so it can't drift again.
+- **Location:** src/schema.sql:1
+- **Description:** First line of `src/schema.sql` reads `-- cq index schema v22`. The actual current schema is v26 (`CURRENT_SCHEMA_VERSION: i32 = 26` in `src/store/helpers/mod.rs:140`); migrations v23, v24 (#1221 vendored), v25 (#1133 notes.kind), and v26 (#1409 composite chunks index) have all landed since the comment was written. Subsequent comments inside the file correctly call out v24/v25/v26 columns (e.g. `chunks.vendored` at line 60 is annotated "v24", `notes.kind` at line 144 is annotated "v25"), so the file is internally inconsistent. A reader trusting the header thinks four migrations don't exist.
+- **Suggested fix:** Change line 1 to `-- cq index schema v26 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26 columns annotated inline below)`.
 
-#### DOC-V1.30-9: SECURITY.md "Read Access" table omits per-project embeddings cache (`<project>/.cqs/embeddings_cache.db`)
+#### CONTRIBUTING.md schema citation stale at v25 (actual v26)
 - **Difficulty:** easy
-- **Location:** `SECURITY.md:65-82`
-- **Description:** The Read Access filesystem table lists only the legacy global cache `~/.cache/cqs/embeddings.db`. v1.30.0 (PR #1105) added a per-project cache at `<project>/.cqs/embeddings_cache.db` (`src/cache.rs:91-93::project_default_path`) that is now the primary cache; the global one is consulted on miss for back-compat (PRIVACY.md gets this right at lines 16-20). A security reviewer reading SECURITY.md will think there's only one cache file to consider.
-- **Suggested fix:** Add a row to both Read Access and Write Access tables: `<project>/.cqs/embeddings_cache.db` — Per-project embedding cache (#1105, primary; legacy global cache at `~/.cache/cqs/embeddings.db` is fallback) — `cqs index`, search.
+- **Location:** CONTRIBUTING.md:212, CONTRIBUTING.md:226
+- **Description:** Line 212 says "store/ - SQLite storage layer (Schema v25, WAL mode)"; line 226 lists migrations as "v10-v25, including … v25 notes.kind". v1.36.0 (#1409) bumped to v26 with the composite `(source_type, origin)` index on `chunks` — CHANGELOG.md:79 documents this. ROADMAP.md:5 and CHANGELOG correctly say v26; CONTRIBUTING.md missed the bump.
+- **Suggested fix:** Change "Schema v25" → "Schema v26" on line 212; on line 226 extend the migration list to "v10-v26, including … v25 notes.kind, v26 composite (source_type, origin) index".
 
-#### DOC-V1.30-10: `enumerate_files` doc comment claims "Respects .gitignore" — also layers `.cqsignore` when `no_ignore=false`
+#### ROADMAP.md "Current" header points at v1.36.0 — actual current is v1.36.2
 - **Difficulty:** easy
-- **Location:** `src/lib.rs:542-547` doc comment vs body at `src/lib.rs:566-569`
-- **Description:** Public-API doc says: "Respects .gitignore, skips hidden files and files larger than `CQS_MAX_FILE_SIZE` bytes". The body adds `wb.add_custom_ignore_filename(".cqsignore")` when `no_ignore` is false (`lib.rs:567-569`). `.cqsignore` is the headline v1.29.0 feature for excluding files committed to git but never indexed; library consumers calling `cqs::enumerate_files` need to know the function honours it (or reconfigure if they don't want it). Body comment at line 560-565 explains the rationale but the function's outer doc comment doesn't surface it.
-- **Suggested fix:** Update the doc comment to: "Respects `.gitignore` and `.cqsignore` (additive on top of `.gitignore`, both disabled by `no_ignore=true`); skips hidden files and files larger than `CQS_MAX_FILE_SIZE` bytes (default 1 MiB — generated code can exceed this)."
+- **Location:** ROADMAP.md:3
+- **Description:** Line 3 reads `## Current: v1.36.0 (cut 2026-05-03)`. v1.36.1 (#1446, qwen3-4b preset + FP16) and v1.36.2 (#1455, Store::drop checkpoint TRUNCATE→PASSIVE + busy_timeout bump) have both shipped since (CHANGELOG.md:8, line 25). The roadmap "Current" section is the authoritative right-now-state pointer; readers landing here believe the project is two patch releases behind reality. CHANGELOG.md is correct; ROADMAP.md drifted.
+- **Suggested fix:** Update the header to `## Current: v1.36.2 (cut 2026-05-04)` and either fold the v1.36.1/v1.36.2 highlights into the Current section or add brief "**v1.36.1 (2026-05-04):**" / "**v1.36.2 (2026-05-04):**" lines analogous to the existing "**v1.35.0 (released 2026-05-02):**" / "**v1.34.0 (2026-05-02):**" pattern at lines 11-13.
+
+#### SECURITY.md telemetry path uses glob `telemetry*.jsonl` — code writes only `telemetry.jsonl`
+- **Difficulty:** easy
+- **Location:** SECURITY.md:135
+- **Description:** SECURITY.md write-access table line 135 lists `.cqs/telemetry*.jsonl` — the asterisk implies rotation or a numbered family. Actual implementation in `src/cli/telemetry.rs:82` writes only the literal `telemetry.jsonl` (no rotation, no `.jsonl.1`, no date stamps), and the module-top docstring on lines 3, 8, 16, 54 consistently uses the singular form. PRIVACY.md:7 is also singular and correct. The glob is a stale wildcard from when rotation was considered but not implemented — minor lying-docs (overstates the file surface a `rm` would need to wipe).
+- **Suggested fix:** Change `.cqs/telemetry*.jsonl` to `.cqs/telemetry.jsonl` on SECURITY.md:135 to match what the code actually writes.
+
+DONE

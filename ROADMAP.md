@@ -1,12 +1,14 @@
 # Roadmap
 
-## Current: v1.36.0 (cut 2026-05-03)
+## Current: v1.36.2 (cut 2026-05-04)
 
-Schema bump v25 → v26 (composite `(source_type, origin)` index on `chunks`; auto-migrated on first read-write open).
+Patch release. No schema bump.
 
-**Headline: per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge.** v1.35.0 shipped EmbeddingGemma as the new default but inherited per-category α defaults that were tuned for BGE-large (2026-04-15/16). A fresh sweep on the gemma slot landed different optima: `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70, plus `Unknown` 1.00→0.80 (catch-all hedge — most fixture-misrouted queries land in `Unknown`, where pure-dense α=1.00 was the worst point in the global sweep). Net agg lift: R@1 +1.8pp, R@5 +3.7pp, R@20 +2.4pp.
+**v1.36.2 (2026-05-04):** critical fix — long-running `cqs index` runs no longer crash with `(code: 5) database is locked` when a concurrent short-lived `cqs` invocation overlaps the indexer's writes (#1451 `Store::drop` checkpoint TRUNCATE → PASSIVE; the indexer's WAL contention with `cqs stats` / similar polling was surfacing fatal mid-transaction `SQLITE_BUSY`). Plus `busy_timeout` 5s → 30s defense-in-depth (#1450) and 5 dependency bumps from dependabot.
 
-Plus 13 audit-followup fixes including a critical bug catch (#1413): readonly opens with stale schema were attempting to migrate and failing with SQLite "attempt to write a readonly database" errors, scattering `index.bak-v25-v26-*` snapshots and breaking every readonly CLI command. Fixed by surfacing `SchemaMismatch` on stale-schema readonly opens.
+**v1.36.1 (2026-05-04):** `qwen3-embedding-4b` preset (#1441/#1442) — 7.4 GB FP16, 2560-dim, 4096 max-seq. Production-ready first-class preset alongside the v1.36.0 8B ceiling probe.
+
+**v1.36.0 (2026-05-03):** schema v25 → v26 (composite `(source_type, origin)` index on `chunks`; auto-migrated on first read-write open). Headline: per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge — v1.35.0 shipped EmbeddingGemma as the new default but inherited per-category α defaults that were tuned for BGE-large (2026-04-15/16). A fresh sweep on the gemma slot landed different optima: `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70, plus `Unknown` 1.00→0.80. Net agg lift: R@1 +1.8pp, R@5 +3.7pp, R@20 +2.4pp. Plus 13 audit-followup fixes including a critical bug catch (#1413): readonly opens with stale schema were attempting to migrate and failing with SQLite "attempt to write a readonly database" errors. Fixed by surfacing `SchemaMismatch` on stale-schema readonly opens.
 
 **v1.35.0 (released 2026-05-02):** default embedder swap BGE-large → EmbeddingGemma-300m (308M, 768-dim, 2K context). Plus tokenizer-truncation correctness fix (#1384) that affected fine-tuned BERT-family presets (bge-large-ft, v9-200k, coderank).
 

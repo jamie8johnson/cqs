@@ -98,9 +98,11 @@ pub trait VectorIndex: Send + Sync {
         k: usize,
         filter: &dyn Fn(&str) -> bool,
     ) -> Vec<IndexResult> {
-        // Default: over-fetch unfiltered, post-filter by chunk_id
+        // Default: over-fetch unfiltered, post-filter by chunk_id.
+        // saturating_mul — sibling of P1-42 (v1.33 #1326) which fixed the same
+        // shape in src/search/. The trait default sat untouched.
         let results: Vec<IndexResult> = self
-            .search(query, k * 3)
+            .search(query, k.saturating_mul(3))
             .into_iter()
             .filter(|r| filter(&r.id))
             .take(k)

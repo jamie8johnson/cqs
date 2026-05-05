@@ -1139,7 +1139,7 @@ mod tests {
             "All 5xx → after MAX_ATTEMPTS retries, item skipped"
         );
         // Each item gets MAX_ATTEMPTS=4 tries against a persistent 500.
-        m.assert_hits(4);
+        m.assert_calls(4);
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }
@@ -1447,7 +1447,7 @@ mod tests {
         let results = provider.fetch_batch_results(&batch_id).unwrap();
         assert!(results.is_empty());
         // Only 1 HTTP call, not 4 — skip-without-retry path.
-        m.assert_hits(1);
+        m.assert_calls(1);
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }
@@ -1477,7 +1477,7 @@ mod tests {
             )
             .unwrap();
         let _ = provider.fetch_batch_results(&batch_id);
-        m.assert_hits(1);
+        m.assert_calls(1);
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }

@@ -397,7 +397,17 @@ impl<Mode> Store<Mode> {
                         );
                         continue;
                     }
-                    current_vec.push((token_id as u32, weight as f32));
+                    let weight_f32 = weight as f32;
+                    if !weight_f32.is_finite() {
+                        tracing::warn!(
+                            token_id,
+                            chunk_id = %current_id.unwrap_or("?"),
+                            weight = weight,
+                            "Non-finite sparse-vector weight, skipping"
+                        );
+                        continue;
+                    }
+                    current_vec.push((token_id as u32, weight_f32));
                 }
                 if let Some(id) = current_id {
                     result.push((id.to_string(), current_vec));
@@ -645,6 +655,55 @@ mod tests {
         assert_eq!(loaded[0].1.len(), 3);
         assert_eq!(loaded[1].0, "chunk_b");
         assert_eq!(loaded[1].1.len(), 2);
+    }
+
+    #[test]
+    fn test_sparse_load_filters_non_finite_weights() {
+        // P1-21 / TC-V1.36-1: load path was casting `weight: f64 -> f32`
+        // without is_finite. An Inf/-Inf weight (corrupt row, hand-edit,
+        // future encoder switch) used to flow into hybrid fusion as
+        // f32::INFINITY and silently corrupt min-max normalization.
+        // SQLite coerces NaN to NULL on bind paths so we plant Inf via
+        // overflow arithmetic at insert time (NaN insertion is blocked by
+        // the `weight REAL NOT NULL` column constraint via sqlx's NULL
+        // mapping anyway, so the loader-side filter is the last line of
+        // defense for Inf — hand-edited DBs are the realistic threat).
+        let (store, _dir) = setup_store();
+        insert_test_chunk(&store, "chunk_a");
+
+        store
+            .rt
+            .block_on(async {
+                let mut conn = store.pool.acquire().await?;
+                sqlx::query(
+                    "INSERT INTO sparse_vectors (chunk_id, token_id, weight) \
+                     VALUES ('chunk_a', 1, 1e308 * 1e308)",
+                )
+                .execute(&mut *conn)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO sparse_vectors (chunk_id, token_id, weight) \
+                     VALUES ('chunk_a', 2, -(1e308 * 1e308))",
+                )
+                .execute(&mut *conn)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO sparse_vectors (chunk_id, token_id, weight) \
+                     VALUES ('chunk_a', 3, 0.5)",
+                )
+                .execute(&mut *conn)
+                .await?;
+                Ok::<(), sqlx::Error>(())
+            })
+            .unwrap();
+
+        let loaded = store.load_all_sparse_vectors().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, "chunk_a");
+        // Only the finite (token_id=3, weight=0.5) row should survive.
+        assert_eq!(loaded[0].1.len(), 1);
+        assert_eq!(loaded[0].1[0].0, 3);
+        assert!((loaded[0].1[0].1 - 0.5_f32).abs() < 1e-6);
     }
 
     #[test]

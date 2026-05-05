@@ -669,7 +669,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination. Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (`embeddinggemma-300m` default since v1.35.0; `bge-large`, `bge-large-ft`, `E5-base`, `v9-200k`, `nomic-coderank` presets, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
+3. **Embed** — Configurable embedding model (`embeddinggemma-300m` default since v1.35.0; `bge-large`, `bge-large-ft`, `E5-base`, `v9-200k`, `nomic-coderank`, `qwen3-embedding-4b`, `qwen3-embedding-8b` presets, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -777,7 +777,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
-| `CQS_EMBEDDING_MODEL` | `embeddinggemma-300m` | Embedding model preset (`embeddinggemma-300m`, `bge-large`, `bge-large-ft`, `v9-200k`, `e5-base`, `nomic-coderank`) or custom HF repo. See `src/embedder/models.rs` for the full preset list and per-preset trade-offs. |
+| `CQS_EMBEDDING_MODEL` | `embeddinggemma-300m` | Embedding model preset (`embeddinggemma-300m`, `bge-large`, `bge-large-ft`, `v9-200k`, `e5-base`, `nomic-coderank`, `qwen3-embedding-4b`, `qwen3-embedding-8b`) or custom HF repo. See `src/embedder/models.rs` for the full preset list and per-preset trade-offs. |
 | `CQS_EVAL_OUTPUT` | (none) | Path to write per-query eval diagnostics JSON (used by eval harness) |
 | `CQS_EVAL_REQUIRE_FRESH` | `1` | Set to `0`/`false`/`no`/`off` to disable the freshness gate that `cqs eval` applies before running (#1182). When on, the eval harness blocks until the running `cqs watch --serve` daemon reports `state == fresh`, or errors out if the daemon isn't reachable — prevents silent stale-index runs that look like 5-25pp R@K regressions. Pass `--no-require-fresh` for the same effect on a single invocation. |
 | `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
@@ -845,6 +845,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_PARSE_CHANNEL_DEPTH` | `512` | Parse pipeline channel depth |
 | `CQS_PARSER_MAX_CHUNK_BYTES` | `100000` (100 KiB) | Per-chunk byte cap inside the parser. Chunks above this are dropped before windowing sees them; per-file warn summarises the count. Distinct from `CQS_MAX_FILE_SIZE` (file-discovery gate) so per-stage knobs stay independent. |
 | `CQS_PARSER_MAX_FILE_SIZE` | `52428800` (50 MiB) | Per-file size cap inside the parser. Files above this are skipped with a warn. Distinct from `CQS_MAX_FILE_SIZE` (which gates file enumeration before the parser even runs). |
+| `CQS_PDF_MAX_BYTES` | `104857600` (100 MiB) | Max stdout bytes captured from the `pdf_to_md.py` subprocess invocation. v1.36.2: previously unbounded — a hostile or pathological PDF could spew arbitrary text into an in-memory `Vec<u8>`. Bump if vendor docs legitimately produce more than 100 MiB of text. |
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
@@ -869,6 +870,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_CACHE_MAX_BYTES` | (unset) | Soft cap; emits `tracing::warn!` when the embeddings cache DB exceeds this many bytes. Does NOT auto-prune — use `cqs cache prune` / `cqs cache compact`. |
 | `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
 | `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
+| `CQS_SMALL_FILE_MAX_BYTES` | `4194304` (4 MiB) | Per-file cap for ad-hoc reads of config-shaped files (slot.toml, git hooks, parent-context fallbacks, doc-rewriter sources). v1.36.2: added when the same file-size guard pattern was needed across four sites. Below the parser cap because none of these paths should be near MB-sized files; tuning knob exists for vendor / legacy-config oddballs. |
 | `CQS_SPARSE_CHUNKS_PER_TX` | `50` | Chunks per sub-transaction during `upsert_sparse_vectors`. Each sub-tx commits independently and bumps `splade_generation`, so a long-running incremental SPLADE upsert never holds `WRITE_LOCK` long enough to starve queries. Lower = more frequent commits / less lock pressure / more I/O; raise on fast NVMe to amortize commit overhead. |
 | `CQS_SPLADE_ALPHA` | (per-category default) | Global SPLADE fusion alpha override (0.0 = pure sparse, 1.0 = pure dense) |
 | `CQS_SPLADE_ALPHA_{CATEGORY}` | (per-category default) | Per-category SPLADE alpha override (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL`); takes precedence over `CQS_SPLADE_ALPHA` |

@@ -78,9 +78,23 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
             .iter()
             .enumerate()
             .filter_map(|(i, r)| {
+                // EXT-V1.36-2: include all container-shaped variants. The
+                // previous Class/Struct/Interface-only set silently dropped
+                // the boost on traits, enums, modules, objects (Kotlin/Swift),
+                // namespaces (C++/C#), and impl blocks (Rust). Methods on a
+                // matching trait/object/namespace deserve the same hub-boost
+                // their Class siblings get.
                 let is_container = matches!(
                     r.chunk.chunk_type,
-                    ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+                    ChunkType::Class
+                        | ChunkType::Struct
+                        | ChunkType::Interface
+                        | ChunkType::Trait
+                        | ChunkType::Enum
+                        | ChunkType::Module
+                        | ChunkType::Object
+                        | ChunkType::Namespace
+                        | ChunkType::Impl
                 );
                 if !is_container {
                     return None;
@@ -209,6 +223,29 @@ impl BoundedScoreHeap {
     /// id at lowest score) and the eviction inverted the intended invariant
     /// — under reverse push order ("c", "b", "a") the surviving set was
     /// {"c", "a"} instead of {"a", "b"}.
+    /// Cheap pre-flight check: returns `true` if a `push(_, score)` would
+    /// either insert (heap below capacity) or evict the current worst. Lets
+    /// callers gate expensive id-cloning behind a peek when scoring a large
+    /// candidate pool against a much smaller K.
+    ///
+    /// PERF-V1.36-9: introduced for SpladeIndex::search_with_filter which
+    /// scored ~18k candidates per query and cloned each id into the heap
+    /// even though only ~k entries survived.
+    pub fn would_accept(&self, score: f32) -> bool {
+        if !score.is_finite() {
+            return false;
+        }
+        if self.heap.len() < self.capacity {
+            return true;
+        }
+        if let Some(Reverse((OrderedFloat(worst_score), _))) = self.heap.peek() {
+            // total_cmp matches the eviction comparator in push().
+            score.total_cmp(worst_score).is_gt()
+        } else {
+            true
+        }
+    }
+
     pub fn push(&mut self, id: String, score: f32) {
         if !score.is_finite() {
             tracing::warn!(id = %id, score = ?score, "BoundedScoreHeap: ignoring non-finite score");

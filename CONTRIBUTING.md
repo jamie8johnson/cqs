@@ -209,7 +209,7 @@ src/
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
-  store/        - SQLite storage layer (Schema v25, WAL mode)
+  store/        - SQLite storage layer (Schema v26, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
     search.rs   - RRF fusion, search_filtered, search_unified_with_index
@@ -223,7 +223,7 @@ src/
     types.rs    - Type edge storage and queries
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
-    migrations.rs - Schema migration framework (v10-v25, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind)
+    migrations.rs - Schema migration framework (v10-v26, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
@@ -234,9 +234,9 @@ src/
     l5x.rs      - Rockwell PLC exports (L5X XML + L5K ASCII) → Structured Text extraction
     markdown/   - Heading-based markdown parser
       mod.rs, headings.rs, code_blocks.rs, tables.rs
-  embedder/      - ONNX embedding models (configurable: embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank-137M, custom ONNX presets)
+  embedder/      - ONNX embedding models (configurable: embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank-137M, qwen3-embedding-4b, qwen3-embedding-8b, custom ONNX presets)
     mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection, ExecutionProvider enum (CUDA/TensorRT/CPU; CoreML/ROCm cfg-gated per #956 Phase A)
-    models.rs   - ModelConfig struct, built-in presets (embeddinggemma-300m default, bge-large, bge-large-ft, e5-base, v9-200k, nomic-coderank), resolution logic, EmbeddingConfig
+    models.rs   - ModelConfig struct, built-in presets (embeddinggemma-300m default, bge-large, bge-large-ft, e5-base, v9-200k, nomic-coderank, qwen3-embedding-4b, qwen3-embedding-8b), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection — per-backend cfg-blocks; CUDA/TensorRT always-on, CoreML/ROCm scaffolded via `ep-coreml`/`ep-rocm` features (#956 Phase A)
   reranker.rs   - Cross-encoder re-ranking (Reranker trait + OnnxReranker / NoopReranker / LlmReranker impls; default ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
@@ -350,7 +350,7 @@ src/
 ```
 
 **Key design notes:**
-- Configurable embeddings (embeddinggemma-300m 768-dim default since v1.35.0; bge-large 1024-dim, bge-large-ft 1024-dim, E5-base 768-dim, nomic-coderank-137M 768-dim, custom ONNX presets)
+- Configurable embeddings (embeddinggemma-300m 768-dim default since v1.35.0; bge-large 1024-dim, bge-large-ft 1024-dim, E5-base 768-dim, nomic-coderank-137M 768-dim, qwen3-embedding-4b 2560-dim, qwen3-embedding-8b 4096-dim, custom ONNX presets)
 - HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries

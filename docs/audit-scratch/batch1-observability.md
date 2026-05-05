@@ -1,145 +1,63 @@
 ## Observability
 
-Coverage is broadly excellent in v1.30.0 — the v0.12.1 lesson has been applied across all post-v0.9.7 modules and v1.30.0 additions (`slot`, `cache`, `serve`, embedder/provider). Previously-flagged OB-V1.29-1 through OB-V1.29-7 are now fixed. Below are NEW observability gaps not in `audit-triage-v1.30.0.md`.
-
-#### OB-V1.30-1: Default subscriber drops EVERY `info_span!` event — no spans render at default log level
+#### `search_filtered` emits duplicate nested `info_span!("search_filtered", ...)`
 - **Difficulty:** easy
-- **Location:** `src/main.rs:14-32`
-- **Description:** The default `EnvFilter` is `"warn,ort=error"`, but every span in the codebase (~150 sites) is `tracing::info_span!` (INFO) or `tracing::debug_span!`. Under default settings none of these match the filter, so the subscriber emits nothing for them. `fmt::init()` also never calls `.with_span_events(FmtSpan::CLOSE)` (or `NEW | CLOSE`), so even if INFO were enabled, span boundaries would not produce log lines on entry/exit — only events emitted *inside* the span would. Consequence: a user running `cqs index` with default config sees no per-batch progress, no SPLADE timing, no UMAP rows-projected count from spans alone — the heavy investment in span instrumentation across `scout`, `gather`, `serve`, `cache`, `slot`, parser, store, and embedder is invisible until someone discovers `--verbose` or `RUST_LOG=info`. There is no runtime way to trace one `cqs serve` request end-to-end without rebuilding the process. Operators of the daemon (`cqs watch --serve`) hit this hardest because the systemd unit inherits empty `RUST_LOG`.
-- **Suggested fix:** (a) Bump default to `"cqs=info,warn"` (cqs's own crate at INFO, world at WARN) so existing spans render without third-party noise. (b) Configure span events: `tracing_subscriber::fmt().with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE).with_env_filter(filter)…` so close events emit `latency_ms` automatically. (c) Add a `--log-format=json` flag (and `CQS_LOG_FORMAT=json`) wired to `.json()` on the fmt builder, so daemon journals are structurally consumable.
+- **Location:** src/search/query.rs:104 and src/search/query.rs:136
+- **Description:** The public `pub fn search_filtered` at line 96 enters `info_span!("search_filtered", limit, threshold, rrf)` at line 104, then inside its body calls private `search_filtered_with_notes` at line 128 which enters *another* `info_span!("search_filtered", limit, rrf)` at line 136. Every user-facing search produces a span tree with two same-named "search_filtered" spans nested one inside the other. This pollutes flame graphs (the inner "search_filtered" span looks like recursion that isn't there), inflates the `tracing::Span` allocation count for every query (the hottest path in the daemon), and makes `journalctl` correlation noisier — operators see `search_filtered` twice per query without realising the inner one is redundant. Two callers exist for `search_filtered_with_notes`: `search_filtered` (which just entered) and `search_filtered_with_index` (path 689 enters its own `search_index_guided` span first, so a triple-nested duplicate fires there).
+- **Suggested fix:** Drop the inner `info_span!` at line 136 (the outer one already covers the work) — or rename it to `search_filtered_inner` so the names disambiguate. Same review for `search_filtered_with_index` (line 667) which also delegates into `search_filtered_with_notes`.
 
-#### OB-V1.30-2: `auth::enforce_auth` rejects 401 silently — no `tracing::warn!` on auth failure
+#### `verify_hnsw_checksums` lacks an entry span on the integrity-check hot path
 - **Difficulty:** easy
-- **Location:** `src/serve/auth.rs:194-232` (specifically `AuthOutcome::Unauthorized` branch at lines 224-230)
-- **Description:** The new per-launch token middleware (#1118, SEC-7) emits zero log output when a request fails authentication. A brute-force scan, expired bookmark, or misconfigured client gets a generic `401 Unauthorized` body and the operator has no journal trail showing it happened, the path attempted, or the source. Asymmetric with `enforce_host_allowlist` at `src/serve/mod.rs:246`, which DOES emit `tracing::warn!(host = %host, "serve: rejected request with disallowed Host header")`. Auth failures are the higher-value signal — host-allowlist failures are usually misconfiguration, while auth failures are the canonical "someone is probing" event.
-- **Suggested fix:** Inside the `AuthOutcome::Unauthorized` arm at `src/serve/auth.rs:224`, before returning the 401 response, emit:
-  ```rust
-  tracing::warn!(
-      method = %req.method(),
-      path = %req.uri().path(),
-      "serve: rejected unauthenticated request",
-  );
-  ```
-  Do NOT log token candidates — even truncated.
+- **Location:** src/hnsw/persist.rs:121
+- **Description:** `verify_hnsw_checksums` walks every file in the HNSW manifest, opens it, and BLAKE3-hashes the contents (potentially hundreds of MB). The function emits three `tracing::warn!` lines on IO error and returns an Err on mismatch, but it never opens an `info_span!`. Operators investigating "why is `cqs index` slow on startup" or "why did load fail" have no way to time the verify pass or see how many files it processed — a startup with a 500 MB HNSW blob spends seconds here invisibly. DS-V1.33-3 just hardened the missing-file branch (P1 fix) but didn't add the span. This sits adjacent to `pub fn save` and `pub fn load_with_dim`, both of which already have `info_span!`.
+- **Suggested fix:** Add `let _span = tracing::info_span!("verify_hnsw_checksums", dir = %dir.display(), basename).entered();` at the top of the function. On Ok, emit a completion event with `files_verified` count and `elapsed_ms`.
 
-#### OB-V1.30-3: Per-request span (TraceLayer) and `build_*` spans are disconnected because `tokio::task::spawn_blocking` doesn't propagate span context
-- **Difficulty:** medium
-- **Location:** `src/serve/handlers.rs:86, 111, 131, 160, 210, 236` (every `spawn_blocking` call)
-- **Description:** The serve router wires `TraceLayer::new_for_http()` (`src/serve/mod.rs:195`) which generates a per-request span (fixes OB-V1.29-5 at the request level). Each handler then spawns its blocking work via `tokio::task::spawn_blocking(move || super::data::build_graph(…))`. The closure runs on a fresh blocking-pool thread which has NO span stack inherited from the caller — `tokio` does not propagate `tracing::Span::current()` into spawn_blocking by default. Inside `build_graph`/`build_chunk_detail`/`build_hierarchy`/`build_cluster`/`build_stats`, the `info_span!` becomes a fresh root span. A JSON capture of one request shows two unrelated trees: TraceLayer's `http_request{method=GET path=/api/graph}` and a separately-rooted `build_graph{file_filter=…}`. Once OB-V1.30-1 is fixed and INFO spans render, the noise will be doubled with no parent linkage.
-- **Suggested fix:** Capture `tracing::Span::current()` before the spawn and `instrument` the closure:
-  ```rust
-  use tracing::Instrument;
-  let span = tracing::Span::current();
-  let stats = tokio::task::spawn_blocking({
-      let store = state.store.clone();
-      move || {
-          let _entered = span.enter();
-          super::data::build_stats(&store)
-      }
-  }).await…
-  ```
-  Apply at all six handlers (stats/graph/chunk_detail/search/hierarchy/cluster_2d). Alternative: drop the per-handler `tracing::info!` lines (80, 100, 126, 149, 175, 201, 231) and rely solely on the inner `build_*` span entry — they're redundant once the inner span emits CLOSE events.
-
-#### OB-V1.30-4: `cqs eval` runner uses `eprintln!` for progress instead of `tracing::info!`
+#### `validate_summary` and `detect_all_injection_patterns` run untraced on every LLM result
 - **Difficulty:** easy
-- **Location:** `src/cli/commands/eval/runner.rs:163-168`
-- **Description:** The eval runner emits progress (`[eval] 50/109 queries (12.3 q/s)`) via `eprintln!` at line 167. Every other progress signal in the codebase (`build.rs` SPLADE batches at 546, UMAP at `umap.rs:142`, daemon GC at `watch.rs:1217`) uses `tracing::info!` with structured fields. Using `eprintln!`: (a) prevents JSON-redirect of eval output for downstream comparison tooling, (b) fires unconditionally even with `RUST_LOG=error` (no quiet mode), (c) the q/s number can't be filtered or summed from journal logs.
-- **Suggested fix:** Replace line 167 with:
-  ```rust
-  tracing::info!(done, total = total_queries, qps, "eval progress");
-  ```
-  Keep `eprintln!` only behind a `--quiet=false` CLI gate if interactive feedback is required, or rely on the `cqs=info` default after OB-V1.30-1.
+- **Location:** src/llm/validation.rs:87, src/llm/validation.rs:152
+- **Description:** Both functions run on every batch result the LLM provider returns (potentially thousands per `cqs index --improve-docs --improve-all` run). When validation rejects a summary — e.g. "prompt-injection pattern detected" — the call surface emits an `Err`/`Vec<&str>` but no `tracing::warn!` is fired with the offending pattern name and chunk identifier. Investigating "why did this batch's summaries get dropped" requires re-running with debug logging that doesn't exist. Compare to e.g. `embed_query` which emits cache-aware completion events.
+- **Suggested fix:** Inside `validate_summary`, when `ValidationOutcome::Rejected` is returned, emit `tracing::warn!(reason = ?outcome, text_len = text.len(), "Summary validation rejected")`. In `detect_all_injection_patterns`, emit `tracing::debug!(pattern = pat, "Injection pattern matched")` per match. No span needed; these are leaf calls.
 
-#### OB-V1.30-5: `nl/mod.rs` public NL generators have zero spans — generated text shapes the embedding for every chunk
+#### `compute_rewrite` lacks span on the doc-writer parse-resolve-apply hot path
 - **Difficulty:** easy
-- **Location:** `src/nl/mod.rs:43, 65, 189, 209` (`generate_nl_with_call_context`, `generate_nl_with_call_context_and_summary`, `generate_nl_description`, `generate_nl_with_template`)
-- **Description:** None of the four `generate_nl_*` public functions have entry spans, despite being the canonical text-shaping path that determines what every chunk's embedding sees. When eval drops 5pp recall after a model swap, there is no way to bisect from "which NL template rendered which chunk" — an operator has to add spans by hand and rebuild. (The fts/markdown helpers running in tight indexing loops are reasonable to skip; the 4 NL generators are NOT inner-loop, they run once per chunk during enrichment.)
-- **Suggested fix:** Add a single `tracing::debug_span!("generate_nl", template = ?template, chunk_kind = ?chunk.chunk_type, len = chunk.content.len())` at the top of `generate_nl_with_template` (line 209). The other three call into it transitively, so one span covers all four entry points. `debug_span!` (not info) keeps it off by default.
+- **Location:** src/doc_writer/rewriter.rs:242
+- **Description:** `pub fn compute_rewrite` reads the source file from disk, runs tree-sitter, and applies edits. It is called by both `rewrite_file` (which has its own `info_span!` at line 290) and `write_proposed_patch` (line 530, also has a span). But `compute_rewrite` is a `pub fn` documented as the "pure parse-resolve-apply step shared by" both wrappers. External callers (or future callers) that hit this entry point directly bypass any span. The function does non-trivial work — file read + tree-sitter parse + N edit applications — and a span here would let operators see resolve failures (the silent "function not found in re-parse" branch noted in the doc-comment) at debug.
+- **Suggested fix:** Add `let _span = tracing::info_span!("compute_rewrite", path = %path.display(), edit_count = edits.len()).entered();` at the top of `compute_rewrite`. The two wrapper spans become parent contexts when the wrappers are entered first; direct callers get coverage they currently lack.
 
-#### OB-V1.30-6: `embed_documents` / `embed_query` lack completion fields — entry span has `count`/`text` but no result.len, dim, time
+#### `config.rs:582` emits redundant `eprintln!` next to a `tracing::warn!` for the same event
 - **Difficulty:** easy
-- **Location:** `src/embedder/mod.rs:683, 722`
-- **Description:** Both entry spans are minimal: `info_span!("embed_documents", count = texts.len())` and `info_span!("embed_query")`. There is no "embed_documents complete" event with the produced batch size, embedding dim, or tokenization stats. `FmtSpan::CLOSE` (OB-V1.30-1) would partially fix this, but even with CLOSE events the only structured field would be the entry-time `count`, not output sizes / dim / tokenization stats. Indexing 100k chunks today produces ~200 `embed_batch` enter events and zero "I produced N embeddings of dim D in T ms" events.
-- **Suggested fix:** At the bottom of `embed_documents` (after the loop completes), add:
-  ```rust
-  tracing::info!(
-      total = embeddings.len(),
-      dim = self.embedding_dim(),
-      input_count = texts.len(),
-      "embed_documents complete"
-  );
-  ```
-  Same pattern in `embed_query` at `tracing::debug!` level.
+- **Location:** src/config.rs:582-594
+- **Description:** When too many references are configured, the validator emits both an `eprintln!("Warning: ...")` AND a `tracing::warn!(count, max, "Too many references configured, truncating")` for the same event. The duplication is intentional ("warn the operator on the terminal") but it routes through two channels — the `eprintln!` lands in journald as unstructured stderr (since the daemon has no terminal), while the `tracing::warn!` lands as structured JSON. Operators get the same event twice with different shapes. The contract elsewhere in the codebase (see OB-V1.30.1-9 in `cli/watch/events.rs:190`) is "tracing only; the daemon has no TTY". This file pre-dates that rule.
+- **Suggested fix:** Drop the `eprintln!` block at lines 582-588. The `tracing::warn!` already covers the operator-visibility need — `cqs watch` prints it via the configured subscriber, CLI runs see it because the default subscriber writes warns to stderr. Keep only `tracing::warn!`.
 
-#### OB-V1.30-7: `Reranker::rerank_with_passages` swallows `passages.len() != results.len()` mismatch with no log — silent semantic corruption
+#### `find_ld_library_dir` failure mode is silent — no log when no LD_LIBRARY_PATH dir is selected
 - **Difficulty:** easy
-- **Location:** `src/reranker.rs:200-220`
-- **Description:** `rerank_with_passages` accepts `passages: &[&str]` independent of `results: &mut Vec<SearchResult>`. The doc says "passages must have the same length as results" but the implementation does not assert, log, or take a tracing event when the lengths diverge. If a caller mis-zips (e.g. filters results post-fetch but forgets to re-trim passages), `compute_scores` either panics on out-of-bounds slicing or scores arbitrarily-paired text, and the operator sees nothing in the journal. Semantically silent: ranks shift, neither error nor warning fires.
-- **Suggested fix:** At line 213 (after the entry span, before the early-return), add:
-  ```rust
-  if passages.len() != results.len() {
-      tracing::warn!(
-          passages = passages.len(),
-          results = results.len(),
-          "rerank_with_passages: length mismatch — caller bug, results will be corrupted",
-      );
-      return Err(RerankerError::InvalidArguments(format!(
-          "passages.len()={} != results.len()={}",
-          passages.len(),
-          results.len()
-      )));
-  }
-  ```
-  Add the `InvalidArguments` variant if it doesn't exist; warn-only also acceptable but less safe.
+- **Location:** src/embedder/provider.rs:121
+- **Description:** On Linux startup, `find_ld_library_dir` parses `LD_LIBRARY_PATH`, looks for a directory that ORT's symlink-providers logic should target, and returns `None` if none qualifies. The `None` path is hit when (a) `LD_LIBRARY_PATH` is unset (legitimate), or (b) every entry is empty/non-existent/the ORT cache itself (a misconfiguration). Both collapse to silent `None`. When CUDA provider load mysteriously fails downstream and the user reports "no GPU detected", there's no breadcrumb showing whether the LD-resolve step ran and what it saw.
+- **Suggested fix:** Emit `tracing::debug!(ld_path = %ld_path, ort_lib_dir = %ort_lib_dir.display(), "Selected LD_LIBRARY_PATH dir for provider symlinks")` on the Some branch and `tracing::debug!(ld_path_set = !ld_path.is_empty(), entries = ld_path.matches(':').count() + 1, "No qualifying LD_LIBRARY_PATH entry for provider symlinks")` on the None branch.
 
-#### OB-V1.30-8: `train_data` git subprocess wrappers don't log non-zero exit codes — silent failure on shallow clones / missing SHAs
+#### `Embedder::token_count` and `token_counts_batch` lack spans on the tokenizer hot path
 - **Difficulty:** easy
-- **Location:** `src/train_data/git.rs:65-242` (`git_log`, `git_diff_tree`, `git_show`)
-- **Description:** Each function has an entry `tracing::info_span!` (good), but on `output.status.success()` failure the exit code and stderr are bundled into a `TrainDataError` and returned — no structured log. When `cqs train-data --max-commits 1000` walks a shallow repo and 50% of `git_diff_tree` calls fail with `fatal: bad revision`, the user sees a single aggregated count at the end and has no way to reconstruct WHICH SHAs failed without re-running with `RUST_LOG=trace`. The `is_shallow` probe at line 241 is the only one that handles a missing-SHA case gracefully.
-- **Suggested fix:** In each subprocess wrapper, on `!output.status.success()` add before the error return:
-  ```rust
-  tracing::warn!(
-      sha,
-      exit = output.status.code(),
-      stderr = %String::from_utf8_lossy(&output.stderr).trim(),
-      "git_diff_tree failed",
-  );
-  ```
-  Apply consistently to `git_log` (line 65), `git_diff_tree` (line 131), `git_show` (line 173).
+- **Location:** src/embedder/mod.rs:715, src/embedder/mod.rs:737
+- **Description:** Both `pub fn` lack `info_span!`. They are called per-chunk during indexing and per-query during retrieval (token-count gating drives splits/window selection — see `split_into_windows`). Surrounding methods like `embed_documents`, `embed_query`, `warm`, `split_into_windows` all carry spans. Token counting is non-trivial work on a long input (full BPE/wordpiece tokenization), and when an indexing run is slow on large files, the operator currently can't see whether time is in token_count vs the actual ONNX forward pass.
+- **Suggested fix:** Add `let _span = tracing::debug_span!("token_count", text_len = text.len()).entered();` to `token_count` and `let _span = tracing::debug_span!("token_counts_batch", count = texts.len()).entered();` to `token_counts_batch`. Debug-level (not info) because per-chunk in tight loops at info would flood journalctl.
 
-#### OB-V1.30-9: Format-string-interpolated `tracing::info!` calls — structural fields are lost
+#### `cagra_persist_enabled` logs once but skips chunk_count / dim context
 - **Difficulty:** easy
-- **Location:** `src/hnsw/build.rs:78, 236`; `src/hnsw/persist.rs:210, 638, 771`; `src/reference.rs:220`; `src/cli/commands/train/export_model.rs:76`; `src/audit.rs:85, 93`; `src/embedder/provider.rs:149`
-- **Description:** OB-V1.29-4 specifically called out `verify_hnsw_checksums` for this pattern; the audit fixed that one site but the broader pattern persists across HNSW build/persist and several other modules. Lines like `tracing::info!("Building HNSW index with {} vectors", nb_elem)` produce a single rendered string instead of structured `count = nb_elem` fields. Once OB-V1.30-1 lands JSON formatting, these lines remain un-queryable: jq-extracting the vector count from "Building HNSW index with 178432 vectors" needs a regex per line, while `count: 178432` is a JSON field. Friction with no offsetting benefit — `tracing` natively supports both forms.
-- **Suggested fix:** Convert each site to structured form. Examples:
-  ```rust
-  // src/hnsw/build.rs:78
-  tracing::info!(count = nb_elem, "Building HNSW index");
-  // src/hnsw/persist.rs:210
-  tracing::info!(dir = %dir.display(), basename, "Saving HNSW index");
-  ```
-  Sweep the 9 sites in one pass. Pure-mechanical change, no behavior delta.
+- **Location:** src/cagra.rs:859-868
+- **Description:** When `CQS_CAGRA_PERSIST=0` is set, the function emits `tracing::info!("CQS_CAGRA_PERSIST=0 — CAGRA persistence disabled")` exactly once (OnceLock). The log carries no fields. When operators set this var to debug a CAGRA load failure, they have no breadcrumb tying the disable-decision to which slot/index was loading at the time. Several call sites (`cagra_save`, `cagra_load`, `cagra_save_with_store`) all return early on `!cagra_persist_enabled()` without their own warn — silent skip of CAGRA persistence is exactly the kind of "looked done, did nothing" failure mode CLAUDE.md memory flags.
+- **Suggested fix:** Inside each `if !cagra_persist_enabled()` early-return arm at lines 890, 985, 1091, emit `tracing::warn!(path = %path.display(), "CAGRA op skipped — CQS_CAGRA_PERSIST=0")`. The OnceLock startup line is fine; the per-call warn is what a debugging operator actually needs.
 
-#### OB-V1.30-10: `cqs serve` cluster_2d emits no warn when corpus has chunks but zero UMAP rows — operators see only the empty payload
+#### `splade::probe_model_vocab` has a span but no completion event with elapsed_ms / vocab_size
 - **Difficulty:** easy
-- **Location:** `src/serve/data.rs:901, 1020` (`build_cluster`); handler at `src/serve/handlers.rs:227-242`
-- **Description:** When the user runs `cqs serve` against a corpus indexed without `cqs index --umap` (the v1.30.0 schema-v22 default — UMAP is opt-in), the cluster-3d view returns `{nodes: [], skipped: N}` with N = total chunks. The frontend renders a "run cqs index --umap" hint (per the doc comment at handlers.rs:226), but the backend emits no `tracing::warn!` to surface this state in the journal — the operator who runs `cqs serve` over SSH and gets a blank cluster view has no log to point at. Neighboring `build_hierarchy` at `data.rs:638` DOES log `tracing::info!(root_id, "build_hierarchy: root chunk not found")` for its empty-result case.
-- **Suggested fix:** At the point inside `build_cluster` where `coords` is empty but `total_chunks > 0`, add:
-  ```rust
-  if response.nodes.is_empty() && response.skipped > 0 {
-      tracing::warn!(
-          skipped = response.skipped,
-          "build_cluster: corpus has chunks but no UMAP coordinates — run `cqs index --umap`",
-      );
-  }
-  ```
+- **Location:** src/splade/mod.rs:127
+- **Description:** `probe_model_vocab` enters a `debug_span!("probe_model_vocab", path = ...)` but emits no completion event tying together how long the probe took and what vocab_size it read. The probe involves loading an ONNX model header — non-trivial IO + parse — and is called once per encoder construction. When SPLADE startup is slow, operators currently can't tell whether the probe was the bottleneck. Compare to `embed_documents` (line 877) which emits a completion `tracing::info!` with `elapsed_ms`, `total`, `dim`.
+- **Suggested fix:** Capture `let started = std::time::Instant::now();` at the span entry and emit `tracing::debug!(vocab_size = ?probed, elapsed_ms = started.elapsed().as_millis() as u64, "probe_model_vocab complete")` on the Ok return path.
 
----
+#### `worktree.rs::record_worktree_stale` and `is_worktree_stale` lack tracing on staleness state changes
+- **Difficulty:** easy
+- **Location:** src/worktree.rs:219, src/worktree.rs:229
+- **Description:** Both functions touch the cross-worktree staleness flag (a marker file or atomic) but emit no tracing. `record_worktree_stale` is the producer side ("our worktree's index is now stale"); `is_worktree_stale` is the consumer side ("should I show a warning to the user"). When a multi-worktree workflow misbehaves — agent A's reindex doesn't propagate the stale flag, agent B keeps serving stale results — there's no journal trail to diagnose which side dropped the signal. Note CLAUDE.md memory specifically calls out worktree leakage (#1254) as a pain point; observability here is exactly what would make that diagnosable.
+- **Suggested fix:** Add `tracing::info!(worktree_root = %worktree_root.display(), "worktree marked stale")` at the producer (`record_worktree_stale`) and `tracing::debug!(stale = res, "is_worktree_stale check")` at the consumer.
 
-## Triage notes
-
-- **OB-V1.30-1** is the highest-leverage finding — fixing it unlocks the value of every span already in the codebase. P1 by impact, easy by effort.
-- **OB-V1.30-2** is the only one tied directly to the new auth surface (#1118); SEC-7 shipped without the warn-on-reject side, so the security event is silent.
-- **OB-V1.30-3** is the only "medium" — it requires understanding tokio's blocking-pool span propagation. The other nine are all easy.
-- **OB-V1.30-9** is bundled because the prior audit (OB-V1.29-4) only patched one site of an idiomatic-but-stale pattern that persists across ~9 lines.
-- I did NOT report module-wide gaps in `scout`, `where_to_add`, `gather`, `staleness`, `impact`, or `slot`/`cache`/`serve` — every public function in those modules now has an entry span, confirming the v0.12.1 lesson has been applied. The current observability bar in cqs is high; the remaining gaps are at the rendering / correlation / completeness edges, not the "no spans exist" tier.
+DONE

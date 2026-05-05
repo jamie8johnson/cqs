@@ -157,6 +157,30 @@ pub(crate) fn cmd_hook(subcmd: HookCommand) -> Result<()> {
     }
 }
 
+/// RB-V1.36-3: bounded read of a managed hook file. Hooks are normally
+/// <10 KB; cap at 1 MiB so a corrupt / hostile multi-GB hook file doesn't
+/// OOM `cqs ci ...`. Files above the cap are reported as `read_to_string`
+/// I/O errors with `kind() == InvalidData` so callers treat them as foreign
+/// (refuse to overwrite) — same effect as the existing fall-through.
+const HOOK_MAX_BYTES: u64 = 1024 * 1024;
+
+fn read_hook_capped(path: &Path) -> std::io::Result<String> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > HOOK_MAX_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            size = meta.len(),
+            cap = HOOK_MAX_BYTES,
+            "Hook file exceeds size cap — treating as foreign hook"
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "hook file exceeds size cap",
+        ));
+    }
+    std::fs::read_to_string(path)
+}
+
 // ─── install ──────────────────────────────────────────────────────────────
 
 fn cmd_install(no_overwrite: bool, json: bool) -> Result<()> {
@@ -180,7 +204,8 @@ fn cmd_install(no_overwrite: bool, json: bool) -> Result<()> {
         // UTF-8, IO hiccup). Collapsing all errors to `None` via `.ok()`
         // would let the `None` arm clobber a foreign hook that was simply
         // unreadable. Refuse to write in any non-NotFound failure case.
-        let existing = match std::fs::read_to_string(&path) {
+        // RB-V1.36-3: read_hook_capped bounds the read at 1 MiB.
+        let existing = match read_hook_capped(&path) {
             Ok(s) => Some(s),
             Err(e) if e.kind() == ErrorKind::NotFound => None,
             Err(e) => {
@@ -362,7 +387,9 @@ fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
 
     for &hook in MANAGED_HOOKS {
         let path = git_dir.join(hook);
-        match std::fs::read_to_string(&path) {
+        // RB-V1.36-3: capped read; oversize files are treated as not-present
+        // to fall through to the "leave foreign hook alone" branch.
+        match read_hook_capped(&path) {
             Err(_) => report.not_present.push(hook.to_string()),
             Ok(content) => {
                 if content.contains(HOOK_MARKER_PREFIX) {
@@ -503,7 +530,9 @@ fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
 
     for &hook in MANAGED_HOOKS {
         let path = git_dir.join(hook);
-        match std::fs::read_to_string(&path) {
+        // RB-V1.36-3: capped read; oversize files are reported as foreign
+        // (since we can't tell whether they contain HOOK_MARKER_PREFIX).
+        match read_hook_capped(&path) {
             Err(_) => report.missing.push(hook.to_string()),
             Ok(content) => {
                 if content.contains(HOOK_MARKER_PREFIX) {

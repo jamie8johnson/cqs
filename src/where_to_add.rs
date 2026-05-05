@@ -212,15 +212,28 @@ fn suggest_placement_with_options_core<Mode>(
 
     for (file, score, chunks) in &file_scores {
         let origin_key = file.to_string_lossy();
-        let all_file_chunks = all_origins_chunks
-            .remove(origin_key.as_ref())
-            .unwrap_or_default();
+        let all_file_chunks = match all_origins_chunks.remove(origin_key.as_ref()) {
+            Some(v) => v,
+            None => {
+                // EH-V1.36-8 / P3: file had a search hit but its chunks were
+                // missing from the batch fetch (race: file deleted, or origin
+                // mismatch). Skip rather than emit a malformed suggestion
+                // pointing at a now-empty file.
+                tracing::debug!(
+                    file = %file.display(),
+                    "where_to_add: file in scores but no chunks fetched — skipping"
+                );
+                continue;
+            }
+        };
 
         // Find the most similar chunk in this file (highest individual score)
         let best_chunk = chunks.iter().max_by(|a, b| a.0.total_cmp(&b.0));
 
         let (near_function, insertion_line) = match best_chunk {
-            Some((_, chunk)) => (chunk.name.clone(), chunk.line_end + 1),
+            // saturating_add — line_end is u32, panic in debug / wrap in release
+            // on synthetic / fuzzed input where line_end == u32::MAX (P1-41 sibling).
+            Some((_, chunk)) => (chunk.name.clone(), chunk.line_end.saturating_add(1)),
             None => ("(top of file)".to_string(), 1),
         };
 
@@ -768,9 +781,11 @@ fn compiled_import_regexes(patterns: &[&'static str]) -> std::sync::Arc<Vec<rege
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let key: Key = (patterns.as_ptr() as usize, patterns.len());
     {
-        let guard = cache
-            .lock()
-            .expect("compiled_import_regexes mutex poisoned");
+        // Recover from poison — cache holds Arc<Vec<Regex>>, no invariants to
+        // protect; matches the embedder/provider.rs:512 ENV_LOCK pattern.
+        // Without this, any panic while holding the lock permanently kills
+        // every cqs where/task call for the daemon's lifetime.
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(arc) = guard.get(&key) {
             return Arc::clone(arc);
         }
@@ -788,9 +803,7 @@ fn compiled_import_regexes(patterns: &[&'static str]) -> std::sync::Arc<Vec<rege
         })
         .collect();
     let arc = Arc::new(compiled);
-    let mut guard = cache
-        .lock()
-        .expect("compiled_import_regexes mutex poisoned");
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     Arc::clone(guard.entry(key).or_insert_with(|| Arc::clone(&arc)))
 }
 
@@ -804,15 +817,19 @@ fn extract_imports_regex(
     max: usize,
 ) -> Vec<String> {
     let compiled = compiled_import_regexes(patterns);
-    let mut seen = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut imports = Vec::new();
     for chunk in chunks {
         for line in chunk.content.lines() {
             let trimmed = line.trim();
-            if compiled.iter().any(|re| re.is_match(trimmed))
-                && imports.len() < max
-                && seen.insert(trimmed.to_string())
+            // PERF-V1.36-5: contains-then-insert to avoid `to_string()` on
+            // every duplicate line. seen.insert(to_string()) used to alloc
+            // a String per iteration regardless of whether it was new.
+            if imports.len() < max
+                && !seen.contains(trimmed)
+                && compiled.iter().any(|re| re.is_match(trimmed))
             {
+                seen.insert(trimmed.to_string());
                 imports.push(trimmed.to_string());
             }
         }

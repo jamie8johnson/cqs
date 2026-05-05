@@ -197,6 +197,17 @@ pub fn detect_all_injection_patterns(text: &str) -> Vec<&'static str> {
         flags.push("embedded-url");
     }
 
+    // OB-V1.36-3 / P3: emit a debug log line per matched flag so operators
+    // running RUST_LOG=cqs=debug can see which patterns trip during a batch
+    // summarization run. validate_summary already covers strict-mode
+    // rejection at warn level; this is the broader-pattern equivalent.
+    if !flags.is_empty() {
+        tracing::debug!(
+            patterns = ?flags,
+            text_len = text.len(),
+            "detect_all_injection_patterns: flags matched"
+        );
+    }
     flags
 }
 

@@ -62,6 +62,7 @@
 //! - `lang-markdown` - Markdown support (enabled by default, no external deps)
 //! - `lang-aspx` - ASP.NET Web Forms support (enabled by default, no external deps)
 //! - `lang-st` - IEC 61131-3 Structured Text support (enabled by default)
+//! - `lang-dart` - Dart support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -1107,10 +1108,25 @@ impl Language {
     /// Get the language definition from the registry.
     ///
     /// # Panics
-    /// Panics if the language's feature flag is disabled.
+    /// Panics if the language's feature flag is disabled. This panic was
+    /// originally intentional for compile-time language references, but
+    /// production code paths that read the variant from stored chunk rows
+    /// can also reach it after a feature-flag-mismatched rebuild — see
+    /// RB-V1.36-8 / P2-8. Such callers should switch to [`Self::try_def`]
+    /// and route through `LanguageError`.
     pub fn def(&self) -> &'static LanguageDef {
-        self.try_def()
-            .unwrap_or_else(|| panic!("Language '{}' not in registry — check feature flags", self))
+        self.try_def().unwrap_or_else(|| {
+            // Log at error! before the panic so operators can correlate the
+            // crash with the offending language variant — bare panic with
+            // unstructured `format!` output otherwise vanishes into stderr.
+            tracing::error!(
+                language = %self,
+                "Language definition not in registry — feature flag missing or chunk \
+                 row recorded a language whose lang-* feature was compiled out. \
+                 Switch the caller to try_def() if this came from stored data."
+            );
+            panic!("Language '{}' not in registry — check feature flags", self)
+        })
     }
 
     /// Look up a language by file extension

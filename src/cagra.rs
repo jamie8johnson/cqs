@@ -189,14 +189,14 @@ fn cagra_itopk_max_default(n_vectors: usize) -> usize {
 /// Returns `IndexParams` with those setters applied (and traces the choice).
 #[cfg(feature = "cuda-index")]
 fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
-    let graph_degree: usize = std::env::var("CQS_CAGRA_GRAPH_DEGREE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(64);
-    let intermediate_graph_degree: usize = std::env::var("CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(128);
+    // Use parse_env_usize_clamped so a literal "0" or empty string falls back
+    // to the default (sibling of P1-45 in v1.33: HNSW M/ef were hardened the
+    // same way; CAGRA branch was missed). cuvs treats 0 as "library default"
+    // on some versions, errors on others — silent-misconfig surface.
+    let graph_degree =
+        crate::limits::parse_env_usize_clamped("CQS_CAGRA_GRAPH_DEGREE", 64, 1, 4096);
+    let intermediate_graph_degree =
+        crate::limits::parse_env_usize_clamped("CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE", 128, 1, 4096);
     let params = cuvs::cagra::IndexParams::new()
         .map_err(|e| CagraError::Cuvs(e.to_string()))?
         .set_graph_degree(graph_degree)
@@ -743,8 +743,19 @@ impl CagraIndex {
             )));
         }
 
+        // RM-V1.36-10: sanity-bound chunk_count before with_capacity in case
+        // a corrupt store reports usize::MAX (matching SPLADE's defensive
+        // pattern in splade/index.rs). 1<<28 = ~268M chunks, well above any
+        // realistic corpus.
+        const MAX_CHUNKS_SANITY: usize = 1 << 28;
+        if chunk_count > MAX_CHUNKS_SANITY {
+            return Err(CagraError::Io(format!(
+                "Refusing to allocate id_map for chunk_count={} > {}",
+                chunk_count, MAX_CHUNKS_SANITY
+            )));
+        }
         let mut id_map = Vec::with_capacity(chunk_count);
-        let mut flat_data = Vec::with_capacity(chunk_count * dim);
+        let mut flat_data = Vec::with_capacity(chunk_count.saturating_mul(dim));
 
         // SHL-V1.33-9: streaming batch size is env-overridable so future
         // higher-dim models can shrink the per-batch heap footprint without
@@ -888,6 +899,9 @@ impl CagraIndex {
     pub fn save(&self, path: &Path) -> Result<(), CagraError> {
         let _span = tracing::info_span!("cagra_save", path = %path.display()).entered();
         if !cagra_persist_enabled() {
+            // OB-V1.36-3 / P2-3: per-call warn — "looked done, did nothing"
+            // silent skips surface only as missing blobs at next load.
+            tracing::warn!(path = %path.display(), "CAGRA save skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
             ));
@@ -983,6 +997,7 @@ impl CagraIndex {
     ) -> Result<(), CagraError> {
         let _span = tracing::info_span!("cagra_save_with_store", path = %path.display()).entered();
         if !cagra_persist_enabled() {
+            tracing::warn!(path = %path.display(), "CAGRA save_with_store skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
             ));
@@ -1089,6 +1104,7 @@ impl CagraIndex {
     ) -> Result<Self, CagraError> {
         let _span = tracing::info_span!("cagra_load", path = %path.display()).entered();
         if !cagra_persist_enabled() {
+            tracing::warn!(path = %path.display(), "CAGRA load skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
             ));

@@ -59,6 +59,16 @@ pub(super) fn reverse_bfs(
     queue.push_back((target_arc, 0));
 
     while let Some((current, d)) = queue.pop_front() {
+        // AC-V1.36-9 / P3: defensive stale-queue skip mirrored from
+        // reverse_bfs_multi. Today reverse_bfs is correct because BFS
+        // visits depths in non-decreasing order, but a future change that
+        // pushes back already-seen nodes at a shorter depth would silently
+        // regress without this guard.
+        if let Some(&stored) = ancestors.get(current.as_ref()) {
+            if d > stored {
+                continue;
+            }
+        }
         if d >= max_depth {
             continue;
         }

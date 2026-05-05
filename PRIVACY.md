@@ -12,7 +12,7 @@ cqs processes your code locally by default. With `--llm-summaries`, function cod
 
 When you run `cqs index`, the following is stored under `.cqs/`:
 
-- `.cqs/slots/<name>/index.db` — code chunks, embedding vectors (dim depends on configured model; 768 for embeddinggemma-300m default since v1.35.0 / nomic-coderank / E5-base / v9-200k presets, 1024 for bge-large / bge-large-ft presets), file paths, line numbers, modification times. Per-named-slot, side-by-side (#1105). Pre-migration projects may still see a legacy single-slot path at `.cqs/index.db`.
+- `.cqs/slots/<name>/index.db` — code chunks, embedding vectors (dim depends on configured model; 768 for embeddinggemma-300m default since v1.35.0 / nomic-coderank / E5-base / v9-200k presets, 1024 for bge-large / bge-large-ft presets, 2560 for qwen3-embedding-4b, 4096 for qwen3-embedding-8b), file paths, line numbers, modification times. Per-named-slot, side-by-side (#1105). Pre-migration projects may still see a legacy single-slot path at `.cqs/index.db`.
 - `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_fingerprint, purpose)` (#1105, #1128). Skips re-embedding chunks that haven't changed across reindexes / model swaps; the `purpose` discriminator (`embedding` for the post-enrichment vector served by HNSW, `embedding_base` for the raw NL vector served by the dual-index "base" graph) prevents the two streams from overwriting each other when the same chunk produces both.
 
 A legacy global cache may also exist from older versions. The legacy cache root resolves per platform: Linux `$XDG_CACHE_HOME/cqs/` or `~/.cache/cqs/`; macOS `~/Library/Caches/cqs/`; Windows `%LOCALAPPDATA%\cqs\`. The three files below live under that root.
@@ -33,6 +33,8 @@ The embedding model is downloaded once from HuggingFace:
 - Preset: `intfloat/e5-base-v2` (E5-base, ~438MB, 768-dim)
 - Preset: `jamie8johnson/e5-base-v2-code-search` (v9-200k LoRA fine-tune on cqs-code-search-200k, ~440MB, 768-dim) — opt-in via `CQS_EMBEDDING_MODEL=v9-200k`
 - Preset: `jamie8johnson/CodeRankEmbed-onnx` (community ONNX export of nomic-ai/CodeRankEmbed, ~547MB, 768-dim) — opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
+- Preset: `Qwen/Qwen3-Embedding-4B` (~7.4GB FP16, 2560-dim, 4096 max-seq) — opt-in via `CQS_EMBEDDING_MODEL=qwen3-embedding-4b` (#1441/#1442)
+- Preset: `Qwen/Qwen3-Embedding-8B` (~15GB FP16, 4096-dim, 4096 max-seq) — opt-in via `CQS_EMBEDDING_MODEL=qwen3-embedding-8b` (#1392)
 - Custom: any HuggingFace repo via `[embedding]` config section, `--model` CLI flag, or `CQS_EMBEDDING_MODEL` env var
 - Size varies by model
 - Cached in: `~/.cache/huggingface/`

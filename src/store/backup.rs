@@ -235,10 +235,25 @@ pub(crate) fn prune_old_backups(db_path: &Path) -> Result<(), StoreError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(it) => it,
         Err(e) => {
-            tracing::warn!(
+            // DS-V1.36-10 / P3: surface at error! with directory size context
+            // so monitoring can alert on accumulating backups when the prune
+            // step keeps failing. Non-fatal — the user's DB is at the correct
+            // version — but silent prune skip lets `.bak-v*.db` files
+            // accumulate without bound on transient permission issues.
+            let approx_size: u64 = std::fs::read_dir(dir)
+                .ok()
+                .map(|it| {
+                    it.flatten()
+                        .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+                        .sum()
+                })
+                .unwrap_or(0);
+            tracing::error!(
                 error = %e,
                 dir = %dir.display(),
-                "Failed to read DB dir for backup pruning (non-fatal)"
+                approx_dir_bytes = approx_size,
+                "Failed to read DB dir for backup pruning (non-fatal); \
+                 .bak-v*.db files may accumulate — investigate dir perms or disk"
             );
             return Ok(());
         }

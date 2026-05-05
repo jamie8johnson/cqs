@@ -529,6 +529,16 @@ pub fn path_matches_mention(path: &str, mention: &str) -> bool {
     let path: &str = path.as_ref();
     let mention: &str = mention.as_ref();
 
+    // PB-V1.36-7: on case-insensitive filesystems (Windows NTFS, macOS HFS+/APFS
+    // default), notes authored on Linux silently failed to apply — `Cargo.toml`
+    // mention vs `cargo.toml` indexed path. Lowercase both sides on those
+    // platforms so the suffix/prefix strip is case-insensitive while staying
+    // byte-exact on Linux ext4.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let (path_buf, mention_buf) = (path.to_ascii_lowercase(), mention.to_ascii_lowercase());
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let (path, mention) = (path_buf.as_str(), mention_buf.as_str());
+
     // Check if mention matches as a path suffix (component-aligned)
     if let Some(stripped) = path.strip_suffix(mention) {
         // Must be at component boundary: empty prefix or ends with /

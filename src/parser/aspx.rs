@@ -1120,4 +1120,30 @@ End Class
         let chunks = parse_aspx_chunks(source, f.path(), &parser).unwrap();
         assert!(!chunks.is_empty());
     }
+
+    /// TC-V1.36-7 / P3: unterminated `<% ... %>` blocks must complete in
+    /// bounded time without panic. Mirror of L5K_ROUTINE_BLOCK_RE's
+    /// `unterminated_routine_no_panic` test in parser/l5x.rs.
+    #[test]
+    fn parse_aspx_unterminated_code_block_no_panic() {
+        let source = "<html><% Response.Write(\"never closes\"";
+        let f = write_temp_file(source, "aspx");
+        let parser = Parser::new().unwrap();
+        let started = std::time::Instant::now();
+        let result = parse_aspx_chunks(source, f.path(), &parser);
+        assert!(result.is_ok());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "parse_aspx_chunks took >5s on unterminated block — possible regex regression"
+        );
+    }
+
+    #[test]
+    fn parse_aspx_truncated_at_open_tag_no_panic() {
+        let source = "<%";
+        let f = write_temp_file(source, "aspx");
+        let parser = Parser::new().unwrap();
+        let result = parse_aspx_chunks(source, f.path(), &parser);
+        assert!(result.is_ok());
+    }
 }

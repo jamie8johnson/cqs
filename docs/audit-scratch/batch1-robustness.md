@@ -1,72 +1,63 @@
-## Robustness — v1.30.0
+## Robustness
 
-Note: prior round (v1.29.0) findings RB-1..RB-10 were filed in `docs/audit-triage-v1.30.0.md` as RB-V1.29-{1..10} and are not repeated here. The findings below are scoped to code added/changed in v1.30.0 (#1090, #1096, #1097, #1101, #1105, #1110, #1117, #1118, #1119, #1120). Read each cited line; many of the surface-level `unwrap()`s in v1.30.0 are guarded by an upstream `Some/Ok` check or live in `#[cfg(test)]`.
-
-#### RB-V1.30-1: Local LLM provider buffers entire HTTP response without size cap
+#### RB-V1.36-1: `doc_writer::compute_rewrite` / `rewrite_file` read source files unbounded
 - **Difficulty:** easy
-- **Location:** `src/llm/local.rs:97-100, 474-487, 492-499`
-- **Description:** `LocalProvider::new` builds a `reqwest::blocking::Client` with only a request timeout — no body cap, and `parse_choices_content` calls `resp.json()` which buffers the entire body before deserializing. A misbehaving (or malicious) local LLM server — particularly one a user pointed `CQS_LLM_API_BASE` at without auditing — can return a multi-GB JSON blob and OOM the cqs process during a `summarize` / `chat` batch. Same risk in `body_preview` via `resp.text().unwrap_or_default()` on the 4xx error path. The retry loop (`MAX_ATTEMPTS = 4`, `RETRY_BACKOFFS_MS` up to 4 s) means each oversize response gets up to four buffering attempts before the item is skipped, multiplying the wasted memory + wall time per item across `local_concurrency()` ≤ 64 worker threads.
-- **Suggested fix:** Pre-cap with a streamed read. Replace `resp.json()` with `resp.bytes()` after `Content-Length` inspection, or use a `take(N)` adaptor on the body — pick a 4 MiB cap on summary responses (a 50-token summary is a few hundred bytes; 4 MiB is ~1000× headroom). Apply the same cap to `body_preview` (replace `resp.text()` with a bounded read of ~2 KiB). New env var `CQS_LOCAL_LLM_MAX_BODY_BYTES` if a user wants to opt out.
+- **Location:** src/doc_writer/rewriter.rs:251 and src/doc_writer/rewriter.rs:319
+- **Description:** Both `compute_rewrite` and `rewrite_file` call `std::fs::read_to_string(path)` with no size guard. They are reachable from `cqs --improve-docs` / `--improve-all` which iterates every project file. A pathological repo (giant generated/SQL/JSON file or symlink to /dev/zero on Linux) drives unbounded heap allocation. The parser path uses `CQS_PARSER_MAX_FILE_SIZE` and the file-read path in `cli/commands/io/read.rs` uses `CQS_READ_MAX_FILE_SIZE`; this site has neither.
+- **Suggested fix:** Stat first and bail out (or skip with warn) when `meta.len() > CQS_DOC_WRITER_MAX_FILE_SIZE` (default e.g. 4 MB — the rewriter only ever touches source files small enough for the parser to have ingested them). Wire the same `metadata.len() > max_bytes → bail!` block already used in `convert/mod.rs::read_to_string_with_size_limit`.
 
-#### RB-V1.30-2: Slot pointer files (`active_slot`, `slot.toml`) read with unbounded `read_to_string`
+#### RB-V1.36-2: `cli::commands::search::query` parent-context read uncapped
 - **Difficulty:** easy
-- **Location:** `src/slot/mod.rs:207, 323`
-- **Description:** `read_active_slot` and `read_slot_model` use `fs::read_to_string(&path)` to load the active-slot pointer and per-slot config. Both files are owned by cqs and expected to be tiny (≤32 chars for the pointer, ~50 bytes for the model config), but a stray editor swap-file collision, a corrupted disk write, or a hostile co-tenant in a shared `.cqs/` directory can leave a multi-GB file behind. `read_to_string` then attempts to allocate the whole thing, OOM-ing every cqs invocation in that project until the user manually inspects `.cqs/`. Because `read_active_slot` runs on every CLI command (it's the slot-resolution fallback), a single bad pointer file effectively bricks the project for cqs.
-- **Suggested fix:** Read with a hard cap. E.g.:
-  ```rust
-  use std::io::Read;
-  let mut f = std::fs::File::open(&path)?;
-  let mut buf = String::new();
-  f.take(4096).read_to_string(&mut buf)?;
-  ```
-  4 KiB is enough for `slot.toml` (and 100× headroom on the pointer file); an oversize file becomes "treated as missing" with a `tracing::warn!`. Same pattern at both sites.
+- **Location:** src/cli/commands/search/query.rs:899
+- **Description:** When parent chunk is missing from the DB, the code falls back to `std::fs::read_to_string(&canonical)` to extract a line range. No size cap. Path is canonicalized + root-restricted (good), but the file itself is still read whole into memory just to pull `lines[start..end]`. A 5 GB file in the project tree (e.g., extracted dataset, debug log) loaded once per parent-context fetch will OOM the search process.
+- **Suggested fix:** Either (a) check `metadata.len()` first and skip with a `tracing::warn!` if above a small cap (~4 MB), or (b) replace with line-bounded read using `BufReader::lines().take(line_end + 1)` and discard everything before `start`.
 
-#### RB-V1.30-3: SystemTime → i64 casts in cache wrap silently after year 2554
+#### RB-V1.36-3: `cli::commands::infra::hook` reads existing git hooks unbounded
 - **Difficulty:** easy
-- **Location:** `src/cache.rs:349-352, 551-555`
-- **Description:** Both `write_batch` and `prune_older_than` do `SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64`. `as_secs()` returns u64 — values above `i64::MAX` (≈ year 2554) wrap to negative and corrupt the `created_at` column / produce a negative cutoff that matches no rows. Latent (we are in 2026), but the `as_secs() as i64` cast pattern is also used elsewhere. None propagate an error — silent wrap is the failure mode.
-- **Suggested fix:** `i64::try_from(secs).map_err(|_| CacheError::Internal("clock above i64 cap"))?` at both sites. Defense-in-depth, the deadline is far away.
+- **Location:** src/cli/commands/infra/hook.rs:183, :365, :506
+- **Description:** Three sites (`do_install`, `do_uninstall`, `do_status`) read every managed git hook file via `std::fs::read_to_string(&path)` with no size guard. A foreign hook truncated to `/dev/zero` or a multi-GB hook file (rare but possible — corruption, malicious commit hook injection on a shared CI box) will OOM `cqs ci ...`. Less likely than RB-V1.36-1 but no defense at all.
+- **Suggested fix:** Stat first; cap at e.g. 1 MB (hooks are normally <10 KB). On overflow, treat as "foreign hook" (so install/uninstall is conservative) and warn. Only `contains(HOOK_MARKER_PREFIX)` is needed — that fits in the first few KB if it's a managed hook, so a streaming `BufReader::read_until(b'\n')` over the first 64 KB is enough.
 
-#### RB-V1.30-4: `migrate_legacy_index_to_default_slot` rollback leaves an undetectable half-state
+#### RB-V1.36-4: `slot::ensure_slot_config` reads slot.toml unbounded
+- **Difficulty:** easy
+- **Location:** src/slot/mod.rs:339
+- **Description:** Slot config bootstrap calls `fs::read_to_string(&final_path)` with no size cap. The `Config::load_file` path *does* enforce `MAX_CONFIG_SIZE` (config.rs:720) — slot.toml uses the same TOML parser shape but skips the guard entirely. Less critical than the doc-writer path because slot.toml is owned by cqs, but a hand-edited 10 GB slot.toml triggers OOM rather than the documented "warn + reset to default" path on the line below.
+- **Suggested fix:** Mirror the `Config::load_file` size check (read meta first, bail/warn at MAX_CONFIG_SIZE). Same pattern, copy-paste with the slot path.
+
+#### RB-V1.36-5: `store::chunks::staleness::compute_fingerprint` blake3 reads file whole
 - **Difficulty:** medium
-- **Location:** `src/slot/mod.rs:511-593`, `move_file` at `:628-638`
-- **Description:** During slot migration, files are moved one by one. On the second-or-later move failing, the function reverses the inventory and tries to move each successful destination back to its original location. A partial rollback prints `tracing::error!("rollback failed (manual recovery may be needed)")` and continues, leaving the project in a half-migrated state where `.cqs/index.db` is missing AND `.cqs/slots/default/index.db` is missing AND `.cqs/active_slot` may or may not exist. The next cqs invocation sees no legacy index, no slots, returns `Ok(false)` from migration, then errors trying to open a Store on the active slot. There is no way to detect "we are mid-failed-migration" from the user side — the recovery error message looks the same as a fresh project missing an index.
-- **Suggested fix:** Write a `.cqs/migration.lock` sentinel file at the start of migration and only remove it on full success; subsequent `migrate_legacy_index_to_default_slot` calls error if the sentinel is found, with a clear `"previous migration failed at $TIME, manually recover then `rm .cqs/migration.lock`"` message. Half-state ambiguity is the actual robustness gap, not the rollback mechanics.
+- **Location:** src/store/chunks/staleness.rs:161
+- **Description:** `std::fs::read(path)` followed by `blake3::hash(&bytes)`. No size cap — runs during watch-driven staleness checks. The parser path skips files above `CQS_PARSER_MAX_FILE_SIZE`, but staleness can still be invoked on the same path before the size check downstream (or after a file grows post-index). For a 5 GB SQL dump that grew between index and watch, the watch reload tries to fingerprint it whole.
+- **Suggested fix:** Switch to `blake3::Hasher::new()` + `Read` chunked into 64 KB. Same hash output, bounded RSS. Apply the same change at `cli/watch/reindex.rs:662` which also reads-then-hashes.
 
-#### RB-V1.30-5: `libc_exdev()` hardcodes 18 — wrong on platforms where EXDEV ≠ 18
+#### RB-V1.36-6: `train_data::diff::find_changed_functions` `usize` add without saturating
 - **Difficulty:** easy
-- **Location:** `src/slot/mod.rs:644-647`
-- **Description:** `libc_exdev` returns the literal `18` to avoid a `libc` dependency. Linux/macOS x86_64/ARM64 all use 18, which is what the comment claims. But Windows (also a release target) uses `ERROR_NOT_SAME_DEVICE = 17`, surfaced through Rust's `io::Error::raw_os_error()` as `Some(17)`. Concretely: a user with `.cqs/` on `D:\` and the legacy `index.db` on `C:\` (junction-mounted via Windows) would hit `move_file`'s `fs::rename` with `ERROR_NOT_SAME_DEVICE`, the EXDEV branch wouldn't match (17 ≠ 18), and the migration would propagate the rename error instead of falling through to copy+remove. The user sees a hard migration failure rather than the documented copy fallback. The doc-comment claims "Windows doesn't surface EXDEV the same way (rename across filesystems just succeeds)" but that is undocumented OS behaviour, not a guarantee.
-- **Suggested fix:** Remove the magic-number EXDEV check entirely and fall back to copy+remove on *any* `fs::rename` error after a `fs::metadata().is_some()` check confirming the source file is still readable. Cheaper than getting the constant right per-platform.
+- **Location:** src/train_data/diff.rs:139
+- **Description:** `let hunk_end = h.new_start + h.new_count.saturating_sub(1);` — only the inner subtraction is saturating; the outer add is bare. `parse_hunk_header` (line 50/58) parses raw `usize` from the diff header `@@ -a,b +c,d @@`. An attacker-supplied (or `git diff`-emitted-on-corrupt-pack) header `@@ -1,1 +18446744073709551615,2 @@` parses to `new_start = usize::MAX`, `new_count = 2`. `usize::MAX + 1` panics in debug; wraps to 0 in release, which then makes `hunk_end >= func.start_line` accidentally false-negative for every function. Reachable from `cqs review` / `affected` whenever the user pipes diff content through.
+- **Suggested fix:** `h.new_start.saturating_add(h.new_count.saturating_sub(1))`. Or reject hunk headers where `new_start > i64::MAX as usize` at parse time (no real diff has line numbers > 2^63).
 
-#### RB-V1.30-6: `cqs cache prune --older-than DAYS` accepts u32, computes negative cutoff for very large DAYS
+#### RB-V1.36-7: `where_to_add::compiled_import_regexes` mutex `expect` propagates panics
 - **Difficulty:** easy
-- **Location:** `src/cache.rs:548, 551-555`
-- **Description:** `prune_older_than` takes a `u32 days` and computes `cutoff = now - days * 86400`. `u32::MAX * 86400 = 3.7e14`, well within i64 — but if `now < days * 86400` (days > current-Unix-seconds / 86400 ≈ 22.5k days = ~62 years), `cutoff` wraps negative. SQLite then prunes all entries (everything's `created_at >= 0 > cutoff`). A user typo `cqs cache prune --older-than 999999999` becomes "prune the entire cache silently". No clamp, no warn.
-- **Suggested fix:** Clamp `days` at parse time in the CLI to a sane ceiling (`days.min(36500 /* 100 years */)`), or assert `cutoff >= 0` and refuse the prune with a clear error otherwise.
+- **Location:** src/where_to_add.rs:773 and :793
+- **Description:** Both lock acquires use `.expect("compiled_import_regexes mutex poisoned")`. If any panic happens while holding the lock (regex compile that recurses into another panic, allocator failure inside `HashMap::get`), every subsequent `cqs where`/`task` call panics permanently for the lifetime of the process — the daemon can't recover without restart. The cache only stores regex Arcs; it's safe to recover from poison.
+- **Suggested fix:** Replace both with `.unwrap_or_else(|e| e.into_inner())` (the same pattern already used at `embedder/provider.rs:512` for `ENV_LOCK`). Poison is recoverable here because the cache state isn't invariant-bearing — worst case we recompile a regex.
 
-#### RB-V1.30-7: `local.rs` retry loop unwraps Mutex on every 401/403 — poison cascades the worker pool
+#### RB-V1.36-8: `language::Language::def` panics on disabled feature flag at runtime
 - **Difficulty:** medium
-- **Location:** `src/llm/local.rs:393, 394, 396`
-- **Description:** Each retry attempt does `*auth_attempts.lock().unwrap() += 1;` and `*auth_failures.lock().unwrap() += 1;`. If any worker thread panics while holding the mutex (e.g. via the test-only `on_item` callback panic the file mentions, or via a future regression in `parse_choices_content`), the mutex becomes poisoned. Every subsequent worker thread that hits a 401/403 then panics on `.unwrap()`, cascading into a thundering-herd of panicked rayon workers. The batch surface area is `concurrency` ≤ 64 — they all die, the batch fails with no auth-statistics summary, and the rayon thread pool is left in a partially-joined state.
-- **Suggested fix:** Replace `.lock().unwrap()` with explicit poison handling: `*auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;` — recover from poison and continue counting. The counters are advisory (used to abort the batch when every first-try hit 401/403); a poisoned mutex shouldn't escalate to a panic cascade. Apply at all three sites.
+- **Location:** src/language/mod.rs:1113
+- **Description:** `Language::def()` calls `try_def()` and unconditionally panics with "Language '...' not in registry — check feature flags" when the registry lookup returns None. `try_def()` exists exactly to support this fallible path, but `def()` is called in many production sites that don't gate on the feature being enabled. If a stored chunk references a `Language` whose feature was compiled out (legitimately possible after a rebuild without `--features all-langs`), the next search/parse panics. The doc comment even calls this out as a deliberate panic but the production call sites don't all guard.
+- **Suggested fix:** Audit `def()` callers — switch any non-test caller that touches stored data to `try_def()` and route through `LanguageError`. The bare panic should remain only on hard-coded compile-time language references.
 
-#### RB-V1.30-8: `serve/data.rs` `i64.max(0) as u32` clamp pattern grew from 3 to 8 sites in v1.30
+#### RB-V1.36-9: `print_telemetry_text` divide-by-zero when `total == 0` but commands have entries
 - **Difficulty:** easy
-- **Location:** `src/serve/data.rs:299, 300, 587, 588, 777, 778, 993, 994` (8 sites post-v1.30)
-- **Description:** `line_start: line_start.max(0) as u32` and matching `line_end` continue to silently clamp DB-corruption / migration-bug `i64` values to `0` then truncate >`u32::MAX` to a low number. v1.30 expanded this pattern to 8 sites (was 3 in v1.29 triage as RB-V1.29-3). The tracking issue is filed but unresolved — the new sites should be folded into the same fix when it lands rather than re-triaged.
-- **Suggested fix:** Defer to RB-V1.29-3's resolution; flag here only because the fix scope grew. When the fix lands, `rg 'max\(0\) as u32' src/serve/data.rs` should return zero hits.
+- **Location:** src/cli/commands/infra/telemetry_cmd.rs:477
+- **Description:** Triage v1.33.0 fixed P1-25 (sessions divisor in `format_sessions_line`, line 434), but the same file still has `let pct = (count as f64 / total as f64) * 100.0;` at line 477 where `total = output.events`. If telemetry events are filtered/empty but the commands map carries a stale 0-count entry, `total = 0` and `count` could be 0 → produces NaN, which clippy/serde would format as `NaN%`. Less likely than the sessions case (the canonical path empties commands when total=0) but the guard is one-sided.
+- **Suggested fix:** Mirror the `if sessions > 0` guard from line 435: wrap the command-frequency loop in `if total > 0 { ... }`, or compute `pct` as `if total > 0 { count*100/total } else { 0 }`.
 
-#### RB-V1.30-9: HTTP redirect policy disagrees between production (`Policy::none`) and doctor (`Policy::limited(2)`)
+#### RB-V1.36-10: `store::sparse::token_dump_paged` casts `f64` weight to `f32` without finite check
 - **Difficulty:** easy
-- **Location:** `src/llm/local.rs:99` (`Policy::none()`) vs. `src/cli/commands/infra/doctor.rs:578` (`Policy::limited(2)`)
-- **Description:** Same OpenAI-compat endpoint reached two ways: production batches refuse all redirects, doctor allows up to 2. A misconfigured local server that 308-redirects from `http://x/v1` to `https://x/v1` then passes the doctor check (limited(2) follows) but every production batch silently fails (`Policy::none` rejects the redirect). User sees `cqs doctor` green and then `summarize` failing with "all attempts hit network errors" — no diagnostic linking the two. Not a panic path, but a robustness/UX gap where the two probes disagree about what counts as a working endpoint.
-- **Suggested fix:** Align the two policies. `Policy::limited(2)` in both is the safer choice — a same-origin HTTP→HTTPS redirect on bind-localhost is benign. Alternative: leave `Policy::none()` in production but log a once-per-launch warning in doctor when a redirect was followed during the probe, so the user is told their server is misconfigured before they hit it in batch.
+- **Location:** src/store/sparse.rs:400
+- **Description:** `current_vec.push((token_id as u32, weight as f32))` reads `weight: f64` straight from SQLite. `cache.rs:639` already filters NaN/Inf at insert time for the embedding cache, but the sparse `weight` column has no such guard at read time. A hand-edited DB or a bug in the splade write path that writes Inf (matching the `test_raw_logits_positive_inf_passes_through_as_inf_weight` test that's still passing — see splade/mod.rs:1565) lands in every downstream BM25-style scorer as `f32::INFINITY`, which corrupts every sort that compares NaN-via-Inf+0.
+- **Suggested fix:** Add `if !weight.is_finite() { tracing::warn!(...); continue; }` before the push. Cheap; consistent with the cache write path's policy.
 
-#### RB-V1.30-10: Daemon socket-thread join detaches on timeout but doc-comment claims "joined cleanly"
-- **Difficulty:** medium (low impact in practice)
-- **Location:** `src/cli/watch.rs:2374-2400`
-- **Description:** On daemon shutdown the code polls `handle.is_finished()` for up to 5 s, then breaks out of the loop. If the thread is still running at deadline, `handle_opt` is dropped and the OS thread is detached — its memory and any in-flight Store handle are leaked until the process exits (which happens immediately after shutdown, so practically benign), but a wedged socket thread holding a Store mutex would also leak the mutex's poison state in its `Drop` order. Not a correctness bug because the process is exiting, but the surrounding tracing emits "Daemon socket thread joined cleanly" only on the `is_finished()` path — a deadline-exit is silent. Operators reading logs to confirm a clean shutdown can't tell the difference.
-- **Suggested fix:** Add a `tracing::warn!("Daemon socket thread did not exit within 5s; detaching")` log on the deadline-fall-through branch. Optionally, before detaching, force-close the listening socket from outside (`unlink` + `shutdown(2)`) to unblock any `accept()`-blocked socket thread, then re-poll `is_finished()` for another 1 s before detaching.
-
-Summary: 10 v1.30.0-specific findings. RB-V1.30-1, 2, 7 are the highest-impact (all reachable on the new Local LLM provider + slot codepaths). RB-V1.30-4 and 5 are slot-migration robustness — narrow but bricking when they fire. RB-V1.30-3, 6, 8, 9, 10 are defense-in-depth / consistency issues.
+DONE

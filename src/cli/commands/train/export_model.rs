@@ -26,6 +26,16 @@ fn validate_repo_id(repo: &str) -> anyhow::Result<()> {
              [A-Za-z0-9._/-] only (e.g. intfloat/e5-base-v2)"
         );
     }
+    // SEC-V1.36-7: forbid `..` even though `.` and `/` are individually allowed.
+    // optimum tries to interpret `--model` as a local path before falling
+    // through to HF Hub; `org/../../etc/secrets` would walk up from cwd. HF
+    // Hub itself rejects `..`; mirror that contract here.
+    if repo.contains("..") {
+        anyhow::bail!(
+            "Invalid repo ID: contains `..`. HF Hub repo IDs cannot contain \
+             parent-directory references."
+        );
+    }
     Ok(())
 }
 

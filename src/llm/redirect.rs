@@ -117,7 +117,7 @@ mod tests {
         assert!(err.is_redirect(), "expected redirect error, got {err}");
         // The target on server B must NOT have been hit.
         assert_eq!(
-            target_mock.hits(),
+            target_mock.calls(),
             0,
             "cross-origin target was reached — bearer header would have leaked"
         );
@@ -150,7 +150,7 @@ mod tests {
             .send()
             .expect("same-origin redirect should follow");
         assert_eq!(resp.status(), 200);
-        assert_eq!(target_mock.hits(), 1);
+        assert_eq!(target_mock.calls(), 1);
     }
 
     /// Same-origin chain that exceeds `max` hops stops cleanly. Using

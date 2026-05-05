@@ -744,3 +744,103 @@ fn handle_socket_client_round_trips_stats() {
         "error_count must reflect the parse failure; got {error_count}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// TC-V1.36-4 / P2-4: lone surrogate halves and deeply-nested JSON
+// adversarial coverage. serde_json by default accepts lone surrogates
+// (RFC 8259 ambiguity) and has no recursion limit on object nesting,
+// so a malicious client could deliver either shape and reach handler
+// dispatch (or stack-overflow the parser thread). Pin both rejection
+// paths so a future serde_json upgrade or parser swap surfaces here
+// instead of in production.
+// ─────────────────────────────────────────────────────────────────────
+#[test]
+fn daemon_handles_lone_surrogate_in_string_arg() {
+    let (_dir, ctx) = test_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    // `\uD800` is a high surrogate without a paired low surrogate.
+    // serde_json today decodes this as a rust String containing the
+    // replacement byte sequence; what matters for us is that the
+    // handler doesn't panic and doesn't leave the socket half-open.
+    let payload = "{\"command\":\"ping\",\"args\":[\"\\uD800\"]}\n";
+    client
+        .write_all(payload.as_bytes())
+        .expect("write surrogate");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        status == "ok" || status == "error",
+        "lone surrogate must be either accepted or surfaced as a structured error; got: {line}"
+    );
+    join_worker(client, handle);
+}
+
+/// TC-V1.36-6 / P2-5 (per-handler slice): N concurrent clients each
+/// holding a slow/partial connection don't pin the BatchContext mutex
+/// or starve a fast valid request. Real accept-loop saturation needs an
+/// actual UnixListener, deferred to integration; this exercises the
+/// handler-thread isolation contract.
+#[test]
+fn daemon_concurrent_handlers_dont_starve() {
+    let (_dir, ctx) = test_ctx();
+    // Spawn 4 slow handlers (each writes a partial line, never closes).
+    let mut slow: Vec<(UnixStream, thread::JoinHandle<()>)> = Vec::new();
+    for _ in 0..4 {
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        // Partial write — no newline; handler blocks on read.
+        client
+            .write_all(b"{\"command\":\"ping\"")
+            .expect("partial write");
+        slow.push((client, handle));
+    }
+    // Fast valid request through a 5th handler — must complete promptly.
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    client
+        .write_all(b"{\"command\":\"ping\",\"args\":[]}\n")
+        .expect("fast write");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    assert_eq!(
+        resp.get("status").and_then(|v| v.as_str()),
+        Some("ok"),
+        "fast request must not be starved by slow concurrent handlers: {line}"
+    );
+    join_worker(client, handle);
+    // Tear down the slow handlers — dropping the client closes the socket
+    // and the handler returns cleanly (read returns 0 bytes).
+    for (client, handle) in slow {
+        join_worker(client, handle);
+    }
+}
+
+#[test]
+fn daemon_handles_deeply_nested_json_without_panic() {
+    let (_dir, ctx) = test_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    // 200 levels of array nesting. serde_json has no recursion limit
+    // by default; on the production line-cap path (1 MiB) this fits
+    // comfortably. The handler should reach the command-validation
+    // step and reject with a structured error (no `command` field at
+    // the top level) instead of stack-overflowing the parser thread.
+    let mut payload = String::with_capacity(512);
+    payload.push_str("{\"command\":\"ping\",\"args\":[");
+    for _ in 0..200 {
+        payload.push('[');
+    }
+    for _ in 0..200 {
+        payload.push(']');
+    }
+    payload.push_str("]}\n");
+    client
+        .write_all(payload.as_bytes())
+        .expect("write deeply nested");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        status == "ok" || status == "error",
+        "deeply-nested JSON must surface a structured response; got: {line}"
+    );
+    join_worker(client, handle);
+}

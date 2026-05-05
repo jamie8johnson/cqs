@@ -113,6 +113,18 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
     cqs::serve::run_server(store, bind_addr, false, auth)
 }
 
+/// Reject URLs containing shell metacharacters before handing them to
+/// cmd.exe. SEC-V1.36-3 / P3: cmd.exe re-parses `&|>%^()<` even inside
+/// double quotes for pipe / redirect operators after expansion, so a
+/// hostile bind addr (`bind = "127.0.0.1:8080/&calc&"`) could spawn an
+/// extra command. The token alphabet is alnum-only, but `bind` accepts
+/// arbitrary user input. Reject up front rather than rely on cmd.exe's
+/// quoting heuristics.
+fn url_safe_for_cmd(url: &str) -> bool {
+    !url.chars()
+        .any(|c| matches!(c, '&' | '|' | '^' | '<' | '>' | '%' | '(' | ')'))
+}
+
 /// Best-effort browser launch. Falls through cleanly on failure —
 /// the server still starts and the user can open the URL manually.
 fn open_browser(url: &str) -> Result<()> {
@@ -124,6 +136,12 @@ fn open_browser(url: &str) -> Result<()> {
     // `start`'s first quoted arg is interpreted as the window title.
     #[cfg(target_os = "windows")]
     {
+        if !url_safe_for_cmd(url) {
+            anyhow::bail!(
+                "Refusing to open URL via cmd.exe — contains shell metacharacters. \
+                 Open manually or fix the bind address."
+            );
+        }
         std::process::Command::new("cmd")
             .args(["/C", "start", "", url])
             .stdout(std::process::Stdio::null())
@@ -144,6 +162,12 @@ fn open_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         if cqs::config::is_wsl() {
+            if !url_safe_for_cmd(url) {
+                anyhow::bail!(
+                    "Refusing to open URL via cmd.exe (WSL interop) — \
+                     contains shell metacharacters. Open manually or fix the bind address."
+                );
+            }
             std::process::Command::new("cmd.exe")
                 .args(["/C", "start", "", url])
                 .stdout(std::process::Stdio::null())

@@ -474,7 +474,13 @@ fn print_telemetry_text(output: &TelemetryOutput) {
     println!("{}:", "Command Usage".cyan());
     for (cmd, &count) in &cmd_sorted {
         let bar_width = (count * bar_max) / max_count.max(1);
-        let pct = (count as f64 / total as f64) * 100.0;
+        // Guard against total==0 producing NaN% — sibling guard to
+        // the sessions divisor protected by the if-block above.
+        let pct = if total > 0 {
+            (count as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
         println!(
             "  {:<14} {:>4}  {}  ({:.1}%)",
             cmd,

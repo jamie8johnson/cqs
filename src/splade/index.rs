@@ -246,6 +246,13 @@ impl SpladeIndex {
         // above iterates in random order).
         let mut heap = crate::search::scoring::BoundedScoreHeap::new(k);
         for (idx, score) in scores {
+            // PERF-V1.36-9: gate the id clone behind a heap pre-flight so
+            // ~17,800 of ~18,000 scored candidates skip the clone entirely
+            // when k=200. Saves ~570 KB of String churn per search at 32-char
+            // chunk ids.
+            if !heap.would_accept(score) {
+                continue;
+            }
             if let Some(id) = self.id_map.get(idx) {
                 heap.push(id.clone(), score);
             }

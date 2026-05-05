@@ -133,9 +133,12 @@ impl<Mode> Store<Mode> {
         threshold: f32,
         notes: &[NoteSummary],
     ) -> Result<Vec<SearchResult>, StoreError> {
-        let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
-            .entered();
-
+        // OB-V1.36-1: no nested `info_span!("search_filtered", ...)` here — the
+        // `search_filtered` public wrapper at line 103 already opens the span
+        // for the whole call tree, and `search_filtered_with_index` (line 689)
+        // opens its own `search_index_guided` span first. A duplicate span
+        // here doubled the per-query span allocation on the hottest daemon
+        // path and made flame graphs look like recursion that wasn't there.
         self.rt.block_on(async {
             let fsql = build_filter_sql(filter);
             // AC-V1.33-3: saturating mul matches sibling paths (lines 505, 696);
@@ -540,11 +543,25 @@ impl<Mode> Store<Mode> {
             "Hybrid search: fusing results"
         );
 
-        // Normalize sparse scores to [0, 1] via min-max
+        // Normalize sparse scores to [0, 1] via min-max.
+        // AC-V1.36-7 / P2-10: reduce-from-first instead of fold-from-0.0 so a
+        // cohort whose maximum score is < 0 doesn't get its max dominated by
+        // the seed. SPLADE itself is non-negative today (ReLU on logits) but
+        // any future sparse signal that isn't (learned dot-product, BM25-like
+        // delta) would silently degenerate to dense-only retrieval. When max
+        // is non-positive we also warn so eval/CI catches the collapse.
         let max_sparse = sparse_results
             .iter()
             .map(|r| r.score)
-            .fold(0.0f32, f32::max);
+            .reduce(f32::max)
+            .unwrap_or(0.0);
+        if !sparse_results.is_empty() && max_sparse <= 0.0 {
+            tracing::warn!(
+                count = sparse_results.len(),
+                max = max_sparse,
+                "Sparse cohort has non-positive max; min-max normalization will zero every entry"
+            );
+        }
 
         // PF-V1.25-1: pre-size hash containers from known input counts.
         // Upper bound on unique candidates is |dense| + |sparse|; default
@@ -845,15 +862,19 @@ impl<Mode> Store<Mode> {
                 threshold,
             };
 
-            // Pre-build filter sets once — avoids per-candidate string parsing (PF-1)
+            // Pre-build filter sets once — avoids per-candidate string parsing (PF-1).
+            // PERF-V1.36-2: drop `.to_lowercase()` because both `Language` and
+            // `ChunkType` Display already emit canonical lowercase (see DB-write
+            // and the comment 12 lines below). The to_string() still allocates
+            // but is unavoidable since HashSet<&str> would borrow from filter.
             let lang_set: Option<HashSet<String>> = filter
                 .languages
                 .as_ref()
-                .map(|langs| langs.iter().map(|l| l.to_string().to_lowercase()).collect());
+                .map(|langs| langs.iter().map(|l| l.to_string()).collect());
             let type_set: Option<HashSet<String>> = filter
                 .include_types
                 .as_ref()
-                .map(|types| types.iter().map(|t| t.to_string().to_lowercase()).collect());
+                .map(|types| types.iter().map(|t| t.to_string()).collect());
 
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()

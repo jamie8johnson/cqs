@@ -540,14 +540,13 @@ mod tests {
         assert!(!cli.rerank_active());
     }
 
-    /// #1372: `--reranker llm` parses; runtime gates it with a "not yet wired"
-    /// error in `cmd_query` / `dispatch_search`. The flag exists so the LLM
-    /// reranker landing in #1220 doesn't need a breaking CLI change.
+    /// API-V1.36-2: `--reranker llm` was a placeholder variant that errored
+    /// at runtime. v1.36.2 dropped it from the CLI surface — clap now rejects
+    /// the spelling outright instead of running a search that fails late.
     #[test]
-    fn test_cli_reranker_llm() {
-        let cli = Cli::try_parse_from(["cqs", "--reranker", "llm", "query"]).unwrap();
-        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Llm);
-        assert!(cli.rerank_active());
+    fn test_cli_reranker_llm_rejected() {
+        let res = Cli::try_parse_from(["cqs", "--reranker", "llm", "query"]);
+        assert!(res.is_err(), "--reranker llm should be rejected by clap");
     }
 
     /// #1372: when both flags are passed, `--reranker` wins (explicit beats

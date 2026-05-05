@@ -40,14 +40,24 @@ impl Drop for SocketCleanupGuard {
 const DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS: usize = 16;
 
 /// Resolve the effective cap from `CQS_MAX_DAEMON_CLIENTS`, defaulting to
-/// [`DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS`]. Called once at daemon
-/// startup, so an env-var change requires `systemctl restart cqs-watch`.
+/// [`DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS`] scaled by host parallelism.
+/// Called once at daemon startup, so an env-var change requires
+/// `systemctl restart cqs-watch`.
+///
+/// SHL-V1.36-10 / P3: scale with cores within `[16, 64]`. Pre-fix, a
+/// 64-core box running a 32-task Claude Code Tasks fan-out would queue
+/// requests serially past 16 clients. Stack memory (16 × 2 MB = 32 MB)
+/// isn't the binding constraint on modern 64-bit hosts.
 pub(super) fn max_concurrent_daemon_clients() -> usize {
     std::env::var("CQS_MAX_DAEMON_CLIENTS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get().clamp(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS, 64))
+                .unwrap_or(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS)
+        })
 }
 /// Handle a single client connection on the daemon socket.
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.

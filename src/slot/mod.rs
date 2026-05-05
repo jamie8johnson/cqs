@@ -191,7 +191,23 @@ pub fn validate_slot_name(name: &str) -> Result<(), SlotError> {
 }
 
 /// Path of `.cqs/slots/<name>/` for the given project `.cqs/` dir + slot name.
+///
+/// SEC-V1.36-3: validates the slot name even on read paths. Write paths
+/// already call [`validate_slot_name`] up front, but read paths
+/// (`read_slot_model`, the public `cqs::resolve_slot_dir`, etc.) used to
+/// trust the caller. A `..`-bearing name would have produced a path that
+/// `Path::join` does *not* normalize, so callers passing attacker-controlled
+/// strings without their own validation could escape the slots dir. On
+/// failure we substitute a sentinel name so downstream IO fails noisily
+/// inside the slots directory rather than silently traversing outside it.
 pub fn slot_dir(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
+    if validate_slot_name(slot_name).is_err() {
+        tracing::warn!(
+            slot = %slot_name,
+            "slot_dir called with invalid slot name; substituting `__invalid__` to keep IO inside slots dir"
+        );
+        return project_cqs_dir.join(SLOTS_DIR).join("__invalid__");
+    }
     project_cqs_dir.join(SLOTS_DIR).join(slot_name)
 }
 
@@ -335,23 +351,39 @@ pub fn write_slot_model(
     // corrupted slot.toml still recovers on the next write — matches the
     // tolerance pattern in `read_slot_model` (warn + None) and means
     // `cqs slot promote` can't deadlock on a hand-broken config.
+    // RB-V1.36-4: cap slot.toml read at the small-file budget. The sibling
+    // `Config::load_file` path enforces MAX_CONFIG_SIZE; this site was the
+    // only one without a guard.
     let mut config: SlotConfigFile = if final_path.exists() {
-        match fs::read_to_string(&final_path) {
-            Ok(raw) => toml::from_str(&raw).unwrap_or_else(|e| {
-                tracing::warn!(
-                    path = %final_path.display(),
-                    error = %e,
-                    "Existing slot.toml is malformed; rewriting from default"
-                );
-                SlotConfigFile::default()
-            }),
-            Err(e) => {
-                tracing::warn!(
-                    path = %final_path.display(),
-                    error = %e,
-                    "Failed to read slot.toml for round-trip; rewriting from default"
-                );
-                SlotConfigFile::default()
+        let max_bytes = crate::limits::small_file_max_bytes();
+        let oversize = fs::metadata(&final_path)
+            .map(|m| m.len() > max_bytes)
+            .unwrap_or(false);
+        if oversize {
+            tracing::warn!(
+                path = %final_path.display(),
+                cap = max_bytes,
+                "slot.toml exceeds CQS_SMALL_FILE_MAX_BYTES; rewriting from default"
+            );
+            SlotConfigFile::default()
+        } else {
+            match fs::read_to_string(&final_path) {
+                Ok(raw) => toml::from_str(&raw).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        path = %final_path.display(),
+                        error = %e,
+                        "Existing slot.toml is malformed; rewriting from default"
+                    );
+                    SlotConfigFile::default()
+                }),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %final_path.display(),
+                        error = %e,
+                        "Failed to read slot.toml for round-trip; rewriting from default"
+                    );
+                    SlotConfigFile::default()
+                }
             }
         }
     } else {
@@ -714,16 +746,19 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         // anything larger means corruption (or a hostile tree). Reading
         // GiB-scale "sentinel" files into memory would OOM the process.
         const SENTINEL_MAX_BYTES: u64 = 64 * 1024;
+        // EH-V1.36-7 / P3: distinguish "sentinel exists but unreadable" from
+        // "sentinel exists and was empty" so the operator can tell whether
+        // they need to chmod / fix perms before deleting the file.
         let detail = {
             let mut buf = String::new();
-            fs::File::open(&sentinel)
-                .and_then(|f| {
-                    f.take(SENTINEL_MAX_BYTES)
-                        .read_to_string(&mut buf)
-                        .map(|_| ())
-                })
-                .map(|_| buf)
-                .unwrap_or_default()
+            match fs::File::open(&sentinel).and_then(|f| {
+                f.take(SENTINEL_MAX_BYTES)
+                    .read_to_string(&mut buf)
+                    .map(|_| ())
+            }) {
+                Ok(_) => buf,
+                Err(e) => format!("(could not read sentinel: {})", e),
+            }
         };
         return Err(SlotError::Migration(format!(
             "previous migration failed (see {}). Manually recover then `rm {}`. \
@@ -909,21 +944,34 @@ fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
 fn collect_migration_files(project_cqs_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     // Always-present
+    // DS-V1.36-1: include the full HNSW sidecar set. The previous list
+    // missed `hnsw.ids` and `hnsw.checksum` for both basenames. Post-PR #1325,
+    // verify_hnsw_checksums treats a checksum sidecar referencing files that
+    // don't exist as a hard error — a legacy-slot migration would leave
+    // .ids/.checksum behind in `.cqs/` and the next search either failed to
+    // verify or rebuilt from scratch (losing all enrichment work).
     let candidates = [
         crate::INDEX_DB_FILENAME,
         "index.db-wal",
         "index.db-shm",
         "index.db.bak",
-        // HNSW (enriched + base, persistence + index)
+        // HNSW (enriched + base, full sidecar set)
         "index.hnsw.data",
         "index.hnsw.graph",
+        "index.hnsw.ids",
+        "index.hnsw.checksum",
         "index_base.hnsw.data",
         "index_base.hnsw.graph",
+        "index_base.hnsw.ids",
+        "index_base.hnsw.checksum",
         "index.hnsw.lock",
+        "index_base.hnsw.lock",
         "index.cagra",
         "index.cagra.sidecar",
+        "index.cagra.meta",
         // SPLADE
         "splade.index.bin",
+        "splade.index.bin.bak",
     ];
     for name in candidates {
         let p = project_cqs_dir.join(name);

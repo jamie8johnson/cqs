@@ -351,11 +351,19 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
         return Ok(None);
     }
 
-    // UTF-8 guard — binary files are not useful for training
+    // UTF-8 guard — binary files are not useful for training. EH-V1.36-10 / P3:
+    // capture the FromUtf8Error.utf8_error().valid_up_to() byte index so the
+    // debug log distinguishes "binary blob" (valid_up_to=0) from "UTF-16
+    // file" (valid_up_to=0 with BOM detection elsewhere) from "single curly
+    // quote" (valid_up_to>>0).
     match String::from_utf8(output.stdout) {
         Ok(content) => Ok(Some(content)),
-        Err(_) => {
-            tracing::debug!(path, "Skipping non-UTF-8 file");
+        Err(e) => {
+            tracing::debug!(
+                path,
+                valid_up_to = e.utf8_error().valid_up_to(),
+                "Skipping non-UTF-8 file"
+            );
             Ok(None)
         }
     }

@@ -701,8 +701,13 @@ async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     // when the migration itself succeeds. Not a hard fail — the rebuild is
     // still strictly an improvement on the old unconstrained shape — but
     // the user should know.
-    let threshold = (before_rows as f64 * 0.10) as i64;
-    if before_rows > 0 && dropped > threshold {
+    // DS-V1.36-8: integer math, not lossy f64 cast. With f64 the threshold
+    // for tiny corpora rounded to 0 and a single dropped orphan tripped the
+    // error! arm spuriously. Require dropped > threshold AND threshold > 0
+    // so before_rows < 10 falls through to the warn arm (where it belongs)
+    // rather than the error arm.
+    let threshold = before_rows / 10;
+    if before_rows > 0 && threshold > 0 && dropped > threshold {
         tracing::error!(
             before = before_rows,
             after = after_rows,

@@ -117,23 +117,37 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
 /// index" — the second case wants a clearer error message naming
 /// both paths.
 pub fn lookup_main_cqs_dir(dir: &Path) -> MainIndexLookup {
-    let own_cqs = dir.join(crate::INDEX_DIR);
-    if own_cqs.exists() {
+    // PB-V1.36-3 / P2-12: canonicalize `dir` once up-front so the returned
+    // `worktree_root` matches `find_project_root()` byte-for-byte on
+    // case-insensitive filesystems (Windows NTFS, macOS HFS+/APFS default).
+    // resolve_main_project_dir already canonicalizes its result; without
+    // this the worktree side stays raw, so downstream string-equality
+    // checks against find_project_root output (which IS canonicalized via
+    // dunce) report mismatches even when the paths refer to the same dir.
+    // That's the #1254-class leakage origin.
+    let dir_canonical = dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let own_cqs = dir_canonical.join(crate::INDEX_DIR);
+    // PB-V1.36-10: is_dir() rather than exists() — a stray `.cqs` *file* (a
+    // mistaken `touch .cqs`, or a packaged tarball with the wrong entry)
+    // shouldn't be treated as an index dir. Downstream code would otherwise
+    // try to open `<file>/index.db` and surface a confusing
+    // "is not a directory" instead of "no index here, fall through to main".
+    if own_cqs.is_dir() {
         return MainIndexLookup::OwnIndex { path: own_cqs };
     }
-    let Some(main_root) = resolve_main_project_dir(dir) else {
+    let Some(main_root) = resolve_main_project_dir(&dir_canonical) else {
         return MainIndexLookup::NotWorktree;
     };
     let main_cqs = main_root.join(crate::INDEX_DIR);
-    if main_cqs.exists() {
+    if main_cqs.is_dir() {
         MainIndexLookup::WorktreeUseMain {
-            worktree_root: dir.to_path_buf(),
+            worktree_root: dir_canonical,
             main_root,
             main_cqs,
         }
     } else {
         MainIndexLookup::WorktreeMainEmpty {
-            worktree_root: dir.to_path_buf(),
+            worktree_root: dir_canonical,
             main_root,
         }
     }
@@ -217,9 +231,20 @@ struct WorktreeContext {
 /// worktree's own. Idempotent: subsequent calls are silently
 /// ignored (the OnceLock semantics).
 pub fn record_worktree_stale(worktree_root: &Path) {
-    let _ = WORKTREE_STALE.set(WorktreeContext {
-        name: worktree_name(worktree_root),
-    });
+    // OB-V1.36-10 / P3: log on producer side. The cross-worktree stale
+    // flag is the kind of cross-process signal that's near-impossible to
+    // diagnose without a journal trail (#1254-class issues).
+    let name = worktree_name(worktree_root);
+    if WORKTREE_STALE
+        .set(WorktreeContext { name: name.clone() })
+        .is_ok()
+    {
+        tracing::info!(
+            worktree_root = %worktree_root.display(),
+            worktree_name = name.as_deref().unwrap_or(""),
+            "worktree marked stale (reading from main's .cqs/)"
+        );
+    }
 }
 
 /// True if the current process is reading from main's `.cqs/`

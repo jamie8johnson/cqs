@@ -76,6 +76,7 @@ fn enrich_with_call_context(store: &Store, embedder: &Embedder) -> usize {
                 5,
                 None,
                 None,
+                512,
             );
             batch.push((cs.id.clone(), nl));
 
