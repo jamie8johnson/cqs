@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-05-05
+
+Minor release. No schema bump. Bundles the v1.36.2 16-category audit close-out (#1456 — 51 of 58 P1 + 11 of 14 P2 fixes, ~120 of 163 audit findings addressed) plus the dim-scaled batch sizes follow-up (#1464). The remaining ~40 deferred items are filed as tracking issues #1457-#1463.
+
+### Fixed (audit close-out, #1456)
+
+- **Lying-docs cluster (11 fixes).** `lib.rs`/`README`/`CONTRIBUTING`/`PRIVACY` now enumerate `qwen3-embedding-{4b,8b}` (shipped in v1.36.1). `src/schema.sql:1` says v26 (was v22). `CONTRIBUTING.md` schema citation v26 (was v25). `ROADMAP.md` "Current" updated to v1.36.2. `Cargo.toml` `lang-all` includes `lang-elm` (was 53/54 mismatch). `CHANGELOG` `[Unreleased]` block moved to top (was parked between two released versions). `SECURITY.md` citation `src/lib.rs:813` (was stale `:601`). `Cargo.toml` description matches README's measured 50.9/76.2/88.6 (was over-rounded 51/76/89).
+- **Configurable-models / wiring-verification (4 fixes).** `enrichment_pass` now threads `model_max_seq_len` into the call-context NL builder — prior fix (v1.33 P1-28) only patched the initial-embedding sites, so qwen3 / nomic-coderank section previews had been silently capped at 512 tokens during enrichment. `resolve_splade_model_dir()` zero-arg form now auto-loads `[splade]` config from `.cqs.toml` instead of dropping it at all 6 production callers. `VectorIndex::search_with_filter` trait default uses `saturating_mul` (sibling miss of v1.33 P1-42).
+- **NaN/Inf passthrough (5 fixes).** `note_boost` clamps sentiment to `[-1.0, 1.0]` before applying — `±Inf` notes used to produce an Inf score multiplier that `BoundedScoreHeap.is_finite` then dropped, hiding the chunk it was meant to boost. `store::sparse::token_dump_paged` filters non-finite weights at load. `print_telemetry_text` divide-by-zero guard at line 477 (sibling of v1.33 P1-25). CAGRA env knobs `CQS_CAGRA_GRAPH_DEGREE` / `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` reject zero (sibling of v1.33 P1-45 HNSW fix).
+- **Unbounded `fs::read_to_string` (5 new sites capped).** `doc_writer/rewriter.rs` (×2), `cli/commands/search/query.rs` parent-context fallback, `cli/commands/infra/hook.rs` (×3 via new `read_hook_capped`), `slot/mod.rs:339`. New `cqs::limits::small_file_max_bytes()` helper (4 MiB default, env override `CQS_SMALL_FILE_MAX_BYTES`).
+- **Unbounded subprocess capture.** `pdf_to_markdown` switched from `.output()` to `spawn + take((max+1))` — env override `CQS_PDF_MAX_BYTES` (default 100 MiB). Other `Command::output()` siblings parking for follow-up (test helpers).
+- **SQLite pool / parallelism cluster.** `CQS_MAX_CONNECTIONS` default scales with `available_parallelism().min(8)` instead of fixed 4 — gated `serve_blocking_permits` so the entire serve concurrency budget was capped at 4 regardless of cores. `reference.rs:208` got the same closure (sibling site missed in v1.33 SHL-V1.33-10).
+- **Concurrent writer / data safety.** `Store::close()` TRUNCATE checkpoint now bounded by 30s tokio timeout, falls back to PASSIVE on expiry — same hazard PR #1450 fixed in `drop()`. `cqs index --force` summary-recovery now calls `old_store.close()` before WAL/SHM removal — prior code's drop-only path was PASSIVE-only and could silently truncate concurrent watch writes. `collect_migration_files` includes the full HNSW sidecar set (`hnsw.ids`, `hnsw.checksum` for both basenames, `index.cagra.meta`, `splade.index.bin.bak`) — strict DS-V1.33-3 verifier was nuking migrated indexes. `set_hnsw_dirty` atomically splits the legacy single `hnsw_dirty` key into per-kind keys (preserves the un-touched kind's prior dirty state). Migration orphan-drop threshold uses integer math (was lossy `f64 * 0.10 as i64` tripping the error! arm spuriously on small corpora).
+- **Windows / case-insensitive FS.** `apply_resolved_edits` preserves CRLF source endings (mirror of #1356 to doc_writer). `note::path_matches_mention` is case-insensitive on Windows/macOS so Linux-authored notes apply correctly. `worktree::lookup_main_cqs_dir` uses `is_dir()` instead of `exists()` and canonicalizes input via `dunce::canonicalize` so the returned `worktree_root` matches `find_project_root()` byte-for-byte. New `cqs::relativize_or_warn(file, root)` helper centralizes the case-insensitive-FS shim that 4 sites silently leaked absolute paths through (`scout.rs`, `gather.rs`, `onboard.rs` ×2).
+- **Security hardenings.** `Store::open` wraps pool creation in `libc::umask(0o077)` so DB+WAL+SHM are born 0o600 (cache had this; main store had drifted). Daemon env-var redactor expanded from 4 suffix markers to 8 substring markers (KEY/TOKEN/SECRET/PASSWORD/BEARER/AUTH/CRED/PASS) plus URL userinfo detection. LLM debug log no longer echoes HTTP body content (Anthropic 4xx echoes prompts = indexed source) into journald. `slot_dir()` validates slot_name with `__invalid__` sentinel fallback so `..` can't escape the slots dir. `validate_repo_id` rejects `..`. `cqs serve` refuses to open URLs containing shell metacharacters via cmd.exe (Windows / WSL-interop browser launch).
+- **Algorithm correctness.** `extract_file_from_chunk_id` window-suffix regex no longer caps at 3 chars (`w99`) — chunks producing 100+ windows had the index leak into the file path, corrupting file-based dedup / glob filtering / SPLADE fusion. `where_to_add` `line_end + 1` is `saturating_add`. `train_data/diff.rs` outer `usize` add saturating (inner sub already was). SPLADE min-max normalization uses `reduce(f32::max)` instead of `fold(0.0, f32::max)` so a negative-only sparse cohort doesn't collapse to dense-only via seed dominance. `BoundedScoreHeap` gains `would_accept(score)` pre-flight; SpladeIndex saves ~570 KB of String churn per search by gating clones.
+- **Resource management.** `truncate_incomplete_line` switched from full-file slurp to tail-seek 64 KiB scan (multi-GB JSONL no longer loads into RAM at startup). HNSW load lock acquires via `try_lock_shared` with 5×200 ms retry — wedged peer holding the save lock no longer hangs every reader indefinitely. Daemon socket connect probe gets read/write timeouts. Daemon accept-loop sleep raised 100 ms → 500 ms (60× fewer wakeups when idle). HNSW checksum verify gains entry span + elapsed_ms.
+
+### Changed
+
+- **`RerankerMode::Llm` removed** from CLI surface. The variant was a placeholder for #1220 that errored at runtime; clap now rejects `--reranker llm` outright instead of running a search that fails late.
+- **`DEFAULT_QUERY_CACHE_SIZE` 128 → 1024** (env override `CQS_QUERY_CACHE_SIZE` unchanged). Daemon-mode agent fleets routinely hit 30+ unique queries per task; 128 was a coin toss for hit rate.
+- **`MAX_CONCURRENT_DAEMON_CLIENTS` scales with cores** (clamped `[16, 64]`) instead of fixed 16. Stack memory isn't binding on modern 64-bit hosts; agent fan-out has grown.
+- **Dim-scaled batch sizes (#1464, SHL-V1.36-3/4/5/8).** New `cqs::limits::dim_scaled_batch(baseline, dim, min, max)` helper applied to `BRUTE_FORCE_BATCH_SIZE` (search), `hnsw_batch_size`, `cagra_stream_batch_size`, and `embed_channel_depth`. Each baseline was sized for BGE-large (1024-dim); opting into qwen3-embedding-{4b,8b} (2560/4096-dim) used to silently 2-4× per-batch heap. Now: per-batch byte footprint stays roughly constant across dim. Env overrides preserve the previous values verbatim if anyone wants to pin (`CQS_BRUTE_FORCE_BATCH_SIZE` is new).
+- **Daemon env-var snapshot redactor** logs at error level instead of warn for `Store::stored_model_name` query failures. Lossy form preserved; new `try_stored_model_name` returns `Result<Option<String>, StoreError>` for decision-path callers that need to distinguish "no row" from "query failed".
+- **`set_hnsw_dirty` atomic split.** When the legacy single `hnsw_dirty` key exists and per-kind keys don't, the per-kind keys are now seeded from the legacy value before legacy is dropped. Test contract: `set_hnsw_dirty(Enriched, false)` after legacy=1 still reports `is_hnsw_dirty(Base) == true`.
+
+### Added
+
+- **New env vars.** `CQS_SMALL_FILE_MAX_BYTES` (default 4 MiB), `CQS_PDF_MAX_BYTES` (default 100 MiB), `CQS_BRUTE_FORCE_BATCH_SIZE` (auto, dim-scaled). All documented in README's env-var table.
+- **`cqs::limits` module promoted from `pub(crate)` to `pub`** so binary-side code can call the size helpers directly. New public fns: `small_file_max_bytes`, `dim_scaled_batch`.
+- **`cqs::relativize_or_warn(file, root) -> PathBuf`** — public helper for case-insensitive-FS-safe path relativization.
+- **`Store::try_stored_model_name() -> Result<Option<String>, StoreError>`** — strict variant for destructive-decision callers. The lossy `stored_model_name() -> Option<String>` is preserved.
+- **`BatchProvider::validate_model(&str) -> Result<(), LlmError>`** trait method (with default impl, non-breaking). Anthropic provider overrides to reject non-`claude-` prefixes pre-API.
+- **`BoundedScoreHeap::would_accept(score) -> bool`** pre-flight check so callers can gate id-cloning.
+- **Two new `LlmError` variants:** `InvalidModel(String)` and `Configuration { message }`.
+- **Adversarial daemon socket tests** (lone-surrogate JSON, deeply-nested JSON, concurrent slow-client starvation guard).
+- **Adversarial serve handler tests** (zero-width-joiner / RTL chunk_id, oversized 10 KiB id path).
+- **Regression tests** for `dim_scaled_batch` (7 tests pinning the formula at 768/1024/2048/4096 dim + zero-dim defensive case), `parse_env_usize_clamped` zero-input, `apply_resolved_edits` CRLF preservation, sparse-vector non-finite filter, `extract_file_from_chunk_id` 100+-window indices.
+
+### Removed
+
+- `RerankerMode::Llm` enum variant from CLI surface (see Changed).
+- Stale `999`-host-param SQLite comment block in `src/lib.rs` replaced with pointer to `store::helpers::sql::max_rows_per_statement` (32766 modern ceiling).
+
+### Known follow-up (filed as tracking issues)
+
+- **#1457** P2-14 ChunkRow column-name strcmps (cascading SELECT-order pin)
+- **#1458** TC Happy path tests (6 remaining: context builders, pack_by_relevance, prepare_for_embedding, daemon GC, cmd_train_data)
+- **#1459** API design (8: project/ref/index ergonomics + trait shape)
+- **#1460** Extensibility (3: config-driven synonyms / test-name patterns / classifier vocab)
+- **#1461** Security (3 medium-effort: serve extractor URI leak, pre-auth body cap, daemon socket squat)
+- **#1462** RM-V1.36-6 config flock + reqwest, CQ-V1.36-3/5 legacy NL wrappers
+- **#1463** P4 umbrella (12 design-level / hard items)
+
 ## [1.36.2] - 2026-05-04
 
 Patch release. No schema bump. **Critical fix: long-running `cqs index` runs no longer crash with `(code: 5) database is locked`** when a concurrent short-lived `cqs` invocation (e.g. periodic `cqs stats`) overlaps the indexer's writes. Plus a defense-in-depth `busy_timeout` bump and 5 dependency bumps merged from dependabot.
