@@ -212,9 +212,20 @@ fn suggest_placement_with_options_core<Mode>(
 
     for (file, score, chunks) in &file_scores {
         let origin_key = file.to_string_lossy();
-        let all_file_chunks = all_origins_chunks
-            .remove(origin_key.as_ref())
-            .unwrap_or_default();
+        let all_file_chunks = match all_origins_chunks.remove(origin_key.as_ref()) {
+            Some(v) => v,
+            None => {
+                // EH-V1.36-8 / P3: file had a search hit but its chunks were
+                // missing from the batch fetch (race: file deleted, or origin
+                // mismatch). Skip rather than emit a malformed suggestion
+                // pointing at a now-empty file.
+                tracing::debug!(
+                    file = %file.display(),
+                    "where_to_add: file in scores but no chunks fetched — skipping"
+                );
+                continue;
+            }
+        };
 
         // Find the most similar chunk in this file (highest individual score)
         let best_chunk = chunks.iter().max_by(|a, b| a.0.total_cmp(&b.0));

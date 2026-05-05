@@ -688,10 +688,24 @@ impl Embedder {
             return Ok(cached);
         }
         let tokenizer = self.tokenizer()?;
-        let resolved: i64 = tokenizer
-            .get_padding()
-            .map(|p| p.pad_id as i64)
-            .unwrap_or(self.model_config.pad_id);
+        let resolved: i64 = match tokenizer.get_padding() {
+            Some(p) => p.pad_id as i64,
+            None => {
+                // EH-V1.36-4 / P3: warn once when the tokenizer.json has no
+                // [padding] section and we fall back to model_config.pad_id.
+                // Most HF tokenizer.json exports include padding; missing
+                // sections silently skewed attention masks for custom models.
+                static WARN_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                if WARN_ONCE.set(()).is_ok() {
+                    tracing::warn!(
+                        model = %self.model_config.name,
+                        fallback_pad_id = self.model_config.pad_id,
+                        "tokenizer.json has no padding section — using model_config.pad_id"
+                    );
+                }
+                self.model_config.pad_id
+            }
+        };
         // Last-writer wins is acceptable — get_padding() is deterministic
         // for the tokenizer, and `model_config.pad_id` is immutable, so
         // every racer computes the same value.
@@ -1115,7 +1129,18 @@ impl Embedder {
         // on first GPU inference) and previously emitted nothing of its own.
         let _span = tracing::info_span!("embedder_warm", model = %self.model_config.name).entered();
         let start = std::time::Instant::now();
-        let _ = self.embed_query("warmup")?;
+        // EH-V1.36-1 / P3: validate the warmup result has the declared
+        // dimension so a misconfigured ONNX session that returns shape [1,0]
+        // surfaces here instead of "warmed" + a confusing dim-mismatch error
+        // on the first user query.
+        let warm_vec = self.embed_query("warmup")?;
+        if warm_vec.as_slice().len() != self.embedding_dim() {
+            return Err(EmbedderError::InferenceFailed(format!(
+                "warmup output dim {} != declared embedding_dim {}",
+                warm_vec.as_slice().len(),
+                self.embedding_dim()
+            )));
+        }
         tracing::info!(
             elapsed_ms = start.elapsed().as_millis() as u64,
             model = %self.model_config.name,
@@ -1542,8 +1567,16 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
             if !TOKENIZER_BLAKE3.is_empty() {
                 verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
             }
-            // Write marker after successful verification
-            let _ = std::fs::write(&marker, &expected_marker);
+            // Write marker after successful verification. EH-V1.36-5 / P3:
+            // surface failure at warn so operators see why subsequent cold
+            // starts re-blake3 the model file (~600 MB at 4s+ per startup).
+            if let Err(e) = std::fs::write(&marker, &expected_marker) {
+                tracing::warn!(
+                    path = %marker.display(),
+                    error = %e,
+                    "Failed to write checksum-verified marker — model will be re-verified on next session"
+                );
+            }
         }
     }
 

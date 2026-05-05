@@ -527,7 +527,17 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         Ok(val) => {
             tracing::warn!(var = %cat_key, value = %val, "Invalid alpha, using default");
         }
-        Err(_) => {}
+        // EH-V1.36-9 / P3: surface NotUnicode separately. NotPresent is
+        // the silent default; NotUnicode is operator misconfiguration
+        // that previously vanished into the same arm.
+        Err(std::env::VarError::NotPresent) => {}
+        Err(e) => {
+            tracing::warn!(
+                var = %cat_key,
+                error = %e,
+                "Per-cat SPLADE alpha env var has non-unicode value — ignored"
+            );
+        }
     }
 
     // Global env override: CQS_SPLADE_ALPHA

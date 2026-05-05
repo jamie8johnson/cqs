@@ -746,16 +746,19 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         // anything larger means corruption (or a hostile tree). Reading
         // GiB-scale "sentinel" files into memory would OOM the process.
         const SENTINEL_MAX_BYTES: u64 = 64 * 1024;
+        // EH-V1.36-7 / P3: distinguish "sentinel exists but unreadable" from
+        // "sentinel exists and was empty" so the operator can tell whether
+        // they need to chmod / fix perms before deleting the file.
         let detail = {
             let mut buf = String::new();
-            fs::File::open(&sentinel)
-                .and_then(|f| {
-                    f.take(SENTINEL_MAX_BYTES)
-                        .read_to_string(&mut buf)
-                        .map(|_| ())
-                })
-                .map(|_| buf)
-                .unwrap_or_default()
+            match fs::File::open(&sentinel).and_then(|f| {
+                f.take(SENTINEL_MAX_BYTES)
+                    .read_to_string(&mut buf)
+                    .map(|_| ())
+            }) {
+                Ok(_) => buf,
+                Err(e) => format!("(could not read sentinel: {})", e),
+            }
         };
         return Err(SlotError::Migration(format!(
             "previous migration failed (see {}). Manually recover then `rm {}`. \
