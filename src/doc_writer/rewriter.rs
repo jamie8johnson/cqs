@@ -500,6 +500,15 @@ fn resolve_edits(
 /// Apply resolved edits to source content, returning the post-edit string.
 /// Edits are sorted bottom-up so earlier-line edits don't shift line numbers
 /// for later ones.
+///
+/// PB-V1.36-1: preserve the source file's line-ending convention (mirror of
+/// PB-V1.33-9 / #1356 in note.rs::write_notes_file). `str::lines()` strips
+/// both `\r\n` and `\n`; the previous re-emit was always `\n`, so every
+/// `cqs index --improve-docs` run on a Windows / CRLF source rewrote every
+/// line of the file as a side effect — fighting `core.autocrlf=true` and
+/// producing huge spurious diffs that swamp the actual doc-comment changes.
+/// Sniff once from `content`; on CRLF, translate the bare-LF re-emit back
+/// to CRLF so the round trip is byte-stable.
 fn apply_resolved_edits(content: &str, resolved: &[ResolvedEdit]) -> String {
     let mut resolved: Vec<&ResolvedEdit> = resolved.iter().collect();
     resolved.sort_by_key(|r| std::cmp::Reverse(r.insert_at));
@@ -533,7 +542,14 @@ fn apply_resolved_edits(content: &str, resolved: &[ResolvedEdit]) -> String {
         }
     }
 
-    lines.concat()
+    let joined = lines.concat();
+    if content.contains("\r\n") {
+        // Bytewise translate bare LF → CRLF. We never double-up because
+        // the re-emit and the new_lines both use bare `\n` only.
+        joined.replace('\n', "\r\n")
+    } else {
+        joined
+    }
 }
 
 /// Compute the proposed doc-comment edits for `path` against the project
@@ -1252,5 +1268,24 @@ impl Beta {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_apply_resolved_edits_preserves_crlf() {
+        // PB-V1.36-1: source file with CRLF line endings round-trips with
+        // CRLF preserved. Pre-fix, every doc rewrite flipped the entire
+        // file to bare LF.
+        let crlf_content = "fn hello() {\r\n    println!(\"hi\");\r\n}\r\n";
+        let resolved: Vec<ResolvedEdit> = Vec::new(); // empty edits — pure round-trip
+        let out = apply_resolved_edits(crlf_content, &resolved);
+        assert_eq!(out, crlf_content, "CRLF source must round-trip CRLF");
+    }
+
+    #[test]
+    fn test_apply_resolved_edits_preserves_lf() {
+        let lf_content = "fn hello() {\n    println!(\"hi\");\n}\n";
+        let resolved: Vec<ResolvedEdit> = Vec::new();
+        let out = apply_resolved_edits(lf_content, &resolved);
+        assert_eq!(out, lf_content, "LF source must round-trip LF");
     }
 }
