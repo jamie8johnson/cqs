@@ -1,4 +1,4 @@
--- cq index schema v22
+-- cq index schema v26 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26 columns annotated inline below)
 -- v22: umap_x / umap_y REAL columns on chunks for the cqs serve cluster view.
 --      Both nullable; populated only when `cqs index --umap` runs the
 --      umap-learn projection. /api/embed/2d skips chunks where coords are NULL.

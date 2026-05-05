@@ -62,6 +62,7 @@
 //! - `lang-markdown` - Markdown support (enabled by default, no external deps)
 //! - `lang-aspx` - ASP.NET Web Forms support (enabled by default, no external deps)
 //! - `lang-st` - IEC 61131-3 Structured Text support (enabled by default)
+//! - `lang-dart` - Dart support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;

@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [1.36.2] - 2026-05-04
 
 Patch release. No schema bump. **Critical fix: long-running `cqs index` runs no longer crash with `(code: 5) database is locked`** when a concurrent short-lived `cqs` invocation (e.g. periodic `cqs stats`) overlaps the indexer's writes. Plus a defense-in-depth `busy_timeout` bump and 5 dependency bumps merged from dependabot.
@@ -190,8 +192,6 @@ The post-release audit's fix wave bundles 24 PRs covering correctness, security,
 
 - **README Retrieval Quality refreshed** (#1381). Per-preset table covering all 5 currently-materialized slots; per-slot LLM-summary state documented inline; cross-comparison protocol noted; 296-query Fixture table dropped (no longer in repo). TL;DR aggregate updated to BGE-large 46.8/73.9/85.3.
 - **Lying-docs sweep** (#1323): 11 docs fixed where they disagreed with code — lib.rs eval claim drift, README env-var count, README "How It Works" preset list, SECURITY.md slot layout post-#1105, `serve/mod.rs` "no auth" docstring, CONTRIBUTING.md `LlmProvider` reference, Cargo.toml encrypt feature contradiction, CHANGELOG missing post-v1.33.0 PRs, schema.sql line-range citation, cqs-bootstrap "14-category" claim.
-
-## [Unreleased]
 
 ## [1.33.0] - 2026-05-02
 

@@ -1,131 +1,75 @@
 ## Performance
 
-#### [PF-V1.30-1]: `reindex_files` watch path double-parses calls per file (parse_file_all then extract_calls_from_chunk per chunk)
+#### PERF-V1.36-1: `fetch_candidates_by_ids_async` rebuilds id-position map per call instead of hashing on placeholder bind
+- **Difficulty:** easy
+- **Location:** src/store/chunks/async_helpers.rs:86-90
+- **Description:** Every search hits this hot path. For ~200-500 candidate ids it allocates a `HashMap<&str, usize>` plus a `Vec<Option<(CandidateRow, Vec<u8>)>>` of `ids.len()` slots, then iterates rows to drop them into slots. The current code is fine *complexity*-wise (linear), but the slot vector wastes one `Option<>` discriminant per id (~32 bytes × N) and every miss leaves a `None` that gets walked again in `flatten()`. With ~32k candidates this is ~1MB of `Option` discriminants pushed across cache lines, then walked twice. A flat `Vec::with_capacity(ids.len())` plus a single re-sort by `id_pos.get(&candidate.id)` is cheaper and a smaller working set; or pre-allocate `Vec<MaybeUninit<...>>` with a presence bitmap. Comment claims this is the "fast" path but `Vec<Option<T>>` reorder isn't free and the `flatten()` collect loses the original allocation anyway.
+- **Suggested fix:** Build `Vec<(CandidateRow, Vec<u8>)>` with `with_capacity(ids.len())`, then `sort_unstable_by_key(|(c, _)| id_pos[&c.id])` once at the end. One alloc, no `Option` discriminant churn, deterministic.
+
+#### PERF-V1.36-2: `lang_set` / `type_set` rebuild from enum-to-string-to-lowercase on every search call
+- **Difficulty:** easy
+- **Location:** src/search/query.rs:849-856
+- **Description:** Per search, `filter.languages` and `filter.include_types` are converted to `HashSet<String>` via `iter().map(|l| l.to_string().to_lowercase()).collect()`. Both `Language` and `ChunkType` are enums whose `Display` yields canonical lowercase already (the comment at line 861-865 explicitly says "DB values are already canonical lowercase from `Language::to_string` / `ChunkType::to_string`"). The `to_lowercase()` allocates a fresh `String` per variant for no reason, and rebuilding the set per search is wasteful — enums have `&'static str` representations the set could store as `&'static str`. A 50-search session with 10-language filters does 500 needless heap allocations.
+- **Suggested fix:** Make `Language::as_str` and `ChunkType::as_str` return `&'static str`, then build `HashSet<&'static str>` from `filter.languages`/`filter.include_types` (no allocation). Compare via `lang_set.contains(candidate.language.as_str())`. Drops the `.to_lowercase()` and `String` allocs entirely.
+
+#### PERF-V1.36-3: `ChunkRow::from_row` does ~16 column-name string lookups per row
 - **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:2815, 2930-2939`
-- **Description:** The watch reindex calls `parser.parse_file_all(&abs_path)` at line 2815 — this returns `(file_chunks, calls, chunk_type_refs)`, where `calls` is the file-level call graph. The `calls` value is upserted at line 2851 via `store.upsert_function_calls`, then **silently discarded for chunk-level call mapping**. Lines 2930-2939 then loop every chunk and call `parser.extract_calls_from_chunk(chunk)` — which re-runs tree-sitter over the chunk content to extract the same call sites a second time. The bulk pipeline already fixed this in P2 #63 by using `parse_file_all_with_chunk_calls` (returns a fourth `chunk_calls: Vec<(chunk_id, CallSite)>` value from the same Pass 2). The docstring at `src/parser/mod.rs:447-451` explicitly notes "Watch (`src/cli/watch.rs`) still uses `parse_file_all` and runs its own `extract_calls_from_chunk` per chunk; collapsing that into this method is a separate refactor." That refactor never landed. With ~14k chunks per repo-wide reindex (parser.rs note) and one tree-sitter parse per chunk, this is an extra 14k tree-sitter parses per `cqs index` (when the daemon is the indexer) or per touched file's chunks per watch event.
-- **Suggested fix:** Switch the watch path from `parse_file_all` to `parse_file_all_with_chunk_calls`. The fourth tuple element is `Vec<(String, CallSite)>` keyed by absolute-path chunk id; rewrite the ids using the same prefix-strip the watch path already does for `chunk.id` at line 2834, then replace the `for chunk in &chunks { extract_calls_from_chunk(chunk) }` loop with a `HashMap` populated from the returned chunk_calls. Single-line API switch + ~10 lines of id rewriting; cuts reindex CPU roughly in half on the watch path.
+- **Location:** src/store/helpers/rows.rs:72-100, also `from_row_lightweight` at 107-130
+- **Description:** Every column read (`row.get("id")`, `row.get("origin")`, ...) does a linear scan of `SqliteRow::column_index_by_name` against the column-name list. For a 16-column SELECT with N rows this is `16N` strcmps. Search hydrates 100-500 rows per query; over 50 searches that's 80k-400k strcmps purely for column-name resolution. Indexed access via `row.get(0)`, `row.get(1)` etc. would skip the lookup entirely; the SELECT order is fixed in the same module (async_helpers.rs:34-36 and 92-96).
+- **Suggested fix:** Switch to ordinal `row.get::<_, _>(0)`, `row.get(1)` etc. in `ChunkRow::from_row` and `CandidateRow::from_row`. Keep the SELECT column order pinned in a const string constant adjacent to the `from_row` so the contract is local.
 
-#### [PF-V1.30-2]: `reindex_files` watch path bypasses the global EmbeddingCache (slot/cross-slot benefit lost on file edits)
+#### PERF-V1.36-4: `fetch_and_assemble` does double hashmap lookup + clone per gathered chunk
+- **Difficulty:** easy
+- **Location:** src/gather.rs:417-420
+- **Description:** Anti-pattern `if seen_ids.contains(&r.chunk.id) { continue; } seen_ids.insert(r.chunk.id.clone());` does two hash probes and clones the id String regardless of outcome. Same anti-pattern at src/llm/doc_comments.rs:333-337 and src/cli/commands/graph/explain.rs:251 / 442. `HashSet::insert` returns `bool` already.
+- **Suggested fix:** `if !seen_ids.insert(r.chunk.id.clone()) { continue; }` — single probe, clone happens only when actually inserting. Even better: `if !seen_ids.contains(r.chunk.id.as_str()) { seen_ids.insert(r.chunk.id.clone()); chunks.push(...); }` if `seen_ids` were `HashSet<String>` keyed by `&str` borrow.
+
+#### PERF-V1.36-5: `extract_imports_regex` allocates `String` per probed line even when already in seen set
+- **Difficulty:** easy
+- **Location:** src/where_to_add.rs:807-820
+- **Description:** Inner loop calls `seen.insert(trimmed.to_string())` after the regex match. `to_string()` runs *before* `insert()` decides whether the entry is new — so duplicate import lines (very common — every chunk in a file repeats the `use ...` block) allocate a `String`, hash it, find the duplicate, then drop. For a file with 10 chunks each repeating 20 imports that's 180 wasted `String` allocs per call. `cqs where`/`cqs task` runs this on every call, with no compiled-regex caching for the seen set itself.
+- **Suggested fix:** Use the standard `if !seen.contains(trimmed) { seen.insert(trimmed.to_string()); imports.push(trimmed.to_string()); }` — one alloc on first sight, zero on duplicates. Same pattern as PERF-V1.36-4 above.
+
+#### PERF-V1.36-6: `BuildHierarchy` rebuilds `visited_names: Vec<String>` from already-interned `Arc<str>` keys
+- **Difficulty:** easy
+- **Location:** src/serve/data.rs:739
+- **Description:** `let visited_names: Vec<String> = depth_by_name.keys().map(|s| s.to_string()).collect();` clones every Arc<str> to a fresh String. Hot path in the daemon hierarchy view — N can be ~10k for a heavy hub. Then those strings are used purely as bind-keys (`q.bind(n)`) and HashMap keys (`name_to_first_id: HashMap<String, String>`) downstream. We had Arc<str> already; SQLite bind accepts `&str` so the conversion is pointless.
+- **Suggested fix:** Keep `Vec<Arc<str>>` (or `Vec<&str>` borrowed from the keys) and bind via `n.as_ref()`. For `name_to_first_id`, key by `Arc<str>` so the chain stays alloc-free. Saves ~10k String clones on a deep hierarchy.
+
+#### PERF-V1.36-7: `search_by_names_batch` clones chunk_id and original_name strings per FTS row, even on miss
 - **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:2876-2887` vs `src/cli/pipeline/embedding.rs:39-62`
-- **Description:** PR #1105 added the per-project `.cqs/embeddings_cache.db` keyed by `(content_hash, model_id)` so a chunk re-embedded after a model swap or a new slot can hit cache instead of going through the GPU. The bulk index path (`prepare_for_embedding`) checks both `global_cache.read_batch` and `store.get_embeddings_by_hashes`. The watch reindex hot path (`reindex_files`) at line 2877 only calls `store.get_embeddings_by_hashes(&hashes)` — it never sees `EmbeddingCache`. Net effect: every file change in watch mode goes through the embedder for any chunk whose content_hash isn't in the *current slot's* `chunks.embedding` column, even if the same hash was already computed in another slot or in a prior model that lives in the global cache. The watch loop is the highest-frequency embedder consumer (every file save during active development); missing the global cache here costs the most.
-- **Suggested fix:** Plumb `global_cache: Option<&EmbeddingCache>` through `cmd_watch` → `reindex_files`. Replace lines 2876-2887 with a call to the same `prepare_for_embedding` helper the bulk pipeline uses (it already handles the `global cache → store cache → embed` fallback chain, including the dim mismatch guard). Eliminates the diverging cache-check code and makes the watch path benefit from #1105 the way the bulk path already does.
+- **Location:** src/store/chunks/query.rs:436-450
+- **Description:** For each light_row the inner loop does `ids_to_fetch.push(id.clone())` and `matched.push((id.clone(), original_name.to_string(), score))` — two String clones per matched row, plus `result.entry(original_name.to_string()).or_default()` which always allocates the key (even on existing entries). Phase 3 then does `chunk_row.clone()` (line 466) — full ChunkRow clone including content/doc/signature for every result row. Caller is `gather`'s `fetch_and_assemble`, hit per gather call.
+- **Suggested fix:** Use `result.raw_entry_mut()` (or precompute `original_name: String` once per batch entry, share via Arc), and replace `chunk_row.clone()` with `chunk_row` move — `full_chunks` is consumed after this loop, so use `into_iter` + `HashMap::remove(&id)` instead of `get(&id).clone()`. Same pattern as `final_scored.into_iter().filter_map(rows_map.remove(&id))` at query.rs:367.
 
-#### [PF-V1.30-3]: `reindex_files` allocates N empty `Embedding` placeholders then overwrites each
+#### PERF-V1.36-8: `fresh_sentinel_nonce` calls `format!("{:02x}", b)` 16 times → 16 String allocations per LLM prompt
 - **Difficulty:** easy
-- **Location:** `src/cli/watch.rs:2918-2924`
-- **Description:** `let mut embeddings: Vec<Embedding> = vec![Embedding::new(vec![]); chunk_count];` allocates `chunk_count` placeholder `Embedding` structs (each with an empty inner `Vec<f32>`), then immediately overwrites every slot via the cached + new-embedding loops at 2919-2923. Even setting aside the constructor cost, the `Embedding` type holds normalized-state metadata; the placeholders may need `Embedding::try_new(vec![])` validation in a future refactor and silently produce zero-norm vectors today. Allocation pattern is also wasteful — for a 100-file batch with 3000 chunks, that's 3000 `Embedding::new(vec![])` calls with discarded results.
-- **Suggested fix:** Build `embeddings` directly from the (cached, new) iterators rather than placeholder-then-overwrite. Either: (1) sort `cached` and `to_embed` indices and merge in order, or (2) build a `HashMap<usize, Embedding>` and `(0..chunk_count).map(|i| map.remove(&i).unwrap_or_else(...))` — but better is to refactor the same way the bulk pipeline does (`create_embedded_batch` at `src/cli/pipeline/embedding.rs:127-143`): zip cached + (to_embed/new_embeddings) in original order without ever materializing a placeholder Vec. This is the same pattern the bulk path already proved.
+- **Location:** src/llm/prompts.rs:33-41
+- **Description:** Generates a 32-char hex nonce by looping over 16 bytes and calling `hex.push_str(&format!("{:02x}", b))`. Each iteration allocates a 2-char String, copies into hex, drops. For batch summarization (#1108-related) where prompts are built per-chunk, this fires on every prompt — N×16 allocations. `write!` into `hex` with `core::fmt` would skip the per-byte allocations.
+- **Suggested fix:** Use `std::fmt::Write::write!(&mut hex, "{:02x}", b).unwrap()` (infallible into `String`) or `hex.push(hex_char(b >> 4)); hex.push(hex_char(b & 0xf));` for zero allocs. Same pattern at src/cli/commands/io/reconstruct.rs:72 and src/cli/commands/train/train_pairs.rs:37,43 — `out.push_str(&format!(...))` is the giveaway. P3-41 from v1.33.0 was supposedly fixed (#1363) but new sites have landed since.
 
-#### [PF-V1.30-4]: `prepare_for_embedding` always issues store-cache query even when global cache fully satisfies the batch
-- **Difficulty:** easy
-- **Location:** `src/cli/pipeline/embedding.rs:64-82`
-- **Description:** `prepare_for_embedding` first queries the global `EmbeddingCache` (line 47) populating `global_hits`, then UNCONDITIONALLY queries the store cache (line 68) for the same `hashes` slice. On the warm-cache path (e.g. reindex after `cqs slot promote`, or any reindex where chunks are unchanged), the global cache hit-rate approaches 100% and every store query is wasted DB work. The store query at `get_embeddings_by_hashes` is one SELECT but with O(n) bind variables and a JOIN against the `chunks` table — non-trivial latency on big batches. The fix is to filter the second query to only hashes the global cache missed.
-- **Suggested fix:** Compute `let missed_hashes: Vec<&str> = hashes.iter().filter(|h| !global_hits.contains_key(*h)).copied().collect()` and pass `&missed_hashes` to `store.get_embeddings_by_hashes`. When all chunks hit global cache, the store query is skipped entirely. When none do, behaviour is identical to today. Additional comment at line 84 about the `global cache > store cache > embed` precedence is already correct; the implementation just doesn't act on it for the second query.
-
-#### [PF-V1.30-5]: `wrap_value` deep-clones the entire payload via `serde_json::to_value(Envelope::ok(&payload))`
+#### PERF-V1.36-9: `SpladeIndex::search_with_filter` clones every id pushed into the heap
 - **Difficulty:** medium
-- **Location:** `src/cli/json_envelope.rs:160-176`
-- **Description:** `wrap_value(&serde_json::Value)` constructs `Envelope::ok(payload)` (which holds `&Value`), then serializes-and-parses the whole envelope via `serde_json::to_value`. For `serde_json::Value` the `Serialize` impl visits every node and rebuilds an identical tree — a deep clone disguised as a re-serialization round trip. The function is called once per daemon dispatch via `crate::cli::batch::write_json_line` and once per CLI emit, so every `cqs gather --tokens 50000` (which can be 50KB+ of nested objects), every `cqs scout`, every `cqs review` output pays the cost. The header comment at line 153-155 acknowledges "shallow clone of the payload (necessary because `serde_json::json!` macro takes ownership)" — but this isn't shallow, the serde_json round trip walks the whole tree and reallocates every Map and Vec. For a typical 30KB gather payload, that's ~30KB of allocator churn per query; on a busy daemon at 100 QPS that's ~3MB/s of pointless allocator pressure plus the CPU walking the tree.
-- **Suggested fix:** Build the envelope as a `serde_json::Value::Object` directly without a typed-struct round trip. `serde_json::Map::from_iter([("data", payload.clone()), ("error", Value::Null), ("version", Value::Number(1.into()))])`. Single shallow clone of the payload's outer enum tag (the inner Map/Vec stays owned) instead of a tree walk. Even better: change the contract so callers pass an *owned* `serde_json::Value` and `wrap_value` moves it in — `Map::insert("data", payload)` doesn't allocate a copy at all. Most call sites (`batch/mod.rs::write_json_line`) already produce the value just-in-time; switching to by-value is a per-site noop.
+- **Location:** src/splade/index.rs:248-252
+- **Description:** After scoring `~min(corpus, query×256)` ≈ ~18k entries, the heap-feed loop does `heap.push(id.clone(), score)` for every (id, score) pair, regardless of whether the heap will accept the entry. With k=200 and 18k scored, that's ~17800 String clones that get immediately dropped inside `BoundedScoreHeap::push` (which always takes `String` by value). At 32-char chunk ids, ~570KB of churn per search.
+- **Suggested fix:** Add `BoundedScoreHeap::push_lazy<F: FnOnce() -> String>(&mut self, score: f32, id_fn: F)` that only invokes the closure when the score crosses the eviction boundary. Then call `heap.push_lazy(score, || id.to_string())` — clones only happen for the ~k entries that survive. Same pattern would help at src/serve/data.rs:898-906 where `caller_id.clone()` and `callee_id.clone()` fire per row for the dedup HashSet.
 
-#### [PF-V1.30-6]: Daemon socket handler walks the args array twice (validation pass + extraction pass)
+#### PERF-V1.36-10: MMR re-rank converts `Vec<SearchResult>` → `Vec<Option<SearchResult>>` → `Vec<SearchResult>` via two extra collects
 - **Difficulty:** easy
-- **Location:** `src/cli/watch.rs:266-297`
-- **Description:** `handle_socket_client` first scans `request.get("args")` to collect indices of non-string elements (`bad_arg_indices`, lines 267-274), and if the array is clean does a SECOND pass via `arr.iter().filter_map(|v| v.as_str().map(String::from))` (lines 291-296) to materialize the `Vec<String>`. Each daemon query thus walks the `serde_json::Value::Array` twice. Cheap individually but it's literally the request entry point — every daemon query at 100+ QPS pays this. Combine the two passes: do the strict-string validation while building the `Vec<String>` and bail out the moment a non-string is observed.
-- **Suggested fix:** Fold both passes into one:
-```rust
-let mut args = Vec::new();
-let mut bad_arg_indices = Vec::new();
-if let Some(arr) = request.get("args").and_then(|v| v.as_array()) {
-    for (i, v) in arr.iter().enumerate() {
-        match v.as_str() {
-            Some(s) => args.push(s.to_string()),
-            None => bad_arg_indices.push(i),
-        }
-    }
-}
-if !bad_arg_indices.is_empty() { /* reject */ }
-```
-One pass instead of two; preserves the existing reject-with-indices error message.
+- **Location:** src/search/query.rs:435-443
+- **Description:** Hot path inside `finalize_results`. To reorder by MMR picks, the code does `let originals: Vec<Option<SearchResult>> = results.into_iter().map(Some).collect::<Vec<_>>(); let mut originals = originals; for &i in &picks { ... }`. That's an extra Vec allocation (Some-wrapping every result, ~Option discriminant per element) plus a redundant rebind. With `Vec<SearchResult>` containing 100-200 results carrying full content/doc, the wrapping is ~24 bytes × N of needless allocation.
+- **Suggested fix:** Use `mem::take(&mut results[i])` with `Default::default()` placeholder, OR use `Vec<MaybeUninit<SearchResult>>` and `assume_init` after picks, OR build a permutation `picks: &[usize]` and apply with `swap`-based reorder in place. Cleanest: collect picks into `BTreeMap<usize, ()>`, then drain `results.into_iter().enumerate().filter_map(|(i, r)| picks.get(&i).map(|_| r)).collect()` — one alloc total, no Option wrapping.
 
-#### [PF-V1.30-7]: `build_graph` correlated subquery for n_callers — N rows × per-row COUNT(*) instead of one GROUP BY
-- **Difficulty:** medium
-- **Location:** `src/serve/data.rs:234-264`
-- **Description:** The node-fetch SQL in `build_graph` includes `COALESCE((SELECT COUNT(*) FROM function_calls fc WHERE fc.callee_name = c.name), 0) AS n_callers_global` as a correlated subquery in the SELECT. SQLite executes the subquery once per row scanned. With `idx_callee_name` present the per-row cost is O(log M) where M = function_calls row count (~30k+ in this repo), and N is the cap'd graph size (`ABS_MAX_GRAPH_NODES`, currently 5000). That's 5000 × log(30k) ≈ 75k index probes for one `/api/graph` request. A single `LEFT JOIN (SELECT callee_name, COUNT(*) AS n FROM function_calls GROUP BY callee_name)` aggregates once and joins by name — one full scan + one hash join, O(M + N), independent of N. On larger projects (the cqs serve /api/graph endpoint is the biggest data fetch in the new web surface) the difference is several hundred ms vs single-digit ms.
-- **Suggested fix:** Replace the correlated subquery with a JOIN against an aggregated subselect:
-```sql
-SELECT c.id, c.name, c.chunk_type, c.language, c.origin, c.line_start, c.line_end,
-       COALESCE(cc.n, 0) AS n_callers_global
-FROM chunks c
-LEFT JOIN (SELECT callee_name, COUNT(*) AS n FROM function_calls GROUP BY callee_name) cc
-  ON cc.callee_name = c.name
-WHERE 1=1 ... ORDER BY n_callers_global DESC, c.id ASC LIMIT ?
-```
-Same result, single aggregation pass. Also benefits `build_hierarchy` which has a similar shape (`src/serve/data.rs:670-754`).
-
-#### [PF-V1.30-8]: `build_graph` edge-dedup HashSet keys clone (file, caller, callee) per row even on dedup miss
+#### PERF-V1.36-11: `scout` looks up `stale_set` via double-allocating PathBuf-to-String round trip per file
 - **Difficulty:** easy
-- **Location:** `src/serve/data.rs:367-373`
-- **Description:** The edge dedup loop builds `let key = (file.clone(), caller.clone(), callee.clone())` for every row regardless of whether the row will be kept, then `seen.insert(key)` — three String clones per fetched row. With `ABS_MAX_GRAPH_EDGES` typical at tens of thousands, that's tens of thousands of extra String allocations per `/api/graph` request, most of them duplicating work the row decode already did (`row.get("file")` already returned an owned String). The pattern was lifted from a deduplicating insert in another module but here the strings are small and the surrounding loop bound is ABS_MAX_GRAPH_EDGES so the cost compounds.
-- **Suggested fix:** Two options. (1) Skip the dedup entirely — the SQL `LIMIT` + the symmetric `IN (...)` twice over already over-fetches; deduping at the resolver step at line 396 is enough since the resolver is a `HashMap` lookup that naturally collapses duplicates by ignoring them. (2) Keep the dedup but switch to a hash-of-bytes key:
-```rust
-use std::collections::hash_map::DefaultHasher;
-let mut h = DefaultHasher::new();
-file.hash(&mut h); caller_name.hash(&mut h); callee_name.hash(&mut h);
-let hash_key = h.finish();
-if seen.insert(hash_key) { accum.push((file, caller_name, callee_name)); }
-```
-Hash collisions on a `u64` keyed `HashSet<u64>` are negligible at <1M edges. Cuts allocations from 3N+1 strings to ~zero.
+- **Location:** src/scout.rs:284
+- **Description:** `stale_set.contains(&file.to_string_lossy().to_string())` allocates twice per file (once for the `Cow<str>` from `to_string_lossy`, once for the explicit `to_string()`). On Windows the Cow is always Owned anyway. With 50 files in a scout result, that's 100 allocations purely for set lookup. `HashSet<String>` supports `contains::<str>(&str)`, so the second `to_string()` is unneeded.
+- **Suggested fix:** `stale_set.contains(&*file.to_string_lossy())` or `stale_set.contains(file.to_string_lossy().as_ref())`. Drops the second alloc. For Linux (Cow::Borrowed common case) drops both.
 
-#### [PF-V1.30-9]: `extract_imports` uses `HashSet<String>` — allocates a `String` per candidate line even on duplicate rejection
+#### PERF-V1.36-12: `vec!["?"; n].join(",")` placeholder construction allocates Vec + Vec<&str> + final String per batch
 - **Difficulty:** easy
-- **Location:** `src/where_to_add.rs:258-276`
-- **Description:** `extract_imports` iterates every line of every chunk, and for every line that matches a prefix it calls `seen.insert(trimmed.to_string())`. The HashSet stores `String` so insertion always allocates, even when the value is rejected as a duplicate (HashSet still hashes its borrowed key, but the caller materialized the String first). For a Rust file with ~50 chunks × ~30 lines/chunk × 5 prefixes, that's ~7500 `to_string` calls per `cqs where`/`cqs task` invocation — most of which are non-import lines that matched the prefix loosely or duplicate imports already seen. Lines borrowed from `chunks` are valid for the lifetime of the function so a borrowed-key HashSet works.
-- **Suggested fix:** Switch `seen` to `HashSet<&str>` with the same lifetime as `chunks`:
-```rust
-let mut seen: HashSet<&str> = HashSet::new();
-let mut imports: Vec<String> = Vec::new();
-for chunk in chunks {
-    for line in chunk.content.lines() {
-        let trimmed = line.trim();
-        for &prefix in prefixes {
-            if trimmed.starts_with(prefix) && imports.len() < max && seen.insert(trimmed) {
-                imports.push(trimmed.to_string());  // Allocate only on accept
-                break;
-            }
-        }
-    }
-}
-```
-Allocation now happens only for accepted imports (capped at `max=5`), not per candidate line. ~1500× fewer String allocations on a typical Rust file.
+- **Location:** src/serve/data.rs:777, 871-872 (and likely other call sites)
+- **Description:** Each batch builds `placeholders` via `vec!["?"; batch.len()].join(",")` — allocates a `Vec<&'static str>` of N elements, then joins. The hierarchy edge SQL (line 871-872) does this twice per inner-loop iteration, on N² batches. For deep hierarchies (visited_names > 32k) the cartesian product is many sub-queries; each pays double placeholder construction. `make_placeholders` (used in store/chunks/) skips the Vec by writing `?,?,?...` directly with `String::with_capacity(2*n)`.
+- **Suggested fix:** Use the existing `crate::store::helpers::make_placeholders(n)` consistently — it's already optimized and used elsewhere. Audit grep for `vec!["?"` usages and replace with the helper.
 
-#### [PF-V1.30-10]: Watch `reindex_files` cached embedding clone via `existing.get` instead of `.remove`
-- **Difficulty:** easy
-- **Location:** `src/cli/watch.rs:2879-2887`
-- **Description:** The cached-embedding loop:
-```rust
-for (i, chunk) in chunks.iter().enumerate() {
-    if let Some(emb) = existing.get(&chunk.content_hash) {
-        cached.push((i, emb.clone()));   // clone every cached Embedding
-    } else {
-        to_embed.push((i, chunk));
-    }
-}
-```
-Every cache hit clones the `Embedding` (inner `Vec<f32>`, dim=1024 default = 4KB allocation per hit). For a 100-file save that touches 500 chunks with 80% cache hit rate, that's ~400 × 4KB = 1.6MB of allocator churn per watch event — and watch events fire on every save in active development. The `existing` map is consumed only by this loop and discarded afterward, so we can `.remove()` to take ownership instead.
-- **Suggested fix:** Make `existing` mutable (already is — `let mut`isn't there but the binding owns the map) and use `existing.remove(&chunk.content_hash)` to take ownership:
-```rust
-let mut existing = store.get_embeddings_by_hashes(&hashes)?;
-let mut cached: Vec<(usize, Embedding)> = Vec::new();
-let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
-for (i, chunk) in chunks.iter().enumerate() {
-    if let Some(emb) = existing.remove(&chunk.content_hash) {
-        cached.push((i, emb));
-    } else {
-        to_embed.push((i, chunk));
-    }
-}
-```
-Eliminates every Embedding clone on the cache-hit path. Mirrors the `global_hits.remove` pattern already used at `src/cli/pipeline/embedding.rs:97`. P3 #126-style fix the watch path missed.
+DONE

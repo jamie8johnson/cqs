@@ -1,1058 +1,1073 @@
-# Audit Findings (v1.33.0)
+# Audit Findings (v1.36.2)
 
-Auditing v1.33.0 (post-#1305 ci-slow.yml stabilization, post-v1.32.0 audit at v1.30.0).
+Auditing v1.36.2 (post-#1455 release, post-v1.33.0 audit completed previously).
 
-## Documentation
+Branches: main @ `ad921040` (clean, in sync with origin).
 
-#### lib.rs top-of-crate eval claim conflicts with current README/Cargo.toml
-- **Difficulty:** easy
-- **Location:** `src/lib.rs:9`
-- **Description:** The crate-level docstring still says "90.9% Recall@1 on 296-query expanded eval", while `README.md:706` quotes 91.2% on the same fixture (current measurement) and `Cargo.toml:6` rounds to "91% R@1". Three sources of truth disagree on the same number; the lib.rs value is the oldest. This is the first thing rust-doc consumers (and crates.io rendering) see.
-- **Suggested fix:** Update `src/lib.rs:9` to match the current README/Cargo.toml number (91.2% / 91%) — or, since this is the doc most likely to drift, drop the specific percentage from lib.rs and just say "high recall on the curated fixture eval; see README.md#retrieval-quality for current numbers".
+Open tracking issues from prior audits (do NOT re-file):
+- #1095 — P4 umbrella (2 micro-perf items)
+- #1096 — SEC-7 serve auth
+- #1097 — EX-V1.29-1 Commands trait
+- #1107 — slot create --model not persisted
+- #1108 — content_hash storm in 5 hot SELECTs
 
-#### lib.rs Features list missing three current embedder presets
-- **Difficulty:** easy
-- **Location:** `src/lib.rs:9`
-- **Description:** Lists "BGE-large default; E5-base, nomic-coderank-137M, and custom ONNX presets". Code at `src/embedder/models.rs:330-444` ships six presets: `bge-large` (default), `bge-large-ft` (#1289, v1.33.0 highlight), `v9-200k`, `e5-base`, `nomic-coderank`, `embeddinggemma-300m`. Missing `bge-large-ft`, `v9-200k`, `embeddinggemma-300m`. The `bge-large-ft` omission is most visible — it's a v1.33.0 release-headline feature (CHANGELOG.md:28).
-- **Suggested fix:** Either enumerate all six presets in the lib.rs feature bullet, or rephrase to "configurable embedding models (BGE-large default; bge-large-ft, E5-base, v9-200k, nomic-coderank, embeddinggemma-300m, and custom ONNX presets)".
+Findings are appended below by category.
 
-#### README "How It Works" undersells the embedder preset roster
-- **Difficulty:** easy
-- **Location:** `README.md:672`
-- **Description:** Step 3 (Embed) says "Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX)". Same gap as the lib.rs item — `bge-large-ft`, `v9-200k`, `nomic-coderank`, `embeddinggemma-300m` are all shipping presets and `CQS_EMBEDDING_MODEL` enumerates all six at line 778. The README contradicts itself within ~100 lines.
-- **Suggested fix:** Replace with "Configurable embedding model (BGE-large default; bge-large-ft, E5-base, v9-200k, nomic-coderank, embeddinggemma-300m presets, or custom ONNX)".
 
-#### README "Environment Variables" overview claims 120 knobs but the table has 158
-- **Difficulty:** easy
-- **Location:** `README.md:723`
-- **Description:** "120 knobs total. Quick index by domain..." Counted unique `CQS_*` env vars in the actual table: 158. The `120` was the count at some earlier release and never refreshed despite a steady stream of new knobs (`CQS_DISABLE_TENSORRT`, `CQS_TRT_ENGINE_CACHE`, `CQS_FRESHNESS_POLL_MS`, `CQS_EVAL_REQUIRE_FRESH`, `CQS_DAEMON_PERIODIC_GC*`, slot/cache knobs, etc.).
-- **Suggested fix:** Update to `~158 knobs`. Or, since this number drifts every release, drop it and just say "Quick index by domain (everything is searchable in the table below)".
-
-#### Retrieval Quality table inconsistent with TL;DR aggregate numbers
-- **Difficulty:** easy
-- **Location:** `README.md:5`, `README.md:712-715`, `Cargo.toml:6`
-- **Description:** Three places report eval numbers and they don't reconcile cleanly:
-  - TL;DR (line 5): "44.5% R@1 / 73.4% R@5 / 84.9% R@20 on a 218-query dual-judge eval"
-  - Retrieval Quality table (lines 712-715): test n=109 → 42.2% / 67.0% / 83.5% ; dev n=109 → 42.2% / 75.2% / 89.9%
-  - Cargo.toml description: "43% R@1 / 70% R@5 / 84% R@20"
-  Aggregating the two splits should be roughly the average. The TL;DR's 73.4% R@5 doesn't match (67.0% + 75.2%)/2 = 71.1% — suggests the aggregate claim was generated from a different run than the per-split numbers (likely a corrected-matcher v3.v2 from #1284 that was only partially propagated). CHANGELOG.md:25 attributes 44.5% / 73.4% / 84.9% to "218 queries aggregate", but the per-split numbers at README.md:712 weren't updated to match.
-- **Suggested fix:** Re-run the eval and update both the per-split table and the TL;DR aggregate from the same JSON output. If 44.5/73.4/84.9 is the current aggregate truth, the per-split numbers in README.md:712-715 are stale and should be regenerated.
-
-#### Retrieval Quality fixture table missing bge-large-ft and embeddinggemma-300m rows
-- **Difficulty:** easy
-- **Location:** `README.md:702-708`
-- **Description:** The fixture table lists BGE-large, v9-200k, E5-base — but `bge-large-ft` is the v1.33.0 headline preset (CHANGELOG.md:28: "Wins test R@5 by 3.7pp, best of any model in today's 5-way A/B"), and `embeddinggemma-300m` shipped via #1301. The "Default config" prose at line 719 also still claims `nomic-coderank` "wins R@1 on the v3.v2 test split at ~⅓ the parameters of BGE-large" — which was the late-2026-04 conclusion before the matcher fix in #1284 invalidated those numbers (per CHANGELOG.md:25 and ROADMAP.md:60). Reader gets a snapshot from before the model A/B story changed.
-- **Suggested fix:** Add `bge-large-ft` (308M) and `embeddinggemma-300m` (308M) rows to the fixture table; rewrite the "Default config" paragraph to reflect the post-#1284 picture (bge-large-ft wins test R@5; embeddinggemma is opt-in; default stays at BGE-large for the dev R@5 hedge).
-
-#### SECURITY.md filesystem table doesn't reflect slot layout (#1105)
-- **Difficulty:** easy
-- **Location:** `SECURITY.md:110-111`, `SECURITY.md:128-129`, `SECURITY.md:243`
-- **Description:** Read- and write-access tables list `.cqs/index.db` and `.cqs/index.hnsw.*` as the canonical paths. PR #1105 (already shipped in v1.29.x) moved them to `.cqs/slots/<name>/index.db` (verified live: `.cqs/slots/{bge-ft,coderank,default,gemma,v9}/`). PRIVACY.md:15 documents the slot path correctly but SECURITY.md still describes the pre-#1105 layout. The bottom-of-file "Index Storage" section (line 243: "Stored in `.cqs/index.db`") repeats the same stale claim. Privacy/Security docs are P1 per project policy ("Docs Lying Is P1") because they describe filesystem reach and access boundaries.
-- **Suggested fix:** Update both Read Access and Write Access tables to use `.cqs/slots/<name>/index.db` and `.cqs/slots/<name>/index.hnsw.*`, with a one-line note that pre-migration projects may still see the legacy `.cqs/index.db` (mirroring PRIVACY.md:15's wording). Update the "Index Storage" section accordingly.
-
-#### serve/mod.rs module docstring says "No auth" — directly contradicts the auth implementation
-- **Difficulty:** easy
-- **Location:** `src/serve/mod.rs:12`
-- **Description:** Module-level docstring lists architecture properties: "No auth, no WebSocket, no live updates — single-user local exploration". Auth has been required since #1118/SEC-7 (per SECURITY.md:17 and the `auth.rs` module imported on line 39). The same file at line 89 documents `AuthMode::Required` for `run_server`. The module-level claim is so obviously wrong that anyone reading the doc will lose trust in the rest of it. Worse, "no auth" is the exact mistake an auditor would flag as a security gap, so a future auditor reading just the module doc would file a false positive.
-- **Suggested fix:** Replace line 12 with: "Per-launch 256-bit auth token gates every request (#1118 / SEC-7); 3 credential channels (Bearer / cookie / `?token=` query); `--no-auth` requires `NoAuthAcknowledgement` proof token. No WebSocket / no live updates — single-user local exploration."
-
-#### CONTRIBUTING.md references nonexistent `LlmProvider` type in src/llm/provider.rs
-- **Difficulty:** easy
-- **Location:** `CONTRIBUTING.md:313`
-- **Description:** "provider.rs (BatchProvider trait, BatchSubmitItem, LlmProvider)". `LlmProvider` doesn't exist as a type, struct, trait, or enum in `src/llm/provider.rs` (verified: `grep "LlmProvider" src/llm/*.rs` returns no hits). The actual contents are `BatchProvider` trait + `BatchSubmitItem` struct + `MockBatchProvider`. The `LlmProvider` reference is leftover from the EX-V1.29-3 audit item that was closed by PR #1101 (per MEMORY.md, audit issue ~~#1098~~ closed by #1101) — the cleanup never propagated to the architecture overview.
-- **Suggested fix:** Drop `, LlmProvider` from the parenthetical and add `MockBatchProvider` if listing concrete impls is the goal: `provider.rs (BatchProvider trait, BatchSubmitItem, MockBatchProvider for tests)`.
-
-#### Cargo.toml `encrypt` feature has contradictory inline comment
-- **Difficulty:** easy
-- **Location:** `Cargo.toml:245-247`
-- **Description:** Three consecutive lines say opposite things:
-  ```
-  # encrypt feature removed - sqlx doesn't support SQLCipher directly
-  # TODO: Re-evaluate encryption strategy with sqlx
-  encrypt = ["keyring"]
-  ```
-  The feature is still defined (line 247). The "removed" comment is wrong, and there's no test or production caller for `encrypt = ["keyring"]` that would justify keeping it. Either the feature was meant to be deleted and the line slipped through cleanup, or the comment is stale. Confusing for anyone trying to understand whether `--features encrypt` does anything.
-- **Suggested fix:** Either (a) delete lines 245-247 entirely if the `encrypt` feature is genuinely dead (verify no callers gate on `cfg(feature = "encrypt")` first), or (b) replace the comment with something accurate like "# `encrypt` feature: opt-in keyring dep for future credential storage. Not currently wired into any code path."
-
-#### CHANGELOG [Unreleased] missing 10+ post-v1.33.0 PRs that landed
-- **Difficulty:** easy
-- **Location:** `CHANGELOG.md:8-17`
-- **Description:** [Unreleased] only documents `cqs eval --reranker` (#1303) and the `slow-tests` gating change (#1286 Phase 2). Since v1.33.0 (`git log v1.33.0..HEAD --oneline | wc -l = 21`), these PRs landed and aren't in CHANGELOG: #1305 ci-slow.yml stabilization series (#1308 / #1307 / #1310 / #1311 / #1313 / #1314 / #1315 / #1316 / #1317 / #1318 / #1319 / #1320 / #1321), #1301 EmbeddingGemma-300m + CQS_DISABLE_TENSORRT, #1300 ROADMAP cleanup, #1304 / #1309 continuity sweeps, #1278 cqs notes update --new-kind, #1276 Reranker trait split, #1275 AuthChannel trait, #1273 daemon_request<T>, #1279 enumerate_files share. Some are internal refactors; the EmbeddingGemma + DISABLE_TENSORRT additions are user-visible (env var + new preset listed in README.md:778) and warrant Added entries.
-- **Suggested fix:** Add entries to CHANGELOG.md [Unreleased] for at least: #1301 (EmbeddingGemma-300m preset + `CQS_DISABLE_TENSORRT` env var), #1278 (`cqs notes update --new-kind`). Optionally batch the #1305 test-stabilization PRs into a single "CI stabilization (#1305 family)" Fixed entry — agents grepping CHANGELOG to understand current state get confused when 10 fix PRs leave no trace.
-
-#### SECURITY.md cites schema.sql:180-187 for llm_summaries — actual range is 185-192
-- **Difficulty:** easy
-- **Location:** `SECURITY.md:47`
-- **Description:** "The summary text is cached in the `llm_summaries` table keyed by `(content_hash, purpose)` per `src/schema.sql:180-187`". The actual `CREATE TABLE llm_summaries` block is at `src/schema.sql:185-192`; lines 180-187 cover the END of an unrelated DELETE trigger plus comments and only the first 3 lines of the table. Off by ~5 lines — minor, but exactly the kind of citation drift the audit-triage policy ("Docs Lying Is P1") was created to catch.
-- **Suggested fix:** Update to `src/schema.sql:185-192`. Better: drop the line range from the citation since line numbers in `schema.sql` will drift again on the next migration — `src/schema.sql` (search for `CREATE TABLE IF NOT EXISTS llm_summaries`) is more durable.
-
-#### cqs-bootstrap SKILL says "14-category code audit" but audit/SKILL.md says 16
-- **Difficulty:** easy
-- **Location:** `.claude/skills/cqs-bootstrap/SKILL.md:101`
-- **Description:** Bootstrap's portable skills list says `audit — 14-category code audit with parallel agents`. The audit skill itself (`.claude/skills/audit/SKILL.md:9`) and CLAUDE.md:53 both say `16-category`. The audit table in audit/SKILL.md confirms 16: 8 categories per batch × 2 batches. Bootstrap's "14" is a stale count from before two categories were added. Anyone running `/cqs-bootstrap` to set up a new project will end up with a CLAUDE.md saying 14 while the skill actually does 16.
-- **Suggested fix:** Update `.claude/skills/cqs-bootstrap/SKILL.md:101` to say `audit — 16-category code audit with parallel agents`.
-
-## Observability
-
-#### `Reranker::run_chunk` — per-batch ONNX inference call has no tracing span
-- **Difficulty:** easy
-- **Location:** `src/reranker.rs:285-410`
-- **Description:** `run_chunk` is the actual ORT inference call inside `compute_scores` / `compute_scores_opt` — it sets up tensors, runs the session, extracts logits. The outer `compute_scores_opt` (used by `rerank_with_passages`) loops over chunks of `CQS_RERANKER_BATCH` (default 16) and calls `run_chunk` per slice. It owns ~98% of reranker latency (ORT session.run is the only blocking step). Yet `run_chunk` emits zero tracing — no span, no entry/exit log, no elapsed_ms. The only end-of-flow signal is `apply_rerank_scores`'s "Re-ranking complete" line at `reranker.rs:874` which only reports total batch_size. Operators tuning `CQS_RERANKER_BATCH` or chasing tail latency on long-passage queries cannot see the per-chunk shape (which chunk was the slow one? did chunk 4 get a longer max_len than chunk 1?). The existing `rerank` info_span entry at line 587 covers entry only.
-- **Suggested fix:** Add `let _span = tracing::debug_span!("reranker_run_chunk", batch_size, max_len, expects_tti).entered();` after computing `max_len` (line ~310), and a `tracing::debug!(elapsed_ms = start.elapsed().as_millis() as u64, batch_size, "run_chunk complete")` before returning `Ok(scores)`. Track `let start = std::time::Instant::now();` at function entry.
-
-#### `SpladeEncoder::encode` debug-span lacks completion event with elapsed_ms / nnz
-- **Difficulty:** easy
-- **Location:** `src/splade/mod.rs:466-630`
-- **Description:** Entry has `tracing::debug_span!("splade_encode", text_len = text.len())`. ORT inference happens at line 529 (`session.run`), output extraction at lines 539-624. No exit event recording elapsed_ms, output token count (nnz of returned `SparseVector`), or which output format was hit (`pre_pooled` vs `raw_logits`). The format detection logs at lines 549/574 are debug too, but there's no aggregate "encode complete in X ms with N tokens" line. Compare to `embed_documents` which gained `P3.10` exit info with elapsed_ms+dim+count. SPLADE encode is called per-query in hybrid search; if it ever spikes (cold session re-init at line 522) operators have no log signal to correlate.
-- **Suggested fix:** Capture `let start = std::time::Instant::now();` near the start. Before the `Ok(sparse)` return at the end of `encode`, add `tracing::debug!(elapsed_ms = start.elapsed().as_millis() as u64, nnz = sparse.len(), "splade_encode complete")`. Mirrors the v1.30.0 P3.10 fix pattern for embedder.
-
-#### `Embedder::embed_query` cache-hit/miss completion event missing elapsed_ms
-- **Difficulty:** easy
-- **Location:** `src/embedder/mod.rs:823-899`
-- **Description:** The cache-hit branches at lines 854 and 863 emit `tracing::trace!(query=text, "Query cache hit (memory|disk)")` — useful for cache-effectiveness analysis but text logged at trace level leaks query content into journals if `RUST_LOG=trace`. The miss-path completion at line 897 (`tracing::debug!(dim = self.embedding_dim(), "embed_query complete")`) lacks `elapsed_ms`. Without the latency on the miss path, you can't tell if the model is suddenly slow vs. cache hit-rate cratered. Compare `embed_documents` (P3.10) which already has `elapsed_ms` on completion.
-- **Suggested fix:** Capture `let start = std::time::Instant::now();` at function entry (after the `_span`). Replace line 897 with `tracing::debug!(dim = self.embedding_dim(), elapsed_ms = start.elapsed().as_millis() as u64, cache = "miss", "embed_query complete")` and add similar `cache = "memory_hit"` / `cache = "disk_hit"` debug calls (no query text — it leaks) at the two hit branches.
-
-#### `serve` axum `http_request` span has no `request_id` field — concurrent requests un-correlatable
-- **Difficulty:** medium
-- **Location:** `src/serve/mod.rs:261-267`
-- **Description:** `TraceLayer::new_for_http().make_span_with(...)` records only `method` and `path`. Each handler then logs its own `tracing::info!("serve::stats")` / `serve::search` lines. With multiple concurrent browsers (or one browser with 3-4 panes loading `/api/graph` + `/api/cluster_2d` + `/api/stats` at startup), the per-handler logs interleave with no way to associate them with the outer `http_request` span — operators reading `journalctl --user -u cqs-watch` get a soup. tracing instruments span hierarchy automatically but the displayed identity is `http_request{method=GET path=/api/search}` for every request, indistinguishable across concurrent calls of the same path. Combined with P2.76's 32-deep blocking-pool semaphore, contention bugs are very hard to diagnose.
-- **Suggested fix:** In the `make_span_with` closure, generate a `request_id` (e.g., `let id = nanoid::nanoid!(8);` or pull from `x-request-id` header, falling back to a counter): `tracing::info_span!("http_request", method = %req.method(), path = %req.uri().path(), request_id = %id)`. Don't log raw IPs (privacy) — short random ID is enough for in-process correlation. If reluctant to add a dep, use a `static AtomicU64` counter; not globally unique but sufficient for one daemon's journal.
-
-#### `notify` watcher errors swallow ErrorKind + paths fields
-- **Difficulty:** easy
-- **Location:** `src/cli/watch/mod.rs:1147-1149`
-- **Description:** On `Ok(Err(e))` from the notify channel, we emit `warn!(error = %e, "Watch error")`. The `notify::Error` struct (`/cargo registry/notify-8.2.0/src/error.rs:44-51`) has both `kind: ErrorKind` (Generic/Io/PathNotFound/WatchNotFound/InvalidConfig/MaxFilesWatch) and `paths: Vec<PathBuf>`. `Display` collapses these to a one-line message that loses the kind discriminator and any paths. `MaxFilesWatch` (inotify limit hit) and `Io(broken pipe)` produce nearly identical-looking lines, but operator response is completely different (raise sysctl vs. restart daemon). On WSL where inotify is flaky, this is a real source of debugging dead-ends.
-- **Suggested fix:** Match on `e.kind` and emit structured fields:
-  ```rust
-  Ok(Err(e)) => {
-      warn!(
-          error = %e,
-          kind = ?e.kind,
-          paths = ?e.paths,
-          "Watch error"
-      );
-  }
-  ```
-  `?e.kind` Debug-formats the discriminator (`MaxFilesWatch`, `Io(...)`, etc.); `?e.paths` shows the affected paths. Operators on WSL get a one-line clue whether to raise `fs.inotify.max_user_watches` or check the FS.
-
-#### `WatchSnapshot::compute` and `now_unix_secs` lack tracing on freshness state machine
-- **Difficulty:** medium
-- **Location:** `src/watch_status.rs:275-330`, `src/watch_status.rs:336-340`
-- **Description:** `compute()` is the freshness state machine — Stale↔Rebuilding↔Fresh transitions are pure functional output of inputs but the function itself emits zero tracing. The transition logging is bolted on at the call site in `cli/watch/mod.rs:235-243` (per OB-V1.30.1-3) which captures the *previous* state and the *new* state outside the lock — but only logs on transitions, not on any individual `compute()` call. When investigating "why did the gate report Stale at 14:32:01 when pending_files was empty?" there's no way to see what inputs `compute()` saw at that timestamp. `now_unix_secs()` swallowing the `SystemTime → i64` conversion as `None` (per RB-10's fix at line 226-231) means a bad clock returns silently — no `tracing::warn!` at the helper itself, just at the eval gate consumer.
-- **Suggested fix:** Add `let _span = tracing::debug_span!("watch_snapshot_compute", pending_files = input.pending_files, pending_notes = input.pending_notes, rebuilding = input.rebuilding, dropped = input.dropped_this_cycle, delta_saturated = input.delta_saturated).entered();` at compute entry, and at the end emit `tracing::trace!(state = %state, "compute decision")` (Display impl already exists per AC-V1.30.1-9). Add `tracing::trace!(error = %e, "now_unix_secs: clock before epoch — returning None")` inside `now_unix_secs`'s `unwrap_or` arm so the rare bad-clock case leaves a trail.
-
-#### `cli/watch/events.rs:23` `collect_events` has no entry span — inotify events untraceable to file
-- **Difficulty:** easy
-- **Location:** `src/cli/watch/events.rs:23-148`
-- **Description:** `collect_events` fires per inotify event, runs gitignore + extension + mtime gating, then enqueues to `state.pending_files`. It only emits trace/debug for *skips* (line 38, 58-61, 79-81, 116, 134-148). When debugging "why didn't my save get reindexed?" the operator needs to know an event arrived for path X — currently if the file falls through into the skip branches there's a debug line, but if it's accepted and queued, there's only the eventual `process_file_changes` "Reindexing N files" line. With debounce coalescing, the audit trail from inotify-event → reindex-file is broken. Combined with the WSL inotify-unreliable warning at mod.rs:430, operators on WSL who suspect drops have no way to confirm an event arrived at all.
-- **Suggested fix:** At `collect_events` entry, add `let _span = tracing::trace_span!("collect_events", event_kind = ?event.kind, paths = event.paths.len()).entered();`. After the path-add succeeds (around line 124, where pending_files is mutated), add `tracing::debug!(path = %rel.display(), event_kind = ?event.kind, "Queued for reindex")`. The trace_span keeps the per-event noise contained behind RUST_LOG=trace; the `Queued for reindex` debug is the line operators set RUST_LOG=debug to see.
-
-#### `cli/registry.rs:133` `println!` for Refresh "no daemon running" bypasses tracing
-- **Difficulty:** easy
-- **Location:** `src/cli/registry.rs:133`
-- **Description:** The non-JSON branch of `Commands::Refresh` writes `println!("no daemon running, nothing to refresh")` directly to stdout. This is the same OB-V1.30.1-9 anti-pattern (`process_file_changes` was using `println!` in non-quiet, fixed in PR #1208). The Refresh command is the canonical user-facing "is the daemon up?" probe — emitting to stdout means it doesn't appear in `journalctl --user -u cqs-watch`, doesn't get redirected by `RUST_LOG`-aware setups, and the `--json` branch above already handles structured output. Stdout for non-JSON is appropriate for the user terminal but the daemon-status fact itself ought to also leave a `tracing::info!` so operators correlating "user ran refresh at 14:30, no daemon" with subsequent reindex weirdness have a journal trail.
-- **Suggested fix:** Keep the `println!` for terminal UX, but add a sibling `tracing::info!(refreshed = false, daemon_running = false, "cqs refresh: no daemon");` immediately before. Mirrors the `--json` branch's emitted shape.
-
-#### `Embedder::warm` no span, no log — silent ~250 MB+ session init at startup
-- **Difficulty:** easy
-- **Location:** `src/embedder/mod.rs:953-956`
-- **Description:** `warm()` triggers a dummy `embed_query("warmup")` to force the lazy ORT session + tokenizer load. On BGE-large + GPU it can take 1-3 seconds (first inference) and allocates the full ~250 MB model + ~10 MB tokenizer. The function emits zero tracing — relies on `embed_query`'s child span. Operators investigating "daemon takes 4s to come up" have no obvious "warm started/completed" line to anchor against. Also, callers that wrap with their own logging (`cmd_watch`, doctor, prebuild) don't all do that — `cli/watch/daemon.rs:67` calls `warm()` inside `tracing::info!("Daemon built and shared embedder")` but the warm itself is invisible.
-- **Suggested fix:** Wrap the body: `let _span = tracing::info_span!("embedder_warm", model = %self.model_config.name).entered();` and add `let start = Instant::now();` + `tracing::info!(elapsed_ms = start.elapsed().as_millis() as u64, "embedder warmed");` at the end. This is a startup-once cost; verbose logging is fine.
-
-#### `LocalProvider` worker threads lack worker-id field on completion — per-worker latency invisible
-- **Difficulty:** easy
-- **Location:** `src/llm/local.rs:219-339`
-- **Description:** Each `local_worker` thread (spawn at line 219, debug span with worker_id) processes `BatchSubmitItem`s by calling the chat-completions endpoint. Per-item `_item_span` at line 430 includes `custom_id` and `attempt`. But the worker-level summary at line 339 (`tracing::info!("local batch worker complete")`) does not include `worker_id` or per-worker counts (items processed, retries, failures). When `CQS_LOCAL_LLM_CONCURRENCY=8` and the run takes 30 minutes, the journal has 8 indistinguishable "worker complete" lines. Operators tuning concurrency or chasing tail-latency workers have no per-worker breakdown. The `worker_id` is on the entered span but `tracing::info!` doesn't always include parent span fields by default in the JSON formatter.
-- **Suggested fix:** Track `let mut completed = 0usize; let mut retried = 0usize; let mut failed = 0usize;` at worker-loop scope, increment in the result branches, then emit `tracing::info!(worker_id, completed, retried, failed, elapsed_ms = worker_start.elapsed().as_millis() as u64, "local batch worker complete")` with explicit fields rather than relying on span context.
-
-## Error Handling
-
-#### EH-V1.33-1: Three telemetry call sites silently coerce pre-epoch clock to ts=0 instead of using `unix_secs_i64()`
-- **Difficulty:** easy
-- **Location:** src/cli/telemetry.rs:80-83, 195-198, 289-292
-- **Description:** `log_command`, `log_command_complete`, and `log_routed` each compute `SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)` — silently writing `ts: 0` when the clock is pre-epoch (RTC mis-set, hypervisor pause, NTP-pre-sync boot). The codebase already added `cqs::unix_secs_i64()` (lib.rs:412) precisely for this — it warns once via tracing and returns `Option` so callers can choose to skip the row. Telemetry rows with `ts:0` corrupt the time-series view in `cqs telemetry --report` and there is no journal trail explaining why. Same pattern repeats in `cli/commands/infra/telemetry_cmd.rs:566-569` and `:607-610`, and in `cli/batch/commands.rs:522-525`.
-- **Suggested fix:** Replace each `unwrap_or(0)` site with `cqs::unix_secs_i64()`; either skip the write on `None` or emit `ts: serde_json::Value::Null` so downstream consumers can distinguish "epoch 0" from "skipped due to bad clock". Single grep-and-replace pass closes all five sites.
-
-#### EH-V1.33-2: `set_on_item_complete` keeps a bare `.unwrap()` on poisoned mutex despite P1.9/P2.35 fix sweep
-- **Difficulty:** easy
-- **Location:** src/llm/local.rs:707-709
-- **Description:** P1.9 (Mutex::into_inner) and P2.35 (auth_attempts) recovered all production mutex sites in this file via `lock().unwrap_or_else(|p| p.into_inner())` — confirmed at lines 315, 316, 322, 323, 381, 486, 487, 489, 690, 749. `set_on_item_complete` is the lone outlier: `*self.on_item.lock().unwrap() = Some(cb);`. If a worker thread panics while the on_item mutex was held (e.g., a callback returns and a sibling worker thread panics before `Drop`), this mutex becomes poisoned and *every subsequent* `set_on_item_complete` panics the caller. P1.9's audit summary explicitly called out the LocalProvider "build it fast for #1101" pattern; this is the residual.
-- **Suggested fix:** `*self.on_item.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);` to match the rest of the file. Pin with a regression test that calls `set_on_item_complete` after deliberately poisoning the mutex.
-
-#### EH-V1.33-3: `cmd_install` hook open silently masks PermissionDenied and clobbers foreign hooks
-- **Difficulty:** easy
-- **Location:** src/cli/commands/infra/hook.rs:170-194
-- **Description:** `let existing = std::fs::read_to_string(&path).ok();` collapses `NotFound`, `PermissionDenied`, and corrupt-UTF-8 into `None`. The next match treats `None` as "no hook here" and writes a fresh cqs hook script (line 177) — overwriting a foreign hook that was simply unreadable. On a shared repo where the hook file is mode 0o600 owned by another developer's account, `cqs hook install` silently destroys their hook script and reports it as `installed`. The function explicitly tries to *avoid* this in the `Some(content)` arm at line 187-191 ("Foreign hook — never clobber") — the `.ok()` collapse defeats the protection.
-- **Suggested fix:** Distinguish the error: `match std::fs::read_to_string(&path) { Ok(s) => Some(s), Err(e) if e.kind() == ErrorKind::NotFound => None, Err(e) => { tracing::warn!(error = %e, path = %path.display(), "Refusing to install over unreadable hook"); report.skipped_existing.push(hook.to_string()); continue; } }`.
-
-#### EH-V1.33-4: `enumerate_files` silently drops files whose metadata fails — operator can't tell why a symbol disappeared
-- **Difficulty:** easy
-- **Location:** src/lib.rs:760-779
-- **Description:** The size-cap filter logs at `info` when `len > size_cap` (good — line 767-772), but the symmetric `Err(_) => false` branch on line 778 drops files when `metadata()` fails (broken symlink target, transient FS error, permission flip mid-walk) without any log. The user runs `cqs index`, gets fewer chunks than expected, and has no way to discover that ~10 files were skipped due to permission denied. The neighbouring `canonicalize` arm at lines 791-808 already has the right pattern (atomic counter + warn first 3 + debug rest); the metadata arm should mirror it.
-- **Suggested fix:** Add an `AtomicUsize` and use the same first-3-warn-then-debug shape: `Err(e) => { let count = metadata_failures.fetch_add(1, Relaxed); if count < 3 { tracing::warn!(path = %e.path().display(), error = %err, "Skipping file: metadata() failed") } else { tracing::debug!(...) }; false }`.
-
-#### EH-V1.33-5: `notes_acceptance_status` swallows note-parse error as `(None, None, None)` and renders as "?" — no diagnostic
-- **Difficulty:** easy
-- **Location:** src/cli/commands/index/build.rs:1000-1023
-- **Description:** When `parse_notes_str(...)` fails (malformed TOML, OOM, unexpected schema), the match arm returns `(None, None, None)` silently, then the user-facing labels render as `?`. Operator running `cqs index --accept-shared-notes` sees `Accepted committed shared notes (? entries)` and has no idea whether the file was missing, malformed, or just empty. Three `unwrap_or_else(|| "?".to_string())` sites paper over this — none log the underlying error. This is exactly the v0.12.1 anti-pattern called out in MEMORY.md ("`.unwrap_or_default()` swallowing real failures with no `tracing::warn!`").
-- **Suggested fix:** Change to `Err(e) => { tracing::warn!(error = %e, "Failed to parse docs/notes.toml during acceptance check"); (None, None, None) }`. Better: surface the parse error in the acceptance prompt so the user knows to fix the TOML before re-running.
-
-#### EH-V1.33-6: `embedder.fingerprint` silently uses `size = 0` when metadata fails — collides every model under the same repo
-- **Difficulty:** medium
-- **Location:** src/embedder/mod.rs:521-526, 537-540
-- **Description:** P1.8 and P2.63 replaced the unstable timestamp fallback with `repo + size` so the fingerprint stays cache-stable. But both fallback sites use `std::fs::metadata(model_path).ok().map(|m| m.len()).unwrap_or(0)` — when metadata itself fails (the same conditions that triggered the hash failure in the first place: permission denied, file gone, FS hiccup), `size = 0`. Every model under the same repo that hits this fallback gets *the same* fingerprint string `repo:fallback:0`, collapsing the cache key across distinct fine-tunes. Cache pollution risk for users who index the same project under multiple fine-tunes of the same base repo (e.g., two `bge-large-ft` checkpoints differing only by training corpus).
-- **Suggested fix:** When metadata fails, fall through to `format!("{}:fallback:no-stat", self.model_config.repo)` (mirrors line 555's `:fallback:no-path`) so the fingerprint distinguishes the *failure mode*, not just the size. Add `tracing::warn!` for the metadata failure since it's a sibling root cause to the hash failure already logged.
-
-#### EH-V1.33-7: `IndexBackend` trait — public lib trait uses anyhow::Result instead of thiserror
-- **Difficulty:** medium
-- **Location:** src/index.rs:8, src/index.rs:134, src/hnsw/mod.rs:440
-- **Description:** `pub mod index;` (lib.rs:77) exposes `IndexBackend::try_open` to library consumers. The trait's signature is `fn try_open(&self, ...) -> anyhow::Result<Option<Box<dyn VectorIndex>>>`. Per project convention (CLAUDE.md "thiserror for library errors, anyhow in CLI"), library traits should expose typed errors. Library users wanting to handle `try_open` failures must downcast through `anyhow::Error` instead of pattern-matching on a typed enum — and the `anyhow` dependency leaks into the public API surface. Only one anyhow site remains in lib code (verified via `grep 'use anyhow' src/store/ src/embedder/ src/hnsw/ src/llm/ src/index.rs`).
-- **Suggested fix:** Define `IndexBackendError` in `src/index.rs` with thiserror variants (`StoreError(#[from] StoreError)`, `ChecksumMismatch(String)`, `LoadFailed(String)`, etc.); change the trait to `Result<Option<...>, IndexBackendError>`. CagraBackend/HnswBackend impls map their internal errors via `From`. CLI sites consume via `?` into `anyhow::Result` exactly as today.
-
-#### EH-V1.33-8: Reconcile mtime-touch chain silently abandons on metadata or `modified()` failure
-- **Difficulty:** medium
-- **Location:** src/cli/watch/reindex.rs:326-341
-- **Description:** EH-V1.30.1-1 (PR #1207) addressed the parse-failure case by touching mtime so the divergent file isn't reconciled forever. But the touch chain is gated on three nested `if let Ok(...)`: `metadata()` (line 326), `modified()` (line 327), `duration_since(UNIX_EPOCH)` (line 328). Any one failing skips the touch silently with no log. A file with a clock-skewed mtime (file's mtime > current time, possible on systems with bad RTC, or a file written by a remote NFS share with skewed clock) takes the third Err branch, leaves stored mtime stale, and reconciles every tick forever — the exact bug EH-V1.30.1-1 fixed for parse failures, regressed via the silent-Err chain.
-- **Suggested fix:** Replace nested `if let Ok` with early-return-on-Err pattern: `let Ok(meta) = std::fs::metadata(&abs_path) else { tracing::warn!(path = %rel_path.display(), "Cannot touch mtime: metadata() failed"); return; };` — log a distinct reason at each step. The store's `touch_source_mtime` should be a hard error if we genuinely cannot compute a valid mtime so the daemon at least logs the persistent loop.
-
-#### EH-V1.33-9: Reference path canonicalize-failure in `Config::validate` silently skips SEC-4 + SEC-NEW-1 path-escape check
-- **Difficulty:** medium
-- **Location:** src/config.rs:613
-- **Description:** `if let Ok(canonical) = p.canonicalize() { /* security check */ }` silently swallows failure. A non-existent reference path (typo in `.cqs.toml`) bypasses the in-home / in-project / in-cqs warning entirely, so the user gets no warning at config-load time and discovers the typo only at `cqs ref update` time. PermissionDenied also silently elides the check — a malicious config pointing at a path the *user* can't canonicalize (but cqs can after running through some FS API as root or via different mount visibility) escapes audit. SEC-4 and SEC-NEW-1 invested in this guard precisely so a bad config path is loudly flagged at load.
-- **Suggested fix:** `match p.canonicalize() { Ok(canonical) => { /* existing check */ } Err(e) => tracing::warn!(name = %r.name, field, path = %p.display(), error = %e, "Cannot canonicalize reference path for SEC-4 audit; treat as untrusted"); }`. Fail-loud (warn) keeps the security posture intact; consider promoting to a hard error for `cqs ref add` / `cqs ref update` paths since those are user-facing operations where a typo should error rather than warn.
-
-#### EH-V1.33-10: `slot_promote` slot-missing message uses `list_slots(...).unwrap_or_default()` — masks listing failure
-- **Difficulty:** easy
-- **Location:** src/cli/commands/infra/slot.rs:296, 333
-- **Description:** Same pattern as P2.21 (the `slot_remove` "only slot remaining" mask, ✅ fixed) but in two unfixed spots. When the user runs `cqs slot promote nonexistent`, the bail message renders `Available: [...]`. If `list_slots` itself fails (permission denied on `.cqs/slots/`, FS hiccup, slot dir corrupted), the user sees `Available: []` and is told to "create with `cqs slot create`" — when in reality there might already be 5 slots. Same misdirection P2.21 already established as worth fixing; the surrounding `slot_promote` already has tracing context so adding a warn-on-listing-failure is one line.
-- **Suggested fix:** `let available = list_slots(project_cqs_dir).context("Failed to list slots while building error message")?;` so the underlying IO/parse error surfaces. If "best-effort message" is preferred to a hard fail, log via `tracing::warn!(error = %e, "list_slots failed while building slot-missing message")` before falling back to empty string.
-
-## Robustness
-
-#### RB-V1.33-1: BM25 division-by-zero on empty corpus produces NaN scores → undefined sort order
-- **Difficulty:** easy
-- **Location:** `src/train_data/bm25.rs:44, 82, 95`
-- **Description:** `Bm25Index::build` already guards `avg_dl = if docs.is_empty() { 0.0 } else { total_dl / n }` (line 44). But the *non-empty* case can still produce `avg_dl == 0.0` when every doc tokenizes to zero terms (e.g., a corpus of pure-whitespace blobs, or after a filter rewrite that produces empty content). Then at query time `dl / self.avg_dl` (line 82) divides by 0, producing `inf` or `NaN`. The score becomes NaN, and `partial_cmp(...).unwrap_or(Equal)` on line 95 silently sorts NaN-laden rows in non-deterministic order. The result list looks normal to the caller but ranking is meaningless. Same root cause as the determinism cluster called out in v1.30.0 audit notes ("HashMap iteration in algorithm code") — a NaN escapes from the math, gets sorted with `Equal`, downstream scoring trusts the order.
-- **Suggested fix:** Guard at the call site: `let denominator_dl = if self.avg_dl > 0.0 { dl / self.avg_dl } else { 0.0 };`. Even better, replace `partial_cmp(...).unwrap_or(Equal)` with `total_cmp` (matches the `query.rs:635` pattern) so NaN sorts deterministically (after all real scores) instead of mixing.
-
-#### RB-V1.33-2: `worktree::resolve_main_project_dir` reads `.git` file unbounded — RB-V1.30-2 sibling
-- **Difficulty:** easy
-- **Location:** `src/worktree.rs:57, 161`
-- **Description:** Two `std::fs::read_to_string(&dot_git).ok()?` sites on the worktree code path. Mirrors the exact pattern P2.33 (slot pointer files) and RB-5 (slot/mod.rs:656 migrate_legacy sentinel) flagged and fixed in v1.30.0/v1.30.1. A malicious or accidentally-huge `.git` file (e.g., a junk file that happens to live at `<dir>/.git`, since the file metadata check at line 50 only confirms it's *not a directory*, not that it's small) gets fully loaded into memory before the line iterator runs. On WSL `/mnt/c/`, an attacker who can drop a 4 GB file at `<repo>/.git` causes any `cqs` invocation in that directory to OOM during worktree resolution. The bypass is wider than the slot version — `worktree_name` (line 161) is called from `WorktreeMeta::current()` which executes on virtually every batch dispatch.
-- **Suggested fix:** Cap with `crate::fs::read_to_string_capped(&dot_git, MAX_GIT_FILE_BYTES)?` (or whatever the project's existing capped helper is — `slot/mod.rs:207` already uses one). A `.git` link file is normally ~30 bytes; cap at 4 KiB to reject anything pathological. Apply to both sites.
-
-#### RB-V1.33-3: `find_cargo_workspace_root` reads every parent `Cargo.toml` unbounded
-- **Difficulty:** easy
-- **Location:** `src/cli/config.rs:188`
-- **Description:** Walks up from the current directory looking for `[workspace]` in each parent's `Cargo.toml`. Each candidate is `std::fs::read_to_string(&cargo_toml)` with no size cap. Cargo.toml files in real projects are well under 100 KB, but a hostile parent directory (e.g., a checkout that has a file named `Cargo.toml` containing a multi-GB blob — perfectly legal on filesystem, just non-Cargo) causes any `cqs` invocation under that subdirectory to OOM during config resolution. This runs early in process startup, before any user-facing argument parsing, so the failure is opaque ("OOM Killed" with no context). Same family as RB-V1.33-2 above.
-- **Suggested fix:** Cap at 1 MiB (Cargo.toml in the wild caps far below). `let content = crate::fs::read_to_string_capped(&cargo_toml, 1 << 20).ok()?;`. If the cap is hit, `tracing::warn!(path = %cargo_toml.display(), "Cargo.toml exceeds 1 MiB cap, skipping workspace detection")` and skip — workspace detection is best-effort already (the `if let Ok(content)` swallows IO errors silently).
-
-#### RB-V1.33-4: `acquire_lock` reads PID file unbounded — DoS lever via lock file
-- **Difficulty:** easy
-- **Location:** `src/cli/files.rs:221, 240`
-- **Description:** Two `std::fs::read_to_string(&lock_path)` calls on the lock file in the contended branch. A lock file is normally 4-7 bytes (PID as ASCII digits + newline). An attacker (or a confused shell redirect) writing many GB to `.cqs/index.lock` causes both subsequent contended-acquire calls to OOM during the stale-PID probe. The first call (line 221) is gated by `!retried` so it runs once per acquisition attempt; the second (line 240) runs every time the lock is held. Worst case: two large reads in series before the bail message renders. Same RB-V1.30-2 family.
-- **Suggested fix:** Cap at 64 bytes (PID is at most 7 digits + newline; 64 covers any reasonable encoding). `let raw = crate::fs::read_to_string_capped(&lock_path, 64).ok()?;`. The trailing `.trim().parse::<u32>().ok()` already absorbs malformed input correctly — only the unbounded read needs fixing.
-
-#### RB-V1.33-5: `EmbeddingCache::scan_or_compute_batch` Vec::with_capacity underflow if `read_batch` returns extra entries
-- **Difficulty:** easy
-- **Location:** `src/cache.rs:883`
-- **Description:** `Vec::with_capacity(items.len() - hits.len())`. If `read_batch` ever returns more entries than `items.len()` (hash collision in a non-cryptographic intermediate, SQL bug returning duplicate rows, future schema change that reads cross-purpose hits) the subtraction panics on usize underflow. The current `read_batch` SQL is keyed by the hashes from `items` so in practice `hits.len() <= items.len()`, but the invariant is not enforced anywhere — no debug_assert, no `Result` boundary. A bug-injection in `read_batch` would crash the cache scan with no diagnostic beyond "subtract overflow".
-- **Suggested fix:** `Vec::with_capacity(items.len().saturating_sub(hits.len()))`. The over-allocation cost on the pathological case is bounded by `items.len()`, which is already the upper bound on `cached`. Same one-line saturating-sub patch RB-V1.30 used widely.
-
-#### RB-V1.33-6: `print_telemetry_text` divide-by-zero when sessions present but events == 0
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/telemetry_cmd.rs:499`
-- **Description:** `total as f64 / sessions as f64` where `sessions` comes from `output.sessions: Option<u64>`. The `if let Some(sessions) =` matches `Some(0)`, producing `inf` if `total > 0` or `NaN` if `total == 0`. Renders to user as "Sessions: 0 (avg inf events/session)" — wrong but cosmetic. More concerning: `format!("{:.0}", f64::INFINITY)` is "inf" which is harmless; `f64::NAN` formats as "NaN". Either way the report is broken on a corner case where the events log has session-id rows but zero command events (possible if a session was recorded but command dispatch failed before any event was logged).
-- **Suggested fix:** `if sessions > 0 { format!("Sessions: {} (avg {:.0} events/session)", sessions, total as f64 / sessions as f64) } else { format!("Sessions: 0") }`. Or guard the division: `let avg = if sessions > 0 { total as f64 / sessions as f64 } else { 0.0 };`.
-
-#### RB-V1.33-7: L5X parser line arithmetic uses unchecked u32 + u32 — overflow panics in debug, wraps in release
-- **Difficulty:** medium
-- **Location:** `src/parser/l5x.rs:124, 171, 172`
-- **Description:** `region.line_start + line_count` and `region.line_start + node.start_position().row as u32`. A pathologically-large L5X file (say 5 GB of synthetic XML lines from a tooling bug or fuzzer) produces tree-sitter row indices that, added to `region.line_start`, overflow u32 (~4 billion lines). In debug builds (used by tests) this *panics*; in release it silently wraps and emits a chunk with line_start near 0, line_end near u32::MAX — corrupting the index for that chunk. Tree-sitter row counts are usize internally so the `as u32` cast at line 171 also silently truncates files >4 B lines (theoretical only — but the cast is unguarded). Same family as P3.21 (i64.max(0) as u32 saturating cast).
-- **Suggested fix:** `region.line_start.saturating_add(line_count)` for line 124; `region.line_start.saturating_add(node.start_position().row as u32)` for 171/172. The `as u32` cast on `usize` row should also be `.try_into().unwrap_or(u32::MAX)` to avoid silent truncation, or replaced by a clamp + warn the first time it fires per parse session.
-
-#### RB-V1.33-8: `cli/commands/infra/cache_cmd.rs::format_timestamp` UNIX_EPOCH addition can overflow on i64::MAX timestamp
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/cache_cmd.rs:327-328`
-- **Description:** `UNIX_EPOCH + Duration::from_secs(ts as u64)` where `ts: i64` comes from a SQLite-stored cache row. If a corrupt row has `ts == i64::MAX` (~9.2e18), `Duration::from_secs(9.2e18)` is legal (Duration max is ~5.8e11 years) but `UNIX_EPOCH + duration` overflows the SystemTime representation on most platforms — Linux maps to `i64` seconds, so adding ~292 billion years past 1970 saturates or panics depending on impl. `dt.elapsed()` on the resulting overflowed time then panics on most platforms (negative duration error). A single corrupt cache row crashes `cqs cache stats`.
-- **Suggested fix:** Clamp or check before constructing: `if ts > 4_102_444_800 { return "far-future".to_string(); }` (~year 2100 sentinel — anything farther is corrupt). Or use `UNIX_EPOCH.checked_add(Duration::from_secs(ts as u64)).unwrap_or(UNIX_EPOCH)` and treat overflow as "unknown". Belt-and-suspenders: validate `ts >= 0 && ts < 2^40` at insert time so the read path can trust it.
-
-#### RB-V1.33-9: `splade.unwrap()` after None-guard — production code carries non-idiomatic unwrap
-- **Difficulty:** easy
-- **Location:** `src/search/query.rs:490`
-- **Description:** `let (splade_index, sparse_query) = splade.unwrap();` immediately after `if !filter.enable_splade || splade.is_none() { ... return ... }`. Logically guarded, but if a future refactor moves the guard or changes the early-return condition, this panics in production. Two cleaner patterns: (1) `let Some((splade_index, sparse_query)) = splade else { return ... }` early-return form, or (2) match expression so the unwrap branch is structurally impossible. The existing code is the v0.12.1 anti-pattern's mirror image — instead of swallowing an error we panic on it, with no recoverability if the invariant breaks.
-- **Suggested fix:** Refactor to `let Some((splade_index, sparse_query)) = splade else { return self.search_filtered_with_index(query, filter, limit, threshold, index); };` collapsing the existing two-branch `if`/`unwrap()` into a single early-return. Net code is shorter and the unwrap goes away.
-
-#### RB-V1.33-10: `set_on_item_complete` lock().unwrap() (also covered as EH-V1.33-2)
-- **Difficulty:** easy
-- **Location:** `src/llm/local.rs:708`
-- **Description:** Note: this finding overlaps with EH-V1.33-2 above. Filed under Robustness as well because the panic-on-poison shape is the canonical example of a recoverable failure being treated as a panic. P1.9 / P2.35 already established `lock().unwrap_or_else(|p| p.into_inner())` as the project-wide recovery pattern; this is the lone holdout. If a worker thread panics while holding any sibling Mutex on the LocalProvider, the next caller of `set_on_item_complete` panics — which can deadlock the entire batch dispatch chain because all workers may need to publish to the same on_item callback.
-- **Suggested fix:** See EH-V1.33-2. (Filed twice deliberately so the triage step sees this is both an error-handling regression *and* a robustness/panic-path concern.)
-
+<!-- ===== docs/audit-scratch/batch1-code-quality.md ===== -->
 ## Code Quality
 
-#### CQ-V1.33.0-1: `generate_nl_description` legacy 1-arg wrapper still on the watch + bulk hot paths
+#### CQ-V1.36-1: Enrichment hot path drops `model_max_seq_len`, falls back to 512 default
 - **Difficulty:** medium
-- **Location:** `src/nl/mod.rs:167-203`, `src/cli/pipeline/embedding.rs:138`, `src/cli/watch/reindex.rs:458`
-- **Description:** P2.38 added `generate_nl_description_with_seq_len(chunk, model_max_seq_len)` because the legacy 1-arg `generate_nl_description` falls back to `CQS_MAX_SEQ_LENGTH` env or hardcoded 512. The fix landed the new API but did not migrate the two production callers — the bulk indexing pipeline (`cli/pipeline/embedding.rs:138`) and the watch reindex loop (`cli/watch/reindex.rs:458`) both still use the legacy entry point. For nomic-coderank (2048 seq) the section-chunk content budget is silently capped at 25% capacity (`max_seq=512` → 1800 chars instead of the 8000 chars the model can absorb). Same root cause as the configurable-models disaster cited in CLAUDE.md: "convenience wrapper hardcodes a default" — the wrapper still exists, prod still calls the wrapper, the model-aware variant is dead in production.
-- **Suggested fix:** Thread `model.max_seq_length` into `prepare_for_embedding` (it already has `embedder: &Embedder` — read `embedder.max_seq_length()` or pass `model_config.max_seq_length`) and call `generate_nl_description_with_seq_len`. Same change in `watch/reindex.rs::reindex_files`. The legacy 1-arg API can stay for tests/ad-hoc tuning, or be deleted if no test depends on the env override.
+- **Location:** src/nl/mod.rs:43-59 (and src/cli/enrichment.rs:223)
+- **Description:** Configurable-models disaster pattern, *new* instance not in v1.33 triage. `enrichment_pass` (production reindex hot path called from `cli/commands/index/build.rs:634`) takes `model_config: &ModelConfig` as a parameter (line 26) but threads only `summary`/`hyde` into `cqs::generate_nl_with_call_context_and_summary` (line 223). That function then calls the legacy 1-arg `generate_nl_description(chunk)` (src/nl/mod.rs:59) which routes through `generate_nl_with_template` → `CQS_MAX_SEQ_LENGTH` env (default 512). Result: for nomic-coderank (2048-tok) or any model with seq > 512, every enriched chunk's section-content preview is capped at ~1800 chars instead of the model-correct ~8000. The initial embedding pipeline (`cli/pipeline/embedding.rs:146`, `cli/watch/reindex.rs:520`) already calls `generate_nl_description_with_seq_len(c, model_max_seq_len)`, so enrichment silently undoes part of that work. P1-28 (#1330) was claimed as "fixed" in v1.33 triage — the fix only updated the initial embedding sites; the enrichment pass was missed.
+- **Suggested fix:** Add `model_max_seq_len: usize` parameter to `generate_nl_with_call_context_and_summary`, plumb through to `generate_nl_with_template_and_seq_len(chunk, NlTemplate::Compact, model_max_seq_len)` instead of the legacy 1-arg call. Pass `model_config.max_seq_length()` from `enrichment_pass`. Verify with `grep -rn "generate_nl_description\b" src/` returning only test sites and the convenience-wrapper definition itself.
 
-#### CQ-V1.33.0-2: `embed_documents` inner batch loop hardcodes 64, ignores model dim/seq
+#### CQ-V1.36-2: `resolve_splade_model_dir()` zero-arg wrapper drops `[splade]` config at all 6 production sites
 - **Difficulty:** easy
-- **Location:** `src/embedder/mod.rs:778`
-- **Description:** `embed_documents` re-batches its input at `parse_env_usize("CQS_EMBED_BATCH_SIZE", 64)` regardless of model. Sibling `embed_batch_size_for(model)` (added in P2.41 / SHL-V1.30-1) was created precisely to avoid this — it scales batch with `1024/dim * 512/seq` rounded to a power of 2. The watch path passes raw N chunks into `embed_documents` with no upstream scaling (`watch/reindex.rs:461`), so on a multi-file save with >64 changed chunks against nomic-coderank, the inner loop slices at 64 and OOMs the GPU. Same "convenience wrapper hardcodes a default" pattern as CQ-V1.33.0-1.
-- **Suggested fix:** Replace the `parse_env_usize(... , 64)` call with `embed_batch_size_for(&self.model_config)` (promote it to `pub(crate)` in `cqs::cli::pipeline::types` or move it onto `ModelConfig`). The env override path stays inside `embed_batch_size_for` so operator-pinned values still win.
+- **Location:** src/splade/mod.rs:213-215
+- **Description:** Configurable-models disaster pattern: `pub fn resolve_splade_model_dir() -> Option<PathBuf>` calls `resolve_splade_model_dir_with_config(None)` — passing `None` is documented as "match the legacy no-config behavior". Six production callers use the zero-arg variant: `cli/store.rs:321`, `cli/batch/mod.rs:941` and `:1804`, `cli/commands/index/build.rs:689`, `cli/watch/events.rs:286`, `cli/watch/reindex.rs:69`. Every one ignores the user's `.cqs.toml` `[splade]` section (`preset`, `model_path`, `tokenizer_path`). Users editing config see no effect on watch/index/batch paths; only env vars work. Doc comment at `:208` warns "this single helper is the *only* place SPLADE paths are resolved" — but the helper itself silently strips config.
+- **Suggested fix:** Either delete the zero-arg wrapper and force every call site to thread the loaded `cfg.splade.as_ref()`, or change the wrapper to accept a `Config`/`&AuxModelSection` and convert all call sites. The latter is mechanical; the former exposes the wiring gap at the type level. Add an integration test that sets `[splade] preset = "..."` in `.cqs.toml` and asserts watch/reindex picks it up.
 
-#### CQ-V1.33.0-3: `model_repo()` discards override and silently lies in `cmd_doctor`
+#### CQ-V1.36-3: `generate_nl_with_template` legacy env-only entry point still public, masks bug from CQ-V1.36-1
 - **Difficulty:** easy
-- **Location:** `src/embedder/mod.rs:34-36`, `src/cli/commands/infra/doctor.rs:167,174`
-- **Description:** `cmd_doctor` resolves a `ModelConfig` honoring `model_override` at `doctor.rs:167`, then 7 lines later calls the parameter-less `cqs::embedder::model_repo()` (= `ModelConfig::resolve(None, None).repo`) for the "runtime repo" displayed to the user and used in the metadata-vs-runtime drift check. Net effect: `cqs doctor --model e5-base` against an index containing E5-base reports a *stored=e5-base / runtime=bge-large* mismatch warning even though the override was honored everywhere except the comparison string. Same "convenience wrapper that hardcodes a default" pattern.
-- **Suggested fix:** Use `model_config.repo.as_str()` (the variable already in scope four lines above) instead of `model_repo()`. Then either delete `model_repo()` (only call site post-fix) or rename it to `default_model_repo()` and document it as "compile-time default — does NOT consult overrides."
+- **Location:** src/nl/mod.rs:197-203
+- **Description:** `generate_nl_with_template(chunk, template)` reads `CQS_MAX_SEQ_LENGTH` (default 512) and forwards to `_with_template_and_seq_len`. It is `pub`, re-exported from `lib.rs:232`, and is the path through which `generate_nl_description` (1-arg) and the enrichment hot path silently truncate previews. Doc comment admits: "legacy 1-arg API kept for compatibility". With CQ-V1.36-1 fixed, this wrapper has zero non-test callers. Leaving it `pub` invites the same disaster (any new caller picks the env-default rather than the model-correct value).
+- **Suggested fix:** After CQ-V1.36-1 is fixed, downgrade `generate_nl_with_template` to `pub(crate)` (or delete entirely if the test at `:815` is updated to call `_with_template_and_seq_len`). Same for `generate_nl_description`. Both wrappers are tombstones for an API that should require the seq-len parameter.
 
-#### CQ-V1.33.0-4: `index_pack` uses `break` while `token_pack` uses `continue` — P1.18 fix not mirrored to sibling
+#### CQ-V1.36-4: Stale dead-code reports in `cqs dead` for src/llm/* — index out of sync with v1.33 trait unification
 - **Difficulty:** easy
-- **Location:** `src/cli/commands/mod.rs:425-489` vs `src/cli/commands/mod.rs:502-534`
-- **Description:** P1.18 changed `token_pack` from `break` to `continue` on the oversized-mid-stream branch so smaller, lower-scored items can still fit in the remaining budget. The sibling `index_pack` (used by `task::pack_section`) still hits `break` at line 521 — exactly the bug shape P1.18 was filed against. A waterfall budget call where a big item arrives in the middle of the score-sorted stream silently truncates the result, dropping smaller items the user expected to see. The two functions have nearly identical "score-sort + greedy pack within budget" core logic; missing the parity fix is exactly the duplication-cost driver MEMORY.md flags.
-- **Suggested fix:** Replace `break;` at line 521 with `continue;`. Add a `tests::index_pack_continues_after_oversized_item` mirroring `token_pack`'s P1.18 regression test. Longer-term: factor the shared score-sort+greedy-pack core into a private helper to prevent the next divergence.
+- **Location:** Tooling artifact; affects audit/triage workflow.
+- **Description:** `cqs dead --json` flags `submit_doc_batch`/`submit_hyde_batch` at `src/llm/batch.rs:387,395`, `src/llm/local.rs:681,689`, `src/llm/provider.rs:153,161,207,215` as dead. Those names no longer exist (PR #1347 / EX-V1.33-1 unified them into `submit_batch`); only doc-comments and historical eval JSON mention them. The HNSW index has stale chunk_id mappings — `cqs read` at those line numbers shows the new code. This isn't a code defect but it actively wastes auditor time chasing ghosts. `assert_eq!(human_bytes(...))` and `format_uptime(...)` are similarly mis-flagged because the `_with_seq_len` macro/test reflection isn't traced.
+- **Suggested fix:** Run `cqs index` (or `systemctl --user restart cqs-watch`) to refresh post-#1347. Longer term: dead-code analyzer should require the chunk's content to be reachable from a live caller-graph node, not just match a chunk-id from the snapshot when the file at that line no longer contains the function. Equivalently, attach the indexed-at content_hash to dead entries and skip when the on-disk hash differs.
 
-#### CQ-V1.33.0-5: `serve` async handlers duplicate 15-20 LOC of permit + spawn_blocking + span boilerplate ×6
-- **Difficulty:** medium
-- **Location:** `src/serve/handlers.rs:77-356` (handlers `stats` / `graph` / `chunk_detail` / `search` / `hierarchy` / `cluster_2d`)
-- **Description:** Every async handler repeats the same prelude: capture `Span::current()`, clone `state.store`, acquire `state.blocking_permits.acquire_owned()` with the `"blocking permit: {e}"` error string, call `spawn_blocking`, re-enter the span inside the closure, hold the permit by `let _permit = permit;`, await, map the join error with `"<name> join: {e}"`. ~120 LOC of identical scaffolding that obscures the per-handler logic (the actual `build_*` call is one line). When P2.76 lands a config knob that needs to thread through (e.g., per-handler permit cost, request cancellation deadline) it must be modified in 6 places — exactly the duplication driver behind the wiring-verification disasters MEMORY.md calls out.
-- **Suggested fix:** Add a `with_blocking<T, F>(state: &AppState, label: &'static str, span: Span, f: F) -> Result<T, ServeError>` helper in `serve/handlers.rs` that runs `f(&Store)` inside `spawn_blocking` with the permit held. Each handler shrinks to ~5 LOC: capture inputs, call helper, return. Tests in `serve/tests.rs` continue to exercise routes end-to-end so the helper gets verified for free.
-
-#### CQ-V1.33.0-6: `search_embedding_only` is a `pub` wrapper with zero callers (incl. tests) and a self-warning to "use the other one"
+#### CQ-V1.36-5: 5 public NL-gen entry points where 2 would suffice (wrapper proliferation)
 - **Difficulty:** easy
-- **Location:** `src/search/query.rs:81-94`
-- **Description:** `pub fn search_embedding_only(&self, query, limit, threshold)` delegates to `search_filtered(query, &SearchFilter::default(), limit, threshold)`. Its docstring openly says "You almost certainly want `search_filtered()` instead. ... Two production bugs came from calling this directly (PR #305)." `grep -rn search_embedding_only src/` returns one definition and zero callers — including in tests. So it's a publicly-exposed footgun whose only purpose is to be warned against. A future contributor sees an attractive 4-arg shape and falls into the PR #305 trap.
-- **Suggested fix:** Delete it. If a test fixture really wants the 4-arg shape, inline `store.search_filtered(q, &SearchFilter::default(), limit, threshold)` at the call site — the wrapper saves zero characters.
+- **Location:** src/nl/mod.rs:43,167,175,197,209
+- **Description:** Public surface: `generate_nl_with_call_context_and_summary` (7 args), `generate_nl_description` (1 arg), `generate_nl_description_with_seq_len` (2 args), `generate_nl_with_template` (2 args, env-default), `generate_nl_with_template_and_seq_len` (3 args). Three of these are 1-line forwarders to a more-parameterized variant. Only `_with_call_context_and_summary` and `_with_template_and_seq_len` carry semantic content. The 1-arg `generate_nl_description` is the trap from CQ-V1.36-1. This is mostly dead surface area — `lib.rs:232` re-exports both `generate_nl_with_call_context_and_summary` AND `generate_nl_with_template`, and the 1-arg `generate_nl_description` is exported via the unqualified glob from older releases.
+- **Suggested fix:** After CQ-V1.36-1, retain only `generate_nl_with_template_and_seq_len` (free-form) and `generate_nl_with_call_context_and_summary` (enrichment). Make the latter take `model_max_seq_len`. Mark the three legacy entry points `#[deprecated]` for one release, then delete (per project policy: no external users, no deprecation cycle needed). The `tests/eval_test.rs:57` use of `generate_nl_description` should switch to the seq-len variant so eval mirrors production.
 
-#### CQ-V1.33.0-7: `check_model_version()` wrapper is dead in production; only test-gated `_with` callers exist
+#### CQ-V1.36-6: `enrichment_pass` accepts `model_config` but ignores it
 - **Difficulty:** easy
-- **Location:** `src/store/metadata.rs:116-149`
-- **Description:** `pub(crate) fn check_model_version()` calls `self.check_model_version_with(DEFAULT_MODEL_NAME)`. The `_with` variant is `#[cfg(test)]`. All five callers of the no-arg wrapper are inside `#[cfg(test)] mod tests`. The function exists to compare the stored model name against a hardcoded compile-time default — for any deployment using a non-default model (E5, nomic-coderank, custom), calling this would assert "stored=user-model / expected=bge-large = mismatch." It's a stale shim from before configurable models landed.
-- **Suggested fix:** Either gate `check_model_version()` behind `#[cfg(test)]` (matches its `_with` sibling and current usage), or delete it and have the test sites call `check_model_version_with(DEFAULT_MODEL_NAME)` directly. Removes the misleading "production validation" appearance.
+- **Location:** src/cli/enrichment.rs:23-28, :223-231
+- **Description:** Function signature takes `model_config: &cqs::embedder::ModelConfig` (line 26) but the parameter is read only by surrounding logic in `enrichment.rs` not visible in the relevant block — when calling `generate_nl_with_call_context_and_summary` at line 223, only `summary` and `hyde` are threaded, not the model. The compiler can't catch this because `model_config` is used elsewhere in the function (e.g., for batch sizing). This is the classic "parameter exists but isn't propagated to the place it should constrain" bug — same shape as the configurable-models disaster.
+- **Suggested fix:** Once CQ-V1.36-1 widens the NL signature, pass `model_config.max_seq_length()` (or whichever accessor is correct — verify against `embedder/models.rs`) through. Add a regression test: enrich a chunk with both 512-seq and 2048-seq models, assert the produced NL string differs in length.
 
-#### CQ-V1.33.0-8: `LlmReranker` exported `pub` but is a stub that returns `Err` from every score call
+#### CQ-V1.36-7: `VectorIndex::search_with_filter` default impl uses unchecked `k * 3`
 - **Difficulty:** easy
-- **Location:** `src/reranker.rs:765-808`, `src/lib.rs:181`
-- **Description:** `LlmReranker` is `pub use`-exported from `lib.rs` but its `Reranker` impl returns `RerankerError::Inference("LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)")` on every call. It exists as a placeholder so #1220's trait surface compiles; nothing in production constructs it. Library consumers (post v1.30.0 #1220) see it in autocomplete and the doc comment, then hit the runtime `Err` only at first call. This is the inverse of the configurable-models disaster — instead of a wrapper hardcoding a default, it's a wrapper hardcoding `Err`.
-- **Suggested fix:** Either gate it behind `#[cfg(any(test, feature = "llm-reranker-skeleton"))]` or move the type to a `reranker::experimental` submodule and stop re-exporting it from `lib.rs`. The trait surface still compiles via `OnnxReranker` + `NoopReranker`. When the real impl lands, promote it back to the public namespace.
+- **Location:** src/index.rs:103
+- **Description:** Trait default impl for filter-aware search: `self.search(query, k * 3).into_iter().filter(...)`. P1-42 (claimed fixed in #1326) addressed `limit*3`/`limit*2` overflow in the brute-force scoring path under `src/search/`, but this trait default — used by any backend that doesn't override (e.g., the brute-force `Vec<Embedding>` backend) — still has the same shape. With `k = usize::MAX/2` (legitimate-looking large `k` from a misconfigured `--limit` env), `k * 3` overflows in release without panic. A test harness or mis-routed daemon request could trip this.
+- **Suggested fix:** Replace with `k.saturating_mul(3)`. Same one-token fix as P1-42; likely just missed because triage scoped to `src/search/`.
 
-#### CQ-V1.33.0-9: `is_false` / `is_zero_usize` trivial helpers duplicated 3+2 times across modules
+
+<!-- ===== docs/audit-scratch/batch1-documentation.md ===== -->
+## Documentation
+
+#### lib.rs Features list omits qwen3-embedding-{4b,8b} presets
 - **Difficulty:** easy
-- **Location:** `src/cli/json_envelope.rs:87`, `src/eval/schema.rs:89`, `src/store/helpers/types.rs:68`, `src/onboard.rs:124`, `src/impact/types.rs:152`, `src/ci.rs:70`
-- **Description:** Six identical 2-line `serde(skip_serializing_if = ...)` predicates re-declared module-by-module: three copies of `fn is_false(b: &bool) -> bool { !*b }` and two copies of `fn is_zero_usize(n: &usize) -> bool { *n == 0 }`, plus a singleton `is_true`. Each new envelope-shaped struct grows another copy. P3-class but a real coupling pin: a single `cqs::serde_helpers` module would absorb all six and make new envelope additions a one-line `serde` attribute import.
-- **Suggested fix:** Add `src/serde_helpers.rs` exporting `pub(crate) fn is_false`, `pub(crate) fn is_zero_usize`, `pub(crate) fn is_true`. Replace the six in-tree definitions with `use crate::serde_helpers::*` (or qualified `crate::serde_helpers::is_false` paths in the `skip_serializing_if` strings).
+- **Location:** src/lib.rs:9
+- **Description:** The `## Features` list in the crate-top docstring enumerates configurable embedding presets as "embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, and custom ONNX presets". `src/embedder/models.rs` registers two more first-class presets — `qwen3-embedding-8b` (line 521, #1392 ceiling probe) and `qwen3-embedding-4b` (line 579, shipped in v1.36.1 PRs #1441 + #1442). Missing them in the most-public docstring (the rustdoc landing) is a lying-docs P1: a developer reading the lib root won't discover the two largest-context presets the crate actually exposes.
+- **Suggested fix:** Append `qwen3-embedding-8b, qwen3-embedding-4b` to the preset enumeration on line 9 (and mirror the same enumeration in `README.md:672` and `README.md:780` — see follow-up finding).
 
-#### CQ-V1.33.0-10: `search_unified_with_index` is a `pub` wrapper that just maps `Code(...)` over `search_filtered_with_index` results
+#### README "How It Works" + CQS_EMBEDDING_MODEL row omit qwen3 presets
 - **Difficulty:** easy
-- **Location:** `src/search/query.rs:928-951`
-- **Description:** Since SQ-9 removed notes from the search pipeline (see line 926 doc), `search_unified_with_index` does exactly: call `search_filtered_with_index` then `.into_iter().map(UnifiedResult::Code).collect()`. That's a 6-line wrapper with zero distinguishing logic — the only thing it changes is the return type's variant constructor. Three production callers (`batch/handlers/search.rs:268`, `eval/runner.rs:368`, `cli/commands/search/query.rs:412`) and they could each call `search_filtered_with_index` and wrap the variant locally. The "unified" name implied a notes+code merge that is gone.
-- **Suggested fix:** Either delete the wrapper and have the three callers do `.map(UnifiedResult::Code)` themselves (~one extra line each), or rename to `search_code_results` so the function name stops promising a non-existent unification. Same outcome — pick the one less load-bearing on the eval scripts.
+- **Location:** README.md:672, README.md:780
+- **Description:** `README.md:672` (How It Works → Embed) lists "embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank presets". `README.md:780` (CQS_EMBEDDING_MODEL row) advertises the accepted values as `embeddinggemma-300m, bge-large, bge-large-ft, v9-200k, e5-base, nomic-coderank`. Both miss `qwen3-embedding-8b` and `qwen3-embedding-4b`, which are accepted by `ModelConfig::from_preset` and ship with built-in pin tests (`models.rs:1078 qwen3_embedding_4b_preset_shape`). CONTRIBUTING.md has the same gap at lines 237 / 239 / 353. PRIVACY.md "Model Download" (lines 30-36) likewise stops at `nomic-coderank` and omits the qwen3 family despite both repos being downloaded by users who pick them.
+- **Suggested fix:** Update README.md:672, README.md:780, CONTRIBUTING.md:237/239/353, and PRIVACY.md "Model Download" bullets to include both qwen3 presets, with a short note on context length (qwen3 is 4096-cap per the v1.36.1 cap change in CHANGELOG).
 
-## Scaling & Hardcoded Limits
-
-#### SHL-V1.33-1: CagraBackend gate uses zero-arg gpu_available(), defeats P2.42 VRAM check
+#### Cargo.toml `lang-all` feature missing `lang-elm` (54-vs-53 mismatch)
 - **Difficulty:** easy
-- **Location:** src/cagra.rs:1345
-- **Description:** P2.42 introduced `gpu_available_for(n_vectors, dim)` to refuse GPU build when estimated peak memory exceeds `CQS_CAGRA_MAX_GPU_BYTES` (default 2 GiB). But the production gate in `CagraBackend::try_open` calls the legacy zero-arg `CagraIndex::gpu_available()`, which collapses to `gpu_available_for(0, 0)` and the corpus-aware branch is short-circuited. Outcome: on an 8 GB GPU with a corpus that would OOM CAGRA build, `try_open` still claims eligibility and proceeds to OOM. Same disaster shape as the `embed_batch_size_for` wiring regression (SHL-V1.30-1 / configurable-models disaster) — the corpus-aware function exists but no production caller uses it.
-- **Suggested fix:** Replace `CagraIndex::gpu_available()` at `cagra.rs:1345` (and the matching `tracing::debug!` at 1349) with `CagraIndex::gpu_available_for(chunk_count, dim)` so the VRAM-budget check actually fires in the gate path. `dim` comes from `ctx.store.dim()` (already in scope as `BackendContext`).
+- **Location:** Cargo.toml:244
+- **Description:** The `lang-all` umbrella feature lists 53 entries: `lang-rust … lang-st, lang-dart`. `lang-elm` is intentionally a registered language (`Elm` variant in `src/language/mod.rs`, definition shipped, `lang-elm` is in `default = […]` on line 187), but `lang-all` does **not** include it. A user running `cargo build --no-default-features --features lang-all` will get a 53-language build that silently drops Elm. README/Cargo.toml otherwise advertise "54 languages" everywhere.
+- **Suggested fix:** Insert `"lang-elm"` into the `lang-all` array on line 244 (between `lang-elixir` and `lang-erlang` to match registry order).
 
-#### SHL-V1.33-2: type_edges INSERT_BATCH=249 still uses pre-2020 SQLite limit despite SHL-31/32/33 fix
+#### `src/language/mod.rs` crate-doc Feature Flags list missing `lang-dart`
 - **Difficulty:** easy
-- **Location:** src/store/types.rs:184
-- **Description:** `upsert_type_edges()` uses `const INSERT_BATCH: usize = 249;` (legacy 999/4 derivation). The neighboring `replace_type_edges_in_tx_for_chunks` at line 138 already uses the centralized helper: `const INSERT_BATCH: usize = max_rows_per_statement(4);` which yields ~8117 rows per statement on modern SQLite (limit 32766). The doc comment at line 161-162 explicitly says the function "should batch" via `max_rows_per_statement(4)`. With ~8117 rows/statement vs 249, this site issues 32× more SQL round-trips than necessary on the hot indexing path. Direct asymmetry in the same file makes the regression obvious.
-- **Suggested fix:** Replace `const INSERT_BATCH: usize = 249;` at `src/store/types.rs:184` with `const INSERT_BATCH: usize = crate::store::helpers::sql::max_rows_per_statement(4);` to match line 138. Add `use crate::store::helpers::sql::max_rows_per_statement;` if not already in scope.
+- **Location:** src/language/mod.rs:10-65
+- **Description:** The `# Feature Flags` enumeration in the module-top docstring lists 53 `lang-*` features (lang-rust through lang-aspx, lang-st, then `lang-all`). It is missing `lang-dart`, which is registered at `src/language/mod.rs:1094` (`Dart => "dart", feature = "lang-dart"`) and shipped as a default feature in `Cargo.toml:243/187`. Currently 54 lang features in the registry; docstring lists 53.
+- **Suggested fix:** Add `//! - \`lang-dart\` - Dart support (enabled by default)` immediately above the `lang-all` line at src/language/mod.rs:65.
 
-#### SHL-V1.33-3: chunks/embeddings.rs and chunks/query.rs BATCH_SIZE=500 use legacy SQLite limit
+#### CHANGELOG.md `[Unreleased]` section is at wrong position (between 1.34.0 and 1.33.0)
 - **Difficulty:** easy
-- **Location:** src/store/chunks/embeddings.rs:24, 103; src/store/chunks/query.rs:188, 233, 319
-- **Description:** Five sites use `const BATCH_SIZE: usize = 500;` for IN-list queries with a single bind variable (`WHERE content_hash IN (?, ?, ...)`, `WHERE origin IN (...)`, `WHERE name IN (...)`, `WHERE id IN (...)`). The line 218 doc comment says "Batches queries in groups of 500 to stay within SQLite's parameter limit (~999)." That's the pre-2020 SQLite limit. Modern SQLite (cqs requires ≥3.35) is 32766 — `max_rows_per_statement(1)` yields 32466. So these sites use 65× more round-trips than the central helper would. Same SHL-31/32/33 anti-pattern that was supposed to be eradicated. Hot path during search/gather/reindex.
-- **Suggested fix:** Replace each `const BATCH_SIZE: usize = 500;` with `const BATCH_SIZE: usize = crate::store::helpers::sql::max_rows_per_statement(1);` at all five sites. Remove the stale "(~999)" comment at chunks/query.rs:218.
+- **Location:** CHANGELOG.md:194
+- **Description:** Per Keep-a-Changelog (which the file's own header points to), `[Unreleased]` lives at the top above the latest released version. cqs's CHANGELOG has versioning order `[1.36.2] (line 8) → [1.36.1] (25) → [1.35.0] (116) → [1.34.0] (144) → [Unreleased] (194) → [1.33.0] (196) → …`. `[Unreleased]` is empty and orphaned between two released versions. Either it was forgotten when 1.34.0 was cut, or it was meant to be deleted. Tools that parse the changelog (release notes generators, dependabot) will see an empty `[Unreleased]` ordered below released versions and can produce broken release notes.
+- **Suggested fix:** Either delete the empty `[Unreleased]` block at line 194-195, or move it above `## [1.36.2] - 2026-05-04` on line 8. Given the project ships fast and unreleased changes accumulate, moving it to the top is the right answer.
 
-#### SHL-V1.33-4: chunks/staleness.rs BATCH_SIZE=100 across three sites also legacy
+#### Cargo.toml description over-rounds eval R@20 (89% claimed, 88.6% measured)
 - **Difficulty:** easy
-- **Location:** src/store/chunks/staleness.rs:315, 434, 600
-- **Description:** Three sites use `const BATCH_SIZE: usize = 100;` for `WHERE origin IN (...)` deletes. Comment at line 312 says "Batch delete in chunks of 100 (SQLite has ~999 param limit)." Same pre-modern-SQLite assumption. Single-bind so `max_rows_per_statement(1)` = 32466. Prune passes loop 324× more than necessary on a moderately-sized corpus.
-- **Suggested fix:** Replace each `const BATCH_SIZE: usize = 100;` with `const BATCH_SIZE: usize = crate::store::helpers::sql::max_rows_per_statement(1);` at the three sites. Remove the "(~999)" comment.
+- **Location:** Cargo.toml:6
+- **Description:** Crate description at line 6 reads: "51% R@1 / 76% R@5 / 89% R@20 on v3.v2 dual-judge code-search (218 queries, EmbeddingGemma-300m default …)". README's matching TL;DR on line 5 cites "50.9% R@1 / 76.2% R@5 / 88.6% R@20" — same eval, same fixture, same date. 88.6% rounds to 89% only by typical rounding; 50.9 rounds to 51 cleanly and 76.2 rounds to 76. The 89% value will be cited verbatim by crates.io users who don't read the README, and overstates the result by 0.4pp. This is exactly the lying-docs cluster (docs that promise behavior the code/eval doesn't deliver) that team policy flags as P1.
+- **Suggested fix:** Either round all three consistently (51% / 76% / 89% → keep, but note in description "≈"), or use the README's precise numbers (51% / 76% / 89% → 50.9% / 76.2% / 88.6%). Recommend matching the README exactly: "50.9% R@1 / 76.2% R@5 / 88.6% R@20".
 
-#### SHL-V1.33-5: chunks/crud.rs INSERT_BATCH=300 legacy size for calls table
+#### SECURITY.md cites stale `src/lib.rs:601` for `enumerate_files` follow_links
 - **Difficulty:** easy
-- **Location:** src/store/chunks/crud.rs:881
-- **Description:** `INSERT INTO calls (caller_id, callee_name, line_number)` uses `const INSERT_BATCH: usize = 300;` — 3 binds per row. Modern limit allows `max_rows_per_statement(3)` = 10822. So 36× under-sized. Hot path because every reindex of a file rewrites every chunk's call edges. Note the file already imports `max_rows_per_statement` at lines 346, 435, 498 (which use it correctly with multipliers of 3 and 5) — so this site is the lone hold-out.
-- **Suggested fix:** Replace `const INSERT_BATCH: usize = 300;` at `src/store/chunks/crud.rs:881` with `const INSERT_BATCH: usize = max_rows_per_statement(3);` (the import is already present in the file).
+- **Location:** SECURITY.md:223
+- **Description:** SECURITY.md "Symlink Behavior → Directory walks" promises: "`enumerate_files` (`src/lib.rs:601`) sets `WalkBuilder::follow_links(false)`". The function `enumerate_files` is now at `src/lib.rs:757` (eager wrapper) and `enumerate_files_iter` at `src/lib.rs:786`; the actual `.follow_links(false)` call lives at `src/lib.rs:813`. A reader auditing the security claim by jumping to line 601 lands in the middle of an unrelated section and is left wondering whether the claim is still true. P1 lying-docs (the behavior is correct, the citation is wrong).
+- **Suggested fix:** Update the citation to `src/lib.rs:813` (the `follow_links(false)` line) — that's the load-bearing line. Or to `src/lib.rs:786` if pointing at the function rather than the line. Both `enumerate_files` and `enumerate_files_iter` exist now, so the "function name" citation is also slightly stale.
 
-#### SHL-V1.33-6: chunks/async_helpers.rs HASH_BATCH=500 still hardcoded
+#### `src/schema.sql` header still says "schema v22" — actual is v26
 - **Difficulty:** easy
-- **Location:** src/store/chunks/async_helpers.rs:266
-- **Description:** `const HASH_BATCH: usize = 500;` for batch hash lookups. The same module already uses `max_rows_per_statement(1)` at lines 29 and 72 — line 266 is the hold-out. Single-bind queries mean we pay 65× the round-trips (32466 / 500).
-- **Suggested fix:** Replace `const HASH_BATCH: usize = 500;` at `src/store/chunks/async_helpers.rs:266` with `const HASH_BATCH: usize = crate::store::helpers::sql::max_rows_per_statement(1);` to match the already-correct sites in the same module.
+- **Location:** src/schema.sql:1
+- **Description:** First line of `src/schema.sql` reads `-- cq index schema v22`. The actual current schema is v26 (`CURRENT_SCHEMA_VERSION: i32 = 26` in `src/store/helpers/mod.rs:140`); migrations v23, v24 (#1221 vendored), v25 (#1133 notes.kind), and v26 (#1409 composite chunks index) have all landed since the comment was written. Subsequent comments inside the file correctly call out v24/v25/v26 columns (e.g. `chunks.vendored` at line 60 is annotated "v24", `notes.kind` at line 144 is annotated "v25"), so the file is internally inconsistent. A reader trusting the header thinks four migrations don't exist.
+- **Suggested fix:** Change line 1 to `-- cq index schema v26 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26 columns annotated inline below)`.
 
-#### SHL-V1.33-7: BM25 K1=1.2, B=0.75 hardcoded in train_data without rationale or env override
+#### CONTRIBUTING.md schema citation stale at v25 (actual v26)
 - **Difficulty:** easy
-- **Location:** src/train_data/bm25.rs:3-4
-- **Description:** `const K1: f32 = 1.2; const B: f32 = 0.75;` — the textbook BM25 defaults appear with no comment justifying the choice or pointing to the literature source. Used during training-data hard-negative selection. Other ranking knobs in the codebase (rrf_k, type_boost, name_boost) all flow through `SCORING_KNOBS` with documented bounds and env overrides; BM25 is the outlier. If a future training experiment needs to sweep K1/B (e.g., for code-specific corpora that benefit from K1≈1.5), there's no knob.
-- **Suggested fix:** Either (a) add a one-line comment citing Robertson & Walker 1994 / Lucene defaults so future readers don't wonder if these are arbitrary; or (b) route through `parse_env_f32("CQS_TRAIN_BM25_K1", 1.2)` / `parse_env_f32("CQS_TRAIN_BM25_B", 0.75)` per the same pattern as `CQS_RISK_HIGH` / `CQS_RISK_MEDIUM`.
+- **Location:** CONTRIBUTING.md:212, CONTRIBUTING.md:226
+- **Description:** Line 212 says "store/ - SQLite storage layer (Schema v25, WAL mode)"; line 226 lists migrations as "v10-v25, including … v25 notes.kind". v1.36.0 (#1409) bumped to v26 with the composite `(source_type, origin)` index on `chunks` — CHANGELOG.md:79 documents this. ROADMAP.md:5 and CHANGELOG correctly say v26; CONTRIBUTING.md missed the bump.
+- **Suggested fix:** Change "Schema v25" → "Schema v26" on line 212; on line 226 extend the migration list to "v10-v26, including … v25 notes.kind, v26 composite (source_type, origin) index".
 
-#### SHL-V1.33-8: BM25 FTS5 column weights (10.0,1.0,1.0,1.0) duplicated as inline SQL string at two sites
+#### ROADMAP.md "Current" header points at v1.36.0 — actual current is v1.36.2
 - **Difficulty:** easy
-- **Location:** src/store/search.rs:125, src/store/chunks/query.rs:417
-- **Description:** Two SQL queries embed the literal `bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0)`. The "10× weight on the name column" decision is duplicated as SQL-literal magic numbers across two production paths. If a tuning sweep finds `(15.0, 1.0, 1.0, 0.5)` is better, the change has to be made in both places, and there's no way to A/B-test without recompiling. Other ranking knobs flow through `SCORING_KNOBS`.
-- **Suggested fix:** Hoist the four weights to named constants (e.g., `BM25_NAME_WEIGHT`, `BM25_DOC_WEIGHT`) and substitute via `format!()` once per site, or wire them through `SCORING_KNOBS` with env overrides (`CQS_BM25_NAME_WEIGHT` etc.). Single source of truth — both sites must move together.
+- **Location:** ROADMAP.md:3
+- **Description:** Line 3 reads `## Current: v1.36.0 (cut 2026-05-03)`. v1.36.1 (#1446, qwen3-4b preset + FP16) and v1.36.2 (#1455, Store::drop checkpoint TRUNCATE→PASSIVE + busy_timeout bump) have both shipped since (CHANGELOG.md:8, line 25). The roadmap "Current" section is the authoritative right-now-state pointer; readers landing here believe the project is two patch releases behind reality. CHANGELOG.md is correct; ROADMAP.md drifted.
+- **Suggested fix:** Update the header to `## Current: v1.36.2 (cut 2026-05-04)` and either fold the v1.36.1/v1.36.2 highlights into the Current section or add brief "**v1.36.1 (2026-05-04):**" / "**v1.36.2 (2026-05-04):**" lines analogous to the existing "**v1.35.0 (released 2026-05-02):**" / "**v1.34.0 (2026-05-02):**" pattern at lines 11-13.
 
-#### SHL-V1.33-9: cagra build_from_store BATCH_SIZE=10_000 hardcoded, doesn't scale with dim
+#### SECURITY.md telemetry path uses glob `telemetry*.jsonl` — code writes only `telemetry.jsonl`
 - **Difficulty:** easy
-- **Location:** src/cagra.rs:736
-- **Description:** `const BATCH_SIZE: usize = 10_000;` for streaming embedding rows during CAGRA index construction. At dim=1024 this is 40 MB per batch (10_000 × 1024 × 4 bytes); at a hypothetical 4096-dim future model, 160 MB per batch. No env override and no scaling to model dim. Sibling memory caps in the same file (`CQS_CAGRA_MAX_BYTES`, `CQS_CAGRA_MAX_GPU_BYTES`) are env-overridable; the streaming batch isn't. Less severe than the SQLite-batch findings because it's a single-shot path, but still inconsistent with the rest of the CAGRA module's tunability story.
-- **Suggested fix:** Either (a) add `CQS_CAGRA_STREAM_BATCH_SIZE` env knob with default 10_000; or (b) compute the batch size from a per-batch byte budget (e.g., 64 MiB / (dim * 4)) so the value scales with the active model. Document the rationale (40 MB at dim=1024) in a doc comment.
+- **Location:** SECURITY.md:135
+- **Description:** SECURITY.md write-access table line 135 lists `.cqs/telemetry*.jsonl` — the asterisk implies rotation or a numbered family. Actual implementation in `src/cli/telemetry.rs:82` writes only the literal `telemetry.jsonl` (no rotation, no `.jsonl.1`, no date stamps), and the module-top docstring on lines 3, 8, 16, 54 consistently uses the singular form. PRIVACY.md:7 is also singular and correct. The glob is a stale wildcard from when rotation was considered but not implemented — minor lying-docs (overstates the file surface a `rm` would need to wipe).
+- **Suggested fix:** Change `.cqs/telemetry*.jsonl` to `.cqs/telemetry.jsonl` on SECURITY.md:135 to match what the code actually writes.
 
-#### SHL-V1.33-10: search_across_projects rayon thread cap unwrap_or(4) ignores host parallelism
-- **Difficulty:** easy
-- **Location:** src/project.rs:222-231
-- **Description:** Cross-project search hardcodes a 4-thread rayon pool when `CQS_RAYON_THREADS` is unset. The neighboring `reference.rs:204` uses the same `unwrap_or(4)` but documents a memory rationale ("each ref loads Store + HNSW") in RM-29 (lines 191-193). project.rs has no such memory rationale and no `available_parallelism()` fallback either. On a 32-core workstation this caps cross-project search to 12% of cores; on a 2-core laptop it over-commits. Daemon worker pool (`watch/runtime.rs:62-66`) does the right `available_parallelism().min(4)` clamp — project.rs hasn't picked up that pattern.
-- **Suggested fix:** Replace the bare `.unwrap_or(4)` at `src/project.rs:231` with `.unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8))` and document why (each project loads its own Store + HNSW, so memory cost scales linearly with thread count). Or, if the 4-cap is intentional, lift the rationale comment from `reference.rs:191-193` and put it here too.
 
-#### SHL-V1.33-11: convert/naming.rs title_to_filename has no length cap — Windows MAX_PATH violation
-- **Difficulty:** easy
-- **Location:** src/convert/naming.rs:71-92
-- **Description:** `title_to_filename()` converts a doc's H1 heading to a kebab-case `.md` filename with no length cap. A 600-character H1 (legal in Markdown — long hierarchical doc titles are common in vendor manuals) generates a 600-character filename. Linux NAME_MAX is 255 bytes (rejects, surfaces as IO error from `fs::write`); Windows traditional MAX_PATH=260 chars total path; even the extended path API is 32767. The fallback path at `extract_title:50` checks `<= 120` chars but only for the "first non-empty line" branch — H1 and H2 are passed through unbounded. Convert pass on a vendor doc with long titles fails at write time with no specific guidance. Audit-charter relevant: filesystem limits differ Windows vs Linux.
-- **Suggested fix:** Cap the title at ~80-100 chars in `title_to_filename` before kebab-conversion (truncate at word boundary); or have `extract_title` apply the same `<= 120` cap to H1 and H2. Add a doc-comment noting the Windows MAX_PATH constraint.
-
-#### SHL-V1.33-12: HNSW M / ef_construction / ef_search defaults static, don't auto-scale with corpus
-- **Difficulty:** medium
-- **Location:** src/hnsw/mod.rs:62-103
-- **Description:** Per the comment at lines 51-54, the recommended values vary by corpus size: "Smaller codebases (<5k): M=16, ef_construction=100, ef_search=50" / "Larger codebases (>100k): M=32, ef_construction=400, ef_search=200". But the defaults are static at M=24, ef_construction=200, ef_search=100. The CAGRA module already log-scales `cagra_itopk_max_default(n_vectors)` (line 166-170). HNSW could use the same pattern: read the chunk_count from store at index-build time and pick M/ef accordingly. Today, a 500-chunk hobby project pays the same construction cost as a 100k-chunk monorepo, and a 100k-chunk repo has worse-than-suggested recall at ef_search=100. The env overrides exist but require operators to know what to tune; auto-scaling would just work.
-- **Suggested fix:** Add a `hnsw_defaults_for(chunk_count: usize) -> (M, ef_c, ef_s)` helper that returns `(16, 100, 50)` below 5k, `(24, 200, 100)` between 5k–100k, `(32, 400, 200)` above 100k. Have `max_nb_connection()` / `ef_construction()` / `ef_search()` consult it on first call. Env overrides win over scaled default.
-
-## Test Coverage (adversarial)
-
-#### TC-ADV-V1.33-1: `search_filtered` and `search_filtered_with_index` with `limit=0` have no short-circuit and no test
-- **Difficulty:** easy
-- **Location:** `src/search/query.rs:112-141, 671-751`
-- **Description:** `search_unified_with_index` (line 936) short-circuits `if limit == 0 { return Ok(vec![]); }`, but `search_filtered` and `search_filtered_with_index` don't. With `limit=0`, `search_filtered_with_index` still computes `candidate_count = limit.saturating_mul(5).max(100)` (line 696), runs the index search to retrieve 100 candidates, then enters `search_by_candidate_ids_with_notes` only to return empty. `search_filtered` falls through to `search_filtered_with_notes` which builds `BoundedScoreHeap::new(0)` (heap_capacity_zero is tested) and then runs the cursor scan over all chunks producing nothing. No test pins the behavior, so a future refactor that reorders branches could panic on `semantic_limit = limit * 3 = 0` arithmetic in unexpected ways. Wasted work + invariant unpinned.
-- **Suggested fix:** Add `test_search_filtered_limit_zero_returns_empty` and `test_search_filtered_with_index_limit_zero_returns_empty` next to `test_search_filtered_empty_store` (line 1168). Optionally add an early-return short-circuit at the top of both functions matching `search_unified_with_index`.
-
-#### TC-ADV-V1.33-2: `HnswIndex::search` with `k=0` untested — `ef_search.max(0 * 2)` math unpinned
-- **Difficulty:** easy
-- **Location:** `src/hnsw/search.rs:23-44, 92-93`
-- **Description:** The `search_impl` empty-graph path is tested via `id_map.is_empty()`, and TC-ADV-2 covers NaN-query rejection. But `k=0` is unpinned — `ef_search = self.ef_search.max(k * 2).min(index_size)` would resolve to `max(0)` which is `self.ef_search`, then call into `hnsw_rs`'s `search_neighbours(..., 0, ef_search)`. hnsw_rs's behavior with k=0 is not contractually documented and could change across crate versions. The exposed `search()` is reachable from `search_filtered_with_index` with attacker-controlled `limit=0` — combined with TC-ADV-V1.33-1, a crafted CLI flow via daemon socket could exercise this code path.
-- **Suggested fix:** Add `tc18_search_k_zero_returns_empty` next to `tc17_search_filtered_all_rejected_returns_empty`. Construct a 10-vector index, call `index.search(&q, 0)`, assert `results.is_empty()` and that the call doesn't panic. Pin the contract at the cqs boundary so an hnsw_rs version bump can't silently change behavior.
-
-#### TC-ADV-V1.33-3: `SpladeIndex::search` with `k=0` and NaN/Inf weights in SparseVector untested
-- **Difficulty:** easy
-- **Location:** `src/splade/index.rs:193-253`
-- **Description:** `test_search_empty_query` and `test_search_no_match` cover the empty-vector cases. `test_search_respects_k` uses `k=2` with three matching tokens. But `k=0` is unpinned — `BoundedScoreHeap::new(0)` is tested in `heap_capacity_zero` (search/scoring/candidate.rs:914), but the SPLADE call path that passes `k` straight in is untested at the boundary. More concerning: `query_weight * doc_weight` (line 229) accumulates with no `is_finite` check on either side. A SparseVector with NaN/Inf weights (which can happen if a corrupted SPLADE encoder output ever reaches `search`) accumulates NaN in `scores` map, then `BoundedScoreHeap::push` orders by score with `total_cmp` putting NaN in deterministic-but-meaningless position. No test pins what `search` does with NaN-weighted query or doc vector.
-- **Suggested fix:** Add `test_search_k_zero_returns_empty` (`k=0` over a populated index → empty), and `test_search_rejects_nan_query_weights` (call `search(&vec![(1, f32::NAN)], 10)` and assert behavior — either filter NaN at score accumulation, or surface a typed error). Doc the contract whichever way.
-
-#### TC-ADV-V1.33-4: `rerank_with_passages` length-mismatch error branch (`results.len() != passages.len()`) is untested
-- **Difficulty:** easy
-- **Location:** `src/reranker.rs:618-656`
-- **Description:** P3.11 added a structured warn + `RerankerError::InvalidArguments` for the length-mismatch case (lines 635-649). `test_rerank_empty_input_returns_empty` covers the empty case (early return via `results.len() <= 1`). The actual mismatch error path — `results.len() = 3, passages.len() = 2` — has no test pinning it returns `Err(InvalidArguments)`. A future refactor that flipped the error to a Tokenizer variant or moved the check after the model load would slip through CI silently.
-- **Suggested fix:** Add `test_rerank_with_passages_length_mismatch_returns_invalid_arguments` next to `test_rerank_empty_input_returns_empty`. Build two `stub_result` entries, pass one passage, assert `Err(RerankerError::InvalidArguments(_))` and that the message string contains both lengths. Runs without ONNX model (the mismatch check is at line 635 before any tokenizer access).
-
-#### TC-ADV-V1.33-5: `enumerate_files` symlink-skip / oversized-skip / non-UTF8-path branches untested
-- **Difficulty:** medium
-- **Location:** `src/lib.rs:708-779`
-- **Description:** SECURITY.md promises "follow_links=false" (per v1.30.1 SEC-V1.30.1-2 fix), and the size cap at line 759 silently filters files exceeding `CQS_MAX_FILE_SIZE`. But neither is pinned by a test. Existing tests cover supported-extension matching, .cqsignore layering, and unsupported-extension empty result. Missing: (1) symlink to a file inside vs. outside the project root — both should be skipped silently; (2) oversized file (>1 MiB default) skipped; (3) file with non-UTF-8 byte sequence in its name (Linux allows this) — currently `to_string_lossy` somewhere in the walker chain may corrupt the path or fail silently. Per SEC-V1.30.1-2 the symlink-skip behavior is a security-policy claim, so its absence from tests means a contributor could accidentally re-enable `follow_links(true)` and ship.
-- **Suggested fix:** Add three tests next to `test_enumerate_files_respects_cqsignore`: `test_enumerate_files_skips_symlinks_to_files`, `test_enumerate_files_skips_oversized_files` (set `CQS_MAX_FILE_SIZE=100`, write 200-byte `.rs` file, assert it's not in result), `test_enumerate_files_handles_non_utf8_filename_on_unix` (`#[cfg(unix)]`, use `OsStr::from_bytes` to create a filename with `\xFF\xFE` bytes, assert the call doesn't panic and either skips or includes it without corruption).
-
-#### TC-ADV-V1.33-6: `QueryCache::get` malformed-blob auto-delete path is untested
-- **Difficulty:** easy
-- **Location:** `src/cache.rs:2266-2322`
-- **Description:** When the embedding blob length isn't a multiple of 4 (corrupt row, schema migration mid-flight, manual SQL stomp), `get` logs a warn, deletes the row, and returns `None` (lines 2300-2315). EH-17/OB-NEW-6 introduced this path explicitly to break re-poll loops on bad rows. It has zero test coverage — no test inserts a malformed blob, calls get, then verifies the row was deleted on the next get attempt. The QueryCache module overall has only one shared-runtime smoke test (line 2462) that exercises the happy roundtrip. NaN/Inf rejection in `put` (line 2328) is also untested at the QueryCache level (only EmbeddingCache tests cover that pattern).
-- **Suggested fix:** Add `test_query_cache_get_deletes_malformed_blob`: (1) `QueryCache::open` a tempdir db; (2) directly insert a row with `embedding = vec![0u8; 7]` (not multiple of 4) via raw `sqlx::query`; (3) call `cache.get("q", "fp")` and assert it returns `None`; (4) call again and assert the row count is 0. Add `test_query_cache_put_rejects_nan_inf` for the put side.
-
-#### TC-ADV-V1.33-7: `parse_env_usize_clamped` and `parse_env_f32` have zero tests despite 10+ production callers
-- **Difficulty:** easy
-- **Location:** `src/limits.rs:241-278`
-- **Description:** `parse_env_usize_clamped` is the load-bearing knob parser for 9 sites (`llm_max_batch_size`, `serve_graph_max_nodes/edges`, `serve_cluster_max_nodes`, `serve_chunk_detail_callers/callees/tests_limit`, `serve_blocking_permits`, `freshness_poll_ms_initial`). `parse_env_f32` powers the risk thresholds at lines 204/209. Neither function has a unit test in `limits.rs::tests` — only `parse_env_usize` and `parse_env_u64` are tested. Edge cases unpinned: (1) above-max value clamps to max; (2) below-min value clamps to min; (3) above-max default clamps to max; (4) NaN string for f32 falls back to default; (5) negative-zero / negative-finite for f32 falls back to default (function explicitly filters `*n > 0.0`). A refactor that swapped clamping to "reject + use default" would compile and pass CI.
-- **Suggested fix:** Add `parse_env_usize_clamped_clamps_above_max`, `parse_env_usize_clamped_clamps_below_min`, `parse_env_usize_clamped_garbage_uses_clamped_default`, `parse_env_f32_rejects_nan`, `parse_env_f32_rejects_negative_and_zero` — same shape as the existing `parse_env_usize_handles_missing_and_garbage` but exercising the clamp branches.
-
-#### TC-ADV-V1.33-8: `CqParser::parse_file` non-UTF8 and oversized-file skip branches untested
-- **Difficulty:** medium
-- **Location:** `src/parser/mod.rs:200-258`
-- **Description:** Two graceful-skip branches: (a) lines 209-217 skip files exceeding `CQS_PARSER_MAX_FILE_SIZE`, returning `Ok(vec![])`; (b) lines 224-228 skip non-UTF-8 files (`InvalidData` error from `read_to_string`), also returning `Ok(vec![])`. Both are documented behavior — the comment says "Returns an empty Vec for non-UTF8 files (with a warning logged)" and "Skipping large file; bump CQS_PARSER_MAX_FILE_SIZE if needed". Neither has a regression test. A future refactor could surface them as errors instead of empty Vec, breaking the watch loop's contract that parse_file failure is recoverable. The non-UTF8 skip is also a quasi-security-relevant behavior — silent skipping means an attacker could land non-UTF8 content (perhaps generated by a build script) and the file effectively becomes invisible to the index.
-- **Suggested fix:** Add tests in `parser/mod.rs::tests` (or `tests/parser_test.rs`): `parse_file_returns_empty_vec_for_oversized_file` (write a 2 MiB Rust file with `CQS_PARSER_MAX_FILE_SIZE=1048576`, assert empty Vec), `parse_file_returns_empty_vec_for_non_utf8_content` (write `&[0xFF, 0xFE, 0xFD]` to `foo.rs`, assert `Ok(vec![])`). The non-UTF8 case may need `#[cfg(unix)]` if Windows file APIs reject the write.
-
-#### TC-ADV-V1.33-9: `validate_and_read_file` oversized-file branch (`CQS_READ_MAX_FILE_SIZE`) untested
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/io/read.rs:51-59`
-- **Description:** `read_rejects_path_outside_root_with_same_message_as_nonexistent` thoroughly tests the path-traversal protection. The size-cap branch at lines 53-59 is documented (`P3 #107: env-overridable via CQS_READ_MAX_FILE_SIZE`) but untested. A bug that flipped the comparison sign (`metadata.len() < max_file_size`) or that read the wrong env var would compile and pass CI. The `cqs read` CLI command surfaces this directly to users; the size-cap is the only DoS-prevention layer for arbitrary-content reads.
-- **Suggested fix:** Add `read_rejects_oversized_file` next to `read_rejects_path_outside_root_with_same_message_as_nonexistent`: write a 100-byte file, set `CQS_READ_MAX_FILE_SIZE=50`, call `validate_and_read_file`, assert the error message matches `File too large: 100 bytes (max 50 bytes; CQS_READ_MAX_FILE_SIZE)`. Use a per-test ENV_LOCK mutex pattern (the slot tests have one) to avoid cross-test env-var races.
-
-#### TC-ADV-V1.33-10: `update_umap_coords_batch` accepts NaN/Inf coords; `build_cluster` emits them as JSON `NaN` (invalid JSON in many parsers)
-- **Difficulty:** medium
-- **Location:** `src/store/chunks/crud.rs:406-481`, `src/serve/data.rs:956-1100`
-- **Description:** P2.27 added `is_finite()` rejection at `EmbeddingCache::write_batch` and `QueryCache::put` precisely because non-finite floats poison downstream readers. `update_umap_coords_batch` has no such guard — `(String, f64, f64)` triples are bound directly to SQLite REAL columns. SQLite stores NaN/Inf without complaint. On read, `build_cluster` extracts `umap_x: f64`/`umap_y: f64` (lines 1043-1044) and propagates them straight into `ClusterNode` which serializes via serde_json. **`serde_json::to_string` emits `NaN` and `Infinity` as bare tokens** that violate the JSON spec — many strict parsers (browser `JSON.parse`, jq with `--strict`, some Python configs) reject the response, breaking the cluster view. The existing `build_cluster_returns_chunks_with_umap_coords` test (`serve/tests.rs:1134`) only exercises a fixture with known-finite coords; a malicious or buggy projection upstream silently corrupts the response.
-- **Suggested fix:** Add `update_umap_coords_batch_rejects_nan_inf` test in `crud.rs::tests`: pass `[(id, f64::NAN, 0.5), (id2, 0.5, f64::INFINITY)]`, assert either a typed error or that the rows aren't inserted (caller's choice — both are defensible). Add the production guard: `if !x.is_finite() || !y.is_finite() { tracing::warn!(...); continue; }` in the binding loop. Optional belt-and-suspenders: in `build_cluster`, filter rows where x or y aren't finite, with a one-time tracing::warn so operators see the cluster view degraded rather than silently corrupted.
-
+<!-- ===== docs/audit-scratch/batch1-api-design.md ===== -->
 ## API Design
 
-#### `cqs project register` lacks `--json` and skips JSON envelope entirely
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/project.rs:50-56`, `src/cli/commands/infra/project.rs:111-122`
-- **Description:** `ProjectCommand::Register { name, path }` has neither `output: TextJsonArgs` nor any inline `--json` flag, and the handler unconditionally `println!`s "Registered '{}' at {}". Every other registry-mutation command (`project remove`, `slot create`, `slot remove`, `slot promote`, `ref add`, `ref remove`, `ref update`) takes `TextJsonArgs` and emits an envelope. Concretely, `cqs --json project register foo /path` writes plain text to stdout, breaking JSON-driven agents that pipe `cqs ... | jq`.
-- **Suggested fix:** Add `#[command(flatten)] output: TextJsonArgs` to `ProjectCommand::Register`, switch the success path to emit `{status:"registered", name, path}` via `crate::cli::json_envelope::emit_json` when `cli.json || output.json`. Same pattern as `Remove` two arms below.
-
-#### `cqs notes add | update | remove` accept no `--json` at the subcommand level
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/io/notes.rs:67-128`
-- **Description:** `NotesCommand::List` flattens `output: TextJsonArgs`, but `Add`, `Update`, and `Remove` do not. The mutation handlers (`cmd_notes_add`, `cmd_notes_update`, `cmd_notes_remove`) read `cli.json` only. Consequence: `cqs notes list --json` works, but `cqs notes add foo --json` fails with `error: unexpected argument '--json' found`. Agents that build flag lists per command without remembering "JSON-flag goes before the `notes` token for mutations only" get wrong-shaped failures. The `cli.json || output.json` pattern is already used everywhere else (cache/slot/project/ref); notes-mutation arms are the holdout.
-- **Suggested fix:** Add `#[command(flatten)] output: TextJsonArgs` to each of `Add`, `Update`, `Remove`, then change the three `if cli.json` checks at lines 340, 488, 566 to `if cli.json || output.json`. Aligns with the post-P2.13 invariant that every CLI subcommand surface accepts `--json` at its own level.
-
-#### `cqs slot` and `cqs cache` still advertise `--slot` even though it bails at runtime
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/slot.rs:87-99`, `src/cli/commands/infra/cache_cmd.rs` (similar)
-- **Description:** P2.13 fixed the silent-ignore bug by making `cmd_slot` / `cmd_cache` `bail!` when `cli.slot.is_some()`, but the CLI top-level `--slot` is `global = true` (`definitions.rs:286-287`), so `--help` on every slot/cache subcommand still lists `--slot` as a valid flag. Result: `cqs slot list --help` advertises `--slot <SLOT>` as an option, but `cqs slot list --slot foo` errors at runtime. Help text and runtime contract disagree, which is precisely the kind of papercut clap should resolve at parse time.
-- **Suggested fix:** Either (a) replace the runtime bail with `disable_args = ["slot"]` on `Commands::Slot` / `Commands::Cache` so clap rejects the flag at parse time and excludes it from `--help`, or (b) document the bail in the global `--slot` doc comment (less ideal — the ergonomics still drift).
-
-#### Same `--depth` flag means four different defaults across five commands
+#### `cqs project search` and top-level `cqs <q>` are two semantic search entry points with diverging surfaces
 - **Difficulty:** medium
-- **Location:** `src/cli/args.rs:166` (gather=1), `src/cli/args.rs:191` (impact=1), `src/cli/args.rs:342` (test-map=5), `src/cli/args.rs:288` (trace `--max-depth`=10), `src/cli/args.rs:369` (onboard=3)
-- **Description:** Five graph commands take a "depth" knob. Four use `--depth` (defaults: gather 1, impact 1, test-map 5, onboard 3). One (`trace`) uses `--max-depth` with default 10. So `cqs <cmd> --depth 3` produces three different traversal radii depending on command, and `trace` doesn't accept `--depth` at all. The blame-rename follow-up (API-V1.22-4 doc-comment) consciously moved away from `--depth` for one bad case but left this scatter intact.
-- **Suggested fix:** Pick one default rule (e.g., 3 for callee/caller traversal, 1 for impact/gather where blast radius matters), document it in a shared `pub const DEFAULT_DEPTH: usize`, and rename `trace::max_depth` → `trace::depth` (or alias) so the spelling matches the rest. The semantic differences between commands are real, but the *current* spread reads like accidents, not decisions.
+- **Location:** `cqs project search` (src/cli/commands/infra/project.rs:88) vs top-level `Cli` (src/cli/definitions.rs:153)
+- **Description:** The top-level `cqs <q>` command exposes ~20 search knobs (`--rrf`, `--rerank`, `--reranker`, `--name-boost`, `--include-type`, `--exclude-type`, `--path`, `--pattern`, `--name-only`, `--no-content`, `-C/--context`, `--expand-parent`, `--ref`, `--include-refs`, `--tokens`, `--no-stale-check`, `--no-demote`, `--splade`, `--splade-alpha`, `--include-docs`, …). `cqs project search` exposes only `-n`, `-t`, `--json`. So the same conceptual operation (semantic search) has wildly different ergonomics depending on which scope you target. Agents who learn the top-level flag set get nothing transferable when they want cross-project search; the cross-project path silently can't filter by language, type, path, or rerank.
+- **Suggested fix:** Either (a) flatten the same `SearchArgs` into both commands so the flag surface is identical, or (b) document explicitly that `project search` is the minimal-surface entry-point and add the top 4–5 most-used filters (`-l`, `--include-type`, `--path`, `--rerank`).
 
-#### Public `Store::search_embedding_only` is a `pub` footgun whose own docstring says "use the other one"
-- **Difficulty:** easy
-- **Location:** `src/search/query.rs:81-94`
-- **Description:** The doc comment on a `pub fn` reads "**You almost certainly want `search_filtered()` instead.** This method skips hybrid RRF ranking, name boosting, and all filters. It exists for tests and internal building blocks only." Two production bugs already came from calling it directly (PR #305, plus the `gather`/`search_across_projects` regression noted in MEMORY.md). A `pub fn` whose docstring instructs callers not to use it is a footgun — the compiler can't enforce the instruction. Overlaps with CQ-V1.33.0-6 (which proposes deletion); this finding adds the API-design framing — even if a caller exists, the visibility is wrong.
-- **Suggested fix:** Demote to `pub(crate)`. Per CLAUDE.md ("nobody else is using cqs but us — `pub` vs `pub(crate)` is about binary/lib crate boundary, not API stability"), this is a one-line visibility flip with no deprecation cost. If a CLI/test path still needs it, expose a renamed `pub(crate) fn raw_cosine_for_tests` so the intent is loud.
-
-#### `project register` vs `ref add` — same operation, two verbs
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/project.rs:49-87`, `src/cli/commands/infra/reference.rs` (RefCommand)
-- **Description:** Two registry-shaped commands disagree on the verb: `cqs project register <name> <path>` adds a project to the cross-project registry, and `cqs ref add <name> <source>` adds a reference index. Both are "register a named external thing", and both produce list/remove siblings — but project says "register" while ref says "add". Agents/users hit this the moment they try `cqs project add` (rejected) after coming off `cqs ref add`.
-- **Suggested fix:** Rename `ProjectCommand::Register` → `Add` (with `register` kept as a `#[command(visible_alias = "register")]` if backwards-compat matters, but per CLAUDE.md "no external users" a hard rename is preferred). Aligns with `ref add`, `cache clear`, `slot create` — every other registry mutation in the surface uses `add` / `create` / `remove`.
-
-#### `--json` declared inline on six commands instead of via shared `TextJsonArgs`
-- **Difficulty:** easy
-- **Location:** `src/cli/definitions.rs:319` (Init), `:346` (Doctor), `:678` (Convert), `:763` (Ping), `:785` (Status), `:811` (Refresh)
-- **Description:** Init, Doctor, Convert, Ping, Status, and Refresh declare `json: bool` inline rather than flattening `TextJsonArgs`. Most other commands in the same enum use `output: TextJsonArgs`. The shape is the same (`--json` boolean), but a future change to the shared flag (e.g., adding `--format` to `TextJsonArgs`, switching to NDJSON envelope, threading a `--pretty` knob) has to be done six times instead of once. The inline declarations also miss the `effective_format()` helper that `TextJsonArgs::effective_format` exposes.
-- **Suggested fix:** Replace each `json: bool` with `#[command(flatten)] output: TextJsonArgs` and update the handler to read `cli.json || output.json` (same pattern as `Stats`, `Slot`, `Cache`, `Project`). One Edit per command, mechanical.
-
-#### `--rerank` (bool) on search vs `--reranker <mode>` (enum) on eval — same concept, two flag names + types
+#### `cqs project` and `cqs ref` are two registries of external indexes with overlapping responsibilities
 - **Difficulty:** medium
-- **Location:** `src/cli/args.rs:99` (`pub rerank: bool`), `src/cli/definitions.rs:211` (`pub rerank: bool`), `src/cli/commands/eval/mod.rs:106-107` (`pub reranker: RerankerMode`)
-- **Description:** `cqs search --rerank` is a binary flag (off/on with default ONNX reranker); `cqs eval --reranker <mode>` is a `RerankerMode` enum (`none|onnx|llm`). The Reranker trait split (#1276) added `LlmReranker` as a third option, but only `eval` exposes it — search has no way to pick a non-default reranker. As more rerankers ship, search will need the enum form too, at which point the bool flag has to be renamed or shadowed by a second flag.
-- **Suggested fix:** Promote search's `--rerank` to `--reranker <mode>` matching eval, with an alias chain that keeps `--rerank` as a bool-ish "use the default" shorthand (`--rerank` ≡ `--reranker onnx`). A shared `pub enum RerankerMode { None, Onnx, Llm }` lifted out of `cli/commands/eval/mod.rs` lets every retrieval surface (search, gather, scout, task) opt in uniformly.
+- **Location:** `cqs project add/list/remove/search` vs `cqs ref add/list/remove/update`
+- **Description:** Both subcommand trees register external code indexes. `ref` adds a "reference index" (with `--weight`, `update` re-indexes from source); `project` adds an existing `.cqs/index.db` to a "cross-project search registry". Top-level search has both `--ref <name>` and `--cross-project` flags that point at these two different registries. Naming overlap is severe: a "project" is a "reference" and vice-versa from the agent's POV. Compare with the documented P3-29 fix (`project register` → `project add`) which only addressed the verb mismatch — the deeper concept duplication remains. Top-level `cqs --help` shows both `ref` and `project` adjacent with no hint of when to use which.
+- **Suggested fix:** Pick one noun. Merge the registries: a single `cqs ref add <name> <path-or-source> [--weight N] [--no-index]` covers "external indexed codebase" whether built locally or already-indexed. Drop `project` (or alias). Long-term this also collapses the `--ref`/`--cross-project` flag confusion in search.
 
-#### `StoreError::SchemaMismatch(String, i32, i32)` uses positional fields where field order matters
+#### `cqs index` and `cqs ref update` both build/refresh an index but use opposite verbs and flag sets
 - **Difficulty:** easy
-- **Location:** `src/store/helpers/error.rs:23-28`
-- **Description:** Three error variants in `StoreError` use unnamed positional fields where the order is non-obvious: `SchemaMismatch(String, i32, i32)` (db-name, found-version, expected-version), `SchemaNewerThanCq(i32)`, `MigrationNotSupported(i32, i32)` (from-version, to-version). Compare with `QueryDimMismatch { index_dim, query_dim, index_model, query_model }` further down the same enum, which is named-fields and self-documenting. Construction sites in the codebase have to remember `SchemaMismatch("path".into(), 19, 22)` is "current 19, want 22" not "want 19, current 22" — there's nothing in the type to disambiguate.
-- **Suggested fix:** Convert all four variants to struct-style with named fields: `SchemaMismatch { source: String, found: i32, expected: i32 }`. Matches `QueryDimMismatch` already in the same enum and removes the silent-swap-on-construction class of bug.
+- **Location:** `cqs index` (definitions.rs:388) vs `cqs ref update` (cli/commands/infra/reference.rs)
+- **Description:** Re-indexing the project is `cqs index --force` (with `--no-ignore`, `--accept-shared-notes`, `--llm-summaries`, `--improve-docs`, `--apply`, `--max-docs`, `--hyde-queries`, `--dry-run`). Re-indexing a registered ref is `cqs ref update <name>` (no flags). Same operation, two verbs (`index` vs `update`), and the ref path skips every quality-affecting flag the project path supports — so a refreshed reference can't get LLM summaries or HyDE queries even though the project index can.
+- **Suggested fix:** Either alias `cqs ref update` → `cqs ref reindex` and pass the same `IndexArgs`, or document clearly that ref refresh is intentionally minimal (it isn't — agents will hit this).
 
-#### Wildcard `pub use diff::* / gather::* / impact::* / scout::* / task::*` in lib.rs leak whatever is `pub`
+#### `--depth` short flag `-d` exists on `impact`/`onboard`/`test-map` but not on `gather` or `trace`
+- **Difficulty:** easy
+- **Location:** src/cli/args.rs:284 (`gather`), src/cli/commands/graph/trace.rs:32 (`trace`), vs args.rs:310/473/500
+- **Description:** API-V1.29-10 added `-d` for parity, but only on three of the five depth-bearing commands. `gather` declares `#[arg(long, default_value_t = DEFAULT_DEPTH_BLAST, visible_alias = "expand")]` with no short. `trace` uses `--max-depth` with `--depth` only as an alias and no short. `cqs gather "x" -d 2` errors with `unexpected argument '-d' found`, while `cqs impact x -d 2` works. The cross-command muscle memory the audit comment promised isn't actually delivered.
+- **Suggested fix:** Add `short = 'd'` to `GatherArgs::depth` and to the `trace` `--max-depth` flag (with the existing `--depth` alias).
+
+#### `--rerank` (bool) and `--reranker` (enum) are both live on `cqs <q>` — two flags for one knob
+- **Difficulty:** medium (API design, easy code)
+- **Location:** src/cli/definitions.rs:215 (`pub rerank: bool`) and 224 (`pub reranker: Option<RerankerMode>`)
+- **Description:** Tracked as P2-14 / #1372 but still both shipped. `--rerank` is "boolean shorthand for `--reranker onnx`". The collision is then resolved by `Cli::rerank_mode()` picking enum-over-bool. This is exactly the "two ways to express the same thing" anti-pattern the audit elsewhere flags as cause of agent confusion. Public docstring even names the loser ("Takes precedence over the legacy `--rerank` bool when both are passed"). Per CLAUDE.md "No External Users" this can be a hard deletion.
+- **Suggested fix:** Drop `--rerank` (the bool). Documentation says it's "muscle memory" but a hard rename without alias is the project policy (see `--commits` rename in `blame`). #1372 should ship as a deletion, not as the dual-flag state we're in now.
+
+#### `cqs gather --direction` defaults to `both`; `cqs onboard` only walks callees with no direction knob
+- **Difficulty:** easy
+- **Location:** `cqs gather` (args.rs:286), `cqs onboard` (args.rs:494)
+- **Description:** `gather` exposes `--direction both|callers|callees`, but the conceptually parallel `onboard` (also call-chain BFS expansion) silently hardcodes "callees" with no flag. An agent learning "depth + direction" on `gather` cannot transfer to `onboard`. Similarly, `cqs callers <name>` and `cqs callees <name>` are sibling commands but `cqs onboard` doesn't allow specifying the direction at all.
+- **Suggested fix:** Add `--direction` to `OnboardArgs` (default `callees` for back-compat) so depth+direction is a uniform pair across `gather`, `onboard`, and `test-map`.
+
+#### `cqs eval --reranker` accepts `none|onnx|llm` but `llm` errors at runtime — flag advertises a non-existent capability
+- **Difficulty:** easy
+- **Location:** src/cli/commands/eval/mod.rs (RerankerMode) — help text describes `llm` as "reserved for #1220 and currently bails with a 'not yet implemented' error"
+- **Description:** Surfacing a placeholder enum variant in `--help` and the value parser is the same scaffold-as-API anti-pattern that got `LlmReranker` demoted in P1-33. The variant exists in the public CLI surface specifically so "production wiring can land without a breaking CLI change", but per "No External Users" / no-deprecation-cycles policy, that argument doesn't apply here. Agents reading `--help` see `llm` as a real choice.
+- **Suggested fix:** Drop `Llm` from `RerankerMode` until #1220 actually wires it. Add it back with the implementation; flipping the variant is one-line at the wire-up site.
+
+#### `cqs slot create --model <preset>` exists but `cqs index --model <preset>` doesn't — model preset is split across two commands inconsistently
 - **Difficulty:** medium
-- **Location:** `src/lib.rs:187-214`
-- **Description:** lib.rs has nine wildcard `pub use` lines (diff, focused_read::COMMON_TYPES, gather, impact, onboard, project, related, scout, search, structural::Pattern, task, where_to_add). The comment at lib.rs:184-186 acknowledges they're "for the binary crate (CLI) — NOT part of the public library API… name conflicts are compiler-caught" but that defense doesn't help against accidentally upgrading internal types to the public surface (e.g., a future `pub struct InternalScratch` in `gather/mod.rs` silently becomes `cqs::InternalScratch`). P3.5 in v1.30.0 already trimmed one of these (`pub use nl::*` → explicit list); same treatment is overdue for the rest.
+- **Location:** `cqs slot create --model` (definitions.rs Slot subcommand), `cqs index` (no `--model`), top-level `Cli::model` (definitions.rs:292)
+- **Description:** Model selection is on (a) top-level `cqs <q> --model <name>` (search-time), (b) `cqs slot create --model <name>` (slot bootstrap), but NOT on `cqs index --model <name>` (re-index time). To switch models you must `cqs slot create --model X && cqs slot promote X && cqs index`. Model swap inside the active slot also requires going through `cqs model swap`, a third entry point. Three commands manage one concept and the user has to know the right verb for the right context.
+- **Suggested fix:** Add `cqs index --model <preset>` that reindexes into the active slot with the new model (or refuses if the recorded model differs, with a hint to use `model swap`). Consolidate around `model swap` as the canonical "change my model" entry point and delete `slot create --model`'s duplicate behaviour, or document the layering explicitly.
 
+#### `IndexBackend::try_open` returns `Option<Box<dyn VectorIndex>>` but error semantics vs `Ok(None)` are unclear
+- **Difficulty:** medium
+- **Location:** src/index.rs:160 (`pub trait IndexBackend`)
+- **Description:** Trait splits "not applicable, try next backend" (Ok(None)) from "store-level abort" (Err). But `IndexBackendError` only carries `Store` / `ChecksumMismatch` / `LoadFailed` — checksum/load failures are described in the doc comment as "self-handled with `tracing::warn!` + `Ok(None)`", meaning two of the three error variants are documented as never-emitted. So implementations have to internalise a "warn-and-return-Ok(None)" convention with no compile-time enforcement, while still importing the error type. Future backend authors will reasonably reach for `LoadFailed` and break the selector contract silently.
+- **Suggested fix:** Either (a) drop `ChecksumMismatch`/`LoadFailed` and tighten the trait return to `Result<Option<...>, StoreError>`, or (b) add a `selector_action: enum { Skip, Abort }` to the error so the contract is encoded in types instead of comments.
+
+#### `BatchProvider::set_on_item_complete` requires `&mut self` but other methods take `&self` — forces `Mutex` everywhere
+- **Difficulty:** easy
+- **Location:** src/llm/provider.rs:150
+- **Description:** Trait method signature: `fn set_on_item_complete(&mut self, _cb: OnItemCallback) {}`. All four other methods take `&self`. Callers that hold a `&dyn BatchProvider` (most of the orchestration code) need to either rebuild the provider with the callback baked in or wrap it in a `Mutex<dyn BatchProvider>` just to call this one configuration setter. The comment justifies "callback may be invoked from multiple worker threads concurrently" — which is fine, but that's about callback invocation, not callback registration.
+- **Suggested fix:** Builder pattern: take the callback at construction (`AnthropicBatchProvider::new(...).with_on_item_complete(cb)`), drop the trait method entirely. Keeps the provider `&self`-only and the trait shape uniform.
+
+#### Wildcard `pub use` re-exports in `lib.rs` were collapsed for cross_project but `cross_project` is a special-case `pub mod` defined inside `lib.rs`
+- **Difficulty:** easy
+- **Location:** src/lib.rs:212-220
+- **Description:** Per #1372/P3-52 the file replaced wildcard re-exports with explicit lists for `diff`/`gather`/`impact`/`scout`/`task`/`onboard`/`related`. But `cross_project` was special-cased as an inline `pub mod cross_project { pub use crate::impact::cross_project::...; pub use crate::store::calls::cross_project::...; }` instead of being an explicit re-export at the same level as the others. The single-file fix that the audit comment claimed ("each module now lists exactly what crosses the lib boundary") is undermined by this one ad-hoc nested module that pulls from two different crate paths and obscures where the types actually live.
+- **Suggested fix:** Either (a) move `cross_project` types into a real `crate::cross_project` module that re-exports the originals, or (b) hoist the explicit `pub use` list to the top alongside the others (so all of `lib.rs`'s re-exports follow one pattern) and document why a virtual module is the right shape for these specific types.
+
+#### Inconsistent `--limit` defaults: 3 (`where`), 5 (most), 10 (`gather`/`neighbors` actually 5/10), 20 (`eval`)
+- **Difficulty:** easy (docs) / medium (semantics)
+- **Location:** src/cli/args.rs:120/137/291/333/374/491/532/543/559, eval/mod.rs:52
+- **Description:** `where` defaults to 3 file suggestions; `gather` to 10 chunks; everything else to 5; `eval` to 20. These are all "max results returned" but agents have to memorize five different defaults. Compare to the `-d` short flag and the `--commits` rename — recent work has been actively normalizing common knobs across commands. `--limit` (the most-used flag in the entire CLI) has no such effort.
+- **Suggested fix:** Either (a) standardize all to 5, with the per-command rationale documented inline, or (b) at minimum harmonise gather/where to the dominant 5, and document `eval`'s 20 as an R@K-specific cap with a comment so it doesn't read as random.
+
+
+<!-- ===== docs/audit-scratch/batch1-error-handling.md ===== -->
+## Error Handling
+
+#### EH-V1.36-1: `Embedder::warm` discards embed_query result via `let _ = ... ?;`
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:1113
+- **Description:** `let _ = self.embed_query("warmup")?;` propagates the error (good) but the actual `Vec<f32>` result is silently dropped after running the full forward pass. The intent is "warm caches" — fine — but the `let _ =` here is functionally equivalent to `let _: Result<Vec<f32>, _> = self.embed_query("warmup");` if `?` were ever removed in a refactor. More importantly, the Ok-result is meaningful: a returned vector with all-zeros indicates a misconfigured ONNX session that the warm path would not catch. Today `warm()` says "warmed" even if the model produces nonsense.
+- **Suggested fix:** Drop the `let _ =` (the function already returns `Result<(), _>`, so just call `self.embed_query("warmup")?;`) and assert the returned vector has length == declared `embedding_dim()` before logging "embedder warmed". Today a misconfigured model that returns shape `[1, 0]` would warm successfully and then fail at first user query.
+
+#### EH-V1.36-2: `train_data` corpus parse path collapses `Err(_)` and panic into one silent skip
+- **Difficulty:** easy
+- **Location:** src/train_data/mod.rs:419
+- **Description:** `Ok(Err(_)) | Err(_) => { corpus_parse_failures += 1; continue; }` lumps together (a) parser returning a real `ParserError` (e.g., grammar load failed, file too large) and (b) a panic caught via `catch_unwind`. Both increment the same counter with no `tracing::warn!` distinguishing which it was — operator can't tell whether the corpus has 5,000 panicking files (a real bug to file) or 5,000 files exceeding the size cap (expected). Compare with the per-commit branch at line 250 which already separates `Ok(Err(e))` (logs `Parse failed`) from `Err(_)` (logs `Parse panicked`).
+- **Suggested fix:** Split into two arms identical to the commit-replay branch:
+  ```rust
+  Ok(Err(e)) => { tracing::debug!(path = %path.display(), error = %e, "Parse failed"); ... }
+  Err(_)     => { tracing::warn!(path = %path.display(), "Parse panicked — skipping"); ... }
+  ```
+
+#### EH-V1.36-3: `doc_writer` cross-device fallback silently drops backup-restore I/O error
+- **Difficulty:** easy
+- **Location:** src/doc_writer/rewriter.rs:629
+- **Description:** When `fs::write(path, data)` fails inside the cross-device fallback, the code attempts `let _ = std::fs::rename(&backup_path, path);` to restore the original. If that rename ALSO fails (e.g., `path` now half-written and locked, or backup got chmod'd), the user has lost the original file AND received only the original write error in the tracing warn. The backup_path file is left on disk for them to find, but they have no way to know that — the warn at line 631 only mentions `rename_error` and `write_error`, not "backup is at X, restore failed because Y, recover manually."
+- **Suggested fix:** Capture the restore result and include backup_path + restore_err in the warn message: `let restore_err = std::fs::rename(&backup_path, path).err();` then in the warn add `restore_failed = restore_err.as_ref().map(|e| e.to_string()), backup_remaining_at = if restore_err.is_some() { Some(backup_path.display().to_string()) } else { None }`. Operator gets actionable recovery info.
+
+#### EH-V1.36-4: `Embedder::pad_id` silently swallows tokenizer pad-id miss with model_config fallback
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:691-694
+- **Description:** `tokenizer.get_padding().map(|p| p.pad_id as i64).unwrap_or(self.model_config.pad_id)`. If the tokenizer.json was loaded WITHOUT a `[padding]` section (which can happen with some HF exports), we silently use the model_config default. For BGE-large that's 0, but for any custom model with mismatched pad_id this produces wrong attention masks — embeddings that subtly drift versus the golden output. No warn, no metric.
+- **Suggested fix:** Emit `tracing::warn!(model = %self.model_config.name, fallback_pad_id = self.model_config.pad_id, "tokenizer.json has no padding section — using model_config.pad_id")` exactly once via a OnceLock guard. Operators can correlate "embeddings look weird after model swap" with the warn.
+
+#### EH-V1.36-5: `embedder/mod.rs` checksum-verified marker write swallows fs error
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:1528
+- **Description:** `let _ = std::fs::write(&marker, &expected_marker);` after a successful `verify_checksum`. If the write fails (disk full, perms), every subsequent process re-runs the blake3 verify of the model.onnx file (~600 MB) on every cold start. Operator never sees why their daemon took 4s to come up — the warn at line 1106 just says "warmed" without distinguishing first-verify cost from post-marker cost.
+- **Suggested fix:** `if let Err(e) = std::fs::write(&marker, &expected_marker) { tracing::warn!(path = %marker.display(), error = %e, "Failed to write checksum-verified marker — model will be re-verified next session"); }`
+
+#### EH-V1.36-6: `Store::stored_model_name()` swallows query errors as `None`, masking schema corruption
+- **Difficulty:** medium
+- **Location:** src/store/metadata.rs:153-161
+- **Description:** This function is `pub` and called from `cmd_doctor`, `slot promote`, and three other call sites that branch on "is this a fresh DB or a model-mismatched one." A query error (e.g., metadata table corrupted, sqlite I/O error) gets logged at warn but returns `None`, which every caller interprets as "fresh DB, no model recorded — treat as new". So a corrupted index is silently treated as a fresh one and a brand-new index gets initialized over it on the next `cqs index` call, *destroying the old data*.
+- **Suggested fix:** Change return type to `Result<Option<String>, StoreError>` and let callers decide. The current behavior makes every caller default to the "destroy-and-recreate" path when the DB is unreadable — exact opposite of safe.
+
+#### EH-V1.36-7: `slot/mod.rs:725` sentinel detail read silently empties on I/O error
+- **Difficulty:** easy
+- **Location:** src/slot/mod.rs:715-727
+- **Description:** When a previous migration left a sentinel file, the code reports its contents in the error message via `.unwrap_or_default()`. If the sentinel exists but is unreadable (perms, locked by editor, etc.), the operator sees `"Sentinel contents:\n"` (empty) instead of an explanation that the file existed but couldn't be read. They're now stuck — they don't know if the migration fully or partially failed, and the recovery instruction `rm <path>` may delete useful diagnostic info.
+- **Suggested fix:** Replace the `.unwrap_or_default()` chain with explicit Ok/Err handling: on Err, set `detail = format!("(could not read sentinel: {})", err)`. Operator now sees the I/O error and can `chmod`/recover before deleting.
+
+#### EH-V1.36-8: `where_to_add::compute` silently skips files missing from batch-fetched chunks
+- **Difficulty:** easy
+- **Location:** src/where_to_add.rs:215-217
+- **Description:** `all_origins_chunks.remove(origin_key.as_ref()).unwrap_or_default()` — if the file appeared in `file_scores` (from search) but its chunks are missing from the batch fetch (race: file was deleted between search and chunk-fetch, or Store::get_chunks_by_origins_batch silently dropped a key), we synthesize a suggestion with empty `all_file_chunks`. The downstream `language` is `None` and `near_function` is "(top of file)". User sees an apparently-valid suggestion pointing at a file that no longer exists.
+- **Suggested fix:** When `remove` returns `None`, log `tracing::debug!(file = %file.display(), "where_to_add: file in scores but no chunks fetched — skipping")` and `continue` rather than emit a malformed suggestion.
+
+#### EH-V1.36-9: `cli/dispatch.rs:530` Err arm in router empty-suppression on per-cat alpha parse
+- **Difficulty:** easy
+- **Location:** src/search/router.rs:530
+- **Description:** The match on `std::env::var(cat_key)` for per-category SPLADE alpha override has `Err(_) => {}` — meaning a missing env var is correctly silent, BUT a `VarError::NotUnicode` (env var contains invalid UTF-8) also falls into this arm and produces zero log output. An operator setting `CQS_SPLADE_ALPHA_NL=$'\xc3\x28'` (or pulling alpha from a Windows env with a stray BOM) gets no signal that their override was discarded.
+- **Suggested fix:** `Err(std::env::VarError::NotPresent) => {}, Err(e) => tracing::warn!(var = %cat_key, error = %e, "Per-cat SPLADE alpha env var not unicode — ignored"),`. The triage notes EH-14 / dispatch.rs:208 already moved away from silent `.ok()`; this site never got the same treatment.
+
+#### EH-V1.36-10: `train_data` skip-non-utf8 file uses bare `Err(_)` losing the actual decode error
+- **Difficulty:** easy
+- **Location:** src/train_data/git.rs:357
+- **Description:** `Err(_) => { tracing::debug!(path, "Skipping non-UTF-8 file"); ... }` — the underlying `FromUtf8Error` carries the byte position of the first invalid sequence, which is useful for "is this a binary blob, a UTF-16 file, or a single curly-quote?" diagnostics. The bare `_` discards it. Files-skipped is a metric that can balloon to millions on a corpus mining run; debug log loses signal for "wait, I think these are actually UTF-16, why are we skipping them all?"
+- **Suggested fix:** `Err(e) => { tracing::debug!(path, error = %e, valid_up_to = e.utf8_error().valid_up_to(), "Skipping non-UTF-8 file"); ... }`
+
+
+<!-- ===== docs/audit-scratch/batch1-observability.md ===== -->
+## Observability
+
+#### `search_filtered` emits duplicate nested `info_span!("search_filtered", ...)`
+- **Difficulty:** easy
+- **Location:** src/search/query.rs:104 and src/search/query.rs:136
+- **Description:** The public `pub fn search_filtered` at line 96 enters `info_span!("search_filtered", limit, threshold, rrf)` at line 104, then inside its body calls private `search_filtered_with_notes` at line 128 which enters *another* `info_span!("search_filtered", limit, rrf)` at line 136. Every user-facing search produces a span tree with two same-named "search_filtered" spans nested one inside the other. This pollutes flame graphs (the inner "search_filtered" span looks like recursion that isn't there), inflates the `tracing::Span` allocation count for every query (the hottest path in the daemon), and makes `journalctl` correlation noisier — operators see `search_filtered` twice per query without realising the inner one is redundant. Two callers exist for `search_filtered_with_notes`: `search_filtered` (which just entered) and `search_filtered_with_index` (path 689 enters its own `search_index_guided` span first, so a triple-nested duplicate fires there).
+- **Suggested fix:** Drop the inner `info_span!` at line 136 (the outer one already covers the work) — or rename it to `search_filtered_inner` so the names disambiguate. Same review for `search_filtered_with_index` (line 667) which also delegates into `search_filtered_with_notes`.
+
+#### `verify_hnsw_checksums` lacks an entry span on the integrity-check hot path
+- **Difficulty:** easy
+- **Location:** src/hnsw/persist.rs:121
+- **Description:** `verify_hnsw_checksums` walks every file in the HNSW manifest, opens it, and BLAKE3-hashes the contents (potentially hundreds of MB). The function emits three `tracing::warn!` lines on IO error and returns an Err on mismatch, but it never opens an `info_span!`. Operators investigating "why is `cqs index` slow on startup" or "why did load fail" have no way to time the verify pass or see how many files it processed — a startup with a 500 MB HNSW blob spends seconds here invisibly. DS-V1.33-3 just hardened the missing-file branch (P1 fix) but didn't add the span. This sits adjacent to `pub fn save` and `pub fn load_with_dim`, both of which already have `info_span!`.
+- **Suggested fix:** Add `let _span = tracing::info_span!("verify_hnsw_checksums", dir = %dir.display(), basename).entered();` at the top of the function. On Ok, emit a completion event with `files_verified` count and `elapsed_ms`.
+
+#### `validate_summary` and `detect_all_injection_patterns` run untraced on every LLM result
+- **Difficulty:** easy
+- **Location:** src/llm/validation.rs:87, src/llm/validation.rs:152
+- **Description:** Both functions run on every batch result the LLM provider returns (potentially thousands per `cqs index --improve-docs --improve-all` run). When validation rejects a summary — e.g. "prompt-injection pattern detected" — the call surface emits an `Err`/`Vec<&str>` but no `tracing::warn!` is fired with the offending pattern name and chunk identifier. Investigating "why did this batch's summaries get dropped" requires re-running with debug logging that doesn't exist. Compare to e.g. `embed_query` which emits cache-aware completion events.
+- **Suggested fix:** Inside `validate_summary`, when `ValidationOutcome::Rejected` is returned, emit `tracing::warn!(reason = ?outcome, text_len = text.len(), "Summary validation rejected")`. In `detect_all_injection_patterns`, emit `tracing::debug!(pattern = pat, "Injection pattern matched")` per match. No span needed; these are leaf calls.
+
+#### `compute_rewrite` lacks span on the doc-writer parse-resolve-apply hot path
+- **Difficulty:** easy
+- **Location:** src/doc_writer/rewriter.rs:242
+- **Description:** `pub fn compute_rewrite` reads the source file from disk, runs tree-sitter, and applies edits. It is called by both `rewrite_file` (which has its own `info_span!` at line 290) and `write_proposed_patch` (line 530, also has a span). But `compute_rewrite` is a `pub fn` documented as the "pure parse-resolve-apply step shared by" both wrappers. External callers (or future callers) that hit this entry point directly bypass any span. The function does non-trivial work — file read + tree-sitter parse + N edit applications — and a span here would let operators see resolve failures (the silent "function not found in re-parse" branch noted in the doc-comment) at debug.
+- **Suggested fix:** Add `let _span = tracing::info_span!("compute_rewrite", path = %path.display(), edit_count = edits.len()).entered();` at the top of `compute_rewrite`. The two wrapper spans become parent contexts when the wrappers are entered first; direct callers get coverage they currently lack.
+
+#### `config.rs:582` emits redundant `eprintln!` next to a `tracing::warn!` for the same event
+- **Difficulty:** easy
+- **Location:** src/config.rs:582-594
+- **Description:** When too many references are configured, the validator emits both an `eprintln!("Warning: ...")` AND a `tracing::warn!(count, max, "Too many references configured, truncating")` for the same event. The duplication is intentional ("warn the operator on the terminal") but it routes through two channels — the `eprintln!` lands in journald as unstructured stderr (since the daemon has no terminal), while the `tracing::warn!` lands as structured JSON. Operators get the same event twice with different shapes. The contract elsewhere in the codebase (see OB-V1.30.1-9 in `cli/watch/events.rs:190`) is "tracing only; the daemon has no TTY". This file pre-dates that rule.
+- **Suggested fix:** Drop the `eprintln!` block at lines 582-588. The `tracing::warn!` already covers the operator-visibility need — `cqs watch` prints it via the configured subscriber, CLI runs see it because the default subscriber writes warns to stderr. Keep only `tracing::warn!`.
+
+#### `find_ld_library_dir` failure mode is silent — no log when no LD_LIBRARY_PATH dir is selected
+- **Difficulty:** easy
+- **Location:** src/embedder/provider.rs:121
+- **Description:** On Linux startup, `find_ld_library_dir` parses `LD_LIBRARY_PATH`, looks for a directory that ORT's symlink-providers logic should target, and returns `None` if none qualifies. The `None` path is hit when (a) `LD_LIBRARY_PATH` is unset (legitimate), or (b) every entry is empty/non-existent/the ORT cache itself (a misconfiguration). Both collapse to silent `None`. When CUDA provider load mysteriously fails downstream and the user reports "no GPU detected", there's no breadcrumb showing whether the LD-resolve step ran and what it saw.
+- **Suggested fix:** Emit `tracing::debug!(ld_path = %ld_path, ort_lib_dir = %ort_lib_dir.display(), "Selected LD_LIBRARY_PATH dir for provider symlinks")` on the Some branch and `tracing::debug!(ld_path_set = !ld_path.is_empty(), entries = ld_path.matches(':').count() + 1, "No qualifying LD_LIBRARY_PATH entry for provider symlinks")` on the None branch.
+
+#### `Embedder::token_count` and `token_counts_batch` lack spans on the tokenizer hot path
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:715, src/embedder/mod.rs:737
+- **Description:** Both `pub fn` lack `info_span!`. They are called per-chunk during indexing and per-query during retrieval (token-count gating drives splits/window selection — see `split_into_windows`). Surrounding methods like `embed_documents`, `embed_query`, `warm`, `split_into_windows` all carry spans. Token counting is non-trivial work on a long input (full BPE/wordpiece tokenization), and when an indexing run is slow on large files, the operator currently can't see whether time is in token_count vs the actual ONNX forward pass.
+- **Suggested fix:** Add `let _span = tracing::debug_span!("token_count", text_len = text.len()).entered();` to `token_count` and `let _span = tracing::debug_span!("token_counts_batch", count = texts.len()).entered();` to `token_counts_batch`. Debug-level (not info) because per-chunk in tight loops at info would flood journalctl.
+
+#### `cagra_persist_enabled` logs once but skips chunk_count / dim context
+- **Difficulty:** easy
+- **Location:** src/cagra.rs:859-868
+- **Description:** When `CQS_CAGRA_PERSIST=0` is set, the function emits `tracing::info!("CQS_CAGRA_PERSIST=0 — CAGRA persistence disabled")` exactly once (OnceLock). The log carries no fields. When operators set this var to debug a CAGRA load failure, they have no breadcrumb tying the disable-decision to which slot/index was loading at the time. Several call sites (`cagra_save`, `cagra_load`, `cagra_save_with_store`) all return early on `!cagra_persist_enabled()` without their own warn — silent skip of CAGRA persistence is exactly the kind of "looked done, did nothing" failure mode CLAUDE.md memory flags.
+- **Suggested fix:** Inside each `if !cagra_persist_enabled()` early-return arm at lines 890, 985, 1091, emit `tracing::warn!(path = %path.display(), "CAGRA op skipped — CQS_CAGRA_PERSIST=0")`. The OnceLock startup line is fine; the per-call warn is what a debugging operator actually needs.
+
+#### `splade::probe_model_vocab` has a span but no completion event with elapsed_ms / vocab_size
+- **Difficulty:** easy
+- **Location:** src/splade/mod.rs:127
+- **Description:** `probe_model_vocab` enters a `debug_span!("probe_model_vocab", path = ...)` but emits no completion event tying together how long the probe took and what vocab_size it read. The probe involves loading an ONNX model header — non-trivial IO + parse — and is called once per encoder construction. When SPLADE startup is slow, operators currently can't tell whether the probe was the bottleneck. Compare to `embed_documents` (line 877) which emits a completion `tracing::info!` with `elapsed_ms`, `total`, `dim`.
+- **Suggested fix:** Capture `let started = std::time::Instant::now();` at the span entry and emit `tracing::debug!(vocab_size = ?probed, elapsed_ms = started.elapsed().as_millis() as u64, "probe_model_vocab complete")` on the Ok return path.
+
+#### `worktree.rs::record_worktree_stale` and `is_worktree_stale` lack tracing on staleness state changes
+- **Difficulty:** easy
+- **Location:** src/worktree.rs:219, src/worktree.rs:229
+- **Description:** Both functions touch the cross-worktree staleness flag (a marker file or atomic) but emit no tracing. `record_worktree_stale` is the producer side ("our worktree's index is now stale"); `is_worktree_stale` is the consumer side ("should I show a warning to the user"). When a multi-worktree workflow misbehaves — agent A's reindex doesn't propagate the stale flag, agent B keeps serving stale results — there's no journal trail to diagnose which side dropped the signal. Note CLAUDE.md memory specifically calls out worktree leakage (#1254) as a pain point; observability here is exactly what would make that diagnosable.
+- **Suggested fix:** Add `tracing::info!(worktree_root = %worktree_root.display(), "worktree marked stale")` at the producer (`record_worktree_stale`) and `tracing::debug!(stale = res, "is_worktree_stale check")` at the consumer.
+
+
+<!-- ===== docs/audit-scratch/batch1-test-coverage-adversarial.md ===== -->
+## Test Coverage (adversarial)
+
+#### Sparse-vector weight NaN/Inf round-trips through SQLite untested
+- **Difficulty:** easy
+- **Location:** src/store/sparse.rs:138 — `upsert_sparse_vectors` / `load_all_sparse_vectors:381`
+- **Description:** `upsert_sparse_vectors` and `load_all_sparse_vectors` accept and emit `f32` weights with no `is_finite()` guard. SQLite's REAL type happily stores NaN/Inf as a regular bit-pattern, and the loader casts `weight: f64 → as f32` without checking. Existing tests (`test_sparse_roundtrip`, `test_sparse_upsert_replaces`, `test_fk_cascade_removes_sparse_rows_on_chunk_delete`) all use finite, hand-picked weights. A SPLADE encoder hiccup, a corrupted sparse cache row, or an external tool writing into `sparse_vectors` could leak NaN weights, which then propagate through downstream sparse-cosine math (and `f32::NAN > anything` is `false`, so a NaN-weighted chunk silently drops out of every result instead of being clamped or rejected). Mirrors P2-12 (umap NaN, ✅ #1333) but for SPLADE.
+- **Suggested fix:** Add two tests in `src/store/sparse.rs` tests module: (1) `upsert_sparse_vectors` with `(token_id, f32::NAN)` and `(token_id, f32::INFINITY)` — pin the contract (reject vs. clamp vs. silently store) and add a runtime guard returning `StoreError::InvalidInput` if reject is the chosen contract; (2) `load_all_sparse_vectors` after a manual `INSERT INTO sparse_vectors VALUES (..., 'nan')` via raw sqlx, to verify the loader either filters or surfaces the row, not silently produces a NaN-weighted vector.
+
+#### `parse_aspx_chunks` malformed/unterminated `<%...%>` block has no test
+- **Difficulty:** easy
+- **Location:** src/parser/aspx.rs:44 (`CODE_BLOCK_RE`) → src/parser/aspx.rs:141 (`find_code_blocks`)
+- **Description:** The CODE_BLOCK_RE pattern `<%(=|:|@|--|--)?(.*?)(--%>|%>)` is non-greedy but on input where the closing `%>` is missing it scans forward through the whole file before failing the alternation. Same DoS shape as `L5K_ROUTINE_BLOCK_RE` (which has SEC-8 acknowledged in comments and an `unterminated_routine_no_panic` test at l5x.rs:782) — but aspx has no equivalent test. Adversarial input: a 10 MB `.aspx` containing many `<%` openers and no closers. The regex crate's linear-time guarantee prevents catastrophic backtracking, but the constant factor on a 50 MB file with 1k unterminated blocks is still measurable.
+- **Suggested fix:** Add `parse_aspx_unterminated_code_block_no_panic` and `parse_aspx_truncated_at_open_tag` tests in `src/parser/aspx.rs` mod tests. Feed `"<html><% Response.Write(\"never closes\""` and assert `parse_aspx_chunks` returns `Ok(_)` without panic and within bounded time. Also pin behaviour for `<script runat="server">` with no `</script>` (currently SCRIPT_BLOCK_RE silently drops the unmatched opener — pin that too).
+
+#### `Embedder::split_into_windows` adversarial token boundaries untested
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:782 — `split_into_windows`
+- **Description:** The function has one happy-path test (`split_into_windows_preserves_original_text` at line 2432) and only that one. Untested edges that have explicit handling code:
+  (1) `max_tokens == 0` early-returns `Ok(vec![])` (line 788);
+  (2) `overlap >= max_tokens / 2` returns an error (line 795);
+  (3) `char_end <= char_start` collapse (line 854) — fires on tokens whose offsets are `(0, 0)` for added special tokens; the fallback returns the full text;
+  (4) text containing a 4-byte multibyte codepoint at exactly the window boundary so `char_start..char_end` would split mid-codepoint (tokenizer offsets are byte offsets, but Rust string slicing panics on non-char boundaries — relies on the tokenizer never returning intra-codepoint offsets).
+  Any of (1)-(4) regressing would be silent for short inputs and only break on exact boundary conditions.
+- **Suggested fix:** Add four targeted tests: `split_into_windows_max_tokens_zero_returns_empty`, `split_into_windows_overlap_too_large_errors`, `split_into_windows_collapsed_offsets_falls_back_to_full_text` (synthesise a fake encoding via a mock tokenizer or pick text where padding tokens inject `(0,0)`), `split_into_windows_emoji_at_window_boundary` (emoji-heavy input with `max_tokens` chosen to land the window edge mid-grapheme — assert no panic).
+
+#### `sanitize_fts_query` property tests miss `{` and `}` strip set
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:1532 (property tests) vs. src/store/mod.rs:203 (production strip set)
+- **Description:** The production `sanitize_fts_query` strips `'"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'` (10 chars), but every property test (`prop_sanitize_no_special_chars`, `prop_pipeline_safe`, `prop_sanitize_all_special`, `prop_sanitize_adversarial`) only asserts the first 8 are absent — `{` and `}` are not in the property assertion set or in the `prop::sample::select` input universe. If a refactor accidentally drops `{`/`}` from the strip set, no test fires. FTS5 doesn't error on `{`/`}` literally but they're in the strip set for a reason (column filter syntax `{col}: term`) — losing the strip silently re-enables column-filter injection in a query that was previously sanitized.
+- **Suggested fix:** Update the four property tests to include `{` and `}` in (a) the negative-assertion `matches!` set and (b) the `prop::sample::select` adversarial-input vector. One-line edit per test plus a regression test `sanitize_strips_curly_braces` with a hand-picked input like `{path}:foo bar`.
+
+#### Daemon JSON-RPC surface: invalid UTF-8 surrogate halves in args untested
+- **Difficulty:** medium
+- **Location:** src/cli/watch/adversarial_socket_tests.rs (8 cases) + src/cli/watch/socket.rs:60 — `handle_socket_client`
+- **Description:** Existing adversarial tests cover oversized line, trailing garbage, UTF-16 BOM, bare newline, missing command, non-string args, 500 KB arg, and NUL byte. Two remaining adversarial JSON shapes are not pinned: (a) a JSON string containing an unpaired surrogate `"\uD800"` (serde_json 1.0 *accepts* lone surrogates by default and emits a `String` containing `WTF-8`-shaped bytes, which then flows into `dispatch_via_view` — downstream `to_string()` works but any path that crosses an FFI/SQLite boundary may hit issues); (b) deeply-nested JSON like `{"command":"ping","args":[],"x":[[[[[…]]]]]}` (1000 levels) — serde_json default has no recursion limit, can stack-overflow in the parser thread which `catch_unwind` may not catch (SIGSEGV from stack guard page is not a Rust panic).
+- **Suggested fix:** Add two tests to `src/cli/watch/adversarial_socket_tests.rs`: `daemon_handles_lone_surrogate_in_string_arg` (assert command is rejected or runs cleanly, no panic, no half-open socket) and `daemon_rejects_deeply_nested_json` (assert: either parser refuses with a structured error, or the daemon thread doesn't take down the whole daemon — handler thread isolation contract). For the recursion case, `serde_json::de::Deserializer::with_recursion_limit(128)` would be the production fix.
+
+#### Daemon socket: zero concurrent-connection / queue-saturation tests
+- **Difficulty:** medium
+- **Location:** src/cli/watch/socket.rs:45 — `max_concurrent_daemon_clients` and the accept loop in src/cli/watch/daemon.rs
+- **Description:** `max_concurrent_daemon_clients()` reads `CQS_DAEMON_MAX_CLIENTS` (default presumably 16-32) and the accept loop is supposed to bound parallel handler threads. Zero tests fire `N+1` simultaneous clients to verify the (N+1)th gets queued, rejected, or admitted — nor that a wedged client (sends partial line, then sleeps) doesn't pin a slot forever (the read_timeout helps but the test doesn't exist). On a daemon servicing N=4 agents this matters: a single hung agent can take down the daemon for the others.
+- **Suggested fix:** Add `daemon_caps_concurrent_clients` to `adversarial_socket_tests.rs` — open `max_concurrent + 5` `UnixStream`s, each writing a slow/partial request, and assert that the daemon either queues them, rejects with `too_many_clients`, or honours the read_timeout. Also `daemon_slow_client_does_not_starve_others`: hold one connection open silently, fire a fast valid request through a second connection, verify it completes within 1s.
+
+#### `build_hierarchy` BFS cycle handling untested
+- **Difficulty:** easy
+- **Location:** src/serve/data.rs:673 — `build_hierarchy`
+- **Description:** Existing tests (`build_hierarchy_walks_callees_to_depth`, `hierarchy_extreme_depth_is_clamped`) verify max_depth clamping and basic walk, but not cyclic call graphs (mutual recursion: `a→b, b→a`). The current code uses `depth_by_name.contains_key` to avoid revisiting, which *should* prevent infinite loops, but a regression that switched to "always insert with min depth" would loop forever on cycles. The `serve` HTTP path is exposed to localhost — an attacker on the same host could find a known recursive call pair and DoS the daemon.
+- **Suggested fix:** Add `build_hierarchy_handles_mutual_recursion` test in `src/serve/tests.rs` — seed two chunks `a` and `b` with `a→b` and `b→a` call edges, request hierarchy from `a` with `max_depth=10`, assert response contains exactly `{a, b}` with `bfs_depth = {0, 1}` and the call completes in <100ms. Also `build_hierarchy_handles_self_call` (`a→a`).
+
+#### Concurrent writer contention path: zero coverage
+- **Difficulty:** hard
+- **Location:** src/store/mod.rs:937 (busy_timeout config), src/cli/watch/reindex.rs (writer), src/cli/commands/index/build.rs (writer)
+- **Description:** The store relies on SQLite WAL + `busy_timeout(30s)` (recently bumped from 5s in #1450) + an in-process `WRITE_LOCK` mutex to serialise writers. Tests cover concurrent *readers* (`stress_test::test_concurrent_searches`, ignored by default) and verify `busy_timeout_from_env`, but not the actual contention scenario: two writer threads — one running `cqs index` long-batch, one running `cqs notes add` mutation — both reaching `begin_write()`. The interaction between in-process `WRITE_LOCK` and SQLite's BUSY response on the WAL writer lock is the flakiest part of the system on WSL (per memory comments) and has no regression test. A subtle change that drops or shortens the in-process lock could let two `BEGIN IMMEDIATE` collide and surface BUSY beyond the busy_timeout.
+- **Suggested fix:** Add `tests/store_concurrent_writers_test.rs` (gated `#[ignore]` if too slow, runnable in CI nightly): spawn 2 threads, each upserting 100 chunks for 5 seconds against a shared `Arc<Store>`, assert both complete with no `database is locked` error and with the union of inserted chunks visible. Then a second test mixing `upsert_chunks_batch` with `upsert_notes_batch` — different write paths must serialise correctly.
+
+#### Embedding pipeline: NaN/Inf escape from `embed_documents` untested
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:877 — `embed_documents` / `embed_batch:1157`
+- **Description:** `Embedding::try_new` rejects NaN/Inf at the constructor, but `embed_batch` constructs Embeddings via `Embedding::new` (the unchecked constructor — see line 121 doc: "**Prefer `try_new()` for untrusted input**"). If ONNX inference produces NaN/Inf for *any* reason (bad ONNX op, dim-zero quirk, cuDNN driver bug, `--features ep-coreml` weirdness), the Embedding sails through to HNSW insert, where it pollutes the search index. The `cache.rs` writer at line 639 *does* check `!f.is_finite()` before writing to disk cache — but the in-memory hot path doesn't. Tests cover `try_new` rejection but not "embed_documents output is finite" — no test confirms inference output finiteness.
+- **Suggested fix:** Add `embed_documents_output_is_finite` and `embed_query_output_is_finite` integration tests in `tests/embedding_test.rs` — call against a fixed mock model and assert `result.iter().all(|e| e.as_slice().iter().all(|v| v.is_finite()))`. Cheap regression-catcher; would have caught any future ONNX-runtime upgrade that started leaking subnormals as NaN.
+
+#### `serve` HTTP handlers: unicode/zero-width/control chars in `chunk_id` path param
+- **Difficulty:** medium
+- **Location:** src/serve/handlers.rs:172 (`chunk_detail`), src/serve/handlers.rs:244 (`hierarchy`)
+- **Description:** Chunk IDs flow from a URL `Path(id): Path<String>` straight into SQL `WHERE id = ?` (parameterised — no SQL-injection risk) but no test pins behaviour for adversarial path parameters: zero-width joiner (`‍`), RTL override (`‮`), NUL byte (`%00`), 100 KB id (URL-encoded), URL-encoded `../../etc/passwd`, percent-decoded surrogate. axum/tower decode the path before it lands in the handler; a refactor swapping `Path<String>` for `Path<RawString>` or adding any post-decode normalisation would silently change behaviour. Existing `chunk_detail_unknown_id_returns_404` only tests a normal-ASCII unknown id. Adversarial IDs in tracing logs are also a concern — the chunk_id is logged at info level (`tracing::info!(chunk_id = %id, "serve::chunk_detail")`) and an RTL override there can flip log lines in journalctl.
+- **Suggested fix:** Add `chunk_detail_handles_adversarial_unicode_id` and `hierarchy_handles_oversized_id_path` tests in `src/serve/tests.rs`. Each fires an `axum::test::TestRequest` with the adversarial id and asserts: HTTP 404 (or 400 for clearly-malformed) with no panic, log line is bounded length, no half-open response. Also add a 64 KB id test to pin "what's the URL length cap" (axum's default is server-config-dependent).
+
+#### `parse_env_f32` rejects NaN but `parse_env_usize_clamped` zero-input UB untested
+- **Difficulty:** easy
+- **Location:** src/limits.rs:269 — `parse_env_usize_clamped`
+- **Description:** Existing tests cover above-max, below-min, garbage, and missing — but the docstring says "Missing/zero/garbage falls back to `default` (also clamped)", and the implementation at line 273 reads `Ok(n) if n > 0 => clamp(n)` — meaning `n=0` falls through to the `_ =>` arm, which `clamp(default)`. If a future refactor moves the `n > 0` check, a caller passing `min=1, max=100, default=0` would silently get 0 (not clamped to min=1), which would then cause divide-by-zero in `embed_batch_size` math. Worth pinning given how widely this helper is used (RT-RES limits, sparse batch sizes, daemon timeouts).
+- **Suggested fix:** Add `parse_env_usize_clamped_zero_input_uses_clamped_default` test asserting `parse_env_usize_clamped("CQS_TEST_KEY_DOES_NOT_EXIST", 0, 1, 100) == 1` (not 0) — which forces the `default.clamp(1, 100)` branch to actually fire. Also `parse_env_usize_clamped_default_below_min` to pin the contract on misconfigured-default callers.
+
+
+<!-- ===== docs/audit-scratch/batch1-robustness.md ===== -->
+## Robustness
+
+#### RB-V1.36-1: `doc_writer::compute_rewrite` / `rewrite_file` read source files unbounded
+- **Difficulty:** easy
+- **Location:** src/doc_writer/rewriter.rs:251 and src/doc_writer/rewriter.rs:319
+- **Description:** Both `compute_rewrite` and `rewrite_file` call `std::fs::read_to_string(path)` with no size guard. They are reachable from `cqs --improve-docs` / `--improve-all` which iterates every project file. A pathological repo (giant generated/SQL/JSON file or symlink to /dev/zero on Linux) drives unbounded heap allocation. The parser path uses `CQS_PARSER_MAX_FILE_SIZE` and the file-read path in `cli/commands/io/read.rs` uses `CQS_READ_MAX_FILE_SIZE`; this site has neither.
+- **Suggested fix:** Stat first and bail out (or skip with warn) when `meta.len() > CQS_DOC_WRITER_MAX_FILE_SIZE` (default e.g. 4 MB — the rewriter only ever touches source files small enough for the parser to have ingested them). Wire the same `metadata.len() > max_bytes → bail!` block already used in `convert/mod.rs::read_to_string_with_size_limit`.
+
+#### RB-V1.36-2: `cli::commands::search::query` parent-context read uncapped
+- **Difficulty:** easy
+- **Location:** src/cli/commands/search/query.rs:899
+- **Description:** When parent chunk is missing from the DB, the code falls back to `std::fs::read_to_string(&canonical)` to extract a line range. No size cap. Path is canonicalized + root-restricted (good), but the file itself is still read whole into memory just to pull `lines[start..end]`. A 5 GB file in the project tree (e.g., extracted dataset, debug log) loaded once per parent-context fetch will OOM the search process.
+- **Suggested fix:** Either (a) check `metadata.len()` first and skip with a `tracing::warn!` if above a small cap (~4 MB), or (b) replace with line-bounded read using `BufReader::lines().take(line_end + 1)` and discard everything before `start`.
+
+#### RB-V1.36-3: `cli::commands::infra::hook` reads existing git hooks unbounded
+- **Difficulty:** easy
+- **Location:** src/cli/commands/infra/hook.rs:183, :365, :506
+- **Description:** Three sites (`do_install`, `do_uninstall`, `do_status`) read every managed git hook file via `std::fs::read_to_string(&path)` with no size guard. A foreign hook truncated to `/dev/zero` or a multi-GB hook file (rare but possible — corruption, malicious commit hook injection on a shared CI box) will OOM `cqs ci ...`. Less likely than RB-V1.36-1 but no defense at all.
+- **Suggested fix:** Stat first; cap at e.g. 1 MB (hooks are normally <10 KB). On overflow, treat as "foreign hook" (so install/uninstall is conservative) and warn. Only `contains(HOOK_MARKER_PREFIX)` is needed — that fits in the first few KB if it's a managed hook, so a streaming `BufReader::read_until(b'\n')` over the first 64 KB is enough.
+
+#### RB-V1.36-4: `slot::ensure_slot_config` reads slot.toml unbounded
+- **Difficulty:** easy
+- **Location:** src/slot/mod.rs:339
+- **Description:** Slot config bootstrap calls `fs::read_to_string(&final_path)` with no size cap. The `Config::load_file` path *does* enforce `MAX_CONFIG_SIZE` (config.rs:720) — slot.toml uses the same TOML parser shape but skips the guard entirely. Less critical than the doc-writer path because slot.toml is owned by cqs, but a hand-edited 10 GB slot.toml triggers OOM rather than the documented "warn + reset to default" path on the line below.
+- **Suggested fix:** Mirror the `Config::load_file` size check (read meta first, bail/warn at MAX_CONFIG_SIZE). Same pattern, copy-paste with the slot path.
+
+#### RB-V1.36-5: `store::chunks::staleness::compute_fingerprint` blake3 reads file whole
+- **Difficulty:** medium
+- **Location:** src/store/chunks/staleness.rs:161
+- **Description:** `std::fs::read(path)` followed by `blake3::hash(&bytes)`. No size cap — runs during watch-driven staleness checks. The parser path skips files above `CQS_PARSER_MAX_FILE_SIZE`, but staleness can still be invoked on the same path before the size check downstream (or after a file grows post-index). For a 5 GB SQL dump that grew between index and watch, the watch reload tries to fingerprint it whole.
+- **Suggested fix:** Switch to `blake3::Hasher::new()` + `Read` chunked into 64 KB. Same hash output, bounded RSS. Apply the same change at `cli/watch/reindex.rs:662` which also reads-then-hashes.
+
+#### RB-V1.36-6: `train_data::diff::find_changed_functions` `usize` add without saturating
+- **Difficulty:** easy
+- **Location:** src/train_data/diff.rs:139
+- **Description:** `let hunk_end = h.new_start + h.new_count.saturating_sub(1);` — only the inner subtraction is saturating; the outer add is bare. `parse_hunk_header` (line 50/58) parses raw `usize` from the diff header `@@ -a,b +c,d @@`. An attacker-supplied (or `git diff`-emitted-on-corrupt-pack) header `@@ -1,1 +18446744073709551615,2 @@` parses to `new_start = usize::MAX`, `new_count = 2`. `usize::MAX + 1` panics in debug; wraps to 0 in release, which then makes `hunk_end >= func.start_line` accidentally false-negative for every function. Reachable from `cqs review` / `affected` whenever the user pipes diff content through.
+- **Suggested fix:** `h.new_start.saturating_add(h.new_count.saturating_sub(1))`. Or reject hunk headers where `new_start > i64::MAX as usize` at parse time (no real diff has line numbers > 2^63).
+
+#### RB-V1.36-7: `where_to_add::compiled_import_regexes` mutex `expect` propagates panics
+- **Difficulty:** easy
+- **Location:** src/where_to_add.rs:773 and :793
+- **Description:** Both lock acquires use `.expect("compiled_import_regexes mutex poisoned")`. If any panic happens while holding the lock (regex compile that recurses into another panic, allocator failure inside `HashMap::get`), every subsequent `cqs where`/`task` call panics permanently for the lifetime of the process — the daemon can't recover without restart. The cache only stores regex Arcs; it's safe to recover from poison.
+- **Suggested fix:** Replace both with `.unwrap_or_else(|e| e.into_inner())` (the same pattern already used at `embedder/provider.rs:512` for `ENV_LOCK`). Poison is recoverable here because the cache state isn't invariant-bearing — worst case we recompile a regex.
+
+#### RB-V1.36-8: `language::Language::def` panics on disabled feature flag at runtime
+- **Difficulty:** medium
+- **Location:** src/language/mod.rs:1113
+- **Description:** `Language::def()` calls `try_def()` and unconditionally panics with "Language '...' not in registry — check feature flags" when the registry lookup returns None. `try_def()` exists exactly to support this fallible path, but `def()` is called in many production sites that don't gate on the feature being enabled. If a stored chunk references a `Language` whose feature was compiled out (legitimately possible after a rebuild without `--features all-langs`), the next search/parse panics. The doc comment even calls this out as a deliberate panic but the production call sites don't all guard.
+- **Suggested fix:** Audit `def()` callers — switch any non-test caller that touches stored data to `try_def()` and route through `LanguageError`. The bare panic should remain only on hard-coded compile-time language references.
+
+#### RB-V1.36-9: `print_telemetry_text` divide-by-zero when `total == 0` but commands have entries
+- **Difficulty:** easy
+- **Location:** src/cli/commands/infra/telemetry_cmd.rs:477
+- **Description:** Triage v1.33.0 fixed P1-25 (sessions divisor in `format_sessions_line`, line 434), but the same file still has `let pct = (count as f64 / total as f64) * 100.0;` at line 477 where `total = output.events`. If telemetry events are filtered/empty but the commands map carries a stale 0-count entry, `total = 0` and `count` could be 0 → produces NaN, which clippy/serde would format as `NaN%`. Less likely than the sessions case (the canonical path empties commands when total=0) but the guard is one-sided.
+- **Suggested fix:** Mirror the `if sessions > 0` guard from line 435: wrap the command-frequency loop in `if total > 0 { ... }`, or compute `pct` as `if total > 0 { count*100/total } else { 0 }`.
+
+#### RB-V1.36-10: `store::sparse::token_dump_paged` casts `f64` weight to `f32` without finite check
+- **Difficulty:** easy
+- **Location:** src/store/sparse.rs:400
+- **Description:** `current_vec.push((token_id as u32, weight as f32))` reads `weight: f64` straight from SQLite. `cache.rs:639` already filters NaN/Inf at insert time for the embedding cache, but the sparse `weight` column has no such guard at read time. A hand-edited DB or a bug in the splade write path that writes Inf (matching the `test_raw_logits_positive_inf_passes_through_as_inf_weight` test that's still passing — see splade/mod.rs:1565) lands in every downstream BM25-style scorer as `f32::INFINITY`, which corrupts every sort that compares NaN-via-Inf+0.
+- **Suggested fix:** Add `if !weight.is_finite() { tracing::warn!(...); continue; }` before the push. Cheap; consistent with the cache write path's policy.
+
+
+<!-- ===== docs/audit-scratch/batch1-scaling.md ===== -->
+## Scaling & Hardcoded Limits
+
+#### SHL-V1.36-1: `CQS_MAX_CONNECTIONS` default `unwrap_or(4)` ignores host parallelism
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:734-737
+- **Description:** SQLite pool size defaults to 4 regardless of CPU count. On a 32-core host running `cqs serve`, every concurrent request contends for one of 4 connections — and `serve_blocking_permits()` (limits.rs:348) clamps spawn-blocking permits to this same `max_connections`, so the entire serve concurrency budget is fixed at 4 even though `available_parallelism()` reports 32. This is the same anti-pattern the v1.33 audit (SHL-V1.33-10) fixed in `project.rs::search_across_projects` and `reference.rs::load_references` (one of which still has the bug — see SHL-V1.36-2). The store has the most impact because it gates every other concurrency limit downstream of it.
+- **Suggested fix:** Default to `available_parallelism().min(8)` (matching the v1.33 fix to `project.rs:260`). Power users on big hosts get linear scaling; small hosts stay capped. `CQS_MAX_CONNECTIONS` env override still wins verbatim.
+
+#### SHL-V1.36-2: `reference.rs::load_references` still uses `unwrap_or(4)` after v1.33 fix to project.rs
+- **Difficulty:** easy
+- **Location:** src/reference.rs:208
+- **Description:** v1.33 (SHL-V1.33-10) replaced the `unwrap_or(4)` rayon thread-count fallback in `project.rs:260` with `available_parallelism().get().min(8)`, citing 32-core hosts being under-utilized. The sibling site at `reference.rs:208` uses the same `CQS_RAYON_THREADS` env var with the same `unwrap_or(4)` pattern and was missed. Both sites read identical env vars and serve the same purpose (parallel store+HNSW load) — they should match. Comment at `project.rs:247` explicitly mentions matching `watch/runtime.rs:62-66`'s pattern; reference.rs got skipped.
+- **Suggested fix:** Copy the v1.33 fallback closure verbatim from `project.rs:260-265` to `reference.rs:208`. Single-line edit.
+
+#### SHL-V1.36-3: `BRUTE_FORCE_BATCH_SIZE = 5000` doesn't scale with model dim
+- **Difficulty:** medium
+- **Location:** src/search/query.rs:197
+- **Description:** Cursor-based brute-force search loads 5000 chunks/iteration regardless of embedding dimension. At BGE-large (1024-dim, f32) that's ~20 MB per batch — fine. At Qwen3-4B (4096-dim) it's ~80 MB; at a hypothetical 8192-dim model it's ~160 MB held in `Vec<u8>` per row plus the bounded heap. The constant is private, not env-overridable, and the comment explicitly cites "bounds memory" as the rationale — but the bound now scales with model choice, not the constant. Same issue applies to the inline `5000`-row paginator in `EmbeddingBatchIterator` referenced in the comment.
+- **Suggested fix:** Compute `batch_size = (TARGET_BYTES / (dim * 4)).clamp(500, 50_000)` with `TARGET_BYTES = 20 * 1024 * 1024` (~20 MB), or read `CQS_BRUTE_FORCE_BATCH_SIZE` env var. Pass the embedder's `dim` through `search_unified_with_index` callers (already in scope via `query.len()`).
+
+#### SHL-V1.36-4: `HNSW_BATCH_SIZE = 10000` default doesn't scale with embedding dim
+- **Difficulty:** easy
+- **Location:** src/cli/commands/index/build.rs:1232-1238
+- **Description:** HNSW insert batch defaults to 10000 vectors regardless of dim. At 1024-dim (BGE-large) that's 40 MB; at 4096-dim (custom Qwen3-style) it's 160 MB held in the per-batch `Vec`. `lib.rs:489` documents this as a fixed constant without flagging the dim coupling. `embed_batch_size_for(model)` (`src/embedder/models.rs:792`) already implements the right pattern (scale by `1024.0/dim`); HNSW build should mirror it.
+- **Suggested fix:** Have `hnsw_batch_size()` accept the embedder's `dim` and scale: `(10_000 * 1024 / dim).clamp(500, 50_000)`. Env override unchanged.
+
+#### SHL-V1.36-5: `cagra_stream_batch_size()` default 10000 doesn't scale with dim
+- **Difficulty:** easy
+- **Location:** src/cagra.rs:166 (function body)
+- **Description:** Sister problem to SHL-V1.36-4. `cagra_stream_batch_size()` returns env or 10_000 verbatim — same dim-blind constant as the HNSW path. P3-15 in v1.33 triage (✅ #1363) addressed CAGRA `build_from_store` at the inner `BATCH_SIZE` level, but the `cagra_stream_batch_size()` resolver itself still ships a fixed default. The streaming path (cagra.rs:747 `Vec::with_capacity(chunk_count * dim)`) already shows dim-awareness in adjacent code — the inconsistency is the smell.
+- **Suggested fix:** Same scaling treatment: `parse_env_usize_clamped("CQS_CAGRA_STREAM_BATCH_SIZE", scaled_default(dim), 500, 50_000)` where `scaled_default(dim) = (10_000 * 1024 / dim).max(500)`.
+
+#### SHL-V1.36-6: `DEFAULT_RERANKER_BATCH = 32` and `splade_batch_size()` = 32 ignore model dim/seq
+- **Difficulty:** medium
+- **Location:** src/reranker.rs:41 ; src/cli/watch/reindex.rs:202
+- **Description:** Two aux-model batch defaults are hardcoded to 32. Reranker comment explicitly says "32 is conservative because cross-encoder runs produce larger activations than plain encoder forward passes" — fine for ms-marco-MiniLM (384-hidden, 512-seq, ~100 MB activations at 32). But the Phase A model registry now supports custom rerankers and SPLADE variants; the default doesn't scale with hidden_size or max_seq_len. Same problem `embed_batch_size_for(model)` solves for the encoder. Result: small model → unused VRAM; large model → OOM at the documented default.
+- **Suggested fix:** Mirror `ModelConfig::embed_batch_size`. Pull `hidden_size` and `max_seq_length` from the loaded reranker / SPLADE model and apply `32 * (384/hidden) * (512/seq)` rounded to a power-of-two, clamped `[1, 256]`. Env vars (`CQS_RERANKER_BATCH`, `CQS_SPLADE_BATCH`) still win.
+
+#### SHL-V1.36-7: stale comment in `lib.rs` cites pre-3.32.0 SQLite 999 host-param limit
+- **Difficulty:** easy
+- **Location:** src/lib.rs:471-492
+- **Description:** The "Batch Size Constants" doc-comment block in `lib.rs` says: "SQLite limit: max 999 bind parameters per statement. A query with N columns per row can batch `floor(999 / N)` rows." This is the legacy pre-2020 limit. Modern SQLite (3.32.0+, what `sqlx` ships) supports 32766, and `store/helpers/sql.rs:26` (`SQLITE_MAX_VARIABLES = 32766`) plus the `max_rows_per_statement(N)` helper already document the new ceiling. The lib.rs block lists the old "common sizes" (500/200/132/100) — readers using this as a guide for new code will pick numbers ~65× too small. This is the same documentation-vs-code drift that v1.33 found across P1-35..P1-39 (all fixed in #1324 by switching to `max_rows_per_statement`); the documentation block was missed.
+- **Suggested fix:** Replace the block with a pointer to `store/helpers/sql.rs::max_rows_per_statement` and delete the stale 999/floor(999/N) explanation. New code should consult the helper, not the comment block.
+
+#### SHL-V1.36-8: `EMBED_CHANNEL_DEPTH = 64` default ignores embedding dim
+- **Difficulty:** easy
+- **Location:** src/cli/pipeline/types.rs:115-129
+- **Description:** Pipeline channel buffers up to 64 `EmbeddedBatch` messages. Each batch holds `embed_batch_size_for(model)` chunks × `dim` × 4 bytes of embeddings. At default BGE-large (batch=64, dim=1024) that's 64 × 64 × 1024 × 4 = 16 MB peak buffered. At Qwen3-style 4096-dim with batch=16 (post-scaling) it's 64 × 16 × 4096 × 4 = 16 MB — coincidentally similar. But the `64` default was picked when batch was a fixed 64; with `embed_batch_size_for` already dim-aware, the channel depth should be too: a model that scales batch *down* probably wants channel depth *up* (more parallelism since each msg is smaller), not unchanged.
+- **Suggested fix:** Document the coupling at minimum (current doc says "smaller to bound memory" without mentioning dim). Better: scale depth inversely with batch — e.g. `64 * (default_batch / actual_batch)` clamped `[16, 256]`, or simply pin the *byte budget* (`32 MB / msg_bytes`) and derive depth.
+
+#### SHL-V1.36-9: `DEFAULT_QUERY_CACHE_SIZE = 128` doesn't scale with available memory or dim
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:337
+- **Description:** Query embedding LRU caches 128 entries regardless of dim. Comment says "~4 KB/entry at 1024-dim, ~3 KB/entry at 768-dim" — total ~512 KB. Fine for default models, but: (1) at 4096-dim it's ~16 KB/entry / 2 MB total — still fine but the rationale flips; (2) on a daemon serving an agent fleet the hit rate is highly dependent on size, and 128 entries is a coin toss for a 30-task batch loop hitting `cqs scout` for each task. Memory is cheap; cache misses are 50-200 ms per query. The default is too conservative for the daemon use case.
+- **Suggested fix:** Bump default to 1024 (still ~4 MB at 1024-dim, trivial) or tier on `cqs serve`/`cqs watch --serve` vs CLI one-shot. Env var `CQS_QUERY_CACHE_SIZE` already exists as escape hatch.
+
+#### SHL-V1.36-10: `MAX_CONCURRENT_DAEMON_CLIENTS = 16` is fixed regardless of host
+- **Difficulty:** easy
+- **Location:** src/cli/watch/socket.rs:40
+- **Description:** Daemon caps concurrent clients at 16 with comment "matches typical agent fan-out... ~32 MB worst-case stack". The env override `CQS_MAX_DAEMON_CLIENTS` exists, but the *default* doesn't scale with cores or RAM. On a 64-core host running an agent swarm with 32+ parallel `cqs scout` calls, requests queue serially past 16. Stack memory isn't the binding constraint on modern 64-bit hosts (16 × 2 MB = 32 MB is rounding error); the cap was sized for "typical agent fan-out" of an unspecified era. With Claude Code Tasks-via-agents the typical fan-out is now 5-30.
+- **Suggested fix:** Default `available_parallelism().get().clamp(16, 64)`. Keeps small hosts at 16, scales 32-core hosts to 32. Env override still wins.
+
+
+<!-- ===== docs/audit-scratch/batch2-algorithm.md ===== -->
 ## Algorithm Correctness
 
-#### AC-V1.33-1: `extract_file_from_chunk_id` mishandles markdown table-window IDs (`:tNwM`) — file extraction returns `path:line` instead of `path`
+#### `extract_file_from_chunk_id` mis-parses window indices ≥ 100
 - **Difficulty:** easy
-- **Location:** `src/search/scoring/filter.rs:14-44`
-- **Description:** The chunk-ID heuristic detects windowed IDs by checking the *last* segment for `wN` (line 25-29: `last_seg.starts_with('w') && last_seg.len() <= 3 && last_seg[1..].bytes().all(|b| b.is_ascii_digit())`). But the only windowed format produced by the codebase is **table windows** in `src/parser/markdown/tables.rs:158`: `format!("{}:{}:{}:t{}w{}", path, line_start, hash, table_idx, window_idx)`. The last segment is `tNwM` (e.g., `t0w3`) — starts with `'t'`, not `'w'`, and is up to 5+ chars long. The heuristic falls through to `segments_to_strip = 2`, so `extract_file_from_chunk_id("docs/x.md:10:abc12345:t0w3")` returns `"docs/x.md:10"` instead of `"docs/x.md"`. Knock-on effect: `compile_glob_filter` matches against the wrong string for split markdown tables, so glob filters (`--path-pattern docs/**/*.md`) silently exclude every windowed table chunk; same root cause for path-mention note boost on those chunks. The doc comment on `extract_file_from_chunk_id` and the unit tests at lines 172-203 only exercise the `wN` shape that no parser actually emits.
-- **Suggested fix:** Either teach the heuristic to recognize the `tNwM` shape (regex `^t\d+w\d+$`), or change `tables.rs:158` to a format the heuristic already handles (e.g., put the table-and-window suffix inside the hash segment). Add a regression test that round-trips a real table chunk ID from `tables.rs::emit_table_window` through `extract_file_from_chunk_id` instead of using a synthetic `wN` string.
+- **Location:** src/search/scoring/filter.rs:44-53 (the `wN` arm of `is_window_suffix`)
+- **Description:** `is_window_suffix` accepts `wN` only when the suffix length is `≤ 3` (so `w0`..`w99`). `apply_windowing` (`src/cli/pipeline/windowing.rs:65`) and the legacy chunker (`src/cli/pipeline/mod.rs:483`) format ids as `format!("{}:w{}", parent_id, window_idx)` where `window_idx` is `u32` and uncapped. A chunk whose tokenized length needs ≥ 100 windows therefore produces an id ending in `:w100` (length 4), which `is_window_suffix` rejects. `extract_file_from_chunk_id` then strips only the standard `(line, hash)` pair — the result is `path:line:hash` instead of `path`, corrupting every downstream consumer that joins by file or de-dups across windows: SPLADE fusion `dense_results`/`sparse_results` ID set, `extract_file_from_chunk_id` callers in `search/query.rs:246` / `:335`, scout's same-file scoring, glob filtering on file path, etc. With BGE/E5 (~480 token windows) the threshold is ~50,000-token chunks, but the markdown / image / data-file pipelines can comfortably exceed that, and the `tNwM` form is similarly capped via the inner-digit `bytes.len() >= 4` lower bound only — `t100w0` etc. still parse, but the generic-window arm is the easy regression. The `:t12w99` test is the largest case asserted today.
+- **Suggested fix:** Drop the `bytes.len() <= 3` ceiling in the generic `wN` arm — the only structural requirement is `'w'` followed by 1+ ASCII digits to end-of-segment. The current upper bound is purely incidental (it was sized for the v0 100-window cap that no longer exists). Add a regression test for `path:10:abc12345:w100` and `path:10:abc12345:w999`.
 
-#### AC-V1.33-2: L5X synthetic-routine chunk computes `line_end` with off-by-one (3-line content gets `line_end = line_start + 3` instead of `+ 2`)
+#### `+ Inf` note sentiment silently zeroes the boosted chunk's score
 - **Difficulty:** easy
-- **Location:** `src/parser/l5x.rs:108-124`
-- **Description:** The L5X parser's synthetic-whole-routine fallback computes `line_count = content.lines().count() as u32` and emits `line_end: region.line_start + line_count`. The crate's chunk-line convention is **inclusive 1-indexed** — for example `src/parser/chunk.rs:93` uses `line_end = node.end_position().row as u32 + 1`, where `end_position().row` is the 0-indexed last row, so a 5-line chunk starting at line 1 produces `line_end = 5` (5 lines: 1,2,3,4,5). With the same convention, an L5X region starting at `line_start = 5` whose source has 3 lines should report `line_end = 7` (lines 5,6,7). Instead it reports `line_end = 8`. The sibling extraction path at `l5x.rs:172` is correct (`region.line_start + node.end_position().row as u32` — uses the inclusive convention), so the bug is isolated to the synthetic-fallback branch only. Off-by-one breaks `read --focus` line ranges, the `:line_start-line_end` header in `cqs read`, and any downstream code that intersects chunk ranges (impact diff, hunk-to-function mapping) for L5X synthetic routines.
-- **Suggested fix:** `line_end: region.line_start + line_count.saturating_sub(1)` (the saturating_sub guards the empty-source corner where `line_count = 0`).
+- **Location:** src/search/scoring/note_boost.rs:131-134, 204-220 (final `1.0 + s * factor`); pipeline at src/search/scoring/candidate.rs:328
+- **Description:** `note_stats` documents that `±Inf` sentiment round-trips through SQLite (`store/notes.rs:492`, asserted by `test_upsert_notes_infinity_sentiment_roundtrips`). Neither `NoteBoostIndex::boost` nor `OwnedNoteBoostIndex::boost` checks finiteness before computing `1.0 + s * note_boost_factor`, so an `+Inf` mention produces a `+Inf` multiplier. In `apply_scoring_pipeline` (`candidate.rs:328`), `base_score.max(0.0) * +Inf == +Inf` (or `NaN` when base is exactly 0.0), the `score >= threshold` guard accepts it, and the candidate flows up to `BoundedScoreHeap::push` (`candidate.rs:213`) where the `is_finite()` check drops it on the floor. Symmetrically, `-Inf` produces `-Inf` and fails `score >= threshold`, returning `None`. Either way, a single mention with extreme sentiment hides every chunk it boosts from search results — exactly opposite to the intent of "boost". (`0.0 * Inf = NaN` is also a separate hit on identical-vector cases.)
+- **Suggested fix:** Either (a) clamp sentiment to `[-1.0, 1.0]` (the documented discrete value range from CLAUDE.md) inside `NoteBoostIndex::new` / `OwnedNoteBoostIndex::new`, or (b) reject non-finite sentiments in `notes::upsert_*` so the storage layer enforces the invariant. (a) is a one-line change and matches the existing `clamp(0.0, 1.0)` defense-in-depth pattern in `apply_scoring_pipeline:311`.
 
-#### AC-V1.33-3: Brute-force scoring path uses unchecked `limit * 3` / `limit * 2`; only the hybrid path saturates
-- **Difficulty:** easy
-- **Location:** `src/search/query.rs:157, 356`
-- **Description:** `search_filtered_with_notes` computes `let semantic_limit = if fsql.use_rrf { limit * 3 } else { limit }` (line 157) and `Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)` (line 356) without saturation. By contrast `search_hybrid` and `search_filtered_with_index` already use `limit.saturating_mul(5).max(100)` (lines 505 and 696, with TC-ADV-5 comment explicitly citing this pathology). The CLI clamps `limit` to small values, but `Store::search_filtered` is `pub` and reachable from external callers — a `limit > usize::MAX / 3` panics in debug and wraps to a tiny number in release, silently degrading recall for big-corpus power users. Inconsistent saturation policy across sibling search methods is also a footgun for future call-site additions.
-- **Suggested fix:** Replace both with `limit.saturating_mul(N)` and add a regression test mirroring the `TC-ADV-5` rationale that already exists for the hybrid path.
-
-#### AC-V1.33-4: Knob config-override path skips `is_finite` check; NaN in `[scoring]` config flows into BM25/parent-boost/RRF math
-- **Difficulty:** easy
-- **Location:** `src/search/scoring/knob.rs:194-220`
-- **Description:** `resolve_uncached` has two override branches with asymmetric validation. Env-var path (line 198-217): parses to f32, checks `v.is_finite() && v >= knob.min && v <= knob.max`, falls back to default on failure (correct). Config path (line 195-197): only `v.clamp(knob.min, knob.max)`. `f32::clamp` propagates NaN — `clamp(NaN, 1.0, 1000.0) == NaN`. So a `[scoring] rrf_k = nan` (or `parent_boost_per_child = nan`, etc.) loaded from a TOML file produces a NaN knob. Downstream: RRF formula at `src/store/search.rs:199` becomes `1.0 / (NaN + rank + 1.0) = NaN`, contaminating every fused score. Parent-boost cap arithmetic at `src/search/scoring/candidate.rs:76,91` becomes NaN and silently zeroes/poisons every container chunk. `BoundedScoreHeap::push` filters NaN scores (good) but RRF runs *before* the heap and the contamination has already propagated to every `final_scored` entry by then.
-- **Suggested fix:** Hoist the existing env-path validation (`v.is_finite() && v >= min && v <= max`) into a shared helper and apply it to the config branch too — falling back to default on out-of-range or non-finite, matching the env path's contract.
-
-#### AC-V1.33-5: BM25 IDF formula uses non-standard `+1.0` (Atire variant) without documenting why; mismatches FTS5 BM25 used elsewhere
+#### `compute_scores_opt` per-chunk empty-tokenization fallback emits 0.5 in mixed cohort
 - **Difficulty:** medium
-- **Location:** `src/train_data/bm25.rs:49`
-- **Description:** Hard-negative selection uses `idf = ((N - df + 0.5) / (df + 0.5) + 1.0).ln()`. Standard Robertson-Sparck-Jones BM25 IDF is `ln((N - df + 0.5) / (df + 0.5))`; the `+ 1.0` is the Atire / Lucene variant that prevents negative IDF when `df > N/2`. The FTS5-backed BM25 path at `src/store/search.rs:125` (`ORDER BY bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0)`) uses SQLite FTS5's built-in BM25, which **does not** include the `+1.0` shift. So `train_data/bm25.rs::score` ranks documents on a different scale than every other BM25 surface in the codebase, and any A/B that compares hard-negative quality against FTS5-derived candidates is comparing two different scoring functions. The variant choice is not documented in the file. Same module also hardcodes `K1=1.2, B=0.75` at the top with no rationale or env override (already SHL-V1.33-7).
-- **Suggested fix:** Drop the `+ 1.0` so the formula matches FTS5 (and the standard literature), or document the Atire variant choice explicitly with a comment citing the negative-IDF avoidance reason. If kept, make sure cross-comparison code (`evals/run_sweep.py` and any negative-mining quality A/B) is aware of the offset.
+- **Location:** src/reranker.rs:299-311
+- **Description:** `run_chunk` checks `max_len == 0` and returns `vec![sigmoid(0.0); batch_size]` (= 0.5 per passage) when *this chunk's* longest encoding tokenized empty. The aggregate guard in `compute_scores_opt:267` only short-circuits when the *entire* input is empty. So with a mix of empty + non-empty chunks (e.g. one batch of 32 happens to be all-empty after `take(stage1_limit)` lands on candidates whose passages tokenize to nothing), the empty chunk's 32 results all get score 0.5, and the non-empty chunks return their cross-encoder sigmoid scores in [0, 1]. After `apply_rerank_scores` sorts by score, the 0.5 cohort sits in the middle of the cross-encoder distribution rather than at the tail where missing-data should land. Anything the cross-encoder rated below 0.5 is now ranked behind passages it never saw.
+- **Suggested fix:** Return `None` (or a sentinel) for empty chunks and have `compute_scores_opt` fall back to skipping the rerank call rather than producing zero-information scores. If preserving order matters, use the input cosine score (which the candidates already carry as `SearchResult.score`) for empty-tokenization rows so the surviving cohort stays homogeneous.
 
-#### AC-V1.33-6: `is_name_like_query` short-circuits NL-word check for ≤2-token queries — "how are", "what is" misclassified as identifier-like
+#### `select_negatives` `take(k)` upstream of empty-content drop yields fewer than k
 - **Difficulty:** easy
-- **Location:** `src/search/scoring/name_match.rs:21-75`
-- **Description:** The function gates `name_boost` on the assumption that name-like queries are identifier-shaped. The opening branch at line 23-26 returns `true` for any query with `words.len() <= 2`, before the NL_WORDS (`the`, `a`, `how`, `what`, `does`, `do`, `with`, `from`, etc.) check at line 64-68. Two-token NL queries like `"how are"`, `"what is"`, `"does this"`, `"can we"`, `"is the"` are all mis-flagged as name-like, so `build_filter_sql` flips `use_hybrid = true` (filter.rs:109-111), and `score_candidate` then mixes a misleading `name_score` from `NameMatcher` against the cosine. The query-text-only-NL case is exactly when name boosting hurts (the audit comment at name_match.rs:18-20 acknowledges this — "NL queries are harmful"). For longer queries the all-lowercase-no-underscores heuristic at line 71-73 catches them; the early-return for ≤2 words is the gap.
-- **Suggested fix:** Move the NL_WORDS check above the `words.len() <= 2` short-circuit, or check it for any length: a single NL_WORDS hit anywhere should disqualify name-like classification regardless of query length.
+- **Location:** src/train_data/bm25.rs:155-184
+- **Description:** The pipeline is `filter(hash != positive) → filter(content_hash != positive_content_hash) → take(k) → filter_map(drop empty content)`. When some of the top-k entries returned by `score()` map to an empty-content row (rare but possible: pre-content-hash data, or rows where the content was rewritten to empty between BM25 build and select call), the empty rows count toward `k` *before* being dropped, so the caller sees fewer than `k` negatives even when more candidates exist. The docstring promises "top-k negatives".
+- **Suggested fix:** Move the empty-content `filter_map` ahead of `take(k)`, or convert the whole chain to a `for` loop that skips empty rows and continues until `k` non-empty negatives are accumulated.
 
-#### AC-V1.33-7: HNSW `M` / `ef_construction` / `ef_search` env overrides accept zero; `parse::<usize>` allows "0" through `unwrap_or(DEFAULT)` and constructs a degenerate graph
+#### `weight as f32` strips NaN guard on sparse vector load
 - **Difficulty:** easy
-- **Location:** `src/hnsw/mod.rs:69-103`
-- **Description:** The three knob accessors (`max_nb_connection`, `ef_construction`, `ef_search`) parse `usize` from env without validation: `let m: usize = std::env::var("CQS_HNSW_M").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_M);`. Setting `CQS_HNSW_M=0` parses successfully and produces `m = 0`, which is then passed to `Hnsw::new(0, ...)` in `build_with_dim` and `build_batched_with_dim`. `hnsw_rs` does not validate connectivity ≥ 1 — building with `M = 0` produces a graph whose nodes have zero out-edges, every search returns 0 neighbours, and the only signal of failure is "search returns empty" deep in production. Same for `CQS_HNSW_EF_CONSTRUCTION=0` (graph builds with no candidate-list expansion) and `CQS_HNSW_EF_SEARCH=0` (search uses `self.ef_search.max(k * 2)`, but `k=0` AND `ef_search=0` → `ef_search.min(index_size) = 0`, calls `search_neighbours(_, 0, 0)`). Compare with the scoring knob pattern at `src/search/scoring/knob.rs` which has explicit `min`/`max` ranges per knob — the HNSW path is the unconverted survivor.
-- **Suggested fix:** Match the scoring-knob pattern: validate `m >= 1`, `ef_construction >= 1`, `ef_search >= 1`, log a warn and fall back to default on out-of-range. A `parse_env_usize_clamped` helper already exists per TC-ADV-V1.33-7 — reuse it here once it's covered by tests.
+- **Location:** src/store/sparse.rs:381-401
+- **Description:** Sparse vector load reads each row's `weight: f64`, applies a `token_id` range check, and pushes `(token_id as u32, weight as f32)` into the per-chunk vector with no finiteness check. SPLADE encoding is non-negative by design (ReLU on logits), but a corrupted row, a future encoder switch, or a manual SQL update can land a `NaN`/`±Inf` weight. Downstream `splade.search_with_filter → IndexResult::score` then carries the bad value into `search/query.rs:543` min-max normalization (`fold(0.0f32, f32::max)` will silently swallow `NaN` because `NaN.max(x) == x` for the `f32::max` total-order convention but `>` returns false on NaN — the normalization branch then divides finite scores by 0.0 and returns 0.0 for everything else). Either path quietly degrades hybrid fusion.
+- **Suggested fix:** Filter (with a `tracing::warn!`) or coerce non-finite weights to 0.0 in the load loop, mirroring the `BoundedScoreHeap` is_finite invariant. Same guard belongs at `store/sparse.rs:400` next to the existing token_id range check.
 
-#### AC-V1.33-8: SPLADE hybrid fusion truncates by `candidate_count` then re-collects into HashMap, losing tie-broken ordering before downstream consumption
+#### CAGRA env-knob defaults accept `0` (parallel to triaged HNSW issue P1-45)
+- **Difficulty:** easy
+- **Location:** src/cagra.rs:191-203 (`CQS_CAGRA_GRAPH_DEGREE`, `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE`)
+- **Description:** P1-45 (triaged ✅ #1326) closed the same hole for HNSW `M`/`ef_construction`/`ef_search`, but the CAGRA branch went unmodified: `std::env::var("CQS_CAGRA_GRAPH_DEGREE").ok().and_then(|v| v.parse().ok()).unwrap_or(64)` accepts a literal `"0"` and forwards it to `set_graph_degree(0)`. cuVS treats `graph_degree=0` as "use library default" on some versions and as an error on others, so the user-visible behavior depends on the cuvs pin — exactly the silent-misconfig scenario P1-45 was filed against. `cagra_max_bytes` / `cagra_stream_batch_size` already route through `parse_env_usize` and inherit its `> 0` guard; only these two knobs slipped through.
+- **Suggested fix:** Replace the inline `parse().ok().unwrap_or(64)` calls with `crate::limits::parse_env_usize(...)` which already filters non-positive values and logs the rejection.
+
+#### SPLADE min-max normalization collapses everything to 0.0 on negative-only sparse cohort
 - **Difficulty:** medium
-- **Location:** `src/search/query.rs:606-660`
-- **Description:** Lines 632-636 sort `fused` by `b.score.total_cmp(&a.score).then(a.id.cmp(&b.id))` and truncate to `candidate_count` — good, deterministic. Then lines 651-659 drain the truncated `Vec` into `fused_map: HashMap<String, f32>`. The subsequent `fused_map.keys().collect::<Vec<&str>>()` (line 659) iterates the HashMap in random order, throwing away the tie-broken sort. The doc comment at 656-658 acknowledges this: "HashMap iteration order is unspecified but STABLE across a single iteration within one call, which is all `fetch_candidates_by_ids_async` needs for its positional tie-breaker." But `fetch_candidates_by_ids_async` returns rows that go into `search_by_candidate_ids_with_notes` which then RE-applies its own `b.score.total_cmp(&a.score).then(a.id.cmp(&b.id))` sort (per the comment at 646-650). So the ordering is recovered downstream — but only if the *fused score* is what the candidate path uses for the final sort. If a future change re-uses positional rank from `candidate_ids` ordering as a tie-breaker (RRF-fuse-of-fused, for instance), the random HashMap iteration silently regresses determinism. The data-flow contract is fragile: "we sort, truncate, then deliberately scramble, trusting downstream to re-sort."
-- **Suggested fix:** Either keep `fused_map` as a `BTreeMap<String, f32>` (deterministic key iteration without an extra sort) or drain `fused` into a `Vec<(String, f32)>` after the sort+truncate and pass the ordered slice forward. Document the contract with a regression-pin test that asserts `candidate_ids` order matches the final fused order for a fixed seed.
+- **Location:** src/search/query.rs:543-572
+- **Description:** `max_sparse = sparse_results.iter().map(|r| r.score).fold(0.0f32, f32::max)`. With a negative-bearing sparse cohort (no real SPLADE input today, but any future sparse signal that is not non-negative — learned dot-product retrievers, contrastive scores, BM25-like deltas) the fold's seed `0.0` dominates, `max_sparse == 0.0`, and the `if max_sparse > 0.0` branch sends every sparse score to `0.0`. The hybrid fuse then degenerates to `alpha * dense + 0.0` — i.e., dense-only retrieval — without any tracing/warning that the sparse leg was suppressed. Even within today's SPLADE-only path, a query whose entire candidate set scores exactly 0.0 (degenerate empty intersection) hits the same branch.
+- **Suggested fix:** Initialize the fold from the first element (`iter().map(|r| r.score).reduce(f32::max)`) so the seed can't dominate, and skip normalization (use scores as-is, or warn) when `max_sparse <= 0.0`. Alternatively, log a `tracing::warn!` when `max_sparse == 0.0` so eval/CI catch silent collapse.
 
-#### AC-V1.33-9: `apply_rerank_scores` partially overwrites scores when reranker returns `scores.len() != results.len()` — surviving results carry mixed-cohort scores that re-sort incorrectly
+#### `chunk.line_end + 1` on `u32` can overflow in `where_to_add` placement suggestion
+- **Difficulty:** easy
+- **Location:** src/where_to_add.rs:223
+- **Description:** `(chunk.name.clone(), chunk.line_end + 1)` adds 1 to a `u32` line number with no saturation. `line_end == u32::MAX` is unreachable for real source files but reachable for fuzzed/corrupted input or the synthetic L5X paths flagged in P1-41. In debug builds this panics; in release it wraps to 0 and silently produces a placement suggestion at line 0, which then breaks any caller relying on `1 ≤ line ≤ file_lines`.
+- **Suggested fix:** `chunk.line_end.saturating_add(1)`. Same mechanical fix as the parser's other line-arithmetic guards (`parser/mod.rs:723`, `cache.rs:986`, etc.).
+
+#### `reverse_bfs` (single-source) lacks the stale-queue guard `reverse_bfs_multi` has
 - **Difficulty:** medium
-- **Location:** `src/reranker.rs:856-875`
-- **Description:** `let n = scores.len().min(results.len()); for (i, score) in scores.into_iter().take(n).enumerate() { results[i].score = score; }` — when scores is shorter than results, the trailing `results[n..]` keep their pre-rerank semantic-similarity scores. The subsequent `results.sort_by(b.score.total_cmp(&a.score))` then mixes cross-encoder cohort scores (typically sigmoid-mapped to [0, 1]) with cosine cohort scores ([-1, 1]) in the same comparison space, producing an arbitrary interleave that is neither pure rerank nor pure semantic. `compute_scores_opt` *currently* always returns either `None` or `Some(scores)` with `scores.len() == passages.len()` so this branch is unreachable in practice, but the silent partial-overwrite is a footgun if a future ONNX backend short-circuits (e.g., per-batch failure with N successful + M skipped). TC-ADV-V1.33-4 covers the length-mismatch *error* branch in `rerank_with_passages` (returns `InvalidArguments`) but `apply_rerank_scores` is the *post-error* helper that should be defensive.
-- **Suggested fix:** When `scores.len() < results.len()`, either truncate `results` to `n` before the sort (drop the un-rescored tail rather than mixing cohorts) or return a `RerankerError::InvalidArguments`. Add a unit test that constructs a `Vec<SearchResult>` of length 5 and a `scores: Vec<f32>` of length 3, asserts the call doesn't silently produce a mixed-cohort sort.
+- **Location:** src/impact/bfs.rs:50-87 vs 161-215, 229-292
+- **Description:** Single-source `reverse_bfs` is correct *today* because BFS visits depths in non-decreasing order and the `!ancestors.contains_key` guard means the first-insertion depth is the minimum. But the moment the function is reused in a loop that pushes back already-seen nodes (e.g. a hypothetical "expand if newer evidence found shorter path" tweak), or merged with `reverse_bfs_multi` for a future caller that wants both single- and multi-source semantics, the missing stale-entry skip block (`if ancestors.get(&current).is_some_and(|&stored| d > stored) { continue; }`) silently regresses to the bug `test_reverse_bfs_multi_stale_queue_entry` was filed against. The two implementations have diverged enough that a reasonable refactor toward "use `reverse_bfs_multi` everywhere" would have to re-discover the property.
+- **Suggested fix:** Either (a) reimplement `reverse_bfs(target, depth)` as a thin wrapper over `reverse_bfs_multi(&[target], depth)` so the two share one verified path, or (b) port the stale-entry skip into `reverse_bfs` defensively. (a) eliminates the duplication and the divergence risk in one move.
 
-#### AC-V1.33-10: `mmr_lambda_from_env` accepts `NaN`/`Inf` strings and silently disables MMR via downstream `lambda < 1.0` returning false
-- **Difficulty:** easy
-- **Location:** `src/search/mmr.rs:146-151`, consumer at `src/search/query.rs:316,427`
-- **Description:** `std::env::var("CQS_MMR_LAMBDA").ok().and_then(|s| s.parse::<f32>().ok()).map(|v| v.clamp(0.0, 1.0))`. `f32::parse` accepts `"nan"`, `"NaN"`, `"inf"`, `"-inf"` etc. — each yields `Some(NaN)`/`Some(±Inf)` from `parse`. Then `clamp(NaN, 0.0, 1.0)` returns NaN (clamp is NaN-passthrough), `clamp(Inf, 0.0, 1.0)` returns 1.0 (Inf > 1.0 maps to max). So `Some(NaN)` flows to `final_scored` consumer at query.rs:316,427. Downstream `if lambda < 1.0 && results.len() > limit` (line 427): `NaN < 1.0` is `false`, so MMR is silently skipped. No warn, no error. The user expected MMR; got pure-relevance. Compare to the env path in `resolve_uncached` (knob.rs:198-217) which does `is_finite()` validation explicitly before clamp.
-- **Suggested fix:** Add the `is_finite()` filter to mirror the scoring-knob env contract: `.and_then(|s| s.parse::<f32>().ok()).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0))`. Emit a warn when the env var was set but parsed to non-finite or invalid, so the operator sees the silent-skip.
-
-#### AC-V1.33-11: SearchFilter `include_types` ∩ `exclude_types` produces always-false WHERE clause silently
-- **Difficulty:** easy
-- **Location:** `src/search/scoring/filter.rs:93-107` and `src/store/helpers/search_filter.rs:100-159` (validate)
-- **Description:** `build_filter_sql` emits `chunk_type IN (?...) AND chunk_type NOT IN (?...)` from include_types and exclude_types respectively. If a caller (CLI, API, programmatic) passes `include_types: ["Function"], exclude_types: ["Function"]`, the SQL becomes a contradiction that returns zero rows — searches silently return empty even when valid candidates exist. `SearchFilter::validate()` covers `name_boost` range, `path_pattern` glob shape, `splade_alpha` range, but not include/exclude type intersection. Same shape exists for `languages` if a future filter ever adds `exclude_languages`.
-- **Suggested fix:** In `validate()`, compute `let overlap: Vec<_> = include_types.iter().filter(|t| exclude_types.contains(t)).collect();` and `Err` if non-empty, naming the overlapping types so the operator can see which knob to fix. Cheaper alternative: subtract `exclude_types` from `include_types` at filter-build time so the user gets the union-intent silently.
-
-## Data Safety
-
-#### DS-V1.33-1: `migrate_legacy_index_to_default_slot` does not acquire `slots.lock` — concurrent CLI invocations can both run the legacy migration
+#### `total_cmp` tie-break on rerank batch fallback puts 0.5 in the middle of cross-encoder cohort
 - **Difficulty:** medium
-- **Location:** `src/slot/mod.rs:662` (function body), called unguarded from `src/cli/dispatch.rs:169`, `src/cli/commands/index/build.rs:114`, `src/cli/watch/mod.rs:462`
-- **Description:** Every CLI invocation in a project that still has legacy `.cqs/index.db` (no `slots/` directory yet) calls `migrate_legacy_index_to_default_slot` from dispatch.rs:169, which checks `slots_dir.exists()`, `legacy_index.exists()`, and `sentinel.exists()` before writing the sentinel and starting `move_file` operations. None of those steps acquire `slots.lock` (P2.61's existing `acquire_slots_lock` exists for create/promote/remove but the legacy-migration path never calls it). Two concurrent `cqs <anything>` invocations on a fresh-clone project (e.g., a watch daemon starting at the same moment as a `cqs search`) both observe the pre-migration state, both pass the sentinel check, both write the sentinel, and both kick off `fs::rename(legacy_index → slots/default/index.db)` plus the HNSW + SPLADE sidecars. One process succeeds and the second fails partway through, but the sentinel-rollback path that's supposed to surface failure only runs in the loser; the winner sees `slots/` already exists on its second iteration and bails — the rollback never restores anything. End state: the sidecars (graph/data/ids/checksum/wal/shm) can land split across legacy + slots/default/, leaving an unloadable index that schema-init won't notice.
-- **Suggested fix:** Hoist `acquire_slots_lock(project_cqs_dir)?` to the top of `migrate_legacy_index_to_default_slot` (or wrap each of the three call sites in dispatch.rs / build.rs / watch/mod.rs in the same flock). The lock is already created on demand by `acquire_slots_lock` — this just hooks the existing serialization machinery onto the one slot operation that's still missing it.
+- **Location:** src/reranker.rs:872-908 + 305-311 interaction
+- **Description:** Companion to the empty-tokenization finding above, but the algorithm-correctness angle is in `apply_rerank_scores`: the comment justifying the cohort-homogeneous truncation when `scores.len() < results.len()` (`AC-V1.33-9`) is correct, but the symmetric case — `scores.len() == results.len()` with some scores being the 0.5 fallback from `run_chunk` empty-batch — is not addressed. The sort comparator `b.score.total_cmp(&a.score)` then interleaves true cross-encoder scores (in [0, 1]) with synthetic 0.5 fallbacks within the same cohort, and the deterministic id-tiebreak gives them stable but meaningless ranking. Worst case: a true low-relevance score of 0.3 sits below a 0.5 fallback for a passage the encoder never saw.
+- **Suggested fix:** Surface the empty-tokenization rows back to `apply_rerank_scores` (e.g., return `Vec<Option<f32>>` from `compute_scores_opt`) and have it either drop those rows (matching the `< n` cohort-trim policy) or fall back to the input cosine score that survived stage 1. Both options keep the comparator on a single homogeneous distribution.
 
-#### DS-V1.33-2: `write_active_slot` and `write_slot_model` use fixed `<file>.tmp` paths — concurrent writers race on the temp file
-- **Difficulty:** easy
-- **Location:** `src/slot/mod.rs:507` (`tmp_path = project_cqs_dir.join(format!("{}.tmp", ACTIVE_SLOT_FILE))`), `src/slot/mod.rs:370` (`tmp_path = dir.join(format!("{}.tmp", SLOT_CONFIG_FILE))`)
-- **Description:** Both writers use a deterministic `active_slot.tmp` / `slot.toml.tmp` filename. The slot lifecycle commands (`slot_create/promote/remove`) hold `slots.lock` so within those callers the path is safe, but `write_active_slot` is also called by `migrate_legacy_index_to_default_slot` (line 817) which runs *without* slots.lock (see DS-V1.33-1 above). Two concurrent calls — e.g., legacy migration in one CLI process while another process explicitly `cqs slot promote`s — both create+truncate the same tmp file, then both `atomic_replace` it. Whichever rename loses races against the other's `fs::File::create`-with-truncate, with the result that one writer's `slot_name` bytes are partially overwritten by the second writer's stream before the rename, then `atomic_replace` ships the truncated result to `active_slot`. Compare with `notes.toml` (`format!("toml.{:016x}.tmp", suffix)`) and HNSW save (`.{}.{:016x}.tmp`) which use the same `crate::temp_suffix()` to disambiguate.
-- **Suggested fix:** Switch both temp filenames to include `crate::temp_suffix()` (already used by note + HNSW + audit-mode writers). Two-line change in each of the two sites; the `let suffix = crate::temp_suffix(); let tmp_path = ... format!("{}.{:016x}.tmp", FILE, suffix)` shape already exists in this codebase.
 
-#### DS-V1.33-3: `verify_hnsw_checksums` skips files that don't exist on disk — partial index passes verification
-- **Difficulty:** easy
-- **Location:** `src/hnsw/persist.rs:121-189` (specifically the `if path.exists()` guard at line 147)
-- **Description:** The verifier walks lines from `index.hnsw.checksum`, parses `ext:hash`, then runs `if path.exists()` — and silently skips when the file is missing. If a save crashes after writing `hnsw.checksum` and `hnsw.ids` but before `hnsw.graph` / `hnsw.data` are renamed into place, the next load calls `verify_hnsw_checksums`, which iterates the four checksum lines, sees `hnsw.graph` and `hnsw.data` paths don't exist, *skips* them, hashes the present `hnsw.ids` successfully, and returns `Ok(())`. The function's own contract ("Returns Ok if checksums match or no checksum file exists") encodes this as designed, but the load path then proceeds to call into `hnsw_rs::file_load` against a missing graph file — at best a confusing late-stage error, at worst (as the existing module-level safety comment warns at line 200-204) an "incomplete library write" the loader can't tell apart from a fresh empty index.
-- **Suggested fix:** When a checksum line names an extension in `HNSW_EXTENSIONS`, treat `!path.exists()` as a hard failure (`HnswError::Internal("checksum manifest references missing file: {ext}")`) instead of `continue`. The four-extension whitelist at line 142-145 makes this safe — only known files trigger the strict check. Optional secondary defense: enumerate the directory at the start of verify and assert each `HNSW_EXTENSIONS` entry has a corresponding checksum line.
-
-#### DS-V1.33-4: `EmbeddingCache::evict` and `QueryCache::evict` use deferred (default) transactions — cross-process readers see stale size
-- **Difficulty:** medium
-- **Location:** `src/cache.rs:603-672` (EmbeddingCache::evict), `src/cache.rs:2183-2249` (QueryCache::evict)
-- **Description:** Both evictors run `self.pool.begin().await` (deferred transaction by sqlx default), then SELECT the size, SELECT the avg, then DELETE. The in-process `evict_lock` mutex serializes evictors within one process, but a second cqs process — for example, the daemon's `cqs cache prune` running while a CLI `cqs index` is calling `write_batch` — opens its own pool and bypasses the in-process mutex entirely. SQLite WAL allows concurrent readers, so the second process's deferred BEGIN reads a snapshot that doesn't include rows the first process has just written but not yet flushed via wal_checkpoint. The DELETE then targets `LIMIT N` of the *snapshot* rows (oldest by created_at), and after both evictors commit, the cache can be smaller than `max_size_bytes / 2` even though only one excess interval was supposed to be reclaimed. The DS2-5 mitigation comment at line 599-603 specifically claims "concurrent `write_batch` traffic cannot invalidate the measurement between steps" — true within one process, false across processes.
-- **Suggested fix:** Switch the eviction transaction to `BEGIN IMMEDIATE` (sqlx exposes this via `pool.begin_with(...)` / raw SQL) so the writer lock is acquired up front and concurrent readers from peer processes see a consistent serialized state. Same fix applies to both cache types — they share an evict signature.
-
-#### DS-V1.33-5: `backup_path_for` uses second-resolution unix timestamp with no PID — concurrent migrations from racing processes collide on backup file
-- **Difficulty:** easy
-- **Location:** `src/store/backup.rs:64-75`
-- **Description:** Filename format is `{stem}.bak-v{from}-v{to}-{unix_ts}.db` where `unix_ts` is `as_secs()` (1-second granularity) and falls back to `0` if `SystemTime::now() < UNIX_EPOCH`. Two CLI processes both attempting v22→v25 migration in the same second (rare but realistic on a build farm or under a CI matrix that spawns 8 cqs-using jobs simultaneously) compute the same backup path. `copy_file_atomic` then writes both processes' staged temp files into the same `.bak.{:016x}.tmp` (per `copy_file_atomic` which DOES use `crate::temp_suffix()` correctly), but `atomic_replace` with the same destination means whichever lands second silently overwrites the first's backup. If the first process's migration fails AFTER the second process completed its own backup-and-restore cycle, the first restorer reads the second process's pre-migrate state — not its own — and corrupts the user's DB. Clock-skew fallback to `0` means concurrent migrations during a clock anomaly all collide deterministically.
-- **Suggested fix:** Append `std::process::id()` and a `crate::temp_suffix()` (or drop the seconds-based suffix entirely) so backup names are per-process unique: `{stem}.bak-v{from}-v{to}-{unix_ts}-{pid}-{rand_hex}.db`. The `prune_old_backups` regex at line 220 (`name.starts_with(&prefix) && name.ends_with(".db")`) already tolerates arbitrary middle content, so the only-newest-N-mtime sort still works without changes.
-
-#### DS-V1.33-6: `evict_lock` is reset to `Mutex::new(())` on every `EmbeddingCache::open` — multiple Store/Cache opens in same process don't share the mutex
-- **Difficulty:** medium
-- **Location:** `src/cache.rs:165` (`evict_lock: std::sync::Mutex<()>`), instantiated at `src/cache.rs:372` (`evict_lock: std::sync::Mutex::new(())`)
-- **Description:** The mutex's docstring (line 160-165) claims it "serializes `evict()` calls so two parallel invocations can't both measure the same logical size and issue overlapping `LIMIT ?` DELETEs." This holds for two clones of the same `EmbeddingCache` instance (e.g., shared via `Arc<EmbeddingCache>`), but in practice `EmbeddingCache::open` / `open_with_runtime` are called in multiple call paths within a single process — the bulk pipeline's `prepare_for_embedding`, the watch daemon's reindex path, and `cmd_cache prune`. Each `open` constructs a fresh `Mutex<()>`; the four resulting `EmbeddingCache` instances point at the same `embeddings_cache.db` file but their `evict_lock` mutexes are independent. Two of those instances calling `evict()` from different tokio runtimes concurrently is exactly the race the docstring promises to prevent, and isn't.
-- **Suggested fix:** Hoist `evict_lock` to a process-global `static EMBEDDING_CACHE_EVICT_LOCK: Mutex<()> = Mutex::new(());` (mirroring how `WRITE_LOCK` in `src/store/mod.rs:54` is one process-wide mutex regardless of how many `Store` handles open the DB). Same change for `QueryCache`. The intra-process serialization the comment promises only holds when the lock is process-static.
-
-#### DS-V1.33-7: `clear_session` doesn't reset `detected_dim` or `model_fingerprint` — model swap leaves stale OnceLocks feeding all readers
-- **Difficulty:** medium
-- **Location:** `src/embedder/mod.rs:915-950` (clear_session) vs `src/embedder/mod.rs:298, 303, 960-967, 1100-1108` (`detected_dim` / `model_fingerprint` `OnceLock`s set on first inference)
-- **Description:** `clear_session` drops the ONNX session, query cache, and tokenizer to release ~500 MB of GPU/CPU memory between idle periods. It does NOT clear `detected_dim` (the `OnceLock<usize>` populated on first inference at line 1107, 1141) or `model_fingerprint` (also `OnceLock<String>` at line 303). Watch mode's documented contract is single-threaded access to one Embedder for one model, but if `clear_session` is ever used as part of a model-swap path (or if a future PR uses the same Embedder to back two slots with different dims as preset metadata suggests), `embedding_dim()` would keep returning the first-seen dim and `model_fingerprint` would keep returning the first-loaded model's hash — silently caching every new embedding under the wrong model_id key, and feeding the wrong dim to `EmbeddingCache::read_batch`'s dimension filter (which silently skips on mismatch). The ONNX session re-init on first inference can't repair these once-set fields.
-- **Suggested fix:** Reset both OnceLocks alongside the session/tokenizer drop. Convert `clear_session` to `&mut self` (the docstring already says "Watch mode guarantees single-threaded access") and reset via `self.detected_dim = std::sync::OnceLock::new(); self.model_fingerprint = std::sync::OnceLock::new();`. Optionally mark the tied `pad_id` OnceLock for the same treatment to match.
-
-#### DS-V1.33-8: Pool `after_connect` only sets `cache_size` and `temp_store=MEMORY` — no `wal_autocheckpoint` ceiling, abrupt shutdown leaves WAL unbounded
-- **Difficulty:** medium
-- **Location:** `src/store/mod.rs:920-961` (open_store, the `connect_with(connect_opts)` builder vs the `after_connect(...)` closure)
-- **Description:** `Store::close` and `Store::drop` both run `wal_checkpoint(TRUNCATE)`, but a process killed via SIGKILL / panic-without-Drop (e.g., the daemon worker thread panicking with the Tokio runtime detached) bypasses both. SQLite's default 1000-page autocheckpoint runs only on COMMIT, so a long-lived read-only `cqs serve` process that never commits never triggers it. No `PRAGMA wal_autocheckpoint = N` is set anywhere — production pool, migration test pools, or backup pools — meaning the on-disk WAL grows to whatever the kernel buffers it to between explicit checkpoints. The next open then reads-and-replays a multi-GB WAL with the live mmap pinned for the duration. Combined with WSL's slow `/mnt/c` sync, this is a 30+ second startup on a project where a single daemon crashed mid-write.
-- **Suggested fix:** Add `PRAGMA wal_autocheckpoint = ?` to the `after_connect` closure with `1000` as default and `CQS_WAL_AUTOCHECKPOINT_PAGES` env override. Apply identically to `EmbeddingCache::open_with_runtime` and `QueryCache::open_with_runtime`. As defense-in-depth, add a debug `query("PRAGMA journal_mode").fetch_one` inside `after_connect` that warns when the result isn't `wal` — the failure mode of one connection silently reverting to `delete` mode (read-only mount, fs that errors on WAL-open) is invisible today.
-
-#### DS-V1.33-9: `migrate_legacy_index_to_default_slot` checkpoints WAL before writing the sentinel — crash between the two leaves no recovery breadcrumb
-- **Difficulty:** easy
-- **Location:** `src/slot/mod.rs:720-741`
-- **Description:** The function calls `checkpoint_legacy_index(&legacy_index)` at line 720 (which opens its own pool, runs `PRAGMA wal_checkpoint(TRUNCATE)`, and closes), then writes the migration sentinel at line 732. If the process is killed (SIGTERM, SIGKILL, host crash) anywhere between the checkpoint completing and the sentinel being written, the on-disk state is "WAL drained, no breadcrumb yet, sidecars about to move" — but no sentinel exists, so the next migration call observes the legacy index, no sentinel, and proceeds as a fresh migration. The comment at line 729-731 explicitly says "write the sentinel before we touch the FS so a crash between here and full success leaves a recovery breadcrumb" — but `checkpoint_legacy_index` already touched the FS by truncating the WAL, removing uncommitted page state from the live DB before the sentinel exists to protect it.
-- **Suggested fix:** Reorder: write the sentinel first (capturing intent: "I'm about to checkpoint and move"), then run `checkpoint_legacy_index`, then proceed with the move loop. The sentinel content is descriptive (`started_at=...`, `state=in_progress`) so the operator on a recovery dialog can tell which step was in flight; today's reorder masks the WAL-checkpoint phase entirely.
-
-#### DS-V1.33-10: `chunks` `INSERT OR REPLACE` cascade is enforced only by call-site convention — no structural defense against losing call/type/sparse edges
-- **Difficulty:** medium
-- **Location:** `src/store/chunks/crud.rs:211-213` (DS-19 warning), `src/store/chunks/crud.rs:214-259` (`upsert_chunks_batch`), `src/store/chunks/crud.rs:262-271` (`upsert_chunk` single-row wrapper)
-- **Description:** The DS-19 banner warns: "Uses `INSERT OR REPLACE` which triggers `ON DELETE CASCADE` on `calls` and `type_edges` tables. Callers must re-populate call graph edges after this function if the chunks had existing relationships." The contract is enforced only by convention — there is no SQL trigger, no Rust wrapper that requires both passes, no debug-only assertion that `calls`/`type_edges`/`sparse_vectors` row counts changed before vs. after by the expected amount. `upsert_chunk` (single-row wrapper at line 262, used by tests and ad-hoc callers) has no banner of its own and silently delegates into the same `INSERT OR REPLACE` codepath. A future caller that hits `upsert_chunks_batch` without then re-populating the edges silently produces an index where `cqs callers <fn>` is empty for chunks that were re-embedded but kept the same `id`. The Memory rule "Invalidation Must Be Enforced" specifically calls out that structural enforcement must replace call-site instrumentation here.
-- **Suggested fix:** Two-layer defense: (1) replace `INSERT OR REPLACE` with `INSERT … ON CONFLICT(id) DO UPDATE SET ...` (UPSERT) so unchanged chunks keep their FK rows — the cascade only fires on actual content_hash change; (2) for the genuinely-changing rows where the cascade IS desired, return a typed handle that the caller MUST consume to re-populate edges (e.g., `pub struct ChunksWritten { content_changed: Vec<ChunkId>, ... }` with a Drop impl that warn-logs on unconsumed handles in debug builds). The combination converts the DS-19 banner into a compile-time + runtime check.
-
-## Security
-
-#### SEC-V1.33-1: `cqs serve --open` leaks per-launch token to local processes via `cmd /C start "" <url>` and `xdg-open <url>` argv
-- **Difficulty:** medium
-- **Location:** `src/cli/commands/serve.rs:111-158`
-- **Description:** `open_browser` spawns `cmd /C start "" "<url>"` (Windows / WSL) or `xdg-open <url>` (Linux) / `open <url>` (macOS) where `<url>` is `http://<bind>/?token=<token>`. The token is now in the spawned subprocess's argv, visible to any local user via `ps -ef`, `/proc/<pid>/cmdline`, `wmic process get CommandLine` on Windows, and persisted in shell history if anything wraps the launch. P1.13 already established that the same banner shouldn't go to journald, and the token-bearing banner is now routed to stderr for that reason — but `--open` re-leaks the token through a different surface entirely. On a multi-user box a co-located user can read `/proc/<pid>/cmdline` for any subprocess until it exits; even after exit, audit subsystems (auditd, ETW) typically capture exec command lines. Same threat model as P1.13 (`cqs serve` token persistence), unfixed for the `--open` path.
-- **Suggested fix:** Don't pass the token through argv. Two options: (1) write the URL with token to a tempfile, then pass the tempfile to the OS handler that supports HTML/URL files (works on macOS/Windows but not portable). (2) Bind a localhost-only one-shot HTTP redirector with a short-lived path token; spawn the browser at `http://127.0.0.1:<bind>/<short-token>` which the daemon validates once and 302s with the cookie set. Cleaner: since cookie-set already happens via the redirect, set the cookie *before* spawning the browser by writing it to the browser's cookie jar — but that's profile-aware and fragile. The minimum-viable fix is to skip `--open` entirely when `auth.token().is_some()` and print a "paste this URL into your browser" message, with a follow-up issue to land option (2). Document the leak in SECURITY.md until then.
-
-#### SEC-V1.33-2: `apply_db_file_perms` runs after SQLite pool open — embedding cache DB+WAL+SHM born world-readable on default umask
-- **Difficulty:** easy
-- **Location:** `src/cache.rs:349-353` (also `src/cache.rs:2152-2153` for QueryCache)
-- **Description:** `EmbeddingCache::open_with_runtime` and `QueryCache::open_with_runtime` both create a `SqlitePoolOptions::create_if_missing(true)` pool that opens the DB file (creating it on first run with the user's umask, typically 0o022 → 0o644) BEFORE calling `apply_db_file_perms(path)`. The chmod 0o600 happens in a tight loop after the pool is up, so the WAL/SHM sidecar files are also momentarily 0o644. On a multi-user host any local user can `cat ~/.cache/cqs/embeddings.db-wal` during the window between SQLite first-write and the chmod — embedding caches can carry sensitive content via `model_fingerprint` columns + the chunk content hashes themselves are evidence of which paths the user indexed. The parent dir is 0o700 so this is an internal-attacker mitigation only, but the audit comment at cache.rs:107-123 already flags this as overdue refactoring.
-- **Suggested fix:** Apply the SEC-D.6 daemon-socket pattern: wrap the pool creation in a `umask(0o077)` set/restore (Unix), or write a zero-byte placeholder file with `OpenOptions::new().mode(0o600).create_new(true)` *before* the pool opens and let SQLite open-existing it. The daemon-socket fix in `cli/watch/mod.rs:563-570` is the model — same comment notes "between bind() and set_permissions(), the socket inode is world-creatable for ~ms".
-
-#### SEC-V1.33-3: `ProjectRegistry::save` writes tmp file with default umask, chmod 0o600 lands after the rename
-- **Difficulty:** easy
-- **Location:** `src/project.rs:101-118`
-- **Description:** `std::fs::write(&tmp, &content)` (line 104) creates the tmp file at `~/.config/cqs/projects.toml.<hex>.tmp` honoring the user's umask (typically 0o644 default). `crate::fs::atomic_replace(&tmp, &path)` (line 106) renames it into place. The chmod 0o600 (line 114) happens AFTER the rename. Result: there is a small window (one rename + a syscall) where `~/.config/cqs/projects.toml` is world-readable. The registry contains absolute project paths — a co-located user can `ls`/`cat` the file during the window to learn which directories the user indexes (low-grade, but the file is supposed to be 0o600). Compare to `audit.rs:131-145` and `note.rs:343-358` which both do `mode(0o600)` at OpenOptions time before write — that's the correct shape and exists in the codebase already.
-- **Suggested fix:** Replace `std::fs::write(&tmp, &content)?` with the `OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?` + `f.write_all(content.as_bytes())?` pattern from `audit.rs:131-140`. Drop the post-rename chmod (which was always defense-in-depth and silently fails on non-Unix).
-
-#### SEC-V1.33-4: `write_model_toml` interpolates `repo` into TOML without escaping `\r`, `[`, `]`
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/train/export_model.rs:104-131` + repo-validation at `src/cli/commands/train/export_model.rs:21-25`
-- **Description:** `cmd_export_model` validates `repo` only against `'/'` presence + `'"'`/`'\n'`/`'\\'` rejection (line 21). It does NOT reject `\r` (carriage return), `[`, `]`, `=`, `#`, or surrounding whitespace. `write_model_toml` then interpolates `repo` into a `format!()` template that lays the value out as `repo = "{repo}"`. A repo string like `evil/model"\r\nonnx_path = "../../../etc/passwd` (on a system that accepts CR alone as line terminator) would inject extra TOML keys into `model.toml`. Even more cheaply, `evil/model]` followed by injected `[embedding.something]` re-opens table scope. The output is then read by `cqs.toml` mergers downstream — a poisoned `model.toml` lets the same operator who ran `cqs export-model` (with their permission, but possibly fooled by a copy-paste from a malicious README) silently escalate config keys.
-- **Suggested fix:** Either (a) write the TOML via `toml::to_string(&Table)` so the serializer escapes structural chars correctly, or (b) tighten the repo validation to a strict allowlist (`[A-Za-z0-9_./-]` only; HF repo IDs are documented as such). Repo IDs from HuggingFace are already constrained — reject anything outside `[A-Za-z0-9._/-]`. While here, reject leading `-` (avoids `--something` arg confusion downstream of the optimum subprocess too).
-
-#### SEC-V1.33-5: Chunk content printed verbatim to stdout — embedded ANSI escapes / OSC 8 hyperlinks reach the terminal unfiltered
-- **Difficulty:** medium
-- **Location:** `src/cli/display.rs:172, 341`; `src/cli/commands/graph/explain.rs:408, 441`; `src/cli/commands/io/context.rs:617`; `src/cli/commands/search/scout.rs:130`
-- **Description:** Every CLI text-mode path that surfaces a chunk uses `println!("{}", r.chunk.content)` (or equivalent) without sanitizing terminal control characters. A malicious file in the indexed corpus (or a poisoned reference index — explicitly covered as a "semi-trusted" surface in SECURITY.md) can embed: (a) ANSI cursor-up + line-clear codes that overwrite previous terminal output (forge "OK" status lines), (b) OSC 8 hyperlinks (`\x1b]8;;file:///etc/passwd\x1b\\benign\x1b]8;;\x1b\\`) that render as innocent text but click through to attacker-chosen destinations, (c) iTerm2 / kitty / wezterm proprietary escapes that can read clipboard or execute commands in some configurations, (d) terminal-bell spam, (e) DCS sequences that some terminals interpret as commands. SECURITY.md's threat model labels indexed content as "Untrusted (in AI agent context)" but cqs's *interactive CLI user* is a terminal, not an agent — and the agent's own terminal too if cqs is being used through Claude Code. This is the shell-version of indirect prompt injection and is unfixed.
-- **Suggested fix:** Add a `sanitize_for_terminal` helper that strips C0/C1 control chars (except `\t`/`\n`/`\r`) and the CSI/OSC/DCS introducer bytes (`\x1b[`, `\x1b]`, `\x1b P`) from any chunk-derived string before `println!`. Apply it at the five sites above. Gate via `CQS_NO_ANSI_STRIP=1` for terminals where the user trusts their corpus. Document the gate in SECURITY.md alongside the existing trust-level / injection_flags mitigations.
-
-#### SEC-V1.33-6: `audit-mode.json` parsed without size cap — `.cqs/`-write attacker can OOM cqs on every command
-- **Difficulty:** easy
-- **Location:** `src/audit.rs:75-88`
-- **Description:** `load_audit_state(cqs_dir)` calls `std::fs::read_to_string(&path)` on `.cqs/audit-mode.json` without a size cap, then `serde_json::from_str` over the whole string. `load_audit_state` is invoked on most CLI paths (read, search, gather, scout, etc. — anything that consults audit mode). An attacker with write access to `.cqs/` (e.g. via a misconfigured `chmod`, a backup-restore that flattened perms, or a CI runner that checks out a poisoned `.cqs/` symlink) can make every cqs invocation read a 1 GiB JSON file into memory. Compare to `project.rs:62-71`'s 1 MiB cap on the project registry — same pattern, missing here.
-- **Suggested fix:** Pre-stat the file via `std::fs::metadata`, bail if `.len() > 4096` (audit-mode JSON is ~80 bytes in practice), then read. Or use `std::fs::File::open` + `take(4096)` + `read_to_string` to bound the I/O. Same fix in `project.rs:62-71` shape.
-
-#### SEC-V1.33-7: `find_7z` accepts `ProgramFiles` env var as path prefix without `is_safe_executable_path` enforcement
-- **Difficulty:** medium
-- **Location:** `src/convert/chm.rs:252-302`
-- **Description:** `find_7z` builds a candidate list that includes `format!(r"{}\7-Zip\7z.exe", pf)` where `pf = std::env::var("ProgramFiles")`. The downstream `is_safe_executable_path` check (line 278) protects against PATH injection by rejecting binaries in user-writable dirs, but on Windows a non-elevated user can override `ProgramFiles` via `setx ProgramFiles C:\Users\me\evil` (sets HKCU env). On a subsequent `cqs convert *.chm` cqs spawns `C:\Users\me\evil\7-Zip\7z.exe`. SEC-V1.25-10's protection (`is_safe_executable_path`) wasn't designed for the case where the env var redirects an "absolute" path through a writable dir — `is_safe_executable_path` is called, but its sense of "safe" is "not in /tmp, not in /var/tmp, not world-writable" — it doesn't catch user-writable directories under `C:\Users\<me>\` because they're owner-writable not world-writable.
-- **Suggested fix:** On Windows, validate that `ProgramFiles` resolves to one of the documented system locations (`C:\Program Files`, `C:\Program Files (x86)`) — reject anything that doesn't start with `C:\Program Files` (case-insensitive). Or, more conservatively: drop the env-based path lookup entirely and only consult `PATH` (operators with non-default 7-Zip installs already need to add it to PATH for any other tool to find it).
-
-#### SEC-V1.33-8: `HF_HOME` and `HUGGINGFACE_HUB_CACHE` accepted without canonicalization or trust check
-- **Difficulty:** medium
-- **Location:** `src/aux_model.rs:53-69`
-- **Description:** `hf_cache_dir` reads `HF_HOME` / `HUGGINGFACE_HUB_CACHE` env vars verbatim and uses the result as the cache directory for ONNX model files (SPLADE encoder, reranker cross-encoder). cqs then loads `model.onnx` + `tokenizer.json` from that location. An attacker who can set the env in the user's shell (via `.bashrc` modification, a hostile devcontainer image, a shared dotfiles repo) redirects model loads to a path under their control. The loaded ONNX is consumed by `ort` at inference time — a malicious `model.onnx` can carry arbitrary compute graph nodes that crash the worker, or in older `ort`/`onnxruntime` versions, trigger known CVE classes. This is the "supply-chain via env redirect" attack pattern. SECURITY.md doesn't enumerate `HF_HOME` as a trust boundary.
-- **Suggested fix:** Validate env-supplied cache paths: reject any path under `/tmp`, `/var/tmp`, `~/Downloads`, or that points outside the user's home dir. On first use of an env-supplied path, log a `tracing::warn!` and require a confirmation prompt (mirrors the v1.30.1 first-encounter shared-notes gate at `index/build.rs`). Document `HF_HOME` and `HUGGINGFACE_HUB_CACHE` as trust boundaries in SECURITY.md.
-
-#### SEC-V1.33-9: `dispatch_read` daemon handler hardcodes `trust_level: "user-code"` even when chunk lives under vendored path
-- **Difficulty:** medium
-- **Location:** `src/cli/batch/handlers/info.rs:391-396, 426-430`
-- **Description:** `dispatch_read` (the `read` daemon RPC) returns JSON with `"trust_level": "user-code"` unconditionally. This is correct for `cqs read <path>` because it reads from the filesystem (not the chunks table) — but the same path is reached by `read --focus <fn>` which consults the `chunks` table. After SEC-V1.30.1-5 / #1221 introduced the three-tier `user-code | vendored-code | reference-code` trust model, every chunk-returning JSON path should propagate the chunk's `trust_level` column (schema v24). The hardcoded `"user-code"` here means a focus on a chunk that lives under `node_modules/`/`vendor/` is mislabeled — the agent gets `user-code` and applies looser rules to text it should treat as vendored. This is the structural class of SEC-V1.30.1-4 (`tag_user_code_trust_level` shape-coupled) — one site that #1221 missed.
-- **Suggested fix:** In `dispatch_read_focused`, after `build_focused_output` returns, look up the focus chunk's `trust_level` from the store and substitute the real value. For the file-read path (`dispatch_read` at line 391), `validate_and_read_file` reads the project filesystem so `user-code` is structurally correct — but consider also tagging `vendored-code` if the relative path matches a configured `vendored_paths` segment (mirrors the index-time logic in `cqs::trust_level::vendored_path_match`).
-
-#### SEC-V1.33-10: `LocalProvider`'s `CQS_LLM_API_BASE` accepts `http://` for non-loopback hosts — bearer travels over plaintext
-- **Difficulty:** medium
-- **Location:** `src/llm/local.rs:96-106`
-- **Description:** `LocalProvider::new` validates `CQS_LLM_API_BASE` only against `starts_with("http://")` || `starts_with("https://")`. There's no check that an `http://` (plaintext) base targets a loopback or RFC1918 address. An operator who points `CQS_LLM_API_BASE=http://internal-llm.example.com:8080/v1` and `CQS_LLM_API_KEY=sk-...` ships every prompt + the bearer token over plaintext to a non-loopback host. The same-origin-redirect policy (#1223) and the SEC-V1.30.1-7 redirect bearer leak fix both assume the operator at least started with HTTPS or a loopback — neither defense triggers on a plaintext intentional bind. Compare to `cqs serve`'s loud-warn for `--no-auth` on non-loopback binds (PB-V1.30.1-1, #1206) — the symmetric defence for `LocalProvider` doesn't exist.
-- **Suggested fix:** When `api_base` parses to `http://` (not https), require the host to be `127.0.0.1`, `localhost`, `::1`, or RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`). Otherwise, refuse to attach the `Authorization: Bearer` header *and* emit a loud-warn. Document `http://` non-loopback as out-of-scope in SECURITY.md or the `LocalProvider` docs.
-- **Suggested fix:** Replace each `pub use foo::*` with the explicit list of items the binary actually consumes (mirror the `nl` cleanup from P3.5). A grep across `src/cli/**/*.rs` for each module's exports gives the migration list. Mechanical, ~20 minutes per module.
-
-## Test Coverage (happy path)
-
-#### TC-HAP-V1.33-1: `cqs convert` and `convert_path` have zero end-to-end tests
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/convert.rs:7-121`, `src/convert/mod.rs:435-443`
-- **Description:** `cmd_convert` is the CLI handler for `cqs convert <path>` and the only caller of `cqs::convert::convert_path` (the orchestrator that branches single-file vs directory and feeds `convert_file` → `cleaning::clean_markdown` → `naming::*` → `finalize_output`). `convert.rs` has zero `#[test]` blocks (only 121 lines, all logic). `convert_path` itself has zero direct tests in `src/convert/mod.rs::tests` (the existing 10 tests cover `format_table`, `detect_format` round-trip, `find_python`, but not the orchestrator). `tests/cli_*.rs` has no `convert` integration test. The submodules (html.rs, pdf.rs, chm.rs, cleaning.rs, naming.rs) have unit tests for their own helpers, so the gap is specifically the entry-point glue — overwrite-vs-skip, dry-run output stability, the `output_dir` SEC-4 canonicalize/warn logic at lines 27-52, and the `clean_tags` CSV split at line 54.
-- **Suggested fix:** Add `tests/cli_convert_test.rs` with three tests: `convert_html_file_writes_markdown_to_inferred_dir` (happy path single-file), `convert_directory_processes_multiple_files`, `convert_dry_run_does_not_write_files`. Use the smallest fixture HTML in tests/fixtures (or inline a `<h1>Title</h1><p>Body</p>` string) — no PDF/CHM dependencies needed for the orchestrator coverage. Optionally add `convert_path_returns_empty_vec_for_unsupported_extension` directly in `src/convert/mod.rs::tests` for the cheap unit-level pin.
-
-#### TC-HAP-V1.33-2: `cqs eval --reranker` flag (#1303) has zero CLI integration test
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/eval/mod.rs:106-124, 188-198`
-- **Description:** `RerankerMode::{None, Onnx, Llm}` was added in #1303 with three branches in `cmd_eval`: `None` short-circuits, `Onnx` builds via `ctx.reranker()?`, `Llm` eagerly constructs `LlmReranker::new()` so the user sees the skeleton's "not yet implemented" error before the search loop spins up. CHANGELOG.md:11 lists `cqs eval --reranker` as a v1.33.0 feature highlight. Despite this, `tests/eval_test.rs`, `tests/eval_subcommand_test.rs`, and `tests/eval_baseline_test.rs` contain zero references to `--reranker` or `RerankerMode` (verified via grep). `tests/eval_harness.rs` uses `RerankerMode` internally for the model-eval binary, but that binary is not the CLI surface; it bypasses `clap` argv parsing. A future refactor that flipped `RerankerMode::None` to default `Onnx`, or that re-wired `RerankerMode::Llm` to a different error variant, would silently pass CI.
-- **Suggested fix:** Add `tests/cli_eval_reranker_test.rs` with `eval_with_reranker_none_runs_to_completion` (`cqs eval queries.json --reranker none --json` over a tiny seeded store), `eval_with_reranker_llm_returns_skeleton_error` (asserts stderr/JSON envelope contains "skeleton" or "not yet implemented" for the Llm path — fast because the early-construction check fires before retrieval), and (gated `slow-tests`) `eval_with_reranker_onnx_changes_ranking` for the heavy path. Use the existing `tests/eval_test.rs::common::seed_store` helper.
-
-#### TC-HAP-V1.33-3: `cqs slot {create, remove, promote, list, active}` have no CLI integration tests
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/infra/slot.rs:87-99`, `tests/slots_and_cache_integration.rs`
-- **Description:** The `slot` subcommand surface (5 verbs) has zero binary-level integration tests. `tests/slots_and_cache_integration.rs` explicitly states (line 5) "without invoking the binary CLI — the slot helpers in `cqs::slot` and the cache helpers in `cqs::cache` are callable from test code directly". That covers the library-level functions but skips the entire `cmd_slot` dispatch path including: `--json` envelope shape per subcommand, the `bail!` when the global `--slot` is passed (P2.13 fix), exit-code stability, error-message stability for "slot does not exist", `cqs slot promote` swapping the active pointer atomically. `grep -ln "cqs.*slot create\|cqs.*slot remove" tests/*.rs` returns nothing. The `cqs slot create --model` plumbing was filed as bug #1107 (per MEMORY.md "slot create --model not persisted") — confirms the absence of a binary-level test that would have caught it.
-- **Suggested fix:** Add `tests/cli_slot_test.rs` mirroring `tests/cli_cache_test.rs` (which uses `assert_cmd::Command::cargo_bin("cqs")` + `serial_test` + `HOME=tempdir`). Tests: `slot_list_after_init_shows_default_slot`, `slot_create_then_list_includes_new_slot`, `slot_create_with_model_persists_model_in_metadata` (regression-pin for #1107), `slot_promote_swaps_active_pointer`, `slot_remove_active_with_other_slots_demotes_to_one_remaining`, `slot_remove_last_slot_returns_error`. No embedder cold-load needed — slots are FS-shape; gating outside `slow-tests` keeps them on every PR.
-
-#### TC-HAP-V1.33-4: `cmd_trace` (CLI handler) has no direct test — suite reimplements BFS instead
-- **Difficulty:** medium
-- **Location:** `src/cli/commands/graph/trace.rs:99-260`, `tests/graph_test.rs:158-250`
-- **Description:** `tests/graph_test.rs:160-162` openly admits: `// No public lib trace function — the CLI inlines a BFS over CallGraph. // Replicating here as a small test helper.` The test then defines its own `shortest_call_path` BFS and asserts on it. The actual `cmd_trace` (188 lines, three output formats, `cross_project` branch wiring `cross_project::trace_cross`, mermaid escaping, "no path found" message stability) is reached only when the binary runs end-to-end in CI — never directly tested. The test file's own helper diverges from production behavior: e.g., the suite's `shortest_call_path` doesn't exercise the `Mermaid` format (line 128-153 of trace.rs), and doesn't exercise the cross-project branch. A regression that changed the JSON envelope shape, dropped the depth field, or broke `mermaid_escape` would silently pass CI.
-- **Suggested fix:** Either (a) extract `cmd_trace`'s body into a `pub(crate) fn build_trace_data(...)` returning `TraceResult`, then unit-test that — same pattern `cmd_explain` uses with `build_explain_data` — and add three tests asserting JSON shape, mermaid output, and cross-project path. Or (b) add `tests/cli_trace_test.rs` driving the binary against a seeded store. Option (a) is cheaper and matches the existing `build_*_data` convention in `src/cli/commands/`.
-
-#### TC-HAP-V1.33-5: `cmd_explain` CLI handler has no direct test — `tests/graph_test.rs:323` reimplements callers+callees inline
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/graph/explain.rs:42-260`, `tests/graph_test.rs:320-341`
-- **Description:** `build_explain_data` has 4 unit tests in `explain.rs::tests` (line 452+), but the test that names itself `explain_process_reports_callers_and_callees` (graph_test.rs:324) is misleadingly named — its body (lines 326-340) calls `store.get_callers_full` and `store.get_callees_full` directly, then asserts on those Vecs. It never invokes `cmd_explain` or `build_explain_data`. The `similar` slot (line 25 of `ExplainData`), the token-budget packing (line 30 `similar_content_ids`), and the hints integration (line 26 `Option<FunctionHints>`) are not exercised by this test. The CLI rendering paths — the JSON envelope shape and the colored terminal format — are also untested. So `cmd_explain` is reached only by the binary in CI, not by `cargo test` directly.
-- **Suggested fix:** Add `build_explain_data_includes_similar_and_hints_when_indexed` to `explain.rs::tests` (line 452+), seeding a small in-memory store + index. The 4 existing tests appear to cover error paths and edge cases; this fills the happy-path gap. Optionally update the misleading `explain_process_reports_callers_and_callees` to actually call `build_explain_data` so its name matches its body.
-
-#### TC-HAP-V1.33-6: `cqs notes update --new-kind` and `--new-mentions` (#1278) have no test coverage
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/io/notes.rs:389-499`, `tests/cli_notes_test.rs`
-- **Description:** PR #1278 (CHANGELOG.md:12 — "feat(notes): cqs notes update --new-kind") shipped two new fields the `update` handler can mutate: `new_kind` (lines 389, 441-448) and `new_mentions` (line 430-435). `tests/cli_notes_test.rs` has 11 tests covering `notes add` and `notes update`, but none of them passes `--new-kind` or `--new-mentions`. `grep "new_kind\|new-kind\|new_mentions\|new-mentions" tests/cli_notes_test.rs` returns zero hits. The kind-normalization code at lines 441-448 (trim + lowercase + empty→None to clear, vs Some(non-empty) to set) is the kind of subtle three-state logic where a future refactor swapping `None` and `Some(None)` would slip through CI. Mentions-merge via clone (line 467-469) similarly unpinned.
-- **Suggested fix:** Add to `tests/cli_notes_test.rs`: `test_notes_update_changes_kind` (set kind on a kind-less note, verify the TOML serializes the kind field), `test_notes_update_clears_kind_with_empty_value` (per the line 441-448 contract — empty string clears), `test_notes_update_changes_mentions` (replace mentions list, verify the TOML matches). Mirrors the existing `test_notes_update_changes_text_and_sentiment` shape.
-
-#### TC-HAP-V1.33-7: `update_umap_coords_batch` (pub Store API used by `cqs index --umap`) has zero tests
-- **Difficulty:** easy
-- **Location:** `src/store/chunks/crud.rs:406-480`
-- **Description:** `update_umap_coords_batch` is a `pub fn` on `Store` and the only consumer of v22's `chunks.umap_x`/`umap_y` columns. It's called by `run_umap_projection` in the `cqs index --umap` flow. The function has non-trivial logic: TEMP TABLE drop+create (P3.40 comment notes a connection-scoping bug it works around), batched binding via `max_rows_per_statement(3)`, INSERT into temp + UPDATE-FROM-temp pattern, partial-update warn at lines 470-477 (when some chunk IDs no longer exist between projection and write). `grep "update_umap_coords_batch\|test.*umap" src/store/chunks/crud.rs` shows the function definition only — no `#[test]`. The build_cluster path consumes umap_x/umap_y on read (serve/data.rs:1043), with happy-path tests for that direction (`build_cluster_returns_chunks_with_umap_coords` at serve/tests.rs:1134). The write path is the gap.
-- **Suggested fix:** Add `update_umap_coords_batch_writes_coords_atomically` and `update_umap_coords_batch_handles_missing_ids` to `crud.rs::tests`: seed a few chunks, call the batch update with their IDs, assert `chunks.umap_x` reflects the values; pass an extra unknown ID and assert the warn tracing event fires + the `updated` return is < input length. Combine with the TC-ADV-V1.33-10 NaN/Inf rejection — covers both the happy path and the existing adversarial gap.
-
-#### TC-HAP-V1.33-8: `run_umap_projection` (`cqs index --umap` orchestrator) has zero tests
-- **Difficulty:** medium
-- **Location:** `src/cli/commands/index/umap.rs:38-228`
-- **Description:** `run_umap_projection` is the orchestrator for `cqs index --umap` — embeds the Python script via `include_str!`, materializes it to a `tempfile::NamedTempFile`, probes Python + umap-learn, streams chunk embeddings to stdin in `STREAM_BATCH_SIZE=1024` batches, parses stdout line-by-line, calls `update_umap_coords_batch`. Despite ~190 lines of orchestration logic, the file has zero `#[cfg(test)]` blocks, and `tests/*.rs` has zero references to `umap` or `--umap`. The "Python not found → return Ok(0)" graceful-skip path (lines 53-60) is documented behavior but unpinned — a future refactor that surfaced this as a hard error would silently break `cqs index --umap` on machines without umap-learn installed (the design intent is exactly to make this optional).
-- **Suggested fix:** Add `run_umap_projection_returns_zero_when_python_missing` (set PATH to a directory without python, assert `Ok(0)` and tracing warn). Add `run_umap_projection_returns_zero_for_empty_corpus` (empty store → no embeddings to stream, no script invocation). The full happy-path test with a real umap-learn install is hard to make portable but worthwhile gated on `slow-tests` + a `#[cfg(any(target_os = "linux", target_os = "macos"))]` guard since the dev workstation has Python.
-
-#### TC-HAP-V1.33-9: `cmd_gc` end-to-end is untested — only `GcOutput` JSON serialization is asserted
-- **Difficulty:** medium
-- **Location:** `src/cli/commands/index/gc.rs:40-205`
-- **Description:** `cmd_gc` runs the full GC pipeline: enumerate files → count_stale_files → prune_all (single tx) → prune_orphan_sparse_vectors → optional HNSW rebuild via `build_hnsw_index`. The 3 unit tests in `gc.rs::tests` (lines 212-279) only assert struct serialization shape — they construct `GcOutput { ... }` literals and check JSON field presence/types. Zero tests drive `cmd_gc` itself. `tests/index_search_test.rs:158` mentions `cmd_gc` only in a comment ("Build the file set the same way `cmd_gc` does"). The HNSW-rebuild branch (lines 100+) is the highest-risk untested code: a regression that fails to delete the stale `.hnsw.data`/`.hnsw.graph` before rebuild would leak orphan IDs (RT-DATA-2 — the very issue the gc.rs:97-99 comment calls out as why the order matters). A regression that flipped the rebuild condition (`pruned_chunks > 0`) to `pruned_chunks >= 0` would always rebuild, slowing GC by minutes on big corpora — passes CI silently because no test wall-clocks the rebuild path.
-- **Suggested fix:** Add `tests/cli_gc_test.rs` (gated `slow-tests` because of the HNSW build): seed a project with 5 files → index → delete one file → run `cqs gc --json` → assert pruned_chunks ≥ 1, hnsw_rebuilt=true, hnsw_vectors equals chunk count after pruning. Add a no-op variant: re-running GC with no changes returns `pruned_chunks=0, hnsw_rebuilt=false`. Pins both the rebuild-trigger condition and the "no work needed" exit path.
-
-#### TC-HAP-V1.33-10: `OnnxReranker::with_section` config-path (P1.7) has zero tests
-- **Difficulty:** easy
-- **Location:** `src/reranker.rs:59-75, 193-285`
-- **Description:** P1.7 in the v1.30.0 audit was "Reranker silently ignores [reranker] config section" — fix shipped by adding `OnnxReranker::with_section(section: Option<AuxModelSection>)` and threading the `section` through to `resolve_reranker` (line 59), which reads `preset` / `model_path` / `tokenizer_path` from the `.cqs.toml` `[reranker]` table. Despite being a documented bug fix on a load-bearing path (CLI → search → reranker config), the implementation has zero test coverage: `grep "with_section\|AuxModelSection" tests/*.rs` returns nothing; `grep "test.*resolve_reranker" src/reranker.rs` returns nothing. The 14 tests in `reranker.rs::tests` cover stub-result construction, score apply, BoundedScoreHeap, sigmoid, NoopReranker, LlmReranker error — but not the config-honor path that was the headline P1.7 fix. A regression that swapped `section.preset.as_deref()` for `section.model_path.as_deref()` (or that lost the `section` clone in `with_section`) would silently break agent-configurable rerankers.
-- **Suggested fix:** Add `resolve_reranker_with_preset_resolves_to_preset_path`, `resolve_reranker_with_model_path_overrides_preset`, `resolve_reranker_with_no_section_falls_back_to_default_preset` to `reranker.rs::tests`. These are pure-config tests — no ONNX runtime needed; they only exercise the `aux_model::resolve` dispatch chain and assert the resulting `AuxModelConfig` matches the input section. The tests pin the precedence chain documented at line 57-58 ("CLI → CQS_RERANKER_MODEL → [reranker] model_path → [reranker] preset → hardcoded ms-marco-minilm").
-
-#### TC-HAP-V1.33-11: `cqs serve` has no end-to-end smoke test (run_server + auth + handlers)
-- **Difficulty:** hard
-- **Location:** `src/serve/mod.rs:97-260`, `src/cli/commands/serve.rs:26`
-- **Description:** `cmd_serve` and `run_server` are reached only by the binary at runtime. `src/serve/tests.rs` has thorough unit tests for `build_graph` / `build_chunk_detail` / `build_cluster` / auth check_request, but no test spins up `run_server` against a port and issues a `reqwest::get` to verify the wire shape. The router includes 6+ routes (`/`, `/api/graph`, `/api/cluster`, `/api/chunk/:id`, etc. via `mod.rs:154-196`), middleware stack of 4+ layers (auth, host allowlist, body limit, trace), and a graceful-shutdown handler (line 253-260). Each layer has unit-level coverage, but the composition order — which is exactly where the SEC-1.30-V1 chain of token-leak fixes lives — is untested. A regression that re-ordered `RequestBodyLimitLayer` to fire after auth (so unauthenticated clients OOM the server before the 401) would compile and pass every unit test.
-- **Suggested fix:** Add `tests/cli_serve_test.rs` (gated `slow-tests`): bind `cqs serve --port 0 --bind 127.0.0.1` (port 0 → kernel-assigned ephemeral port), capture the `Server bound at` stdout line to extract the port + auth token, issue 3 `reqwest` calls — `/` returns 200 with token, `/` returns 401 without token, `/api/graph` returns valid JSON envelope. The harness joins on a `Drop`-bound child handle so the server tears down at end-of-test. The test exercises the full layer stack in production order.
-
-## Resource Management
-
-#### RM-V1.33-1: `add_reference_to_config` / `remove_reference_from_config` read locked TOML with no size guard — OOM on hostile config
-- **Difficulty:** easy
-- **Location:** `src/config.rs:795-802, 891-895`
-- **Description:** `Config::load_file` (line 685) caps the config file at 1 MiB *before* reading it — but the read-modify-write paths `add_reference_to_config` and `remove_reference_from_config` read the locked `.cqs/config.toml` (or `~/.config/cqs/config.toml`) via `lock_file.read_to_string(&mut content)?` with no `.take(N)` guard and no metadata-len check. A 4 GiB file at the path (left over from a botched dump, hostile dotfile sync, or filesystem corruption) is read entirely into memory. Same root cause as RB-V1.33-2/3/4 (`worktree::resolve_main_project_dir`, `find_cargo_workspace_root`, `acquire_lock`) — those siblings already shipped guards.
-- **Suggested fix:** Mirror `Config::load_file:686-693`: stat first, bail with a clear error if `meta.len() > MAX_CONFIG_SIZE`. Or wrap the read in `(&lock_file).take(MAX_CONFIG_SIZE).read_to_string(...)` so the cap is enforced at I/O level and a hostile actor can't race a truncate after the stat. Already a 1 MiB constant defined at `Config::load_file:685` — promote it to module scope and reuse here.
-
-#### RM-V1.33-2: `ProjectRegistry::load` reads file *then* checks size — full alloc happens before the cap is enforced
-- **Difficulty:** easy
-- **Location:** `src/project.rs:62-71`
-- **Description:** Comment says "Read first, then enforce the size guard — avoids TOCTOU between stat and read." Implementation: `let content = std::fs::read_to_string(&path)?;` is unconditional, *then* `if content.len() > MAX_REGISTRY_SIZE`. A hostile or corrupt `~/.config/cqs/projects.toml` of 8 GiB is fully read into memory before the rejection fires — defeating the size guard. The TOCTOU framing is wrong: the file was just opened, so wrapping a `File::open(...).take(MAX+1).read_to_string(...)` cap-then-check has the same TOCTOU surface (stat-after-open) as the current "read everything" approach, but bounds the allocation. `cli::commands::infra::project::cmd_project_register` is the daemon-callable surface (`cqs project register --json`) so the OOM lever reaches the daemon path on shared hosts.
-- **Suggested fix:** Open with `File::open`, wrap in `.take(MAX_REGISTRY_SIZE as u64 + 1)`, then `read_to_string`. If the resulting buffer is `> MAX_REGISTRY_SIZE` bytes after read, return `FileTooLarge`. Same shape as `cli/commands/mod.rs:read_stdin` (line 538-552). Symmetric pattern with the slot pointer `take(SLOT_POINTER_MAX_BYTES)` already in `slot/mod.rs:273, 447, 700-701`.
-
-#### RM-V1.33-3: `EmbeddingCache` / `QueryCache` `Drop` calls `block_on` — can stall daemon shutdown past systemd timeout
-- **Difficulty:** medium
-- **Location:** `src/cache.rs:960-987, 2374-2401`
-- **Description:** Both caches' `Drop` impls run `self.rt.block_on(async { sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)") ... })`. `catch_unwind` masks the "block_on inside a runtime" panic, but doesn't address the deeper risk: the runtime is shared with `Store` per #968 — daemon shutdown drops `EmbeddingCache`, `QueryCache`, AND `Store` in some order, and the WAL checkpoint awaits `pool.execute()` which needs an idle connection. A TRUNCATE checkpoint copies the entire WAL back into the main DB synchronously — a 200 MiB WAL (large slot reindex) blocks shutdown for seconds. systemd's `TimeoutStopSec` (default 90 s) will SIGKILL the daemon if the shutdown chain stalls, and SIGKILL skips ALL further `Drop` impls — including `SocketCleanupGuard` and reference index cleanup. The "best-effort" framing in the docstring understates the failure mode.
-- **Suggested fix:** Make WAL checkpoint explicit, not implicit-on-Drop: add `EmbeddingCache::checkpoint_wal()` / `QueryCache::checkpoint_wal()` and call them from the daemon shutdown path *before* dropping. Keep the Drop impl as a no-op (or a single non-blocking `PRAGMA wal_checkpoint(PASSIVE)` with a 1 s `tokio::time::timeout` wrapper). On systemd shutdown, the bounded-time PASSIVE checkpoint is enough — SQLite recovers from a non-truncated WAL on next open.
-
-#### RM-V1.33-4: HNSW background rebuild loads a second `Store` (256 MiB mmap × 2) on top of the live one — daemon peaks at 2× RAM
-- **Difficulty:** hard
-- **Location:** `src/cli/watch/rebuild.rs:236-245`
-- **Description:** `spawn_hnsw_rebuild` opens a fresh `cqs::Store::open_readonly_pooled(&index_path)` inside the rebuild thread (line 240). `open_readonly_pooled` defaults to a 256 MiB mmap (`store/mod.rs:750`) and 16 MiB cache. The watch loop's main store (read-write) already has 256 MiB mmap + 16 MiB cache resident. During the rebuild window (10-30 s on a 1 M chunk index, longer on WSL DrvFS), peak RSS is `2 × (256 + 16) MiB = 544 MiB` of SQLite alone, plus the watch loop's existing in-memory Owned HNSW index (~50-200 MiB on bge-large-1024) AND the rebuild thread building a fresh Owned HNSW (another ~50-200 MiB). On the documented "long-running watch session" workstation, this 2× peak is the worst-case footprint and it isn't capped or documented in the module-level Memory Usage docstring (`cli/watch/mod.rs:3-16`).
-- **Suggested fix:** Open the rebuild thread's store with `Store::open_readonly` (the small variant — 64 MiB mmap, 4 MiB cache) instead of `open_readonly_pooled`. The rebuild streams chunks via the existing batched API so a smaller mmap doesn't hurt throughput. Update the module docstring's "Memory Usage" to call out the rebuild-window peak. Optionally: gate the second Store behind a global `Mutex<()>` ("only one rebuild at a time") so a wedged rebuild can't accumulate multiple shadow Stores if `spawn_hnsw_rebuild` is called twice in quick succession (the current incremental_count threshold guards against this in practice but isn't enforced in the API).
-
-#### RM-V1.33-5: `cqs serve` has no idle eviction — Store mmap + spawn_blocking pool pinned for the entire process lifetime
-- **Difficulty:** medium
-- **Location:** `src/cli/commands/serve.rs:59-99` + `src/serve/mod.rs:97-179`
-- **Description:** Unlike `cqs watch --serve` (which has `BatchContext::sweep_idle_sessions` running once per minute and clearing ONNX/HNSW after `CQS_BATCH_IDLE_MINUTES` / `CQS_BATCH_DATA_IDLE_MINUTES`), `cqs serve` opens a `Store::open_readonly` once at startup and holds it forever. A user starting `cqs serve` in the morning and walking away pins 64 MiB mmap + 4 MiB cache + 32 spawn_blocking permits' worth of working set indefinitely. The blocking_permits semaphore (`AppState.blocking_permits`, default 32) holds a thread per active permit on the tokio blocking pool — even after queries idle out, the threads stay alive until the tokio default keep-alive (10 s). Real concern: a user who browses the graph view briefly then leaves the tab open for a day pays full memory cost the entire window. The watch-mode safety net does not apply to `cqs serve`.
-- **Suggested fix:** Add an idle-tracking middleware that timestamps the last request and a background tokio task that, after `CQS_SERVE_IDLE_MINUTES` (default 30) of inactivity, drops the `AppState.store` Arc and re-opens on next request. Or: simpler — close-on-idle by `tokio::select!`-ing the server future against an idle timer that triggers `axum::serve.with_graceful_shutdown`. Document in README that `cqs serve` is interactive and exits cleanly on idle.
-
-#### RM-V1.33-6: `train_data::git_diff_tree` captures unbounded subprocess stdout — OOM on large monolithic commits
-- **Difficulty:** easy
-- **Location:** `src/train_data/git.rs:149-174`
-- **Description:** `git_diff_tree` calls `Command::new("git").args([..., "diff-tree", ...]).output()`, which buffers the entire `stdout` Vec<u8> into memory before returning. Sibling `git_show` (line 195+) caps via `CQS_TRAIN_GIT_SHOW_MAX_BYTES` (default 50 MiB) — `git_diff_tree` has no such cap. A single bulk-import commit (vendor drop, schema dump, generated migration) producing 500 MiB of patch text fully allocates that into the parent process before the caller sees a single byte. The caller in `train_data/mod.rs` then iterates `output.stdout` to build per-file diff entries, double-allocating. Plus: line 174 `String::from_utf8_lossy(&output.stdout).to_string()` allocates a third copy on the way out — `from_utf8_lossy` returns `Cow<str>` which decays to a fresh `String` clone here even when the bytes are valid UTF-8.
-- **Suggested fix:** Switch from `cmd.output()` to `cmd.stdout(Stdio::piped()).spawn()?`, then read the stdout pipe with a `.take(max_diff_tree_size)` wrapper. Reuse the `CQS_TRAIN_GIT_SHOW_MAX_BYTES` env var (or add `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES`) so operators can dial it for known-large repos. Drop the `from_utf8_lossy().to_string()` in favor of `String::from_utf8(stdout).unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned())` to avoid the third allocation in the common (valid UTF-8) case.
-
-#### RM-V1.33-7: `parse_wsl_automount_root` / `is_slow_mmap_filesystem` read system files unbounded
-- **Difficulty:** easy
-- **Location:** `src/cli/watch/mod.rs:267-294`, `src/store/mod.rs:443-450`
-- **Description:** `parse_wsl_automount_root` (called from `is_under_wsl_automount`, which fires on every file-event path comparison in the watch loop on WSL) does `std::fs::read_to_string("/etc/wsl.conf")` with no size guard. `/etc/wsl.conf` is normally a few hundred bytes, but on a hostile or misconfigured host it could be a symlink (or bind mount) to a multi-GiB file. The result is cached in a `OnceLock<String>` (line 259-262) so the OOM is one-shot, but the first invocation pulls the entire file into memory before scanning for the `automount.root` line. Same shape at `store/mod.rs:443` reading `/proc/self/mountinfo` without bounds — `/proc/self/mountinfo` is reliably small in normal use, but a system with 2000+ mounts (containers, network FS, btrfs subvols) can produce 100+ KiB of text per call, and that read happens for *every* `Store::open` on slow-mmap filesystems.
-- **Suggested fix:** Wrap both `/etc/wsl.conf` and `/proc/self/mountinfo` reads in `File::open(...)?.take(64 * 1024).read_to_string(...)`. 64 KiB is several orders of magnitude above realistic content for either file. If the buffer fills, log a warn and treat the file as malformed (return None / fall back to default).
-
-#### RM-V1.33-8: Atomic-write tmp files leak on intermediate write failure (config / notes)
-- **Difficulty:** easy
-- **Location:** `src/config.rs:840-858`, `src/note.rs:343-348`
-- **Description:** The atomic-write idiom in `add_reference_to_config` (config.rs:836-867) writes via `f.write_all(serialized.as_bytes())?` (line 852, unix branch) or `std::fs::write(&tmp_path, &serialized)?` (line 856, non-unix). Both use `?` for error propagation: if the write fails (disk full, ENOSPC, EIO), the function returns immediately *without* removing the partially-written `<config>.toml.<hex>.tmp` file. Only the `atomic_replace` failure arm (line 863-866) cleans up. `note.rs:343-348` has the same pattern: `std::fs::write(&tmp_path, &output).map_err(...)?` on line 343 leaks the tmp on write failure — only the `atomic_replace` failure path at line 364 cleans up. A user running `cqs notes add` on a full disk repeatedly accumulates `notes.toml.<hex>.tmp` files in their project root. Since the suffix is `temp_suffix()` (16 random hex chars) the names are unique, so they pile up rather than collide.
-- **Suggested fix:** Wrap the write+permission set in a closure that returns `Result<(), Error>`, then on outer error always `let _ = std::fs::remove_file(&tmp_path)`. Alternative pattern: introduce a `TmpFileGuard` RAII type that removes the file on Drop unless `commit()` is called after a successful `atomic_replace`. The latter generalizes across the ~6 atomic-write sites in config.rs / note.rs / slot/mod.rs / store/backup.rs.
-
-#### RM-V1.33-9: Centroid classifier file loaded with no size guard — first-search OOM lever
-- **Difficulty:** easy
-- **Location:** `src/search/router.rs:1018-1032`
-- **Description:** `CentroidClassifier::load()` reads `~/.local/share/cqs/classifier_centroids.v1.json` via `std::fs::read_to_string(&path)?` with no metadata check, no `.take(N)` cap. The result is cached in `static CENTROID_CLASSIFIER: OnceLock<Option<CentroidClassifier>>` (line 1000), so the OOM is one-shot per process, but: a normal centroid file is ~50-200 KiB; a hostile or corrupted file (training accident, partial sync, deliberate plant) of multiple GiB would OOM the daemon at first search. Daemon shutdown is uncontrolled (process killed by OOM-killer). The CqsHnsw / SPLADE checksum patterns in `hnsw/persist.rs` and `splade/index.rs` show the project knows how to defend against this — the search router missed it.
-- **Suggested fix:** Cap reads: `File::open(&path)?.take(16 * 1024 * 1024).read_to_string(&mut buf)`. 16 MiB is generous for a centroid registry — even with 100 categories × 1024-dim × 4-byte floats serialized as JSON, the file is < 5 MiB. Rejection on overflow logs a warn and returns `None` (rule-only mode), matching the existing missing-file path.
-
-#### RM-V1.33-10: Per-handler `Semaphore` permits decoupled from SQLite pool size (32 vs 4) — handler panics can starve the pool
-- **Difficulty:** medium
-- **Location:** `src/serve/handlers.rs:99-114, 136-156, 165-191, 215-241` + `src/serve/mod.rs:60-65, 107-112`
-- **Description:** Every serve handler acquires a permit from `AppState.blocking_permits` (default 32) before `tokio::task::spawn_blocking`. The permit is held inside the closure (`let _permit = permit;`) so it correctly bounds concurrent SQL-bound work. But the budget is *not* coupled to the SQLite pool's `max_connections` (default 4 from `CQS_MAX_CONNECTIONS`, set in `store/mod.rs:721`). A handler that panics inside spawn_blocking (e.g., a malformed query parameter through `tracing::info!` formatting on user input) unwinds the closure: `_permit` releases, but the SQLite connection borrowed via the `Arc<Store>` clone may not return cleanly to the pool until tokio's blocking-pool worker thread terminates. With 32 concurrent permits but only 4 pool connections, even a small panic rate accumulates "broken" connection slots faster than the pool's recovery tick replaces them. The 32-permit/4-conn ratio is the real budget mismatch — a malicious or buggy client running 8 concurrent panicking requests can starve the pool while the permit count says "plenty of headroom." `serve/mod.rs:55-59` documents the permit choice ("default 32 permits is plenty for an interactive single-user UI") without acknowledging the pool-coupling.
-- **Suggested fix:** Cap `serve_blocking_permits()` at the SQLite pool's `max_connections` value (default 4). Or: lower the default permit count to match (`std::env::var("CQS_MAX_CONNECTIONS").unwrap_or(4)`). Plus add a `std::panic::catch_unwind(AssertUnwindSafe(...))` inside each spawn_blocking body that explicitly drops the borrowed connection back to the pool before re-raising — guarantees the pool slot returns even if the handler panics in user-facing code.
-
-## Performance
-
-#### PERF-V1.33-1: `reverse_bfs` / `reverse_bfs_multi(_attributed)` / `build_test_map` re-allocate `String` keys despite `CallGraph` already interning to `Arc<str>`
-- **Difficulty:** medium
-- **Location:** `src/impact/bfs.rs:42-78, 149-202, 212-274`; `src/cli/commands/graph/test_map.rs:91-119`
-- **Description:** `CallGraph` stores `forward: HashMap<Arc<str>, Vec<Arc<str>>>` and `reverse: HashMap<Arc<str>, ...>` (helpers/types.rs:303-308) — string interning was added by PERF-30 specifically so callers wouldn't re-allocate names. The reverse-BFS implementations defeat that: `reverse_bfs` uses `HashMap<String, usize>` and per visit calls `caller.to_string()` (line 70-71) where `caller: &Arc<str>` is already cheaply cloneable. `reverse_bfs_multi_attributed` does the same at lines 257, 260; `build_test_map` does it at 91-94, 113-115 plus `chain.push(current.clone())` (clone of `String`) at line 130. With `CQS_IMPACT_MAX_NODES=10_000` (default) and `CQS_TEST_MAP_MAX_NODES=10_000`, every `cqs impact` / `cqs test-map` call performs ~10k unnecessary heap allocations + ~10k String→hash recomputes. `forward_bfs_multi` (lines 94-138) already shows the correct shape — `HashSet<Arc<str>>` with `Arc::clone` — so the reverse impls are an inconsistency, not a forced trade-off.
-- **Suggested fix:** Convert the three reverse-BFS functions and `build_test_map` to use `HashMap<Arc<str>, usize>` (or `(usize, usize)` for attributed). At each visit, replace `caller.to_string()` with `Arc::clone(caller)`. The chain walk in `build_test_map` keeps `Arc<str>` throughout. Expected speedup: 2-3× on hub functions (>1000 callers) where the `String` alloc + 8-byte hash dominates the per-node cost. Tests in `src/impact/bfs.rs:367-859` use `String` keys via `from_string_maps` — those pass through `Arc::from(s)` already, so the test surface needs `&Arc<str>` for assertion lookups.
-
-#### PERF-V1.33-2: `cache.rs::read_batch` decodes f32 blobs via `chunks_exact(4).map(f32::from_le_bytes)` instead of zero-copy `bytemuck::cast_slice`
-- **Difficulty:** easy
-- **Location:** `src/cache.rs:447-451` (read_batch); `src/cache.rs:2316-2319` (`disk_query_cache.get`); `src/cache.rs:569-571` (write_batch encoding)
-- **Description:** `read_batch` decodes every cached embedding via `blob.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()`. For BGE-large (1024-dim) on a warm cache, that's 1024 `from_le_bytes` calls + 1024 `[u8;4]` array constructions per row, multiplied by every cache hit during reindex. The `bytes_to_embedding` helper (helpers/embeddings.rs:48-58) already uses `bytemuck::cast_slice::<u8, f32>(bytes).to_vec()` — one zero-copy LE-aware cast on the x86 LE platforms cqs targets. Both `cache.rs` decode sites duplicate the slow path while the fast path lives next door. The encode side at line 571 (`embedding.iter().flat_map(|f| f.to_le_bytes())`) is a per-element iterator chain instead of `bytemuck::cast_slice::<f32, u8>(embedding)`. At 5413 chunks × 1024 dims × 4 bytes per index pass, encoding overhead matters.
-- **Suggested fix:** Replace the manual decode at lines 447-451 and 2316-2319 with `bytes_to_embedding(&blob, expected_dim)` (or its inline equivalent). Replace the manual encode at 569-571 with `blob.extend_from_slice(bytemuck::cast_slice::<f32, u8>(embedding))`. ~3 LOC change per site, identical bytes, expected speedup ~5× on the per-row hot path.
-
-#### PERF-V1.33-3: `Embedder::embed_batch` and `Reranker::run_chunk` allocate three `Vec<Vec<i64>>` per batch via double `iter().map().collect()` over tokenizer output
-- **Difficulty:** medium
-- **Location:** `src/embedder/mod.rs:1006-1013, 1029-1030`; `src/reranker.rs:290-297, 331-332, 339-343`
-- **Description:** Both encoders walk `encodings` three times to produce input_ids / attention_mask / token_type_ids — each pass allocates an outer `Vec<Vec<i64>>`, a per-encoding inner `Vec<i64>`, and converts u32→i64 element by element. With `CQS_EMBED_BATCH_SIZE=64` and avg seq_len=512, that's ~98K i64 conversions + 192 inner Vecs per `embed_batch` call. `pad_2d_i64` (line 1277-1286) then walks all three again to copy into an `Array2<i64>`. The intermediate `Vec<Vec<i64>>` only exists to feed `pad_2d_i64`. SPLADE's `encode_batch` (`src/splade/mod.rs:707-726`) already shows the right shape — single flat `Vec<i64>` with `push` in one tight loop. `embed_documents` at 100k chunks fires ~1500 batches; this is real index-time perf.
-- **Suggested fix:** Refactor `pad_2d_i64` to consume `&[tokenizers::Encoding]` directly, writing each encoding's tokens into the right `Array2` row in one pass. A single `Array2::from_elem((batch, max_len), pad_value)` followed by `for (i, enc) in encodings.iter().enumerate() { for (j, &id) in enc.get_ids().iter().take(max_len).enumerate() { arr[[i, j]] = id as i64; } }` replaces the two-pass build. Apply the same to `run_chunk`. Expected speedup: ~30% wall-time on embed-bound indexing for medium-sized projects (5k-50k chunks).
-
-#### PERF-V1.33-4: `output.push_str(&format!(...))` pattern allocates intermediate `String` 4-6 times per `read --focus` invocation
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/io/read.rs:139, 167, 172, 187, 197` (also `src/impact/format.rs`, `src/scout.rs`, `src/onboard.rs`)
-- **Description:** `build_focused_output` builds a multi-line text response by repeatedly calling `output.push_str(&format!("// [cqs] ..."))`. Each `format!` macro allocates a fresh `String`, formats into it, then `push_str` copies its bytes into `output` and the temporary is dropped. For a typical focused read with hints + audit status + 3-5 notes + N type deps, that's 4-10 throw-away `String` allocations per response. `write!(&mut output, "...")` writes directly into the destination buffer with no intermediate. Same pattern repeats in `src/scout.rs` (~30 sites), `src/impact/format.rs` (~15 sites), `src/onboard.rs` (~10 sites). At dozens of `read --focus` / `scout` calls per agent session, this is a steady allocation tax — `format!` is strictly slower for `push_str` targets.
-- **Suggested fix:** Mechanical sweep: replace `output.push_str(&format!("..."))` with `use std::fmt::Write; let _ = write!(output, "...");`. ~50-80 sites total across the listed modules, all 1-line edits. `cargo clippy` may auto-suggest some via the `clippy::format_push_string` lint.
-
-#### PERF-V1.33-5: `SpladeIndex::search_with_filter` builds the score `HashMap` with no capacity hint — multiple rehashes on every search
-- **Difficulty:** easy
-- **Location:** `src/splade/index.rs:221`
-- **Description:** `let mut scores: HashMap<usize, f32> = HashMap::new();` starts at the default 0-bucket capacity. SPLADE queries typically have 50-200 active query tokens × posting lists of 10-1000 docs each, easily growing `scores` to ~5k-20k entries. `HashMap::new()` then rehashes 12-14 times during accumulation (each capacity doubling). Pre-allocating to a sensible upper bound (`self.id_map.len().min(query.len() * 256)`) eliminates the rehash cascade. SPLADE search is on the hot path for every hybrid `cqs search` call when the SPLADE backend is enabled.
-- **Suggested fix:** `let mut scores: HashMap<usize, f32> = HashMap::with_capacity(self.id_map.len().min(query.len().saturating_mul(256)));` — bounded by both the corpus and the query's reach. For an 18k-chunk index with 100 query tokens, this preallocates ~18k buckets vs growing from 0. Expected speedup: ~15-25% on SPLADE search latency, larger on smaller indexes where the rehash overhead dominates.
-
-#### PERF-V1.33-6: `Store::load_all_sparse_vectors` allocates a fresh `String` per row for the chunk_id comparison even though most rows belong to the same chunk
-- **Difficulty:** medium
-- **Location:** `src/store/sparse.rs:368-389`
-- **Description:** The streaming row loop at line 368-389 reads `chunk_id: String = row.get("chunk_id")` for every row in the sparse_vectors table, then compares against `current_id` (also `Option<String>`). For a 60k-chunk index averaging ~100 sparse tokens per chunk that's ~6M String allocations per `load_all_sparse_vectors` call (called on watch reload + cqs daemon startup). The `chunk_id.clone()` at line 377 adds a second allocation per chunk-boundary transition. Comparison + grouping doesn't need an owned String — `row.try_get::<&str, _>` (sqlx supports zero-copy borrows on TEXT columns since the row buffer is held for the iteration) plus an `&str` `current_id` cuts the allocation count to one per chunk-boundary transition (~60k vs 6M).
-- **Suggested fix:** Refactor the loop to read `let chunk_id: &str = row.get("chunk_id");` (or `row.try_get`), use `Option<&str>` for `current_id`, and only allocate `String` at the chunk-boundary `result.push((id, ...))` step. Expected: ~5× reduction in row-loop allocations, ~30% wall-time on the warm-load step (the SQL fetch dominates the rest).
-
-#### PERF-V1.33-7: `extract_imports_regex` recompiles the same `Regex` set on every `cqs where` / `cqs task` call
-- **Difficulty:** easy
-- **Location:** `src/where_to_add.rs:755-769`
-- **Description:** `extract_imports_regex` is called from `extract_patterns` (line 802) which fires once per `cqs where` and once per language analyzed inside `cqs task`. It receives `patterns: &[&'static str]` (from `LanguageDef::visibility::RegexImportSet { patterns }`) and recompiles them via `regex::Regex::new(p)` every time. The patterns are static and don't depend on the query — they're language-specific import-line regexes. With ~5 patterns per language × ~10 languages exercised per session, that's 50 compiles per call. `convert/cleaning.rs`, `nl/markdown.rs`, and `parser/aspx.rs` already wrap their own regexes in `LazyLock` — `extract_imports_regex` is the outlier.
-- **Suggested fix:** Move regex compilation into a `LazyLock<Vec<Regex>>` per-language, exposed via a method like `LanguageDef::visibility_regexes()`. `extract_imports_regex` then accepts the precompiled slice. Expected impact: removes 50-200 ms per `cqs task` invocation — every call currently pays the first-compile cost.
-
-#### PERF-V1.33-8: `Store::search_by_name` lowercases every chunk name per result even though only ~100 rows are scored
-- **Difficulty:** easy
-- **Location:** `src/store/search.rs:104, 137-138`
-- **Description:** Inside the per-row map at line 137 we allocate `let name_lower = chunk.name.to_lowercase()`. The query side (`lower_name`) is pre-lowercased once at line 104 — but the row side allocates a fresh `String` per result. `score_name_match_pre_lower` (helpers/scoring.rs:35-50) only does `==`, `starts_with`, and `contains` comparisons; ASCII-fast equivalents already exist (`eq_ignore_ascii_case`, `ascii_contains_ignore_case` in `search/scoring/name_match.rs`). Even bounded to `NAME_SEARCH_CAP=100`, this is 100 throwaway `String` allocations per `search_by_name` (definition lookup is on the hot path for `cqs <name> --name-only` / `cqs callers` / `cqs explain`). Identical pattern to the v1.22.0 audit PF-7 fix at `search/query.rs:865-869`, which observed the same `to_lowercase` per candidate and switched to a pre-lowered set.
-- **Suggested fix:** Skip the `to_lowercase` allocation when both `chunk.name` and `lower_name` are ASCII (the dominant case for code identifiers): use `chunk.name.eq_ignore_ascii_case(&lower_name)` for the exact tier and `ascii_contains_ignore_case` for the rest, falling through to a single `.to_lowercase()` only on Unicode names. Expected: ~50% reduction in `search_by_name` per-call allocation and ~10-20% wall-time on small queries where allocation dominates ORT-free paths.
-
-#### PERF-V1.33-9: `gather::bridge_scores` HashMap clones `pr.chunk.name` and `pr.chunk.id` per result — `into_iter()` would let the loop take ownership
-- **Difficulty:** easy
-- **Location:** `src/gather.rs:710-724`
-- **Description:** The bridge merge loop at line 710-724 iterates `for pr in &results` (borrow), then performs `pr.chunk.name.clone()`, `pr.chunk.id.clone()`, and a second `pr.chunk.id.clone()` in the Occupied branch. With seed_count × bridge_limit = (typically) 10 × 3 = 30 entries that's modest, but every entry clones at least 2 strings (chunk id + name) that are about to be dropped from `bridge_results`. Switching to `for (seed_score, results) in bridge_results { for pr in results { ... pr.chunk.name, pr.chunk.id ... } }` (consume `bridge_results`) eliminates 60-90 String allocations per `cqs gather --ref` and removes the borrow that prevents the move. `bridge_results` is the local `Vec<(f32, Vec<SearchResult>)>` collected from the rayon par_iter — it's not used after this loop.
-- **Suggested fix:** Change line 710 to consume: replace the borrowed iteration with `for (seed_score, results) in bridge_results { for pr in results { let bridge_score = pr.score * seed_score; match bridge_scores.entry(pr.chunk.name) { ... } } }`. Drop the `.clone()` calls. Mechanical 4-LOC change.
-
-#### PERF-V1.33-10: SQLite `chunks` table is missing a composite index on `(source_type, origin)` despite `staleness.rs` being the most-trafficked query path
-- **Difficulty:** medium
-- **Location:** `src/schema.sql:63-68`; `src/store/chunks/staleness.rs:687-692`
-- **Description:** `list_stale_files` runs `SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'` on every reconcile + every `cqs status --watch-fresh`. The schema has `idx_chunks_source_type` and a separate `idx_chunks_origin`, but no composite covering `(source_type, origin)` so SQLite cannot satisfy the DISTINCT scan from a single index — it ends up with an index probe + full row visits (or a full table scan filtered by source_type then a sort). `EXPLAIN QUERY PLAN` shows `SCAN chunks USING INDEX idx_chunks_source_type` for the WHERE then a separate sort for DISTINCT. With a 5413-chunk index this is fast enough, but at the 50k+ chunk corpora cqs is increasingly aimed at, the reconcile-triggered SELECT can dominate `cqs status` latency (>50 ms per call vs ~1 ms with a covering index). Same issue on the GC sibling `prune_missing_files` (chunks/staleness.rs:318).
-- **Suggested fix:** Add `CREATE INDEX IF NOT EXISTS idx_chunks_source_type_origin ON chunks(source_type, origin);` to the schema migrations. SQLite will then use the index to satisfy the WHERE + ORDER BY for DISTINCT in one pass. Index size: ~5-15% of `chunks` table. Same composite would also speed up `prune_missing_files` (chunks/staleness.rs:318) and the `count_stale_files` aggregation. Expected: 50× faster reconcile SELECT at 50k chunks.
-
+<!-- ===== docs/audit-scratch/batch2-extensibility.md ===== -->
 ## Extensibility
 
-#### EX-V1.33-1: `BatchProvider` trait has three near-identical `submit_*_batch` methods — adding a fourth prompt purpose costs N×M edits
-- **Difficulty:** medium
-- **Location:** `src/llm/provider.rs:42-103`, `src/llm/batch.rs:112-145, 378-401`, `src/llm/local.rs:645-672`
-- **Description:** `BatchProvider` declares `submit_batch_prebuilt`, `submit_doc_batch`, `submit_hyde_batch` — three trait methods that differ only in which `build_*_prompt` closure is fed to `submit_batch_inner`. The Anthropic impl proves this: lines 112-145 of `batch.rs` are three 7-line wrappers each calling `self.submit_batch_inner(items, max_tokens, "<label>", Self::build_<x>_prompt)`. Adding a fourth purpose (e.g. classification, contrastive summary repair, code-review prompts) means add prompt builder × add trait method × implement on every provider (4 sites: AnthropicLlmClient + LocalProvider + MockBatchProvider + DefaultValidationProvider). The trait should be parameterized on a `BatchKind` discriminant, not bake the builder into the method name.
-- **Suggested fix:** Collapse to one `submit_batch(&self, kind: BatchKind, items: &[BatchSubmitItem], max_tokens: u32) -> Result<String, LlmError>` where `BatchKind` is an enum with `Prebuilt`, `DocComment`, `Hyde`, … and the impl pattern-matches once to pick the prompt builder. Each call site (`doc_comments.rs:296`, `hyde.rs:92`, `batch.rs:887/927/1006/1044`) becomes `submit_batch(BatchKind::Hyde, ...)`. Adding a fifth purpose then = one enum row + one match arm.
-
-#### EX-V1.33-2: `IndexBackend` registry is hand-coded in `backends()` — third backend (USearch / Faiss / Metal) needs to edit the slice and the `cuda-index` cfg
-- **Difficulty:** medium
-- **Location:** `src/index.rs:140-148`
-- **Description:** `pub fn backends<Mode>()` constructs the backend slice with two hardcoded `vec![]` literals gated on `#[cfg(feature = "cuda-index")]`. The trait was extracted (good, replaces the if/else cited in P2.89), but the *registration* is still a hand-edit. Adding a USearch backend (cross-platform, no GPU dep) means: a new struct + impl + cfg-gate cluster + edit `backends()` to insert the row in two cfg branches. Metal/ROCm backends compound the cfg matrix — every new feature flag adds another `#[cfg]` permutation. The `define_languages!` / `define_embedder_presets!` macro pattern would let backend modules own a single `register_backend!` invocation each.
-- **Suggested fix:** Either (a) introduce inventory-style registration (`inventory` or `linkme` crate) so each backend module declares itself in a `#[distributed_slice]` and `backends()` collects them, or (b) keep the explicit slice but extract a `register_index_backends!` macro that takes feature-gated rows and emits both the slice and the `#[cfg]` permutations consistently.
-
-#### EX-V1.33-3: `SearchResult::to_json` and `to_json_relative` duplicate the 12-field JSON shape — adding any chunk metadata field needs both edited
+#### Hardcoded synonym table — no extension hook for domain vocabulary
 - **Difficulty:** easy
-- **Location:** `src/store/helpers/types.rs:193-220, 230-260` (parallel pair at 463-493 for `ChunkSummary`)
-- **Description:** Both `to_json_with_origin` and `to_json_relative_with_origin` build a 12-field `serde_json::json!({ ... })` literal that differs only in path-formatting (`crate::normalize_path(...)` vs `crate::rel_display(..., root)`). Trust-level computation, injection-flag detection, content-wrapping, and reference-name splice are duplicated verbatim. Adding a new chunk metadata field (`complexity_score`, `last_modified_unix`, `vendored_path_prefix`) costs four edits across the two `SearchResult` paths plus the parallel `ChunkSummary` siblings at 463-493. AD-27 explicitly removed the `Serialize` derive "to avoid two divergent serialization paths" — but the manual form recreated the divergence.
-- **Suggested fix:** Extract a `fn build_chunk_json(chunk: &ChunkSummary, score: Option<f32>, file_str: &str, ref_name: Option<&str>) -> Value` helper that owns the field-list. The two outer functions become `to_json_with_origin → build_chunk_json(...norm_path..., ...)`; relative variant calls with `rel_display`. Adding a field then = one edit.
+- **Location:** src/search/synonyms.rs:13-46
+- **Description:** `SYNONYMS` is a `LazyLock<HashMap>` baked into the binary with 30 generic developer abbreviations (`auth`, `cfg`, `req`, `db`, etc.). Adding domain vocabulary — industrial automation (`plc`, `scada`, `opc`, `hmi`), manufacturing (`mes`, `erp`, `andon`), or cqs-internal terms (`hnsw`, `splade`, `cagra`, `rrf`, `slot`) — requires editing this file and recompiling. There is no config-side or per-project extension hook. cqs is positioned for manufacturing/industrial use cases per project memory; the synonym dictionary blocks that pivot at the source-edit boundary.
+- **Suggested fix:** Load synonyms from a TOML table merged on top of the static defaults: `~/.config/cqs/synonyms.toml` (user-global) and `.cqs/synonyms.toml` (per-project). Each row: `key = ["expansion1", "expansion2"]`. Built-ins remain in source as the floor; project overrides win on conflict. Validation reuses the existing FTS-safe alpha-token check.
 
-#### EX-V1.33-4: `SearchFilter` has 12 fields and 37 of 54 construction sites enumerate every field — adding a new dimension breaks the world
-- **Difficulty:** medium
-- **Location:** `src/store/helpers/search_filter.rs:16-69` and 54 call sites under `src/`
-- **Description:** `SearchFilter` is `pub` with 12 fields and a `Default` impl. Of 54 struct-literal construction sites in `src/`, only 17 use `..Default::default()` — the other 37 enumerate every field. Adding a new search filter dimension (`filter_by_visibility: Option<Visibility>`, `min_recency_days: Option<u32>`, `boost_recently_modified: bool`) is a compile-error hose at 37 places. Compare to `clap::Args` derive structs (`TextJsonArgs`) where the additive default keeps callers stable.
-- **Suggested fix:** Mark `SearchFilter` `#[non_exhaustive]` and ship a builder (`SearchFilter::builder().languages([Rust]).enable_rrf(true).build()`) so existing call sites stop working until they migrate, then normalize on the builder. Or sweep the 37 enumerating sites to use `..Default::default()` and pin the convention with a clippy lint.
-
-#### EX-V1.33-5: `apply_scoring_pipeline` is a hand-coded pipeline — adding a third score signal (recency, popularity) edits the function body
-- **Difficulty:** medium
-- **Location:** `src/search/scoring/candidate.rs:293-339`, parallel SPLADE fusion at `src/search/query.rs:594-635`
-- **Description:** The scoring pipeline (embedding → name boost → glob filter → note boost → demotion → threshold) is a flat sequence of `if let / .max() / *= ` operations. Adding a new score signal (recency boost from chunk `last_modified`, popularity boost from `function_calls.count`, vendored-code demotion) means inserting another stanza into `apply_scoring_pipeline` *and* the parallel SPLADE fusion path — the original P2.88 (issue #1130) flagged "third score signal touches two parallel fusion paths" and it's still present. There is no `ScoreSignal` trait or composable-stage abstraction.
-- **Suggested fix:** Define `trait ScoreSignal { fn apply(&self, current: f32, ctx: &ScoringContext, chunk_meta: &ChunkMeta) -> f32; fn enabled(&self, filter: &SearchFilter) -> bool; }`. The pipeline becomes `signals.iter().filter(|s| s.enabled(...)).fold(base, |acc, s| s.apply(acc, ...))`. Adding recency boost = one new struct + register in the signal slice once. SPLADE fusion path picks up the same signals.
-
-#### EX-V1.33-6: `run_migration` is a 16-arm hand-coded match — adding migration v26 requires three coordinated edits across two files
+#### `apply_parent_boost` hardcodes Class/Struct/Interface as the only container kinds
 - **Difficulty:** easy
-- **Location:** `src/store/migrations.rs:344-367` plus `src/store/helpers/mod.rs` (`CURRENT_SCHEMA_VERSION`) plus `schema.sql`
-- **Description:** Adding a schema migration is a four-step protocol per the file's docstring (lines 6-11): bump `CURRENT_SCHEMA_VERSION`, add `migrate_vN_to_vM` function, add `(N, M) => migrate_vN_to_vM(conn).await` arm to `run_migration`, update `schema.sql`. The `match (from, to)` is a sequential ladder of 16 arms (10→11 through 24→25). Forgetting the arm is silently caught only by a test, not a compile error. Compare with `define_embedder_presets!` / `define_languages!` / `define_chunk_types!` — each registers via a single declarative row that generates the dispatch automatically.
-- **Suggested fix:** Define `struct Migration { from: i32, to: i32, run: fn(&mut SqliteConnection) -> BoxFuture<Result<(), StoreError>> }` and register each migration via `inventory::submit!(Migration { from: 24, to: 25, run: |c| Box::pin(migrate_v24_to_v25(c)) })` next to its function. `run_migration` becomes a slice scan. Eliminates the third coordinated edit and lets each migration colocate with its registration.
+- **Location:** src/search/scoring/candidate.rs:81-84
+- **Description:** Parent-container boost only fires for `ChunkType::Class | Struct | Interface`. cqs already extracts `Trait`, `Enum`, `Module`, `Object`, `Protocol` (and parser/chunk.rs assigns `parent_type_name` for methods on Rust traits, Kotlin objects, Swift protocols, etc.). A query that semantically matches three trait method impls won't boost the trait itself — the heuristic silently degrades to one-result behavior on those languages. Adding a new container variant requires editing this match plus chasing every other `is_container` site.
+- **Suggested fix:** Add `ChunkType::is_container() -> bool` on the enum (generated via `define_chunk_types!` macro to keep it data-table-driven), then call `r.chunk.chunk_type.is_container()`. Declare the container flag in the macro row alongside `hints = [...]` and `human = "..."`.
 
-#### EX-V1.33-7: HNSW distance metric is type-baked as `DistCosine` — switching to inner-product or L2 needs rebuild path + persist-format migration
-- **Difficulty:** hard
-- **Location:** `src/hnsw/mod.rs:131, 204, 214` (`HnswGraph<'a> = Hnsw<'a, f32, DistCosine>`), `src/hnsw/persist.rs:7, 835`, `src/cagra.rs:324, 789` (no metric param to `cuvs::cagra::Index::build`)
-- **Description:** Both backends (HNSW + CAGRA) hardcode cosine similarity. HNSW bakes `DistCosine` into the type alias and three `LoadedHnsw` variants, plus both load paths in `persist.rs` and the `with_hnsw` dispatch. CAGRA's `Index::build` takes a `build_params` struct that *can* set a metric, but cqs never threads one through. Future-scenario: CodeRankEmbed's reference impl uses dot-product with un-normalized embeddings; a Matryoshka-truncated EmbeddingGemma at 256 dim might benefit from dot-product. Switching today is multi-day work because the persist format implicitly encodes the metric assumption.
-- **Suggested fix:** Either (a) add a `DistanceMetric` enum + thread it through `HnswIndex::build` / `load` / `search` and persist it in the index header so a query-time metric mismatch becomes a typed error (mirrors `Store::stored_model_name()`); or (b) accept that cosine is the cqs commitment and document it in lib.rs / SECURITY.md. Today's silent assumption is the worst spot — a future contributor will try to add dot-product, find no extension point, and either fork or hack.
-
-#### EX-V1.33-8: `BatchSubmitItem.context` is a stringly-typed bag — every prompt builder reinterprets the field with no type discipline
-- **Difficulty:** easy
-- **Location:** `src/llm/provider.rs:25-37`
-- **Description:** The struct was added to replace an opaque tuple — good — but the `context` field's docstring admits "Context field: chunk_type (summaries), signature (doc comments), or unused (prebuilt/HyDE)". One field, three meanings, none enforced. Adding a fourth prompt purpose that needs both a chunk_type *and* a signature has to either pick one (pack the other into `content`) or change the struct. The wire shape is decided by the receiver — `build_doc_prompt` reads `context` as the signature, `build_summary_prompt` reads it as a chunk type, and a typo at the call site silently sends the wrong field. This is the same tuple-with-named-fields problem the struct was meant to solve, just one level deeper.
-- **Suggested fix:** Replace `context: String` with `context: PromptContext` where `PromptContext` is an enum (`ChunkType(String)`, `Signature(String)`, `None`, etc.). Or split into named-optional fields: `chunk_type: Option<String>`, `signature: Option<String>`.
-
-#### EX-V1.33-9: Telemetry has one hardcoded sink (`.cqs/telemetry.jsonl`) — no trait, no exporter abstraction
+#### `is_test_chunk` heuristic is hardcoded and diverges from SQL-side `TEST_NAME_PATTERNS`
 - **Difficulty:** medium
-- **Location:** `src/cli/telemetry.rs:59-160, 177-265, 267-380` (three `log_*` functions, each writing the file)
-- **Description:** `log_command`, `log_command_complete`, `log_routed` each open `cqs_dir.join("telemetry.jsonl")` and append a JSON line with the same advisory-flock + 10-MB-rotate dance reimplemented inline three times. There is no `TelemetrySink` trait. Future-scenarios: shipping an OTLP exporter, writing to stdout JSONL for CI capture, posting to a Loki / Honeycomb endpoint, redirecting to a parent process pipe — every one rewrites the three `log_*` functions in place. The closest comparable is `BatchProvider` which *does* have a trait + registry; telemetry should follow the same pattern.
-- **Suggested fix:** Define `trait TelemetrySink: Send + Sync { fn record(&self, event: TelemetryEvent); }` with `JsonlSink { cqs_dir: PathBuf }` as the default impl. `log_command` etc. dispatch on a process-global `OnceLock<Box<dyn TelemetrySink>>` initialized from `CQS_TELEMETRY_SINK` (default `jsonl`, future `stdout`, `otlp`, `noop`). Each `log_*` becomes a call to a shared `event!()` helper that builds the `TelemetryEvent` once. The 10-MB rotate logic stays inside `JsonlSink`.
+- **Location:** src/lib.rs:502-541, src/store/calls/mod.rs:126
+- **Description:** Two parallel test-detection patches: `is_test_chunk` in lib.rs uses tightened name rules (`Test_`, `test_`, `_test`, `_spec`, `.test`) and language-registry path patterns; `TEST_NAME_PATTERNS = &["test_%", "Test%"]` in calls/mod.rs uses looser SQL LIKE patterns that still match `TestSuite` / `TestRegistry` (the production-type case the AC-4 audit explicitly fixed in lib.rs). Adding a new convention — JUnit5 `@DisplayName`-annotated, BDD `_when_should_*`, Go `it_*`, Rust `#[test_case(...)]` — requires touching both sites with different syntaxes (Rust regex vs SQL LIKE). Plus the markers are language-namespaced through `LanguageDef::test_markers` for content but the *name* heuristics are global.
+- **Suggested fix:** Move test-name patterns into `LanguageDef::test_name_patterns` (mirroring `test_markers` and `test_path_patterns`), then have both `is_test_chunk` and `TEST_NAME_PATTERNS` consume the registry. Single source of truth, language-scoped, and adding a Kotlin/Swift convention is one line in the language module.
 
-#### EX-V1.33-10: Adding any new top-level CLI command still needs three coordinated edits — `Commands` enum + registry row + handler
+#### `OutputFormat` is a closed enum with hand-coded if/else-if chains at every render site
+- **Difficulty:** medium
+- **Location:** src/cli/definitions.rs:13-17, src/cli/commands/graph/trace.rs:126-281, src/cli/commands/graph/impact.rs:48-92
+- **Description:** `OutputFormat { Text, Json, Mermaid }` is dispatched at 12+ sites via `if matches!(format, OutputFormat::Json) { ... } else if matches!(format, OutputFormat::Mermaid) { ... } else { ... }`. Adding a fourth format (CSV for spreadsheet pipelines, GraphViz/dot for graph commands, Markdown table for PR comments, NDJSON for streaming) requires hunting every render site and adding another `else if`. Worse, the chains aren't exhaustive — the trailing `else` silently falls into Text rendering for unhandled variants, so a new variant will produce text output instead of a compile error.
+- **Suggested fix:** Define a `Renderer` trait per command type (`TraceRenderer`, `ImpactRenderer`) with `render_trace(&Trace)` / `render_impact(&Impact)` methods, and a `&[&dyn Renderer]` registry indexed by `OutputFormat`. Replace the if/else-if chain with a single `pick_renderer(format).render(&data)`. Match on the enum at one site (the registry lookup), and let the compiler enforce exhaustiveness via `#[deny(non_exhaustive_omitted_patterns)]`.
+
+#### Hardcoded query classifier function — adding a category requires surgery
+- **Difficulty:** medium
+- **Location:** src/search/router.rs:632-773 (`classify_query_inner`)
+- **Description:** Query classification is an 8-arm hand-coded if/return chain with priority semantics encoded in source order (Negation > Identifier > CrossLanguage > TypeFiltered > Structural > Behavioral > Conceptual > MultiStep). Each arm calls a hardcoded predicate (`is_identifier_query`, `is_cross_language_query`, etc.) and emits a hardcoded `(category, confidence, strategy, type_hints)` tuple. Adding a category — `RegexQuery`, `ApiCall`, `ErrorMessage`, `StackTrace` — requires inserting a new branch at the right priority position, declaring a new predicate, and remembering to add the variant to the `QueryCategory` macro AND to the centroid classifier in `reclassify_with_centroid`. The QueryCategory enum is macro-driven but the *classifier* is not.
+- **Suggested fix:** Define `trait QueryClassifier { fn priority(&self) -> i32; fn classify(&self, query: &str, words: &[&str]) -> Option<Classification>; }` and hold a `&[&dyn QueryClassifier]` static slice sorted by descending priority. `classify_query_inner` becomes "first non-None classifier wins, fall back to Unknown." Each existing arm becomes one impl; new categories are one new struct + one slice row.
+
+#### Three near-identical prompt builders — adding a fourth means another method
+- **Difficulty:** medium
+- **Location:** src/llm/prompts.rs:182-312
+- **Description:** `build_contrastive_prompt`, `build_doc_prompt`, `build_hyde_prompt` share the same shape: truncate content, sanitize, fresh sentinel nonce, `format!` with sentinel-bracketed body. The `BatchKind` enum (P3-47 / EX-V1.33-1) abstracted the dispatch but the prompt builders themselves remain three independent methods on `LlmClient`. The doc-comment for `BatchKind` already lists three pending purposes (`Classification`, `ContrastiveRepair`, `CodeReview`) — each will require: (1) a new method on `LlmClient`, (2) a new variant on `BatchKind`, (3) a new arm in the dispatcher mapping kind → builder. Three coordinated edits per new prompt purpose.
+- **Suggested fix:** Define `trait PromptBuilder { fn build(&self, item: &BatchSubmitItem) -> String; }` with one impl per kind. Replace `BatchKind` dispatch with a `&[&dyn PromptBuilder]` registry indexed by kind. Adding a fourth purpose: one new struct + one new enum variant + one slice row. The shared sentinel/truncate/sanitize prelude moves into a `BasePrompt` helper that all impls call.
+
+#### `PoolingStrategy` dispatch site loses exhaustiveness via `unreachable!`
 - **Difficulty:** easy
-- **Location:** `src/cli/definitions.rs:311+` (`pub(super) enum Commands`), `src/cli/registry.rs:62-700+` (registry rows), `src/cli/commands/<area>/`
-- **Description:** PR #1097 collapsed the previous 5 hand-edited match arms down to a registry table. But the enum variant in `definitions.rs` is still hand-declared because `clap` requires a real enum, and the registry row in `registry.rs` is still hand-added. The registry's own docstring (lines 12-16) admits "Adding a new command now means: declare the variant in `definitions.rs::Commands`; add one row to either the `group_a` or `group_b` list; implement the handler in `commands/<area>/`." Three coordinated edits across three files for every new command — better than five but worse than the macro registries used elsewhere (`define_languages!` is one row).
-- **Suggested fix:** Either (a) accept three-edit floor and lint it (CI grep that every `Commands::Foo` variant has a matching `Commands::Foo {` registry row, surfacing the missing-row case as a CI failure rather than runtime), or (b) custom derive-macro that takes a single `#[command(name="foo", group="b", batch=Cli)]` annotation on the enum variant and emits the registry row.
+- **Location:** src/embedder/mod.rs:1390-1399, src/embedder/models.rs:111-137
+- **Description:** The 4-variant `PoolingStrategy` is dispatched in the encode loop with `Identity` mapped to `unreachable!()` because it's intercepted earlier as a 2D shortcut. Adding a fifth pooling strategy (e.g., `WeightedMean`, `MaxPool`, `AttentionPool` for LLM2Vec-style heads) means: (1) add variant, (2) implement pooler function, (3) edit dispatch site, (4) decide whether the 2D shortcut applies and edit the 2D path. The `unreachable!` arm is brittle — any future model whose ONNX returns 3D AND uses Identity pooling silently panics in production.
+- **Suggested fix:** Make pooling a trait: `trait Pooler { fn pool_3d(&self, hidden: &Array3<f32>, mask: &Array2<i64>, dim: usize) -> Vec<Vec<f32>>; fn handles_2d_directly(&self) -> bool { false } }`. Each variant becomes one impl. The 2D shortcut becomes `if pooler.handles_2d_directly() && hidden.is_2d()`. Removes the unreachable arm and makes adding a new pooler one struct + one enum row.
 
+#### Hardcoded NEGATION / MULTISTEP / cross-language token lists in router
+- **Difficulty:** easy
+- **Location:** src/search/router.rs (NEGATION_TOKENS, MULTISTEP_PATTERNS_AC, language-name lists in is_cross_language_query)
+- **Description:** The classifier predicates rely on a fixed set of English vocabulary: `NEGATION_TOKENS` (without/no/not/...), MULTISTEP conjunctions (then/and then/...), language-name lists (rust, python, ...). Non-English queries, domain-specific negation ("ignoring X"), or new languages added via `lang-*` features don't propagate to the classifier — the language registry is the source of truth for "what languages exist" but the classifier maintains its own parallel list. The `1.95-msrv` edition note in CLAUDE.md mentions "let-chains in if/while are out of scope" — these classifier predicates would benefit from let-chain refactoring once edition bumps, but the underlying vocabulary lock-in is the deeper issue.
+- **Suggested fix:** (1) Have `is_cross_language_query` consume `Language::valid_names()` instead of a hardcoded slice — drops one drift point. (2) Move NEGATION_TOKENS / MULTISTEP_PATTERNS to `~/.config/cqs/classifier.toml` with built-in defaults, mirroring the synonym fix above.
+
+#### LLM model-name validation hand-coded per provider
+- **Difficulty:** medium
+- **Location:** src/llm/mod.rs:326-326 + each `ProviderRegistry::build` impl
+- **Description:** While the `ProviderRegistry` trait is properly pluggable (P4-EX work), each provider's model-name validation is implicit / informal — `LocalProvider::new` parses `LlmConfig.model` as a string with no constraint, so `cqs feedback --provider anthropic --model gpt-4o` silently submits to Anthropic with an OpenAI model name and fails at API time with a vague error. There's no `provider.is_valid_model(name) -> Result<(), Error>` step before submission.
+- **Suggested fix:** Add `fn validate_model(&self, name: &str) -> Result<(), LlmError>` to `BatchProvider` (or `ProviderRegistry`). Anthropic checks against a known prefix list (`claude-`, `claude-3`, etc.); Local accepts anything because OpenAI-compat servers expose arbitrary model names; a future OpenAI provider can validate `gpt-` / `o1-` / `o3-`. Call it from `submit_batch` before the API roundtrip. Adds one method per provider but catches the fast-fail case.
+
+#### CAGRA threshold and backend selection are env-var-driven, not policy-extensible
+- **Difficulty:** medium
+- **Location:** src/index.rs (BackendContext) + cagra/hnsw backends + `CQS_CAGRA_THRESHOLD` env var
+- **Description:** The `IndexBackend` registry is now table-driven (P4-EX work) but the *selection policy* — "use CAGRA when chunk_count >= 5000 and GPU available" — is hand-coded inside each backend's `try_open`. There's no shared `SelectionPolicy` trait, so adding a third backend (USearch, Metal, ROCm, SIMD brute-force) requires re-deriving "when should I be picked" from ad-hoc env vars and chunk-count thresholds. The `i32 priority()` is iteration order, not a real eligibility rule. This blocks slot-aware policies like "prefer USearch on slot=foo because it's tuned for that corpus shape" without a config-side knob.
+- **Suggested fix:** Promote the eligibility logic to a `SelectionPolicy` shape on `BackendContext` (e.g., `cqs.toml [index.policy]` with `prefer = "cagra"`, `cagra_min_chunks = 5000`, `disabled_backends = ["usearch"]`), then have each backend's `try_open` read it from `ctx.policy`. New backends declare their default policy entry; operators override per-slot in TOML.
+
+
+<!-- ===== docs/audit-scratch/batch2-platform.md ===== -->
 ## Platform Behavior
 
-#### PB-V1.33-1: SEC-4 / SEC-NEW-1 reference-path containment uses `std::fs::canonicalize`, breaking on Windows
-- **Difficulty:** easy
-- **Location:** `src/config.rs:613` and `src/reference.rs:90`
-- **Description:** Both sites canonicalize the reference path via `p.canonicalize()` (std), which on Windows returns the verbatim `\\?\C:\...` UNC-prefixed form. The neighboring `home = dirs::home_dir()` and `cwd = std::env::current_dir().ok()` both return non-prefixed paths (e.g., `C:\Users\foo`). The subsequent `canonical.starts_with(home)` / `canonical.starts_with(cwd)` always fails because verbatim ≠ non-verbatim, so on Windows every reference (including ones that correctly live inside the project / home / `.cqs/`) falls through `!in_home && !in_project && !in_cqs_dir` and trips a spurious "Reference is outside project and home directories" warning. The original SEC-4 / SEC-NEW-1 mitigation (warn when a malicious checked-in `.cqs.toml` points at e.g. `~/.ssh`) is also defeated symmetrically — a real out-of-tree path also triggers the warning, so the operator sees noise on every reference and stops paying attention. The codebase has `dunce::canonicalize` available (used in 16+ other sites including `cli/config.rs`, `cli/display.rs`, `cli/commands/infra/reference.rs`) precisely to strip this prefix.
-- **Suggested fix:** Replace both `p.canonicalize()` with `dunce::canonicalize(p)`. Symmetric: also pass `home` and `cwd` through `dunce::canonicalize` so both sides of `starts_with` are canonical-and-de-UNC-ed before comparison.
-
-#### PB-V1.33-2: `train_data::git::validate_git_repo` uses raw `canonicalize()` and feeds verbatim path to `git -C`
-- **Difficulty:** easy
-- **Location:** `src/train_data/git.rs:26`
-- **Description:** `validate_git_repo` returns `repo.canonicalize()?` directly. On Windows that's the `\\?\C:\...` form, which is then passed via `cmd.args(["-C"]).arg(&canonical_repo)` to `git`. Git for Windows historically rejects extended-length paths in some subcommand combinations (older builds in particular), and the `canonical.display()` in error paths surfaces the ugly `\\?\` to operators. The same canonical path is passed back to `git_log`, `git diff`, and `git rev-parse`, multiplying the surface for git-side path normalization edge cases. Other call sites in the codebase consistently use `dunce::canonicalize` for `git`-bound paths (e.g., `src/cli/commands/infra/reference.rs:132`).
-- **Suggested fix:** Switch to `dunce::canonicalize(repo)`. Strips the verbatim prefix on Windows; identity transform on Unix. Same one-line change as `cli/config.rs::find_project_root` already uses.
-
-#### PB-V1.33-3: `worktree::resolve_main_project_dir` uses `std::fs::canonicalize` on `.git/`
-- **Difficulty:** easy
-- **Location:** `src/worktree.rs:85`
-- **Description:** `resolve_main_project_dir` returns `canonical_git.parent()?.to_path_buf()` after `std::fs::canonicalize(&canonical_git)`. On Windows the returned `main_root` carries the `\\?\C:\` prefix. Downstream consumers (`lookup_main_cqs_dir` at `worktree.rs:110-115`) then `main_root.join(".cqs")` and surface that path through `MainIndexLookup::WorktreeUseMain { main_root, main_cqs }` into JSON envelopes (the worktree-fallback log line at `lib.rs:291-296` already includes `main_cqs.display()`). Resulting JSON output tags responses with `\\?\C:\Projects\cqs\.cqs` instead of `C:\Projects\cqs\.cqs` — agents downstream that compare paths string-wise (which the worktree code path is explicitly meant for) get spurious mismatches.
-- **Suggested fix:** `dunce::canonicalize(&canonical_git)` instead. Same fix pattern as PB-V1.33-1 / PB-V1.33-2.
-
-#### PB-V1.33-4: `db_file_identity` non-Unix fallback uses mtime — fails to detect rapid `cqs index --force` replacements
+#### `apply_resolved_edits` flattens CRLF source files to LF on every doc rewrite
 - **Difficulty:** medium
-- **Location:** `src/cli/watch/reindex.rs:42-45`
-- **Description:** On Unix, `db_file_identity` returns `(dev, ino)` so a `cqs index --force` (which creates a new inode via tmp+rename) is reliably detected as a database replacement (DS-W5). On non-Unix the fallback uses `std::fs::metadata(path).ok()?.modified().ok()` (a `SystemTime`). NTFS mtime resolution is technically 100ns but Windows often coalesces writes to ~16 ms and FAT32/exFAT/SMB shares round to 1-2 s. Two `cqs index --force` runs that complete inside the same coarse-mtime bucket (an A/B reindex pair, a fast-iteration test, the documented `slot promote` flow that reindexes twice in a row) leave identical mtimes; the daemon's incremental reindex path won't notice the swap and will keep serving the old HNSW against the new SQLite — the exact corruption mode DS-W5 was added to prevent. The Linux replacement-detection guarantee silently weakens to "best effort" on Windows-native, and the cross-platform CI doesn't catch it because the related test (`reload_after_db_replaced`) is `#[cfg(unix)]`-only.
-- **Suggested fix:** On Windows, query `BY_HANDLE_FILE_INFORMATION.dwVolumeSerialNumber + nFileIndexHigh + nFileIndexLow` via `winapi`/`windows-sys` (the documented NTFS equivalents of dev+ino, surviving rename/replace) and return that tuple instead of mtime. Failing that, document the limitation in the function-level doc and add an mtime-collision warning when two consecutive identities match.
+- **Location:** src/doc_writer/rewriter.rs:478-512 (`apply_resolved_edits`)
+- **Description:** The doc-rewrite path reads the file with `read_to_string`, then `apply_resolved_edits` does `content.lines().map(|l| format!("{l}\n"))`. `str::lines()` strips both `\r\n` and `\n`; the re-emit is bare `\n`. Result: every `cqs index --improve-docs` (or any `rewrite_file` caller) silently rewrites a Windows-source file from CRLF to bare LF across the whole file, churning every line in git's diff and fighting `core.autocrlf=true`. Same root cause that `note.rs::write_notes_file` already fixed (PB-V1.33-9 / #1356) — that fix sniffed CRLF in the existing content and re-translated `\n → \r\n` before writing. The doc rewriter has no equivalent guard. `compute_rewrite_from_content` (line 263) feeds `apply_resolved_edits` directly, and `write_proposed_patch` (line 523) builds `similar::TextDiff::from_lines` over the lossy `new_content`, so even the patch-only path emits a diff that flips line endings on every line.
+- **Suggested fix:** Mirror the note.rs CRLF-preservation pattern: sniff `content.contains("\r\n")` once, switch the re-join to `"\r\n"` if so. Or — more robustly — split using a regex / byte-level scan that preserves the per-line trailing terminator instead of `str::lines()`. The note.rs comment block at line 349-373 is the template.
 
-#### PB-V1.33-5: Daemon error/operator hints hardcode `systemctl --user` — broken UX for macOS users
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/eval/mod.rs:374, 378, 395, 413` and `src/cli/commands/index/build.rs:198`
-- **Description:** When `cqs eval --require-fresh` can't talk to the daemon (and similarly when `cqs index` detects a live daemon holding the HNSW lock), the bail message tells the user to run `systemctl --user start cqs-watch` / `systemctl --user restart cqs-watch` / `systemctl --user stop cqs-watch && cargo install --path . && systemctl --user start cqs-watch`. systemd doesn't exist on macOS — the canonical path there (already encoded in `restart_daemon_if_needed` at `cli/commands/infra/model.rs:803-844` with `cfg(target_os = "macos")`) is to spawn `cqs watch --serve` directly and to send SIGTERM via `stop_daemon_via_sigterm_macos`. macOS users hitting these errors get advice that fails (`systemctl: command not found`), so the documented remediation is dead. Cross-platform release targets are Linux x86_64, macOS ARM64, Windows x86_64 — at minimum the macOS arm should be covered; Windows users currently can't run the daemon at all so they don't hit this codepath.
-- **Suggested fix:** Pull a `daemon_control_hint()` helper from `cli/commands/infra/model.rs` that returns the platform-correct command (`systemctl --user ...` on Linux, `cqs watch --serve` / `pkill cqs` on macOS, plain `cqs watch --serve` on Windows) and substitute it into all five hint messages. The five strings are also a near-duplicate of each other, so the helper avoids the next drift when the hint changes again.
-
-#### PB-V1.33-6: `aux_model::hf_cache_dir` joins `".cache/huggingface"` as a single component, mangling Windows path display
-- **Difficulty:** easy
-- **Location:** `src/aux_model.rs:68-69`
-- **Description:** Both fallback arms join a literal `".cache/huggingface"` (forward-slash embedded) onto a `PathBuf` via `.join(".cache/huggingface")`. `PathBuf::join` -> `push` does NOT auto-split forward slashes on Windows (it splits only on `\` and the documented Windows component separators); the embedded `/` becomes part of one component. Resulting path on Windows displays as `C:\Users\foo\.cache/huggingface\splade-onnx` (mixed separators). Windows syscalls themselves accept this mixed form, but downstream comparators that round-trip through `Path::components()` see one giant `.cache/huggingface` component instead of two — `path.starts_with("C:\\Users\\foo\\.cache\\huggingface")` returns false even though they're "the same path" in the eyes of the OS. The neighboring `EmbeddingCache::default_path` (`src/cache.rs:184`) already does the right thing as `.join(".cache")` (no slash inside the literal); P3.32 fixed `cache.rs` but missed `aux_model.rs`.
-- **Suggested fix:** Replace `h.join(".cache/huggingface").join(subdir)` with `h.join(".cache").join("huggingface").join(subdir)` and the same fix on the `unwrap_or_else` arm. One-line per site.
-
-#### PB-V1.33-7: Hook scripts assume `cqs` is on the MSYS-shell PATH on Windows-native
+#### `audit-mode.json` SEC-1 promise is bypassed on Windows
 - **Difficulty:** medium
-- **Location:** `src/cli/commands/infra/hook.rs:241-263` (`render_hook_script`)
-- **Description:** `cqs hook install` writes `#!/bin/sh` wrappers into `.git/hooks/`. On Windows the wrapper is executed by git-for-Windows' bundled MSYS shell (`/usr/bin/sh` inside the Git installation, NOT the user's `cmd.exe` or PowerShell). The `command -v cqs >/dev/null 2>&1 || exit 0` line only detects `cqs` on the MSYS PATH, which is built from a separate set of environment files (`/etc/profile`, `/etc/profile.d/*.sh`) and does NOT inherit `%PATH%` directly — only entries that translate to valid POSIX-style paths (e.g., `/c/Users/foo/.cargo/bin` if it appears as `C:\Users\foo\.cargo\bin` in `%PATH%`) survive. Operators who installed `cqs` via `cargo install` and verified `cqs --version` works in `cmd.exe` will see hooks silently no-op on every `git checkout` / `git pull` because the MSYS shell can't find `cqs`. There is no diagnostic — `command -v cqs >/dev/null 2>&1 || exit 0` swallows the failure by design (so the hook never blocks `git`). Combined with PB-V1.33-5 (no Windows daemon), this leaves Windows-native users with a fully-installed `cqs hook` that does nothing on every commit, and `cqs hook status` (`hook.rs:90-103`) doesn't probe whether `cqs` is reachable from the hook's actual shell environment, so the breakage is invisible.
-- **Suggested fix:** Two-pronged. (1) `cqs hook install` on Windows can detect `cargo install`'s default location (`%USERPROFILE%\.cargo\bin\cqs.exe`) and emit a fully-qualified path into the wrapper script (POSIX-translated to `/c/Users/foo/.cargo/bin/cqs.exe`). (2) `cqs hook status` should run `bash -c 'command -v cqs'` (when `bash` is available) and surface the result so operators see whether the hook will actually fire — currently status reports "installed" / "running" with no shell-PATH check.
+- **Location:** src/audit.rs:140-159 (`save_audit_state`)
+- **Description:** P4-19 in the v1.33 triage. Confirmed still present at v1.36.2: the `#[cfg(unix)]` arm uses `OpenOptions::mode(0o600)` so the tmp file is born private; the `#[cfg(not(unix))]` arm calls `std::fs::write(&tmp_path, &content)` with no ACL hardening at all, then `atomic_replace` moves it into `.cqs/audit-mode.json` with whatever default ACL the OS picks. The same shape exists in `project.rs::save` (line 129-132), `config.rs:899-905` and `config.rs:997-1003`. Audit mode encodes "the operator believes notes are untrusted" — leaking that state to other Windows users on a multi-user host (or to per-user services like the embedded SYSTEM-runtime indexer) breaks SEC-1's "0o600-equivalent" claim that doc-comments and SECURITY.md make.
+- **Suggested fix:** Wire a Windows ACL fixup (e.g., `windows-acl` or a manual `SetFileSecurityW` call to deny everyone-except-owner) inside the `#[cfg(not(unix))]` arms. Alternatively, downgrade SEC-1's claim in SECURITY.md so the doc and the code agree (per the "docs lying is P1" rule).
 
-#### PB-V1.33-8: `audit.rs` audit-mode file gets no Windows ACL — SEC-1 promise broken on Windows
+#### `db_file_identity` Windows fallback uses mtime — misses rapid `--force` rebuilds
 - **Difficulty:** medium
-- **Location:** `src/audit.rs:127-145` (`#[cfg(unix)]` 0o600 mode arm vs `#[cfg(not(unix))]` plain `fs::write` arm)
-- **Description:** The `cfg(unix)` branch sets `mode(0o600)` at file-creation time so the audit-mode marker is never world-readable. On Windows the `cfg(not(unix))` arm just calls `std::fs::write(&tmp_path, &content)`, which inherits whatever ACL the parent directory's DACL inheritance produces. By default `%LOCALAPPDATA%\cqs\` (or wherever `dirs::data_dir()` resolves) inherits user-only ACLs from the user's profile, so the typical case is fine; but operators with roaming-profile setups, or those who relocated `%LOCALAPPDATA%` to a shared mount (common in some enterprise deployments), can end up with the audit-mode file readable by other authenticated users. The neighboring `cache.rs::apply_db_file_perms` has the same `cfg(not(unix))` no-op (`apply_db_file_perms(_path: &Path) {}` at `cache.rs:147`), so the SEC-1 mitigation explicitly documented at `audit.rs:125` — "Write with mode 0o600 from creation so file is never world-readable" — is silently weaker on Windows. SECURITY.md doesn't currently disclose this asymmetry.
-- **Suggested fix:** Add a Windows arm using the `windows-sys` crate's `SetFileSecurityW` to apply a DACL granting only the current SID full access; or accept the limitation and document it in SECURITY.md so the SEC-1 claim isn't a lie on Windows. Mirror the same fix in `cache.rs::apply_db_file_perms`.
+- **Location:** src/cli/watch/reindex.rs:42-45
+- **Description:** P4-17 in the v1.33 triage, still present. On Unix the daemon detects DB-replacement via `(dev, ino)` after `cqs index --force`; on Windows the fallback returns `metadata.modified()`. NTFS mtime granularity is 100ns in theory but Win32 file caching often returns ~1-second-old timestamps, and a sub-second `index --force` (very common in tests / quick re-indexes) leaves the daemon serving the stale handle because `db_id == old_db_id`. The downstream code at `cli/watch/mod.rs:1281,1333,1461,1506` re-reads the index in lockstep with this signal, so a stale `db_file_identity` on Windows means the daemon hands out queries against a freed mmap — at best wrong results, at worst a SIGBUS-equivalent if NTFS truncates.
+- **Suggested fix:** On Windows use `meta.file_index()` (nightly) or call `GetFileInformationByHandleEx` for the file index + volume serial number — that pair is the NTFS analogue of `(dev, ino)`. The `winapi`/`windows-sys` crate already pulls in the necessary bindings.
 
-#### PB-V1.33-9: `note.rs::write_notes_file` writes bare `\n` line endings — CRLF round-trip churn on Windows + `core.autocrlf`
+#### `worktree::lookup_main_cqs_dir` doesn't canonicalize `dir`, so worktree-vs-main equality is asymmetric on case-insensitive filesystems
 - **Difficulty:** medium
-- **Location:** `src/note.rs:342-348`
-- **Description:** `write_notes_file` formats output via `format!("{}\n{}", NOTES_HEADER, serialized)` — explicit `\n`, no platform-conditional CRLF. On Windows under git's default `core.autocrlf=true`, the next `git checkout` (or even a `git add` cycle) converts the file's line endings to `\r\n` on disk. cqs reads the file back via `parse_notes`, sees byte-different content, and the watcher's mtime-equality skip in `cli/watch/events.rs:104-118` will trigger a notes reindex on every checkout — even though the semantic content didn't change. Pair this with the `cqs hook` reconcile path and you get a hot-spin: hook fires reconcile, reconcile sees notes.toml changed, reindexes, daemon serializes the canonical TOML back via `write_notes_file` with bare `\n`, git's smudge filter converts back to `\r\n` on the next checkout, and the cycle repeats. Operators see "saving notes.toml" loops every time they switch branches. CLAUDE.md explicitly encourages users to commit `docs/notes.toml`, so the CRLF interaction isn't a hypothetical.
-- **Suggested fix:** Either (a) sniff `\r` in the existing on-disk content during read, preserve CRLF on write back when the file was CRLF on disk, or (b) document a `.gitattributes` requirement (`docs/notes.toml text eol=lf`) in the bootstrap skill and CLAUDE.md so the file is force-LF in the working tree on Windows. (b) is cheaper but requires every project to remember it; (a) is the correct fix.
+- **Location:** src/worktree.rs:119-140
+- **Description:** `lookup_main_cqs_dir(dir)` joins `dir` with `INDEX_DIR` directly (line 120) and then calls `resolve_main_project_dir(dir)` (line 124), which `dunce::canonicalize`s only the resolved `.git/` parent. The returned `MainIndexLookup::WorktreeUseMain { worktree_root: dir.to_path_buf(), main_root, .. }` therefore has a canonicalized `main_root` but a non-canonical `worktree_root`. Downstream callers compare these fields (search-result `_meta.worktree_stale`, daemon ping responses) and string-compare against `find_project_root()` output, which IS canonicalized via `dunce::canonicalize` (cli/config.rs:138). On Windows `C:\Projects\Foo` vs `C:\projects\foo` and on macOS `/Users/Foo` vs `/Users/foo` produce a worktree_root that doesn't equal find_project_root's output, so the `worktree_stale` flag fires (or fails to fire) inconsistently — same lab as the #1254 leakage class.
+- **Suggested fix:** Call `dunce::canonicalize(dir)` once at the top of `lookup_main_cqs_dir` and use that for both the `own_cqs.exists()` check and `MainIndexLookup::*::worktree_root`. Same for `MainIndexLookup::WorktreeMainEmpty.worktree_root`.
 
-#### PB-V1.33-10: `process_exists` (Windows) uses PATH lookup for `tasklist` — stripped-PATH containers see every lock as stale
+#### Multiple `strip_prefix(root)` callers silently leak absolute paths on case-skew without the warn shim
+- **Difficulty:** medium
+- **Location:** src/scout.rs:319, src/gather.rs:269, src/onboard.rs:160 + 413, src/doc_writer/rewriter.rs:543
+- **Description:** `enumerate_files` learned (lib.rs:943) that on case-insensitive FS, `path.starts_with(root)` can pass while `path.strip_prefix(root)` byte-equals fails — the fix logs a warn and skips. Five other call sites still use the original anti-pattern: `file.strip_prefix(root).unwrap_or(&file).to_path_buf()`. When the user's `find_project_root` canonicalization picks `C:\Projects\Cqs` but the SQLite-stored chunk paths were ingested as `C:\projects\cqs`, every JSON envelope leaks the full absolute path into a field documented as "relative to project root", and downstream agents that string-compare `file` against `<root>/...` mismatch silently. No warn fires — the operator only sees "scout returned full paths" without explanation. Equivalent on macOS HFS+ default and on any Linux ZFS pool with `casesensitivity=insensitive`.
+- **Suggested fix:** Wrap the pattern in a single helper `relativize_or_warn(file, root)` that returns `Option<PathBuf>` with the same shim that `enumerate_files` already emits, and switch all five call sites to it. Or normalise both sides to lowercase comparison on `cfg(any(target_os = "windows", target_os = "macos"))` before stripping.
+
+#### `note::path_matches_mention` is case-sensitive, breaks on Windows / macOS notes
 - **Difficulty:** easy
-- **Location:** `src/cli/files.rs:71` (Windows `process_exists`)
-- **Description:** The Windows `process_exists` uses `Command::new("tasklist")` (PATH lookup) instead of an absolute `C:\Windows\System32\tasklist.exe`. Almost every Windows host has `System32` in `%PATH%` so this works in practice, but stripped-PATH environments — Docker containers, GitHub Actions Windows runners with custom PATH overrides, services launched from a constrained shell — can hit `tasklist not found`. The current behavior on `Err` is to return `false` (process doesn't exist), which means the caller (`acquire_index_lock`) treats the held lock as STALE and retries — racing the live holder. Worst case: the second cqs process force-acquires the lock by PID-recovery despite a real cqs holding it, leading to two writers on `index.db`. The Unix arm (`libc::kill(p, 0)`) doesn't have this PATH dependency. PB-V1.30.1-3 (PR #1209) already fixed locale-dependence; the PATH-dependence is the residual.
-- **Suggested fix:** On Windows, prefer `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)` via `windows-sys` — direct syscall, no PATH dependency, no spawn cost. Fall back to absolute `%SystemRoot%\System32\tasklist.exe` if the Windows API call is undesirable for any reason.
+- **Location:** src/note.rs:525-542
+- **Description:** Note mentions are matched via `str::strip_prefix` / `strip_suffix` after slash-normalization. Case-sensitive byte comparison. On Windows a note mentioning `"Cargo.toml"` won't match an indexed chunk file `"cargo.toml"` (and vice versa for path components like `Src/` vs `src/`). The CLAUDE.md and README explicitly invite users to commit `docs/notes.toml` cross-platform, so a note authored on Linux silently fails to apply on Windows. Worse, the sentiment-boost in the search ranker therefore vanishes for affected files — silent quality regression rather than a hard error.
+- **Suggested fix:** On `cfg(any(target_os = "windows", target_os = "macos"))`, use `eq_ignore_ascii_case` for the strip checks (or normalise both strings to lowercase before comparison). On Linux keep the case-sensitive behaviour — Linux ext4 is case-sensitive and `Cargo.toml`-vs-`cargo.toml` collisions there are intentional.
+
+#### `daemon_translate` is unconditionally `#[cfg(unix)]` — `cqs ping`, `cqs watch --serve`, daemon RPC all silently degrade on Windows
+- **Difficulty:** hard
+- **Location:** src/daemon_translate.rs (29× `#[cfg(unix)]`, zero `#[cfg(not(unix))]` shims), src/cli/commands/infra/ping.rs:166-200
+- **Description:** Every public daemon-RPC entry point — `daemon_socket_path`, `daemon_ping`, `daemon_status`, `daemon_reconcile` — is gated `#[cfg(unix)]` only. Windows builds ship `cqs ping` that prints "not supported, exit 1" (per ping.rs:160-166) and `cqs watch --serve` falls back to CLI-only mode. README.md's release matrix advertises `Linux x86_64, macOS ARM64, Windows x86_64` and the CLAUDE.md / docs talk about the daemon's 3-19ms-vs-2s startup advantage as a blanket claim. Windows users get the cold-start path on every invocation with no warning at install time. Either the docs lie, or Windows needs a `Named Pipe` daemon path. Docs-lying-is-P1 (per memory.md).
+- **Suggested fix:** Two options. (1) Implement a `\\.\pipe\cqs-<hash>` named-pipe variant for Windows — the wire format is already JSON-line so the transport swap is mostly mechanical. (2) Update README + SECURITY.md to explicitly mark the daemon as Linux+macOS-only and remove Windows from the daemon-aware perf claims. Either way, `cqs ping` on Windows should print a one-line "daemon not implemented on Windows; using CLI mode (~2s startup)" hint instead of failing with exit 1.
+
+#### `tasklist` parsing assumes UTF-8 stdout — Windows console code pages can corrupt the comparison
+- **Difficulty:** medium
+- **Location:** src/cli/files.rs:104-111
+- **Description:** `String::from_utf8_lossy(&o.stdout)` on `tasklist /FO CSV /NH` output. The `/FO CSV` format is locale-independent for the *separator* characters (comma, double-quote, PID digits — all ASCII), so the substring match `,\"<pid>\",` actually works correctly even when CMD's active code page is CP932 (Japanese) or CP1252 (Windows-1252) — those are ASCII-supersets. BUT: tasklist on some Windows builds emits a UTF-16 LE BOM (`\xFF\xFE`) when invoked with `/FO CSV` from certain process contexts (notably PowerShell-spawned children with `[Console]::OutputEncoding = Unicode`). `from_utf8_lossy` then sees `\xFF\xFE,...` and the BOM-prefixed PID column never matches `,"12345",`. `process_exists` returns false, which `acquire_index_lock` interprets as "stale lock holder" and races the live daemon for the lock file — the exact bug PB-V1.33-10 was supposed to fix.
+- **Suggested fix:** Detect a UTF-16 LE BOM in the first two bytes of stdout and decode via `String::from_utf16_lossy(...)` before the substring search. Or pass `/FO LIST` and parse line-by-line — LIST format prefixes each field with the field name and is identically-shaped across encodings.
+
+#### Hardcoded `/tmp` in `Path::new` test fixtures fails on Windows (test-portability bug, not runtime)
+- **Difficulty:** easy
+- **Location:** src/store/notes.rs:331,352,419,435,470,499,520,546; src/store/backup.rs:373-399; src/cli/watch/tests.rs:164-300+
+- **Description:** Many test cases construct `Path::new("/tmp/notes.toml")` or `PathBuf::from("/tmp/test_project")` as a placeholder label. They work on Linux/macOS (the path is just stored as a string, never opened), but on Windows `Path::new("/tmp/...")` is a relative path under whichever volume the test runner is on, so behaviour diverges from intent. The `_test_project` watch tests at cli/watch/tests.rs make assumptions (e.g., that `/tmp/test_project/.cqs/index.db` is "inside" `/tmp/test_project`) that hold on POSIX but produce different `starts_with` results on Windows. Not load-bearing today because the project's CI doesn't run the full Windows test matrix, but it bites whoever stands up Windows CI next.
+- **Suggested fix:** Replace `/tmp/<x>` with `tempfile::TempDir::new().unwrap().path().join("<x>")` for any test that exercises path-comparison logic; for tests that only need a label string (notes.toml), use `Path::new(if cfg!(windows) { "C:\\test\\notes.toml" } else { "/tmp/notes.toml" })` or just `Path::new("notes.toml")` if absoluteness doesn't matter.
+
+#### `lookup_main_cqs_dir` predicates on `own_cqs.exists()` without distinguishing dir-vs-file
+- **Difficulty:** easy
+- **Location:** src/worktree.rs:120-122
+- **Description:** `if own_cqs.exists()` — on a worktree where someone created a `.cqs` regular file (e.g. `touch .cqs` by mistake, or a packaged tarball with a stray entry) the code returns `MainIndexLookup::OwnIndex { path: own_cqs }` and downstream code tries to open `<file>/index.db` which fails with a confusing "is not a directory" error rather than the clean "this worktree has no index, use main's" error path. Cross-platform issue but most likely on Windows where users hand-edit zip-extracted directories.
+- **Suggested fix:** Use `own_cqs.is_dir()` rather than `own_cqs.exists()`. Same fix in the `main_cqs.exists()` branch at line 128.
+
+
+<!-- ===== docs/audit-scratch/batch2-security.md ===== -->
+## Security
+
+#### Store::open creates index.db with permissive umask, post-open chmod has TOCTOU window
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:973-1014
+- **Description:** `connect_with_config` lets sqlx create `index.db`, `db-wal`, and `db-shm` honoring the user's umask (typically 0o022 → 0o644 / world-readable), then post-fix permissions to 0o600 only after `connect_with(...).await`. On a multi-user box, any local user can read the freshly-born WAL/SHM during the window between SQLite's first commit and the `set_permissions` call. The cache path (`src/cache.rs:295-420`) closed exactly this gap with SEC-V1.33-2 by wrapping pool creation in `libc::umask(0o077)` + restore. The main store, which holds the most sensitive data (chunks, embeddings, summaries, notes derivatives), still has the race. Read-only opens skip the chmod entirely, so a concurrent process opening read-only never tightens perms it inherited from the original creator.
+- **Suggested fix:** Mirror the cache pattern: tighten umask to 0o077 around `pool.connect_with(connect_opts)` for write opens, then restore. Keep the post-open `set_permissions` as belt-and-suspenders (matches the cache comment).
+
+#### Daemon `tracing::info!` snapshot logs every CQS_* env var to journald
+- **Difficulty:** easy
+- **Location:** src/cli/watch/mod.rs:633-656
+- **Description:** Daemon startup logs every `CQS_*` env var at info level into journald with a hardcoded suffix-only redactor (`_API_KEY`, `_TOKEN`, `_PASSWORD`, `_SECRET`). Misses common shapes used in this codebase: `ANTHROPIC_API_KEY` (no `CQS_` prefix is fine — it's filtered by prefix anyway, so safe), but `CQS_LLM_API_BASE` carrying `https://user:pass@host/...`, `CQS_PROXY_URL`, `CQS_AUTH_TOKEN` style names not ending in one of the four exact suffixes, or any user-extension env (`CQS_FOO_BEARER`, `CQS_VLLM_KEY`) — none redacted. journald keeps this for 30 days per the rotation policy mentioned in `auth.rs:151`. With OB-V1.30-1 surfacing info-level to journald, operators harvesting logs find these.
+- **Suggested fix:** Switch the predicate from "name ends with one of 4 suffixes" to "name contains any of {KEY, TOKEN, SECRET, PASSWORD, BEARER, AUTH, CRED, PASS}" (case-insensitive substring), or take a deny-by-default approach for any name not on a small allowlist (`CQS_LLM_MODEL`, `CQS_LLM_API_BASE` minus userinfo, etc.).
+
+#### `open_browser` on Windows passes URL with auth token to `cmd /C start "" <url>` — cmd.exe metachar parsing
+- **Difficulty:** medium
+- **Location:** src/cli/commands/serve.rs:127-156
+- **Description:** `cmd /C start "" "<url>"` and the WSL `cmd.exe /C start "" "<url>"` branches hand the listening URL (which contains `?token=<43char>`) to `cmd.exe`. `Command::new("cmd").arg(url)` quotes the arg for CreateProcess but `cmd.exe` then re-parses, treating `&`, `^`, `|`, `>`, `<`, `(`, `)`, `%` as shell metacharacters even inside double quotes for pipe and redirect operators when they appear unquoted post-expansion. The current bind-addr + token form (`http://127.0.0.1:8080/?token=ABC`) is alphanumeric so today is safe, but: (a) any future addition to the URL (e.g. `?token=X&foo=bar`) would be split by cmd.exe into two commands; (b) `--bind` accepts arbitrary user input, so a hostile config file or shell script that sets `bind = "127.0.0.1:8080/&calc&"` — the token alphabet is enforced, but the URL host:port comes from user input via `bind_addr`. This is a latent foot-gun more than an active exploit.
+- **Suggested fix:** Use `cmd.exe /D /S /C` and pass URL via `start` with a verified-safe URL; or skip `cmd.exe` and call `ShellExecuteW` via the `windows` crate / `open` crate directly so cmd.exe's parser is bypassed.
+
+#### LLM error path logs full HTTP body at `tracing::debug!` — prompts + reflected secrets land in journald
+- **Difficulty:** easy
+- **Location:** src/llm/batch.rs:87-94 (and 131-137, 234-240)
+- **Description:** On any non-success response from the Anthropic batch endpoint, `tracing::debug!(body = %body, ...)` logs the entire HTTP error body at debug level. Anthropic's 4xx responses regularly echo input fields (the prompt, the offending content). Operators who run `RUST_LOG=cqs=debug` (recommended in CONTRIBUTING.md) get the full prompt — which on cqs's pipeline is *the indexed source code, signatures, and surrounding context* — into journald. If the input body contained anything sensitive (private repo content, secrets accidentally indexed via `extra_paths`), they're now in the 30-day journal. The user-visible `LlmError::Api { message }` correctly uses `redacted_api_message`; the debug log undoes that.
+- **Suggested fix:** Drop `body = %body` from the debug log entirely. Keep `body_len` and `parsed_anthropic_message` (if you trust Anthropic's `error.message` not to echo prompts — it does sometimes, so consider dropping that too). For local-debugging, gate the full body behind `tracing::trace!`.
+
+#### `slot_dir` / `slot_config_path` build paths from unvalidated slot name (read path)
+- **Difficulty:** easy
+- **Location:** src/slot/mod.rs:194-244 (consumers in src/lib.rs:377, src/cli/store.rs:49, src/cli/watch/mod.rs:520, etc.)
+- **Description:** `slot_dir(project_cqs_dir, slot_name)` and `slot_config_path` do a raw `project_cqs_dir.join(SLOTS_DIR).join(slot_name)` with no `validate_slot_name` call. The write paths (`write_slot_model`, `slot_create`, etc.) all validate up front. The read paths — `read_slot_model:257`, the public `cqs::resolve_slot_dir:377` (lib export), and every `slot_dir(...)` call site that takes a slot name from `CQS_SLOT` env, `--slot` CLI flag, or `.cqs/active_slot` pointer — do not. `resolve_slot_name` validates names that come through *its* code path, but `slot_dir` is a public helper and external code (or future call sites) can hand it `"../../etc/passwd"`, getting a `<project>/.cqs/slots/../../etc/passwd` path. `Path::join` does not normalize `..`. Today the consumers pass the path to SQLite, which would just fail noisily — not a live exploit — but a future caller that uses the path for `read_dir` / file enumeration will leak.
+- **Suggested fix:** Make `slot_dir` and `slot_config_path` either return `Result<PathBuf, SlotError>` and call `validate_slot_name` internally, or accept a typed `&ValidatedSlotName` newtype that can only be constructed via `validate_slot_name`. The current shape invites the bug.
+
+#### `cqs serve` — full request URI not redacted in axum extractor errors
+- **Difficulty:** medium
+- **Location:** src/serve/handlers.rs:147-159, 244-270
+- **Description:** P1.11 (already fixed) made the TraceLayer span record `path` only, not the full URI, so `?token=…` doesn't bleed into structured logs. But when axum's built-in `Query<T>` extractor fails (malformed query string, type-mismatched arg), axum's default rejection emits the *full URI fragment* in its 400 response body and emits a debug log via `tower_http`. The `cqs serve` router includes a `TraceLayer::new_for_http()` that captures `make_span_with` for the *successful* path, but extractor failures fall through to the layer's default error response handler which logs the unparsed query. A client sending `GET /api/graph?token=ABC&max_nodes=notanumber` produces a 400 whose body and the trace event both include `token=ABC`. The auth middleware sits *inside* the extractor for query handlers (it's added via `from_fn_with_state` in `build_router:320` after the routes), so an attacker can't reach the handler — but the 401 path in `enforce_auth:657-662` already strips query strings. The extractor-failure path doesn't.
+- **Suggested fix:** Add a custom `axum::error_handling` layer that intercepts 400-class extractor rejections and rewrites the response body / log fields to drop any `token` parameter. Or: parse query strings manually in handlers (verbose) so the extractor's error path can't fire on auth-bearing requests.
+
+#### `validate_repo_id` allows `..` in HF model name → optimum subprocess fetch
+- **Difficulty:** easy
+- **Location:** src/cli/commands/train/export_model.rs:17-30
+- **Description:** The repo-id allowlist permits `[A-Za-z0-9._/-]` which lets `..` through (`.` in the set + `.` in the set = `..`). A repo id like `org/../../etc` or `../foo` is accepted and passed verbatim to `optimum.exporters.onnx --model <repo>`. Optimum first tries to interpret `--model` as a local path before falling through to HF Hub. A repo id `../../home/user/secrets` would cause optimum to attempt loading from `<cwd>/../../home/user/secrets` as a local model directory, surfacing the existence (and possibly partial content via error messages) of that path in the user-visible failure. Low impact today — failure surface only — but the in-source comment on line 14 says "HuggingFace repo IDs are documented as `[A-Za-z0-9._/-]` only" and HF Hub explicitly rejects `..` for this reason; cqs is laxer than the upstream contract.
+- **Suggested fix:** Add `if repo.contains("..") { bail!(..) }` to `validate_repo_id`, mirroring the `embedder/models.rs:698` SEC-28 check on the user-config repo path which already excludes `..`.
+
+#### Audit-mode TOCTOU on Windows — no ACL or atomic create
+- **Difficulty:** medium
+- **Location:** src/audit.rs:140-160
+- **Description:** Acknowledged at audit-triage P4-19 as a known issue. Recording sub-aspect: even on Unix, `OpenOptions::new().create(true).truncate(true).open(&tmp_path)` creates the temp file with the user's umask if the `.mode(0o600)` builder method is somehow bypassed by a future refactor — `.mode()` is on `OpenOptionsExt`, not on the cross-platform `OpenOptions`, so a clippy lint or a Windows-clean refactor could silently drop it. Hold-out from #1107 / #1108 era: the same pattern lives in `notes.rs`, `project.rs`, `slot/mod.rs`, `audit.rs` — five separate atomic-write paths with the same Unix-only chmod, three of which (`audit`, `project`, `slot`) overlap. None has a Windows equivalent.
+- **Suggested fix:** Centralize the "private temp file" pattern in `crate::fs` (next to `atomic_replace`) so a single `private_tempfile_for(path)` helper sets `.mode(0o600)` on Unix and applies a sensible Windows ACL (deny `Authenticated Users : Read`) via `windows::Win32::Security`. All five callers reduce to one line and Windows finally gets parity.
+
+#### `serve` request-body limit (64 KiB) sits outside the auth layer — pre-auth memory pressure
+- **Difficulty:** easy
+- **Location:** src/serve/mod.rs:341-344
+- **Description:** Comment says the body limit "applies even to rejected requests (preventing OOM-then-401 attacks)" — it does, but only because axum applies layers in the documented order. A 64 KiB cap means an attacker on the host-allowlist (or via a WebSocket-upgrade attempt) can fan out N concurrent connections, each holding a 64 KiB body buffer pre-auth. With the default tokio worker pool, the pre-auth body buffers can cumulatively allocate ~64 KiB × N where N is bounded only by the OS file descriptor limit, since the `blocking_permits` semaphore (P2.76) gates only the blocking pool, not the async accept loop. For a localhost-bound box this is academic; for the `--bind 0.0.0.0` path with `--no-auth` documented carve-out, less so.
+- **Suggested fix:** Cap concurrent inbound connections with `tokio::sync::Semaphore` outside the body-limit layer (per-IP would be ideal but requires extracting the peer addr). Or document explicitly that operators must use a reverse proxy in front for the LAN-bind path.
+
+#### Daemon socket cleanup races a hostile local user — bind succeeds with TOCTOU
+- **Difficulty:** medium
+- **Location:** src/cli/watch/mod.rs:540-611
+- **Description:** Cleanup logic uses `symlink_metadata` + `remove_file` + `bind`. Between the `remove_file` and `UnixListener::bind`, a local user can `socket(AF_UNIX) + bind(sock_path)`, planting their own socket — the next `bind()` call from the daemon then either fails (and the daemon exits) or, on platforms where `bind()` follows symlinks (Linux does not, BSD differs), connects through. The umask 0o077 wrap closes the *permission* race but not the *identity* race. If the daemon socket lives under `/tmp/cqs-<hex>.sock` (the `XDG_RUNTIME_DIR` unset fallback at `daemon_translate.rs:228`), `/tmp` is world-writable so the race window matters. The hex is `blake3(canonical_project_path)`; an attacker who knows the project root (often visible in the systemd unit file or `ps`) can pre-compute it and squat on the socket name during early daemon boot.
+- **Suggested fix:** Bind under `XDG_RUNTIME_DIR` whenever it's set (already done) and refuse to start when it isn't — or `mkdir -m 0700 /tmp/cqs-<uid>/` first and bind inside that, so the parent dir's perms gate squatters even when `/tmp` itself is sticky-but-shared. Document the `XDG_RUNTIME_DIR`-required posture in SECURITY.md.
+
+
+<!-- ===== docs/audit-scratch/batch2-data-safety.md ===== -->
+## Data Safety
+
+#### DS-V1.36-1: `collect_migration_files` misses `hnsw.ids` / `hnsw.checksum` / `index_base.*` sidecars
+- **Difficulty:** easy
+- **Location:** src/slot/mod.rs:912-927 (`collect_migration_files`)
+- **Description:** The hardcoded `candidates` list moved by `migrate_legacy_index_to_default_slot` includes only `index.hnsw.data` and `index.hnsw.graph` (and the same two for `index_base`). It is missing `index.hnsw.ids`, `index.hnsw.checksum`, `index_base.hnsw.ids`, `index_base.hnsw.checksum`, `index.hnsw.lock` for `index_base`, and SPLADE's checksum-bearing companion files. Post-DS-V1.33-3 (PR #1325), `verify_hnsw_checksums` is strict: a checksum file referencing files that do not exist is a hard error. A user with a v1.32-era pre-slot legacy `.cqs/` containing all five `index.hnsw.*` files would, after `cqs slot ...` triggers the legacy migration, end up with `slots/default/index.hnsw.{data,graph}` only — `index.hnsw.ids` and `index.hnsw.checksum` are left behind in `.cqs/`. The next `cqs search` then either fails verification (no `hnsw.ids` to load) or rebuilds from scratch silently (because the `Self::load_with_dim` "any required file missing" path returns `NotFound`), losing all enrichment work captured in the original index. Also worth noting: `HNSW_ALL_EXTENSIONS` in `src/hnsw/persist.rs:101-108` is the canonical list — `collect_migration_files` should iterate that constant + `index_base` + SPLADE rather than hard-coding a partial list.
+- **Suggested fix:** Replace the hardcoded `candidates` array with a programmatic enumeration: for each basename in `["index", "index_base"]` and each ext in `crate::hnsw::persist::HNSW_ALL_EXTENSIONS`, build `<basename>.<ext>`. Then add splade companion files. Add a `cargo test` regression that drops a fake legacy `.cqs/` containing all five `index.hnsw.*` files plus `splade.index.bin`, runs the migration, and asserts every file is present in `slots/default/`.
+
+#### DS-V1.36-2: CAGRA `save` overwrites the previous good blob in place — no `.bak` or temp-rename
+- **Difficulty:** medium
+- **Location:** src/cagra.rs:888-975 (`CagraIndex::save`)
+- **Description:** `gpu.index.serialize(&gpu.resources, path_str, true)` writes the cuVS blob directly to the final path. There is no temp-file staging or `.bak` rollback. A crash, OOM, or SIGKILL during `cuvsCagraSerialize` truncates or corrupts the only on-disk copy of the previous good `.cagra` index — and because the meta sidecar was already removed at line 924 (`let _ = std::fs::remove_file(&meta_path);`), the old metadata that would let load() validate the prior good blob is also gone. Net effect: a single ill-timed crash during `cqs index` finalization leaves the user with a partial `.cagra` and no `.meta`, which load() will reject as `NotFound` — forcing a full GPU rebuild (~minutes for a 50k-chunk corpus, much worse on the inference RTX 4000). The HNSW save path uses backup-temp-rename rollback (DS-V1.30.1-D7); CAGRA does not. The save is best-effort by design (load can rebuild) but the destructive overwrite is avoidable.
+- **Suggested fix:** Stage cuVS output to `<path>.{:016x}.tmp` (using `crate::temp_suffix()` for the same-process collision protection used elsewhere), checksum it, then `crate::fs::atomic_replace(&tmp, path)`. Mirror the `.bak` rotation pattern used in `src/hnsw/persist.rs:467-484` so a save failure can restore the prior blob. Remove the meta_path *after* the new blob is in place, not before.
+
+#### DS-V1.36-3: legacy `hnsw_dirty` key is never cleared after per-kind keys are written
+- **Difficulty:** easy
+- **Location:** src/store/metadata.rs:257-278 (`is_hnsw_dirty`) and 437-451 (`set_hnsw_dirty`)
+- **Description:** The doc comment on `is_hnsw_dirty` claims that "the next `set_hnsw_dirty` call splits them apart" — meaning the legacy single `hnsw_dirty` key should be removed once a per-kind key is written. `set_hnsw_dirty` does not implement that: it only writes `hnsw_dirty_enriched` or `hnsw_dirty_base`, never deleting the legacy key. So on a v1.20-era DB with `hnsw_dirty=1` still in metadata, after `set_hnsw_dirty(Enriched, false)`, querying `is_hnsw_dirty(Base)` still falls through to the legacy key and returns `true` — Base is permanently reported dirty even though the user never wrote anything to it. The inverse case (legacy=0, per-kind enriched=1) makes `is_hnsw_dirty(Base)` return false even if Base was secretly dirty, which is the actually-dangerous direction: Base could go un-rebuilt indefinitely.
+- **Suggested fix:** In `set_hnsw_dirty`, after writing the per-kind key, run `DELETE FROM metadata WHERE key = 'hnsw_dirty'` inside the same transaction. The legacy fallback in `is_hnsw_dirty` then becomes dead code that can be removed in a subsequent cleanup, but for safety keep it for one release while real DBs migrate.
+
+#### DS-V1.36-4: `cqs index --force` deletes WAL/SHM without checkpointing the old store first
+- **Difficulty:** easy
+- **Location:** src/cli/commands/index/build.rs:362-386 (`--force` rebuild path)
+- **Description:** The summary-recovery branch runs `Store::open` to read summaries, drops the store (line 362), then renames `index.db` → `index.db.bak` and unconditionally `remove_file`s `index.db-wal` and `index.db-shm`. The drop path on `Store` runs only `wal_checkpoint(PASSIVE)` with a 1s timeout (V1.36.2 / src/store/mod.rs:1430-1480); PASSIVE bails on any reader/writer contention without copying. So if the user happens to have a `cqs watch` daemon attached to the same DB (legitimate workflow — watch is supposed to coexist with index), the PASSIVE checkpoint can return without flushing pages. Then deleting `-wal` discards any uncommitted-from-mainfile pages permanently. The summaries we just read are unaffected (they came from a fresh `SELECT`), but any other writes the daemon was making (e.g. notes, telemetry counters) get silently truncated. The previous `Store::close()` API (which runs `TRUNCATE`) is not invoked here.
+- **Suggested fix:** Replace `drop(old_store)` (line 362) with `old_store.close().context("...")?;` so the `wal_checkpoint(TRUNCATE)` runs synchronously. Then the `-wal`/`-shm` removal at lines 376-385 is safe because all pages have been merged into `index.db` before the rename. This is the structured-shutdown path the V1.36.2 fix preserved precisely for this kind of operator-initiated quiesce.
+
+#### DS-V1.36-5: SPLADE save uses two-pass rewrite without `.bak` rollback for the final file
+- **Difficulty:** medium
+- **Location:** src/splade/index.rs:350-440 (`save`)
+- **Description:** The SPLADE save streams a blake3 hash through a `HashingWriter`, then seeks back to the checksum offset to stamp the digest, then `atomic_replace`s the temp into place. That part is sound. But unlike the HNSW save (which renames the existing `<basename>.<ext>` to `.<ext>.bak` *before* atomic_replace runs and rolls back on failure), SPLADE's atomic_replace overwrites the previous good `splade.index.bin` directly. If `atomic_replace` itself fails (e.g. cross-device fallback runs out of disk after the source file was already promoted but before the rename completes), the previous good index is gone and the temp may also be corrupt. The `splade_generation` counter then diverges from the on-disk file: SPLADE refuses to load (generation mismatch), so we fall back to no-SPLADE search. Recovery requires a full reindex. The HNSW pattern (rename to `.bak` first, restore from `.bak` on rollback) is precisely the missing piece.
+- **Suggested fix:** Before `atomic_replace`, rename any existing `splade.index.bin` to `splade.index.bin.bak`. On atomic_replace failure, rename `.bak` back to the live name. On success, remove `.bak` after a parent fsync. Mirrors `src/hnsw/persist.rs:467-484`.
+
+#### DS-V1.36-6: HNSW load `_lock_file` drop happens at end of function — but lock is taken without timeout, can hang load on stuck save
+- **Difficulty:** medium
+- **Location:** src/hnsw/persist.rs:736-758 (lock acquisition in `load_with_dim`)
+- **Description:** The shared lock taken on `<basename>.hnsw.lock` during load is acquired via `lock_file.lock()` (the std file-lock API) with no timeout or `try_lock` fallback. If a concurrent `save()` from a different process holds the exclusive lock and that process is wedged (e.g. WSL 9P stall, paused under debugger), the load blocks indefinitely. `cqs search` then hangs and the user has no signal except "command never returns". Daemons that hit this on reconcile-time HNSW reload would silently lock up. The save path's lock is also unbounded but that's the writer's own choice; the reader path inheriting the same wait makes a single misbehaving writer take down all readers.
+- **Suggested fix:** Use `try_lock_shared` with a bounded retry loop (e.g. 5 attempts × 200 ms with jitter) and surface a `HnswError::Internal("save in progress, try again")` when it expires. Daemons can retry; CLI users see a clear error instead of an opaque hang. Existing test infrastructure in `src/hnsw/persist.rs` tests at lines 1762+ already exercises lock contention — extend with a stuck-writer test.
+
+#### DS-V1.36-7: `Store::close()` still uses `wal_checkpoint(TRUNCATE)` — can deadlock under V1.36.2 PR #1450 conditions
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:1289-1298 (`Store::close`)
+- **Description:** PR #1450 (recent main commit `4b3fd41e`) replaced the `Store::drop` checkpoint from TRUNCATE → PASSIVE specifically because TRUNCATE acquires the SQLite EXCLUSIVE lock and can stall under WSL 9P when readers are present, occasionally blowing past the 30s busy_timeout (per `git log` and src/store/mod.rs:1440-1447). `Store::close()` — the explicit caller-controlled shutdown path — still issues `PRAGMA wal_checkpoint(TRUNCATE)` with no timeout. If a user calls `close()` while another reader handle (e.g. an explicit `cqs stats` invocation, or the watch daemon) holds the WAL, close blocks on the EXCLUSIVE lock. Under WSL 9P this is the same failure mode the drop-path fix addressed. close() is called from the `--force` rebuild path (after this audit's DS-V1.36-4 is applied) and from `cqs serve` shutdown — both places where a stuck checkpoint becomes operator-visible.
+- **Suggested fix:** Wrap the close-path checkpoint in a `tokio::time::timeout` (e.g. 30s) and downgrade to PASSIVE on timeout, mirroring the drop-path treatment. Or accept that close is "best-effort fully-blocking" and document the timeout expectation; either way the unbounded TRUNCATE is the same hazard PR #1450 fixed elsewhere.
+
+#### DS-V1.36-8: `migrate_v18_to_v19` orphan-drop threshold uses lossy `f64 → i64` cast
+- **Difficulty:** easy
+- **Location:** src/store/migrations.rs:738-754 (orphan threshold computation)
+- **Description:** `let threshold = (before_rows as f64 * 0.10) as i64;`. For very large `before_rows` (≥ 2^53 ≈ 9 quadrillion) the f64 multiplication loses precision, producing an incorrect threshold. More relevantly: for `before_rows < 10`, threshold is `0` — meaning a single dropped orphan trips the `error!` log path, spamming the user with "more than 10% dropped" warnings on small DBs that have any orphan at all. The intent is "10% or more is suspicious, otherwise log routinely". Saturating-cast or integer arithmetic avoids both edge cases.
+- **Suggested fix:** Use integer math: `let threshold = before_rows / 10;` and require `dropped > threshold` to fire the error path. The min-corpus case (before_rows=5, threshold=0, dropped=1) then falls through to the `warn` arm rather than `error`. Float arithmetic isn't justified here — the percentage is a single fixed constant.
+
+#### DS-V1.36-9: `INSERT OR REPLACE` on `llm_summaries` triggers `bump_splade_on_chunks_delete` cascade if FK mistakenly added
+- **Difficulty:** medium
+- **Location:** src/store/chunks/crud.rs:520 (llm_summaries upsert) — preventive
+- **Description:** Currently safe: `llm_summaries` has no FK to `chunks`. But the `INSERT OR REPLACE` form is well-known to issue an implicit DELETE-then-INSERT, which fires ON DELETE triggers and ON DELETE CASCADE foreign keys. If a future migration adds `FOREIGN KEY (content_hash) REFERENCES chunks(content_hash) ON DELETE CASCADE` (a tempting addition for cleanup), every summary refresh would silently delete and re-insert, firing the v20 `bump_splade_on_chunks_delete` trigger via the cascade chain — bumping `splade_generation` and invalidating the on-disk SPLADE index on every summary write. The latent footgun is the trigger's broad scope: any future FK to chunks gets caught. P4-6 in the v1.33 triage flagged this conceptually ("INSERT OR REPLACE cascade enforced only by call-site convention") but the v20 trigger added a new cascade target since.
+- **Suggested fix:** Replace the `INSERT OR REPLACE` with `INSERT … ON CONFLICT(content_hash, purpose) DO UPDATE SET ...` so the upsert path is a true UPDATE on conflict and never fires DELETE triggers. Same change PR #1342 made for `chunks` (per the comment at src/store/chunks/crud.rs:215). Idempotent semantics, no behavior change today, no future-FK footgun.
+
+#### DS-V1.36-10: Migration backup `prune_old_backups` skips on `read_dir` failure — orphan disk burn on permission error
+- **Difficulty:** easy
+- **Location:** src/store/backup.rs:222-243 (`prune_old_backups`)
+- **Description:** The prune step swallows `std::fs::read_dir(dir)` errors with a `tracing::warn!` and returns `Ok(())`. So the next migration runs, drops another `.bak-v*-v*-*.db` (potentially several hundred MB on a large project), the prune step warns again and returns Ok, and the `.cqs/` directory accumulates one new backup per migrate forever. KEEP_BACKUPS=3 is enforced only when the read succeeds. The most likely cause of read_dir failure is a transient permission issue (CI containers, NFS mount glitch) — exactly the conditions where backups also accumulate fastest because migrations re-run repeatedly. After 50 runs the user has 50 × 200 MB = 10 GB of backups in `.cqs/` with no signal beyond a debug log line.
+- **Suggested fix:** Surface read_dir failures as `StoreError::Io` to the caller, who already classifies prune failure as "non-fatal — the user's DB is at the correct version" (src/store/migrations.rs:122-126). The error can still be downgraded to a warn at the caller, but at least one log site at `error!` would let operators notice the accumulation. Alternative: emit a `tracing::error!` with the directory size when prune was skipped, so monitoring can alert.
+
+
+<!-- ===== docs/audit-scratch/batch2-performance.md ===== -->
+## Performance
+
+#### PERF-V1.36-1: `fetch_candidates_by_ids_async` rebuilds id-position map per call instead of hashing on placeholder bind
+- **Difficulty:** easy
+- **Location:** src/store/chunks/async_helpers.rs:86-90
+- **Description:** Every search hits this hot path. For ~200-500 candidate ids it allocates a `HashMap<&str, usize>` plus a `Vec<Option<(CandidateRow, Vec<u8>)>>` of `ids.len()` slots, then iterates rows to drop them into slots. The current code is fine *complexity*-wise (linear), but the slot vector wastes one `Option<>` discriminant per id (~32 bytes × N) and every miss leaves a `None` that gets walked again in `flatten()`. With ~32k candidates this is ~1MB of `Option` discriminants pushed across cache lines, then walked twice. A flat `Vec::with_capacity(ids.len())` plus a single re-sort by `id_pos.get(&candidate.id)` is cheaper and a smaller working set; or pre-allocate `Vec<MaybeUninit<...>>` with a presence bitmap. Comment claims this is the "fast" path but `Vec<Option<T>>` reorder isn't free and the `flatten()` collect loses the original allocation anyway.
+- **Suggested fix:** Build `Vec<(CandidateRow, Vec<u8>)>` with `with_capacity(ids.len())`, then `sort_unstable_by_key(|(c, _)| id_pos[&c.id])` once at the end. One alloc, no `Option` discriminant churn, deterministic.
+
+#### PERF-V1.36-2: `lang_set` / `type_set` rebuild from enum-to-string-to-lowercase on every search call
+- **Difficulty:** easy
+- **Location:** src/search/query.rs:849-856
+- **Description:** Per search, `filter.languages` and `filter.include_types` are converted to `HashSet<String>` via `iter().map(|l| l.to_string().to_lowercase()).collect()`. Both `Language` and `ChunkType` are enums whose `Display` yields canonical lowercase already (the comment at line 861-865 explicitly says "DB values are already canonical lowercase from `Language::to_string` / `ChunkType::to_string`"). The `to_lowercase()` allocates a fresh `String` per variant for no reason, and rebuilding the set per search is wasteful — enums have `&'static str` representations the set could store as `&'static str`. A 50-search session with 10-language filters does 500 needless heap allocations.
+- **Suggested fix:** Make `Language::as_str` and `ChunkType::as_str` return `&'static str`, then build `HashSet<&'static str>` from `filter.languages`/`filter.include_types` (no allocation). Compare via `lang_set.contains(candidate.language.as_str())`. Drops the `.to_lowercase()` and `String` allocs entirely.
+
+#### PERF-V1.36-3: `ChunkRow::from_row` does ~16 column-name string lookups per row
+- **Difficulty:** medium
+- **Location:** src/store/helpers/rows.rs:72-100, also `from_row_lightweight` at 107-130
+- **Description:** Every column read (`row.get("id")`, `row.get("origin")`, ...) does a linear scan of `SqliteRow::column_index_by_name` against the column-name list. For a 16-column SELECT with N rows this is `16N` strcmps. Search hydrates 100-500 rows per query; over 50 searches that's 80k-400k strcmps purely for column-name resolution. Indexed access via `row.get(0)`, `row.get(1)` etc. would skip the lookup entirely; the SELECT order is fixed in the same module (async_helpers.rs:34-36 and 92-96).
+- **Suggested fix:** Switch to ordinal `row.get::<_, _>(0)`, `row.get(1)` etc. in `ChunkRow::from_row` and `CandidateRow::from_row`. Keep the SELECT column order pinned in a const string constant adjacent to the `from_row` so the contract is local.
+
+#### PERF-V1.36-4: `fetch_and_assemble` does double hashmap lookup + clone per gathered chunk
+- **Difficulty:** easy
+- **Location:** src/gather.rs:417-420
+- **Description:** Anti-pattern `if seen_ids.contains(&r.chunk.id) { continue; } seen_ids.insert(r.chunk.id.clone());` does two hash probes and clones the id String regardless of outcome. Same anti-pattern at src/llm/doc_comments.rs:333-337 and src/cli/commands/graph/explain.rs:251 / 442. `HashSet::insert` returns `bool` already.
+- **Suggested fix:** `if !seen_ids.insert(r.chunk.id.clone()) { continue; }` — single probe, clone happens only when actually inserting. Even better: `if !seen_ids.contains(r.chunk.id.as_str()) { seen_ids.insert(r.chunk.id.clone()); chunks.push(...); }` if `seen_ids` were `HashSet<String>` keyed by `&str` borrow.
+
+#### PERF-V1.36-5: `extract_imports_regex` allocates `String` per probed line even when already in seen set
+- **Difficulty:** easy
+- **Location:** src/where_to_add.rs:807-820
+- **Description:** Inner loop calls `seen.insert(trimmed.to_string())` after the regex match. `to_string()` runs *before* `insert()` decides whether the entry is new — so duplicate import lines (very common — every chunk in a file repeats the `use ...` block) allocate a `String`, hash it, find the duplicate, then drop. For a file with 10 chunks each repeating 20 imports that's 180 wasted `String` allocs per call. `cqs where`/`cqs task` runs this on every call, with no compiled-regex caching for the seen set itself.
+- **Suggested fix:** Use the standard `if !seen.contains(trimmed) { seen.insert(trimmed.to_string()); imports.push(trimmed.to_string()); }` — one alloc on first sight, zero on duplicates. Same pattern as PERF-V1.36-4 above.
+
+#### PERF-V1.36-6: `BuildHierarchy` rebuilds `visited_names: Vec<String>` from already-interned `Arc<str>` keys
+- **Difficulty:** easy
+- **Location:** src/serve/data.rs:739
+- **Description:** `let visited_names: Vec<String> = depth_by_name.keys().map(|s| s.to_string()).collect();` clones every Arc<str> to a fresh String. Hot path in the daemon hierarchy view — N can be ~10k for a heavy hub. Then those strings are used purely as bind-keys (`q.bind(n)`) and HashMap keys (`name_to_first_id: HashMap<String, String>`) downstream. We had Arc<str> already; SQLite bind accepts `&str` so the conversion is pointless.
+- **Suggested fix:** Keep `Vec<Arc<str>>` (or `Vec<&str>` borrowed from the keys) and bind via `n.as_ref()`. For `name_to_first_id`, key by `Arc<str>` so the chain stays alloc-free. Saves ~10k String clones on a deep hierarchy.
+
+#### PERF-V1.36-7: `search_by_names_batch` clones chunk_id and original_name strings per FTS row, even on miss
+- **Difficulty:** medium
+- **Location:** src/store/chunks/query.rs:436-450
+- **Description:** For each light_row the inner loop does `ids_to_fetch.push(id.clone())` and `matched.push((id.clone(), original_name.to_string(), score))` — two String clones per matched row, plus `result.entry(original_name.to_string()).or_default()` which always allocates the key (even on existing entries). Phase 3 then does `chunk_row.clone()` (line 466) — full ChunkRow clone including content/doc/signature for every result row. Caller is `gather`'s `fetch_and_assemble`, hit per gather call.
+- **Suggested fix:** Use `result.raw_entry_mut()` (or precompute `original_name: String` once per batch entry, share via Arc), and replace `chunk_row.clone()` with `chunk_row` move — `full_chunks` is consumed after this loop, so use `into_iter` + `HashMap::remove(&id)` instead of `get(&id).clone()`. Same pattern as `final_scored.into_iter().filter_map(rows_map.remove(&id))` at query.rs:367.
+
+#### PERF-V1.36-8: `fresh_sentinel_nonce` calls `format!("{:02x}", b)` 16 times → 16 String allocations per LLM prompt
+- **Difficulty:** easy
+- **Location:** src/llm/prompts.rs:33-41
+- **Description:** Generates a 32-char hex nonce by looping over 16 bytes and calling `hex.push_str(&format!("{:02x}", b))`. Each iteration allocates a 2-char String, copies into hex, drops. For batch summarization (#1108-related) where prompts are built per-chunk, this fires on every prompt — N×16 allocations. `write!` into `hex` with `core::fmt` would skip the per-byte allocations.
+- **Suggested fix:** Use `std::fmt::Write::write!(&mut hex, "{:02x}", b).unwrap()` (infallible into `String`) or `hex.push(hex_char(b >> 4)); hex.push(hex_char(b & 0xf));` for zero allocs. Same pattern at src/cli/commands/io/reconstruct.rs:72 and src/cli/commands/train/train_pairs.rs:37,43 — `out.push_str(&format!(...))` is the giveaway. P3-41 from v1.33.0 was supposedly fixed (#1363) but new sites have landed since.
+
+#### PERF-V1.36-9: `SpladeIndex::search_with_filter` clones every id pushed into the heap
+- **Difficulty:** medium
+- **Location:** src/splade/index.rs:248-252
+- **Description:** After scoring `~min(corpus, query×256)` ≈ ~18k entries, the heap-feed loop does `heap.push(id.clone(), score)` for every (id, score) pair, regardless of whether the heap will accept the entry. With k=200 and 18k scored, that's ~17800 String clones that get immediately dropped inside `BoundedScoreHeap::push` (which always takes `String` by value). At 32-char chunk ids, ~570KB of churn per search.
+- **Suggested fix:** Add `BoundedScoreHeap::push_lazy<F: FnOnce() -> String>(&mut self, score: f32, id_fn: F)` that only invokes the closure when the score crosses the eviction boundary. Then call `heap.push_lazy(score, || id.to_string())` — clones only happen for the ~k entries that survive. Same pattern would help at src/serve/data.rs:898-906 where `caller_id.clone()` and `callee_id.clone()` fire per row for the dedup HashSet.
+
+#### PERF-V1.36-10: MMR re-rank converts `Vec<SearchResult>` → `Vec<Option<SearchResult>>` → `Vec<SearchResult>` via two extra collects
+- **Difficulty:** easy
+- **Location:** src/search/query.rs:435-443
+- **Description:** Hot path inside `finalize_results`. To reorder by MMR picks, the code does `let originals: Vec<Option<SearchResult>> = results.into_iter().map(Some).collect::<Vec<_>>(); let mut originals = originals; for &i in &picks { ... }`. That's an extra Vec allocation (Some-wrapping every result, ~Option discriminant per element) plus a redundant rebind. With `Vec<SearchResult>` containing 100-200 results carrying full content/doc, the wrapping is ~24 bytes × N of needless allocation.
+- **Suggested fix:** Use `mem::take(&mut results[i])` with `Default::default()` placeholder, OR use `Vec<MaybeUninit<SearchResult>>` and `assume_init` after picks, OR build a permutation `picks: &[usize]` and apply with `swap`-based reorder in place. Cleanest: collect picks into `BTreeMap<usize, ()>`, then drain `results.into_iter().enumerate().filter_map(|(i, r)| picks.get(&i).map(|_| r)).collect()` — one alloc total, no Option wrapping.
+
+#### PERF-V1.36-11: `scout` looks up `stale_set` via double-allocating PathBuf-to-String round trip per file
+- **Difficulty:** easy
+- **Location:** src/scout.rs:284
+- **Description:** `stale_set.contains(&file.to_string_lossy().to_string())` allocates twice per file (once for the `Cow<str>` from `to_string_lossy`, once for the explicit `to_string()`). On Windows the Cow is always Owned anyway. With 50 files in a scout result, that's 100 allocations purely for set lookup. `HashSet<String>` supports `contains::<str>(&str)`, so the second `to_string()` is unneeded.
+- **Suggested fix:** `stale_set.contains(&*file.to_string_lossy())` or `stale_set.contains(file.to_string_lossy().as_ref())`. Drops the second alloc. For Linux (Cow::Borrowed common case) drops both.
+
+#### PERF-V1.36-12: `vec!["?"; n].join(",")` placeholder construction allocates Vec + Vec<&str> + final String per batch
+- **Difficulty:** easy
+- **Location:** src/serve/data.rs:777, 871-872 (and likely other call sites)
+- **Description:** Each batch builds `placeholders` via `vec!["?"; batch.len()].join(",")` — allocates a `Vec<&'static str>` of N elements, then joins. The hierarchy edge SQL (line 871-872) does this twice per inner-loop iteration, on N² batches. For deep hierarchies (visited_names > 32k) the cartesian product is many sub-queries; each pays double placeholder construction. `make_placeholders` (used in store/chunks/) skips the Vec by writing `?,?,?...` directly with `String::with_capacity(2*n)`.
+- **Suggested fix:** Use the existing `crate::store::helpers::make_placeholders(n)` consistently — it's already optimized and used elsewhere. Audit grep for `vec!["?"` usages and replace with the helper.
+
+
+<!-- ===== docs/audit-scratch/batch2-resources.md ===== -->
+## Resource Management
+
+#### RM-V1.36-1: `truncate_incomplete_line` slurps entire training-data JSONL into memory
+- **Difficulty:** easy
+- **Location:** src/train_data/checkpoint.rs:56-77
+- **Description:** `truncate_incomplete_line` calls `fs::read(path)` on the training-data output JSONL, then walks it in-memory just to find the last newline. Training-data JSONL files routinely run multi-GB (the doc-string says it's used for "crash recovery: partial JSONL lines"). Resume mode (`--resume`) on a 5-10 GB JSONL allocates a 5-10 GB Vec<u8> at startup, peak heap = 2× file size during the in-memory truncate path. Easy DoS surface and a real OOM on agent workstations with the v3.v2 fixture-scale corpora.
+- **Suggested fix:** Open file, `seek(SeekFrom::End(-N))` for N=64 KiB, scan the tail buffer for the last `\n`, then `set_len(end_offset)` via `File::set_len`. Constant memory regardless of file size.
+
+#### RM-V1.36-2: `pdf_to_markdown` captures unbounded subprocess stdout via `.output()`
+- **Difficulty:** easy
+- **Location:** src/convert/pdf.rs:20-25
+- **Description:** `Command::new(python).arg(script).arg(path).output()` buffers the entire converter stdout in memory before returning. A 200 MB image-light PDF produces an order of magnitude more text than its bytes; a hostile PDF (or runaway pymupdf4llm) can produce arbitrary stdout that lands as a single `Vec<u8>` in our address space. There's no per-process cap and no per-call timeout — sibling subprocess code in `train_data/git.rs:167-211` already does the right thing with `Command::spawn` + `.take(max+1).read_to_end`.
+- **Suggested fix:** Mirror the `train_data::git_diff_tree` pattern: spawn with `.stdout(Stdio::piped())`, wrap in `.take(max+1)`, kill child on overrun, surface a `ConvertError::OutputTooLarge`. Same env-overridable cap pattern (`CQS_PDF_MAX_BYTES`).
+
+#### RM-V1.36-3: Position-IDs build allocates one throwaway Vec per row in the batch
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:1238-1241
+- **Description:**
+  ```
+  let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len() * max_len);
+  for _ in 0..texts.len() {
+      pos_data.extend((0..max_len as i64).collect::<Vec<i64>>());
+  }
+  ```
+  The inner `.collect::<Vec<i64>>()` allocates a fresh Vec just to immediately consume it via `extend`. For a Qwen3-Embedding-4B batch of 128 × 2048 = 128 throwaway 16 KiB allocations per call. Also `texts.len() * max_len` is unchecked — `texts.len() * max_len` could overflow on 32-bit (cqs is 64-bit so practically fine, but the pattern is `saturating_mul` everywhere else).
+- **Suggested fix:** `pos_data.extend(0..max_len as i64)` directly inside the loop (range iter is `Iterator` already). Use `saturating_mul` on the with_capacity arg for consistency with the rest of the codebase.
+
+#### RM-V1.36-4: Watch-loop pre-bind probe `UnixStream::connect` has no timeout
+- **Difficulty:** easy
+- **Location:** src/cli/watch/mod.rs:540
+- **Description:** Before binding the daemon socket, the watch loop does `UnixStream::connect(&sock_path)` to detect a peer daemon. No `Duration` is configured anywhere on this connect — std uses an OS default (Linux `SO_SNDTIMEO`/`SO_RCVTIMEO` unset → blocking). If the previous daemon is wedged in shutdown (mid-checkpoint, in TIME_WAIT analogue, or `accept` queue full), the connect blocks indefinitely and `cqs watch --serve` hangs at startup with no diagnostic. Compare `dispatch.rs:333-359` and `socket.rs:77-88` which BOTH set explicit timeouts.
+- **Suggested fix:** Use `UnixStream::connect_timeout` (or set `set_nonblocking(true)` immediately after connect with a brief poll) and treat ETIMEDOUT as "no live peer, proceed with bind". Same 5 s default as `resolve_daemon_timeout_ms()`.
+
+#### RM-V1.36-5: `Command::output()` in chm.rs / convert/mod.rs / train_data/mod.rs swallows whole subprocess output
+- **Difficulty:** easy
+- **Location:** src/convert/chm.rs:33-47, src/convert/mod.rs:65, src/train_data/mod.rs:528
+- **Description:** Same shape as RM-V1.36-2: every `Command::output()` site materializes both stdout and stderr in memory unbounded. chm.rs nullifies stdout but pipes stderr unbounded; convert/mod.rs's binary-existence probe pipes both. A misbehaving 7z that endlessly emits errors → unbounded `Vec<u8>` per invocation. Fewer bytes per call than the PDF case, but same shape and no per-process cap.
+- **Suggested fix:** For probes (existence checks) use `.stderr(Stdio::null())`. For real conversions, use the spawn+take pattern from `git.rs`. Single `bounded_output(cmd, max)` helper would unify all five sites.
+
+#### RM-V1.36-6: `add_reference_to_config` / similar config-write paths re-read full file under lock
+- **Difficulty:** easy
+- **Location:** src/config.rs:820-867 (and analogous remove path ~line 956)
+- **Description:** The atomic config-update code path opens the file, takes an exclusive flock, then reads-modifies-writes. The size cap (RM-V1.33-1) is in place, but the read+TOML parse+full-rewrite cycle materializes 3 copies of the config in memory simultaneously (raw `String` content, parsed `toml::Table`, serialized output). With `MAX_CONFIG_SIZE=1 MiB` (default) this is fine; if an operator overrides via env it's cubic in the cap. More importantly, the lock is held across blocking reqwest calls in callers (validation), pinning the file for tens of seconds.
+- **Suggested fix:** Read+parse under the flock, drop the flock before any network I/O, re-acquire flock for the final atomic-write phase only. Standard "minimize critical section" refactor — affects `add_reference_to_config` and `remove_reference_from_config` symmetrically.
+
+#### RM-V1.36-7: `BufReader::lines()` in display.rs allocates per-line with no per-line cap
+- **Difficulty:** easy
+- **Location:** src/cli/display.rs:204-208, src/cli/display.rs:635-639
+- **Description:** Both `read_window_lines` paths use `BufReader::new(f).lines().take(limit)`. `BufRead::lines()` allocates a fresh `String` per line via `read_line` — a single pathological source file with a 500 MB line (minified JS bundle, generated lockfile, single-line WASM disassembly) becomes a 500 MB heap allocation even when the caller only wants `limit=20` lines around `line_start`. The `take(limit)` short-circuits the iterator after N lines but doesn't bound the per-line `String` size.
+- **Suggested fix:** Use `read_until(b'\n', &mut buf)` with a per-line `take` cap (e.g. 1 MiB) or check `buf.len()` and skip lines exceeding the cap, replacing them with a `[line truncated]` marker. Same pattern other defensive readers already use.
+
+#### RM-V1.36-8: Daemon accept loop polls with 100 ms blocking sleep — wakeup latency on shutdown
+- **Difficulty:** easy
+- **Location:** src/cli/watch/daemon.rs:212-213
+- **Description:** `Err(WouldBlock) => std::thread::sleep(Duration::from_millis(100))` — the accept loop sleeps a flat 100 ms when no client is waiting. On SIGTERM/Ctrl-C the `daemon_should_exit` check at top of loop only fires once per accept tick, so the daemon exit latency is **up to 100 ms** + the time for whatever's currently in-flight to drain. Not a real DoS, but it accumulates: every accept-loop iteration that lands in WouldBlock costs a thread-park syscall. With the 60-second idle-sweep tick window, that's 600 wakeups/min on an otherwise-idle daemon — 600 wasted scheduler trips/min × N daemon processes on the workstation.
+- **Suggested fix:** `epoll_wait` / `mio` / `poll` on the listener fd with `daemon_should_exit` checked between events. Or at minimum, raise the sleep to 500 ms — agents poll for fresh on the order of seconds, no need for 10 Hz wakeups when idle.
+
+#### RM-V1.36-9: HNSW build holds full `id_map` Vec<String> in memory at peak
+- **Difficulty:** medium
+- **Location:** src/hnsw/build.rs:169-209
+- **Description:** `build_with_dim_streaming` pre-allocates `Vec::with_capacity(capacity)` for `id_map` where `capacity` is the chunk count fetched from the store. At ~80 chars/chunk-id × 1M chunks = 80 MB just for the id strings — on top of the HNSW graph itself. The streaming-batches design correctly avoids holding all embeddings simultaneously, but `id_map` is the inverse: every entry is retained for the whole build. For very large corpora (the SPLADE-Code 0.6B / Qwen3-4B target), this is the largest single allocation outside the HNSW graph.
+- **Suggested fix:** `Vec<Arc<str>>` halves the per-entry overhead vs `Vec<String>` (no separate len/capacity per entry). Or compress: `Vec<u32>` indices into a deduplicated string-arena. Real fix (multi-PR) is to write the id_map directly to disk as it's built and mmap on load — same shape as the embeddings_arena work.
+
+#### RM-V1.36-10: `Vec::with_capacity(chunk_count * dim)` in CAGRA build is unchecked multiplication
+- **Difficulty:** easy
+- **Location:** src/cagra.rs:746-747
+- **Description:** `Vec::with_capacity(chunk_count * dim)` directly multiplies — `chunk_count` is store-controlled (could be in the millions) and `dim` is model-controlled (could be 4096 for Qwen3-4B). On 64-bit the practical overflow risk is gone, but the *allocation* is unchecked: 1M chunks × 4096 dim × 4 B/f32 = 16 GiB. The `cagra_max_bytes` check at line 736-744 happens **before** these `with_capacity` calls, so OOM-via-allocator is gated. But a corrupt store reporting `chunk_count = usize::MAX` slipping through `embedding_count()` would still hit `Vec::with_capacity(usize::MAX)` → panic. Belt-and-suspenders: the same `try_into::<usize>` + sanity-bound pattern as `splade/index.rs:653-664` should apply here.
+- **Suggested fix:** Add an upper bound assertion (`chunk_count <= 1<<28` say, matching the SPLADE pattern) before the `with_capacity` calls. Or prefer `Vec::new()` + `extend_from_slice` per batch (the loop already streams batches, the up-front `with_capacity` is the only reason this matters).
+
+
+<!-- ===== docs/audit-scratch/batch2-test-coverage-happy.md ===== -->
+## Test Coverage (happy path)
+
+#### TC-HAP-V1.36-1: `serve::data::build_stats` has no positive test
+- **Difficulty:** easy
+- **Location:** src/serve/data.rs:1109 — `build_stats` (1 caller: `handlers::stats`)
+- **Description:** All sibling builders in `serve/data.rs` (`build_graph`, `build_chunk_detail`, `build_hierarchy`, `build_cluster`) have populated-store positive tests under the `TC-HAP-1.29-1` block in `src/serve/tests.rs:1010-1190`. `build_stats` is the only one without a direct positive test — only the `/api/stats` HTTP layer exercises it, and only against a tiny fixture without verifying the four numeric fields (`total_chunks`, `total_files`, `call_edges`, `type_edges`). Schema regressions (`call_edges` vs prior `total_call_edges`, missing `type_edges` after the type-edge migration) would slip through.
+- **Suggested fix:** Add `build_stats_returns_correct_counts_for_populated_store` next to `build_chunk_detail_returns_callers_callees_tests`. Insert N chunks across M distinct origin files, upsert K function_calls and L type_edges, then assert `(total_chunks, total_files, call_edges, type_edges) == (N, M, K, L)`.
+
+#### TC-HAP-V1.36-2: `Store::get_callers_with_context` has no direct unit test
+- **Difficulty:** easy
+- **Location:** src/store/calls/query.rs:150 — `get_callers_with_context` (callers: `impact::analysis::analyze_impact`, plus `_batch` variant in `impact::diff`)
+- **Description:** The function joins call-edges with chunks/snippets to return `CallerInfo` with `call_line` and snippet context — load-bearing for `cqs impact`. Only indirectly tested via `tests/impact_test.rs::analyze_impact`. A regression in JOIN order, snippet truncation, or `call_line` extraction would reach `cqs impact` JSON output without anyone catching it. The simpler `get_callers_full` at line 14 has test coverage in `tests/store_calls_test.rs:215`; this richer variant doesn't.
+- **Suggested fix:** Add to `tests/store_calls_test.rs`: insert two chunks A and B with calls A→B at known line numbers, call `store.get_callers_with_context("B")`, assert the returned `CallerInfo` has the expected `name`, `file`, `line`, `call_line`, and a non-empty `snippet`.
+
+#### TC-HAP-V1.36-3: `get_callers_full_batch` and `get_callees_full_batch` untested
+- **Difficulty:** easy
+- **Location:** src/store/calls/query.rs:239 and :294 (callers: `cli::enrichment::enrich_chunks`, `cli::commands::io::context::build_full_data`, `tests/pipeline_eval.rs`)
+- **Description:** Two `pub` batch variants on a hot path (page-render and context-pack stages). `tests/pipeline_eval.rs` calls them with `unwrap_or_default()`, so silent regressions like "returns empty map for one of N names" never trip a test. The non-batch `get_callers_full` has explicit tests in `tests/store_calls_test.rs`; the batch versions don't.
+- **Suggested fix:** In `tests/store_calls_test.rs`, after the `store.upsert_function_calls` fixture, call both batch fns with a `Vec<&str>` of three names where one is unknown. Assert the unknown name maps to `Vec::new()` (not missing key) and the others have the expected callers/callees.
+
+#### TC-HAP-V1.36-4: `cli::commands::io::context::build_compact_data` and `build_full_data` untested
+- **Difficulty:** easy
+- **Location:** src/cli/commands/io/context.rs:25 (`build_compact_data`) and :130 (`build_full_data`) — both `pub(crate)`, exclusively used by `cmd_context`
+- **Description:** `cmd_context` is exercised only at the JSON-shape level (`compact_to_json`, `full_to_json`, `summary_to_json` have `hp1_*` tests), but the data-fetching builders that populate those shapes from the store have zero direct tests. Both contain non-trivial logic: path normalization (PB-V1.29-1), `bail!` on empty origin, `get_caller_counts_batch`/`get_callee_counts_batch` reduction. A breakage in the normalization or the empty-path guard would only surface as a `cqs context` regression in production.
+- **Suggested fix:** Add a `tc_hap_build_compact_data_*` test that opens an in-memory store, upserts two chunks under `src\\foo.rs` (Windows-style backslashes), calls `build_compact_data(&store, "src\\foo.rs")`, and asserts both chunks come back with non-zero caller/callee counts wired up. Mirror for `build_full_data`.
+
+#### TC-HAP-V1.36-5: `apply_ci_token_budget` (`pub(crate)` entry point) has no direct test
+- **Difficulty:** easy
+- **Location:** src/cli/commands/review/ci.rs:64 — `apply_ci_token_budget` (caller: `cli::batch::handlers::analysis:206`)
+- **Description:** `apply_ci_token_budget` is a `pub(crate)` shim over the local `apply_token_budget(_, _, json=true)`. The sibling `apply_token_budget_public` in `diff_review.rs:70` has tests at `:388` and `:407`, but the CI variant — used by the batch pipeline for `cqs ci --tokens N` — has none. The `json=true` branch enables `JSON_OVERHEAD_PER_RESULT` which inflates per-item token cost; a regression in that constant would silently fit fewer items into the budget for batch CI but not for review.
+- **Suggested fix:** Add `tests` mod to `ci.rs` with `test_apply_ci_token_budget_truncates_callers_and_tests` and `test_apply_ci_token_budget_zero_returns_zero_items` mirroring the `diff_review.rs:test_apply_token_budget_*` shape, but pinning `json=true` accounting.
+
+#### TC-HAP-V1.36-6: `HnswIndex::search` (unfiltered) has no direct unit test
+- **Difficulty:** easy
+- **Location:** src/hnsw/search.rs:23 — `HnswIndex::search` (callers: `Store::search_*` family)
+- **Description:** `search_filtered` has TC-17 tests (referenced at `src/hnsw/build.rs:487`) and dim-mismatch tests in `tests/embedder_dim_mismatch_test.rs`. The unfiltered `search` entry point has no direct test — it's only reached through the higher-level `Store::search` which mixes RRF, BM25, and reranker concerns. The empty-query and dim-mismatch early-returns at lines 53 and 65, and the non-finite filter at line 82, deserve dedicated coverage at the HNSW layer rather than smuggled in through 6 wrapper layers.
+- **Suggested fix:** Add to `src/hnsw/mod.rs` tests: `test_hnsw_search_empty_index_returns_empty`, `test_hnsw_search_dim_mismatch_returns_empty`, `test_hnsw_search_nonfinite_query_returns_empty`, `test_hnsw_search_returns_top_k_in_score_order`. Use `make_test_embedding` already imported at `:700`.
+
+#### TC-HAP-V1.36-7: `cli::commands::io::context::pack_by_relevance` has no test
+- **Difficulty:** easy
+- **Location:** src/cli/commands/io/context.rs:349 — `pack_by_relevance` (caller: `cmd_context` token-budgeting path)
+- **Description:** Token-budget packing for the `cqs context --tokens N` flag. The companion `build_token_pack` private at `:448` is exercised through the `cmd_context` integration test, but `pack_by_relevance` — which applies the relevance-weighted ordering — has no direct test. Score ordering or saturation bugs in the relevance heuristic land in production output without being caught.
+- **Suggested fix:** Add `pack_by_relevance_orders_by_score` test in `context.rs` `tests` mod. Build a `Vec<ChunkSummary>` with three chunks (high/mid/low scores), call `pack_by_relevance`, assert the high-score chunk is first and the low-score is last (or dropped if budget excludes it).
+
+#### TC-HAP-V1.36-8: `cli::pipeline::embedding::prepare_for_embedding` has no test despite being a major orchestrator
+- **Difficulty:** medium
+- **Location:** src/cli/pipeline/embedding.rs:26 — `prepare_for_embedding` (callers: `gpu_embed_stage:247`, `cpu_embed_stage:461`)
+- **Description:** 130-line function that does five logical steps (windowing, global cache, store cache, partition, NL description). The sibling `create_embedded_batch` at `:159` has four positive tests in `src/cli/pipeline/mod.rs:277-360`. `prepare_for_embedding` has zero direct tests — silent regressions in the cache hit/miss split or the windowing→hash chain only surface as eval-recall regressions. (Note: the pre-existing R@5 regression noted in MEMORY.md between 2026-04-25 and 2026-04-30 lives somewhere in this region of code.)
+- **Suggested fix:** Add `test_prepare_for_embedding_separates_cached_and_uncached` and `test_prepare_for_embedding_uses_global_cache_when_available` next to the `create_embedded_batch` tests. Use a fake/in-memory `EmbeddingCache` with one pre-seeded `(content_hash, model_fp)` entry; assert that one chunk lands in `cached` and the other in `to_embed`.
+
+#### TC-HAP-V1.36-9: Daemon GC entry points untested
+- **Difficulty:** medium
+- **Location:** src/cli/watch/gc.rs:114 (`run_daemon_startup_gc`) and :218 (`run_daemon_periodic_gc`)
+- **Description:** Both functions are `pub(super)` and called from `cli/watch/mod.rs:1051` and `:1450`. The lower-level `prune_last_indexed_mtime` is well-tested in `cli/watch/tests.rs:688-803`. The two big GC drivers — which orchestrate `Pass 1: drop chunks for missing files` + `Pass 2: drop chunks for now-gitignored paths` and the periodic origin-cap walker (`DAEMON_PERIODIC_GC_CAP_DEFAULT=1000`) — have no direct test. Bugs in the cap honoring, the gitignore-matcher integration, or the `CQS_DAEMON_STARTUP_GC=0` opt-out only surface in production daemon logs.
+- **Suggested fix:** Add to `cli/watch/tests.rs`: `test_run_daemon_startup_gc_prunes_missing_files` (insert 5 chunks for files A,B,C,D,E; delete A and B from disk; run startup GC; assert chunk count drops to 3) and `test_run_daemon_periodic_gc_honors_cap` (set `CQS_DAEMON_PERIODIC_GC_CAP=2`, verify only 2 origins per tick).
+
+#### TC-HAP-V1.36-10: `train_data::cmd_train_data` and `cmd_plan` untested directly
+- **Difficulty:** medium
+- **Location:** src/cli/commands/train/train_data.rs:7 and src/cli/commands/train/plan.rs:7
+- **Description:** `cli_train_review_test.rs` covers `cmd_plan` (P2 #46 (a)) but `cmd_train_data` has only an eval-fixture mention and no integration test. The function calls `cqs::train_data::generate_training_data` and prints a six-field summary; if the underlying generator changes its `TrainingDataStats` shape (rename `commits_skipped` → `commits_filtered`, etc.) the print format silently drifts from what the spec promises and from `cqs train-data --help`.
+- **Suggested fix:** Add `tests/cli_train_data_test.rs` (subprocess pattern, like `cli_train_review_test.rs`): set up a tiny git repo with 2 commits, run `cqs train-data --output /tmp/x.jsonl`, assert exit code 0 and that stdout matches `Generated \d+ triplets from 1 repos \(\d+ commits processed, \d+ skipped\)`.
+

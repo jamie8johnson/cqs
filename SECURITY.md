@@ -132,7 +132,7 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `.cqs/splade.index.bin` | SPLADE sparse inverted index | `cqs index` (with `CQS_SPLADE_MODEL` set), lazy rebuild on first `--splade` query |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
-| `.cqs/telemetry*.jsonl` | Command usage logs (opt-in, persists via file presence) | `CQS_TELEMETRY=1` or file exists, delete to opt out |
+| `.cqs/telemetry.jsonl` | Command usage logs (opt-in, persists via file presence; single file, no rotation) | `CQS_TELEMETRY=1` or file exists, delete to opt out |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `.cqs.toml` | Reference configuration | `cqs ref add`, `cqs ref remove` |
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
@@ -220,7 +220,7 @@ cqs has **two** symlink-handling regimes, depending on the entry point.
 
 ### Directory walks (`cqs index`, `cqs ref add`, `cqs watch` reconcile, `cqs convert`)
 
-Symlinks are **skipped** entirely — `enumerate_files` (`src/lib.rs:601`) sets `WalkBuilder::follow_links(false)` and `cqs convert`'s archive extraction skips them in extract paths. The walker never opens the link's target.
+Symlinks are **skipped** entirely — `enumerate_files` / `enumerate_files_iter` (`src/lib.rs:813`, `WalkBuilder::follow_links(false)`) and `cqs convert`'s archive extraction skip them in extract paths. The walker never opens the link's target.
 
 | Scenario | Behavior |
 |----------|----------|
