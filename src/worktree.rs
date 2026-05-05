@@ -231,9 +231,20 @@ struct WorktreeContext {
 /// worktree's own. Idempotent: subsequent calls are silently
 /// ignored (the OnceLock semantics).
 pub fn record_worktree_stale(worktree_root: &Path) {
-    let _ = WORKTREE_STALE.set(WorktreeContext {
-        name: worktree_name(worktree_root),
-    });
+    // OB-V1.36-10 / P3: log on producer side. The cross-worktree stale
+    // flag is the kind of cross-process signal that's near-impossible to
+    // diagnose without a journal trail (#1254-class issues).
+    let name = worktree_name(worktree_root);
+    if WORKTREE_STALE
+        .set(WorktreeContext { name: name.clone() })
+        .is_ok()
+    {
+        tracing::info!(
+            worktree_root = %worktree_root.display(),
+            worktree_name = name.as_deref().unwrap_or(""),
+            "worktree marked stale (reading from main's .cqs/)"
+        );
+    }
 }
 
 /// True if the current process is reading from main's `.cqs/`

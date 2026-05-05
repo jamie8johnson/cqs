@@ -382,8 +382,7 @@ pub(crate) fn build_graph(
                     if accum.len() >= max_graph_edges {
                         break;
                     }
-                    let placeholders =
-                        crate::store::helpers::sql::make_placeholders(chunk.len()).into_owned();
+                    let placeholders = vec!["?"; chunk.len()].join(",");
                     let edge_sql = format!(
                         "SELECT fc.file, fc.caller_name, fc.callee_name \
                          FROM function_calls fc \
@@ -775,8 +774,7 @@ pub(crate) fn build_hierarchy(
             HashMap::new();
 
         for batch in visited_names.chunks(META_CHUNK) {
-            let placeholders =
-                crate::store::helpers::sql::make_placeholders(batch.len()).into_owned();
+            let placeholders = vec!["?"; batch.len()].join(",");
             let sql = format!(
                 "SELECT id, name, chunk_type, language, origin, line_start, line_end \
                  FROM chunks WHERE name IN ({placeholders}) ORDER BY id"
@@ -870,10 +868,8 @@ pub(crate) fn build_hierarchy(
             std::collections::HashSet::new();
         for caller_batch in &edge_batches {
             for callee_batch in &edge_batches {
-                let caller_ph =
-                    crate::store::helpers::sql::make_placeholders(caller_batch.len()).into_owned();
-                let callee_ph =
-                    crate::store::helpers::sql::make_placeholders(callee_batch.len()).into_owned();
+                let caller_ph = vec!["?"; caller_batch.len()].join(",");
+                let callee_ph = vec!["?"; callee_batch.len()].join(",");
                 let edge_sql = format!(
                     "SELECT DISTINCT caller_name, callee_name FROM function_calls \
                      WHERE caller_name IN ({caller_ph}) AND callee_name IN ({callee_ph})"

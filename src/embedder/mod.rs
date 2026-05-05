@@ -713,6 +713,10 @@ impl Embedder {
     ///
     /// Returns `EmbedderError::Tokenizer` if the tokenizer is unavailable or if encoding the text fails.
     pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
+        // OB-V1.36-7 / P3: debug span — per-chunk during indexing, per-query
+        // during retrieval. Slow indexing on large files is hard to attribute
+        // between token_count vs the ONNX forward without per-call timing.
+        let _span = tracing::debug_span!("token_count", text_len = text.len()).entered();
         // Same truncation-bypass as `split_into_windows`: count actual
         // tokens, not whatever the tokenizer's `truncation` cap returns.
         // bge-large-ft and v9-200k ship tokenizer.json with
@@ -738,6 +742,7 @@ impl Embedder {
         if texts.is_empty() {
             return Ok(vec![]);
         }
+        let _span = tracing::debug_span!("token_counts_batch", count = texts.len()).entered();
         // Same truncation-bypass as `token_count` — count actual tokens
         // for accurate windowing decisions.
         let tokenizer_arc = self.tokenizer()?;
