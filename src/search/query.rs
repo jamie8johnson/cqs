@@ -862,15 +862,19 @@ impl<Mode> Store<Mode> {
                 threshold,
             };
 
-            // Pre-build filter sets once — avoids per-candidate string parsing (PF-1)
+            // Pre-build filter sets once — avoids per-candidate string parsing (PF-1).
+            // PERF-V1.36-2: drop `.to_lowercase()` because both `Language` and
+            // `ChunkType` Display already emit canonical lowercase (see DB-write
+            // and the comment 12 lines below). The to_string() still allocates
+            // but is unavoidable since HashSet<&str> would borrow from filter.
             let lang_set: Option<HashSet<String>> = filter
                 .languages
                 .as_ref()
-                .map(|langs| langs.iter().map(|l| l.to_string().to_lowercase()).collect());
+                .map(|langs| langs.iter().map(|l| l.to_string()).collect());
             let type_set: Option<HashSet<String>> = filter
                 .include_types
                 .as_ref()
-                .map(|types| types.iter().map(|t| t.to_string().to_lowercase()).collect());
+                .map(|types| types.iter().map(|t| t.to_string()).collect());
 
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
