@@ -124,17 +124,17 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 | Code Quality | 3 | CQ-3 (legacy NL wrapper deprecation), CQ-4 (stale dead-code reports — re-index issue), CQ-5 (NL gen wrapper proliferation) |
 | API Design | 8 | project/ref/index/onboard ergonomics, --limit defaults, BatchProvider builder, cross_project pub mod |
 | Error Handling | 8 | EH-1, 4, 5, 7, 8, 9, 10 — easy hardenings, low impact each |
-| Observability | 8 | hnsw verify span, validate_summary, compute_rewrite, find_ld, token_count, probe_model_vocab, worktree |
+| Observability | 8 | ✅ all shipped: hnsw verify span, validate_summary, compute_rewrite, find_ld, token_count, probe_model_vocab, worktree, cagra_persist (cagra one was P2-3) |
 | TC Adversarial | 5 | aspx/build_hierarchy/parse_env/window edges/split_into_windows |
 | TC Happy | 10 | All 10 — tests are net-positive but not load-bearing |
 | Scaling | 7 | dim-blind batch sizes, query cache size, daemon clients cap, channel depth |
-| Algorithm | 2 | select_negatives ordering, reverse_bfs guard |
-| Extensibility | 4 | synonyms, test_chunk patterns, NEGATION/MULTISTEP, model-name validation |
+| Algorithm | 2 | ✅ select_negatives ordering, reverse_bfs guard |
+| Extensibility | 4 | ✅ PoolingStrategy::Identity error; ⏳ synonyms / test_chunk / NEGATION / model-name validation |
 | Platform | 1 | hardcoded /tmp in test fixtures |
 | Security | 4 | open_browser cmd.exe, serve extractor errors, 64KiB pre-auth, daemon socket squat |
-| Data Safety | 3 | HNSW load lock timeout, INSERT OR REPLACE preventive, prune_old_backups read_dir |
-| Performance | 11 | All except #3 |
-| Resource Mgmt | 4 | RM-3, 6, 8, 10 |
+| Data Safety | 3 | ✅ INSERT OR REPLACE preventive, prune_old_backups read_dir; ⏳ HNSW load lock timeout |
+| Performance | 11 | ✅ shipped: -2, -4, -5, -8, -9, -11; analysed/skipped: -1 (sort would be slower), -3 (= P2-14 cascade), -6 (visited_names cascade), -10 (current best), -12 (placeholder mismatch reverted) |
+| Resource Mgmt | 4 | ✅ RM-V1.36-3, RM-V1.36-10; ⏳ RM-6, RM-8 |
 
 ## P4 — Defer (hard, design-level, or low-impact)
 
