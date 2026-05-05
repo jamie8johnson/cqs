@@ -210,7 +210,14 @@ pub(super) fn spawn_daemon_thread(
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(100));
+                    // RM-V1.36-8 / P3: 500 ms instead of 100 ms — agents
+                    // poll on the order of seconds, no need for 10 Hz
+                    // accept-loop wakeups when idle (was 600 wasted
+                    // scheduler trips/min × N daemons). Trade-off: shutdown
+                    // latency rises from up-to-100ms to up-to-500ms; agents
+                    // already tolerate sub-second startup. Real fix
+                    // (epoll/mio) is follow-up.
+                    std::thread::sleep(Duration::from_millis(500));
                 }
                 Err(e) => {
                     // Warn, not debug: EMFILE/ENFILE/ECONNABORTED are

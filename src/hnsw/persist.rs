@@ -737,7 +737,25 @@ impl HnswIndex {
             .create(true)
             .truncate(false)
             .open(&lock_path)?;
-        lock_file.lock_shared().map_err(HnswError::Io)?;
+        // DS-V1.36-6 / P3: bound the wait with try-lock-and-retry so a
+        // wedged peer process holding the exclusive save lock doesn't hang
+        // every reader indefinitely. 5 attempts × 200 ms (with jitter) =
+        // ~1s ceiling; daemons can retry the load and CLI users see a clear
+        // error instead of a silent hang. Without this, a paused
+        // `cqs index` (debugger / SIGSTOP) takes down all readers.
+        let lock_acquired = (0..5).any(|attempt| {
+            if attempt > 0 {
+                let jitter = std::time::Duration::from_millis(200 + (attempt * 37) as u64);
+                std::thread::sleep(jitter);
+            }
+            lock_file.try_lock_shared().is_ok()
+        });
+        if !lock_acquired {
+            return Err(HnswError::Internal(format!(
+                "HNSW load lock contended after 5 retries — concurrent save in progress at {}",
+                lock_path.display()
+            )));
+        }
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared, released after read)");
 
