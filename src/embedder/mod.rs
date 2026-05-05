@@ -331,10 +331,16 @@ pub struct Embedder {
 }
 
 /// Default query cache size (entries). Each entry is roughly `4 * dim` bytes
-/// of vector data plus the cache key; with the default BGE-large (1024-dim) that
-/// is ~4 KB/entry, with E5-base / v9-200k (768-dim) it is ~3 KB/entry, and scales
-/// accordingly for custom models. Override with `CQS_QUERY_CACHE_SIZE`.
-const DEFAULT_QUERY_CACHE_SIZE: usize = 128;
+/// of vector data plus the cache key; with the default embeddinggemma-300m
+/// (768-dim) that is ~3 KB/entry, with bge-large (1024-dim) ~4 KB/entry,
+/// and qwen3-embedding (2560/4096-dim) 10-16 KB/entry. Override with
+/// `CQS_QUERY_CACHE_SIZE`.
+///
+/// SHL-V1.36-9 / P3: bumped 128 → 1024. Daemon-mode agent fleets routinely
+/// hit 30+ unique queries per task (scout, gather, where, task) so 128 was
+/// a coin toss for hit rate. 1024 is ~3 MB at default, ~16 MB at qwen3-8B
+/// — still trivial vs the model footprint.
+const DEFAULT_QUERY_CACHE_SIZE: usize = 1024;
 
 impl Embedder {
     /// Create a new embedder with lazy model loading.
