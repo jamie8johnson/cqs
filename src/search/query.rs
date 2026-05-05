@@ -543,11 +543,25 @@ impl<Mode> Store<Mode> {
             "Hybrid search: fusing results"
         );
 
-        // Normalize sparse scores to [0, 1] via min-max
+        // Normalize sparse scores to [0, 1] via min-max.
+        // AC-V1.36-7 / P2-10: reduce-from-first instead of fold-from-0.0 so a
+        // cohort whose maximum score is < 0 doesn't get its max dominated by
+        // the seed. SPLADE itself is non-negative today (ReLU on logits) but
+        // any future sparse signal that isn't (learned dot-product, BM25-like
+        // delta) would silently degenerate to dense-only retrieval. When max
+        // is non-positive we also warn so eval/CI catches the collapse.
         let max_sparse = sparse_results
             .iter()
             .map(|r| r.score)
-            .fold(0.0f32, f32::max);
+            .reduce(f32::max)
+            .unwrap_or(0.0);
+        if !sparse_results.is_empty() && max_sparse <= 0.0 {
+            tracing::warn!(
+                count = sparse_results.len(),
+                max = max_sparse,
+                "Sparse cohort has non-positive max; min-max normalization will zero every entry"
+            );
+        }
 
         // PF-V1.25-1: pre-size hash containers from known input counts.
         // Upper bound on unique candidates is |dense| + |sparse|; default

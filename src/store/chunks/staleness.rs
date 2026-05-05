@@ -157,10 +157,19 @@ impl FileFingerprint {
             }
         };
 
+        // RB-V1.36-5 / P2-7: streaming blake3 with bounded RSS. Pre-fix
+        // slurped the whole file into memory before hashing — a 5 GB SQL
+        // dump that grew between index and watch tried to fingerprint
+        // whole. Hasher::update_reader keeps the working set at ~64 KiB.
         let content_hash = if needs_hash {
-            std::fs::read(path)
-                .ok()
-                .map(|bytes| *blake3::hash(&bytes).as_bytes())
+            std::fs::File::open(path).ok().and_then(|f| {
+                let mut hasher = blake3::Hasher::new();
+                if hasher.update_reader(std::io::BufReader::new(f)).is_ok() {
+                    Some(*hasher.finalize().as_bytes())
+                } else {
+                    None
+                }
+            })
         } else {
             None
         };

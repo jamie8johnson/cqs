@@ -658,13 +658,33 @@ pub(super) fn reindex_files(
         // upsert transaction (best-effort), so a stat or read failure
         // here only forfeits the BLAKE3 tiebreak — the next save fires
         // the same path.
+        // RB-V1.36-5 / P2-7: streaming blake3 + size-from-metadata so we
+        // don't have to slurp the whole file into RAM just to hash it.
         let abs_path = root.join(file);
-        let fp = match std::fs::read(&abs_path) {
-            Ok(bytes) => cqs::store::FileFingerprint {
-                mtime,
-                size: u64::try_from(bytes.len()).ok(),
-                content_hash: Some(*blake3::hash(&bytes).as_bytes()),
-            },
+        let size_hint = std::fs::metadata(&abs_path).ok().map(|m| m.len());
+        let fp = match std::fs::File::open(&abs_path) {
+            Ok(f) => {
+                let mut hasher = blake3::Hasher::new();
+                match hasher.update_reader(std::io::BufReader::new(f)) {
+                    Ok(_) => cqs::store::FileFingerprint {
+                        mtime,
+                        size: size_hint,
+                        content_hash: Some(*hasher.finalize().as_bytes()),
+                    },
+                    Err(e) => {
+                        tracing::debug!(
+                            file = %file.display(),
+                            error = %e,
+                            "blake3 stream read failed; staleness fingerprint skipped"
+                        );
+                        cqs::store::FileFingerprint {
+                            mtime,
+                            size: size_hint,
+                            content_hash: None,
+                        }
+                    }
+                }
+            }
             Err(e) => {
                 tracing::debug!(
                     path = %abs_path.display(),
