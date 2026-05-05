@@ -1152,6 +1152,31 @@ fn build_chunk_detail_returns_callers_callees_tests() {
     assert_eq!(detail.tests.len(), 0, "no test chunks seeded");
 }
 
+/// TC-HAP-V1.36-1 / P3: positive test for `build_stats`. Pre-existing
+/// coverage was indirect through the `/api/stats` HTTP layer. A schema
+/// regression (column rename, count miscount) would slip through the
+/// existing fixture; this asserts the four numeric fields directly.
+#[test]
+fn build_stats_returns_correct_counts_for_populated_store() {
+    // populated_fixture(3, false) seeds 3 chunks across 1 origin file with
+    // a 3-ring of function_calls (3 edges) and zero type_edges.
+    let fixture = populated_fixture(3, false);
+    let state = fixture.state();
+    let store = state.store.clone();
+
+    let stats = std::thread::spawn(move || super::data::build_stats(&store))
+        .join()
+        .expect("build_stats join")
+        .expect("build_stats ok");
+
+    assert_eq!(stats.total_chunks, 3, "3 chunks seeded");
+    // populated_fixture seeds each chunk under its own origin so this
+    // matches total_chunks.
+    assert_eq!(stats.total_files, 3, "fixture: one origin per chunk");
+    assert_eq!(stats.call_edges, 3, "3-ring = 3 edges");
+    assert_eq!(stats.type_edges, 0, "no type_edges seeded");
+}
+
 #[test]
 fn build_hierarchy_walks_callees_to_depth() {
     // 3-ring: BFS from func_0000 along callees with depth=2 visits

@@ -563,4 +563,38 @@ mod tests {
             results.len()
         );
     }
+
+    /// TC-HAP-V1.36-6 / P3: empty-index direct test. The `id_map.is_empty()`
+    /// short-circuit must apply to unfiltered `search()` too, not only the
+    /// already-tested filtered path.
+    #[test]
+    fn tc_hap_search_empty_index_returns_empty() {
+        let index = HnswIndex::build_with_dim(Vec::new(), crate::EMBEDDING_DIM).unwrap();
+        let query = make_embedding(0);
+        assert!(index.search(&query, 5).is_empty());
+    }
+
+    /// TC-HAP-V1.36-6 / P3: dim-mismatch query must return empty without
+    /// crashing the dense library. Pins the early-return at hnsw/search.rs:65.
+    #[test]
+    fn tc_hap_search_dim_mismatch_returns_empty() {
+        let embeddings: Vec<(String, Embedding)> = (0..5)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        let bad = Embedding::new(vec![0.5; 32]); // wrong dim
+        assert!(index.search(&bad, 5).is_empty());
+    }
+
+    /// TC-HAP-V1.36-6 / P3: NaN/Inf query must short-circuit before the
+    /// `assert dist >= ε` panic in the dense library.
+    #[test]
+    fn tc_hap_search_nonfinite_query_returns_empty() {
+        let embeddings: Vec<(String, Embedding)> = (0..5)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        let nan_query = Embedding::new(vec![f32::NAN; crate::EMBEDDING_DIM]);
+        assert!(index.search(&nan_query, 5).is_empty());
+    }
 }
