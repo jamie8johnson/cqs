@@ -65,7 +65,6 @@ pub(crate) fn cmd_query(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
-
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {
         if cli.rerank_active() {

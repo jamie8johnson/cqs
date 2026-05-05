@@ -30,7 +30,7 @@ pub(in crate::cli::batch) fn dispatch_search(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %args.query).entered();
 
-// Accepted for CLI parity; batch JSON doesn't use line-context, parent
+    // Accepted for CLI parity; batch JSON doesn't use line-context, parent
     // expansion, include-docs, pattern, or no-stale-check yet. Assigning to
     // `_` avoids clippy unused-field warnings while preserving forwards
     // compat: when the batch path wires these up, removing the `_ =` line

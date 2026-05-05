@@ -736,10 +736,7 @@ mod tests {
             #[command(flatten)]
             args: EvalCmdArgs,
         }
-        for (input, expected) in [
-            ("none", RerankerMode::None),
-            ("onnx", RerankerMode::Onnx),
-        ] {
+        for (input, expected) in [("none", RerankerMode::None), ("onnx", RerankerMode::Onnx)] {
             let w = Wrapper::try_parse_from(["test", "queries.json", "--reranker", input]).unwrap();
             assert_eq!(
                 w.args.reranker, expected,

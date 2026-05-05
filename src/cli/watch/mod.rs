@@ -672,8 +672,8 @@ pub fn cmd_watch(
             .filter(|(k, _)| k.starts_with("CQS_"))
             .map(|(k, v)| {
                 let upper = k.to_ascii_uppercase();
-                let is_secret = SECRET_MARKERS.iter().any(|m| upper.contains(m))
-                    || value_has_userinfo(&v);
+                let is_secret =
+                    SECRET_MARKERS.iter().any(|m| upper.contains(m)) || value_has_userinfo(&v);
                 let value = if is_secret {
                     format!("<redacted len={}>", v.len())
                 } else {

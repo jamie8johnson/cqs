@@ -40,7 +40,11 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
         // Clamp sentiment to [-1.0, 1.0] and reject NaN — defends against
         // NaN/±Inf in notes round-tripping through SQLite.
         Some(s) => {
-            let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+            let s = if s.is_finite() {
+                s.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
             1.0 + s * ScoringConfig::current().note_boost_factor
         }
         None => 1.0,
@@ -141,7 +145,11 @@ impl<'a> NoteBoostIndex<'a> {
             // boost was hidden from results entirely. f32::clamp panics on NaN,
             // so handle non-finite up front.
             Some(s) => {
-                let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+                let s = if s.is_finite() {
+                    s.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
                 1.0 + s * ScoringConfig::current().note_boost_factor
             }
             None => 1.0,
@@ -244,7 +252,11 @@ impl OwnedNoteBoostIndex {
             // boost was hidden from results entirely. f32::clamp panics on NaN,
             // so handle non-finite up front.
             Some(s) => {
-                let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+                let s = if s.is_finite() {
+                    s.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
                 1.0 + s * ScoringConfig::current().note_boost_factor
             }
             None => 1.0,

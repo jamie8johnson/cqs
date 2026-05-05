@@ -48,9 +48,7 @@ fn is_window_suffix(seg: &str) -> bool {
     // index — chunks that produce 100+ windows (legitimate for very large
     // markdown / data files) failed this check and the suffix wasn't stripped,
     // corrupting file-based dedup / glob filtering / SPLADE fusion (P1-35).
-    if bytes.first() == Some(&b'w')
-        && bytes.len() >= 2
-        && bytes[1..].iter().all(u8::is_ascii_digit)
+    if bytes.first() == Some(&b'w') && bytes.len() >= 2 && bytes[1..].iter().all(u8::is_ascii_digit)
     {
         return true;
     }
