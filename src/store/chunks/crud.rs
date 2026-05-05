@@ -516,18 +516,28 @@ impl Store<ReadWrite> {
             use crate::store::helpers::sql::max_rows_per_statement;
             const BATCH_SIZE: usize = max_rows_per_statement(5);
             for batch in summaries.chunks(BATCH_SIZE) {
+                // DS-V1.36-9 / P3: ON CONFLICT DO UPDATE instead of INSERT OR
+                // REPLACE so the upsert is a true UPDATE on conflict and
+                // never fires the implicit DELETE that INSERT OR REPLACE
+                // emits. Matches PR #1342's chunks-table fix. Today there's
+                // no FK to chunks, but a future ON DELETE CASCADE addition
+                // would otherwise turn every summary refresh into a v20
+                // splade-trigger fire (full SPLADE invalidation).
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, purpose, created_at)",
+                    "INSERT INTO llm_summaries (content_hash, summary, model, purpose, created_at)",
                 );
-                qb.push_values(
-                    batch.iter(),
-                    |mut b, (hash, summary, model, purpose)| {
-                        b.push_bind(hash)
-                            .push_bind(summary)
-                            .push_bind(model)
-                            .push_bind(purpose)
-                            .push_bind(&now);
-                    },
+                qb.push_values(batch.iter(), |mut b, (hash, summary, model, purpose)| {
+                    b.push_bind(hash)
+                        .push_bind(summary)
+                        .push_bind(model)
+                        .push_bind(purpose)
+                        .push_bind(&now);
+                });
+                qb.push(
+                    " ON CONFLICT(content_hash, purpose) DO UPDATE SET \
+                     summary = excluded.summary, \
+                     model = excluded.model, \
+                     created_at = excluded.created_at",
                 );
                 qb.build().execute(&mut *tx).await?;
             }

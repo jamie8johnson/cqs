@@ -806,15 +806,19 @@ fn extract_imports_regex(
     max: usize,
 ) -> Vec<String> {
     let compiled = compiled_import_regexes(patterns);
-    let mut seen = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut imports = Vec::new();
     for chunk in chunks {
         for line in chunk.content.lines() {
             let trimmed = line.trim();
-            if compiled.iter().any(|re| re.is_match(trimmed))
-                && imports.len() < max
-                && seen.insert(trimmed.to_string())
+            // PERF-V1.36-5: contains-then-insert to avoid `to_string()` on
+            // every duplicate line. seen.insert(to_string()) used to alloc
+            // a String per iteration regardless of whether it was new.
+            if imports.len() < max
+                && !seen.contains(trimmed)
+                && compiled.iter().any(|re| re.is_match(trimmed))
             {
+                seen.insert(trimmed.to_string());
                 imports.push(trimmed.to_string());
             }
         }
