@@ -332,3 +332,90 @@ fn display_ci_text(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::{CallerDetail, DiffTestInfo, ReviewedFunction, RiskLevel, RiskScore, RiskSummary};
+    use std::path::PathBuf;
+
+    /// Build a synthetic ReviewResult mirroring the diff_review.rs helper.
+    /// Pinned here so the ci.rs test doesn't import a private helper.
+    fn make_review(num_callers: usize, num_tests: usize) -> ReviewResult {
+        let callers: Vec<CallerDetail> = (0..num_callers)
+            .map(|i| CallerDetail {
+                name: format!("caller_{}", i),
+                file: PathBuf::from(format!("src/c{}.rs", i)),
+                line: (i as u32) + 1,
+                call_line: (i as u32) + 10,
+                snippet: None,
+            })
+            .collect();
+        let tests: Vec<DiffTestInfo> = (0..num_tests)
+            .map(|i| DiffTestInfo {
+                name: format!("test_{}", i),
+                file: PathBuf::from(format!("tests/t{}.rs", i)),
+                line: (i as u32) + 1,
+                via: "direct".into(),
+                call_depth: 1,
+            })
+            .collect();
+        ReviewResult {
+            changed_functions: vec![ReviewedFunction {
+                name: "target_fn".into(),
+                file: PathBuf::from("src/lib.rs"),
+                line_start: 42,
+                risk: RiskScore {
+                    caller_count: num_callers,
+                    test_count: num_tests,
+                    test_ratio: 1.0,
+                    risk_level: RiskLevel::Low,
+                    blast_radius: RiskLevel::Low,
+                    score: 0.0,
+                },
+            }],
+            affected_callers: callers,
+            affected_tests: tests,
+            relevant_notes: vec![],
+            risk_summary: RiskSummary {
+                high: 0,
+                medium: 0,
+                low: 1,
+                overall: RiskLevel::Low,
+            },
+            stale_warning: None,
+            warnings: vec![],
+        }
+    }
+
+    /// TC-HAP-V1.36-5 / P3: pin apply_ci_token_budget shape with json=true
+    /// accounting (sibling test_apply_token_budget_truncates_when_over only
+    /// covers json=false). Adds JSON_OVERHEAD_PER_RESULT to per-item cost,
+    /// so the same budget fits fewer items.
+    #[test]
+    fn test_apply_ci_token_budget_truncates_callers_and_tests() {
+        let mut review = make_review(50, 50);
+        let used = apply_ci_token_budget(&mut review, 200);
+        assert!(
+            review.affected_callers.len() < 50 || review.affected_tests.len() < 50,
+            "small budget must truncate at least one of callers/tests with json=true accounting"
+        );
+        assert!(used > 0);
+    }
+
+    #[test]
+    fn test_apply_ci_token_budget_zero_produces_zero_items() {
+        let mut review = make_review(5, 5);
+        apply_ci_token_budget(&mut review, 0);
+        assert_eq!(
+            review.affected_callers.len(),
+            0,
+            "budget=0 must drop all callers"
+        );
+        assert_eq!(
+            review.affected_tests.len(),
+            0,
+            "budget=0 must drop all tests"
+        );
+    }
+}
