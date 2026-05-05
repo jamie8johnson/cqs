@@ -1557,7 +1557,7 @@ mod tests {
         #[test]
         fn fuzz_normalize_for_fts_special_chars(
             prefix in "[a-z]{0,10}",
-            special in prop::sample::select(vec!['*', '"', ':', '^', '(', ')', '-', '+']),
+            special in prop::sample::select(vec!['*', '"', ':', '^', '(', ')', '-', '+', '{', '}']),
             suffix in "[a-z]{0,10}"
         ) {
             let input = format!("{}{}{}", prefix, special, suffix);
@@ -1583,7 +1583,7 @@ mod tests {
             let result = sanitize_fts_query(&input);
             for c in result.chars() {
                 prop_assert!(
-                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'),
                     "FTS5 special char '{}' in sanitized output: {}",
                     c, result
                 );
@@ -1610,7 +1610,7 @@ mod tests {
             // No FTS5 special chars
             for c in result.chars() {
                 prop_assert!(
-                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'),
                     "Special char '{}' in pipeline output: {}",
                     c, result
                 );
@@ -1629,7 +1629,7 @@ mod tests {
         #[test]
         fn prop_sanitize_all_special(
             chars in prop::collection::vec(
-                prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':']),
+                prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':', '{', '}']),
                 1..50
             )
         ) {
@@ -1665,14 +1665,14 @@ mod tests {
         #[test]
         fn prop_sanitize_adversarial(
             normal in "[a-z]{1,10}",
-            special in prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':']),
+            special in prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':', '{', '}']),
             op in prop::sample::select(vec!["OR", "AND", "NOT", "NEAR"]),
         ) {
             let input = format!("{}{} {} {}{}", special, normal, op, normal, special);
             let result = sanitize_fts_query(&input);
             for c in result.chars() {
                 prop_assert!(
-                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}'),
                     "Special char '{}' in adversarial output: {}",
                     c, result
                 );
