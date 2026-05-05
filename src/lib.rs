@@ -669,6 +669,28 @@ pub fn rel_display(path: &Path, root: &Path) -> String {
     normalize_path(path.strip_prefix(root).unwrap_or(path))
 }
 
+/// Relativize `file` against `root`. On case-insensitive filesystems
+/// (Windows NTFS, macOS HFS+/APFS default), `path.starts_with(root)` can
+/// pass while `path.strip_prefix(root)` byte-equals fails — case skew
+/// between the canonicalized project root and the indexed chunk path.
+/// PB-V1.36-5 / P2-13: this helper centralizes the "warn-and-fall-back"
+/// shim that `enumerate_files` already learned (lib.rs:940), so caller
+/// sites don't keep silently leaking absolute paths into JSON envelopes
+/// documented as "relative to project root".
+pub fn relativize_or_warn(file: &Path, root: &Path) -> std::path::PathBuf {
+    match file.strip_prefix(root) {
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => {
+            tracing::warn!(
+                file = %file.display(),
+                root = %root.display(),
+                "relativize: file does not have root as prefix (case-insensitive FS skew?) — emitting absolute path"
+            );
+            file.to_path_buf()
+        }
+    }
+}
+
 // ============ Note Indexing Helper ============
 
 /// Index notes into the database (store without embeddings)

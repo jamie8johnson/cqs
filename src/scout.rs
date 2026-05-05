@@ -316,7 +316,7 @@ pub(crate) fn scout_core<Mode>(
                 .collect();
 
             FileGroup {
-                file: file.strip_prefix(root).unwrap_or(&file).to_path_buf(),
+                file: crate::relativize_or_warn(&file, root),
                 relevance_score,
                 chunks: scout_chunks,
                 is_stale,

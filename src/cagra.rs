@@ -888,6 +888,9 @@ impl CagraIndex {
     pub fn save(&self, path: &Path) -> Result<(), CagraError> {
         let _span = tracing::info_span!("cagra_save", path = %path.display()).entered();
         if !cagra_persist_enabled() {
+            // OB-V1.36-3 / P2-3: per-call warn — "looked done, did nothing"
+            // silent skips surface only as missing blobs at next load.
+            tracing::warn!(path = %path.display(), "CAGRA save skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
             ));
@@ -983,6 +986,7 @@ impl CagraIndex {
     ) -> Result<(), CagraError> {
         let _span = tracing::info_span!("cagra_save_with_store", path = %path.display()).entered();
         if !cagra_persist_enabled() {
+            tracing::warn!(path = %path.display(), "CAGRA save_with_store skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
             ));
@@ -1089,6 +1093,7 @@ impl CagraIndex {
     ) -> Result<Self, CagraError> {
         let _span = tracing::info_span!("cagra_load", path = %path.display()).entered();
         if !cagra_persist_enabled() {
+            tracing::warn!(path = %path.display(), "CAGRA load skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
             ));

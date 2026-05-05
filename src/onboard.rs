@@ -154,12 +154,7 @@ pub fn onboard<Mode>(
         .or(results.first())
         .expect("results guaranteed non-empty by early return above");
     let entry_name = entry.chunk.name.clone();
-    let entry_file = entry
-        .chunk
-        .file
-        .strip_prefix(root)
-        .unwrap_or(&entry.chunk.file)
-        .to_path_buf();
+    let entry_file = crate::relativize_or_warn(&entry.chunk.file, root);
     tracing::info!(entry_point = %entry_name, file = ?entry_file, "Selected entry point");
 
     // 3. Load shared resources
@@ -407,12 +402,7 @@ fn fetch_entry_point<Mode>(
 
     match best {
         Some(r) => {
-            let rel_file = r
-                .chunk
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&r.chunk.file)
-                .to_path_buf();
+            let rel_file = crate::relativize_or_warn(&r.chunk.file, root);
             Ok(OnboardEntry {
                 name: r.chunk.name.clone(),
                 file: rel_file,

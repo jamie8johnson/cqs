@@ -263,12 +263,7 @@ impl GatheredChunk {
     ) -> Self {
         Self {
             name: sr.chunk.name.clone(),
-            file: sr
-                .chunk
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&sr.chunk.file)
-                .to_path_buf(),
+            file: crate::relativize_or_warn(&sr.chunk.file, root),
             line_start: sr.chunk.line_start,
             line_end: sr.chunk.line_end,
             language: sr.chunk.language,
