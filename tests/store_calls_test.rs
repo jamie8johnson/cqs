@@ -485,3 +485,61 @@ fn delete_phantom_chunks_does_not_touch_function_calls() {
          flow's upsert_function_calls's job, see crud.rs comment in delete_phantom_chunks"
     );
 }
+
+/// TC-HAP-V1.36-2 / P3: get_callers_with_context positive test. The
+/// richer variant of get_callers_full carries call_line — used by
+/// `cqs impact`. Coverage was indirect via tests/impact_test.rs only.
+#[test]
+fn test_get_callers_with_context_returns_call_line() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let calls = vec![FunctionCalls {
+        name: "caller_fn".to_string(),
+        line_start: 10,
+        calls: vec![CallSite {
+            callee_name: "target".to_string(),
+            line_number: 25,
+        }],
+    }];
+    store
+        .upsert_function_calls(std::path::Path::new("a.rs"), &calls)
+        .unwrap();
+
+    let callers = store.get_callers_with_context("target").unwrap();
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0].name, "caller_fn");
+    assert_eq!(callers[0].line, 10);
+    assert_eq!(callers[0].call_line, 25);
+}
+
+/// TC-HAP-V1.36-3 / P3: pin _full_batch variants — both must return
+/// empty Vec for unknown names (not missing keys), and matching entries
+/// for known names.
+#[test]
+fn test_get_callers_full_batch_returns_per_name_results() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let calls = vec![FunctionCalls {
+        name: "caller".to_string(),
+        line_start: 1,
+        calls: vec![CallSite {
+            callee_name: "real_target".to_string(),
+            line_number: 2,
+        }],
+    }];
+    store
+        .upsert_function_calls(std::path::Path::new("a.rs"), &calls)
+        .unwrap();
+
+    let result = store
+        .get_callers_full_batch(&["real_target", "missing"])
+        .unwrap();
+    assert_eq!(result.get("real_target").map(|v| v.len()), Some(1));
+    // Names with no callers don't appear in the map at all (current
+    // contract). Pin it so a future change to "absent key → empty Vec"
+    // is intentional, not silent. The audit suggested the "empty Vec"
+    // shape but that's a contract change for callers.
+    assert!(!result.contains_key("missing"));
+}
