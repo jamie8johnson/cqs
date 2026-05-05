@@ -652,9 +652,10 @@ pub fn cmd_watch(
         // SEC-V1.36-2: switched from suffix-only to substring matching,
         // added BEARER/AUTH/CRED/PASS to the marker set, and added a
         // value-shape check that redacts any URL with embedded userinfo
-        // (`scheme://user:pass@host`). Suffix-only missed names like
-        // `CQS_AUTH_TOKEN_HEADER`, `CQS_FOO_BEARER`, and any URL that
-        // happened to carry creds in CQS_LLM_API_BASE etc.
+        // (`scheme://user:pass@host`). Suffix-only missed names that bury
+        // the marker mid-name (an _AUTH_TOKEN_HEADER suffix, a _BEARER
+        // suffix on an unrelated prefix, etc.), plus any URL carrying
+        // creds in CQS_LLM_API_BASE.
         const SECRET_MARKERS: &[&str] = &[
             "KEY", "TOKEN", "SECRET", "PASSWORD", "BEARER", "AUTH", "CRED", "PASS",
         ];
