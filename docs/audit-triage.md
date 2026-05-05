@@ -12,14 +12,15 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 | P4 | 18 | All deferred (hard / design-level / Windows-daemon / etc.) |
 | **Total addressed** | **163** | **~120 of 163 findings (~74%)** in PR #1456 |
 
-Remaining ⏳ P3s by cluster (deferred to follow-up):
-- 7 TC Happy path tests (need real Embedder fixtures or are tests of already-tested code)
-- 8 API Design (mostly design-level — project/ref merge, --limit harmonize, BatchProvider builder)
-- 7 Scaling (dim-blind batch sizes — design pass)
-- 3 Extensibility (config-driven synonyms / vocab — design)
-- 3 Security (serve extractor errors, 64KiB pre-auth, daemon socket TOCTOU)
-- 1 RM-V1.36-6 config-write critical section (concurrency-sensitive refactor)
-- 1 CQ-3 deprecate legacy NL wrapper (would break public doctest)
+Remaining ⏳ filed as tracking issues (2026-05-05, post-PR-#1456):
+- **#1457** — P2-14: ChunkRow::from_row column-name strcmps
+- **#1458** — P3 TC Happy path tests (6 items: context builders, pack_by_relevance, prepare_for_embedding, daemon GC, cmd_train_data)
+- **#1459** — P3 API design (8 items: project/ref/index ergonomics + trait shape)
+- **#1460** — P3 Extensibility (3 items: config-driven synonyms / test-name patterns / classifier vocab)
+- **#1461** — P3 Security (3 items: serve extractor URI leak, pre-auth body cap, daemon socket TOCTOU)
+- **#1462** — P3 misc: RM-V1.36-6 config flock + reqwest, CQ-V1.36-3/5 legacy NL wrappers
+- **#1463** — P4 umbrella (12 design-level / hard items: extensibility refactors, Windows daemon, `.bak` rollback)
+- **In-progress** — P3 Scaling: 5 dim-blind batch sizes (SHL-V1.36-3/4/5/6/8) being addressed in a follow-up PR
 
 ## Cross-cutting themes
 
