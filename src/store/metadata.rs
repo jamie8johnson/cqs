@@ -461,12 +461,11 @@ impl Store<ReadWrite> {
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(legacy_val) = legacy {
-                let other_exists: Option<i64> = sqlx::query_scalar::<_, i64>(
-                    "SELECT 1 FROM metadata WHERE key = ?1",
-                )
-                .bind(other_key)
-                .fetch_optional(&mut *tx)
-                .await?;
+                let other_exists: Option<i64> =
+                    sqlx::query_scalar::<_, i64>("SELECT 1 FROM metadata WHERE key = ?1")
+                        .bind(other_key)
+                        .fetch_optional(&mut *tx)
+                        .await?;
                 if other_exists.is_none() {
                     sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
                         .bind(other_key)
