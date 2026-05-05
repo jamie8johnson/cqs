@@ -1792,3 +1792,44 @@ mentions = [
     "gpu",
     "wsl",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Store::drop ran wal_checkpoint(TRUNCATE) which acquires SQLite EXCLUSIVE lock — any concurrent cqs invocation (e.g. cqs stats polling) blocks the long-running indexer's writes and surfaces (code: 5) database is locked as a fatal error after minutes of work. Fixed in #1451: switched to wal_checkpoint(PASSIVE) with 1s timeout (mirrors EmbeddingCache::drop). Same bug shape #1343 fixed for cache months ago; slot store had drifted."
+mentions = [
+    "src/store/mod.rs",
+    "wal",
+    "checkpoint",
+    "Drop",
+    "sqlite",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Cross-slot LLM summary copy works at 64% overlap on cqs corpus (gemma → qwen3-4b: 7674/12881 chunk hashes match). Summaries are content_hash-keyed and model-independent, so copying via SQL before --force --llm-summaries reindex saves most of the Haiku batch cost. Pattern: SELECT from src.llm_summaries WHERE content_hash IN (SELECT content_hash FROM dst.chunks); INSERT OR IGNORE."
+mentions = [
+    "llm_summaries",
+    "content_hash",
+    "cross-slot",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Per-category SPLADE α picks for qwen3-4b diverged dramatically from gemma's deployed defaults (5 of 8 categories shifted ≥0.4 absolute α; identifier_lookup 1.00→0.15, structural_search 0.60→0.15). Suggests qwen3-4b's dense embeddings are weaker on code than gemma's, so SPLADE compensation pulls more weight. Per-model α sets needed — filed as #1453."
+mentions = [
+    "splade",
+    "alpha",
+    "router",
+    "qwen3",
+    "gemma",
+    "#1453",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Efficient SPLADE alpha sweep: 21 cqs eval invocations with CQS_SPLADE_ALPHA=X env each (instead of evals/alpha_sweep_v3_r5.py's per-(cat,α) brute force). 21 × ~30s = 10 min/split vs ~80 min/split brute force. α only affects post-encoding fusion, so the brute force was re-encoding queries 21 times pointlessly. Post-process the by_category field per saved JSON for per-cat curves."
+mentions = [
+    "evals/alpha_sweep_v3_r5.py",
+    "CQS_SPLADE_ALPHA",
+    "sweep",
+]
