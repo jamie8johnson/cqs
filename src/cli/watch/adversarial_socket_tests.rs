@@ -776,6 +776,44 @@ fn daemon_handles_lone_surrogate_in_string_arg() {
     join_worker(client, handle);
 }
 
+/// TC-V1.36-6 / P2-5 (per-handler slice): N concurrent clients each
+/// holding a slow/partial connection don't pin the BatchContext mutex
+/// or starve a fast valid request. Real accept-loop saturation needs an
+/// actual UnixListener, deferred to integration; this exercises the
+/// handler-thread isolation contract.
+#[test]
+fn daemon_concurrent_handlers_dont_starve() {
+    let (_dir, ctx) = test_ctx();
+    // Spawn 4 slow handlers (each writes a partial line, never closes).
+    let mut slow: Vec<(UnixStream, thread::JoinHandle<()>)> = Vec::new();
+    for _ in 0..4 {
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        // Partial write — no newline; handler blocks on read.
+        client
+            .write_all(b"{\"command\":\"ping\"")
+            .expect("partial write");
+        slow.push((client, handle));
+    }
+    // Fast valid request through a 5th handler — must complete promptly.
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    client
+        .write_all(b"{\"command\":\"ping\",\"args\":[]}\n")
+        .expect("fast write");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    assert_eq!(
+        resp.get("status").and_then(|v| v.as_str()),
+        Some("ok"),
+        "fast request must not be starved by slow concurrent handlers: {line}"
+    );
+    join_worker(client, handle);
+    // Tear down the slow handlers — dropping the client closes the socket
+    // and the handler returns cleanly (read returns 0 bytes).
+    for (client, handle) in slow {
+        join_worker(client, handle);
+    }
+}
+
 #[test]
 fn daemon_handles_deeply_nested_json_without_panic() {
     let (_dir, ctx) = test_ctx();
