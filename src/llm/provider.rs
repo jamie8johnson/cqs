@@ -131,6 +131,28 @@ pub trait BatchProvider {
     /// Get the model name for this provider.
     fn model_name(&self) -> &str;
 
+    /// EXT-V1.36-1 / P3: validate that the model name configured for this
+    /// provider matches the provider's expected naming convention. Default
+    /// accepts any non-empty model so impls can opt in incrementally.
+    ///
+    /// Anthropic: should override and reject names that don't start with
+    /// `claude-`. Local OpenAI-compat: any non-empty name is fine because
+    /// vLLM/LMDeploy etc. expose arbitrary identifiers. A future OpenAI
+    /// provider should validate `gpt-` / `o1-` / `o3-` prefixes.
+    ///
+    /// Called from `submit_batch` *before* the API roundtrip so a
+    /// wrong-provider/model combo (e.g. `--provider anthropic --model
+    /// gpt-4o`) fails fast with the offending name in the error instead of
+    /// surfacing as an opaque API error.
+    fn validate_model(&self, model: &str) -> Result<(), LlmError> {
+        if model.is_empty() {
+            return Err(LlmError::Configuration {
+                message: "model name must not be empty".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Optional streaming callback invoked once per completed item.
     ///
     /// Callers (e.g. `llm_summary_pass`) can set this to persist results

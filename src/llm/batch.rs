@@ -335,12 +335,32 @@ impl LlmClient {
 }
 
 impl BatchProvider for LlmClient {
+    fn validate_model(&self, model: &str) -> Result<(), LlmError> {
+        // EXT-V1.36-1 / P3: Anthropic models all start with `claude-`.
+        // A wrong-provider/model combo (`--provider anthropic --model gpt-4o`)
+        // used to fail at the API roundtrip with an opaque error.
+        if model.is_empty() {
+            return Err(LlmError::Configuration {
+                message: "Anthropic model name must not be empty".into(),
+            });
+        }
+        if !model.starts_with("claude-") {
+            return Err(LlmError::InvalidModel(format!(
+                "Anthropic provider expects model starting with 'claude-', got '{}'",
+                model
+            )));
+        }
+        Ok(())
+    }
+
     fn submit_batch(
         &self,
         kind: super::provider::BatchKind,
         items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
+        // EXT-V1.36-1 / P3: client-side validation before API roundtrip.
+        self.validate_model(&self.llm_config.model)?;
         // #1347: dispatch on `BatchKind` once; the inner submit_batch_inner
         // takes the chosen prompt builder + log purpose verbatim. Adding a
         // fourth kind is one new variant + one new arm.
