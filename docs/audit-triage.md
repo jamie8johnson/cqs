@@ -39,62 +39,62 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 
 | ID | Category | Title | Difficulty | Status |
 |----|----------|-------|------------|--------|
-| P1-1 | Documentation | lib.rs Features missing qwen3-embedding-{4b,8b} | easy | ⏳ |
-| P1-2 | Documentation | README How It Works + CQS_EMBEDDING_MODEL miss qwen3 (4 files: README, CONTRIBUTING, PRIVACY) | easy | ⏳ |
-| P1-3 | Documentation | Cargo.toml lang-all missing lang-elm | easy | ⏳ |
-| P1-4 | Documentation | language/mod.rs Feature Flags missing lang-dart | easy | ⏳ |
-| P1-5 | Documentation | CHANGELOG [Unreleased] in wrong position | easy | ⏳ |
-| P1-6 | Documentation | Cargo.toml description over-rounds R@20 | easy | ⏳ |
-| P1-7 | Documentation | SECURITY.md cites stale src/lib.rs:601 (actual :813) | easy | ⏳ |
-| P1-8 | Documentation | src/schema.sql:1 header says v22 (actual v26) | easy | ⏳ |
-| P1-9 | Documentation | CONTRIBUTING.md schema citation v25 (actual v26) | easy | ⏳ |
-| P1-10 | Documentation | ROADMAP.md Current still v1.36.0 (actual v1.36.2) | easy | ⏳ |
-| P1-11 | Documentation | SECURITY.md telemetry path glob (no rotation) | easy | ⏳ |
+| P1-1 | Documentation | lib.rs Features missing qwen3-embedding-{4b,8b} | easy | ✅ |
+| P1-2 | Documentation | README How It Works + CQS_EMBEDDING_MODEL miss qwen3 (4 files: README, CONTRIBUTING, PRIVACY) | easy | ✅ |
+| P1-3 | Documentation | Cargo.toml lang-all missing lang-elm | easy | ✅ |
+| P1-4 | Documentation | language/mod.rs Feature Flags missing lang-dart | easy | ✅ |
+| P1-5 | Documentation | CHANGELOG [Unreleased] in wrong position | easy | ✅ |
+| P1-6 | Documentation | Cargo.toml description over-rounds R@20 | easy | ✅ |
+| P1-7 | Documentation | SECURITY.md cites stale src/lib.rs:601 (actual :813) | easy | ✅ |
+| P1-8 | Documentation | src/schema.sql:1 header says v22 (actual v26) | easy | ✅ |
+| P1-9 | Documentation | CONTRIBUTING.md schema citation v25 (actual v26) | easy | ✅ |
+| P1-10 | Documentation | ROADMAP.md Current still v1.36.0 (actual v1.36.2) | easy | ✅ |
+| P1-11 | Documentation | SECURITY.md telemetry path glob (no rotation) | easy | ✅ |
 | P1-12 | Code Quality | CQ-V1.36-1 enrichment_pass drops model_max_seq_len | medium | ⏳ |
-| P1-13 | Code Quality | CQ-V1.36-2 resolve_splade_model_dir() drops config at 6 sites | easy | ⏳ |
+| P1-13 | Code Quality | CQ-V1.36-2 resolve_splade_model_dir() drops config at 6 sites | easy | ✅ |
 | P1-14 | Code Quality | CQ-V1.36-6 enrichment_pass model_config ignored (group with P1-12) | easy | ⏳ |
-| P1-15 | Code Quality | CQ-V1.36-7 VectorIndex::search_with_filter k*3 unchecked | easy | ⏳ |
-| P1-16 | API Design | -d short flag missing on gather and trace | easy | ⏳ |
-| P1-17 | API Design | cqs eval --reranker llm placeholder advertises non-existent capability | easy | ⏳ |
+| P1-15 | Code Quality | CQ-V1.36-7 VectorIndex::search_with_filter k*3 unchecked | easy | ✅ |
+| P1-16 | API Design | -d short flag missing on gather and trace | easy | ✅ |
+| P1-17 | API Design | cqs eval --reranker llm placeholder advertises non-existent capability | easy | ✅ |
 | P1-18 | Error Handling | EH-V1.36-6 Store::stored_model_name swallows query errors → data destruction risk | medium | ⏳ |
-| P1-19 | Observability | search_filtered duplicate nested span on hottest path | easy | ⏳ |
-| P1-20 | Observability | config.rs:582 redundant eprintln! next to tracing::warn! | easy | ⏳ |
-| P1-21 | TC Adversarial | Sparse-vector NaN/Inf weight round-trip untested | easy | ⏳ |
-| P1-22 | TC Adversarial | sanitize_fts_query property tests miss `{` and `}` | easy | ⏳ |
+| P1-19 | Observability | search_filtered duplicate nested span on hottest path | easy | ✅ |
+| P1-20 | Observability | config.rs:582 redundant eprintln! next to tracing::warn! | easy | ✅ |
+| P1-21 | TC Adversarial | Sparse-vector NaN/Inf weight round-trip untested | easy | ✅ |
+| P1-22 | TC Adversarial | sanitize_fts_query property tests miss `{` and `}` | easy | ✅ |
 | P1-23 | TC Adversarial | embed_documents output finiteness untested | easy | ⏳ |
-| P1-24 | Robustness | RB-V1.36-1 doc_writer compute_rewrite/rewrite_file unbounded read | easy | ⏳ |
-| P1-25 | Robustness | RB-V1.36-2 search/query.rs parent-context unbounded read | easy | ⏳ |
-| P1-26 | Robustness | RB-V1.36-3 hook.rs reads existing git hooks unbounded (3 sites) | easy | ⏳ |
-| P1-27 | Robustness | RB-V1.36-4 slot.toml unbounded read | easy | ⏳ |
-| P1-28 | Robustness | RB-V1.36-6 train_data diff hunk_end usize add not saturating | easy | ⏳ |
-| P1-29 | Robustness | RB-V1.36-7 where_to_add mutex .expect propagates panic | easy | ⏳ |
-| P1-30 | Robustness | RB-V1.36-9 print_telemetry_text divide-by-zero sibling at line 477 | easy | ⏳ |
-| P1-31 | Robustness | RB-V1.36-10 sparse weight as f32 no NaN guard | easy | ⏳ |
-| P1-32 | Scaling | SHL-V1.36-1 CQS_MAX_CONNECTIONS unwrap_or(4) ignores parallelism | easy | ⏳ |
-| P1-33 | Scaling | SHL-V1.36-2 reference.rs:208 still unwrap_or(4) (sibling fix in project.rs) | easy | ⏳ |
-| P1-34 | Scaling | SHL-V1.36-7 lib.rs stale 999 SQLite host-param comment | easy | ⏳ |
-| P1-35 | Algorithm | extract_file_from_chunk_id mis-parses :w100+ window suffixes | easy | ⏳ |
-| P1-36 | Algorithm | ±Inf note sentiment hides boosted chunk via BoundedScoreHeap drop | easy | ⏳ |
-| P1-37 | Algorithm | Sparse weight `as f32` no NaN guard (mirrors RB P1-31) | easy | ⏳ |
-| P1-38 | Algorithm | CAGRA env knobs accept 0 (sibling of P1-45 HNSW fix in v1.33) | easy | ⏳ |
-| P1-39 | Algorithm | where_to_add line_end + 1 u32 add not saturating | easy | ⏳ |
-| P1-40 | Extensibility | apply_parent_boost hardcodes Class/Struct/Interface (drops boost on Trait/Object/Protocol) | easy | ⏳ |
+| P1-24 | Robustness | RB-V1.36-1 doc_writer compute_rewrite/rewrite_file unbounded read | easy | ✅ |
+| P1-25 | Robustness | RB-V1.36-2 search/query.rs parent-context unbounded read | easy | ✅ |
+| P1-26 | Robustness | RB-V1.36-3 hook.rs reads existing git hooks unbounded (3 sites) | easy | ✅ |
+| P1-27 | Robustness | RB-V1.36-4 slot.toml unbounded read | easy | ✅ |
+| P1-28 | Robustness | RB-V1.36-6 train_data diff hunk_end usize add not saturating | easy | ✅ |
+| P1-29 | Robustness | RB-V1.36-7 where_to_add mutex .expect propagates panic | easy | ✅ |
+| P1-30 | Robustness | RB-V1.36-9 print_telemetry_text divide-by-zero sibling at line 477 | easy | ✅ |
+| P1-31 | Robustness | RB-V1.36-10 sparse weight as f32 no NaN guard | easy | ✅ |
+| P1-32 | Scaling | SHL-V1.36-1 CQS_MAX_CONNECTIONS unwrap_or(4) ignores parallelism | easy | ✅ |
+| P1-33 | Scaling | SHL-V1.36-2 reference.rs:208 still unwrap_or(4) (sibling fix in project.rs) | easy | ✅ |
+| P1-34 | Scaling | SHL-V1.36-7 lib.rs stale 999 SQLite host-param comment | easy | ✅ |
+| P1-35 | Algorithm | extract_file_from_chunk_id mis-parses :w100+ window suffixes | easy | ✅ |
+| P1-36 | Algorithm | ±Inf note sentiment hides boosted chunk via BoundedScoreHeap drop | easy | ✅ |
+| P1-37 | Algorithm | Sparse weight `as f32` no NaN guard (mirrors RB P1-31) | easy | ✅ |
+| P1-38 | Algorithm | CAGRA env knobs accept 0 (sibling of P1-45 HNSW fix in v1.33) | easy | ✅ |
+| P1-39 | Algorithm | where_to_add line_end + 1 u32 add not saturating | easy | ✅ |
+| P1-40 | Extensibility | apply_parent_boost hardcodes Class/Struct/Interface (drops boost on Trait/Object/Protocol) | easy | ✅ |
 | P1-41 | Platform | apply_resolved_edits CRLF flatten on doc rewrite (mirror #1356 to doc_writer) | medium | ⏳ |
-| P1-42 | Platform | note::path_matches_mention case-sensitive — Linux notes skip Windows/macOS | easy | ⏳ |
-| P1-43 | Platform | worktree own_cqs.exists() should be is_dir() | easy | ⏳ |
-| P1-44 | Security | Store::open umask TOCTOU (cache has the wrap, store doesn't) | easy | ⏳ |
-| P1-45 | Security | Daemon env-var redactor misses BEARER/AUTH/CRED/URL-embedded creds | easy | ⏳ |
-| P1-46 | Security | LLM debug log echoes HTTP body (= indexed source) into journald | easy | ⏳ |
-| P1-47 | Security | slot_dir/slot_config_path skip validate_slot_name → path-traversal | easy | ⏳ |
-| P1-48 | Security | validate_repo_id allows `..` | easy | ⏳ |
-| P1-49 | Data Safety | DS-V1.36-1 collect_migration_files misses hnsw.ids/.checksum sidecars | easy | ⏳ |
-| P1-50 | Data Safety | DS-V1.36-3 legacy hnsw_dirty key never cleared in set_hnsw_dirty | easy | ⏳ |
-| P1-51 | Data Safety | DS-V1.36-4 cqs index --force WAL/SHM removal after PASSIVE only | easy | ⏳ |
-| P1-52 | Data Safety | DS-V1.36-7 Store::close() still TRUNCATE (#1450 sibling) | easy | ⏳ |
-| P1-53 | Data Safety | DS-V1.36-8 migrate_v18_to_v19 orphan threshold lossy f64 cast | easy | ⏳ |
-| P1-54 | Resource Mgmt | RM-V1.36-1 truncate_incomplete_line slurps whole JSONL | easy | ⏳ |
-| P1-55 | Resource Mgmt | RM-V1.36-2 pdf_to_markdown unbounded subprocess output | easy | ⏳ |
-| P1-56 | Resource Mgmt | RM-V1.36-4 watch UnixStream::connect no timeout | easy | ⏳ |
+| P1-42 | Platform | note::path_matches_mention case-sensitive — Linux notes skip Windows/macOS | easy | ✅ |
+| P1-43 | Platform | worktree own_cqs.exists() should be is_dir() | easy | ✅ |
+| P1-44 | Security | Store::open umask TOCTOU (cache has the wrap, store doesn't) | easy | ✅ |
+| P1-45 | Security | Daemon env-var redactor misses BEARER/AUTH/CRED/URL-embedded creds | easy | ✅ |
+| P1-46 | Security | LLM debug log echoes HTTP body (= indexed source) into journald | easy | ✅ |
+| P1-47 | Security | slot_dir/slot_config_path skip validate_slot_name → path-traversal | easy | ✅ |
+| P1-48 | Security | validate_repo_id allows `..` | easy | ✅ |
+| P1-49 | Data Safety | DS-V1.36-1 collect_migration_files misses hnsw.ids/.checksum sidecars | easy | ✅ |
+| P1-50 | Data Safety | DS-V1.36-3 legacy hnsw_dirty key never cleared in set_hnsw_dirty | easy | ✅ |
+| P1-51 | Data Safety | DS-V1.36-4 cqs index --force WAL/SHM removal after PASSIVE only | easy | ✅ |
+| P1-52 | Data Safety | DS-V1.36-7 Store::close() still TRUNCATE (#1450 sibling) | easy | ✅ |
+| P1-53 | Data Safety | DS-V1.36-8 migrate_v18_to_v19 orphan threshold lossy f64 cast | easy | ✅ |
+| P1-54 | Resource Mgmt | RM-V1.36-1 truncate_incomplete_line slurps whole JSONL | easy | ✅ |
+| P1-55 | Resource Mgmt | RM-V1.36-2 pdf_to_markdown unbounded subprocess output | easy | ✅ |
+| P1-56 | Resource Mgmt | RM-V1.36-4 watch UnixStream::connect no timeout | easy | ✅ |
 | P1-57 | Resource Mgmt | RM-V1.36-5 Command::output() unbounded (chm/convert/train_data) | easy | ⏳ |
 | P1-58 | Resource Mgmt | RM-V1.36-7 BufReader::lines no per-line cap | easy | ⏳ |
 
