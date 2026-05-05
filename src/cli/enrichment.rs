@@ -228,6 +228,10 @@ pub(crate) fn enrichment_pass(
                     5, // max callees
                     summary,
                     hyde,
+                    // CQ-V1.36-6: was previously dropped — thread the model's
+                    // max_seq_length so the section-preview budget scales with
+                    // model capacity (was hardcoded to env default 512).
+                    model_config.max_seq_length,
                 );
 
                 embed_batch.push((cs.id.clone(), enriched_nl, enrichment_hash));

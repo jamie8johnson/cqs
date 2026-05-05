@@ -48,15 +48,22 @@ pub fn generate_nl_with_call_context_and_summary(
     max_callees: usize,
     summary: Option<&str>,
     hyde: Option<&str>,
+    model_max_seq_len: usize,
 ) -> String {
     tracing::trace!(
         callers = ctx.callers.len(),
         callees = ctx.callees.len(),
         has_summary = summary.is_some(),
         has_hyde = hyde.is_some(),
+        model_max_seq_len,
         "generate_nl_with_call_context_and_summary"
     );
-    let base = generate_nl_description(chunk);
+    // CQ-V1.36-1: thread the model's seq-length into the section-chunk preview
+    // budget. Previously this called the legacy 1-arg `generate_nl_description`
+    // which routed through `CQS_MAX_SEQ_LENGTH` env (default 512), capping
+    // nomic-coderank (2048) and qwen3 (4096) section previews at ~25% of the
+    // model's actual capacity on every enrichment pass.
+    let base = generate_nl_description_with_seq_len(chunk, model_max_seq_len);
 
     let mut extras = Vec::new();
 
@@ -875,7 +882,8 @@ mod tests {
             callees: vec![],
         };
         let freq = std::collections::HashMap::new();
-        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+        let nl =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
         assert!(nl.contains("Called by: main, serve"), "got: {}", nl);
         assert!(!nl.contains("Calls:"), "got: {}", nl);
     }
@@ -895,7 +903,8 @@ mod tests {
         freq.insert("log".to_string(), 0.15_f32); // above 10% threshold — filtered
         freq.insert("validate".to_string(), 0.05_f32); // below — kept
         freq.insert("save".to_string(), 0.02_f32); // below — kept
-        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+        let nl =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
         assert!(nl.contains("Calls: validate, save"), "got: {}", nl);
         assert!(!nl.contains("log"), "log should be filtered, got: {}", nl);
     }
@@ -913,7 +922,8 @@ mod tests {
             callees: vec![],
         };
         let freq = std::collections::HashMap::new();
-        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 2, 5, None, None);
+        let nl =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 2, 5, None, None, 512);
         assert!(nl.contains("Called by: a, b"), "got: {}", nl);
         assert!(!nl.contains(", c"), "c should be truncated, got: {}", nl);
     }
@@ -925,7 +935,7 @@ mod tests {
         let freq = std::collections::HashMap::new();
         let base = generate_nl_description(&chunk);
         let enriched =
-            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
         assert_eq!(base, enriched);
     }
 
@@ -949,6 +959,7 @@ mod tests {
             5,
             Some(summary),
             Some(hyde),
+            512,
         );
 
         // Summary should be prepended (appears before the base NL)
@@ -981,7 +992,8 @@ mod tests {
         freq.insert("log".to_string(), 0.15);
         freq.insert("rare_fn".to_string(), 0.02);
 
-        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+        let nl =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
 
         // "log" should be filtered out (>= 0.10 threshold)
         assert!(
@@ -1008,7 +1020,8 @@ mod tests {
         };
         let freq = std::collections::HashMap::new();
 
-        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+        let nl =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
 
         // Callers appear (tokenized: snake_case split into words)
         assert!(
@@ -1056,7 +1069,8 @@ mod tests {
         freq.insert("unwrap".to_string(), 0.12);
         freq.insert("rare_fn".to_string(), 0.02);
 
-        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+        let nl =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
 
         // High-frequency callees should be filtered
         assert!(
@@ -1094,6 +1108,7 @@ mod tests {
             5,
             Some(summary),
             Some(hyde),
+            512,
         );
 
         // Summary prepended
