@@ -437,6 +437,10 @@ impl Store<ReadWrite> {
     pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
         let val = if dirty { "1" } else { "0" };
         let key = kind.metadata_key();
+        let other_key = match kind {
+            HnswKind::Enriched => HnswKind::Base.metadata_key(),
+            HnswKind::Base => HnswKind::Enriched.metadata_key(),
+        };
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
@@ -444,13 +448,36 @@ impl Store<ReadWrite> {
                 .bind(val)
                 .execute(&mut *tx)
                 .await?;
-            // DS-V1.36-3: clear the legacy single `hnsw_dirty` key so the
-            // is_hnsw_dirty fallback can't return a stale answer for the
-            // non-written kind. The doc on is_hnsw_dirty already promised
-            // this; only set_hnsw_dirty hadn't been performing the cleanup.
-            sqlx::query("DELETE FROM metadata WHERE key = 'hnsw_dirty'")
-                .execute(&mut *tx)
+            // DS-V1.36-3: split the legacy single `hnsw_dirty` key into per-kind
+            // keys atomically. If a legacy value exists and the other kind has
+            // no per-kind key yet, seed the other per-kind from legacy so the
+            // un-touched kind keeps its prior dirty state. Then drop legacy so
+            // future is_hnsw_dirty calls don't fall back to stale data. The
+            // doc on is_hnsw_dirty had promised this split since v1.20; only
+            // set_hnsw_dirty had drifted from doing it.
+            let legacy: Option<String> = sqlx::query_scalar::<_, String>(
+                "SELECT value FROM metadata WHERE key = 'hnsw_dirty'",
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(legacy_val) = legacy {
+                let other_exists: Option<i64> = sqlx::query_scalar::<_, i64>(
+                    "SELECT 1 FROM metadata WHERE key = ?1",
+                )
+                .bind(other_key)
+                .fetch_optional(&mut *tx)
                 .await?;
+                if other_exists.is_none() {
+                    sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                        .bind(other_key)
+                        .bind(&legacy_val)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                sqlx::query("DELETE FROM metadata WHERE key = 'hnsw_dirty'")
+                    .execute(&mut *tx)
+                    .await?;
+            }
             tx.commit().await?;
             Ok(())
         })
