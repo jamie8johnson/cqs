@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.2] - 2026-05-04
+
+Patch release. No schema bump. **Critical fix: long-running `cqs index` runs no longer crash with `(code: 5) database is locked`** when a concurrent short-lived `cqs` invocation (e.g. periodic `cqs stats`) overlaps the indexer's writes. Plus a defense-in-depth `busy_timeout` bump and 5 dependency bumps merged from dependabot.
+
+### Fixed
+
+- **`Store::drop` checkpoint TRUNCATE → PASSIVE** (#1451). The slot store's `Drop` ran `PRAGMA wal_checkpoint(TRUNCATE)`, which acquires the SQLite EXCLUSIVE lock — any read-only Store handle exiting (e.g. `cqs stats` polling during a long reindex) blocked every other writer until the WAL was fully copied back. Under WSL 9P/NTFS that checkpoint sometimes took seconds; the indexer's next `BEGIN` landed inside that window, surfaced `SQLITE_BUSY`, and terminated fatally because mid-transaction BUSY isn't recoverable even with a longer `busy_timeout`. Switched to `PASSIVE` + 1s `tokio::time::timeout` cap, mirroring `EmbeddingCache::drop` (which fixed the same shape of bug in #1343 — the slot store had drifted). Operators who want truncate semantics call `Store::close()` from a structured-shutdown path before drop.
+- **SQLite `busy_timeout` 5s → 30s** (#1450). Defense-in-depth bump for transient WAL contention. The `CQS_BUSY_TIMEOUT_MS` env override remains the tuning knob. Default 5000→30000ms for the slot store + embedding cache; 2000→15000ms for the query cache (write-lighter). The PASSIVE-checkpoint fix above addresses the actual root cause; this bump just gives transient contention windows more grace before surfacing.
+
+### Changed
+
+- **Dependency bumps** (dependabot): `tokio 1.52.1 → 1.52.2` (#1443), `fast_html2md 0.0.61 → 0.0.62` (#1444), `tree-sitter-swift 0.7.1 → 0.7.2` (#1445), `tree-sitter-powershell 0.26.3 → 0.26.4` (#1447), `similar 2.7.0 → 3.1.0` (#1448 — major bump validated by full CI).
+
+### Notes
+
+- This release closes out a session-long debugging arc: three consecutive `cqs index` reindexes against the in-progress qwen3-4b ceiling probe slot crashed with the same `database is locked` error after 5-25 minutes of work each. The first hypothesis (busy_timeout too short) shipped as #1450 but the run still crashed identically — the actual fix required tracing the concurrent-Drop pattern via timestamp correlation between `cqs stats` invocations and the indexer's failure instant. The DB-lock fix is materially load-bearing for any long-running `cqs index` on this filesystem against any concurrent reader; ship before further reindexing.
+
 ## [1.36.1] - 2026-05-04
 
 Patch release. No schema bump. Headline: **Qwen3-Embedding-4B preset + FP16/BF16 ONNX output dispatch** (#1441, #1442) — extends the embedder to decoder-only architectures with `position_ids` input and 16-bit output tensors. Plus daemon ergonomics (server-side `wait_fresh` and idle-shutdown), HNSW perf scaling for large corpora, and 9 audit-driven fixes.
