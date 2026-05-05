@@ -102,19 +102,19 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 
 | ID | Category | Title | Difficulty | Status |
 |----|----------|-------|------------|--------|
-| P2-1 | Error Handling | EH-V1.36-2 train_data corpus-parse Err+panic collapsed | easy | ⏳ |
-| P2-2 | Error Handling | EH-V1.36-3 doc_writer cross-device backup-restore silent drop | easy | ⏳ |
-| P2-3 | Observability | cagra_persist_enabled silent skip in callers | easy | ⏳ |
-| P2-4 | TC Adversarial | Daemon JSON-RPC: lone surrogate + deeply-nested JSON | medium | ⏳ |
+| P2-1 | Error Handling | EH-V1.36-2 train_data corpus-parse Err+panic collapsed | easy | ✅ |
+| P2-2 | Error Handling | EH-V1.36-3 doc_writer cross-device backup-restore silent drop | easy | ✅ |
+| P2-3 | Observability | cagra_persist_enabled silent skip in callers | easy | ✅ |
+| P2-4 | TC Adversarial | Daemon JSON-RPC: lone surrogate + deeply-nested JSON | medium | ✅ |
 | P2-5 | TC Adversarial | Daemon socket: zero concurrent-connection / queue-saturation | medium | ⏳ |
 | P2-6 | TC Adversarial | serve HTTP chunk_id adversarial unicode | medium | ⏳ |
-| P2-7 | Robustness | RB-V1.36-5 chunked blake3 vs whole-file read (staleness + reindex) | medium | ⏳ |
-| P2-8 | Robustness | RB-V1.36-8 Language::def panics on disabled feature flag | medium | ⏳ |
-| P2-9 | Algorithm | compute_scores_opt empty-tokenization 0.5 fallback in mixed cohort | medium | ⏳ |
-| P2-10 | Algorithm | SPLADE min-max normalization collapse on negative cohort | medium | ⏳ |
-| P2-11 | Algorithm | total_cmp tie-break interleaves 0.5 fallback (companion to P2-9) | medium | ⏳ |
-| P2-12 | Platform | worktree::lookup_main_cqs_dir asymmetric canonicalization | medium | ⏳ |
-| P2-13 | Platform | 5 strip_prefix sites leak abs paths on case-insensitive FS | medium | ⏳ |
+| P2-7 | Robustness | RB-V1.36-5 chunked blake3 vs whole-file read (staleness + reindex) | medium | ✅ |
+| P2-8 | Robustness | RB-V1.36-8 Language::def panics on disabled feature flag | medium | 🟢 |
+| P2-9 | Algorithm | compute_scores_opt empty-tokenization 0.5 fallback in mixed cohort | medium | 🟢 |
+| P2-10 | Algorithm | SPLADE min-max normalization collapse on negative cohort | medium | ✅ |
+| P2-11 | Algorithm | total_cmp tie-break interleaves 0.5 fallback (companion to P2-9) | medium | 🟢 |
+| P2-12 | Platform | worktree::lookup_main_cqs_dir asymmetric canonicalization | medium | ✅ |
+| P2-13 | Platform | 5 strip_prefix sites leak abs paths on case-insensitive FS | medium | ✅ |
 | P2-14 | Performance | ChunkRow::from_row 16 column-name strcmps per row | medium | ⏳ |
 
 ## P3 — Fix If Time (clusters listed; details in audit-findings.md)
