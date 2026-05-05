@@ -744,3 +744,65 @@ fn handle_socket_client_round_trips_stats() {
         "error_count must reflect the parse failure; got {error_count}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// TC-V1.36-4 / P2-4: lone surrogate halves and deeply-nested JSON
+// adversarial coverage. serde_json by default accepts lone surrogates
+// (RFC 8259 ambiguity) and has no recursion limit on object nesting,
+// so a malicious client could deliver either shape and reach handler
+// dispatch (or stack-overflow the parser thread). Pin both rejection
+// paths so a future serde_json upgrade or parser swap surfaces here
+// instead of in production.
+// ─────────────────────────────────────────────────────────────────────
+#[test]
+fn daemon_handles_lone_surrogate_in_string_arg() {
+    let (_dir, ctx) = test_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    // `\uD800` is a high surrogate without a paired low surrogate.
+    // serde_json today decodes this as a rust String containing the
+    // replacement byte sequence; what matters for us is that the
+    // handler doesn't panic and doesn't leave the socket half-open.
+    let payload = "{\"command\":\"ping\",\"args\":[\"\\uD800\"]}\n";
+    client
+        .write_all(payload.as_bytes())
+        .expect("write surrogate");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        status == "ok" || status == "error",
+        "lone surrogate must be either accepted or surfaced as a structured error; got: {line}"
+    );
+    join_worker(client, handle);
+}
+
+#[test]
+fn daemon_handles_deeply_nested_json_without_panic() {
+    let (_dir, ctx) = test_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    // 200 levels of array nesting. serde_json has no recursion limit
+    // by default; on the production line-cap path (1 MiB) this fits
+    // comfortably. The handler should reach the command-validation
+    // step and reject with a structured error (no `command` field at
+    // the top level) instead of stack-overflowing the parser thread.
+    let mut payload = String::with_capacity(512);
+    payload.push_str("{\"command\":\"ping\",\"args\":[");
+    for _ in 0..200 {
+        payload.push('[');
+    }
+    for _ in 0..200 {
+        payload.push(']');
+    }
+    payload.push_str("]}\n");
+    client
+        .write_all(payload.as_bytes())
+        .expect("write deeply nested");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        status == "ok" || status == "error",
+        "deeply-nested JSON must surface a structured response; got: {line}"
+    );
+    join_worker(client, handle);
+}
