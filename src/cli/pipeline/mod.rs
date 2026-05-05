@@ -54,10 +54,10 @@ pub(crate) fn run_index_pipeline(
     // Channels
     let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
         bounded(parse_channel_depth());
+    let embed_depth = embed_channel_depth(model_config.dim, model_config.embed_batch_size());
     let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
-        bounded(embed_channel_depth());
-    let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
-        bounded(embed_channel_depth());
+        bounded(embed_depth);
+    let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(embed_depth);
 
     // Shared state
     let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);

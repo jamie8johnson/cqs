@@ -194,10 +194,22 @@ impl<Mode> Store<Mode> {
             // This bounds memory to O(semantic_limit) instead of O(total_chunks).
             let mut score_heap = BoundedScoreHeap::new(semantic_limit);
 
-            // Cursor-based batching: load embeddings in batches of 5000 instead of
-            // all at once. This bounds memory to O(batch_size) instead of O(total_chunks).
-            // Uses the same cursor pattern as EmbeddingBatchIterator in store/chunks.rs.
-            const BRUTE_FORCE_BATCH_SIZE: i64 = 5000;
+            // Cursor-based batching: bound memory to O(batch_size) instead of
+            // O(total_chunks). Uses the same cursor pattern as
+            // EmbeddingBatchIterator in store/chunks.rs.
+            //
+            // SHL-V1.36-3: scale by query dim so a 4096-dim model doesn't hold
+            // 80 MB per batch in memory while a 768-dim model only holds 15.
+            // 5000 is the BGE-large baseline (1024-dim); at 768-dim that's
+            // 6_666 (clamped to 50_000), at 4096-dim it's 1_250 (above the
+            // 500 floor). Env override: CQS_BRUTE_FORCE_BATCH_SIZE wins.
+            let brute_force_batch_size: i64 = std::env::var("CQS_BRUTE_FORCE_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or_else(|| {
+                    crate::limits::dim_scaled_batch(5000, query.len(), 500, 50_000) as i64
+                });
             let mut last_rowid: i64 = 0;
 
             // Hoist SQL template out of cursor loop — only last_rowid changes per iteration
@@ -225,7 +237,7 @@ impl<Mode> Store<Mode> {
                         q = q.bind(val);
                     }
                     q = q.bind(last_rowid);
-                    q = q.bind(BRUTE_FORCE_BATCH_SIZE);
+                    q = q.bind(brute_force_batch_size);
                     q.fetch_all(&self.pool).await?
                 };
 

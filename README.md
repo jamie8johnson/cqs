@@ -737,6 +737,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
 | `CQS_BATCH_DATA_IDLE_MINUTES` | `30` | Minutes of inactivity before `cqs batch` / `cqs chat` evicts heavy data caches (HNSW, SPLADE index, call graph, test chunks, file set, refs). Independent of the ONNX-session sweep above. `0` disables. |
 | `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
+| `CQS_BRUTE_FORCE_BATCH_SIZE` | (auto) | Cursor-based brute-force search batch size. Default scales by query embedding dim via `dim_scaled_batch(5000, dim, 500, 50_000)` so a 4096-dim model holds ~20 MB per batch instead of 80 MB. v1.36.2 SHL-V1.36-3 — pinned override wins verbatim. |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
 | `CQS_CAGRA_GRAPH_DEGREE` | `64` | CAGRA output graph degree at build time (cuVS default 64; higher → better recall, longer build) |

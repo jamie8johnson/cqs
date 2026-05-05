@@ -110,9 +110,18 @@ pub(super) fn parse_channel_depth() -> usize {
     })
 }
 
-/// Embed channel depth — heavy (embedding vectors), smaller to bound memory.
-/// Configurable via `CQS_EMBED_CHANNEL_DEPTH` environment variable.
-pub(super) fn embed_channel_depth() -> usize {
+/// Embed channel depth — heavy (embedding vectors), bounded for memory.
+///
+/// SHL-V1.36-8: pins a *byte budget* (~16 MB by default) instead of a fixed
+/// depth so the channel holds the same amount of vector data regardless of
+/// embedding dim. Pre-fix, `depth=64` × batch=64 × dim=1024 × 4 bytes = 16 MB
+/// at BGE-large but ballooned/shrank linearly with dim. Now: depth scales
+/// inversely with `(batch × dim × 4)` so the buffered byte total stays in
+/// the same neighborhood.
+///
+/// `CQS_EMBED_CHANNEL_DEPTH` env override wins verbatim. With no override
+/// and `dim == 0` (test paths) we fall back to the historic default of 64.
+pub(super) fn embed_channel_depth(dim: usize, batch_size: usize) -> usize {
     static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *DEPTH.get_or_init(|| match std::env::var("CQS_EMBED_CHANNEL_DEPTH") {
         Ok(val) => match val.parse::<usize>() {
@@ -121,12 +130,26 @@ pub(super) fn embed_channel_depth() -> usize {
                 n
             }
             _ => {
-                tracing::warn!(value = %val, "Invalid CQS_EMBED_CHANNEL_DEPTH, using default 64");
-                64
+                tracing::warn!(value = %val, "Invalid CQS_EMBED_CHANNEL_DEPTH, using default budget");
+                derive_depth_from_budget(dim, batch_size)
             }
         },
-        Err(_) => 64,
+        Err(_) => derive_depth_from_budget(dim, batch_size),
     })
+}
+
+/// SHL-V1.36-8: derive channel depth from a 16 MB byte budget. Each
+/// message ≈ `batch_size * dim * 4 bytes` of f32 vectors. Clamp `[16, 256]`.
+fn derive_depth_from_budget(dim: usize, batch_size: usize) -> usize {
+    const BYTE_BUDGET: usize = 16 * 1024 * 1024;
+    if dim == 0 || batch_size == 0 {
+        return 64; // historic default for test / unknown paths
+    }
+    let msg_bytes = batch_size.saturating_mul(dim).saturating_mul(4);
+    if msg_bytes == 0 {
+        return 64;
+    }
+    (BYTE_BUDGET / msg_bytes).clamp(16, 256)
 }
 
 /// Process-wide lock used by tests that mutate or depend on
