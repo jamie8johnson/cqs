@@ -31,11 +31,20 @@ use super::{max_content_chars, LlmClient};
 /// has effectively zero chance of guessing the closing sentinel even
 /// across millions of prompts.
 fn fresh_sentinel_nonce() -> String {
+    // PERF-V1.36-8: write hex digits directly instead of `format!("{:02x}", b)`
+    // which allocates a 2-char String per iteration (16 throwaway allocs per
+    // prompt). Manual nibble-to-char keeps the loop alloc-free.
     let bytes: [u8; 16] = rand::random();
     let mut hex = String::with_capacity(32);
+    fn nibble(n: u8) -> char {
+        match n {
+            0..=9 => (b'0' + n) as char,
+            _ => (b'a' + n - 10) as char,
+        }
+    }
     for b in bytes {
-        // Lowercase hex, no separators — keep the sentinel compact.
-        hex.push_str(&format!("{:02x}", b));
+        hex.push(nibble(b >> 4));
+        hex.push(nibble(b & 0x0f));
     }
     hex
 }

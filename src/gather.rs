@@ -409,11 +409,11 @@ pub(crate) fn fetch_and_assemble<Mode>(
     for (name, (score, depth)) in name_scores {
         if let Some(results) = batch_results.get(name) {
             if let Some(r) = results.first() {
-                if seen_ids.contains(&r.chunk.id) {
+                // PERF-V1.36-4: HashSet::insert returns false if the key
+                // was already present — single hash probe instead of two.
+                if !seen_ids.insert(r.chunk.id.clone()) {
                     continue;
                 }
-                seen_ids.insert(r.chunk.id.clone());
-
                 chunks.push(GatheredChunk::from_search(r, root, *score, *depth, None));
             }
         }

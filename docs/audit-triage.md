@@ -106,8 +106,8 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 | P2-2 | Error Handling | EH-V1.36-3 doc_writer cross-device backup-restore silent drop | easy | ✅ |
 | P2-3 | Observability | cagra_persist_enabled silent skip in callers | easy | ✅ |
 | P2-4 | TC Adversarial | Daemon JSON-RPC: lone surrogate + deeply-nested JSON | medium | ✅ |
-| P2-5 | TC Adversarial | Daemon socket: zero concurrent-connection / queue-saturation | medium | ⏳ |
-| P2-6 | TC Adversarial | serve HTTP chunk_id adversarial unicode | medium | ⏳ |
+| P2-5 | TC Adversarial | Daemon socket: zero concurrent-connection / queue-saturation | medium | ✅ |
+| P2-6 | TC Adversarial | serve HTTP chunk_id adversarial unicode | medium | ✅ |
 | P2-7 | Robustness | RB-V1.36-5 chunked blake3 vs whole-file read (staleness + reindex) | medium | ✅ |
 | P2-8 | Robustness | RB-V1.36-8 Language::def panics on disabled feature flag | medium | 🟢 |
 | P2-9 | Algorithm | compute_scores_opt empty-tokenization 0.5 fallback in mixed cohort | medium | 🟢 |
