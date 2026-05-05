@@ -37,7 +37,12 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
         }
     }
     match strongest {
-        Some(s) => 1.0 + s * ScoringConfig::current().note_boost_factor,
+        // Clamp sentiment to [-1.0, 1.0] and reject NaN — defends against
+        // NaN/±Inf in notes round-tripping through SQLite.
+        Some(s) => {
+            let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+            1.0 + s * ScoringConfig::current().note_boost_factor
+        }
         None => 1.0,
     }
 }
@@ -129,7 +134,16 @@ impl<'a> NoteBoostIndex<'a> {
         }
 
         match strongest {
-            Some(s) => 1.0 + s * ScoringConfig::current().note_boost_factor,
+            // Clamp sentiment to [-1.0, 1.0] before applying — defense against
+            // NaN/±Inf round-tripping through SQLite (see test_upsert_notes_infinity_sentiment_roundtrips).
+            // Without this, +Inf sentiment produced an Inf multiplier that
+            // BoundedScoreHeap dropped via is_finite — the chunk it was meant to
+            // boost was hidden from results entirely. f32::clamp panics on NaN,
+            // so handle non-finite up front.
+            Some(s) => {
+                let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+                1.0 + s * ScoringConfig::current().note_boost_factor
+            }
             None => 1.0,
         }
     }
@@ -223,7 +237,16 @@ impl OwnedNoteBoostIndex {
         }
 
         match strongest {
-            Some(s) => 1.0 + s * ScoringConfig::current().note_boost_factor,
+            // Clamp sentiment to [-1.0, 1.0] before applying — defense against
+            // NaN/±Inf round-tripping through SQLite (see test_upsert_notes_infinity_sentiment_roundtrips).
+            // Without this, +Inf sentiment produced an Inf multiplier that
+            // BoundedScoreHeap dropped via is_finite — the chunk it was meant to
+            // boost was hidden from results entirely. f32::clamp panics on NaN,
+            // so handle non-finite up front.
+            Some(s) => {
+                let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+                1.0 + s * ScoringConfig::current().note_boost_factor
+            }
             None => 1.0,
         }
     }

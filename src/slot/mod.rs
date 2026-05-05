@@ -335,23 +335,39 @@ pub fn write_slot_model(
     // corrupted slot.toml still recovers on the next write — matches the
     // tolerance pattern in `read_slot_model` (warn + None) and means
     // `cqs slot promote` can't deadlock on a hand-broken config.
+    // RB-V1.36-4: cap slot.toml read at the small-file budget. The sibling
+    // `Config::load_file` path enforces MAX_CONFIG_SIZE; this site was the
+    // only one without a guard.
     let mut config: SlotConfigFile = if final_path.exists() {
-        match fs::read_to_string(&final_path) {
-            Ok(raw) => toml::from_str(&raw).unwrap_or_else(|e| {
-                tracing::warn!(
-                    path = %final_path.display(),
-                    error = %e,
-                    "Existing slot.toml is malformed; rewriting from default"
-                );
-                SlotConfigFile::default()
-            }),
-            Err(e) => {
-                tracing::warn!(
-                    path = %final_path.display(),
-                    error = %e,
-                    "Failed to read slot.toml for round-trip; rewriting from default"
-                );
-                SlotConfigFile::default()
+        let max_bytes = crate::limits::small_file_max_bytes();
+        let oversize = fs::metadata(&final_path)
+            .map(|m| m.len() > max_bytes)
+            .unwrap_or(false);
+        if oversize {
+            tracing::warn!(
+                path = %final_path.display(),
+                cap = max_bytes,
+                "slot.toml exceeds CQS_SMALL_FILE_MAX_BYTES; rewriting from default"
+            );
+            SlotConfigFile::default()
+        } else {
+            match fs::read_to_string(&final_path) {
+                Ok(raw) => toml::from_str(&raw).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        path = %final_path.display(),
+                        error = %e,
+                        "Existing slot.toml is malformed; rewriting from default"
+                    );
+                    SlotConfigFile::default()
+                }),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %final_path.display(),
+                        error = %e,
+                        "Failed to read slot.toml for round-trip; rewriting from default"
+                    );
+                    SlotConfigFile::default()
+                }
             }
         }
     } else {

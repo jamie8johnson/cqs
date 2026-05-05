@@ -397,7 +397,17 @@ impl<Mode> Store<Mode> {
                         );
                         continue;
                     }
-                    current_vec.push((token_id as u32, weight as f32));
+                    let weight_f32 = weight as f32;
+                    if !weight_f32.is_finite() {
+                        tracing::warn!(
+                            token_id,
+                            chunk_id = %current_id.unwrap_or("?"),
+                            weight = weight,
+                            "Non-finite sparse-vector weight, skipping"
+                        );
+                        continue;
+                    }
+                    current_vec.push((token_id as u32, weight_f32));
                 }
                 if let Some(id) = current_id {
                     result.push((id.to_string(), current_vec));

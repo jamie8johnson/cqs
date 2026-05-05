@@ -896,6 +896,19 @@ fn resolve_parent_context<Mode>(
                 );
                 continue;
             }
+            // RB-V1.36-2: gate by file size before slurping for line-range slice.
+            let max_bytes = cqs::limits::small_file_max_bytes();
+            if let Ok(meta) = std::fs::metadata(&canonical) {
+                if meta.len() > max_bytes {
+                    tracing::warn!(
+                        path = %canonical.display(),
+                        size = meta.len(),
+                        cap = max_bytes,
+                        "Skipping parent-context fallback (CQS_SMALL_FILE_MAX_BYTES)"
+                    );
+                    continue;
+                }
+            }
             match std::fs::read_to_string(&canonical) {
                 Ok(content) => {
                     let lines: Vec<&str> = content.lines().collect();

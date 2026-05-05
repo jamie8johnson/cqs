@@ -136,7 +136,10 @@ pub fn find_changed_functions(
 
     for func in functions {
         let overlaps = hunks.iter().any(|h| {
-            let hunk_end = h.new_start + h.new_count.saturating_sub(1);
+            // saturating_add on the outer add too — diff headers can carry
+            // adversarial usize values (`@@ -1,1 +18446744073709551615,2 @@`)
+            // and parse_hunk_header doesn't reject them.
+            let hunk_end = h.new_start.saturating_add(h.new_count.saturating_sub(1));
             // Overlap: hunk range [new_start, hunk_end] intersects [start_line, end_line]
             h.new_start <= func.end_line && hunk_end >= func.start_line
         });

@@ -108,7 +108,7 @@ pub use drift::{detect_drift, DriftEntry, DriftResult};
 pub(crate) mod focused_read;
 pub(crate) mod gather;
 pub(crate) mod impact;
-pub(crate) mod limits;
+pub mod limits;
 pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod onboard;

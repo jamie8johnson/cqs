@@ -248,6 +248,19 @@ pub fn compute_rewrite(
         return Ok(None);
     }
 
+    // RB-V1.36-1: gate by file size before slurping into a String.
+    let max_bytes = crate::limits::small_file_max_bytes();
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > max_bytes {
+            tracing::warn!(
+                path = %path.display(),
+                size = meta.len(),
+                cap = max_bytes,
+                "Skipping oversize file (CQS_SMALL_FILE_MAX_BYTES) for doc rewrite"
+            );
+            return Ok(None);
+        }
+    }
     let content = std::fs::read_to_string(path)?;
     let new_content = compute_rewrite_from_content(&content, path, edits, parser)?;
     Ok(new_content.map(|(new, applied)| RewriteOutcome {
@@ -315,7 +328,19 @@ pub fn rewrite_file(
 
     // Read current file content (under the lock so the parse + write cycle
     // sees a consistent snapshot — same rationale as the original inline
-    // implementation).
+    // implementation). RB-V1.36-1: size-gate before slurping.
+    let max_bytes = crate::limits::small_file_max_bytes();
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > max_bytes {
+            tracing::warn!(
+                path = %path.display(),
+                size = meta.len(),
+                cap = max_bytes,
+                "Skipping oversize file (CQS_SMALL_FILE_MAX_BYTES) for doc rewrite"
+            );
+            return Ok(0);
+        }
+    }
     let content = std::fs::read_to_string(path)?;
     let outcome = compute_rewrite_from_content(&content, path, edits, parser)?;
     let Some((new_content, count)) = outcome else {

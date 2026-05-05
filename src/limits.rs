@@ -103,6 +103,16 @@ pub(crate) fn convert_file_size() -> u64 {
     parse_env_u64("CQS_CONVERT_MAX_FILE_SIZE", DEFAULT_CONVERT_MAX_FILE_SIZE)
 }
 
+/// RB-V1.36-1/3/4: small-file byte cap for ad-hoc reads of config-shaped files
+/// (slot.toml, git hooks, parent-context fallbacks, doc-rewriter sources).
+/// Defaults to 4 MiB. Honored via `CQS_SMALL_FILE_MAX_BYTES`. Source files for
+/// the doc rewriter and parent-context lookups can legitimately exceed 1 MiB
+/// (the file-discovery gate) but should never reach tens of MiB.
+pub fn small_file_max_bytes() -> u64 {
+    const DEFAULT_SMALL_FILE_MAX: u64 = 4 * 1024 * 1024;
+    parse_env_u64("CQS_SMALL_FILE_MAX_BYTES", DEFAULT_SMALL_FILE_MAX)
+}
+
 // ============ SHL-V1.29-7: hotspot / dead-cluster thresholds ============
 //
 // `HOTSPOT_MIN_CALLERS`, `DEAD_CLUSTER_MIN_SIZE`, `SUGGEST_HOTSPOT_POOL`
