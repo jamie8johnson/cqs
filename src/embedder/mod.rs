@@ -2539,6 +2539,33 @@ mod tests {
                 "no window contains `CagraError` — decoding lowercased the text"
             );
         }
+
+        /// TC-V1.36-9 / P3: max_tokens == 0 short-circuits to empty Vec
+        /// without touching the tokenizer.
+        #[test]
+        #[ignore]
+        fn split_into_windows_max_tokens_zero_returns_empty() {
+            let embedder = match Embedder::new(ModelConfig::e5_base()) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let windows = embedder.split_into_windows("any text", 0, 0).unwrap();
+            assert!(windows.is_empty());
+        }
+
+        /// TC-V1.36-9 / P3: overlap >= max_tokens/2 must error out, not
+        /// produce O(2n/max_tokens) windows.
+        #[test]
+        #[ignore]
+        fn split_into_windows_overlap_too_large_errors() {
+            let embedder = match Embedder::new(ModelConfig::e5_base()) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            // overlap=64 with max_tokens=128 → overlap >= max_tokens/2.
+            let res = embedder.split_into_windows("any text", 128, 64);
+            assert!(res.is_err(), "overlap >= max_tokens/2 must error");
+        }
     }
 
     // ===== TC-45: ensure_model / CQS_ONNX_DIR path tests =====

@@ -573,4 +573,36 @@ mod tests {
         assert_eq!(parse_env_f32(key, 0.5), 0.5, "integer zero falls back");
         std::env::remove_var(key);
     }
+
+    /// TC-V1.36-8 / P3: pin that `parse_env_usize_clamped` zero-input
+    /// falls back to `clamp(default)` rather than `0`. The helper's
+    /// `n > 0` filter is load-bearing — a future refactor moving the
+    /// check would silently produce 0, which would cause divide-by-zero
+    /// in callers like embed_batch_size. Also covers the
+    /// "default below min → use min" defensive contract.
+    #[test]
+    fn parse_env_usize_clamped_zero_input_uses_clamped_default() {
+        let key = "CQS_TEST_USIZE_ZERO";
+        std::env::set_var(key, "0");
+        assert_eq!(
+            parse_env_usize_clamped(key, 50, 1, 100),
+            50,
+            "explicit zero falls back to default (clamped)"
+        );
+        std::env::remove_var(key);
+        // Missing var also falls through to clamped default.
+        assert_eq!(parse_env_usize_clamped("CQS_TEST_USIZE_NX", 50, 1, 100), 50);
+    }
+
+    #[test]
+    fn parse_env_usize_clamped_default_below_min_clamps_up() {
+        // Misconfigured caller passes default=0, min=1 — must return min,
+        // not 0. Without the clamp(default) we'd return 0 and crash on
+        // division.
+        std::env::remove_var("CQS_TEST_USIZE_BELOW_MIN_DEFAULT");
+        assert_eq!(
+            parse_env_usize_clamped("CQS_TEST_USIZE_BELOW_MIN_DEFAULT", 0, 1, 100),
+            1
+        );
+    }
 }
