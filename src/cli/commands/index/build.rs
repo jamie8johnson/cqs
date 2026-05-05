@@ -358,7 +358,19 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                             "Read LLM summaries from existing DB"
                         );
                     }
-                    drop(old_store); // Close before rename
+                    // DS-V1.36-4: explicit close() runs the bounded TRUNCATE
+                    // checkpoint so concurrent watch writes are flushed into
+                    // the main DB before we delete -wal/-shm below. Plain
+                    // drop() runs only PASSIVE (post-#1450), which can return
+                    // without flushing under reader contention. close()
+                    // bounds at 30s and falls back to PASSIVE on timeout.
+                    if let Err(e) = old_store.close() {
+                        tracing::warn!(
+                            error = %e,
+                            "Old store close() failed before --force rebuild; \
+                             concurrent writes may not have been flushed"
+                        );
+                    }
                     summaries
                 }
                 Err(e) => {

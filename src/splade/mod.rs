@@ -210,8 +210,16 @@ fn probe_model_vocab(
 /// multiple paths means the model and tokenizer can desync (which has
 /// happened: a stale BERT tokenizer was used with a SPLADE-Code model,
 /// silently producing garbage embeddings).
+///
+/// CQ-V1.36-2: now auto-loads `.cqs.toml` from the cwd / nearest project root
+/// and threads `[splade]` through. Previous zero-arg form forwarded `None` and
+/// silently dropped any preset/path the user had configured. Six production
+/// callers hit this path and all of them now respect config without per-call
+/// retrofits.
 pub fn resolve_splade_model_dir() -> Option<std::path::PathBuf> {
-    resolve_splade_model_dir_with_config(None)
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cfg = crate::config::Config::load(&cwd);
+    resolve_splade_model_dir_with_config(cfg.splade.as_ref())
 }
 
 /// Config-aware variant of [`resolve_splade_model_dir`].

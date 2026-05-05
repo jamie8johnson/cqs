@@ -941,21 +941,34 @@ fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
 fn collect_migration_files(project_cqs_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     // Always-present
+    // DS-V1.36-1: include the full HNSW sidecar set. The previous list
+    // missed `hnsw.ids` and `hnsw.checksum` for both basenames. Post-PR #1325,
+    // verify_hnsw_checksums treats a checksum sidecar referencing files that
+    // don't exist as a hard error — a legacy-slot migration would leave
+    // .ids/.checksum behind in `.cqs/` and the next search either failed to
+    // verify or rebuilt from scratch (losing all enrichment work).
     let candidates = [
         crate::INDEX_DB_FILENAME,
         "index.db-wal",
         "index.db-shm",
         "index.db.bak",
-        // HNSW (enriched + base, persistence + index)
+        // HNSW (enriched + base, full sidecar set)
         "index.hnsw.data",
         "index.hnsw.graph",
+        "index.hnsw.ids",
+        "index.hnsw.checksum",
         "index_base.hnsw.data",
         "index_base.hnsw.graph",
+        "index_base.hnsw.ids",
+        "index_base.hnsw.checksum",
         "index.hnsw.lock",
+        "index_base.hnsw.lock",
         "index.cagra",
         "index.cagra.sidecar",
+        "index.cagra.meta",
         // SPLADE
         "splade.index.bin",
+        "splade.index.bin.bak",
     ];
     for name in candidates {
         let p = project_cqs_dir.join(name);

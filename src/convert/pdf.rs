@@ -17,15 +17,44 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 
     let python = find_python()?;
 
-    let output = std::process::Command::new(&python)
+    // RM-V1.36-2: bound PDF stdout. Default 100 MiB cap, env-overridable via
+    // CQS_PDF_MAX_BYTES. A pathological / hostile PDF can produce arbitrary
+    // stdout that .output() would buffer unbounded. Mirrors the spawn+take
+    // pattern in train_data::git_diff_tree.
+    use std::io::Read;
+    use std::process::Stdio;
+    let max_bytes: usize = std::env::var("CQS_PDF_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100 * 1024 * 1024);
+    let mut child = std::process::Command::new(&python)
         .arg("--")
         .arg(&script)
         .arg(path)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("Failed to run `{}`. Is Python installed?", python))?;
+    let mut stdout_buf = Vec::with_capacity(64 * 1024);
+    let mut stderr_buf = Vec::with_capacity(8 * 1024);
+    if let Some(s) = child.stdout.take() {
+        let _ = s.take((max_bytes as u64) + 1).read_to_end(&mut stdout_buf);
+    }
+    if let Some(s) = child.stderr.take() {
+        let _ = s
+            .take(1024 * 1024) // 1 MiB cap on stderr
+            .read_to_end(&mut stderr_buf);
+    }
+    let status = child.wait().context("Failed to await PDF converter")?;
+    if stdout_buf.len() > max_bytes {
+        anyhow::bail!(
+            "PDF converter stdout exceeded CQS_PDF_MAX_BYTES ({} bytes)",
+            max_bytes
+        );
+    }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_buf);
         if stderr.contains("pymupdf4llm not installed") {
             tracing::warn!("pymupdf4llm not installed");
             anyhow::bail!("pymupdf4llm not installed. Run: pip install pymupdf4llm");
@@ -35,7 +64,7 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
     }
 
     let markdown =
-        String::from_utf8(output.stdout).context("PDF converter produced non-UTF-8 output")?;
+        String::from_utf8(stdout_buf).context("PDF converter produced non-UTF-8 output")?;
 
     if markdown.trim().is_empty() {
         tracing::warn!(path = %path.display(), "PDF produced no text (possibly image-only)");
