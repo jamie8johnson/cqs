@@ -71,18 +71,16 @@ pub const DEFAULT_DEPTH_TRACE: u16 = 10;
 ///
 /// Lifted out of `src/cli/commands/eval/mod.rs` (P2-14, #1372) so search and
 /// eval share the same flag shape. `cqs <q> --rerank` is preserved as a
-/// boolean shorthand for `--reranker onnx`; `--reranker none|onnx|llm` is
-/// the canonical form. `Llm` is reserved for the production wiring landing
-/// in #1220 — the variant is exposed on every retrieval surface so the
-/// future implementation can plug in without a breaking CLI change.
+/// boolean shorthand for `--reranker onnx`; `--reranker none|onnx` is the
+/// canonical form. `Llm` was previously exposed as a placeholder for #1220
+/// but errored at runtime — API-V1.36-2 dropped it from the surface so
+/// `--help` lists only modes the binary actually supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum RerankerMode {
     /// No reranking — stage-1 retrieval is the final answer (default).
     None,
     /// Cross-encoder reranker via [`cqs::OnnxReranker`].
     Onnx,
-    /// LLM reranker — reserved for #1220, currently errors on selection.
-    Llm,
 }
 
 /// Resolve the effective reranker mode from the `(--reranker, --rerank)`
@@ -281,7 +279,8 @@ pub(crate) struct GatherArgs {
     /// Aligned with `onboard`/`impact`/`test-map` which already use `--depth`;
     /// the legacy `--expand` form is kept as a visible alias.
     /// #1373: BLAST default — direct callers / callees only.
-    #[arg(long, default_value_t = DEFAULT_DEPTH_BLAST, visible_alias = "expand")]
+    /// API-V1.36-1: -d short flag for parity with impact/onboard/test-map.
+    #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_BLAST, visible_alias = "expand")]
     pub depth: usize,
     /// Expansion direction: both, callers, callees
     #[arg(long, default_value = "both")]
@@ -409,6 +408,7 @@ pub(crate) struct TraceArgs {
     /// (#1373) so the spelling matches the rest of the depth-knob
     /// family even though the semantic differs.
     #[arg(
+        short = 'd',
         long,
         visible_alias = "depth",
         default_value_t = DEFAULT_DEPTH_TRACE,

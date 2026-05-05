@@ -133,9 +133,12 @@ impl<Mode> Store<Mode> {
         threshold: f32,
         notes: &[NoteSummary],
     ) -> Result<Vec<SearchResult>, StoreError> {
-        let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
-            .entered();
-
+        // OB-V1.36-1: no nested `info_span!("search_filtered", ...)` here — the
+        // `search_filtered` public wrapper at line 103 already opens the span
+        // for the whole call tree, and `search_filtered_with_index` (line 689)
+        // opens its own `search_index_guided` span first. A duplicate span
+        // here doubled the per-query span allocation on the hottest daemon
+        // path and made flame graphs look like recursion that wasn't there.
         self.rt.block_on(async {
             let fsql = build_filter_sql(filter);
             // AC-V1.33-3: saturating mul matches sibling paths (lines 505, 696);

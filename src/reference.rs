@@ -196,6 +196,8 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     // RM-29: Cap concurrency — each ref loads Store (~16MB mmap via
     // open_readonly_small) + HNSW (~50-200MB). The Store mmap shrunk in
     // #970 but HNSW dominates, so the 4-thread cap still applies.
+    // SHL-V1.36-2: scale with cores, capped at 8. Mirrors v1.33 SHL-V1.33-10
+    // fix to project.rs:260; this sibling site was missed.
     let threads = std::env::var("CQS_RAYON_THREADS")
         .ok()
         .and_then(|v| {
@@ -205,7 +207,11 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
             }
             parsed.ok()
         })
-        .unwrap_or(4);
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get().min(8))
+                .unwrap_or(4)
+        });
     let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(p) => p,
         Err(e) => {

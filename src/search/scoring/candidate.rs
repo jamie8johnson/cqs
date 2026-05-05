@@ -78,9 +78,23 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
             .iter()
             .enumerate()
             .filter_map(|(i, r)| {
+                // EXT-V1.36-2: include all container-shaped variants. The
+                // previous Class/Struct/Interface-only set silently dropped
+                // the boost on traits, enums, modules, objects (Kotlin/Swift),
+                // namespaces (C++/C#), and impl blocks (Rust). Methods on a
+                // matching trait/object/namespace deserve the same hub-boost
+                // their Class siblings get.
                 let is_container = matches!(
                     r.chunk.chunk_type,
-                    ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+                    ChunkType::Class
+                        | ChunkType::Struct
+                        | ChunkType::Interface
+                        | ChunkType::Trait
+                        | ChunkType::Enum
+                        | ChunkType::Module
+                        | ChunkType::Object
+                        | ChunkType::Namespace
+                        | ChunkType::Impl
                 );
                 if !is_container {
                     return None;

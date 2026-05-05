@@ -43,10 +43,13 @@ pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
 /// from `parser/markdown/tables.rs::emit_table_window`).
 fn is_window_suffix(seg: &str) -> bool {
     let bytes = seg.as_bytes();
-    // Generic: "wN" — 'w' followed by 1+ ASCII digits, total length ≤ 3
+    // Generic: "wN" — 'w' followed by 1+ ASCII digits. The previous `len <= 3`
+    // ceiling capped windows at `w99`, but `apply_windowing` emits a `u32`
+    // index — chunks that produce 100+ windows (legitimate for very large
+    // markdown / data files) failed this check and the suffix wasn't stripped,
+    // corrupting file-based dedup / glob filtering / SPLADE fusion (P1-35).
     if bytes.first() == Some(&b'w')
         && bytes.len() >= 2
-        && bytes.len() <= 3
         && bytes[1..].iter().all(u8::is_ascii_digit)
     {
         return true;
@@ -260,10 +263,33 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_file_window_index_three_or_more_digits() {
+        // P1-35 / AC-V1.36-1: very large chunks can produce 100+ windows.
+        // The previous `bytes.len() <= 3` ceiling capped wN at w99; w100+
+        // failed the suffix check and the index leaked into the file path,
+        // corrupting file-based dedup / glob filtering / SPLADE fusion.
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w100"),
+            "src/foo.rs"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w999"),
+            "src/foo.rs"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("docs/foo/bar.md:5:cafebabe:t12w999"),
+            "docs/foo/bar.md"
+        );
+    }
+
+    #[test]
     fn test_is_window_suffix_recognizes_both_formats() {
         // Generic wN
         assert!(is_window_suffix("w0"));
         assert!(is_window_suffix("w99"));
+        // P1-35: 100+-window indices must also be recognised.
+        assert!(is_window_suffix("w100"));
+        assert!(is_window_suffix("w12345"));
         // Table tNwM
         assert!(is_window_suffix("t0w0"));
         assert!(is_window_suffix("t12w99"));

@@ -470,26 +470,23 @@ pub fn unix_secs_i64() -> Option<i64> {
 
 // # Batch Size Constants (#683)
 //
-// ~25 `const BATCH_SIZE` definitions across store/pipeline/search modules.
-// Intentionally local — each is tuned for its SQL query shape:
+// `const BATCH_SIZE` definitions across store/pipeline/search modules,
+// intentionally local — each is tuned for its SQL query shape.
 //
-// SQLite limit: max 999 bind parameters per statement. A query with N columns
-// per row can batch `floor(999 / N)` rows.
+// SQLite host-parameter ceiling: 32766 (SQLite ≥3.32.0; previously 999).
+// Compute the per-statement row cap via
+// `crate::store::helpers::sql::max_rows_per_statement(params_per_row)`,
+// which returns `min(rows, SQLITE_MAX_VARIABLES / params_per_row)`. New
+// batched SQL should call this helper rather than hard-coding sizes.
 //
-// Common sizes:
-//   500   — 1-2 param queries (chunks, embeddings, calls)
-//   200   — 4-5 params per row (type edges, call graph)
-//   132   — upsert_chunk (5 params, 132 × 5 = 660)
-//   100   — staleness checks with path matching
-//   20    — enrichment hash (many columns)
-//
-// Non-SQL:
+// Non-SQL pinned defaults:
 //   EMBED_BATCH_SIZE = 64    — ONNX inference (CQS_EMBED_BATCH_SIZE)
 //   FILE_BATCH_SIZE = 5000   — pipeline file processing (CQS_FILE_BATCH_SIZE)
 //   HNSW_BATCH_SIZE = 10000  — HNSW insert
 //   MAX_BATCH_SIZE = 10000   — Claude Batches API limit
 //
-// Do not centralize. If adding a batched SQL query: floor(999 / params_per_row).
+// Do not centralize. If adding a batched SQL query, call
+// `max_rows_per_statement(N)` rather than picking a number.
 
 /// Unified test-chunk detection heuristic.
 ///

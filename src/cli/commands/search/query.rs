@@ -65,12 +65,6 @@ pub(crate) fn cmd_query(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
-    // #1372: --reranker llm not wired in search — eval has the same gate.
-    if matches!(cli.rerank_mode(), crate::cli::args::RerankerMode::Llm) {
-        bail!(
-            "--reranker llm is reserved for #1220 (LLM-judge reranker) and not yet wired into search. Use --reranker onnx (or --rerank for the same effect)."
-        );
-    }
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {

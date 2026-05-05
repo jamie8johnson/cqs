@@ -731,10 +731,18 @@ impl Store<ReadWrite> {
     /// lockstep with the standalone version as pool / mmap / cache defaults
     /// evolve.
     fn default_open_config(path: &Path, runtime: Option<Arc<Runtime>>) -> StoreOpenConfig {
+        // SHL-V1.36-1: scale with available parallelism instead of a fixed 4.
+        // The pool size also gates `serve_blocking_permits()` (limits.rs), so
+        // a fixed 4 caps the entire serve concurrency budget at 4 even on
+        // 32-core hosts. Mirrors the v1.33 SHL-V1.33-10 fix in project.rs:260.
         let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(4);
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| (n.get() as u32).min(8))
+                    .unwrap_or(4)
+            });
         StoreOpenConfig {
             read_only: false,
             use_current_thread: false,
