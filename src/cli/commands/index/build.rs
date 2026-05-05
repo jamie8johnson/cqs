@@ -1240,13 +1240,18 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 }
 
 /// HNSW insert batch size.
-/// Configurable via `CQS_HNSW_BATCH_SIZE` (default 10000).
-fn hnsw_batch_size() -> usize {
+///
+/// SHL-V1.36-4: scales with embedding dim so a 4096-dim model holds
+/// ~40 MB per batch (matching BGE-large's 40 MB at 1024-dim) instead of
+/// 160 MB. The 10_000 baseline was picked when BGE-large was the default;
+/// `dim_scaled_batch(10_000, dim, 500, 50_000)` keeps the per-batch heap
+/// footprint roughly constant. Env override `CQS_HNSW_BATCH_SIZE` wins.
+fn hnsw_batch_size(dim: usize) -> usize {
     std::env::var("CQS_HNSW_BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n: &usize| n > 0)
-        .unwrap_or(10_000)
+        .unwrap_or_else(|| cqs::limits::dim_scaled_batch(10_000, dim, 500, 50_000))
 }
 
 /// Build HNSW index from store embeddings
@@ -1316,7 +1321,7 @@ pub(crate) fn build_hnsw_index_owned<M>(
         return Ok(None);
     }
 
-    let batch_size = hnsw_batch_size();
+    let batch_size = hnsw_batch_size(store.dim());
 
     // Tee the (id, embedding, hash) stream: HNSW build consumes
     // (id, embedding) pairs while we accumulate fingerprints into a side
@@ -1370,7 +1375,7 @@ pub(crate) fn build_hnsw_base_index<M>(
         return Ok(None);
     }
 
-    let batch_size = hnsw_batch_size();
+    let batch_size = hnsw_batch_size(store.dim());
 
     let chunk_batches = store.embedding_base_batches(batch_size);
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, base_count, store.dim())?;

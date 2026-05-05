@@ -113,6 +113,31 @@ pub fn small_file_max_bytes() -> u64 {
     parse_env_u64("CQS_SMALL_FILE_MAX_BYTES", DEFAULT_SMALL_FILE_MAX)
 }
 
+/// SHL-V1.36 / dim-blind batch sizes — scale a baseline batch size by
+/// embedding dim. The baseline is assumed to have been picked when the
+/// default model was 1024-dim (BGE-large era), so divide by `dim/1024`
+/// to keep the per-batch heap footprint roughly constant as the user
+/// opts into 2560-dim or 4096-dim presets (qwen3-embedding-{4b,8b}).
+///
+/// Returns `baseline.clamp(min, max)` if `dim == 0` so callers don't
+/// need to special-case zero or unwrap.
+///
+/// ```text
+/// dim=1024 → baseline (no change)
+/// dim=2048 → baseline / 2
+/// dim=4096 → baseline / 4
+/// dim=768  → baseline * 4/3 (slight bump for sub-1024 models)
+/// ```
+pub fn dim_scaled_batch(baseline: usize, dim: usize, min: usize, max: usize) -> usize {
+    if dim == 0 {
+        return baseline.clamp(min, max);
+    }
+    // Multiply first so small `baseline` × small `dim` still has headroom.
+    // saturating_mul because callers feed pathological `baseline` from env.
+    let scaled = baseline.saturating_mul(1024) / dim;
+    scaled.clamp(min, max)
+}
+
 // ============ SHL-V1.29-7: hotspot / dead-cluster thresholds ============
 //
 // `HOTSPOT_MIN_CALLERS`, `DEAD_CLUSTER_MIN_SIZE`, `SUGGEST_HOTSPOT_POOL`
@@ -604,5 +629,53 @@ mod tests {
             parse_env_usize_clamped("CQS_TEST_USIZE_BELOW_MIN_DEFAULT", 0, 1, 100),
             1
         );
+    }
+
+    /// SHL-V1.36 / dim_scaled_batch — pin the formula at the dim values we
+    /// actually ship presets for. Regressions surface here, not at runtime.
+    #[test]
+    fn dim_scaled_batch_at_baseline_dim_returns_baseline() {
+        // dim == 1024 = baseline assumption → baseline unchanged.
+        assert_eq!(dim_scaled_batch(10_000, 1024, 500, 50_000), 10_000);
+        assert_eq!(dim_scaled_batch(5_000, 1024, 500, 50_000), 5_000);
+    }
+
+    #[test]
+    fn dim_scaled_batch_halves_at_2048_dim() {
+        // qwen3-embedding-4b is 2560-dim; pin the 2048 case as a reference.
+        assert_eq!(dim_scaled_batch(10_000, 2048, 500, 50_000), 5_000);
+    }
+
+    #[test]
+    fn dim_scaled_batch_quarters_at_4096_dim() {
+        // qwen3-embedding-8b is 4096-dim — was the motivating preset.
+        assert_eq!(dim_scaled_batch(10_000, 4096, 500, 50_000), 2_500);
+    }
+
+    #[test]
+    fn dim_scaled_batch_grows_at_768_dim() {
+        // E5-base / nomic-coderank / embeddinggemma-300m all 768-dim.
+        // baseline * 1024 / 768 = 13_333 (integer).
+        assert_eq!(dim_scaled_batch(10_000, 768, 500, 50_000), 13_333);
+    }
+
+    #[test]
+    fn dim_scaled_batch_clamps_to_min_on_huge_dim() {
+        // hypothetical 65536-dim → 156 → clamp to min 500.
+        assert_eq!(dim_scaled_batch(10_000, 65_536, 500, 50_000), 500);
+    }
+
+    #[test]
+    fn dim_scaled_batch_clamps_to_max_on_tiny_dim() {
+        // hypothetical 64-dim → 160_000 → clamp to max 50_000.
+        assert_eq!(dim_scaled_batch(10_000, 64, 500, 50_000), 50_000);
+    }
+
+    #[test]
+    fn dim_scaled_batch_zero_dim_returns_clamped_baseline() {
+        // Defensive: zero dim must not trigger div-by-zero panic.
+        assert_eq!(dim_scaled_batch(10_000, 0, 500, 50_000), 10_000);
+        assert_eq!(dim_scaled_batch(50, 0, 500, 50_000), 500); // clamp up
+        assert_eq!(dim_scaled_batch(99_999, 0, 500, 50_000), 50_000); // clamp down
     }
 }
