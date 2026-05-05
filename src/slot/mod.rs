@@ -191,7 +191,23 @@ pub fn validate_slot_name(name: &str) -> Result<(), SlotError> {
 }
 
 /// Path of `.cqs/slots/<name>/` for the given project `.cqs/` dir + slot name.
+///
+/// SEC-V1.36-3: validates the slot name even on read paths. Write paths
+/// already call [`validate_slot_name`] up front, but read paths
+/// (`read_slot_model`, the public `cqs::resolve_slot_dir`, etc.) used to
+/// trust the caller. A `..`-bearing name would have produced a path that
+/// `Path::join` does *not* normalize, so callers passing attacker-controlled
+/// strings without their own validation could escape the slots dir. On
+/// failure we substitute a sentinel name so downstream IO fails noisily
+/// inside the slots directory rather than silently traversing outside it.
 pub fn slot_dir(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
+    if validate_slot_name(slot_name).is_err() {
+        tracing::warn!(
+            slot = %slot_name,
+            "slot_dir called with invalid slot name; substituting `__invalid__` to keep IO inside slots dir"
+        );
+        return project_cqs_dir.join(SLOTS_DIR).join("__invalid__");
+    }
     project_cqs_dir.join(SLOTS_DIR).join(slot_name)
 }
 

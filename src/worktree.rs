@@ -118,14 +118,19 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
 /// both paths.
 pub fn lookup_main_cqs_dir(dir: &Path) -> MainIndexLookup {
     let own_cqs = dir.join(crate::INDEX_DIR);
-    if own_cqs.exists() {
+    // PB-V1.36-10: is_dir() rather than exists() — a stray `.cqs` *file* (a
+    // mistaken `touch .cqs`, or a packaged tarball with the wrong entry)
+    // shouldn't be treated as an index dir. Downstream code would otherwise
+    // try to open `<file>/index.db` and surface a confusing
+    // "is not a directory" instead of "no index here, fall through to main".
+    if own_cqs.is_dir() {
         return MainIndexLookup::OwnIndex { path: own_cqs };
     }
     let Some(main_root) = resolve_main_project_dir(dir) else {
         return MainIndexLookup::NotWorktree;
     };
     let main_cqs = main_root.join(crate::INDEX_DIR);
-    if main_cqs.exists() {
+    if main_cqs.is_dir() {
         MainIndexLookup::WorktreeUseMain {
             worktree_root: dir.to_path_buf(),
             main_root,

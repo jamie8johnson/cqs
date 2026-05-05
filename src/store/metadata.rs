@@ -444,6 +444,13 @@ impl Store<ReadWrite> {
                 .bind(val)
                 .execute(&mut *tx)
                 .await?;
+            // DS-V1.36-3: clear the legacy single `hnsw_dirty` key so the
+            // is_hnsw_dirty fallback can't return a stale answer for the
+            // non-written kind. The doc on is_hnsw_dirty already promised
+            // this; only set_hnsw_dirty hadn't been performing the cleanup.
+            sqlx::query("DELETE FROM metadata WHERE key = 'hnsw_dirty'")
+                .execute(&mut *tx)
+                .await?;
             tx.commit().await?;
             Ok(())
         })

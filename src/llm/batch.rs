@@ -89,7 +89,6 @@ impl LlmClient {
                 status = %status,
                 parsed_anthropic_message = parsed.as_ref().map(|p| p.error.message.as_str()).unwrap_or(""),
                 body_len = body.len(),
-                body = %body,
                 "{purpose} submission failed at LLM API",
             );
             let context = format!("{purpose} submission");
@@ -132,7 +131,6 @@ impl LlmClient {
                 batch_id,
                 status,
                 body_len = body.len(),
-                body = %body,
                 "Batch status check failed at LLM API",
             );
             return Err(LlmError::Api {
@@ -170,7 +168,6 @@ impl LlmClient {
                     batch_id,
                     status,
                     body_len = body.len(),
-                    body = %body,
                     "Batch status poll failed at LLM API",
                 );
                 return Err(LlmError::Api {
@@ -235,7 +232,6 @@ impl LlmClient {
                 batch_id,
                 status,
                 body_len = body.len(),
-                body = %body,
                 "Batch results fetch failed at LLM API",
             );
             return Err(LlmError::Api {
