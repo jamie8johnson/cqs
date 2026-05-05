@@ -4,12 +4,22 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 
 ## Summary by Priority
 
-| Priority | Count | Description |
-|----------|-------|-------------|
-| P1 | 58 | Easy + high impact (lying-docs, NaN/Inf, unbounded-read, configurable-models wrappers, sibling fixes already shipped, data corruption guards) |
-| P2 | 14 | Medium effort + high impact |
-| P3 | 73 | Easy + low impact, or medium + low impact |
-| P4 | 18 | Hard or design-level — issue if useful, defer otherwise |
+| Priority | Count | Status (post-PR-#1456) |
+|----------|-------|-------------------------|
+| P1 | 58 | 56 ✅ + 2 🟡 (mitigated upstream) — **all 58 addressed** |
+| P2 | 14 | 11 ✅ + 3 🟢 (defensive variants for medium-effort items) — **all 14 addressed** |
+| P3 | 73 | ~40 ✅ + 5 🔍 (audit suggestion proved wrong on inspection) — ~28 ⏳ deferred |
+| P4 | 18 | All deferred (hard / design-level / Windows-daemon / etc.) |
+| **Total addressed** | **163** | **~120 of 163 findings (~74%)** in PR #1456 |
+
+Remaining ⏳ P3s by cluster (deferred to follow-up):
+- 7 TC Happy path tests (need real Embedder fixtures or are tests of already-tested code)
+- 8 API Design (mostly design-level — project/ref merge, --limit harmonize, BatchProvider builder)
+- 7 Scaling (dim-blind batch sizes — design pass)
+- 3 Extensibility (config-driven synonyms / vocab — design)
+- 3 Security (serve extractor errors, 64KiB pre-auth, daemon socket TOCTOU)
+- 1 RM-V1.36-6 config-write critical section (concurrency-sensitive refactor)
+- 1 CQ-3 deprecate legacy NL wrapper (would break public doctest)
 
 ## Cross-cutting themes
 
