@@ -2,11 +2,46 @@
 
 ## Right Now
 
-**v1.36.1 shipped** — 2026-05-04 afternoon. Patch release. Headline: Qwen3-Embedding-4B preset (#1441) + FP16/BF16 ONNX output dispatch (#1442) — extends embedder to decoder-only architectures with `position_ids` input and 16-bit output tensors. Plus daemon ergonomics (server-side `wait_fresh`, idle-shutdown), HNSW perf scaling for large corpora, and 9 audit-driven fixes. 26 commits since v1.36.0; no schema bump. Tag pushed; crates.io published; GitHub Release auto-build in flight.
+**v1.36.1 shipped** — 2026-05-04 afternoon. Patch release. Headline: Qwen3-Embedding-4B preset (#1441) + FP16/BF16 ONNX output dispatch (#1442) — extends embedder to decoder-only architectures with `position_ids` input and 16-bit output tensors. Plus daemon ergonomics (server-side `wait_fresh`, idle-shutdown), HNSW perf scaling for large corpora, and 9 audit-driven fixes. 26 commits since v1.36.0; no schema bump. Tag pushed; crates.io published; GitHub Release auto-built.
 
-**Qwen3-Embedding-4B ceiling probe — Phase 1 done** (2026-05-04). Earlier tries with the FP32 sigalr export crashed WSL2 mid-load (~16 GB single-file mmap ceiling). Switched to FP16 zhiqing export (~8 GB) plus the new FP16 dispatch in #1442. Default `CQS_EMBED_BATCH_SIZE=8` then OOM'd at 48.5/49 GB GPU on Qwen3-4B FP16 — diagnosis: per-layer attention `[8,32,4096,4096]×fp16 ≈ 8.6 GB` plus model weights ~8-10 GB plus ORT arenas hits the A6000 ceiling. Dropped to `batch=2`: clean run, **2161 chunks, 0 GPU failures, 8m11s** on the cqs corpus (slot `qwen3-4b`, 702 files, 867 cached + 1294 fresh embeds). Note: 2161 vs the BGE-large slot's ~19,500 because Qwen3-4B's `max_seq_length=4096` produces ~8× larger chunks. Phase 2/3 (LLM summary copy + eval matrix vs gemma) parked until next session.
+**v1.36.2 staged** — 2026-05-04 evening. Two fixes merged but not yet released:
+- **#1450 — `busy_timeout` 5s→30s** (defense-in-depth)
+- **#1451 — `Store::drop` checkpoint TRUNCATE → PASSIVE** (the actual lock-contention root cause — see below)
 
-**v1.36.0 (one day prior)** — Per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge. Schema v25→v26 (composite `(source_type, origin)` index on chunks). Plus the critical readonly-migration bug fix.
+Plus 5 dependabot bumps (tokio, fast_html2md, tree-sitter-{swift,powershell}, similar 2→3) and the docs(tears) update. Worth cutting v1.36.2 before next session — the lock-contention fix is materially load-bearing for any long-running `cqs index` against any concurrent reader.
+
+**Qwen3-Embedding-4B full probe complete** (2026-05-04 afternoon-evening, 6+ hour session):
+
+Results vs gemma canonical (post-α-retune v1.36.0):
+
+| Slot / Tuning | Split | R@1 | R@5 | R@20 |
+|---|---|---:|---:|---:|
+| qwen3-4b base (FP16 batch=1 seq=4096) | TEST | 35.8% | 56.0% | 74.3% |
+| qwen3-4b +summaries +enrichment | TEST | 48.6% | 67.9% | 81.7% |
+| qwen3-4b +summaries +tuned α | TEST | 45.0% | **69.7%** | 81.7% |
+| **gemma-300m canonical** | TEST | **49.1%** | **72.5%** | **86.2%** |
+| qwen3-4b base | DEV | 45.9% | 70.6% | 86.2% |
+| qwen3-4b +summaries +enrichment | DEV | 50.5% | 75.2% | 89.9% |
+| qwen3-4b +summaries +tuned α | DEV | 49.5% | **77.1%** | 89.9% |
+| **gemma-300m canonical** | DEV | **50.9%** | **79.8%** | 88.6% |
+
+**Bottom line: gemma-300m wins.** Qwen3-4B at 13× the parameters, 3.3× the dim, 2× the context — loses by 2.7-2.8pp R@5 even with full enrichment + per-cat α tuning + Unknown hedge. Architecture isn't the lever; gemma's been pre-tuned and code-specialized.
+
+Per-category α picks for qwen3-4b diverged dramatically from gemma's (5 of 8 categories shifted by ≥0.4 absolute α; identifier_lookup 1.00→0.15, structural_search 0.60→0.15). **This proves per-model α sets are needed** — filed as **#1453**.
+
+Engineering wins from the probe (worth more than the eval result):
+- **DB-lock root cause found** (#1451): `Store::drop`'s `wal_checkpoint(TRUNCATE)` blocked the long-running indexer's writes. Repro'd 3× in this session — three crashes with identical "(code: 5) database is locked" terminating runs after 5-25min of work. Switched to `PASSIVE` + 1s timeout; verified under deliberate stress polling. Same shape of bug `EmbeddingCache::drop` had fixed months ago (#1343); slot store had drifted.
+- **WSL2 ceiling probed**: 4B FP32 (16 GB mmap) crashes WSL during load; 4B FP16 (8 GB mmap) loads cleanly. Confirms the WSL2 single-file mmap ceiling is somewhere in 8-16 GB on this hardware (96GB RAM, 32GB swap, autoMemoryReclaim=disabled).
+- **GPU-OOM cascade understood**: 4B FP16 at batch=8 OOMs at 48.5/49 GB; batch=2 fits with 30 GB headroom; batch=1 fits with 40 GB headroom. CPU fallback fundamentally broken for FP16 models — ORT CPU EP can't execute the FP16 Cast nodes ("GetElementType is not implemented") — so any GPU OOM at FP16 is fatal without batch=1.
+- **Cross-slot summary copy works** (saved $3-4 of Haiku spend): 7674/12881 chunk hashes overlapped between gemma and qwen3-4b slots; only 1269 fresh summaries needed. Cost ~$1.27.
+
+Open issues filed:
+- **#1452** — `perf(index): skip first-pass embed when --llm-summaries guarantees enrichment overwrite`. The `cqs index --force --llm-summaries` pipeline embeds every chunk twice (raw, then enriched-overwrite). On qwen3-4b that's ~30 min of wasted GPU. Roughly halves the time when picked up.
+- **#1453** — `feat(splade): per-slot α tables — gemma-tuned globals don't generalize`. Includes the qwen3-4b sweep matrix. Proposes `slot.toml [splade.alpha]` section with the existing precedence chain (env > slot > preset > global default).
+
+**Qwen3-8B is now feasible** to probe: FP16 dispatch landed (#1442), DB-lock fixed (#1451), batch=1 envelope confirmed safe at FP16 8GB mmap on this hardware. ETA ~2-3 hours bare reindex + ~30 min summary batch + ~30 min enrichment. Not on the critical path but the probe is cheap given the engineering investment we already paid.
+
+**v1.36.0 (two days prior)** — Per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge. Schema v25→v26 (composite `(source_type, origin)` index on chunks). Plus the critical readonly-migration bug fix.
 
 **Eval baseline (post-α-retune, v1.36.0 default):**
 
