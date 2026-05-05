@@ -1395,12 +1395,21 @@ impl Embedder {
             PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask_arr, embedding_dim),
             PoolingStrategy::Cls => cls_pool(&hidden),
             PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask_arr),
-            // Already handled by the early-return above; this arm is only
-            // reachable if the model output had 3 dims AND pooling = Identity,
-            // which is a config error (Identity expects 2D).
-            PoolingStrategy::Identity => unreachable!(
-                "PoolingStrategy::Identity should be handled before the 3D pool dispatch"
-            ),
+            // EXT-V1.36-3 / P3: surface as a structured error rather than
+            // panic. Identity is supposed to be intercepted by the 2D
+            // shortcut at line 1309 — reaching here implies the ONNX model
+            // emitted 3D output AND configured Identity pooling, which is a
+            // config-shape mismatch. A future model exposing Identity on a
+            // 3D output should error cleanly, not crash the daemon.
+            PoolingStrategy::Identity => {
+                return Err(EmbedderError::InferenceFailed(
+                    "PoolingStrategy::Identity is not supported on 3D model outputs — \
+                     the ONNX model must already produce a 2D [batch, dim] tensor \
+                     for Identity pooling. Re-export with mean/cls/last-token pooling \
+                     baked in, or change the model_config pooling value."
+                        .to_string(),
+                ));
+            }
         };
 
         let results = pooled_batch
