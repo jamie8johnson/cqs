@@ -410,13 +410,22 @@ fn build_bm25_corpus(repo_path: &Path, parser: &Parser) -> Vec<(String, String)>
             continue;
         }
 
-        // Parse file (catch panics from malformed content)
+        // Parse file (catch panics from malformed content). EH-V1.36-2: split
+        // expected parser errors from grammar panics so operators can tell
+        // whether a corpus-mining run hit 5,000 oversized files (expected) or
+        // 5,000 grammar panics (a real bug). Mirrors the per-commit branch.
         let path_owned = path.to_path_buf();
         let chunks = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             parser.parse_file(&path_owned)
         })) {
             Ok(Ok(c)) => c,
-            Ok(Err(_)) | Err(_) => {
+            Ok(Err(e)) => {
+                tracing::debug!(path = %path_owned.display(), error = %e, "Parse failed");
+                corpus_parse_failures += 1;
+                continue;
+            }
+            Err(_) => {
+                tracing::warn!(path = %path_owned.display(), "Parse panicked — skipping");
                 corpus_parse_failures += 1;
                 continue;
             }

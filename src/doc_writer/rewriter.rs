@@ -665,15 +665,26 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
                     Ok(())
                 }
                 Err(write_err) => {
-                    // Restore from backup if we made one
-                    if has_backup {
-                        let _ = std::fs::rename(&backup_path, path);
-                    }
+                    // EH-V1.36-3: capture the restore-rename result so
+                    // operators see *which* recovery branch failed and where
+                    // the salvageable backup is. Pre-fix, a failed restore
+                    // silently dropped the backup_path on the floor and the
+                    // user got only the original write error — couldn't
+                    // recover from the leftover .bak.
+                    let restore_err = if has_backup {
+                        std::fs::rename(&backup_path, path).err()
+                    } else {
+                        None
+                    };
                     tracing::warn!(
                         path = %path.display(),
                         rename_error = %rename_err,
                         write_error = %write_err,
-                        "Atomic write failed: both rename and fallback write failed"
+                        restore_error = restore_err.as_ref().map(|e| e.to_string()),
+                        backup_remaining_at = if restore_err.is_some() { Some(backup_path.display().to_string()) } else { None },
+                        "Atomic write failed: rename + fallback write failed; \
+                         restore from backup also failed if `restore_error` is set; \
+                         original content is at `backup_remaining_at` if so"
                     );
                     Err(write_err)
                 }

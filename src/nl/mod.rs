@@ -40,6 +40,7 @@ pub struct CallContext {
 ///
 /// If a summary is provided, it's prepended to the NL for maximum embedding weight.
 /// If hyde predictions are provided, they're appended as query terms (SQ-12).
+#[allow(clippy::too_many_arguments)]
 pub fn generate_nl_with_call_context_and_summary(
     chunk: &Chunk,
     ctx: &CallContext,

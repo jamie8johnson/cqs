@@ -50,18 +50,18 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 | P1-9 | Documentation | CONTRIBUTING.md schema citation v25 (actual v26) | easy | ✅ |
 | P1-10 | Documentation | ROADMAP.md Current still v1.36.0 (actual v1.36.2) | easy | ✅ |
 | P1-11 | Documentation | SECURITY.md telemetry path glob (no rotation) | easy | ✅ |
-| P1-12 | Code Quality | CQ-V1.36-1 enrichment_pass drops model_max_seq_len | medium | ⏳ |
+| P1-12 | Code Quality | CQ-V1.36-1 enrichment_pass drops model_max_seq_len | medium | ✅ |
 | P1-13 | Code Quality | CQ-V1.36-2 resolve_splade_model_dir() drops config at 6 sites | easy | ✅ |
-| P1-14 | Code Quality | CQ-V1.36-6 enrichment_pass model_config ignored (group with P1-12) | easy | ⏳ |
+| P1-14 | Code Quality | CQ-V1.36-6 enrichment_pass model_config ignored (group with P1-12) | easy | ✅ |
 | P1-15 | Code Quality | CQ-V1.36-7 VectorIndex::search_with_filter k*3 unchecked | easy | ✅ |
 | P1-16 | API Design | -d short flag missing on gather and trace | easy | ✅ |
 | P1-17 | API Design | cqs eval --reranker llm placeholder advertises non-existent capability | easy | ✅ |
-| P1-18 | Error Handling | EH-V1.36-6 Store::stored_model_name swallows query errors → data destruction risk | medium | ⏳ |
+| P1-18 | Error Handling | EH-V1.36-6 Store::stored_model_name swallows query errors → data destruction risk | medium | ✅ |
 | P1-19 | Observability | search_filtered duplicate nested span on hottest path | easy | ✅ |
 | P1-20 | Observability | config.rs:582 redundant eprintln! next to tracing::warn! | easy | ✅ |
 | P1-21 | TC Adversarial | Sparse-vector NaN/Inf weight round-trip untested | easy | ✅ |
 | P1-22 | TC Adversarial | sanitize_fts_query property tests miss `{` and `}` | easy | ✅ |
-| P1-23 | TC Adversarial | embed_documents output finiteness untested | easy | ⏳ |
+| P1-23 | TC Adversarial | embed_documents output finiteness untested | easy | ✅ |
 | P1-24 | Robustness | RB-V1.36-1 doc_writer compute_rewrite/rewrite_file unbounded read | easy | ✅ |
 | P1-25 | Robustness | RB-V1.36-2 search/query.rs parent-context unbounded read | easy | ✅ |
 | P1-26 | Robustness | RB-V1.36-3 hook.rs reads existing git hooks unbounded (3 sites) | easy | ✅ |
@@ -79,7 +79,7 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 | P1-38 | Algorithm | CAGRA env knobs accept 0 (sibling of P1-45 HNSW fix in v1.33) | easy | ✅ |
 | P1-39 | Algorithm | where_to_add line_end + 1 u32 add not saturating | easy | ✅ |
 | P1-40 | Extensibility | apply_parent_boost hardcodes Class/Struct/Interface (drops boost on Trait/Object/Protocol) | easy | ✅ |
-| P1-41 | Platform | apply_resolved_edits CRLF flatten on doc rewrite (mirror #1356 to doc_writer) | medium | ⏳ |
+| P1-41 | Platform | apply_resolved_edits CRLF flatten on doc rewrite (mirror #1356 to doc_writer) | medium | ✅ |
 | P1-42 | Platform | note::path_matches_mention case-sensitive — Linux notes skip Windows/macOS | easy | ✅ |
 | P1-43 | Platform | worktree own_cqs.exists() should be is_dir() | easy | ✅ |
 | P1-44 | Security | Store::open umask TOCTOU (cache has the wrap, store doesn't) | easy | ✅ |
@@ -95,8 +95,8 @@ Total findings: 163 across 16 categories. Classified P1 (fix immediately) / P2 (
 | P1-54 | Resource Mgmt | RM-V1.36-1 truncate_incomplete_line slurps whole JSONL | easy | ✅ |
 | P1-55 | Resource Mgmt | RM-V1.36-2 pdf_to_markdown unbounded subprocess output | easy | ✅ |
 | P1-56 | Resource Mgmt | RM-V1.36-4 watch UnixStream::connect no timeout | easy | ✅ |
-| P1-57 | Resource Mgmt | RM-V1.36-5 Command::output() unbounded (chm/convert/train_data) | easy | ⏳ |
-| P1-58 | Resource Mgmt | RM-V1.36-7 BufReader::lines no per-line cap | easy | ⏳ |
+| P1-57 | Resource Mgmt | RM-V1.36-5 Command::output() unbounded (chm/convert/train_data) | easy | 🟡 |
+| P1-58 | Resource Mgmt | RM-V1.36-7 BufReader::lines no per-line cap | easy | 🟡 |
 
 ## P2 — Fix in Batch
 

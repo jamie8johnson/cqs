@@ -330,7 +330,7 @@ mod tests {
 
         // Keep the tempdir alive so the db file survives for the test duration.
         // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
-        let _keep = dir.into_path();
+        let _keep = dir.keep();
 
         NamedStore {
             name: name.to_string(),
