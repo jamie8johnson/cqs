@@ -150,14 +150,38 @@ impl<Mode> Store<Mode> {
 
     /// Read the stored model name from metadata, if set.
     /// Returns `None` for fresh databases or pre-model indexes.
+    ///
+    /// EH-V1.36-6: this lossy form swallows real SQLite errors as `None`,
+    /// which every caller interprets as "fresh DB, no model recorded — treat
+    /// as new". For decision sites that care about distinguishing "metadata
+    /// row absent" from "metadata table unreadable", call
+    /// [`Self::try_stored_model_name`] and branch on the `Result`. Failures
+    /// here now log at `error!` (not `warn!`) so a corrupted index surfaces
+    /// in journald instead of being absorbed silently.
     pub fn stored_model_name(&self) -> Option<String> {
-        match self.get_metadata_opt("model_name") {
-            Ok(val) => val.filter(|s| !s.is_empty()),
+        match self.try_stored_model_name() {
+            Ok(val) => val,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to read model_name from metadata");
+                tracing::error!(
+                    error = %e,
+                    "Failed to read model_name from metadata — treating as fresh DB. \
+                     If the index file exists this likely indicates corruption; \
+                     re-running `cqs index --force` will overwrite the prior data."
+                );
                 None
             }
         }
+    }
+
+    /// Strict variant of [`Self::stored_model_name`] that distinguishes
+    /// "no row" (`Ok(None)`) from "query failed" (`Err`). New decision-path
+    /// callers should use this — destructive operations (rebuild, slot
+    /// promote, model swap) shouldn't conflate "fresh DB" with "unreadable
+    /// metadata".
+    pub fn try_stored_model_name(&self) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .get_metadata_opt("model_name")?
+            .filter(|s| !s.is_empty()))
     }
 
     /// Read the stored SPLADE model identifier from metadata, if set.
