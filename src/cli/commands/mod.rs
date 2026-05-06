@@ -21,6 +21,14 @@ mod search;
 pub(crate) mod serve;
 mod train;
 
+// #1366: dispatch shims for `#[derive(CqsCommands)]`. Each shim is a thin
+// wrapper around an existing `cmd_xxx` handler that pattern-matches the
+// variant out of `&Commands` and forwards destructured args. Lives at the
+// module surface so the proc-macro-emitted dispatch can call
+// `crate::cli::commands::cmd_xxx_dispatch`.
+mod dispatch_shims;
+pub(crate) use dispatch_shims::*;
+
 // Re-export inner modules accessed directly by batch handlers via
 // crate::cli::commands::{module}::{function} paths.
 pub(crate) use graph::explain;

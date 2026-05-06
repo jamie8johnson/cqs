@@ -5,123 +5,18 @@ use anyhow::Result;
 use super::config::{apply_config_defaults, find_project_root};
 #[cfg(unix)]
 use super::definitions::BatchSupport;
-use super::definitions::{Cli, Commands};
+use super::definitions::Cli;
 use super::telemetry;
-use super::{batch, chat, watch};
 
-#[cfg(feature = "convert")]
-use super::commands::cmd_convert;
-use super::commands::{
-    cmd_affected, cmd_audit_mode, cmd_blame, cmd_brief, cmd_cache, cmd_callees, cmd_callers,
-    cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_eval,
-    cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_hook, cmd_impact,
-    cmd_impact_diff, cmd_index, cmd_init, cmd_model, cmd_neighbors, cmd_notes, cmd_onboard,
-    cmd_ping, cmd_plan, cmd_project, cmd_query, cmd_read, cmd_reconstruct, cmd_ref, cmd_related,
-    cmd_review, cmd_scout, cmd_similar, cmd_slot, cmd_stale, cmd_stats, cmd_status, cmd_suggest,
-    cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map, cmd_trace, cmd_train_data,
-    cmd_train_pairs, cmd_where,
-};
-
-// ── Dispatch macros (#1097) ──────────────────────────────────────────────
-//
-// Both Group A (no-store, early-return) and Group B (store-using) matches
-// in `run_with` are generated from the single registration table in
-// `crate::cli::registry`. The registry splits rows into `group_a:` and
-// `group_b:` brace groups; each emitter consumes both and emits the right
-// arm shape per group:
-//
-//   * **Group A match** (before `let ctx = …`)
-//     - `group_a` row → `Some($bind) => return $body`
-//     - `group_b` row → `Some($wild) => {}`  (no-op fall-through)
-//     - `None` arm    → `=> {}`              (bare query, handled below)
-//
-//   * **Group B match** (after `let ctx = …`)
-//     - `group_a` row → `Some($wild) => unreachable!()`  (already returned)
-//     - `group_b` row → `Some($bind) => $body`           (uses `&ctx`, `&cli`)
-//     - `None` arm    → bare-query path (`cmd_query`) and usage banner
-//
-// Both matches are exhaustive over `Commands`. The legacy `_ => {}` and
-// `_ => unreachable!()` catch-alls are gone — adding a new variant without
-// registering it is a compile error.
-//
-// Hygiene: macro_rules is unhygienic for free identifiers, so `cli`,
-// `ctx`, and the imported `cmd_*` paths in each `$body` resolve in the
-// `run_with` scope as expected. Local `let` bindings inside a body are
-// hygienic and won't collide with the Group B `let ctx = …` between the
-// two macro-emitted matches.
-macro_rules! gen_dispatch_group_a {
-    (
-        cli = $cli:ident,
-        ctx = $_ctx:ident,
-        project_cqs_dir = $_pcd:ident,
-        group_a: {
-            $(
-                $(#[$a_attr:meta])*
-                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
-            ),* $(,)?
-        }
-        group_b: {
-            $(
-                $(#[$b_attr:meta])*
-                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
-            ),* $(,)?
-        }
-    ) => {
-        match $cli.command {
-            $(
-                $(#[$a_attr])*
-                Some($a_bind) => return $a_body,
-            )*
-            $(
-                $(#[$b_attr])*
-                Some($b_wild) => {}, // handled in Group B match below
-            )*
-            None => {} // bare-query mode handled in Group B below
-        }
-    };
-}
-
-macro_rules! gen_dispatch_group_b {
-    (
-        cli = $cli:ident,
-        ctx = $ctx:ident,
-        project_cqs_dir = $_pcd:ident,
-        group_a: {
-            $(
-                $(#[$a_attr:meta])*
-                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
-            ),* $(,)?
-        }
-        group_b: {
-            $(
-                $(#[$b_attr:meta])*
-                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
-            ),* $(,)?
-        }
-    ) => {
-        match $cli.command {
-            $(
-                $(#[$a_attr])*
-                Some($a_wild) => unreachable!(
-                    "Group A variant `{}` handled before context open",
-                    $a_name
-                ),
-            )*
-            $(
-                $(#[$b_attr])*
-                Some($b_bind) => $b_body,
-            )*
-            None => match &$cli.query {
-                Some(q) => cmd_query(&$ctx, q),
-                None => {
-                    println!("Usage: cqs <query> or cqs <command>");
-                    println!("Run 'cqs --help' for more information.");
-                    Ok(())
-                }
-            },
-        }
-    };
-}
+// #1366: Group A and Group B dispatch live in
+// `crate::cli::definitions::dispatch_group_{a,b}` (emitted by
+// `cqs_macros::CqsCommands` derive on the `Commands` enum). Per-variant
+// shims live in `commands::dispatch_shims` and forward to existing
+// handlers — see the docstring on that module for the standardized
+// dispatch-shim signature. The previous `for_each_command!` central
+// registry + `gen_dispatch_group_a` / `gen_dispatch_group_b` emitter
+// macros are gone; per-variant `#[cqs_cmd(group, batch)]` attributes
+// drive everything now.
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(cli: Cli) -> Result<()> {
@@ -308,40 +203,37 @@ fn run_with_dispatch(
         }
     }
 
-    // ── Group A + Group B dispatch (#1097) ──────────────────────────────────
+    // ── Group A + Group B dispatch ──────────────────────────────────────────
     //
-    // Both matches are generated from the single registration table in
-    // `crate::cli::registry`. `__group_a_arm!` and `__group_b_arm!` (defined
-    // below) discriminate per row's group ident — Group A rows produce
-    // `=> return $body;` in match #1 and `=> {}` in match #2; Group B rows
-    // produce `=> {}` in match #1 and `=> $body` (with `&ctx` bound) in
-    // match #2. The legacy `_ => {}` and `_ => unreachable!()` catch-alls
-    // are gone — both matches are fully exhaustive over `Commands`.
+    // #1366: per-variant `#[cqs_cmd(group, batch)]` attributes drive
+    // `cqs_macros::CqsCommands` derive on `Commands` (definitions.rs:337),
+    // which emits `dispatch_group_a` and `dispatch_group_b` free functions.
+    // Each shim (in `commands/dispatch_shims.rs`) destructures the variant
+    // and forwards to the existing handler with the same args the
+    // for_each_command! body used to bind.
+    //
+    // Group A returns `ControlFlow::Break(result)` when handled (lifecycle /
+    // mutation commands run before the read-only store opens) and
+    // `Continue(())` for Group B variants + the bare-query path (handled
+    // after the store open).
     //
     // Task #8 — `--json` precedence: every Group B subcommand reads
     // `cli.json || output.json` (OR semantics). Top-level `--json` wins
-    // when set; the subcommand's `--json` is the fallback. For the impact/
-    // trace pair (`OutputArgs` with `--format`), `cli.json` short-circuits
-    // to `OutputFormat::Json` regardless of `--format`. The exact wiring
-    // lives per-row in the registry.
-    crate::cli::registry::for_each_command!(
-        gen_dispatch_group_a,
-        cli = cli,
-        ctx = ctx,
-        project_cqs_dir = project_cqs_dir
-    );
+    // when set; the subcommand's `--json` is the fallback. For the
+    // impact/trace pair (`OutputArgs` with `--format`), `cli.json`
+    // short-circuits to `OutputFormat::Json` regardless of `--format`. The
+    // exact wiring lives per-shim in `commands/dispatch_shims.rs`.
+    use crate::cli::definitions::{dispatch_group_a, dispatch_group_b};
+    if let std::ops::ControlFlow::Break(result) = dispatch_group_a(&cli, project_cqs_dir) {
+        return result;
+    }
 
     let ctx = crate::cli::CommandContext::open_readonly(&cli)?;
-    crate::cli::registry::for_each_command!(
-        gen_dispatch_group_b,
-        cli = cli,
-        ctx = ctx,
-        project_cqs_dir = project_cqs_dir
-    )
+    dispatch_group_b(&cli, &ctx, project_cqs_dir)
 }
 
 /// Generate shell completion scripts for the specified shell
-fn cmd_completions(shell: clap_complete::Shell) {
+pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
 }
