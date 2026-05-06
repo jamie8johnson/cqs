@@ -10,6 +10,7 @@ use colored::Colorize;
 use cqs::embedder::ModelConfig;
 use cqs::normalize_path;
 use cqs::Embedder;
+use cqs::SearchFilter;
 use cqs::{search_across_projects, ProjectRegistry};
 
 use crate::cli::definitions::TextJsonArgs;
@@ -81,7 +82,13 @@ pub(crate) enum ProjectCommand {
         #[command(flatten)]
         output: TextJsonArgs,
     },
-    /// Search across all registered projects
+    /// Search across all registered projects.
+    ///
+    /// #1459 item 1 (parity arm): mirrors the top-level `cqs <q>` filter
+    /// surface so `cqs project search` accepts the same `--lang`,
+    /// `--include-type`, `--exclude-type`, `--path`, `--name-boost`,
+    /// `--rrf`, and `--include-docs` flags. Each project's per-store
+    /// search applies the filter consistently before results are merged.
     Search {
         /// Search query
         query: String,
@@ -89,8 +96,30 @@ pub(crate) enum ProjectCommand {
         #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
         /// Min similarity threshold
-        #[arg(short = 't', long, default_value = "0.3")]
+        #[arg(short = 't', long, default_value = "0.3", value_parser = crate::cli::definitions::parse_finite_f32)]
         threshold: f32,
+        /// Weight for name matching in hybrid search (0.0-1.0). Mirrors the
+        /// top-level `cqs <q> --name-boost` flag.
+        #[arg(long, default_value = "0.2", value_parser = crate::cli::definitions::parse_unit_f32)]
+        name_boost: f32,
+        /// Filter by language (mirrors top-level `-l/--lang`).
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+        /// Include only these chunk types (mirrors top-level `--include-type`).
+        #[arg(long, alias = "chunk-type")]
+        include_type: Option<Vec<String>>,
+        /// Exclude these chunk types (mirrors top-level `--exclude-type`).
+        #[arg(long)]
+        exclude_type: Option<Vec<String>>,
+        /// Filter by path glob (mirrors top-level `-p/--path`).
+        #[arg(short = 'p', long)]
+        path: Option<String>,
+        /// Enable RRF hybrid search (keyword + semantic fusion). Mirrors top-level `--rrf`.
+        #[arg(long)]
+        rrf: bool,
+        /// Include documentation, markdown, and config chunks. Mirrors top-level `--include-docs`.
+        #[arg(long)]
+        include_docs: bool,
         /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
         #[command(flatten)]
         output: TextJsonArgs,
@@ -115,7 +144,8 @@ pub(crate) fn cmd_project(
             tracing::info_span!("cmd_project_remove", name = %name).entered()
         }
         ProjectCommand::Search { query, limit, .. } => {
-            tracing::info_span!("cmd_project_search", query = %query, limit).entered()
+            tracing::info_span!("cmd_project_search", query = %query, limit, parity = "1459-1a")
+                .entered()
         }
     };
     match subcmd {
@@ -202,12 +232,73 @@ pub(crate) fn cmd_project(
             query,
             limit,
             threshold,
+            name_boost,
+            lang,
+            include_type,
+            exclude_type,
+            path,
+            rrf,
+            include_docs,
             output,
         } => {
             let embedder = Embedder::new(model_config.clone())?;
             let query_embedding = embedder.embed_query(query)?;
 
-            let results = search_across_projects(&query_embedding, query, *limit, *threshold)?;
+            // #1459 item 1a: assemble the SearchFilter from the same flag
+            // surface the top-level `cqs <q>` exposes so cross-project
+            // search behaves identically per-project. Use the existing
+            // helpers on `SearchFilter` so language / chunk-type strings
+            // get the same parsing rules as `cmd_search`.
+            //
+            // SearchFilter is `#[non_exhaustive]`, so cross-crate
+            // construction starts from `Default` then mutates fields.
+            let mut filter = SearchFilter::default();
+            filter.query_text = query.clone();
+            filter.name_boost = *name_boost;
+            filter.enable_rrf = *rrf;
+            filter.path_pattern = path.clone();
+            if let Some(lang_str) = lang.as_deref() {
+                if let Ok(parsed) = lang_str.parse::<cqs::parser::Language>() {
+                    filter.languages = Some(vec![parsed]);
+                } else {
+                    tracing::warn!(
+                        lang = lang_str,
+                        "Unknown language for project search; ignoring"
+                    );
+                }
+            }
+            // `--include-type` / default code-only / `--include-docs` follow
+            // the same precedence as the top-level search path
+            // (`src/cli/commands/search/query.rs`):
+            //   1. `--include-type X,Y` — explicit allowlist (wins over docs flag)
+            //   2. `--include-docs` (and no `--include-type`) — None = search everything
+            //   3. default — `ChunkType::code_types()` (callable + type defs)
+            filter.include_types = match include_type {
+                Some(types) => {
+                    let parsed: Vec<_> = types
+                        .iter()
+                        .filter_map(|s| s.parse::<cqs::parser::ChunkType>().ok())
+                        .collect();
+                    if parsed.is_empty() {
+                        None
+                    } else {
+                        Some(parsed)
+                    }
+                }
+                None if *include_docs => None,
+                None => Some(cqs::parser::ChunkType::code_types().to_vec()),
+            };
+            if let Some(types) = exclude_type {
+                let parsed: Vec<_> = types
+                    .iter()
+                    .filter_map(|s| s.parse::<cqs::parser::ChunkType>().ok())
+                    .collect();
+                if !parsed.is_empty() {
+                    filter.exclude_types = Some(parsed);
+                }
+            }
+
+            let results = search_across_projects(&query_embedding, &filter, *limit, *threshold)?;
 
             // Top-level `--json` always wins (mirrors `cmd_model` at
             // `src/cli/commands/infra/model.rs:113`). `cqs --json project search foo`
