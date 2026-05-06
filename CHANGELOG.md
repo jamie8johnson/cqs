@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-05-06
+
+Minor release. No schema bump. Bundles 13 audit-driven PRs that close three umbrella tracking issues from the v1.36.2 audit (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM) plus tracker-hygiene cleanup (3 stale issues that already shipped in prior PRs). Six surface deletions justify the minor bump despite the size; env overrides preserve prior behavior on every default-changed knob.
+
+### Added
+
+- **Per-slot SPLADE α tables** (#1472, #1453). New `[splade.alpha]` section in `slot.toml` with per-category float values; precedence chain is per-cat env > global env > slot.toml > category default. New public `cqs::slot::read_slot_splade_alpha_table` and `cqs::search::router::install_slot_splade_alpha_overrides`. Gemma-tuned globals no longer handicap qwen3-embedding-{4b,8b} or future presets out of the box.
+- **Synonym TOML overlay** (#1482, EXT-V1.36-1 / #1460). Operators extend the FTS expansion dictionary at runtime via `~/.config/cqs/synonyms.toml` (user-global) and `<project>/.cqs/synonyms.toml` (project-local), no recompile. Schema: `[synonyms] plc = ["programmable_logic_controller"]`. Token-safety guard at the loader filters keys/expansions to `[A-Za-z0-9_]+` (FTS5 OR-group injection requires this). Bounded read at 4 KiB. `src/search/synonyms.rs` builtins promoted from compile-time to runtime-mutable `LazyLock<RwLock<HashMap>>`. Module visibility raised from `pub(crate)` to `pub`.
+- **Classifier vocab TOML overlay** (#1483, EXT-V1.36-8 sub-2 / #1460). Same pattern as synonyms but for `NEGATION_TOKENS` and `MULTISTEP_PATTERNS_AC`. Schema: `[classifier] negation_tokens = ["ignoring"]; multistep_patterns = ["sequentially"]`. AhoCorasick rebuilt once at install with the union of builtins + overlay; lookup is `Arc<AhoCorasick>` clone per query. New public `cqs::search::router::install_classifier_vocab_overlay` and `load_classifier_vocab_overlay`.
+- **`cqs onboard --direction <both|callers|callees>`** (#1470, API-V1.36-4 / #1459). Default `callees` preserves prior behavior. Unifies depth+direction across `gather`, `onboard`, and `test-map`. `OnboardArgs` gains a `direction` field; `cqs::onboard()` signature gains a 6th arg.
+- **`cqs ref reindex` visible alias** for `cqs ref update` (#1475, API-V1.36-3 / #1459). One-line `#[command(visible_alias = "reindex")]` so cross-command muscle memory transfers from `cqs index --force`.
+- **`cqs serve` concurrent-request cap** (#1477, SEC-V1.36-9 / #1461). Outermost middleware caps in-flight requests via `tokio::sync::Semaphore`; saturation returns `503 Service Unavailable` immediately (no queueing, no allocation past the permit check). Default 256, env-overridable via new `CQS_SERVE_MAX_CONCURRENT_REQUESTS` (clamped `[1, 8192]`). Closes the pre-auth memory-pressure surface where N concurrent connections each held a 64 KiB body buffer bound only by FD limit.
+- **`LocalProvider::with_on_item_complete(self, cb) -> Self`** (#1470). Consuming-builder replaces the dropped trait method `BatchProvider::set_on_item_complete`. See Removed.
+- **`LanguageDef::test_name_patterns: &'static [&'static str]` field** (#1474, EXT-V1.36-3 / #1460). Single source of truth for `is_test_chunk` (lib.rs) and `TEST_NAME_PATTERNS` (store/calls/mod.rs). Both consumers flow from `Registry::all_test_name_patterns()` aggregator. Adding a Kotlin/Swift `should_*` BDD convention is now one row in the language module.
+- **Public surface** (#1478, SEC-V1.36-10): `cqs::daemon_translate::ensure_socket_parent_dir(&Path) -> io::Result<()>` — daemon startup helper that creates / tightens / refuses-on-symlink the unix-socket parent directory.
+- **Public surface** (#1477): `cqs::limits::serve_max_concurrent_requests`, const `SERVE_MAX_CONCURRENT_REQUESTS_DEFAULT`.
+- **New env var documented in README**: `CQS_SERVE_MAX_CONCURRENT_REQUESTS` (#1477).
+
+### Changed
+
+- **`--limit` defaults harmonised to 5** (#1470, API-V1.36-8 / #1459). `where` 3 → 5; `gather` 10 → 5. `eval` keeps R@K-specific 20 with an inline comment. Existing scripts that pinned the old defaults via `--limit N` are unaffected.
+- **`BatchProvider` trait surface uniformly `&self`** (#1470, API-V1.36-7 / #1459). The lone outlier `set_on_item_complete(&mut self, _)` forced callers holding `&dyn BatchProvider` to wrap in a Mutex just to register the streaming-persist callback. Callback registration moved to construction: `cqs::llm::create_client(LlmConfig)` → `create_client(LlmConfig, Option<OnItemCallback>)`. See Removed for the trait method.
+- **Daemon accept loop** uses `libc::poll` on the listener fd with a 1s timeout instead of `WouldBlock + thread::sleep(500ms)` busy-poll (#1471, RM-V1.36-8 / #1462). Idle wake rate drops 120/min → 60/min; parked threads consume zero CPU. Shutdown latency stays bounded at ~1s. EINTR is caught + re-loops; spurious POLLIN re-loops without sleeping.
+- **`ChunkRow::from_row` ordinal access** (#1468, P2-14 / PERF-V1.36-3). Replaces ~16 column-name strcmps per row with positional `row.get(N)` reads. Pinned column order in `CHUNK_ROW_SELECT_COLUMNS` const adjacent to `from_row`; all 9 production SELECT sites use the const. Hot-path speedup on search hydration.
+- **SQL test-chunk filter tightens** (#1474, EXT-V1.36-3 / #1460). `Test%` (loose, matched `TestRegistry`/`TestSuite`) → `Test\_%` (strict, requires literal underscore). Aligns with the post-AC-4 lib.rs matcher; production-named types no longer demoted.
+- **Daemon socket fallback path** (#1478, SEC-V1.36-10 / #1461). When `XDG_RUNTIME_DIR` is unset on Linux, the socket falls back to `temp_dir()/cqs-<uid>/cqs-<hash>.sock` instead of `temp_dir()/cqs-<hash>.sock`. The new per-uid directory is created with `0o700` so the `remove_file → bind` TOCTOU window is contained to a directory only the owning UID can write to. systemd `XDG_RUNTIME_DIR=/run/user/<uid>/` path is unchanged in shape; the helper still verifies + tightens parent mode if loose.
+- **`generate_nl_description_with_seq_len` is now the sole public NL-gen entry point** (#1473, CQ-V1.36-3/5 / #1462). The legacy 1-arg sibling that read `CQS_MAX_SEQ_LENGTH` env at the call site is gone — see Removed.
+
+### Removed
+
+- **`pub fn nl::generate_nl_description(chunk: &Chunk) -> String`** and **`pub fn nl::generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String`** (#1473, CQ-V1.36-3/5). Both wrapped the explicit `_with_seq_len` siblings by reading `CQS_MAX_SEQ_LENGTH` env (default 512). After v1.37.0's CQ-V1.36-1 fix made production embedding sites flow `model_max_seq_len` end-to-end, leaving these `pub` invited the configurable-models bug back at every preset where 512 ≠ the model's actual max_seq_length (qwen3-{4b,8b}: 4096-8192; nomic-coderank: 2048).
+- **`pub rerank: bool`** field on both `Cli` (top-level) and `SearchArgs` (graph-search subcommand) (#1479, API-V1.36-9 / #1459). The audit's canonical "two flags for one knob" anti-pattern. `cqs --rerank query` now fails at parse time; use `cqs --reranker onnx query`. The `pub(crate) fn args::resolve_rerank_mode` helper deleted alongside.
+- **`BatchProvider::set_on_item_complete(&mut self, _)` trait method** (#1470). See Changed for the construction-time replacement.
+
+### Fixed
+
+- **SEC-V1.36-6 regression test** for `cqs serve` `Query<T>` extractor 400 bodies (#1469). The audit speculated that axum's rejection body and tower-http's debug log echoed the URI — direct verification against axum 0.8 / tower-http 0.6 source confirmed neither does under the deployed config (P1.11's `make_span_with(path = ...)` already redacts; rejection body shape is the serde error path with no URI fragment). Pinned with a regression-guard test against `?token=secret&max_nodes=foo` and a doc-comment on `GraphQuery` explaining the chain so a future maintainer doesn't re-implement the audit recommendation without checking.
+- **Daemon socket parent-directory TOCTOU** (#1478, SEC-V1.36-10 / #1461). `ensure_socket_parent_dir` runs before stale-socket cleanup; refuses to start on file/symlink at the parent path, creates with `0o700` if missing, tightens loose existing modes. See Changed for the per-uid path layout.
+- **`tests/cli_eval_reranker_test.rs`** post-API-V1.36-2 surface (#1481). The slow-tests-feature test pinned the pre-v1.37.0 `--reranker llm` skeleton-error contract; v1.37.0 dropped the variant from clap so the test failed nightly. Rewritten to pin the parse-time-rejection contract.
+- **`hnsw::build::tests::test_build_batched*` flake** (#1484). Sin-based seeds 1..=20 produced near-collinear vectors that the post-#1425 small-tier HNSW (M=16/ef_c=100/ef_s=50) approximated-pruned non-deterministically. Spaced seeds by 1000× so sin inputs span `[-1, 1]` uniformly; recall@N=N is now stable.
+
+### Tracker hygiene
+
+- Closed **3 stale issues** already shipped in prior PRs: #1107 (slot model persistence — shipped #1112), #1108 (content_hash on hot SELECTs — shipped #1112), #1395 (token-count GPU routing — shipped #1398).
+- Closed **3 audit umbrellas**: #1460 (P3 Extensibility), #1461 (P3 Security), #1462 (P3 misc — CQ-V1.36-3/5 shipped + RM-V1.36-6 verified stale: no reqwest under flock in current code).
+
 ## [1.37.0] - 2026-05-05
 
 Minor release. No schema bump. Bundles the v1.36.2 16-category audit close-out (#1456 — 51 of 58 P1 + 11 of 14 P2 fixes, ~120 of 163 audit findings addressed) plus the dim-scaled batch sizes follow-up (#1464). The remaining ~40 deferred items are filed as tracking issues #1457-#1463.

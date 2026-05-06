@@ -1,8 +1,10 @@
 # Roadmap
 
-## Current: v1.37.0 (cut 2026-05-05)
+## Current: v1.38.0 (cut 2026-05-06)
 
 Minor release. No schema bump.
+
+**v1.38.0 (2026-05-06):** post-v1.37.0 autopilot wave — 13 audit-driven PRs since #1467 close three umbrella tracking issues from the v1.36.2 audit (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM). Headline: per-slot SPLADE α tables (#1472), TOML overlays for FTS synonyms + classifier vocab (#1482, #1483), `cqs serve` outermost concurrent-request cap (#1477), daemon socket parent-dir TOCTOU hardening (#1478), ChunkRow ordinal access on the search-hydration hot path (#1468), daemon accept loop `libc::poll` instead of busy-poll (#1471). Six surface deletions justify the minor bump despite the size: `pub fn nl::generate_nl_description` + `generate_nl_with_template` (#1473), `pub rerank: bool` field on `Cli`/`SearchArgs` + `pub(crate) resolve_rerank_mode` (#1479), `BatchProvider::set_on_item_complete` trait method (#1470). Env overrides preserve prior behavior on every default-changed knob. Three stale-tracker issues closed alongside (#1107, #1108, #1395 — all already shipped pre-v1.37.0).
 
 **v1.37.0 (2026-05-05):** v1.36.2 16-category audit close-out (#1456) — ~120 of 163 audit findings addressed. All 56 P1s + 13 of 14 P2s shipped or addressed via defensive variants. Plus dim-scaled batch sizes (#1464) so `BRUTE_FORCE_BATCH_SIZE` / `hnsw_batch_size` / `cagra_stream_batch_size` / `embed_channel_depth` keep per-batch heap roughly constant across embedding dim (qwen3-embedding-{4b,8b} at 2560/4096-dim used to silently 2-4× the heap). Surface changes that argue minor: `RerankerMode::Llm` removed from CLI (was placeholder that errored at runtime); `cqs::limits` promoted from `pub(crate)` → `pub`; new public surface (`dim_scaled_batch`, `relativize_or_warn`, `Store::try_stored_model_name`, `BoundedScoreHeap::would_accept`, `BatchProvider::validate_model`); `DEFAULT_QUERY_CACHE_SIZE` 128→1024; `MAX_CONCURRENT_DAEMON_CLIENTS` scales with cores. ~28 deferred P3/P4 items filed as tracking issues #1457-#1463.
 
