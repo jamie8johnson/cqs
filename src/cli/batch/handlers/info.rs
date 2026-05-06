@@ -323,10 +323,12 @@ pub(in crate::cli::batch) fn dispatch_onboard(
 ) -> Result<serde_json::Value> {
     let query = args.query.as_str();
     let tokens = args.tokens;
+    let direction = args.direction;
     let _span = tracing::info_span!(
         "batch_onboard",
         query,
         depth = args.depth,
+        ?direction,
         limit = args.limit_arg.limit
     )
     .entered();
@@ -335,7 +337,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     // Task A3: cap on call_chain + callers + tests. entry_point always kept.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
-    let mut result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth)?;
+    let mut result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth, direction)?;
     result.call_chain.truncate(limit);
     result.callers.truncate(limit);
     result.tests.truncate(limit);

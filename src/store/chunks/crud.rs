@@ -613,7 +613,9 @@ impl Store<ReadWrite> {
     /// Build a streaming per-item persist callback for the local LLM provider.
     ///
     /// Returns a `Box<dyn Fn(&str, &str) + Send + Sync>` that can be handed to
-    /// [`crate::llm::BatchProvider::set_on_item_complete`]. Each invocation
+    /// [`crate::llm::create_client`] as its `on_item` arg, or to
+    /// [`crate::llm::local::LocalProvider::with_on_item_complete`] for
+    /// direct test-time construction. Each invocation
     /// `cb(custom_id, text)` enqueues one row into the per-Store
     /// `summary_queue`. The queue drains under [`Store::begin_write`] when
     /// either of its thresholds is crossed (rows ≥ N OR elapsed ≥ T), or

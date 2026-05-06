@@ -122,15 +122,30 @@ pub struct OnboardSummary {
 /// Produce a guided tour of a concept in the codebase.
 ///
 /// Returns an ordered reading list: entry point → callees → callers → types → tests.
+///
+/// `direction` controls which side of the call graph gets the full BFS:
+/// - `Callees` (default): follow what the entry point calls; callers walked at depth 1.
+/// - `Callers`: follow who calls the entry point; callees walked at depth 1.
+/// - `Both`: walk both sides at the requested `depth`.
 pub fn onboard<Mode>(
     store: &Store<Mode>,
     embedder: &Embedder,
     concept: &str,
     root: &Path,
     depth: usize,
+    direction: GatherDirection,
 ) -> Result<OnboardResult, AnalysisError> {
     let _span = tracing::info_span!("onboard", concept).entered();
     let depth = depth.min(10);
+    // Per-side depths derived from the requested direction.
+    // - Callees: full depth on callees, depth=1 on callers (status-quo behavior).
+    // - Callers: depth=1 on callees, full depth on callers.
+    // - Both: full depth on both sides.
+    let (callee_depth, caller_depth) = match direction {
+        GatherDirection::Callees => (depth, 1),
+        GatherDirection::Callers => (1, depth),
+        GatherDirection::Both => (depth, depth),
+    };
 
     // 1. Search for relevant code (direct search, skip full scout overhead)
     let query_embedding = embedder.embed_query(concept)?;
@@ -172,7 +187,7 @@ pub fn onboard<Mode>(
     let mut callee_scores: HashMap<String, (f32, usize)> = HashMap::new();
     callee_scores.insert(entry_name.clone(), (1.0, 0));
     let callee_opts = GatherOptions::default()
-        .with_expand_depth(depth)
+        .with_expand_depth(callee_depth)
         .with_direction(GatherDirection::Callees)
         .with_decay_factor(0.7)
         .with_max_expanded_nodes(100);
@@ -182,11 +197,13 @@ pub fn onboard<Mode>(
     callee_scores.remove(&entry_name);
     tracing::debug!(callee_count = callee_scores.len(), "Callee BFS complete");
 
-    // 5. Caller BFS — who calls the entry point (shallow, 1 level)
+    // 5. Caller BFS — who calls the entry point.
+    // Depth is `caller_depth` (= 1 for direction=Callees back-compat,
+    // = `depth` for Callers / Both).
     let mut caller_scores: HashMap<String, (f32, usize)> = HashMap::new();
     caller_scores.insert(entry_name.clone(), (1.0, 0));
     let caller_opts = GatherOptions::default()
-        .with_expand_depth(1)
+        .with_expand_depth(caller_depth)
         .with_direction(GatherDirection::Callers)
         .with_decay_factor(0.8)
         .with_max_expanded_nodes(50);

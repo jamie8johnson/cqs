@@ -13,13 +13,30 @@ use super::{LlmConfig, LlmError};
 /// not three coordinated edits.
 pub(crate) trait ProviderRegistry: Sync {
     fn name(&self) -> &'static str;
-    fn build(&self, cfg: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError>;
+    /// Build a provider from resolved config, optionally registering a
+    /// per-item streaming-persist callback. The Anthropic provider
+    /// ignores the callback (fetch-at-end semantics); the Local provider
+    /// stores it for use during the worker-pool fanout.
+    fn build(
+        &self,
+        cfg: LlmConfig,
+        on_item: Option<OnItemCallback>,
+    ) -> Result<Box<dyn BatchProvider>, LlmError>;
 }
 
 /// Callback type for the per-item streaming persist hook.
 ///
-/// `(custom_id, text)` — see [`BatchProvider::set_on_item_complete`] for the
-/// full concurrency contract.
+/// `(custom_id, text)` — see provider-specific construction APIs (e.g.
+/// [`crate::llm::local::LocalProvider::with_on_item_complete`]) for the
+/// concurrency contract.
+///
+/// **Concurrency contract:** the callback may be invoked from multiple
+/// worker threads concurrently. Implementations must be `Fn + Send + Sync`
+/// and must serialize any shared mutable state internally (typically via
+/// `Mutex<Connection>`). Panics in the callback are caught and logged;
+/// they do not abort the batch. SQLite `INSERT OR IGNORE` on the
+/// `content_hash` primary key gracefully handles redundant writes from
+/// both streaming and `fetch_batch_results` paths.
 pub type OnItemCallback = Box<dyn Fn(&str, &str) + Send + Sync>;
 
 /// A single item in a batch submission.
@@ -153,23 +170,15 @@ pub trait BatchProvider {
         Ok(())
     }
 
-    /// Optional streaming callback invoked once per completed item.
-    ///
-    /// Callers (e.g. `llm_summary_pass`) can set this to persist results
-    /// to SQLite as they arrive, enabling crash-safe partial completion
-    /// without changing the store-all-at-end contract of `fetch_batch_results`.
-    ///
-    /// **Concurrency contract:** the callback may be invoked from multiple
-    /// worker threads concurrently. Implementations must be `Fn + Send + Sync`
-    /// and must serialize any shared mutable state internally (typically via
-    /// `Mutex<Connection>`). Panics in the callback are caught and logged;
-    /// they do not abort the batch. SQLite `INSERT OR IGNORE` on the
-    /// `content_hash` primary key gracefully handles redundant writes from
-    /// both streaming and `fetch_batch_results` paths.
-    ///
-    /// Default: no-op. The Anthropic path uses fetch-at-end semantics and
-    /// ignores the callback.
-    fn set_on_item_complete(&mut self, _cb: OnItemCallback) {}
+    // API-V1.36-7 / #1459 sub-7: the optional streaming per-item callback
+    // is now passed at construction (via [`crate::llm::create_client`]'s
+    // `on_item` arg, or [`LocalProvider::with_on_item_complete`] for direct
+    // construction in tests). Removing it from the trait keeps every method
+    // `&self` and lets callers hold `&dyn BatchProvider` without wrapping in
+    // a `Mutex` just to register the callback.
+    //
+    // The Anthropic provider ignores the callback (fetch-at-end semantics).
+    // The Local provider stores it under interior mutability.
 }
 
 /// Mock batch provider for testing batch orchestration without API calls.

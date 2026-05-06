@@ -9,11 +9,20 @@ pub(crate) fn cmd_onboard(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     concept: &str,
     depth: usize,
+    direction: cqs::GatherDirection,
     limit: usize,
     json: bool,
     max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_onboard", concept, depth, limit, ?max_tokens).entered();
+    let _span = tracing::info_span!(
+        "cmd_onboard",
+        concept,
+        depth,
+        ?direction,
+        limit,
+        ?max_tokens
+    )
+    .entered();
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
@@ -23,7 +32,7 @@ pub(crate) fn cmd_onboard(
     // (relevance → depth) is respected before truncation.
     let limit = limit.clamp(1, 100);
 
-    let mut result = onboard(store, embedder, concept, root, depth)?;
+    let mut result = onboard(store, embedder, concept, root, depth, direction)?;
     result.call_chain.truncate(limit);
     result.callers.truncate(limit);
     result.tests.truncate(limit);

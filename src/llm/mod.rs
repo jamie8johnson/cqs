@@ -409,7 +409,10 @@ impl LlmConfig {
 /// and delegates construction to its `build` method. Adding a third
 /// provider is one impl + one slice row — `resolve` and `create_client`
 /// stay untouched.
-pub fn create_client(llm_config: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
+pub fn create_client(
+    llm_config: LlmConfig,
+    on_item: Option<provider::OnItemCallback>,
+) -> Result<Box<dyn BatchProvider>, LlmError> {
     let _span = tracing::info_span!("create_client", provider = llm_config.provider).entered();
     let registry = PROVIDERS
         .iter()
@@ -424,7 +427,7 @@ pub fn create_client(llm_config: LlmConfig) -> Result<Box<dyn BatchProvider>, Ll
                 message: format!("unknown LLM provider: {}", llm_config.provider),
             }
         })?;
-    registry.build(llm_config)
+    registry.build(llm_config, on_item)
 }
 
 /// Static registry of available LLM providers.
@@ -439,7 +442,14 @@ impl ProviderRegistry for AnthropicRegistry {
     fn name(&self) -> &'static str {
         "anthropic"
     }
-    fn build(&self, cfg: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
+    fn build(
+        &self,
+        cfg: LlmConfig,
+        _on_item: Option<provider::OnItemCallback>,
+    ) -> Result<Box<dyn BatchProvider>, LlmError> {
+        // Anthropic's Batches API uses fetch-at-end semantics; the per-item
+        // streaming-persist callback only fires for the LocalProvider's
+        // worker-pool fanout. Drop silently here.
         let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
             LlmError::ApiKeyMissing(
                 "ANTHROPIC_API_KEY environment variable required for LLM features".to_string(),
@@ -454,7 +464,11 @@ impl ProviderRegistry for LocalRegistry {
     fn name(&self) -> &'static str {
         "local"
     }
-    fn build(&self, cfg: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
+    fn build(
+        &self,
+        cfg: LlmConfig,
+        on_item: Option<provider::OnItemCallback>,
+    ) -> Result<Box<dyn BatchProvider>, LlmError> {
         // Local provider needs an explicit endpoint URL and model name —
         // the Anthropic defaults do not apply. Validate here (before any
         // HTTP traffic) so misconfig surfaces with an actionable message.
@@ -476,7 +490,12 @@ impl ProviderRegistry for LocalRegistry {
                 cfg.api_base
             )));
         }
-        Ok(Box::new(local::LocalProvider::new(cfg)?))
+        let provider = local::LocalProvider::new(cfg)?;
+        let provider = match on_item {
+            Some(cb) => provider.with_on_item_complete(cb),
+            None => provider,
+        };
+        Ok(Box::new(provider))
     }
 }
 
@@ -1173,7 +1192,7 @@ mod tests {
 
         let cfg = crate::config::Config::default();
         let llm_config = LlmConfig::resolve(&cfg).unwrap();
-        let err = match create_client(llm_config) {
+        let err = match create_client(llm_config, None) {
             Ok(_) => panic!("should reject missing API_BASE"),
             Err(e) => e,
         };
@@ -1208,7 +1227,7 @@ mod tests {
 
         let cfg = crate::config::Config::default();
         let llm_config = LlmConfig::resolve(&cfg).unwrap();
-        let err = match create_client(llm_config) {
+        let err = match create_client(llm_config, None) {
             Ok(_) => panic!("should reject missing MODEL"),
             Err(e) => e,
         };

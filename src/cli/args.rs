@@ -285,8 +285,9 @@ pub(crate) struct GatherArgs {
     /// Expansion direction: both, callers, callees
     #[arg(long, default_value = "both")]
     pub direction: cqs::GatherDirection,
-    /// Max chunks to return
-    #[arg(short = 'n', long, default_value = "10")]
+    /// Max chunks to return.
+    /// API-V1.36-8 (#1459): default harmonised to 5 across the CLI.
+    #[arg(short = 'n', long, default_value = "5")]
     pub limit: usize,
     /// Maximum token budget (overrides --limit with token-based packing)
     #[arg(long, value_parser = parse_nonzero_usize)]
@@ -496,9 +497,14 @@ pub(crate) struct RelatedArgs {
 pub(crate) struct OnboardArgs {
     /// Concept or query to explore
     pub query: String,
-    /// Callee expansion depth — #1373: WALK default.
+    /// Call-chain expansion depth — #1373: WALK default.
     #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_WALK)]
     pub depth: usize,
+    /// Expansion direction: both, callers, callees.
+    /// API-V1.36-4 (#1459): default `callees` preserves prior behavior;
+    /// gather/test-map cross-command muscle memory now transfers.
+    #[arg(long, default_value = "callees")]
+    pub direction: cqs::GatherDirection,
     /// Maximum token budget
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
@@ -528,8 +534,9 @@ pub(crate) struct ExplainArgs {
 pub(crate) struct WhereArgs {
     /// Description of the code to add
     pub description: String,
-    /// Max file suggestions
-    #[arg(short = 'n', long, default_value = "3")]
+    /// Max file suggestions.
+    /// API-V1.36-8 (#1459): default harmonised to 5 across the CLI.
+    #[arg(short = 'n', long, default_value = "5")]
     pub limit: usize,
 }
 

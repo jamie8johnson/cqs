@@ -49,6 +49,8 @@ pub(crate) struct EvalCmdArgs {
     ///
     /// API-V1.29-7: `-n` short flag added for parity with every other CLI
     /// command that accepts a result cap (search, gather, related, etc.).
+    /// API-V1.36-8 (#1459): eval is the R@K cap; intentionally larger
+    /// than the harmonised default of 5 used elsewhere.
     #[arg(short = 'n', long, default_value = "20")]
     pub limit: usize,
 
