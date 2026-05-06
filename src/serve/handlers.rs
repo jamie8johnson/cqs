@@ -82,6 +82,31 @@ where
     .map_err(Into::into)
 }
 
+// ─── SEC-V1.36-6 / token-leak posture ──────────────────────────────
+//
+// The `Query<T>` extractors below participate in a defense-in-depth
+// chain that prevents `?token=…` URLs from leaking into either response
+// bodies or trace logs:
+//   1. **Body**: axum 0.8's `Query<T>` rejection emits
+//      `"Failed to deserialize query string: <field>: <serde error>"` —
+//      the URI itself is never placed in the body. Confirmed against
+//      axum-core 0.5 / serde_path_to_error 0.1.
+//   2. **Trace span**: P1.11 replaced the default TraceLayer
+//      `make_span_with` with one recording `path = %req.uri().path()`
+//      only — query string excluded from spans.
+//   3. **Auth redirect**: when auth is on, `needs_url_strip` (auth.rs)
+//      302-redirects any `?token=…` URL before the extractor fires.
+//
+// The audit-finding SEC-V1.36-6 (#1461 sub-item) speculated that
+// tower-http's debug log path echoed the URI; verified against
+// tower-http 0.6 source that this is not the case under our config.
+// Regression-guarded by `serve::tests::auth_tests::sec_v136_6_*`.
+//
+// Adding a new `Query<T>` extractor? You inherit this posture for
+// free — no per-handler scrub needed. Don't add fields whose `Display`
+// echoes raw input back into trace events; if you must, route them
+// through `auth::strip_token_param` first.
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct GraphQuery {
     /// Optional file-path filter — extensibility seam for the future
