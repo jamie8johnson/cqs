@@ -71,7 +71,13 @@ pub(crate) enum RefCommand {
         #[command(flatten)]
         output: TextJsonArgs,
     },
-    /// Update a reference index from its source
+    /// Update a reference index from its source.
+    ///
+    /// API-V1.36-3 (#1459): exposed as both `update` and the
+    /// `reindex` visible alias so cross-command muscle memory
+    /// transfers from `cqs index --force` (the project-side
+    /// equivalent verb).
+    #[command(visible_alias = "reindex")]
     Update {
         /// Name of the reference to update
         name: String,
