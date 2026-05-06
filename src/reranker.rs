@@ -40,14 +40,52 @@ const TOKENIZER_BLAKE3: &str = "";
 /// activations than plain encoder forward passes.
 const DEFAULT_RERANKER_BATCH: usize = 32;
 
+/// Reranker reference seq-length, paired with [`DEFAULT_RERANKER_BATCH`].
+/// The [`reranker_batch_size`] formula scales the baseline batch by
+/// `(REFERENCE_MAX_LENGTH / max_length).max(0.25)` so a custom reranker
+/// running at 2048 tokens halves the batch (32 → 16) instead of OOMing
+/// at the documented default.
+const REFERENCE_MAX_LENGTH: usize = 512;
+
 /// Maximum number of candidates per ORT `session.run()` in the reranker.
 ///
-/// Reads `CQS_RERANKER_BATCH`; falls back to [`DEFAULT_RERANKER_BATCH`] when
-/// unset, unparseable, or zero.
-fn reranker_batch_size() -> usize {
+/// SHL-V1.36-6 (#1463 follow-up): scales the baseline 32 by the loaded
+/// model's `max_length`. Long-context rerankers (e.g.
+/// `CQS_RERANKER_MAX_LENGTH=2048`) at the documented default 32 OOM
+/// 8 GB GPUs because the per-batch token tensor scales linearly with
+/// seq. The scaling factor is `(REFERENCE_MAX_LENGTH / max_length)`
+/// floored at 0.25 (so seq=8192 → batch=32*0.25=8 rather than 1) and
+/// rounded to a power of two clamped to `[1, 256]`.
+///
+/// The audit's full formula `32 * (384/hidden) * (512/seq)` would also
+/// scale by `hidden_size`, but the reranker session doesn't surface
+/// hidden_size today — adding that would require probing
+/// `config.json` at session-init time and threading the value through
+/// `OnnxReranker`, an infrastructure change tracked separately. The
+/// max-length-only scaling is a real (if narrow) improvement.
+///
+/// `CQS_RERANKER_BATCH` env wins (operators with workloads they
+/// understand can pin a value).
+fn reranker_batch_size(max_length: usize) -> usize {
     // P2.4: route through shared `parse_env_usize` so behavior matches the
     // 24 other CQS_* knobs (missing/empty/garbage/zero -> default).
-    crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH)
+    if std::env::var_os("CQS_RERANKER_BATCH").is_some() {
+        return crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH);
+    }
+    let baseline = DEFAULT_RERANKER_BATCH as f64;
+    let max_length = max_length.max(1) as f64;
+    let seq_factor = (REFERENCE_MAX_LENGTH as f64 / max_length).max(0.25);
+    let scaled = (baseline * seq_factor).max(1.0) as usize;
+    let rounded = scaled.next_power_of_two().clamp(1, 256);
+    if rounded != DEFAULT_RERANKER_BATCH {
+        tracing::debug!(
+            max_length = max_length as usize,
+            scaled,
+            rounded,
+            "reranker_batch_size: scaling baseline by max_length"
+        );
+    }
+    rounded
 }
 
 /// Resolve the reranker model source via the shared auxiliary-model
@@ -268,7 +306,7 @@ impl OnnxReranker {
             return Ok(None); // Nothing to score — empty tokenization
         }
 
-        let batch_cap = reranker_batch_size();
+        let batch_cap = reranker_batch_size(self.max_length);
         let mut scores = Vec::with_capacity(passages.len());
         for chunk in encodings.chunks(batch_cap) {
             scores.extend(self.run_chunk(chunk)?);
@@ -830,6 +868,80 @@ impl Reranker for LlmReranker {
             "LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)"
                 .to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod batch_scaling_tests {
+    use super::{reranker_batch_size, DEFAULT_RERANKER_BATCH, REFERENCE_MAX_LENGTH};
+
+    /// Process-wide lock for the env-override tests so parallel cargo
+    /// test runs don't observe each other's `CQS_RERANKER_BATCH` writes.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Reference seq-length (512) reproduces the historic baseline 32 —
+    /// existing operator setups see no behavior change. Pinning this
+    /// catches a refactor that accidentally re-derives the rounded value.
+    #[test]
+    fn baseline_max_length_returns_default_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(
+            reranker_batch_size(REFERENCE_MAX_LENGTH),
+            DEFAULT_RERANKER_BATCH
+        );
+    }
+
+    /// SHL-V1.36-6 motivating case: a custom 2048-token reranker. The
+    /// scaling factor is `512 / 2048 = 0.25`, so 32 → 8 (next_power_of_two
+    /// of 32 * 0.25 = 8). Halves the OOM risk by quartering tensor size.
+    #[test]
+    fn long_seq_reduces_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(2048), 8);
+    }
+
+    /// 8K-seq rerankers shouldn't degenerate to batch=1. The 0.25 floor
+    /// in `seq_factor` keeps the result at 32 * 0.25 = 8.
+    #[test]
+    fn extreme_seq_floors_at_quarter() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(8192), 8);
+        assert_eq!(reranker_batch_size(32_768), 8);
+    }
+
+    /// Short-seq rerankers (e.g., 256-token cross-encoders) get a wider
+    /// batch — `512 / 256 = 2.0` so 32 → 64.
+    #[test]
+    fn short_seq_widens_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(256), 64);
+        assert_eq!(reranker_batch_size(128), 128);
+    }
+
+    /// `CQS_RERANKER_BATCH` env wins regardless of `max_length`. Operators
+    /// pinning a value know their own workload — we don't second-guess them.
+    #[test]
+    fn env_override_wins_regardless_of_max_length() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("CQS_RERANKER_BATCH", "100");
+        assert_eq!(reranker_batch_size(2048), 100);
+        assert_eq!(reranker_batch_size(512), 100);
+        std::env::remove_var("CQS_RERANKER_BATCH");
+    }
+
+    /// A degenerate `max_length=0` doesn't panic. The `.max(1)` floor
+    /// keeps the formula safe.
+    #[test]
+    fn zero_max_length_does_not_panic() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        // 512 / 1 = 512 → 32 * 512 = clamped to 256
+        let result = reranker_batch_size(0);
+        assert!(result <= 256);
     }
 }
 
