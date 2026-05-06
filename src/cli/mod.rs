@@ -492,34 +492,37 @@ mod tests {
 
     // ===== --rerank / --reranker flag tests =====
 
+    /// API-V1.36-9 (#1459): legacy `--rerank` bool was dropped — clap now
+    /// rejects the spelling outright instead of mapping it to `--reranker
+    /// onnx`. Callers must use the canonical `--reranker onnx`.
     #[test]
-    fn test_cli_rerank_flag() {
-        let cli = Cli::try_parse_from(["cqs", "--rerank", "search query"]).unwrap();
-        assert!(cli.rerank);
-        // #1372: --rerank shorthand resolves to Onnx mode.
-        assert!(cli.rerank_active());
-        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Onnx);
+    fn test_cli_rerank_bool_rejected_post_api_v136_9() {
+        let result = Cli::try_parse_from(["cqs", "--rerank", "search query"]);
+        assert!(
+            result.is_err(),
+            "--rerank bool should be rejected post-API-V1.36-9; use --reranker onnx"
+        );
     }
 
     #[test]
-    fn test_cli_rerank_default_false() {
+    fn test_cli_rerank_default_none() {
         let cli = Cli::try_parse_from(["cqs", "search query"]).unwrap();
-        assert!(!cli.rerank);
         assert!(!cli.rerank_active());
         assert_eq!(cli.rerank_mode(), super::args::RerankerMode::None);
     }
 
     #[test]
-    fn test_cli_rerank_with_ref() {
-        let cli = Cli::try_parse_from(["cqs", "--rerank", "--ref", "aveva", "query"]).unwrap();
-        assert!(cli.rerank);
+    fn test_cli_reranker_onnx_with_ref() {
+        let cli =
+            Cli::try_parse_from(["cqs", "--reranker", "onnx", "--ref", "aveva", "query"]).unwrap();
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Onnx);
         assert_eq!(cli.ref_name, Some("aveva".to_string()));
     }
 
     #[test]
-    fn test_cli_rerank_with_limit() {
-        let cli = Cli::try_parse_from(["cqs", "--rerank", "-n", "20", "query"]).unwrap();
-        assert!(cli.rerank);
+    fn test_cli_reranker_onnx_with_limit() {
+        let cli = Cli::try_parse_from(["cqs", "--reranker", "onnx", "-n", "20", "query"]).unwrap();
+        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::Onnx);
         assert_eq!(cli.limit, 20);
     }
 
@@ -549,16 +552,16 @@ mod tests {
         assert!(res.is_err(), "--reranker llm should be rejected by clap");
     }
 
-    /// #1372: when both flags are passed, `--reranker` wins (explicit beats
-    /// shorthand). Lets a script with hardcoded `--rerank` opt into Llm
-    /// without having to drop the shorthand.
+    /// API-V1.36-9 (#1459): the previous "both flags passed → --reranker
+    /// wins" coexistence test no longer applies — `--rerank` is gone.
+    /// Pin that the dual-flag form is now a parse-time rejection.
     #[test]
-    fn test_cli_reranker_overrides_rerank() {
-        let cli = Cli::try_parse_from(["cqs", "--rerank", "--reranker", "none", "query"]).unwrap();
-        // `--rerank` raw bool is still set, but resolved mode is None.
-        assert!(cli.rerank);
-        assert_eq!(cli.rerank_mode(), super::args::RerankerMode::None);
-        assert!(!cli.rerank_active());
+    fn test_cli_dual_rerank_flag_rejected_post_api_v136_9() {
+        let result = Cli::try_parse_from(["cqs", "--rerank", "--reranker", "none", "query"]);
+        assert!(
+            result.is_err(),
+            "the legacy dual-flag form `--rerank --reranker` should be rejected"
+        );
     }
 
     /// #1372: invalid `--reranker` value rejected at parse time (clap

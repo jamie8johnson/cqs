@@ -206,21 +206,14 @@ pub struct Cli {
     #[arg(long)]
     pub include_docs: bool,
 
-    /// Re-rank results with cross-encoder (slower, more accurate).
-    ///
-    /// Boolean shorthand for `--reranker onnx`. `--reranker <mode>` (P2-14,
-    /// #1372) is the canonical form; this stays for muscle memory and batch
-    /// scripts. If both are passed, `--reranker` wins.
-    #[arg(long)]
-    pub rerank: bool,
-
-    /// Reranker mode: `none|onnx|llm` (#1372).
+    /// Reranker mode: `none|onnx` (#1372).
     ///
     /// Mirrors `cqs eval --reranker`. `none` is the default; `onnx` runs the
-    /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`; `llm`
-    /// is reserved for the production wiring landing in #1220 and currently
-    /// errors with a "not yet implemented" message. Takes precedence over
-    /// the legacy `--rerank` bool when both are passed.
+    /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
+    ///
+    /// API-V1.36-9 (#1459): the legacy `--rerank` bool was dropped; per
+    /// "no external users" project policy, breaking renames without
+    /// aliases are clean cuts. `--reranker onnx` is the canonical form.
     #[arg(long = "reranker", value_enum)]
     pub reranker: Option<args::RerankerMode>,
 
@@ -329,10 +322,10 @@ impl Cli {
             .ok_or_else(|| anyhow::anyhow!("ModelConfig not resolved — call resolve_model() first"))
     }
 
-    /// Effective reranker mode after resolving `(--reranker, --rerank)` (#1372).
-    /// Returns `RerankerMode::None` when neither flag is set.
+    /// Effective reranker mode. Returns `RerankerMode::None` when no flag is set.
+    /// API-V1.36-9 (#1459): legacy `--rerank` bool gone; `--reranker` is canonical.
     pub(crate) fn rerank_mode(&self) -> args::RerankerMode {
-        args::resolve_rerank_mode(self.reranker, self.rerank)
+        self.reranker.unwrap_or(args::RerankerMode::None)
     }
 
     /// `true` if any reranker stage is selected (Onnx or Llm).
