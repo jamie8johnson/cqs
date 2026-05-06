@@ -1751,3 +1751,184 @@ fn touch_mtime_or_warn_returns_true_on_extant_file() {
         "extant file with readable mtime must succeed; FS chain returned false unexpectedly"
     );
 }
+
+// ============================================================================
+// TC-HAP-V1.36-9 — daemon GC happy-path tests
+//
+// `run_daemon_startup_gc` and `run_daemon_periodic_gc` are pub(super) helpers
+// in `super::gc`. These tests exercise the missing-file prune branch end-to-
+// end: real on-disk files + a phantom chunk for a file that never existed.
+// The gitignore-prune branch is exercised by passing `None` for the matcher
+// (covered by the dedicated `prune_gitignored` unit tests).
+// ============================================================================
+
+fn make_gc_test_chunk(file: &Path, name: &str, line_start: u32) -> cqs::parser::Chunk {
+    let content = format!("fn {name}() {{ }}");
+    let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    cqs::parser::Chunk {
+        id: format!("{}:{line_start}:{name}", file.display()),
+        file: file.to_path_buf(),
+        language: cqs::parser::Language::Rust,
+        chunk_type: cqs::parser::ChunkType::Function,
+        name: name.to_string(),
+        signature: format!("fn {name}()"),
+        content,
+        doc: None,
+        line_start,
+        line_end: line_start + 4,
+        content_hash,
+        parent_id: None,
+        window_idx: None,
+        parent_type_name: None,
+        parser_version: 0,
+    }
+}
+
+/// TC-HAP-V1.36-9: startup GC prunes phantom chunks for files no longer on disk.
+#[test]
+fn run_daemon_startup_gc_prunes_phantom_chunks() {
+    use super::gc::run_daemon_startup_gc;
+    use std::io::Write;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+
+    // Create one real on-disk file.
+    let live_abs = root.join("src").join("live.rs");
+    std::fs::create_dir_all(live_abs.parent().unwrap()).unwrap();
+    std::fs::File::create(&live_abs)
+        .unwrap()
+        .write_all(b"fn live_fn() {}")
+        .unwrap();
+
+    // Open Store and seed with chunks keyed by paths matching what
+    // `enumerate_files` returns under this root: project-relative paths.
+    let store_path = root.join(cqs::INDEX_DB_FILENAME);
+    let store = Store::open(&store_path).unwrap();
+    store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+    let dim = cqs::EMBEDDING_DIM;
+    let mut emb = vec![0.0_f32; dim];
+    emb[0] = 1.0;
+    let embedding = cqs::Embedding::new(emb);
+
+    let live_rel = PathBuf::from("src/live.rs");
+    let phantom_rel = PathBuf::from("src/phantom.rs");
+    let chunks = vec![
+        (
+            make_gc_test_chunk(&live_rel, "live_fn", 1),
+            embedding.clone(),
+        ),
+        (make_gc_test_chunk(&phantom_rel, "phantom_fn", 1), embedding),
+    ];
+    store.upsert_chunks_batch(&chunks, Some(0)).unwrap();
+
+    let before = store.stats().unwrap().total_chunks;
+    assert_eq!(before, 2, "fixture must seed 2 chunks");
+
+    let parser = CqParser::new().unwrap();
+
+    // No env override → startup GC runs.
+    std::env::remove_var("CQS_DAEMON_STARTUP_GC");
+    run_daemon_startup_gc(&store, root, &parser, None);
+
+    let after = store.stats().unwrap().total_chunks;
+    assert_eq!(
+        after, 1,
+        "phantom chunk for nonexistent file must be pruned (before={before}, after={after})"
+    );
+
+    let live_origin = cqs::normalize_path(&live_rel);
+    let live_chunks = store.get_chunks_by_origin(&live_origin).unwrap();
+    assert_eq!(live_chunks.len(), 1);
+    assert_eq!(live_chunks[0].name, "live_fn");
+}
+
+/// TC-HAP-V1.36-9: `CQS_DAEMON_STARTUP_GC=0` short-circuits the prune.
+/// Pre-fix this was an unobservable behavior — pinning it keeps the
+/// operator-visible escape hatch honest.
+#[test]
+fn run_daemon_startup_gc_disabled_by_env_keeps_phantoms() {
+    use super::gc::run_daemon_startup_gc;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    let store_path = root.join(cqs::INDEX_DB_FILENAME);
+    let store = Store::open(&store_path).unwrap();
+    store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+    let dim = cqs::EMBEDDING_DIM;
+    let mut emb = vec![0.0_f32; dim];
+    emb[0] = 1.0;
+    let chunks = vec![(
+        make_gc_test_chunk(&PathBuf::from("src/phantom.rs"), "phantom_fn", 1),
+        cqs::Embedding::new(emb),
+    )];
+    store.upsert_chunks_batch(&chunks, Some(0)).unwrap();
+
+    let parser = CqParser::new().unwrap();
+
+    // SAFETY: env-mutation in a parallel-test world. The vars are namespaced
+    // (CQS_DAEMON_STARTUP_GC) and unset at end; concurrent watch tests don't
+    // touch this var.
+    std::env::set_var("CQS_DAEMON_STARTUP_GC", "0");
+    run_daemon_startup_gc(&store, root, &parser, None);
+    std::env::remove_var("CQS_DAEMON_STARTUP_GC");
+
+    let after = store.stats().unwrap().total_chunks;
+    assert_eq!(
+        after, 1,
+        "CQS_DAEMON_STARTUP_GC=0 must skip prune; phantom must survive"
+    );
+}
+
+/// TC-HAP-V1.36-9: periodic GC also prunes missing-file chunks.
+/// The bounded version paths through `prune_missing` the same way startup
+/// does; this test pins the missing-file branch (gitignore branch is `None`).
+#[test]
+fn run_daemon_periodic_gc_prunes_missing_files() {
+    use super::gc::run_daemon_periodic_gc;
+    use std::io::Write;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let live_abs = root.join("src").join("live.rs");
+    std::fs::create_dir_all(live_abs.parent().unwrap()).unwrap();
+    std::fs::File::create(&live_abs)
+        .unwrap()
+        .write_all(b"fn live_fn() {}")
+        .unwrap();
+
+    let store_path = root.join(cqs::INDEX_DB_FILENAME);
+    let store = Store::open(&store_path).unwrap();
+    store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+    let dim = cqs::EMBEDDING_DIM;
+    let mut emb = vec![0.0_f32; dim];
+    emb[0] = 1.0;
+    let embedding = cqs::Embedding::new(emb);
+
+    let chunks = vec![
+        (
+            make_gc_test_chunk(&PathBuf::from("src/live.rs"), "live_fn", 1),
+            embedding.clone(),
+        ),
+        (
+            make_gc_test_chunk(&PathBuf::from("src/ghost.rs"), "ghost_fn", 1),
+            embedding,
+        ),
+    ];
+    store.upsert_chunks_batch(&chunks, Some(0)).unwrap();
+    assert_eq!(store.stats().unwrap().total_chunks, 2);
+
+    let parser = CqParser::new().unwrap();
+    // disk_files: None → function does its own enumerate_files walk.
+    run_daemon_periodic_gc(&store, root, &parser, None, None);
+
+    assert_eq!(
+        store.stats().unwrap().total_chunks,
+        1,
+        "periodic GC must prune missing-file chunks (ghost.rs)"
+    );
+}
