@@ -195,21 +195,38 @@ pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
         None => match std::env::var_os("XDG_RUNTIME_DIR") {
             Some(d) => PathBuf::from(d),
             None => {
-                // P3.38: silent fallback to /tmp (mode 1777) is fine on macOS
-                // (`/var/folders/.../T/` is per-user) but a meaningful trust
-                // drop on multi-user Linux. Surface it once so operators can
-                // wire `XDG_RUNTIME_DIR=/run/user/$(id -u)` if they care.
+                // P3.38 + SEC-V1.36-10 (#1461): silent fallback to /tmp
+                // (mode 1777) is fine on macOS (`/var/folders/.../T/` is
+                // per-user) but a meaningful trust drop on multi-user
+                // Linux. Surface it once so operators can wire
+                // `XDG_RUNTIME_DIR=/run/user/$(id -u)` if they care.
+                //
+                // SEC-V1.36-10: nest the socket inside a per-uid private
+                // subdirectory (`temp_dir()/cqs-<uid>/`) so the
+                // `remove_file` → `bind` TOCTOU window is contained to a
+                // 0o700 dir only the current uid can write to. The dir
+                // itself is created with the 0o700 mode by
+                // `ensure_socket_parent_dir` at daemon startup; this fn
+                // just builds the path.
                 #[cfg(target_os = "linux")]
                 {
                     static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
                     WARNED.get_or_init(|| {
                         tracing::info!(
-                            "XDG_RUNTIME_DIR unset — daemon socket falls back to temp_dir; \
+                            "XDG_RUNTIME_DIR unset — daemon socket falls back to temp_dir/cqs-<uid>/; \
                              consider XDG_RUNTIME_DIR=/run/user/$(id -u)"
                         );
                     });
                 }
-                std::env::temp_dir()
+                #[cfg(unix)]
+                {
+                    let uid = unsafe { libc::getuid() };
+                    std::env::temp_dir().join(format!("cqs-{}", uid))
+                }
+                #[cfg(not(unix))]
+                {
+                    std::env::temp_dir()
+                }
             }
         },
     };
@@ -227,6 +244,81 @@ pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
     }
     let sock_name = format!("cqs-{}.sock", hex);
     sock_dir.join(sock_name)
+}
+
+/// SEC-V1.36-10 (#1461): ensure the socket's parent directory exists with
+/// `0o700` so the cleanup-then-bind TOCTOU window is contained.
+///
+/// Called from the daemon startup path (`cli/watch/mod.rs`) BEFORE the
+/// stale-socket cleanup + `UnixListener::bind` sequence runs. With this
+/// guarantee, a hostile local user can't plant their own socket at the
+/// daemon's bind path during the gap between `remove_file` and `bind`,
+/// because they don't have write access to the parent directory.
+///
+/// On `XDG_RUNTIME_DIR` paths (`/run/user/<uid>`) the parent is already
+/// `0o700` per systemd's contract — this function still verifies the
+/// path exists and is a directory, but skips the chmod. On the `/tmp`
+/// fallback path the parent is `temp_dir()/cqs-<uid>/` which we own;
+/// create it with `0o700` if missing, or fail loudly if a file/symlink
+/// is squatting there.
+///
+/// Production-only: tests using [`set_socket_dir_override_for_test`] set
+/// up their own per-test tempdir and skip this check (the test's tempdir
+/// is `0o700` by default on most platforms).
+#[cfg(unix)]
+pub fn ensure_socket_parent_dir(socket_path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = match socket_path.parent() {
+        Some(p) => p,
+        None => return Ok(()), // bare filename — no parent to secure
+    };
+    match std::fs::symlink_metadata(parent) {
+        Ok(md) => {
+            if md.file_type().is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "SEC-V1.36-10: refusing to use socket parent dir {} \
+                     because it is a symlink (potential trust escalation)",
+                    parent.display()
+                )));
+            }
+            if !md.is_dir() {
+                return Err(std::io::Error::other(format!(
+                    "SEC-V1.36-10: socket parent path {} exists but is not a directory \
+                     (regular file or other inode squatting on the path)",
+                    parent.display()
+                )));
+            }
+            // Existing dir — verify mode is private. systemd-managed
+            // `/run/user/<uid>/` is 0o700; tempdir-fallback `/tmp/cqs-<uid>/`
+            // we created earlier is also 0o700; an unexpected loose mode
+            // on either is a real anomaly.
+            let mode = md.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    parent = %parent.display(),
+                    mode = format!("{:o}", mode),
+                    "SEC-V1.36-10: socket parent dir mode is not 0o700; tightening"
+                );
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Create the per-uid socket dir with private mode. We can't
+            // pass mode to `create_dir`, so set umask 0o077 around it as
+            // belt-and-suspenders, then chmod explicitly.
+            let prev_umask = unsafe { libc::umask(0o077) };
+            let create_result = std::fs::create_dir_all(parent);
+            unsafe { libc::umask(prev_umask) };
+            create_result?;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            tracing::debug!(
+                parent = %parent.display(),
+                "SEC-V1.36-10: created private socket parent dir (0o700)"
+            );
+        }
+        Err(e) => return Err(e),
+    }
+    Ok(())
 }
 
 // Thread-local override for the socket directory. Production paths leave
@@ -1847,6 +1939,86 @@ mod tests {
             }
             other => panic!("expected DaemonError(\"daemon error\") today, got: {other:?}",),
         }
+    }
+
+    // ── SEC-V1.36-10: socket parent-dir hardening ─────────────────────
+
+    /// Creating a fresh socket parent dir produces an empty 0o700 directory.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_socket_parent_dir_creates_private_when_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("subdir");
+        let sock = parent.join("cqs-test.sock");
+        assert!(!parent.exists());
+        ensure_socket_parent_dir(&sock).unwrap();
+        let md = std::fs::metadata(&parent).unwrap();
+        assert!(md.is_dir());
+        let mode = md.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "newly-created socket parent dir must be 0o700, got {:o}",
+            mode
+        );
+    }
+
+    /// An existing dir with looser mode gets tightened to 0o700.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_socket_parent_dir_tightens_loose_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("loose");
+        std::fs::create_dir(&parent).unwrap();
+        // Set 0o755 (group + other read+exec) — the audit's threat model.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sock = parent.join("cqs-test.sock");
+        ensure_socket_parent_dir(&sock).unwrap();
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "loose-mode parent dir must be tightened to 0o700, got {:o}",
+            mode
+        );
+    }
+
+    /// A regular file squatting on the parent path is fatal — the daemon
+    /// must refuse to start rather than silently fail on the bind side.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_socket_parent_dir_refuses_when_parent_is_a_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("not-a-dir");
+        // Create a regular file at the parent path.
+        std::fs::write(&parent, b"squatting").unwrap();
+        let sock = parent.join("cqs-test.sock");
+        let err = ensure_socket_parent_dir(&sock).expect_err("must reject file-at-parent-path");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a directory") || msg.contains("SEC-V1.36-10"),
+            "error must name the bug ID or shape, got: {msg}"
+        );
+    }
+
+    /// A symlink at the parent path is fatal — symlinks across the
+    /// socket dir are an attack vector (a hostile user planting a
+    /// symlink to a dir they control).
+    #[cfg(unix)]
+    #[test]
+    fn ensure_socket_parent_dir_refuses_when_parent_is_a_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("real");
+        std::fs::create_dir(&target).unwrap();
+        let parent = tmp.path().join("link-to-real");
+        std::os::unix::fs::symlink(&target, &parent).unwrap();
+        let sock = parent.join("cqs-test.sock");
+        let err = ensure_socket_parent_dir(&sock).expect_err("must reject symlink-at-parent");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("symlink") || msg.contains("SEC-V1.36-10"),
+            "error must name the bug ID or shape, got: {msg}"
+        );
     }
 
     /// TC-ADV-1.30.1-10: `unwrap_dispatch_payload` does NOT distinguish

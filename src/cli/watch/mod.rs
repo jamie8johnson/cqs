@@ -562,6 +562,21 @@ pub fn cmd_watch(
                     // into deleting something we shouldn't. Use symlink_metadata
                     // (no follow) and refuse to remove anything that isn't a
                     // socket or a plain file in the cqs dir.
+                    //
+                    // SEC-V1.36-10 (#1461): ensure the socket's parent
+                    // directory is 0o700 BEFORE the cleanup-then-bind
+                    // sequence. With a private parent dir, a hostile
+                    // local user can't plant their own socket at sock_path
+                    // during the TOCTOU gap between `remove_file` and
+                    // `bind`. Failure to secure the parent (symlink, mode
+                    // tightening fails, etc.) is fatal — better to refuse
+                    // to start than serve from a world-writable dir.
+                    if let Err(e) = cqs::daemon_translate::ensure_socket_parent_dir(&sock_path) {
+                        anyhow::bail!(
+                            "Failed to secure daemon socket parent directory: {} (SEC-V1.36-10)",
+                            e
+                        );
+                    }
                     use std::os::unix::fs::FileTypeExt;
                     match std::fs::symlink_metadata(&sock_path) {
                         Ok(md) => {
