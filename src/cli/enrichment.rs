@@ -62,6 +62,27 @@ pub(crate) fn enrichment_pass(
         *name_file_count.entry(ci.name.as_str()).or_insert(0) += 1;
     }
 
+    // #1452: chunks at `needs_embedding=1` MUST be processed even if they
+    // have no callers/callees/summary/hyde — they have no embedding at all
+    // (zero-vec sentinel), so the standard early-skip would leave them
+    // invisible to search forever. The HashSet is built once per pass; on
+    // a fresh `--llm-summaries` reindex it covers every chunk, on
+    // incremental runs it's empty (≈ no overhead) or has only the
+    // newly-changed chunks.
+    let needs_embedding_ids = match store.needs_embedding_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch needs_embedding_ids; falling back to context-only enrichment");
+            std::collections::HashSet::new()
+        }
+    };
+    if !needs_embedding_ids.is_empty() {
+        tracing::info!(
+            count = needs_embedding_ids.len(),
+            "Enrichment pass: chunks at needs_embedding=1 will be processed regardless of context"
+        );
+    }
+
     let progress = if quiet {
         ProgressBar::hidden()
     } else {
@@ -171,19 +192,32 @@ pub(crate) fn enrichment_pass(
                 let summary_norm = all_summaries_norm.get(&cs.content_hash).map(|s| s.as_str());
                 let hyde_norm = all_hyde_norm.get(&cs.content_hash).map(|s| s.as_str());
 
-                // Skip chunks with nothing to add: no call context, no summary, no hyde
-                if !has_callers && !has_callees && summary.is_none() && hyde.is_none() {
-                    continue;
-                }
+                // #1452: chunks at `needs_embedding=1` must always be embedded
+                // regardless of context — they were written by the parser
+                // stage with a zero-vec sentinel (see `upsert_chunks_unembedded_batch`).
+                // Search and HNSW build skip them via `WHERE needs_embedding = 0`,
+                // so leaving them unembedded means they stay invisible.
+                let needs_embedding = needs_embedding_ids.contains(&cs.id);
 
-                // Skip ambiguous names — functions like `new`, `parse`, `build`
-                // appear in multiple chunks and would get merged callers from
-                // unrelated functions. (RB-B1)
-                // But still process if they have a summary or hyde (neither depends on call graph)
-                if name_file_count.get(cs.name.as_str()).copied().unwrap_or(0) > 1
+                // Skip chunks with nothing to add: no call context, no summary,
+                // no hyde — UNLESS they need an embedding at all (#1452).
+                if !needs_embedding
+                    && !has_callers
+                    && !has_callees
                     && summary.is_none()
                     && hyde.is_none()
                 {
+                    continue;
+                }
+
+                // Ambiguous names (RB-B1): functions like `new`, `parse`,
+                // `build` appear in multiple files. Today's contract: skip
+                // them so we don't merge callers from unrelated functions.
+                // #1452: even ambiguous names need a base-NL embedding when
+                // `needs_embedding=1` — pass an empty CallContext below so
+                // they get the bare-name vector without false call context.
+                let ambiguous = name_file_count.get(cs.name.as_str()).copied().unwrap_or(0) > 1;
+                if ambiguous && summary.is_none() && hyde.is_none() && !needs_embedding {
                     continue;
                 }
 
@@ -191,13 +225,26 @@ pub(crate) fn enrichment_pass(
                 // Borrowing would require lifetime parameters through CallContext → generate_nl,
                 // cascading across 5+ modules. At ~5 callers + ~5 callees per chunk, these
                 // clones are negligible (~500 bytes) compared to the embedding cost (~3ms each).
-                let ctx = cqs::CallContext {
-                    callers: callers
-                        .map(|v| v.iter().map(|c| c.name.clone()).collect())
-                        .unwrap_or_default(),
-                    callees: callees
-                        .map(|v| v.iter().map(|(name, _)| name.clone()).collect())
-                        .unwrap_or_default(),
+                //
+                // #1452: ambiguous-name chunks at `needs_embedding=1` get an
+                // EMPTY ctx so the NL is base-only (`generate_nl_description_with_seq_len`)
+                // — equivalent to what the first-pass embed would have produced.
+                // Without this, an ambiguous `new()` on a 50-class project
+                // would inherit 50 unrelated callers.
+                let ctx = if ambiguous && needs_embedding {
+                    cqs::CallContext {
+                        callers: Vec::new(),
+                        callees: Vec::new(),
+                    }
+                } else {
+                    cqs::CallContext {
+                        callers: callers
+                            .map(|v| v.iter().map(|c| c.name.clone()).collect())
+                            .unwrap_or_default(),
+                        callees: callees
+                            .map(|v| v.iter().map(|(name, _)| name.clone()).collect())
+                            .unwrap_or_default(),
+                    }
                 };
 
                 // Compute enrichment hash from post-filtered call context + summary (RT-DATA-2, SQ-6).

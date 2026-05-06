@@ -139,7 +139,16 @@ pub(crate) fn bm25_ordering_expr() -> String {
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 26;
+///
+/// - v27: chunks.needs_embedding flag (#1452). Set on chunks written by
+///   the parser stage during a `--llm-summaries` reindex without a
+///   first-pass embed; cleared by `enrichment_pass` once a real embedding
+///   is written. `embedding` column stays `BLOB NOT NULL` (zero-vec
+///   sentinel for unembedded chunks); search-time and HNSW build paths
+///   filter `WHERE needs_embedding = 0` so chunks in the partial state
+///   are invisible until enrichment lands their real vector. The
+///   visibility gate is local — LLM summary failure does not block it.
+pub const CURRENT_SCHEMA_VERSION: i32 = 27;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

@@ -269,9 +269,79 @@ impl Store<ReadWrite> {
                 &vendored_per_chunk,
                 source_mtime,
                 &now,
+                false, // #1452: real embeddings → needs_embedding=0
             )
             .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
+            tx.commit().await?;
+            Ok(chunks.len())
+        })
+    }
+
+    /// #1452: insert chunks without a real embedding. Each row gets a
+    /// zero-vec sentinel in the `embedding` column and `needs_embedding=1`,
+    /// signaling that `enrichment_pass` must overwrite the embedding before
+    /// the chunk becomes visible to HNSW build / search hydration.
+    ///
+    /// Used by the indexing pipeline when `--llm-summaries` is set: the
+    /// first-pass embed would just be overwritten by the post-summary
+    /// enrichment re-embed, so we skip it entirely. On a fresh
+    /// `cqs index --force --llm-summaries` for a 12k-chunk corpus this
+    /// halves the GPU time spent embedding (~30 min → ~30 min total
+    /// instead of ~60 min for the discard-and-redo shape).
+    ///
+    /// Failure modes: an interrupted enrichment pass leaves chunks at
+    /// `needs_embedding=1`. The next `cqs index` invocation observes them
+    /// via `enrichment_pass`'s `needs_embedding > 0` trigger and embeds
+    /// them. Search ignores chunks at `needs_embedding=1` so the partial
+    /// state never leaks degraded results.
+    pub fn upsert_chunks_unembedded_batch(
+        &self,
+        chunks: &[Chunk],
+        source_mtime: Option<i64>,
+    ) -> Result<usize, StoreError> {
+        let _span =
+            tracing::info_span!("upsert_chunks_unembedded_batch", count = chunks.len()).entered();
+
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+
+        let dim = self.dim;
+        let zero_vec = Embedding::new(vec![0.0_f32; dim]);
+        let chunks_with_zero: Vec<(Chunk, Embedding)> = chunks
+            .iter()
+            .map(|c| (c.clone(), zero_vec.clone()))
+            .collect();
+        let embedding_bytes: Vec<Vec<u8>> = chunks_with_zero
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb, dim))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let prefixes = self.vendored_prefixes_slice();
+        let vendored_per_chunk: Vec<bool> = chunks
+            .iter()
+            .map(|chunk| {
+                let origin = crate::normalize_path(&chunk.file);
+                crate::vendored::is_vendored_origin(&origin, prefixes)
+            })
+            .collect();
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            let old_hashes = snapshot_content_hashes(&mut tx, &chunks_with_zero).await?;
+            let now = chrono::Utc::now().to_rfc3339();
+            batch_insert_chunks(
+                &mut tx,
+                &chunks_with_zero,
+                &embedding_bytes,
+                &vendored_per_chunk,
+                source_mtime,
+                &now,
+                true, // #1452: zero-vec sentinel → needs_embedding=1
+            )
+            .await?;
+            upsert_fts_conditional(&mut tx, &chunks_with_zero, &old_hashes).await?;
             tx.commit().await?;
             Ok(chunks.len())
         })
@@ -386,11 +456,20 @@ impl Store<ReadWrite> {
                 query.execute(&mut *tx).await?;
             }
 
-            // 3. Single UPDATE...FROM join (SQLite 3.33+)
+            // 3. Single UPDATE...FROM join (SQLite 3.33+).
+            //
+            // #1452: clear `needs_embedding=0` on rows that get a real
+            // embedding written. The first-pass-skip path writes
+            // chunks with `needs_embedding=1` + zero-vec sentinel; a
+            // subsequent enrichment_pass call lands here with the real
+            // vector and must clear the flag so the chunk becomes
+            // visible to HNSW build / search hydration. For chunks
+            // already at `needs_embedding=0` this is a no-op write.
             let result = sqlx::query(
                 "UPDATE chunks SET \
                     embedding = t.embedding, \
-                    enrichment_hash = COALESCE(t.enrichment_hash, chunks.enrichment_hash) \
+                    enrichment_hash = COALESCE(t.enrichment_hash, chunks.enrichment_hash), \
+                    needs_embedding = 0 \
                  FROM _update_embeddings t \
                  WHERE chunks.id = t.id",
             )
@@ -872,6 +951,7 @@ impl Store<ReadWrite> {
                 &vendored_per_chunk,
                 source_mtime,
                 &now,
+                false, // #1452: real embeddings → needs_embedding=0
             )
             .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
@@ -1163,6 +1243,95 @@ mod tests {
         let count = store.upsert_chunks_batch(&[], Some(100)).unwrap();
         assert_eq!(count, 0);
         assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    // ===== #1452: needs_embedding flag round-trip =====
+
+    /// `upsert_chunks_unembedded_batch` writes chunks with `needs_embedding=1`
+    /// and a zero-vec sentinel in the `embedding` column. `needs_embedding_count`
+    /// reports them; `needs_embedding_ids` returns their IDs.
+    #[test]
+    fn upsert_unembedded_marks_needs_embedding_and_zero_vec() {
+        let (store, _dir) = setup_store();
+        let c1 = make_chunk("alpha", "src/a.rs");
+        let c2 = make_chunk("beta", "src/b.rs");
+
+        let count = store
+            .upsert_chunks_unembedded_batch(&[c1.clone(), c2.clone()], Some(100))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Both chunks visible to the count query.
+        assert_eq!(store.needs_embedding_count().unwrap(), 2);
+        let ids = store.needs_embedding_ids().unwrap();
+        assert!(ids.contains(&c1.id));
+        assert!(ids.contains(&c2.id));
+
+        // The on-disk embedding is the zero-vec sentinel.
+        let embs = store
+            .get_embeddings_by_hashes(&[&c1.content_hash, &c2.content_hash])
+            .unwrap();
+        for (_, emb) in &embs {
+            assert!(
+                emb.as_slice().iter().all(|&x| x == 0.0),
+                "unembedded chunks must carry a zero-vec sentinel"
+            );
+        }
+    }
+
+    /// `update_embeddings_with_hashes_batch` (used by `enrichment_pass`)
+    /// clears `needs_embedding=0` on every row it writes, so the next
+    /// HNSW build / search picks up the chunk.
+    #[test]
+    fn enrichment_update_clears_needs_embedding() {
+        let (store, _dir) = setup_store();
+        let c = make_chunk("alpha", "src/a.rs");
+
+        store
+            .upsert_chunks_unembedded_batch(&[c.clone()], Some(100))
+            .unwrap();
+        assert_eq!(store.needs_embedding_count().unwrap(), 1);
+
+        // Land a real embedding (mimics enrichment_pass.flush_enrichment_batch).
+        let real_emb = mock_embedding(0.5);
+        let updates = vec![(c.id.clone(), real_emb, Some("hash".to_string()))];
+        store.update_embeddings_with_hashes_batch(&updates).unwrap();
+
+        // Flag cleared, count zero, ID gone from the set.
+        assert_eq!(store.needs_embedding_count().unwrap(), 0);
+        assert!(store.needs_embedding_ids().unwrap().is_empty());
+    }
+
+    /// First-pass-skip → enrichment-clear contract: search and HNSW build
+    /// both filter `needs_embedding=0`, so an unembedded chunk is invisible
+    /// from FTS-name search until enrichment lands its real vector.
+    #[test]
+    fn unembedded_chunks_invisible_from_name_search() {
+        let (store, _dir) = setup_store();
+        let c = make_chunk("alpha_function", "src/a.rs");
+
+        store
+            .upsert_chunks_unembedded_batch(&[c.clone()], Some(100))
+            .unwrap();
+
+        // Name search must NOT find the unembedded chunk.
+        let hits = store.search_by_name("alpha_function", 10).unwrap();
+        assert!(
+            hits.is_empty(),
+            "unembedded chunk must be invisible from name search; got {} hit(s)",
+            hits.len()
+        );
+
+        // After enrichment, the chunk surfaces.
+        let real_emb = mock_embedding(0.5);
+        let updates = vec![(c.id.clone(), real_emb, Some("hash".to_string()))];
+        store.update_embeddings_with_hashes_batch(&updates).unwrap();
+        let hits_post = store.search_by_name("alpha_function", 10).unwrap();
+        assert_eq!(
+            hits_post.len(),
+            1,
+            "after enrichment, the chunk must surface from name search"
+        );
     }
 
     /// #1221: end-to-end vendored-flag round-trip. With the default

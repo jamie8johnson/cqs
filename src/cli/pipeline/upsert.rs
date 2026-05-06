@@ -136,38 +136,46 @@ pub(super) fn store_stage(
         let batch_count = batch.chunk_embeddings.len();
         let no_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
 
-        // Upsert chunks WITHOUT calls (calls are deferred)
+        // Upsert chunks WITHOUT calls (calls are deferred).
         // #1283: also accumulate per-file live IDs for the post-loop prune pass.
-        if batch.file_mtimes.len() <= 1 {
-            // Fast path: single file or no mtimes
-            let mtime = batch.file_mtimes.values().next().copied();
-            for (chunk, _) in &batch.chunk_embeddings {
-                live_ids_per_file
-                    .entry(chunk.file.clone())
-                    .or_default()
-                    .insert(chunk.id.clone());
-            }
-            store.upsert_chunks_and_calls(&batch.chunk_embeddings, mtime, &no_calls)?;
-        } else {
-            // Multi-file batch: group by file and upsert with correct per-file mtime.
-            let mut by_file: HashMap<PathBuf, Vec<(Chunk, Embedding)>> = HashMap::new();
-            for (chunk, embedding) in batch.chunk_embeddings {
-                by_file
+        //
+        // #1452: when `uncached_need_embedding` is set, the chunks past
+        // index `cached_count` carry zero-vec sentinels (skip-first-pass
+        // path under `--llm-summaries`). Cached chunks still carry real
+        // embeddings (from the global cache). Slice the batch and route
+        // each half to the correct upsert path so cached chunks land at
+        // `needs_embedding=0` while sentinel chunks land at
+        // `needs_embedding=1`.
+        let cached_slice_end = batch.cached_count.min(batch.chunk_embeddings.len());
+        let mut by_file_real: HashMap<PathBuf, Vec<(Chunk, Embedding)>> = HashMap::new();
+        let mut by_file_sentinel: HashMap<PathBuf, Vec<Chunk>> = HashMap::new();
+        for (i, (chunk, embedding)) in batch.chunk_embeddings.into_iter().enumerate() {
+            live_ids_per_file
+                .entry(chunk.file.clone())
+                .or_default()
+                .insert(chunk.id.clone());
+            if i < cached_slice_end || !batch.uncached_need_embedding {
+                by_file_real
                     .entry(chunk.file.clone())
                     .or_default()
                     .push((chunk, embedding));
+            } else {
+                // Past cached_count and skip-first-pass mode is on — chunk
+                // carries a zero-vec sentinel; route to the unembedded upsert.
+                by_file_sentinel
+                    .entry(chunk.file.clone())
+                    .or_default()
+                    .push(chunk);
             }
+        }
 
-            for (file, pairs) in &by_file {
-                let mtime = batch.file_mtimes.get(file.as_path()).copied();
-                for (chunk, _) in pairs {
-                    live_ids_per_file
-                        .entry(file.clone())
-                        .or_default()
-                        .insert(chunk.id.clone());
-                }
-                store.upsert_chunks_and_calls(pairs, mtime, &no_calls)?;
-            }
+        for (file, pairs) in &by_file_real {
+            let mtime = batch.file_mtimes.get(file.as_path()).copied();
+            store.upsert_chunks_and_calls(pairs, mtime, &no_calls)?;
+        }
+        for (file, chunks) in &by_file_sentinel {
+            let mtime = batch.file_mtimes.get(file.as_path()).copied();
+            store.upsert_chunks_unembedded_batch(chunks, mtime)?;
         }
 
         // Store function calls extracted during parsing (for the `function_calls` table).

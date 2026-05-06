@@ -171,6 +171,10 @@ pub(super) fn create_embedded_batch(
         relationships,
         cached_count,
         file_mtimes,
+        // Default: real embeddings throughout. The skip-first-pass path
+        // builds EmbeddedBatch directly with `uncached_need_embedding: true`
+        // (see #1452 paths in `gpu_embed_stage` / `cpu_embed_stage`).
+        uncached_need_embedding: false,
     }
 }
 
@@ -200,6 +204,7 @@ fn flush_to_cpu(
                 relationships: rels,
                 cached_count,
                 file_mtimes: prepared.file_mtimes.clone(),
+                uncached_need_embedding: false,
             })
             .is_err()
         {
@@ -263,6 +268,44 @@ pub(super) fn gpu_embed_stage(
                     relationships: prepared.relationships,
                     cached_count,
                     file_mtimes: prepared.file_mtimes,
+                    uncached_need_embedding: false,
+                })
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
+
+        // #1452: skip-first-pass-embed short-circuit. When set, we do NOT
+        // call `embed_documents()` for cache-miss chunks — instead we
+        // emit zero-vec sentinels stamped `needs_embedding=1` so the
+        // post-summary `enrichment_pass` can land their real vectors
+        // without the wasted GPU time of a discarded first pass.
+        // Cache hits still pass through with their real embeddings.
+        if ctx.skip_first_pass_embed {
+            let dim = embedder.embedding_dim();
+            let zero_vec_count = prepared.to_embed.len();
+            let zero_vecs: Vec<Embedding> = (0..zero_vec_count)
+                .map(|_| Embedding::new(vec![0.0_f32; dim]))
+                .collect();
+            let cached_count = prepared.cached.len();
+            let mut chunk_embeddings = prepared.cached;
+            chunk_embeddings.extend(prepared.to_embed.into_iter().zip(zero_vecs));
+            ctx.embedded_count
+                .fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+            tracing::debug!(
+                cache_hits = cached_count,
+                stamped_unembedded = zero_vec_count,
+                "skip-first-pass: emitted zero-vec batch"
+            );
+            if embed_tx
+                .send(EmbeddedBatch {
+                    chunk_embeddings,
+                    relationships: prepared.relationships,
+                    cached_count,
+                    file_mtimes: prepared.file_mtimes,
+                    uncached_need_embedding: true,
                 })
                 .is_err()
             {
@@ -345,6 +388,7 @@ pub(super) fn gpu_embed_stage(
                         relationships: prepared.relationships,
                         cached_count,
                         file_mtimes: prepared.file_mtimes,
+                        uncached_need_embedding: false,
                     })
                     .is_err()
                 {
@@ -457,8 +501,45 @@ pub(super) fn cpu_embed_stage(
         let fp = fingerprint.as_deref().unwrap_or("");
 
         // Prepare batch: windowing, cache check, text generation
+        // (still useful in skip-first-pass mode — windowing splits long chunks
+        // and cache lookup salvages real embeddings for hit chunks).
         let prepared =
             prepare_for_embedding(batch, emb, &ctx.store, ctx.global_cache.as_deref(), fp);
+
+        // #1452: skip-first-pass-embed short-circuit (CPU side). Mirrors the
+        // GPU stage above — emit zero-vec sentinels for to_embed chunks
+        // stamped `needs_embedding=1`. Cache hits still pass through with
+        // their real embeddings.
+        if ctx.skip_first_pass_embed && !prepared.to_embed.is_empty() {
+            let dim = emb.embedding_dim();
+            let zero_vec_count = prepared.to_embed.len();
+            let zero_vecs: Vec<Embedding> = (0..zero_vec_count)
+                .map(|_| Embedding::new(vec![0.0_f32; dim]))
+                .collect();
+            let cached_count = prepared.cached.len();
+            let mut chunk_embeddings = prepared.cached;
+            chunk_embeddings.extend(prepared.to_embed.into_iter().zip(zero_vecs));
+            ctx.embedded_count
+                .fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+            tracing::debug!(
+                cache_hits = cached_count,
+                stamped_unembedded = zero_vec_count,
+                "skip-first-pass: emitted zero-vec batch (cpu)"
+            );
+            if embed_tx
+                .send(EmbeddedBatch {
+                    chunk_embeddings,
+                    relationships: prepared.relationships,
+                    cached_count,
+                    file_mtimes: prepared.file_mtimes,
+                    uncached_need_embedding: true,
+                })
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
 
         // Embed new chunks (CPU only)
         let new_embeddings: Vec<Embedding> = if prepared.to_embed.is_empty() {
