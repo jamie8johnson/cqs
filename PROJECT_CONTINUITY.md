@@ -2,6 +2,31 @@
 
 ## Right Now
 
+**v1.38.0 shipped** — 2026-05-06 morning. Minor release. Bundles 13 audit-driven PRs since v1.37.0 closing three umbrella tracking issues (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM) plus tracker-hygiene cleanup (3 stale issues). Six surface deletions justify the minor bump: `pub fn nl::generate_nl_description` + `generate_nl_with_template` (#1473), `pub rerank: bool` field on `Cli`/`SearchArgs` + `pub(crate) resolve_rerank_mode` (#1479), `BatchProvider::set_on_item_complete` trait method (#1470). Env overrides preserve prior behavior on every default-changed knob. Tag `v1.38.0` pushed; crates.io published; GitHub Release auto-building from `.github/workflows/release.yml`.
+
+**v1.38.0 highlights**:
+- **Per-slot SPLADE α tables** (#1472 / #1453) — `slot.toml [splade.alpha]`. Gemma-tuned globals no longer handicap qwen3-{4b,8b} or future presets.
+- **Synonym + classifier vocab TOML overlays** (#1482, #1483) — operator-extensible FTS expansion dictionary and classifier negation/multistep vocab without rebuilding the binary. Manufacturing/industrial vocabulary path opened (`plc`/`scada`/`opc`/`hmi`).
+- **`cqs serve` concurrent-request cap** (#1477, SEC-V1.36-9) — outermost middleware, default 256, env-overridable. Pre-auth memory ceiling.
+- **Daemon socket parent-dir TOCTOU hardening** (#1478, SEC-V1.36-10) — `/tmp/cqs-<uid>/` (0o700) instead of bare `/tmp/`. `ensure_socket_parent_dir` refuses files/symlinks at the path.
+- **ChunkRow ordinal access** (#1468, P2-14) — search-hydration hot path, ~16 strcmps × ~300 rows × 50 queries dropped to zero.
+- **Daemon accept loop poll()** (#1471, RM-V1.36-8) — `libc::poll` instead of WouldBlock+sleep busy-poll. Idle wakes 120/min → 60/min, parked threads zero CPU.
+- **`cqs onboard --direction <both|callers|callees>`** (#1470, API-V1.36-4) — depth+direction now uniform across `gather`/`onboard`/`test-map`.
+- **`cqs ref reindex` alias** (#1475, API-V1.36-3) for `cqs ref update`.
+- **Tightened SQL test-chunk filter** (#1474, EXT-V1.36-3) — `Test\_%` not `Test%`; production-named types no longer demoted.
+
+**Audit umbrella state after v1.38.0**:
+- ✅ #1460 (P3 Extensibility) closed
+- ✅ #1461 (P3 Security) closed
+- ✅ #1462 (P3 misc CQ/RM) closed
+- ⏳ #1458 (TC Happy 5 tests) — need real Store fixtures
+- ⏳ #1459 (P3 API design) — 5/8 sub-items shipped; 4 design-discussion items remain (1, 2, 5, 6)
+- ⏳ #1463 (P4 design-level) — 12 hard items, parked per audit's own tagging
+
+**Standalone open issues** still pending: #1452 (skip first-pass embed when `--llm-summaries` — risky pipeline restructuring), #1366 (proc-macro CLI derive — large refactor needs dedicated session).
+
+**Operational note from this release cycle**: `cargo publish --features gpu-index` fails verification on the package-build step because the workspace `[patch.crates-io]` cuvs-patched fork doesn't ship in the package (cuvs upstream API mismatch surfaces during verify). The standard `cargo publish` (no features) works — gpu-index is feature-gated and the verify step compiles without it. Same pattern applies to all future releases on the cuvs-patched workspace.
+
 **Post-v1.37.0 autopilot wave (2026-05-05 evening, 8 PRs)**: triaged 20 open issues, closed 3 stale (#1107, #1108, #1395 — all already shipped in prior PRs), shipped 8 PRs against the audit umbrella issues #1459-#1462:
 
 - **#1468** — perf(store): pin ChunkRow SELECT column order, switch to ordinal access (closes #1457 / P2-14). Replaced per-column `row.get("name")` strcmp scans with positional reads. 9 SELECT sites updated (vs 5 in the issue — agent's investigation found 4 more: query.rs:238 batch-by-names, query.rs:540 chunks_paged with rowid prefix, types.rs:320, types.rs:402).
