@@ -478,19 +478,69 @@ static MULTISTEP_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
 
 /// Classify a query into a category with confidence level and recommended strategy.
 ///
+/// Per-slot SPLADE α overrides (#1453). Loaded once at CLI/daemon startup
+/// from `.cqs/slots/<active>/slot.toml` `[splade.alpha]` and consulted by
+/// [`resolve_splade_alpha`] between the env precedence and the hardcoded
+/// per-category default.
+///
+/// `RwLock<Option<HashMap>>` so writes are single-shot and reads are
+/// uncontended on the hot search path. The Option distinguishes "never
+/// initialised" (None — no slot context resolved, e.g. early test setup)
+/// from "initialised but empty" (Some(empty) — slot has no `[splade.alpha]`
+/// section, fall through is intended).
+static SLOT_SPLADE_ALPHA: std::sync::RwLock<Option<std::collections::HashMap<String, f32>>> =
+    std::sync::RwLock::new(None);
+
+/// Install the per-slot SPLADE α override table for this process.
+///
+/// Called once by `dispatch::run_with` after the active slot is resolved;
+/// the daemon also calls this at startup. Re-calls overwrite (e.g. a
+/// test resetting state). Production callers expect single-shot.
+///
+/// `table` keys are lowercase category names (matching `QueryCategory`'s
+/// `to_string()`); values are pre-validated to `[0.0, 1.0]` finite by
+/// [`crate::slot::read_slot_splade_alpha_table`].
+pub fn install_slot_splade_alpha_overrides(table: std::collections::HashMap<String, f32>) {
+    match SLOT_SPLADE_ALPHA.write() {
+        Ok(mut g) => {
+            *g = Some(table);
+        }
+        Err(_) => {
+            tracing::warn!(
+                "router slot α RwLock poisoned — leaving slot overrides at previous state"
+            );
+        }
+    }
+}
+
+/// Clear the per-slot SPLADE α overrides. Test-only convenience so unit
+/// tests don't leak across each other; production never needs this
+/// (process-lifetime state is fine).
+#[cfg(test)]
+pub(crate) fn clear_slot_splade_alpha_overrides() {
+    if let Ok(mut g) = SLOT_SPLADE_ALPHA.write() {
+        *g = None;
+    }
+}
+
 /// Resolve the SPLADE fusion alpha for a query category.
 ///
-/// Precedence: per-category env (`CQS_SPLADE_ALPHA_{CATEGORY}`) > global env
-/// (`CQS_SPLADE_ALPHA`) > hardcoded default (1.0 = pure dense, SPLADE off).
+/// Precedence:
+/// 1. Per-category env (`CQS_SPLADE_ALPHA_{CATEGORY}`)
+/// 2. Global env (`CQS_SPLADE_ALPHA`)
+/// 3. Per-slot `slot.toml [splade.alpha].<category>` (#1453, installed via
+///    [`install_slot_splade_alpha_overrides`])
+/// 4. Hardcoded per-category default (`category.default_alpha()`)
 ///
 /// Returns a value in [0.0, 1.0] where 1.0 means pure dense and < 1.0 activates
 /// SPLADE with that fusion weight.
 ///
-/// OB-NEW-1: emits a single structured `tracing::info!` recording the
-/// resolved alpha, its source (`per_cat_env` / `global_env` / `default`),
-/// and the category. Callers no longer need to log the decision themselves;
-/// rooting the log inside this function makes the env-precedence visible and
-/// eliminates the drift that existed between the CLI and batch-handler logs.
+/// OB-NEW-1: emits a single structured `tracing::debug!` recording the
+/// resolved alpha, its source (`per_cat_env` / `global_env` / `slot_toml` /
+/// `default`), and the category. Callers no longer need to log the decision
+/// themselves; rooting the log inside this function makes the precedence
+/// visible and eliminates the drift that existed between the CLI and
+/// batch-handler logs.
 pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     let _span = tracing::debug_span!("resolve_splade_alpha", category = %category).entered();
 
@@ -557,6 +607,29 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
             }
         }
         _ => {}
+    }
+
+    // #1453: per-slot SPLADE α overrides from `slot.toml [splade.alpha]`.
+    // Sits between env vars (operator override) and hardcoded defaults
+    // (model-category guess) so a slot that's been α-tuned for its
+    // embedder doesn't silently inherit values tuned for a different
+    // model. Read-locked — write happens once at CLI/daemon startup.
+    if let Ok(guard) = SLOT_SPLADE_ALPHA.read() {
+        if let Some(table) = guard.as_ref() {
+            let key = category.to_string().to_lowercase();
+            if let Some(&alpha) = table.get(&key) {
+                if alpha.is_finite() {
+                    let alpha = alpha.clamp(0.0, 1.0);
+                    tracing::debug!(
+                        category = %category,
+                        alpha,
+                        source = "slot_toml",
+                        "SPLADE routing"
+                    );
+                    return alpha;
+                }
+            }
+        }
     }
 
     // Per-category defaults from the 21-point alpha sweep on the genuinely
@@ -1672,6 +1745,92 @@ mod tests {
     }
 
     #[test]
+    // ── #1453: per-slot SPLADE α overrides ────────────────────────────────
+
+    /// Slot table installed → that override beats the hardcoded default for
+    /// the matching category.
+    #[test]
+    #[serial_test::serial(splade_alpha_state)]
+    fn slot_splade_alpha_override_wins_over_default() {
+        clear_slot_splade_alpha_overrides();
+        // Clear env so the test doesn't accidentally pick up an outer
+        // `CQS_SPLADE_ALPHA_*` value.
+        std::env::remove_var("CQS_SPLADE_ALPHA");
+        std::env::remove_var(format!(
+            "CQS_SPLADE_ALPHA_{}",
+            QueryCategory::Behavioral.to_string().to_uppercase()
+        ));
+
+        let mut table = std::collections::HashMap::new();
+        // Default for Behavioral is 1.0 (from the gemma sweep). Override to 0.3.
+        table.insert("behavioral".to_string(), 0.3);
+        install_slot_splade_alpha_overrides(table);
+
+        let got = resolve_splade_alpha(&QueryCategory::Behavioral);
+        assert!(
+            (got - 0.3).abs() < f32::EPSILON,
+            "slot α=0.3 must beat default 1.0; got {got}"
+        );
+
+        clear_slot_splade_alpha_overrides();
+    }
+
+    /// Env vars beat slot table — operator override is highest precedence.
+    #[test]
+    #[serial_test::serial(splade_alpha_state)]
+    fn env_splade_alpha_beats_slot_override() {
+        clear_slot_splade_alpha_overrides();
+        let mut table = std::collections::HashMap::new();
+        table.insert("conceptual".to_string(), 0.1);
+        install_slot_splade_alpha_overrides(table);
+
+        // Per-cat env override.
+        std::env::set_var("CQS_SPLADE_ALPHA_CONCEPTUAL", "0.55");
+        let got = resolve_splade_alpha(&QueryCategory::Conceptual);
+        assert!(
+            (got - 0.55).abs() < f32::EPSILON,
+            "per-cat env α=0.55 must beat slot α=0.1; got {got}"
+        );
+
+        std::env::remove_var("CQS_SPLADE_ALPHA_CONCEPTUAL");
+
+        // Global env override.
+        std::env::set_var("CQS_SPLADE_ALPHA", "0.42");
+        let got = resolve_splade_alpha(&QueryCategory::Conceptual);
+        assert!(
+            (got - 0.42).abs() < f32::EPSILON,
+            "global env α=0.42 must beat slot α=0.1; got {got}"
+        );
+        std::env::remove_var("CQS_SPLADE_ALPHA");
+        clear_slot_splade_alpha_overrides();
+    }
+
+    /// Slot table without a key for the category → falls through to the default.
+    #[test]
+    #[serial_test::serial(splade_alpha_state)]
+    fn slot_splade_alpha_partial_table_falls_through_to_default() {
+        clear_slot_splade_alpha_overrides();
+        std::env::remove_var("CQS_SPLADE_ALPHA");
+        std::env::remove_var(format!(
+            "CQS_SPLADE_ALPHA_{}",
+            QueryCategory::Behavioral.to_string().to_uppercase()
+        ));
+
+        let mut table = std::collections::HashMap::new();
+        // Only `unknown` defined; Behavioral falls through.
+        table.insert("unknown".to_string(), 0.3);
+        install_slot_splade_alpha_overrides(table);
+
+        let got = resolve_splade_alpha(&QueryCategory::Behavioral);
+        let default = QueryCategory::Behavioral.default_alpha();
+        assert!(
+            (got - default).abs() < f32::EPSILON,
+            "Behavioral not in slot table → uses default α={default}; got {got}"
+        );
+
+        clear_slot_splade_alpha_overrides();
+    }
+
     fn test_structural_keyword_substring_does_not_fire() {
         // Word-split matching: "MyTraitImpl" as a CamelCase identifier does
         // NOT classify as structural just because it contains "trait".

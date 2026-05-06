@@ -259,6 +259,95 @@ pub fn slot_config_path(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
     slot_dir(project_cqs_dir, slot_name).join(SLOT_CONFIG_FILE)
 }
 
+/// Read the per-slot SPLADE α overrides from `.cqs/slots/<name>/slot.toml`.
+///
+/// Schema (#1453):
+/// ```toml
+/// [splade.alpha]
+/// behavioral_search = 0.0
+/// conceptual_search = 0.7
+/// # ... per QueryCategory variant ...
+/// ```
+///
+/// Returns an empty map if the file is missing, unreadable, has no
+/// `[splade.alpha]` section, or has only invalid values. Each value is
+/// validated `is_finite()` and clamped to `[0.0, 1.0]` before being
+/// returned; the router falls through to the env/preset/global default
+/// precedence chain for any category not present in the result map.
+///
+/// Bounded read shares the slot.toml budget with `read_slot_model`.
+pub fn read_slot_splade_alpha_table(
+    project_cqs_dir: &Path,
+    slot_name: &str,
+) -> std::collections::HashMap<String, f32> {
+    let cfg = match read_slot_config(project_cqs_dir, slot_name) {
+        Some(c) => c,
+        None => return std::collections::HashMap::new(),
+    };
+    let raw = match cfg.splade {
+        Some(s) => s.alpha,
+        None => return std::collections::HashMap::new(),
+    };
+    raw.into_iter()
+        .filter_map(|(cat, alpha)| {
+            if alpha.is_finite() && (0.0..=1.0).contains(&alpha) {
+                Some((cat.to_lowercase(), alpha))
+            } else {
+                tracing::warn!(
+                    slot = slot_name,
+                    category = %cat,
+                    alpha,
+                    "Slot SPLADE α out of [0.0, 1.0] or non-finite — ignored, \
+                     falling through to env/preset/default precedence"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+/// Internal helper: read and parse `slot.toml` into the typed
+/// `SlotConfigFile` struct, returning `None` if missing / unreadable /
+/// malformed. Used by the per-section public readers
+/// (`read_slot_model`, `read_slot_splade_alpha_table`).
+fn read_slot_config(project_cqs_dir: &Path, slot_name: &str) -> Option<SlotConfigFile> {
+    let path = slot_config_path(project_cqs_dir, slot_name);
+    let raw = match fs::File::open(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to open slot config; falling back to default resolution"
+            );
+            return None;
+        }
+        Ok(f) => {
+            let mut buf = String::new();
+            if let Err(e) = f.take(SLOT_POINTER_MAX_BYTES).read_to_string(&mut buf) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Bounded read of slot config failed; falling back to default resolution"
+                );
+                return None;
+            }
+            buf
+        }
+    };
+    match toml::from_str::<SlotConfigFile>(&raw) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Slot config is malformed TOML; falling back to default resolution"
+            );
+            None
+        }
+    }
+}
+
 /// Read the embedding model preset/repo persisted in `.cqs/slots/<name>/slot.toml`.
 ///
 /// Schema (#1107):
@@ -444,6 +533,10 @@ pub fn write_slot_model(
 struct SlotConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<SlotEmbeddingSection>,
+    /// #1453: per-slot SPLADE fusion α overrides. Optional; absence
+    /// means the router uses its env-or-preset-default precedence chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    splade: Option<SlotSpladeSection>,
     #[serde(default, flatten, skip_serializing_if = "toml::Table::is_empty")]
     extra: toml::Table,
 }
@@ -452,6 +545,33 @@ struct SlotConfigFile {
 struct SlotEmbeddingSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+}
+
+/// Per-slot SPLADE α overrides (#1453).
+///
+/// Schema:
+/// ```toml
+/// [splade.alpha]
+/// behavioral_search = 0.0
+/// conceptual_search = 0.7
+/// cross_language = 0.85
+/// identifier_lookup = 0.15
+/// multi_step = 0.45
+/// negation = 0.0
+/// structural_search = 0.15
+/// type_filtered = 0.0
+/// unknown = 0.85
+/// ```
+///
+/// Keys are the lowercase form of `QueryCategory::to_string()` (the same
+/// shape `CQS_SPLADE_ALPHA_<CATEGORY>` env vars accept after lowercasing).
+/// Values are clamped to [0.0, 1.0] at read time; non-finite or out-of-range
+/// values are silently skipped (caller falls through to env / preset / global
+/// default precedence).
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct SlotSpladeSection {
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    alpha: std::collections::HashMap<String, f32>,
 }
 
 /// Path of `.cqs/active_slot` pointer file.
@@ -1485,5 +1605,136 @@ mod tests {
             slot_config_path(Path::new("/proj/.cqs"), "default"),
             Path::new("/proj/.cqs/slots/default/slot.toml")
         );
+    }
+
+    // ── slot.toml [splade.alpha] read (#1453) ────────────────────────────
+
+    #[test]
+    fn read_slot_splade_alpha_table_returns_empty_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        fs::create_dir_all(slot_dir(&cqs, "default")).unwrap();
+        let table = read_slot_splade_alpha_table(&cqs, "default");
+        assert!(table.is_empty(), "missing slot.toml → empty table");
+    }
+
+    #[test]
+    fn read_slot_splade_alpha_table_returns_empty_when_no_splade_section() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        fs::create_dir_all(slot_dir(&cqs, "default")).unwrap();
+        // slot.toml exists but only has [embedding], no [splade.alpha]
+        write_slot_model(&cqs, "default", "bge-large").unwrap();
+        let table = read_slot_splade_alpha_table(&cqs, "default");
+        assert!(table.is_empty(), "no [splade.alpha] section → empty table");
+    }
+
+    #[test]
+    fn read_slot_splade_alpha_table_parses_typed_section() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot = "tuned";
+        let cfg_path = slot_config_path(&cqs, slot);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        let initial = "[embedding]\nmodel = \"qwen3-embedding-4b\"\n\n\
+            [splade.alpha]\n\
+            behavioral_search = 0.0\n\
+            conceptual_search = 0.7\n\
+            cross_language = 0.85\n\
+            unknown = 0.85\n";
+        fs::write(&cfg_path, initial).unwrap();
+
+        let table = read_slot_splade_alpha_table(&cqs, slot);
+        assert_eq!(table.get("behavioral_search").copied(), Some(0.0));
+        assert_eq!(table.get("conceptual_search").copied(), Some(0.7));
+        assert_eq!(table.get("cross_language").copied(), Some(0.85));
+        assert_eq!(table.get("unknown").copied(), Some(0.85));
+        assert_eq!(
+            table.len(),
+            4,
+            "exactly the 4 keys in the source toml should resolve"
+        );
+    }
+
+    #[test]
+    fn read_slot_splade_alpha_table_filters_invalid_values() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot = "bad-values";
+        let cfg_path = slot_config_path(&cqs, slot);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        // Mix of valid and out-of-range / nan values; reader must keep the
+        // valid ones and drop the rest with a warn.
+        let initial = "[splade.alpha]\n\
+            behavioral_search = 0.5\n\
+            negation = 1.5\n\
+            structural_search = -0.1\n\
+            unknown = nan\n";
+        fs::write(&cfg_path, initial).unwrap();
+
+        let table = read_slot_splade_alpha_table(&cqs, slot);
+        assert_eq!(table.get("behavioral_search").copied(), Some(0.5));
+        assert!(
+            !table.contains_key("negation"),
+            "1.5 is out of range — dropped"
+        );
+        assert!(
+            !table.contains_key("structural_search"),
+            "-0.1 is out of range — dropped"
+        );
+        assert!(
+            !table.contains_key("unknown"),
+            "NaN is non-finite — dropped"
+        );
+        assert_eq!(table.len(), 1, "only the in-range value survives");
+    }
+
+    #[test]
+    fn read_slot_splade_alpha_table_lowercases_keys() {
+        // Operators may type categories in upper/title case; the router
+        // looks up by lowercase. Reader normalizes so a hand-edited slot.toml
+        // is forgiving about case.
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot = "case-test";
+        let cfg_path = slot_config_path(&cqs, slot);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        let initial = "[splade.alpha]\n\
+            BEHAVIORAL_SEARCH = 0.3\n\
+            Conceptual_Search = 0.4\n";
+        fs::write(&cfg_path, initial).unwrap();
+
+        let table = read_slot_splade_alpha_table(&cqs, slot);
+        assert_eq!(table.get("behavioral_search").copied(), Some(0.3));
+        assert_eq!(table.get("conceptual_search").copied(), Some(0.4));
+    }
+
+    #[test]
+    fn write_slot_model_preserves_existing_splade_section() {
+        // Round-trip safety: hand-edited [splade.alpha] survives a later
+        // `cqs slot create --model X`-style write_slot_model call. The
+        // catch-all `extra: toml::Table` makes this work without
+        // promoting splade to a typed field of SlotConfigFile — but
+        // since we DID promote it, the typed path needs the same
+        // round-trip guarantee.
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot = "tuned-then-rewritten";
+        let cfg_path = slot_config_path(&cqs, slot);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        let initial = "[embedding]\nmodel = \"old-model\"\n\n\
+            [splade.alpha]\n\
+            behavioral_search = 0.0\n\
+            conceptual_search = 0.7\n";
+        fs::write(&cfg_path, initial).unwrap();
+
+        write_slot_model(&cqs, slot, "new-model").unwrap();
+
+        // Model swapped:
+        assert_eq!(read_slot_model(&cqs, slot).as_deref(), Some("new-model"));
+        // [splade.alpha] still there:
+        let table = read_slot_splade_alpha_table(&cqs, slot);
+        assert_eq!(table.get("behavioral_search").copied(), Some(0.0));
+        assert_eq!(table.get("conceptual_search").copied(), Some(0.7));
     }
 }
