@@ -101,14 +101,19 @@ fn eval_with_reranker_none_parses_and_reaches_handler() {
     );
 }
 
-/// TC-HAP-V1.33-2: `--reranker llm` eagerly constructs the skeleton
-/// `LlmReranker`, which surfaces "not yet implemented" before the
-/// search loop spins up. Pins the early-construction contract — a
-/// regression that delayed construction until first scoring would
-/// burn minutes on retrieval before failing.
+/// API-V1.36-2 (v1.37.0): `--reranker llm` was a placeholder enum
+/// variant that errored at runtime. Per `cqs --help` truth-in-advertising,
+/// v1.37.0 dropped `Llm` from `RerankerMode` so clap now rejects the
+/// spelling at parse time instead of running a search that fails late.
+///
+/// The previous incarnation of this test (TC-HAP-V1.33-2) pinned the
+/// early-construction skeleton-error contract while the variant was still
+/// listed; the contract is now tighter — the spelling never reaches the
+/// dispatch path at all. Pin that here so a future re-introduction of
+/// the variant without an actual implementation gets noticed.
 #[test]
 #[serial]
-fn eval_with_reranker_llm_returns_skeleton_error() {
+fn eval_with_reranker_llm_rejected_at_parse_time() {
     let dir = TempDir::new().expect("tempdir");
     seed_minimal_store(&dir);
     let q_path = write_minimal_queries(&dir);
@@ -127,24 +132,21 @@ fn eval_with_reranker_llm_returns_skeleton_error() {
 
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    let combined = format!("{stdout}\n{stderr}");
-
-    // Either the skeleton error fires (preferred), or the embedder
-    // fails to load (acceptable in test env without a model). The
-    // load-bearing assertion: the binary did NOT silently succeed with
-    // an unimplemented LLM scorer.
-    let skeleton_hit = combined.to_ascii_lowercase().contains("skeleton")
-        || combined
-            .to_ascii_lowercase()
-            .contains("not yet implemented");
-    let embedder_failed = combined.contains("Embedder")
-        || combined.contains("ModelDownload")
-        || combined.contains("model")
-        || stderr.contains("Failed to");
 
     assert!(
-        skeleton_hit || embedder_failed,
-        "llm reranker mode must surface skeleton error or embedder failure, \
+        !result.status.success(),
+        "post-API-V1.36-2 `--reranker llm` must fail at parse time, \
          not silently succeed.\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        stderr.contains("invalid value 'llm'") && stderr.contains("--reranker"),
+        "clap must reject the spelling with the `invalid value` error \
+         (signals the variant was actually removed, not just deprecated). \
+         stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("[possible values: none, onnx]"),
+        "clap should enumerate the surviving variants so a user typing \
+         `llm` immediately sees what's actually supported. stderr={stderr}"
     );
 }
