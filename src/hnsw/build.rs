@@ -294,9 +294,12 @@ mod tests {
 
     #[test]
     fn test_build_batched() {
-        // Simulate streaming batches like Store::embedding_batches would provide
+        // Simulate streaming batches like Store::embedding_batches would
+        // provide. Seeds spaced by 1000 so the sin-based embeddings are
+        // genuinely distinct in cosine space — see the rationale on
+        // `test_build_batched_vs_regular_equivalence`.
         let all_embeddings: Vec<(String, Embedding)> = (1..=25)
-            .map(|i| (format!("chunk{}", i), make_embedding(i)))
+            .map(|i| (format!("chunk{}", i), make_embedding(i * 1000)))
             .collect();
 
         // Split into batches of 10 (simulating LIMIT/OFFSET pagination)
@@ -311,14 +314,10 @@ mod tests {
                 .unwrap();
         assert_eq!(index.len(), 25);
 
-        // Wiring check: top-N from N. The test exists to verify the batched
-        // build round-trips every chunk into a searchable graph, not to pin
-        // recall — `make_test_embedding`'s adjacent-seed vectors are very
-        // close in cosine space, and the small-tier defaults from #1370
-        // (M=16, ef_c=100, ef_s=50 for <5k chunks, dropped from M=24/ef_c=200
-        // /ef_s=100) flake on top-K windows smaller than N. Issue #1104
-        // and the post-#1425 main-CI flake both surface as exactly that.
-        let query = make_embedding(1);
+        // Wiring check: query the seed directly — nearest neighbour must
+        // be itself. With spaced seeds the small-tier graph reliably
+        // returns the queried point in top-K=N.
+        let query = make_embedding(1 * 1000);
         let results = index.search(&query, 25);
         assert!(!results.is_empty());
         assert!(
@@ -339,9 +338,20 @@ mod tests {
 
     #[test]
     fn test_build_batched_vs_regular_equivalence() {
-        // Build same index both ways, verify similar search results
+        // Build same index both ways, verify similar search results.
+        //
+        // Seeds spaced by 1000 so the sin-based embeddings are genuinely
+        // distinct in cosine space — adjacent seeds (1..=20) produced
+        // near-collinear vectors that flaked on the small-tier HNSW
+        // defaults (post-#1425: M=16, ef_c=100, ef_s=50 for <5k chunks).
+        // The widened top-N=N window from #1431 wasn't enough; sin'(0.1)
+        // ≈ sin(0.2) and HNSW's approximate graph dropped one of them
+        // out of recall non-deterministically. Spaced seeds drop
+        // sin(100), sin(200), ... — uniformly distributed in [-1, 1] —
+        // so recall@N is deterministic.
+        let item_id = |i: u32| format!("item{}", i);
         let embeddings: Vec<(String, Embedding)> = (1..=20)
-            .map(|i| (format!("item{}", i), make_embedding(i)))
+            .map(|i| (item_id(i), make_embedding(i * 1000)))
             .collect();
 
         let regular = HnswIndex::build_with_dim(embeddings.clone(), crate::EMBEDDING_DIM).unwrap();
@@ -356,12 +366,9 @@ mod tests {
 
         assert_eq!(regular.len(), batched.len());
 
-        // Both should find item10. Top-N from N — see the rationale in
-        // `test_build_batched`: post-#1425 small-tier defaults plus the
-        // adjacent-seed clustering of `make_test_embedding` make any
-        // partial-K window flaky on N=20. Wiring + parity is what we
-        // care about here, not recall.
-        let query = make_embedding(10);
+        // Both should find item10 — query embedding matches its seed
+        // exactly, so the nearest neighbour is itself.
+        let query = make_embedding(10 * 1000);
         let regular_results = regular.search(&query, 20);
         let batched_results = batched.search(&query, 20);
 
