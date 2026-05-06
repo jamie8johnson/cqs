@@ -367,9 +367,11 @@ impl HnswIndex {
     /// rebuild thread already snapshot-ingested before replaying.
     ///
     /// P4-11 follow-up: returns `&[Box<str>]` after the storage shrunk
-    /// from `Vec<String>` to `Vec<Box<str>>`. Callers comparing against
-    /// `&str` literals (`id == "delta_a"`) continue to work because
-    /// `Box<str>: PartialEq<str>` via deref.
+    /// from `Vec<String>` to `Vec<Box<str>>`. Callers that compared
+    /// against `&str` literals via `String == &str` (`id == "delta_a"`)
+    /// must now deref both sides (`&**id == "delta_a"`); `Box<str>`
+    /// doesn't implement `PartialEq<str>` directly. The existing
+    /// watch-rebuild test sites have been updated accordingly.
     pub fn ids(&self) -> &[Box<str>] {
         &self.id_map
     }
