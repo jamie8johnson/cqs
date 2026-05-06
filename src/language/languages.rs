@@ -44,6 +44,7 @@ const DEFAULTS: LanguageDef = LanguageDef {
     post_process_chunk: None,
     test_markers: &[],
     test_path_patterns: &[],
+    test_name_patterns: &[],
     structural_matchers: None,
     error_swallow_patterns: &[],
     async_markers: &[],
