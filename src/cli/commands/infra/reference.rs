@@ -77,10 +77,50 @@ pub(crate) enum RefCommand {
     /// `reindex` visible alias so cross-command muscle memory
     /// transfers from `cqs index --force` (the project-side
     /// equivalent verb).
+    ///
+    /// #1459 item 3 (deep parity arm): mirrors `cqs index`'s
+    /// `--llm-summaries` / `--improve-docs` / `--hyde-queries`
+    /// flag set so ref refresh has the same enrichment surface
+    /// as the project-side reindex. `--apply` (in-place doc
+    /// rewrite of source files) is intentionally NOT exposed
+    /// for refs — references typically point at vendored or
+    /// external code, and silently writing back into someone
+    /// else's tree is the wrong default. `--improve-docs`
+    /// always writes proposed patches to
+    /// `<ref-dir>/proposed-docs/` for review.
     #[command(visible_alias = "reindex")]
     Update {
         /// Name of the reference to update
         name: String,
+        /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        llm_summaries: bool,
+        /// Generate doc comments for undocumented functions in this reference.
+        ///
+        /// Always writes proposed edits as unified-diff patches to
+        /// `<ref-dir>/proposed-docs/<rel>.patch` — refs cannot use `--apply`
+        /// (refs typically point at external code that must not be silently
+        /// rewritten). Requires `--llm-summaries`.
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        improve_docs: bool,
+        /// Regenerate doc comments for all functions, even those with existing docs (requires --improve-docs)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        improve_all: bool,
+        /// Maximum number of functions to generate docs for (used with --improve-docs)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        max_docs: Option<usize>,
+        /// Generate hyde query predictions for functions (requires ANTHROPIC_API_KEY)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        hyde_queries: bool,
+        /// Maximum number of functions to generate hyde predictions for
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        max_hyde: Option<usize>,
         /// API-V1.29-2: shared `--json` arg.
         #[command(flatten)]
         output: TextJsonArgs,
@@ -98,9 +138,54 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
         } => cmd_ref_add(cli, name, source, *weight, cli.json || output.json),
         RefCommand::List { output } => cmd_ref_list(cli, output.json),
         RefCommand::Remove { name, output } => cmd_ref_remove(name, cli.json || output.json),
-        RefCommand::Update { name, output } => cmd_ref_update(cli, name, cli.json || output.json),
+        RefCommand::Update {
+            name,
+            #[cfg(feature = "llm-summaries")]
+            llm_summaries,
+            #[cfg(feature = "llm-summaries")]
+            improve_docs,
+            #[cfg(feature = "llm-summaries")]
+            improve_all,
+            #[cfg(feature = "llm-summaries")]
+            max_docs,
+            #[cfg(feature = "llm-summaries")]
+            hyde_queries,
+            #[cfg(feature = "llm-summaries")]
+            max_hyde,
+            output,
+        } => {
+            #[cfg(feature = "llm-summaries")]
+            let opts = RefUpdateLlmOpts {
+                llm_summaries: *llm_summaries,
+                improve_docs: *improve_docs,
+                improve_all: *improve_all,
+                max_docs: *max_docs,
+                hyde_queries: *hyde_queries,
+                max_hyde: *max_hyde,
+            };
+            #[cfg(not(feature = "llm-summaries"))]
+            let opts = RefUpdateLlmOpts;
+            cmd_ref_update(cli, name, cli.json || output.json, opts)
+        }
     }
 }
+
+/// #1459 item 3: opts bundle for `cqs ref reindex`'s LLM/HyDE flag parity
+/// with `cqs index`. Empty marker struct under
+/// `#[cfg(not(feature = "llm-summaries"))]` so the dispatcher signature
+/// stays identical regardless of feature gate.
+#[cfg(feature = "llm-summaries")]
+struct RefUpdateLlmOpts {
+    llm_summaries: bool,
+    improve_docs: bool,
+    improve_all: bool,
+    max_docs: Option<usize>,
+    hyde_queries: bool,
+    max_hyde: Option<usize>,
+}
+
+#[cfg(not(feature = "llm-summaries"))]
+struct RefUpdateLlmOpts;
 
 /// Add a reference: validate name/weight, index source, update config.
 /// * If the source path does not exist or cannot be resolved
@@ -511,7 +596,20 @@ fn cmd_ref_remove(name: &str, json: bool) -> Result<()> {
 }
 
 /// Re-index a reference from its source directory.
-fn cmd_ref_update(cli: &Cli, name: &str, json: bool) -> Result<()> {
+fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> Result<()> {
+    // #1459 item 3: enforce flag-dependency invariants up front so misuse
+    // bails before the (potentially long) index pipeline runs. Mirrors
+    // `cmd_index`'s pre-flight at `src/cli/commands/index/build.rs`.
+    #[cfg(feature = "llm-summaries")]
+    {
+        if opts.improve_docs && !opts.llm_summaries {
+            anyhow::bail!("--improve-docs requires --llm-summaries");
+        }
+        if opts.improve_all && !opts.improve_docs {
+            anyhow::bail!("--improve-all requires --improve-docs");
+        }
+    }
+
     let root = find_project_root();
     let config = cqs::config::Config::load(&root);
 
@@ -636,6 +734,178 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool) -> Result<()> {
 
     if !cli.quiet && !json && pruned > 0 {
         println!("  Pruned: {} (deleted files)", pruned);
+    }
+
+    // #1459 item 3 (deep parity arm): mirror `cmd_index`'s post-pipeline
+    // LLM / doc-comment / HyDE / enrichment passes against the ref store.
+    // Passes are gated behind their own flags so the default `cqs ref
+    // reindex` behavior is byte-identical to the pre-#1505 path.
+    //
+    // Rationale for matching `cmd_index`:
+    //   - LLM summaries are keyed by content_hash and shared across
+    //     stores, so a `--llm-summaries` ref reindex populates the same
+    //     cache that the project-side index reads. No recomputation cost
+    //     when both run for the same source.
+    //   - enrichment_pass is the gate that clears `needs_embedding=1`
+    //     rows; with `--llm-summaries` we skip the first-pass embed in
+    //     the pipeline (#1452), so without enrichment the ref index would
+    //     ship full of zero-vec sentinels.
+    //   - `--improve-docs` writes patches to `<ref-dir>/proposed-docs/`,
+    //     never directly to source — refs typically point at vendored
+    //     code that must not be silently rewritten. `--apply` is not
+    //     wired through for `cqs ref reindex` for the same reason.
+    #[cfg(feature = "llm-summaries")]
+    if !crate::cli::check_interrupted() && opts.llm_summaries {
+        if !cli.quiet && !json {
+            println!("Generating LLM summaries...");
+        }
+        match cqs::llm::llm_summary_pass(&store, cli.quiet || json, &config, Some(ref_dir)) {
+            Ok(count) => {
+                if !cli.quiet && !json && count > 0 {
+                    println!("  LLM summaries: {} new", count);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "LLM summary pass failed for ref; continuing");
+            }
+        }
+    }
+
+    #[cfg(feature = "llm-summaries")]
+    if !crate::cli::check_interrupted() && opts.improve_docs {
+        if !cli.quiet && !json {
+            println!("Generating doc comments...");
+        }
+        match cqs::llm::doc_comment_pass(
+            &store,
+            &config,
+            opts.max_docs.unwrap_or(0),
+            opts.improve_all,
+            Some(ref_dir),
+        ) {
+            Ok(doc_results) => {
+                if !doc_results.is_empty() {
+                    use std::collections::HashMap;
+                    let mut by_file: HashMap<std::path::PathBuf, Vec<_>> = HashMap::new();
+                    for r in doc_results {
+                        by_file.entry(r.file.clone()).or_default().push(r);
+                    }
+                    let doc_parser = CqParser::new()?;
+                    let patch_dir = ref_dir.join("proposed-docs");
+                    let mut written = 0usize;
+                    let mut skipped = 0usize;
+                    for (path, edits) in &by_file {
+                        match cqs::doc_writer::rewriter::write_proposed_patch(
+                            path,
+                            source,
+                            edits,
+                            &doc_parser,
+                            &patch_dir,
+                        ) {
+                            Ok(true) => written += 1,
+                            Ok(false) => skipped += 1,
+                            Err(e) => tracing::warn!(
+                                file = %path.display(),
+                                error = %e,
+                                "Doc patch write failed"
+                            ),
+                        }
+                    }
+                    if !cli.quiet && !json {
+                        if written > 0 {
+                            println!(
+                                "  Doc comments: {} proposed update(s) written to {}",
+                                written,
+                                patch_dir.display()
+                            );
+                        } else if skipped > 0 {
+                            println!(
+                                "  Doc comments: {} candidate file(s) produced no diff",
+                                skipped
+                            );
+                        }
+                    }
+                } else if !cli.quiet && !json {
+                    println!("  Doc comments: 0 candidates");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Doc comment pass failed for ref; continuing");
+            }
+        }
+    }
+
+    #[cfg(feature = "llm-summaries")]
+    if !crate::cli::check_interrupted() && opts.hyde_queries {
+        if !cli.quiet && !json {
+            println!("Generating hyde query predictions...");
+        }
+        match cqs::llm::hyde_query_pass(
+            &store,
+            cli.quiet || json,
+            &config,
+            opts.max_hyde.unwrap_or(0),
+            Some(ref_dir),
+        ) {
+            Ok(count) => {
+                if !cli.quiet && !json && count > 0 {
+                    println!("  Hyde predictions: {} new", count);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Hyde query pass failed for ref; continuing");
+            }
+        }
+    }
+
+    // enrichment_pass: clears `needs_embedding=1` rows that
+    // `--llm-summaries` left behind by skipping the first-pass embed,
+    // and re-embeds chunks with caller/callee context when call edges
+    // were extracted. Mirror `cmd_index`'s trigger: any unembedded
+    // chunks OR any call edges → run.
+    let needs_embed_count = match store.needs_embedding_count() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to count needs_embedding chunks for ref; assuming zero");
+            0
+        }
+    };
+    if !crate::cli::check_interrupted() && (stats.total_calls > 0 || needs_embed_count > 0) {
+        use crate::cli::enrichment_pass;
+        if !cli.quiet && !json {
+            if needs_embed_count > 0 {
+                println!(
+                    "Enriching embeddings with call graph context ({} chunks awaiting first embedding)...",
+                    needs_embed_count
+                );
+            } else {
+                println!("Enriching embeddings with call graph context...");
+            }
+        }
+        let model_config = cli.try_model_config()?.clone();
+        match cqs::Embedder::new(model_config.clone()) {
+            Ok(embedder) => {
+                match enrichment_pass(&store, &embedder, &model_config, cli.quiet || json) {
+                    Ok(count) => {
+                        if !cli.quiet && !json && count > 0 {
+                            println!("  Enriched: {} chunks", count);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Enrichment pass failed for ref; continuing");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create embedder for ref enrichment");
+            }
+        }
+    }
+
+    // Belt-and-braces summary queue flush mirrors cmd_index.
+    #[cfg(feature = "llm-summaries")]
+    if let Err(e) = store.flush_pending_summaries() {
+        tracing::warn!(error = %e, "cmd_ref_update: final flush of summary queue failed");
     }
 
     // Rebuild HNSW
