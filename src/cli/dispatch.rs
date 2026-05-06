@@ -232,6 +232,21 @@ fn run_with_dispatch(
             .apply_env_overrides(),
     );
 
+    // #1453: load per-slot SPLADE α overrides from `slot.toml [splade.alpha]`
+    // and install them on the search router. Done once at dispatch entry so
+    // every search/eval/batch path benefits without per-call I/O.
+    //
+    // Resolution mirrors the slot-model lookup above: pick the active slot
+    // (`--slot` > CQS_SLOT > active_slot file > "default"), read the alpha
+    // table, install. Slot-resolution failure (missing project, malformed
+    // slot.toml) → empty table → router falls through to env / preset /
+    // default precedence as before.
+    let slot_alpha_table = cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir)
+        .ok()
+        .map(|s| cqs::slot::read_slot_splade_alpha_table(project_cqs_dir, &s.name))
+        .unwrap_or_default();
+    cqs::search::router::install_slot_splade_alpha_overrides(slot_alpha_table);
+
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
 
