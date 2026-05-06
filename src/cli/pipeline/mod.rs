@@ -529,6 +529,172 @@ mod tests {
         }
     }
 
+    // ========================================================================
+    // TC-HAP-V1.36-8 — `prepare_for_embedding` happy paths
+    //
+    // Exercises the windowing → cache-check → text-generation orchestrator end
+    // to end against a real CPU embedder + Store. Each test is `#[ignore]`-
+    // gated because constructing an `Embedder` requires the ONNX model on disk
+    // (matches the `apply_windowing` test pattern above and #1305).
+    //
+    // Branches covered:
+    //   1. Fresh batch (no cache) → all chunks in `to_embed`, texts populated.
+    //   2. Store-cache hit → previously-embedded chunk goes to `cached`,
+    //      `to_embed` is empty, no text generated.
+    //   3. Empty batch → all collections empty, no embedder calls.
+    // ========================================================================
+
+    fn make_parsed_batch_with_chunk(chunk: Chunk) -> super::types::ParsedBatch {
+        let mut file_mtimes = std::collections::HashMap::new();
+        file_mtimes.insert(chunk.file.clone(), 0);
+        super::types::ParsedBatch {
+            chunks: vec![chunk],
+            relationships: super::types::RelationshipData::default(),
+            file_mtimes,
+        }
+    }
+
+    #[test]
+    #[ignore = "Requires ONNX embedder model on disk"]
+    fn prepare_for_embedding_fresh_batch_routes_all_to_to_embed() {
+        use super::embedding::prepare_for_embedding;
+        use cqs::embedder::ModelConfig;
+        use cqs::store::ModelInfo;
+        use cqs::{Embedder, Store};
+
+        let embedder = match Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("CPU embedder unavailable: {err}; skipping (#1305)");
+                return;
+            }
+        };
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store_path = tmp.path().join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open(&store_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let chunk = make_test_chunk("fresh", "fn fresh() {}");
+        let batch = make_parsed_batch_with_chunk(chunk);
+
+        let prepared = prepare_for_embedding(batch, &embedder, &store, None, "test-fp");
+
+        assert!(
+            prepared.cached.is_empty(),
+            "no cache → cached must be empty"
+        );
+        assert_eq!(
+            prepared.to_embed.len(),
+            1,
+            "fresh chunk must route to to_embed"
+        );
+        assert_eq!(
+            prepared.texts.len(),
+            1,
+            "one text per to_embed chunk (NL description generated)"
+        );
+        assert!(
+            !prepared.texts[0].is_empty(),
+            "generated NL description must be non-empty"
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires ONNX embedder model on disk"]
+    fn prepare_for_embedding_store_cache_hit_skips_to_embed() {
+        use super::embedding::prepare_for_embedding;
+        use cqs::embedder::ModelConfig;
+        use cqs::store::ModelInfo;
+        use cqs::{Embedder, Store};
+
+        let embedder = match Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("CPU embedder unavailable: {err}; skipping (#1305)");
+                return;
+            }
+        };
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store_path = tmp.path().join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open(&store_path).unwrap();
+        store
+            .init(&ModelInfo::new("test/m", embedder.embedding_dim()))
+            .unwrap();
+
+        // Pre-seed the chunk + embedding so the store cache hit path fires.
+        let chunk = make_test_chunk("seeded", "fn seeded() {}");
+        let mut emb_vec = vec![0.0_f32; embedder.embedding_dim()];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), embedding)], Some(0))
+            .unwrap();
+
+        // Build a ParsedBatch with a chunk that has the SAME content_hash —
+        // that's what the cache lookup keys on. We use a fresh Chunk with
+        // identical content so its hash matches without sharing the same id.
+        let lookup_chunk = make_test_chunk("seeded_again", "fn seeded() {}");
+        assert_eq!(
+            lookup_chunk.content_hash, chunk.content_hash,
+            "same content must hash identically"
+        );
+        let batch = make_parsed_batch_with_chunk(lookup_chunk);
+
+        let prepared = prepare_for_embedding(batch, &embedder, &store, None, "test-fp");
+
+        assert_eq!(
+            prepared.cached.len(),
+            1,
+            "store-cached chunk must route to cached (got cached={}, to_embed={})",
+            prepared.cached.len(),
+            prepared.to_embed.len()
+        );
+        assert!(
+            prepared.to_embed.is_empty(),
+            "cached chunk must not appear in to_embed"
+        );
+        assert!(
+            prepared.texts.is_empty(),
+            "no NL text generation when nothing needs embedding"
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires ONNX embedder model on disk"]
+    fn prepare_for_embedding_empty_batch_returns_empty_collections() {
+        use super::embedding::prepare_for_embedding;
+        use cqs::embedder::ModelConfig;
+        use cqs::store::ModelInfo;
+        use cqs::{Embedder, Store};
+
+        let embedder = match Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("CPU embedder unavailable: {err}; skipping (#1305)");
+                return;
+            }
+        };
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store_path = tmp.path().join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open(&store_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let batch = super::types::ParsedBatch {
+            chunks: vec![],
+            relationships: super::types::RelationshipData::default(),
+            file_mtimes: std::collections::HashMap::new(),
+        };
+
+        let prepared = prepare_for_embedding(batch, &embedder, &store, None, "test-fp");
+
+        assert!(prepared.cached.is_empty());
+        assert!(prepared.to_embed.is_empty());
+        assert!(prepared.texts.is_empty());
+    }
+
     #[test]
     fn test_embed_batch_size() {
         use super::types::{embed_batch_size, TEST_ENV_MUTEX};
