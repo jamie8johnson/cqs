@@ -228,8 +228,7 @@ pub use impact::{
     TestMatch, TestSuggestion, TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{
-    generate_nl_description, generate_nl_description_with_seq_len,
-    generate_nl_with_call_context_and_summary, generate_nl_with_template,
+    generate_nl_description_with_seq_len, generate_nl_with_call_context_and_summary,
     generate_nl_with_template_and_seq_len, normalize_for_fts, tokenize_identifier, CallContext,
     NlTemplate,
 };

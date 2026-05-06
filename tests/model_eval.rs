@@ -13,7 +13,9 @@
 mod eval_common;
 
 use cqs::parser::{Language, Parser};
-use cqs::{generate_nl_description, generate_nl_with_template, NlTemplate};
+use cqs::{
+    generate_nl_description_with_seq_len, generate_nl_with_template_and_seq_len, NlTemplate,
+};
 use eval_common::{fixture_path, hard_fixture_path, EvalCase, EVAL_CASES, HARD_EVAL_CASES};
 use ndarray::Array2;
 use ort::session::Session;
@@ -422,7 +424,7 @@ fn test_model_comparison() {
         let path = fixture_path(*lang);
         let chunks = parser.parse_file(&path).expect("Failed to parse fixture");
         for chunk in &chunks {
-            let nl = generate_nl_description(chunk);
+            let nl = generate_nl_description_with_seq_len(chunk, 512);
             chunk_descs.push(ChunkDesc {
                 name: chunk.name.clone(),
                 language: *lang,
@@ -620,7 +622,7 @@ fn test_template_comparison() {
         // Generate NL descriptions with this template
         let nl_texts: Vec<String> = chunks
             .iter()
-            .map(|c| generate_nl_with_template(c, *template))
+            .map(|c| generate_nl_with_template_and_seq_len(c, *template, 512))
             .collect();
 
         // Show a sample
@@ -805,7 +807,7 @@ fn test_hard_template_comparison() {
         // Generate NL descriptions with this template
         let nl_texts: Vec<String> = chunks
             .iter()
-            .map(|c| generate_nl_with_template(c, *template))
+            .map(|c| generate_nl_with_template_and_seq_len(c, *template, 512))
             .collect();
 
         if let Some(first) = nl_texts.first() {
@@ -1093,7 +1095,7 @@ fn test_hard_model_comparison() {
             .parse_file(&path)
             .expect("Failed to parse original fixture");
         for chunk in &chunks {
-            let nl = generate_nl_description(chunk);
+            let nl = generate_nl_description_with_seq_len(chunk, 512);
             chunk_descs.push(ChunkDesc {
                 name: chunk.name.clone(),
                 language: *lang,
@@ -1107,7 +1109,7 @@ fn test_hard_model_comparison() {
                 .parse_file(&hard_path)
                 .expect("Failed to parse hard fixture");
             for chunk in &chunks {
-                let nl = generate_nl_description(chunk);
+                let nl = generate_nl_description_with_seq_len(chunk, 512);
                 chunk_descs.push(ChunkDesc {
                     name: chunk.name.clone(),
                     language: *lang,
@@ -1357,7 +1359,7 @@ fn test_hard_reranker_comparison() {
             .parse_file(&path)
             .expect("Failed to parse original fixture");
         for chunk in &chunks {
-            let nl = generate_nl_description(chunk);
+            let nl = generate_nl_description_with_seq_len(chunk, 512);
             chunk_descs.push(ChunkDesc {
                 name: chunk.name.clone(),
                 language: *lang,
@@ -1371,7 +1373,7 @@ fn test_hard_reranker_comparison() {
                 .parse_file(&hard_path)
                 .expect("Failed to parse hard fixture");
             for chunk in &chunks {
-                let nl = generate_nl_description(chunk);
+                let nl = generate_nl_description_with_seq_len(chunk, 512);
                 chunk_descs.push(ChunkDesc {
                     name: chunk.name.clone(),
                     language: *lang,
@@ -1756,7 +1758,7 @@ fn load_fixture_summaries() -> HashMap<String, String> {
 /// Generate enriched NL: prepend summary (if available) to base NL description.
 /// Matches production behavior in `generate_nl_with_call_context_and_summary`.
 fn generate_enriched_nl(chunk: &cqs::parser::Chunk, summary: Option<&str>) -> String {
-    let base_nl = generate_nl_description(chunk);
+    let base_nl = generate_nl_description_with_seq_len(chunk, 512);
     match summary {
         Some(s) if !s.is_empty() => format!("{} {}", s, base_nl),
         _ => base_nl,
@@ -2231,7 +2233,7 @@ fn test_type_aware_embeddings() {
             }
             let parsed = parser.parse_file(&path).expect("Parse failed");
             for chunk in &parsed {
-                let base_nl = generate_nl_description(chunk);
+                let base_nl = generate_nl_description_with_seq_len(chunk, 512);
                 let sig = &chunk.signature;
 
                 // Variant 1: prepend signature
@@ -2477,7 +2479,7 @@ fn test_weight_sweep() {
                     name: chunk.name.clone(),
                     language: *lang,
                     content: chunk.content.clone(),
-                    nl_text: generate_nl_description(chunk),
+                    nl_text: generate_nl_description_with_seq_len(chunk, 512),
                 });
             }
         }

@@ -15,7 +15,9 @@ use cqs::hnsw::HnswIndex;
 use cqs::parser::{ChunkType, Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use cqs::VectorIndex;
-use cqs::{generate_nl_description, generate_nl_with_call_context_and_summary, CallContext};
+use cqs::{
+    generate_nl_description_with_seq_len, generate_nl_with_call_context_and_summary, CallContext,
+};
 use eval_common::{fixture_path, hard_fixture_path, EvalCase, HARD_EVAL_CASES, HOLDOUT_EVAL_CASES};
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -318,7 +320,7 @@ fn test_fixture_eval_296q() {
             eprintln!("    Found {} chunks", chunks.len());
 
             for chunk in &chunks {
-                let text = generate_nl_description(chunk);
+                let text = generate_nl_description_with_seq_len(chunk, 512);
                 let embeddings = embedder
                     .embed_documents(&[&text])
                     .expect("Failed to embed chunk");
@@ -1051,7 +1053,7 @@ fn test_holdout_eval() {
             }
             let chunks = parser.parse_file(&path).expect("Failed to parse fixture");
             for chunk in &chunks {
-                let text = generate_nl_description(chunk);
+                let text = generate_nl_description_with_seq_len(chunk, 512);
                 let embeddings = embedder
                     .embed_documents(&[&text])
                     .expect("Failed to embed chunk");
@@ -1195,7 +1197,7 @@ fn test_noise_eval_143q() {
                 .parse_file_all(&path)
                 .expect("Failed to parse fixture");
             for chunk in &chunks {
-                let text = generate_nl_description(chunk);
+                let text = generate_nl_description_with_seq_len(chunk, 512);
                 let embeddings = embedder
                     .embed_documents(&[&text])
                     .expect("Failed to embed chunk");
@@ -1272,7 +1274,7 @@ fn test_noise_eval_143q() {
                     store.upsert_function_calls(path, &calls).ok();
                 }
                 for chunk in &chunks {
-                    batch_texts.push(generate_nl_description(chunk));
+                    batch_texts.push(generate_nl_description_with_seq_len(chunk, 512));
                     batch_chunks.push(chunk.clone());
                     repo_chunks += 1;
 
@@ -1342,7 +1344,7 @@ fn test_noise_eval_143q() {
             for cs in &chunks {
                 if let Some(summary) = summaries.get(&cs.content_hash) {
                     let chunk: cqs::Chunk = cs.into();
-                    let base_nl = generate_nl_description(&chunk);
+                    let base_nl = generate_nl_description_with_seq_len(&chunk, 512);
                     let nl_with_summary = format!("{} {}", summary, base_nl);
                     let embs = embedder
                         .embed_documents(&[&nl_with_summary])
