@@ -7,7 +7,7 @@ mod mmr;
 mod query;
 pub mod router;
 pub(crate) mod scoring;
-pub(crate) mod synonyms;
+pub mod synonyms;
 
 // Re-export the shared scoring-knob table so binary-side code (e.g.
 // `cqs doctor`) can iterate `SCORING_KNOBS` without exposing the rest

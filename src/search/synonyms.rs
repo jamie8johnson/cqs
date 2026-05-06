@@ -2,49 +2,206 @@
 //!
 //! Expands abbreviated query tokens into OR-groups for FTS5, improving recall
 //! when users search with abbreviations (e.g., "auth" finds "authentication").
+//!
+//! EXT-V1.36-1 (#1460): the synonym table is a runtime-mutable
+//! `HashMap<String, Vec<String>>` initialized with compile-time defaults
+//! and overlay-merged from optional TOML files at startup. Operators
+//! extend the dictionary with domain vocabulary (manufacturing/industrial:
+//! `plc`/`scada`/`opc`/`hmi`; cqs-internal: `hnsw`/`splade`/`cagra`/`rrf`)
+//! without rebuilding the binary. Schema in `[load_synonym_overlay]`.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::path::Path;
+use std::sync::{LazyLock, RwLock};
 
-/// Static synonym map: abbreviation → list of expansions.
+/// Compile-time built-in synonyms — initial floor before any TOML overlay
+/// is installed. These mirror the original v1.x hand-curated dictionary.
+fn builtin_synonyms() -> HashMap<String, Vec<String>> {
+    let entries: &[(&str, &[&str])] = &[
+        ("auth", &["authentication", "authorize", "credential"]),
+        ("config", &["configuration", "settings"]),
+        ("cfg", &["configuration", "config", "settings"]),
+        ("err", &["error", "failure", "exception"]),
+        ("fn", &["function", "method"]),
+        ("func", &["function", "method"]),
+        ("init", &["initialize", "setup", "initialization"]),
+        ("parse", &["parsing", "deserialize", "decode"]),
+        ("req", &["request"]),
+        ("res", &["response", "result"]),
+        ("fmt", &["format", "formatting"]),
+        ("db", &["database", "storage"]),
+        ("ctx", &["context"]),
+        ("msg", &["message"]),
+        ("cmd", &["command"]),
+        ("buf", &["buffer"]),
+        ("str", &["string"]),
+        ("impl", &["implementation", "implement"]),
+        ("alloc", &["allocate", "allocation"]),
+        ("dealloc", &["deallocate", "free"]),
+        ("arg", &["argument", "parameter"]),
+        ("args", &["arguments", "parameters"]),
+        ("param", &["parameter", "argument"]),
+        ("params", &["parameters", "arguments"]),
+        ("iter", &["iterator", "iteration"]),
+        ("async", &["asynchronous"]),
+        ("sync", &["synchronous", "synchronize"]),
+        ("env", &["environment"]),
+        ("dir", &["directory", "folder"]),
+        ("deps", &["dependencies", "dependency"]),
+        ("repo", &["repository"]),
+    ];
+    entries
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+        .collect()
+}
+
+/// Merged synonym table. Initialized lazily with builtins on first access;
+/// overlays installed via [`install_synonym_overlay`] are merged in
+/// (overwriting on key collision). RwLock keeps reads cheap on the hot
+/// search path — uncontested reads are ~10ns and only contend with the
+/// once-at-startup write from `install_synonym_overlay`.
+static SYNONYMS: LazyLock<RwLock<HashMap<String, Vec<String>>>> =
+    LazyLock::new(|| RwLock::new(builtin_synonyms()));
+
+/// EXT-V1.36-1 (#1460): install a runtime synonym overlay. Idempotent
+/// per key — repeated calls overwrite. Per-key precedence is "last
+/// install wins"; in production [`install_synonym_overlay`] is called
+/// once at CLI/daemon startup with the project-local overlay layered
+/// on top of the user-global one.
 ///
-/// Each key maps to tokens that FTS should also match. The original token
-/// is always included in the OR group (handled by `expand_query_for_fts`).
-static SYNONYMS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
-    m.insert("auth", &["authentication", "authorize", "credential"][..]);
-    m.insert("config", &["configuration", "settings"][..]);
-    m.insert("cfg", &["configuration", "config", "settings"][..]);
-    m.insert("err", &["error", "failure", "exception"][..]);
-    m.insert("fn", &["function", "method"][..]);
-    m.insert("func", &["function", "method"][..]);
-    m.insert("init", &["initialize", "setup", "initialization"][..]);
-    m.insert("parse", &["parsing", "deserialize", "decode"][..]);
-    m.insert("req", &["request"][..]);
-    m.insert("res", &["response", "result"][..]);
-    m.insert("fmt", &["format", "formatting"][..]);
-    m.insert("db", &["database", "storage"][..]);
-    m.insert("ctx", &["context"][..]);
-    m.insert("msg", &["message"][..]);
-    m.insert("cmd", &["command"][..]);
-    m.insert("buf", &["buffer"][..]);
-    m.insert("str", &["string"][..]);
-    m.insert("impl", &["implementation", "implement"][..]);
-    m.insert("alloc", &["allocate", "allocation"][..]);
-    m.insert("dealloc", &["deallocate", "free"][..]);
-    m.insert("arg", &["argument", "parameter"][..]);
-    m.insert("args", &["arguments", "parameters"][..]);
-    m.insert("param", &["parameter", "argument"][..]);
-    m.insert("params", &["parameters", "arguments"][..]);
-    m.insert("iter", &["iterator", "iteration"][..]);
-    m.insert("async", &["asynchronous"][..]);
-    m.insert("sync", &["synchronous", "synchronize"][..]);
-    m.insert("env", &["environment"][..]);
-    m.insert("dir", &["directory", "folder"][..]);
-    m.insert("deps", &["dependencies", "dependency"][..]);
-    m.insert("repo", &["repository"][..]);
-    m
-});
+/// Empty maps are no-ops.
+///
+/// Token-validation note: each key is lowercased before insertion (the
+/// lookup path lowercases too) so a user-config typo like `Auth`
+/// matches the lookup. The expansion `Vec<String>` entries are passed
+/// verbatim into FTS5 OR groups — callers MUST ensure they're
+/// alphanumeric / FTS-safe; the loader [`load_synonym_overlay`] enforces
+/// this on the disk path.
+pub fn install_synonym_overlay(extras: HashMap<String, Vec<String>>) {
+    if extras.is_empty() {
+        return;
+    }
+    let mut g = SYNONYMS.write().unwrap_or_else(|p| p.into_inner());
+    for (k, v) in extras {
+        g.insert(k.to_lowercase(), v);
+    }
+}
+
+/// Test-only: reset the synonym table to the compile-time builtins.
+/// Without this, a test that installs an overlay would leak into
+/// sibling tests via the process-global `LazyLock`.
+#[cfg(test)]
+pub(crate) fn reset_synonyms_for_test() {
+    let mut g = SYNONYMS.write().unwrap_or_else(|p| p.into_inner());
+    *g = builtin_synonyms();
+}
+
+/// EXT-V1.36-1 (#1460): parse a `synonyms.toml` overlay from disk.
+///
+/// Schema:
+/// ```toml
+/// [synonyms]
+/// plc = ["programmable_logic_controller", "ladder_logic"]
+/// scada = ["supervisory_control"]
+/// hnsw = ["hierarchical_navigable_small_world"]
+/// ```
+///
+/// Returns an empty map on:
+/// - missing file (no error — operators don't need to create the file)
+/// - malformed TOML (warn + empty so a typo doesn't break search)
+/// - unsafe expansion tokens (anything outside `[A-Za-z0-9_]+`) — these
+///   are skipped per-entry with a warn so partial overlays still apply.
+///
+/// Bounded read at 4 KiB. Typical overlay is <500 bytes; a hostile config
+/// can't OOM the indexer.
+pub fn load_synonym_overlay(path: &Path) -> HashMap<String, Vec<String>> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 4096;
+
+    let mut file = match std::fs::File::open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to open synonym overlay; falling back to builtins"
+            );
+            return HashMap::new();
+        }
+        Ok(f) => f,
+    };
+    let mut raw = String::new();
+    if let Err(e) = (&mut file).take(MAX_BYTES).read_to_string(&mut raw) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Bounded read of synonym overlay failed; falling back to builtins"
+        );
+        return HashMap::new();
+    }
+
+    #[derive(serde::Deserialize)]
+    struct File {
+        synonyms: Option<HashMap<String, Vec<String>>>,
+    }
+    let parsed: File = match toml::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Synonym overlay is malformed TOML; falling back to builtins"
+            );
+            return HashMap::new();
+        }
+    };
+    let raw_table = match parsed.synonyms {
+        Some(t) => t,
+        None => return HashMap::new(),
+    };
+
+    let is_fts_safe =
+        |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    let mut out = HashMap::with_capacity(raw_table.len());
+    for (k, v) in raw_table {
+        if !is_fts_safe(&k) {
+            tracing::warn!(
+                path = %path.display(),
+                key = %k,
+                "Synonym overlay key contains unsafe characters (allowed: A-Z, a-z, 0-9, _) — skipping"
+            );
+            continue;
+        }
+        let kept: Vec<String> = v
+            .into_iter()
+            .filter(|exp| {
+                if !is_fts_safe(exp) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        key = %k,
+                        expansion = %exp,
+                        "Synonym overlay expansion contains unsafe characters — dropping"
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        if !kept.is_empty() {
+            out.insert(k, kept);
+        }
+    }
+    if !out.is_empty() {
+        tracing::debug!(
+            path = %path.display(),
+            entries = out.len(),
+            "Loaded synonym overlay"
+        );
+    }
+    out
+}
 
 /// Expand a single FTS-sanitized query string with synonym OR groups.
 ///
@@ -52,7 +209,9 @@ static SYNONYMS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = Lazy
 /// Tokens without synonyms pass through unchanged.
 ///
 /// Input must already be FTS-sanitized (no special chars). Output is safe for
-/// FTS5 MATCH because we only inject known-safe alpha tokens inside OR groups.
+/// FTS5 MATCH because we only inject known-safe alpha tokens inside OR groups
+/// (compile-time builtins are ASCII alphanumeric; runtime overlays are
+/// validated by [`load_synonym_overlay`]).
 pub fn expand_query_for_fts(sanitized_query: &str) -> String {
     debug_assert!(
         !sanitized_query.contains('"')
@@ -65,14 +224,15 @@ pub fn expand_query_for_fts(sanitized_query: &str) -> String {
         return String::new();
     }
 
+    let synonyms = SYNONYMS.read().unwrap_or_else(|p| p.into_inner());
     let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
     let mut has_or_group = false;
     for token in &tokens {
         let lower = token.to_lowercase();
-        if let Some(synonyms) = SYNONYMS.get(lower.as_str()) {
+        if let Some(entries) = synonyms.get(&lower) {
             // Build OR group: (original OR syn1 OR syn2 ...)
             let mut group = format!("({}", token);
-            for syn in *synonyms {
+            for syn in entries {
                 group.push_str(" OR ");
                 group.push_str(syn);
             }
@@ -93,6 +253,7 @@ pub fn expand_query_for_fts(sanitized_query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn empty_query_returns_empty() {
@@ -106,7 +267,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(synonyms_overlay)]
     fn single_synonym_expands() {
+        reset_synonyms_for_test();
         let result = expand_query_for_fts("auth");
         assert!(result.contains("auth"));
         assert!(result.contains("authentication"));
@@ -117,7 +280,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(synonyms_overlay)]
     fn mixed_tokens_expand_selectively() {
+        reset_synonyms_for_test();
         let result = expand_query_for_fts("auth middleware");
         // "auth" should expand, "middleware" should not
         // FTS5 requires explicit AND when OR groups are present
@@ -127,7 +292,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(synonyms_overlay)]
     fn all_synonyms_expand() {
+        reset_synonyms_for_test();
         let result = expand_query_for_fts("config err");
         assert!(result.contains("(config OR configuration"));
         assert!(result.contains("AND (err OR error"));
@@ -142,26 +309,191 @@ mod tests {
     }
 
     #[test]
+    #[serial(synonyms_overlay)]
     fn case_insensitive_lookup() {
+        reset_synonyms_for_test();
         let result = expand_query_for_fts("Auth");
         assert!(result.contains("Auth"));
         assert!(result.contains("authentication"));
     }
 
     #[test]
+    #[serial(synonyms_overlay)]
     fn synonym_map_has_expected_entries() {
-        // Verify key synonyms from the spec exist
-        let map = &*SYNONYMS;
-        assert!(map.contains_key("auth"));
-        assert!(map.contains_key("config"));
-        assert!(map.contains_key("err"));
-        assert!(map.contains_key("fn"));
-        assert!(map.contains_key("init"));
-        assert!(map.contains_key("parse"));
-        assert!(map.contains_key("req"));
-        assert!(map.contains_key("res"));
-        assert!(map.contains_key("fmt"));
-        assert!(map.contains_key("db"));
-        assert!(map.len() >= 30, "Expected at least 30 synonym entries");
+        reset_synonyms_for_test();
+        // Verify key synonyms from the spec exist (read directly from the
+        // table, mirroring the pre-EXT-V1.36-1 invariant).
+        let g = SYNONYMS.read().unwrap();
+        assert!(g.contains_key("auth"));
+        assert!(g.contains_key("config"));
+        assert!(g.contains_key("err"));
+        assert!(g.contains_key("fn"));
+        assert!(g.contains_key("init"));
+        assert!(g.contains_key("parse"));
+        assert!(g.contains_key("req"));
+        assert!(g.contains_key("res"));
+        assert!(g.contains_key("fmt"));
+        assert!(g.contains_key("db"));
+        assert!(g.len() >= 30, "Expected at least 30 synonym entries");
+    }
+
+    // ─── EXT-V1.36-1: TOML overlay tests ───────────────────────────────
+
+    #[test]
+    #[serial(synonyms_overlay)]
+    fn install_overlay_extends_dictionary() {
+        reset_synonyms_for_test();
+        // Domain vocabulary not in the builtins.
+        let mut overlay = HashMap::new();
+        overlay.insert(
+            "plc".to_string(),
+            vec![
+                "programmable_logic_controller".to_string(),
+                "ladder_logic".to_string(),
+            ],
+        );
+        install_synonym_overlay(overlay);
+
+        let result = expand_query_for_fts("plc");
+        assert!(result.contains("plc"));
+        assert!(result.contains("programmable_logic_controller"));
+        assert!(result.contains("ladder_logic"));
+        reset_synonyms_for_test();
+    }
+
+    #[test]
+    #[serial(synonyms_overlay)]
+    fn install_overlay_overrides_builtin_on_conflict() {
+        reset_synonyms_for_test();
+        // Override "auth" with a custom expansion set.
+        let mut overlay = HashMap::new();
+        overlay.insert(
+            "auth".to_string(),
+            vec!["my_custom_auth_expansion".to_string()],
+        );
+        install_synonym_overlay(overlay);
+
+        let result = expand_query_for_fts("auth");
+        assert!(result.contains("my_custom_auth_expansion"));
+        // Builtin expansions should NOT be present after override.
+        assert!(
+            !result.contains("authentication"),
+            "overlay must override the builtin entry; got {result:?}"
+        );
+        reset_synonyms_for_test();
+    }
+
+    #[test]
+    #[serial(synonyms_overlay)]
+    fn install_overlay_lowercases_keys() {
+        reset_synonyms_for_test();
+        // Case-insensitive lookup means an upper-case overlay key still
+        // matches a lower-case query.
+        let mut overlay = HashMap::new();
+        overlay.insert("SCADA".to_string(), vec!["supervisory_control".to_string()]);
+        install_synonym_overlay(overlay);
+
+        let result = expand_query_for_fts("scada");
+        assert!(result.contains("supervisory_control"));
+        reset_synonyms_for_test();
+    }
+
+    #[test]
+    #[serial(synonyms_overlay)]
+    fn install_overlay_empty_is_noop() {
+        reset_synonyms_for_test();
+        // Capture pre-state.
+        let before_len = SYNONYMS.read().unwrap().len();
+        install_synonym_overlay(HashMap::new());
+        let after_len = SYNONYMS.read().unwrap().len();
+        assert_eq!(before_len, after_len);
+        reset_synonyms_for_test();
+    }
+
+    #[test]
+    fn load_overlay_missing_file_returns_empty() {
+        let table = load_synonym_overlay(Path::new("/nonexistent/synonyms.toml"));
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn load_overlay_parses_typed_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("synonyms.toml");
+        std::fs::write(
+            &path,
+            "[synonyms]\nplc = [\"programmable_logic_controller\"]\nhnsw = [\"hierarchical_navigable_small_world\"]\n",
+        )
+        .unwrap();
+
+        let table = load_synonym_overlay(&path);
+        assert_eq!(
+            table.get("plc").map(|v| v.as_slice()),
+            Some(&["programmable_logic_controller".to_string()][..])
+        );
+        assert_eq!(
+            table.get("hnsw").map(|v| v.as_slice()),
+            Some(&["hierarchical_navigable_small_world".to_string()][..])
+        );
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn load_overlay_drops_unsafe_keys_keeps_safe_entries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("synonyms.toml");
+        std::fs::write(
+            &path,
+            "[synonyms]\nplc = [\"programmable_logic_controller\"]\n\"bad-key!\" = [\"foo\"]\nopc = [\"open_platform_communications\"]\n",
+        )
+        .unwrap();
+
+        let table = load_synonym_overlay(&path);
+        assert!(table.contains_key("plc"));
+        assert!(table.contains_key("opc"));
+        assert!(
+            !table.contains_key("bad-key!"),
+            "unsafe key with `-`/`!` must be dropped (FTS-safe filter)"
+        );
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn load_overlay_drops_unsafe_expansions_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("synonyms.toml");
+        std::fs::write(
+            &path,
+            "[synonyms]\nplc = [\"programmable_logic_controller\", \"with-dash\", \"good_one\"]\n",
+        )
+        .unwrap();
+
+        let table = load_synonym_overlay(&path);
+        let plc = table.get("plc").unwrap();
+        assert!(plc.contains(&"programmable_logic_controller".to_string()));
+        assert!(plc.contains(&"good_one".to_string()));
+        assert!(
+            !plc.iter().any(|s| s == "with-dash"),
+            "unsafe expansion with `-` must be dropped"
+        );
+        assert_eq!(plc.len(), 2);
+    }
+
+    #[test]
+    fn load_overlay_malformed_toml_returns_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("synonyms.toml");
+        std::fs::write(&path, "[synonyms\nplc = oops").unwrap(); // unclosed table
+        let table = load_synonym_overlay(&path);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn load_overlay_no_synonyms_section_returns_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("synonyms.toml");
+        std::fs::write(&path, "[other]\nfoo = \"bar\"\n").unwrap();
+        let table = load_synonym_overlay(&path);
+        assert!(table.is_empty());
     }
 }
