@@ -355,7 +355,23 @@ pub(super) async fn batch_insert_chunks(
                 // incoming embedding comes from raw NL (no enrichment), so on
                 // initial insert it IS the base. Enrichment pass later updates
                 // `embedding` only; `embedding_base` stays put for dual-index.
-                .push_bind(&embedding_bytes[emb_offset + i])
+                //
+                // #1452 follow-up: when `needs_embedding` is set, the bytes
+                // above are a zero-vec sentinel (skip-first-pass under
+                // `--llm-summaries`). Stamping that as `embedding_base` would
+                // poison the base HNSW (`build_hnsw_base_index` filters
+                // `WHERE embedding_base IS NOT NULL` — zero-vec passes the
+                // filter and joins the index with corrupt zeros). Bind NULL
+                // instead so partial-state chunks naturally drop out of the
+                // base index until a non-skip reindex of their content lands
+                // a real base-NL embedding. Coverage trade-off documented in
+                // CHANGELOG; the base index is the routing-fallback channel,
+                // not the main search path.
+                .push_bind(if needs_embedding {
+                    None::<&[u8]>
+                } else {
+                    Some(embedding_bytes[emb_offset + i].as_slice())
+                })
                 .push_bind(source_mtime)
                 .push_bind(now)
                 .push_bind(now)

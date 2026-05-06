@@ -1334,6 +1334,44 @@ mod tests {
         );
     }
 
+    /// #1452 follow-up: skip-first-pass writes `embedding_base = NULL`
+    /// (not the zero-vec sentinel). Otherwise `build_hnsw_base_index`
+    /// (`SELECT ... WHERE embedding_base IS NOT NULL`) would join the
+    /// base HNSW with corrupt zeros for every partial-state chunk —
+    /// the base index is the routing-fallback channel and silently
+    /// degrading it is the original-bug shape this PR fixed.
+    #[test]
+    fn unembedded_chunks_have_null_embedding_base() {
+        let (store, _dir) = setup_store();
+        let c = make_chunk("alpha", "src/a.rs");
+
+        store
+            .upsert_chunks_unembedded_batch(&[c.clone()], Some(100))
+            .unwrap();
+
+        // Pre-enrichment: embedding_base IS NULL (not zero-vec). The base
+        // index count query (`base_embedding_count`) drops these chunks.
+        assert_eq!(
+            store.base_embedding_count().unwrap(),
+            0,
+            "skip-first-pass chunks must be invisible to base_embedding_count"
+        );
+
+        // Post-enrichment: embedding overwrites with real bytes; embedding_base
+        // is intentionally LEFT NULL (the perf trade-off — base coverage is
+        // restored on a non-skip reindex of the chunk content).
+        let real_emb = mock_embedding(0.5);
+        let updates = vec![(c.id.clone(), real_emb, Some("hash".to_string()))];
+        store.update_embeddings_with_hashes_batch(&updates).unwrap();
+        assert_eq!(
+            store.base_embedding_count().unwrap(),
+            0,
+            "post-enrichment, base_embedding_count must STILL be 0 — \
+             enrichment refreshes only `embedding`, not `embedding_base`. \
+             Base coverage returns on the next non-skip reindex of the chunk."
+        );
+    }
+
     /// #1221: end-to-end vendored-flag round-trip. With the default
     /// prefix list configured on the store, a chunk whose origin
     /// passes through `vendor/` is upserted with `vendored = 1` and
