@@ -1,4 +1,13 @@
--- cq index schema v26 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26 columns annotated inline below)
+-- cq index schema v27 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27 columns annotated inline below)
+-- v27: chunks.needs_embedding INTEGER NOT NULL DEFAULT 0 + partial index on
+--      needs_embedding=1. Set on chunks written by the parser stage during a
+--      `--llm-summaries` reindex without a first-pass embed (#1452); cleared
+--      by `enrichment_pass` once a real embedding is written. The
+--      `embedding` column stays BLOB NOT NULL (zero-vec sentinel for
+--      unembedded chunks); HNSW build + search hydration filter
+--      `WHERE needs_embedding = 0` so partial-state chunks are invisible
+--      until enrichment lands their real vector. The visibility gate is
+--      local — LLM summary failure does not block it.
 -- v22: umap_x / umap_y REAL columns on chunks for the cqs serve cluster view.
 --      Both nullable; populated only when `cqs index --umap` runs the
 --      umap-learn projection. /api/embed/2d skips chunks where coords are NULL.
@@ -57,8 +66,12 @@ CREATE TABLE IF NOT EXISTS chunks (
     umap_y REAL,                              -- v22: 2D projection Y coord (NULL until `cqs index --umap` runs)
     source_size INTEGER,                      -- v23: file size in bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
     source_content_hash BLOB,                 -- v23: BLAKE3 hash of file bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
-    vendored INTEGER NOT NULL DEFAULT 0       -- v24: 1 if origin matches a vendored-path prefix at index time (#1221); search emits trust_level="vendored-code" for these
+    vendored INTEGER NOT NULL DEFAULT 0,      -- v24: 1 if origin matches a vendored-path prefix at index time (#1221); search emits trust_level="vendored-code" for these
+    needs_embedding INTEGER NOT NULL DEFAULT 0 -- v27: 1 when chunk was written without a real embedding (#1452 first-pass-skip); cleared by enrichment_pass
 );
+
+CREATE INDEX IF NOT EXISTS idx_chunks_needs_embedding
+    ON chunks(needs_embedding) WHERE needs_embedding = 1;
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_type ON chunks(source_type);

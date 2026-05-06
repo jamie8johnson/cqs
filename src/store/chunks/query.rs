@@ -44,6 +44,44 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// #1452: count of chunks awaiting a real embedding.
+    ///
+    /// Triggers `enrichment_pass` from `cmd_index` whenever `> 0` so the
+    /// first-pass-skip (`--llm-summaries` flow) doesn't leave chunks at
+    /// `needs_embedding=1` indefinitely. Backed by the partial index
+    /// `idx_chunks_needs_embedding` (v27 migration), so the lookup is
+    /// O(needs) regardless of total chunk count.
+    pub fn needs_embedding_count(&self) -> Result<u64, StoreError> {
+        let _span = tracing::debug_span!("needs_embedding_count").entered();
+        self.rt.block_on(async {
+            let row: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM chunks WHERE needs_embedding = 1")
+                    .fetch_one(&self.pool)
+                    .await?;
+            Ok(row.0 as u64)
+        })
+    }
+
+    /// #1452: chunk IDs awaiting a real embedding.
+    ///
+    /// Used by `enrichment_pass` to bypass the
+    /// "skip-chunks-with-no-enrichment-context" early-out for any chunk
+    /// that's still at `needs_embedding=1`. The base NL embedding is
+    /// equivalent to what the first-pass would have produced
+    /// (see `nl/mod.rs:104-108` — empty ctx + None summary collapses to
+    /// `generate_nl_description_with_seq_len`), so the chunk gets a
+    /// meaningful vector either way.
+    pub fn needs_embedding_ids(&self) -> Result<std::collections::HashSet<String>, StoreError> {
+        let _span = tracing::debug_span!("needs_embedding_ids").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT id FROM chunks WHERE needs_embedding = 1")
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows.into_iter().map(|(id,)| id).collect())
+        })
+    }
+
     /// Get index statistics
     /// Uses batched queries to minimize database round trips:
     /// 1. Single query for counts with GROUP BY using CTEs

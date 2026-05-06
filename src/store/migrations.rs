@@ -395,6 +395,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (23, 24, |c| Box::pin(migrate_v23_to_v24(c))),
     (24, 25, |c| Box::pin(migrate_v24_to_v25(c))),
     (25, 26, |c| Box::pin(migrate_v25_to_v26(c))),
+    (26, 27, |c| Box::pin(migrate_v26_to_v27(c))),
 ];
 
 /// Run a single migration step
@@ -973,6 +974,41 @@ async fn migrate_v25_to_v26(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v27: add `chunks.needs_embedding` flag for #1452. Pipeline can now skip
+/// the wasted first-pass embed when `--llm-summaries` is set (which guarantees
+/// `enrichment_pass` will overwrite every chunk's embedding anyway).
+/// Chunks written without a real embedding get `needs_embedding = 1` and a
+/// zero-vec sentinel in the `embedding` column; HNSW build + search paths
+/// filter `WHERE needs_embedding = 0` so those chunks are invisible until
+/// `enrichment_pass` lands their real vector and clears the flag.
+async fn migrate_v26_to_v27(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v26_to_v27").entered();
+
+    // Add the flag with a default of 0 so every existing row is treated
+    // as embedded (which they are — pre-v27 there was no skip-first-pass
+    // path). Fresh DBs use the same default via schema.sql.
+    sqlx::query("ALTER TABLE chunks ADD COLUMN needs_embedding INTEGER NOT NULL DEFAULT 0")
+        .execute(&mut *conn)
+        .await?;
+
+    // Partial index on `needs_embedding = 1` so the rare "find chunks that
+    // still need embedding" lookup in `enrichment_pass` is O(needs)
+    // instead of O(total_chunks). Most chunks are embedded most of the
+    // time, so a partial index keeps the disk footprint negligible.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_needs_embedding \
+         ON chunks(needs_embedding) WHERE needs_embedding = 1",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!(
+        "Migrated to v27: chunks.needs_embedding flag + partial index. \
+         Enables --llm-summaries first-pass-embed skip (#1452)."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,7 +1041,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 27);
     }
 
     #[test]
@@ -3519,6 +3555,138 @@ mod tests {
                 assert_eq!(rsize, *size, "source_size round-trip for {id}");
                 assert_eq!(&rhash, hash, "source_content_hash round-trip for {id}");
             }
+        });
+    }
+
+    /// v27 / #1452: `chunks.needs_embedding` column added with DEFAULT 0.
+    /// Pre-migration rows must default to 0 (preserves "all chunks are
+    /// embedded" invariant from v26 era). The partial index
+    /// `idx_chunks_needs_embedding WHERE needs_embedding=1` is created so
+    /// `needs_embedding_count` is O(needs) regardless of total rows.
+    #[test]
+    fn test_migrate_v26_to_v27_adds_needs_embedding_flag() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v26 schema — pre-needs_embedding shape.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0,
+                    parser_version INTEGER NOT NULL DEFAULT 0,
+                    vendored INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '26')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Seed a pre-migration v26 chunk.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('pre_v27', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v27', \
+                 '', '', 'h', 1, 10, X'00', '2026-05-06', '2026-05-06')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run v26 → v27 migration.
+            let pool = migrate(pool, &db_path, 26, 27).await.unwrap();
+
+            // Schema version bumped.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "27");
+
+            // Pre-migration row has needs_embedding = 0 (DEFAULT). Existing
+            // chunks were embedded under the v26 contract; the migration must
+            // not flip them to "needs embedding" or every reindex would
+            // re-enrich them and waste GPU.
+            let (pre_flag,): (i64,) =
+                sqlx::query_as("SELECT needs_embedding FROM chunks WHERE id = 'pre_v27'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                pre_flag, 0,
+                "pre-migration chunk must retain needs_embedding=0 (already embedded)"
+            );
+
+            // The partial index exists.
+            let (idx_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'index' AND name = 'idx_chunks_needs_embedding'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                idx_count, 1,
+                "v27 must create idx_chunks_needs_embedding partial index"
+            );
+
+            // Insert a fresh chunk with needs_embedding=1 and round-trip it.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at, needs_embedding) \
+                 VALUES ('post_v27_unembedded', 'file:lib.rs', 'file', 'rust', 'function', \
+                 'post_v27_unembedded', '', '', 'h2', 1, 10, X'00', '2026-05-06', '2026-05-06', 1)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (round_flag,): (i64,) = sqlx::query_as(
+                "SELECT needs_embedding FROM chunks WHERE id = 'post_v27_unembedded'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(round_flag, 1);
         });
     }
 }

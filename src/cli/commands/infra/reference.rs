@@ -239,6 +239,9 @@ fn cmd_ref_add(
         false,
         cli.quiet,
         cli.try_model_config()?.clone(),
+        // #1452: ref add does not run the LLM summary pass, so first-pass
+        // embed is the only embed — never skip it for refs.
+        false,
     )?;
 
     if !cli.quiet && !json {
@@ -594,6 +597,9 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool) -> Result<()> {
         false,
         cli.quiet,
         cli.try_model_config()?.clone(),
+        // #1452: ref update does not run the LLM summary pass, so
+        // first-pass embed is the only embed — never skip it for refs.
+        false,
     )?;
 
     if !cli.quiet && !json {

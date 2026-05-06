@@ -32,6 +32,18 @@ pub(super) struct EmbeddedBatch {
     pub relationships: RelationshipData,
     pub cached_count: usize,
     pub file_mtimes: HashMap<PathBuf, i64>,
+    /// #1452: when `true`, the chunks past index `cached_count` carry
+    /// **zero-vec sentinel embeddings** and must be written via
+    /// `upsert_chunks_unembedded_batch` so they're stamped with
+    /// `needs_embedding=1`. Cached chunks (indexes `0..cached_count`)
+    /// always carry real embeddings (from the global cache) and go
+    /// through the normal upsert path.
+    ///
+    /// Set by the embed stages when `EmbedStageContext.skip_first_pass_embed`
+    /// is `true` AND there were `to_embed` chunks (cache misses) in the
+    /// batch. When all chunks were cache hits, the embed stages already
+    /// short-circuit to a "send cached" branch with this flag `false`.
+    pub uncached_need_embedding: bool,
 }
 
 /// Stats returned from pipelined indexing
@@ -69,6 +81,13 @@ pub(super) struct EmbedStageContext {
     pub embedded_count: Arc<AtomicUsize>,
     pub model_config: ModelConfig,
     pub global_cache: Option<Arc<cqs::cache::EmbeddingCache>>,
+    /// #1452: when `true`, skip the actual `embed_documents()` call for
+    /// cache-miss chunks and emit zero-vec sentinels stamped
+    /// `needs_embedding=1` instead. The post-summary `enrichment_pass`
+    /// will overwrite every chunk's embedding anyway, so the first-pass
+    /// embed is wasted work under `--llm-summaries`. Cache hits still
+    /// pass through with their real embeddings.
+    pub skip_first_pass_embed: bool,
 }
 
 // Pipeline tuning constants

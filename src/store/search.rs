@@ -129,8 +129,17 @@ impl<Mode> Store<Mode> {
         }
 
         self.rt.block_on(async {
+            // #1452: JOIN chunks + filter `needs_embedding = 0` so
+            // FTS-only candidates that haven't been embedded yet stay
+            // out of the RRF mix. They'd otherwise rank lower than
+            // expected (zero cosine score against zero-vec sentinel)
+            // and pollute the result list during a `--llm-summaries`
+            // reindex's partial state.
             let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
+                "SELECT f.id FROM chunks_fts f \
+                 JOIN chunks c ON c.id = f.id \
+                 WHERE chunks_fts MATCH ?1 AND c.needs_embedding = 0 \
+                 ORDER BY bm25(chunks_fts) LIMIT ?2",
             )
             .bind(&normalized_query)
             .bind(limit as i64)
@@ -196,11 +205,16 @@ impl<Mode> Store<Mode> {
         // correct `trust_level` for chunks under `node_modules/`/`vendor/`.
         // Without that column the `ChunkRow::from_row` `try_get` falls back
         // to false and every vendored chunk masquerades as user-code.
+        // #1452: filter `c.needs_embedding = 0` so chunks in the partial
+        // state of a `--llm-summaries` reindex (parser stage written, not
+        // yet enriched) are invisible from name-search until enrichment
+        // lands their real embedding. Same visibility gate as HNSW build.
         let sql = format!(
             "SELECT {cols}
              FROM chunks c
              JOIN chunks_fts f ON c.id = f.id
              WHERE chunks_fts MATCH ?1
+               AND c.needs_embedding = 0
              ORDER BY {ord}
              LIMIT ?2",
             cols = super::helpers::CHUNK_ROW_SELECT_COLUMNS_PREFIXED,

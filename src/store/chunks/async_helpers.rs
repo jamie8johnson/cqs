@@ -321,19 +321,21 @@ pub(super) async fn batch_insert_chunks(
     vendored_per_chunk: &[bool],
     source_mtime: Option<i64>,
     now: &str,
+    needs_embedding: bool,
 ) -> Result<(), StoreError> {
     use crate::store::helpers::sql::max_rows_per_statement;
-    // 22 binds per row (v24 / #1221: vendored added after parser_version).
-    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(22);
+    // 23 binds per row (v27 / #1452: needs_embedding added after vendored).
+    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(23);
     debug_assert_eq!(
         chunks.len(),
         vendored_per_chunk.len(),
         "vendored_per_chunk must align 1:1 with chunks"
     );
+    let needs_embedding_i64: i64 = if needs_embedding { 1 } else { 0 };
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored)",
+            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored, needs_embedding)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -369,7 +371,12 @@ pub(super) async fn batch_insert_chunks(
                     1_i64
                 } else {
                     0_i64
-                });
+                })
+                // v27 / #1452: 1 when this chunk was written without a real
+                // embedding (skip-first-pass for `--llm-summaries`); 0 when
+                // the embedding bytes are real. Cleared by `enrichment_pass`
+                // via `update_embeddings_with_hashes_batch`.
+                .push_bind(needs_embedding_i64);
         });
         // DS-2: ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
         //
@@ -407,6 +414,7 @@ pub(super) async fn batch_insert_chunks(
              parent_type_name=excluded.parent_type_name, \
              parser_version=excluded.parser_version, \
              vendored=excluded.vendored, \
+             needs_embedding=excluded.needs_embedding, \
              umap_x=CASE WHEN chunks.content_hash != excluded.content_hash \
                          THEN NULL ELSE chunks.umap_x END, \
              umap_y=CASE WHEN chunks.content_hash != excluded.content_hash \
@@ -628,8 +636,14 @@ impl<'a, Mode> Iterator for EmbeddingHashBatchIterator<'a, Mode> {
             }
 
             let result = self.store.rt.block_on(async {
+                // #1452: filter `needs_embedding = 0` so HNSW build skips
+                // chunks that were written by the parser stage during a
+                // first-pass-skip reindex but haven't yet been re-embedded
+                // by `enrichment_pass`. Their `embedding` column carries a
+                // zero-vec sentinel that would corrupt the index.
                 let sql = "SELECT rowid, id, embedding, content_hash FROM chunks \
                            WHERE rowid > ?1 AND embedding IS NOT NULL \
+                             AND needs_embedding = 0 \
                            ORDER BY rowid ASC LIMIT ?2";
                 let rows: Vec<_> = sqlx::query(sql)
                     .bind(self.last_rowid)

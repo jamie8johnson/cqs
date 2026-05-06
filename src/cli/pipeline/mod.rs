@@ -40,6 +40,15 @@ use upsert::store_stage;
 /// 1. Parser: Parse files in parallel batches
 /// 2. Embedder: Embed chunks (GPU with CPU fallback)
 /// 3. Writer: Write to SQLite
+///
+/// `skip_first_pass_embed` (#1452): when `true`, the embedder stages
+/// emit zero-vec sentinels stamped `needs_embedding=1` for cache-miss
+/// chunks instead of running real inference. The post-summary
+/// `enrichment_pass` lands their real embeddings, halving the GPU time
+/// on `--llm-summaries` reindexes (which already overwrite every
+/// chunk's embedding via enrichment). Cache hits still pass through
+/// with their real embeddings. HNSW build + search filter
+/// `WHERE needs_embedding = 0` so partial-state chunks are invisible.
 pub(crate) fn run_index_pipeline(
     root: &Path,
     files: Vec<PathBuf>,
@@ -47,6 +56,7 @@ pub(crate) fn run_index_pipeline(
     force: bool,
     quiet: bool,
     model_config: ModelConfig,
+    skip_first_pass_embed: bool,
 ) -> Result<PipelineStats> {
     let _span = tracing::info_span!("run_index_pipeline", file_count = files.len()).entered();
     let total_files = files.len();
@@ -138,6 +148,7 @@ pub(crate) fn run_index_pipeline(
             embedded_count: Arc::clone(&embedded_count),
             model_config: model_config.clone(),
             global_cache: global_cache.clone(),
+            skip_first_pass_embed,
         };
         let gpu_failures = Arc::clone(&gpu_failures);
         thread::spawn(move || gpu_embed_stage(parse_rx, embed_tx, fail_tx, ctx, gpu_failures))
@@ -150,6 +161,7 @@ pub(crate) fn run_index_pipeline(
             embedded_count: Arc::clone(&embedded_count),
             model_config,
             global_cache: global_cache.clone(),
+            skip_first_pass_embed,
         };
         thread::spawn(move || cpu_embed_stage(parse_rx_cpu, fail_rx, embed_tx_cpu, ctx))
     };

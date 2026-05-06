@@ -443,6 +443,24 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         .set_hnsw_dirty(HnswKind::Base, true)
         .context("Failed to mark base HNSW dirty before indexing")?;
 
+    // #1452: skip the first-pass embed when `--llm-summaries` is set.
+    // The post-summary `enrichment_pass` will overwrite every chunk's
+    // embedding anyway (NL = `summary + caller/callee names + content`),
+    // so the first embed is wasted work — ~30 min of GPU time on a
+    // 12k-chunk Qwen3-4B reindex. Chunks land with a zero-vec sentinel +
+    // `needs_embedding=1`; HNSW build and search hide them until
+    // enrichment lands the real vector. If enrichment fails or is
+    // interrupted, the next `cqs index` invocation observes the
+    // `needs_embedding=1` rows and re-runs enrichment to clear them.
+    //
+    // The LLM summary pass is best-effort independent of this — its
+    // failure doesn't block enrichment_pass's local embed work, just
+    // means chunks get the base NL (no summary boost) for that run.
+    #[cfg(feature = "llm-summaries")]
+    let skip_first_pass_embed = llm_summaries;
+    #[cfg(not(feature = "llm-summaries"))]
+    let skip_first_pass_embed = false;
+
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)
     let stats = run_index_pipeline(
@@ -452,6 +470,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         force,
         cli.quiet,
         cli.try_model_config()?.clone(),
+        skip_first_pass_embed,
     )?;
     let total_embedded = stats.total_embedded;
     let total_cached = stats.total_cached;
@@ -633,12 +652,32 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         tracing::warn!(error = %e, "cmd_index: final flush of summary queue failed; rows retained for next run");
     }
 
-    // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee context
-    if !check_interrupted() && stats.total_calls > 0 {
+    // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee
+    // context. #1452: also fires whenever any chunk is at `needs_embedding=1`
+    // — the parser stage marks chunks unembedded when a `--llm-summaries`
+    // run skipped the first-pass embed, and `enrichment_pass` is the gate
+    // that clears those flags. Without this trigger extension, a project
+    // with no calls would leave first-pass-skipped chunks invisible
+    // forever.
+    let needs_embed_count = match store.needs_embedding_count() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to count needs_embedding chunks; assuming zero");
+            0
+        }
+    };
+    if !check_interrupted() && (stats.total_calls > 0 || needs_embed_count > 0) {
         use crate::cli::enrichment_pass;
 
         if !cli.quiet {
-            println!("Enriching embeddings with call graph context...");
+            if needs_embed_count > 0 {
+                println!(
+                    "Enriching embeddings with call graph context ({} chunks awaiting first embedding)...",
+                    needs_embed_count
+                );
+            } else {
+                println!("Enriching embeddings with call graph context...");
+            }
         }
         let model_config = cli.try_model_config()?.clone();
         let embedder = Embedder::new(model_config.clone())
