@@ -1284,4 +1284,107 @@ mod tests {
             );
         }
     }
+
+    /// #1495 follow-up: regression guard pinning the **set** of
+    /// top-level CLI subcommands. With per-variant `#[cqs_cmd(...)]`
+    /// attributes driving dispatch (#1366), accidentally renaming or
+    /// dropping a `Commands` variant compiles cleanly because kebab-
+    /// case auto-derives. Without this guard, the help text could
+    /// silently drift out from under agents that have command-name
+    /// muscle memory baked into prompts.
+    ///
+    /// Adding a variant means appending to `EXPECTED_SUBCOMMANDS`
+    /// below — the intentional friction. Description / arg-flag
+    /// churn doesn't invalidate the snapshot because we compare
+    /// names only, not full help text.
+    #[test]
+    fn cli_subcommand_set_unchanged() {
+        use clap::CommandFactory;
+
+        // Sorted, kebab-case. Cfg-gated commands (`serve`, `convert`)
+        // are listed because the default-feature build (which CI
+        // uses) enables them.
+        const EXPECTED_SUBCOMMANDS: &[&str] = &[
+            "affected",
+            "audit-mode",
+            "batch",
+            "blame",
+            "brief",
+            "cache",
+            "callees",
+            "callers",
+            "chat",
+            "ci",
+            "completions",
+            "context",
+            "convert",
+            "dead",
+            "deps",
+            "diff",
+            "doctor",
+            "drift",
+            "eval",
+            "explain",
+            "export-model",
+            "gather",
+            "gc",
+            "health",
+            "hook",
+            "impact",
+            "impact-diff",
+            "index",
+            "init",
+            "model",
+            "neighbors",
+            "notes",
+            "onboard",
+            "ping",
+            "plan",
+            "project",
+            "read",
+            "reconstruct",
+            "ref",
+            "refresh",
+            "related",
+            "review",
+            "scout",
+            "serve",
+            "similar",
+            "slot",
+            "stale",
+            "stats",
+            "status",
+            "suggest",
+            "task",
+            "telemetry",
+            "test-map",
+            "trace",
+            "train-data",
+            "train-pairs",
+            "watch",
+            "where",
+        ];
+
+        let cmd = Cli::command();
+        let mut actual: Vec<String> = cmd
+            .get_subcommands()
+            .map(|sc| sc.get_name().to_string())
+            .collect();
+        actual.sort();
+        let expected: Vec<String> = EXPECTED_SUBCOMMANDS.iter().map(|s| s.to_string()).collect();
+
+        if actual != expected {
+            let only_in_actual: Vec<&String> =
+                actual.iter().filter(|n| !expected.contains(n)).collect();
+            let only_in_expected: Vec<&String> =
+                expected.iter().filter(|n| !actual.contains(n)).collect();
+            panic!(
+                "CLI subcommand set drifted from EXPECTED_SUBCOMMANDS in \
+                 src/cli/definitions.rs::tests. Update the array. \
+                 Added (in CLI, not in test): {only_in_actual:?}; \
+                 removed (in test, not in CLI): {only_in_expected:?}. \
+                 Full actual list: {actual:?}"
+            );
+        }
+    }
 }
