@@ -453,6 +453,71 @@ mod tests {
         }
     }
 
+    /// #1459 item 3: `cqs ref reindex` (visible_alias of update) accepts the
+    /// LLM/HyDE flag set at parity with `cqs index`. The `--apply` flag is
+    /// intentionally NOT exposed for refs and should fail to parse.
+    #[cfg(feature = "llm-summaries")]
+    #[test]
+    fn test_cmd_ref_reindex_llm_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "ref",
+            "reindex",
+            "tokio",
+            "--llm-summaries",
+            "--improve-docs",
+            "--max-docs",
+            "100",
+            "--hyde-queries",
+            "--max-hyde",
+            "50",
+        ])
+        .expect("ref reindex must accept LLM/HyDE flag set at parity with cqs index");
+        match cli.command {
+            Some(Commands::Ref { ref subcmd }) => match subcmd {
+                commands::RefCommand::Update {
+                    name,
+                    llm_summaries,
+                    improve_docs,
+                    max_docs,
+                    hyde_queries,
+                    max_hyde,
+                    ..
+                } => {
+                    assert_eq!(name, "tokio");
+                    assert!(llm_summaries);
+                    assert!(improve_docs);
+                    assert_eq!(*max_docs, Some(100));
+                    assert!(hyde_queries);
+                    assert_eq!(*max_hyde, Some(50));
+                }
+                _ => panic!("Expected Update subcommand"),
+            },
+            _ => panic!("Expected Ref command"),
+        }
+    }
+
+    /// `--apply` is the in-place rewrite mode on `cqs index`. Refs typically
+    /// point at vendored/external code that must not be silently rewritten,
+    /// so `--apply` is not wired through to `cqs ref reindex`.
+    #[cfg(feature = "llm-summaries")]
+    #[test]
+    fn test_cmd_ref_reindex_apply_flag_rejected() {
+        let result = Cli::try_parse_from([
+            "cqs",
+            "ref",
+            "reindex",
+            "tokio",
+            "--llm-summaries",
+            "--improve-docs",
+            "--apply",
+        ]);
+        assert!(
+            result.is_err(),
+            "--apply must be rejected for `cqs ref reindex` to keep external source files safe"
+        );
+    }
+
     // ===== --ref flag tests =====
 
     #[test]
