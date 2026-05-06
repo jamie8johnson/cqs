@@ -497,24 +497,20 @@ pub fn unix_secs_i64() -> Option<i64> {
 /// detection (`TEST_NAME_PATTERNS`, `TEST_CONTENT_MARKERS`, `TEST_PATH_PATTERNS`)
 /// that also checks content markers like `#[test]` and `@Test`.
 pub fn is_test_chunk(name: &str, file: &str) -> bool {
-    // Name-based patterns (language-agnostic).
+    // Name-based patterns from the language registry (EXT-V1.36-3 / #1460).
     //
-    // v1.22.0 audit AC-4: previously `name.starts_with("Test")` demoted
-    // production types like TestRegistry, TestHarness, TestContext by 30%.
-    // Tightened to require `Test` followed by underscore or end-of-name
-    // (catches `test_foo`, `Test_bar`, but not `TestHarness`). The xUnit
-    // `TestFoo` naming convention would still be caught but Go's and
-    // Rust's `test_` prefix is the dominant pattern in practice.
-    let name_match = name.starts_with("test_")
-        || name.starts_with("Test_")
-        || name == "Test"
-        || name.starts_with("spec_")
-        || name.ends_with("_test")
-        || name.ends_with("_spec")
-        || name.contains("_test_")
-        || name.contains(".test");
-    if name_match {
-        return true;
+    // Single source of truth for both this matcher and
+    // `store::calls::TEST_NAME_PATTERNS`. The default set encodes the v1.22.0
+    // AC-4 tightening: `Test\_%` matches `Test_bar` but NOT `TestRegistry`
+    // (which the loose `Test%` was incorrectly demoting by 30%). Languages
+    // with their own conventions (Kotlin/Swift `should_*`, JUnit5
+    // `@DisplayName`, BDD `_when_should_*`) extend the set via
+    // `LanguageDef::test_name_patterns`. SQL LIKE syntax with `\_` for
+    // literal underscore — `sql_like_matches` already supports the escape.
+    for pattern in language::REGISTRY.all_test_name_patterns() {
+        if sql_like_matches(name, pattern) {
+            return true;
+        }
     }
     // Path-based patterns from the language registry (all 54 languages).
     // Patterns use SQL LIKE syntax: `%` = any chars, `\_` = literal underscore.

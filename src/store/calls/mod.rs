@@ -121,10 +121,6 @@ pub struct FunctionCallStats {
 static TRAIT_IMPL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"impl\s+\w+\s+for\s+").expect("hardcoded regex"));
 
-/// Test function/method name patterns (SQL LIKE syntax).
-/// Matches naming conventions: `test_*` (Rust/Python), `Test*` (Go).
-const TEST_NAME_PATTERNS: &[&str] = &["test_%", "Test%"];
-
 /// Fallback test content markers — used when language definitions don't provide any.
 /// These are superseded by `LanguageDef::test_markers` via `build_test_content_markers()`.
 const FALLBACK_TEST_CONTENT_MARKERS: &[&str] = &["#[test]", "@Test"];
@@ -182,10 +178,22 @@ fn build_trait_method_names() -> Vec<&'static str> {
 /// Build the shared SQL WHERE filter clause for test chunks.
 /// Combines name patterns, content markers, and path patterns into a single
 /// OR-joined clause string. Computed once at startup via LazyLock callers.
+///
+/// EXT-V1.36-3 (#1460): name patterns now flow from
+/// `language::REGISTRY.all_test_name_patterns()` — same source as
+/// `is_test_chunk` in lib.rs, so adding a Kotlin/Swift convention is
+/// one line in the language module instead of two coordinated edits.
 fn build_test_chunk_filter() -> String {
     let mut clauses: Vec<String> = Vec::new();
-    for pat in TEST_NAME_PATTERNS {
-        clauses.push(format!("name LIKE '{pat}'"));
+    for pat in crate::language::REGISTRY.all_test_name_patterns() {
+        // Patterns are SQL-LIKE with `\_` escaping a literal underscore;
+        // emit ESCAPE only for those that actually use the escape so SQL
+        // parses cleanly when the pattern is wildcard-only (e.g. `Test`).
+        if pat.contains("\\_") {
+            clauses.push(format!("name LIKE '{pat}' ESCAPE '\\'"));
+        } else {
+            clauses.push(format!("name LIKE '{pat}'"));
+        }
     }
     for marker in build_test_content_markers() {
         clauses.push(format!("content LIKE '%{marker}%'"));

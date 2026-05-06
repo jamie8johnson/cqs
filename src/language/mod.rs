@@ -339,6 +339,14 @@ pub struct LanguageDef {
     /// Test path patterns — file path suffixes/directories (SQL LIKE syntax).
     /// E.g., `&["%_test.rs", "%/tests/%"]`. Empty = use global defaults.
     pub test_path_patterns: &'static [&'static str],
+    /// Test function/method name patterns — SQL LIKE syntax with `\_` for
+    /// literal underscore. EXT-V1.36-3 (#1460): single source of truth for
+    /// `is_test_chunk` (lib.rs) and `TEST_NAME_PATTERNS` (store/calls/mod.rs).
+    /// Empty = use the global default set built from `is_test_chunk`'s
+    /// post-AC-4 patterns. Languages with their own conventions (Kotlin/Swift,
+    /// JUnit5 `@DisplayName`, Go's loose `Test%`, BDD `_when_should_*`) add
+    /// rows here so adding a new convention is one line in the language module.
+    pub test_name_patterns: &'static [&'static str],
     /// Language-specific structural pattern matchers.
     /// Keyed by pattern name (e.g., "error_swallow", "async", "mutex", "unsafe").
     /// When present, `Pattern::matches` uses these instead of generic heuristics.
@@ -974,6 +982,57 @@ impl LanguageRegistry {
                 if seen.insert(*pat) {
                     patterns.push(*pat);
                 }
+            }
+        }
+        patterns
+    }
+
+    /// Collect all unique test name patterns from all enabled languages,
+    /// always including the post-AC-4 cross-language defaults.
+    ///
+    /// EXT-V1.36-3 (#1460): single source of truth for `is_test_chunk`
+    /// (lib.rs) and `TEST_NAME_PATTERNS` (store/calls/mod.rs).
+    ///
+    /// Patterns use SQL LIKE syntax with `\_` escaping a literal
+    /// underscore. The cross-language defaults below mirror the
+    /// `is_test_chunk` Rust matcher byte-for-byte:
+    ///   - `test\_%`     starts with literal `test_`
+    ///   - `Test\_%`     starts with literal `Test_` (NOT `TestSuite`)
+    ///   - `Test`        bare exact name
+    ///   - `spec\_%`     starts with literal `spec_`
+    ///   - `%\_test`     ends with literal `_test`
+    ///   - `%\_spec`     ends with literal `_spec`
+    ///   - `%\_test\_%`  contains literal `_test_`
+    ///   - `%.test%`     contains literal `.test`
+    ///
+    /// Languages may declare additional patterns via
+    /// `LanguageDef::test_name_patterns` (e.g. Kotlin/Swift `should_*`,
+    /// JUnit5 `@DisplayName`, BDD `_when_should_*`). The fallback set
+    /// is always present so a new language without overrides still
+    /// matches the standard conventions.
+    pub fn all_test_name_patterns(&self) -> Vec<&'static str> {
+        const FALLBACK: &[&str] = &[
+            "test\\_%",
+            "Test\\_%",
+            "Test",
+            "spec\\_%",
+            "%\\_test",
+            "%\\_spec",
+            "%\\_test\\_%",
+            "%.test%",
+        ];
+        let mut patterns: Vec<&'static str> = Vec::new();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for def in self.all() {
+            for pat in def.test_name_patterns {
+                if seen.insert(*pat) {
+                    patterns.push(*pat);
+                }
+            }
+        }
+        for pat in FALLBACK {
+            if seen.insert(*pat) {
+                patterns.push(*pat);
             }
         }
         patterns
