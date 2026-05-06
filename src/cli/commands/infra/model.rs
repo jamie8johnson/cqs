@@ -380,10 +380,25 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
 
     // 2. Read current model. Used both for the no-op short-circuit and the
     //    backup-directory name.
+    //
+    // P1-18 (#1456 follow-up): use the strict variant so a corrupted-metadata
+    // read isn't conflated with "fresh DB". A lossy `None` here would make
+    // `already_on_target` false and we'd proceed with the destructive
+    // backup+rebuild against an unreadable but possibly recoverable index.
     let current_model = {
         let store = Store::open_readonly(&index_path)
             .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
-        store.stored_model_name().unwrap_or_default()
+        store
+            .try_stored_model_name()
+            .with_context(|| {
+                format!(
+                    "Failed to read model_name from {} metadata — refusing to swap; \
+                     re-run `cqs index --force --model {preset}` if the index is \
+                     known-bad",
+                    index_path.display()
+                )
+            })?
+            .unwrap_or_default()
     };
 
     let already_on_target = !current_model.is_empty()
