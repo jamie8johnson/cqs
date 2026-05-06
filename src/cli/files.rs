@@ -55,6 +55,41 @@ pub(crate) fn enumerate_files(
     cqs::enumerate_files(root, &exts, no_ignore)
 }
 
+/// P4-10 (#1463): decode tasklist stdout, handling both UTF-8 (the common case)
+/// and UTF-16 LE/BE with a BOM (some locales / configurations). Falls back to
+/// UTF-8 lossy when no BOM is detected.
+///
+/// Gated `cfg(any(windows, test))` so the unit tests run on every platform —
+/// the function itself is byte-level and platform-agnostic — without producing
+/// a dead-code warning on the unix `cargo build` path that never calls it.
+#[cfg(any(windows, test))]
+fn decode_tasklist_stdout(bytes: &[u8]) -> String {
+    // UTF-16 LE BOM: 0xFF 0xFE
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    // UTF-16 BE BOM: 0xFE 0xFF
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    // UTF-8 BOM: 0xEF 0xBB 0xBF — strip and treat as UTF-8.
+    let utf8_payload =
+        if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+            &bytes[3..]
+        } else {
+            bytes
+        };
+    String::from_utf8_lossy(utf8_payload).into_owned()
+}
+
 /// Check if a process with the given PID exists
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
@@ -105,7 +140,14 @@ fn process_exists(pid: u32) -> bool {
         .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
         .output()
         .map(|o| {
-            let output = String::from_utf8_lossy(&o.stdout);
+            // P4-10 (#1463): tasklist on some locales / Windows configurations
+            // emits stdout with a UTF-16 LE BOM (`\xff\xfe`) and 16-bit encoded
+            // text. `String::from_utf8_lossy` then yields a string of
+            // replacement characters and the substring match below silently
+            // misses every PID, classifying live holders as stale. Detect the
+            // BOM and decode via `String::from_utf16_lossy` so the CSV-parse
+            // path works regardless of which encoding tasklist picked.
+            let output = decode_tasklist_stdout(&o.stdout);
             output.trim().contains(&format!(",\"{}\",", pid))
         })
         .unwrap_or(false)
@@ -374,5 +416,85 @@ mod tests {
         assert!(!csv_contains_pid(german, 1234));
         let french = "INFORMATIONS: Aucune tâche en cours d'exécution ne correspond aux critères spécifiés.\n";
         assert!(!csv_contains_pid(french, 1234));
+    }
+
+    // ====== P4-10 (#1463) — `tasklist` UTF-16 BOM handling ======
+
+    /// UTF-8 stdout (the historic common case) decodes unchanged.
+    #[test]
+    fn decode_tasklist_stdout_utf8_passthrough() {
+        let utf8 = b"\"cqs.exe\",\"1234\",\"Console\",\"1\",\"12,345 K\"\n";
+        let decoded = decode_tasklist_stdout(utf8);
+        assert!(decoded.contains(",\"1234\","));
+    }
+
+    /// UTF-16 LE BOM-prefixed stdout — pre-fix, `from_utf8_lossy` returned
+    /// replacement chars and the PID match silently missed. Post-fix, the
+    /// CSV is decoded correctly and the PID column appears intact.
+    #[test]
+    fn decode_tasklist_stdout_utf16_le_bom() {
+        // Build "1234" UTF-16 LE with BOM so we can match the PID column
+        // substring after decoding. Format we're emulating is:
+        //   ,"1234",
+        let payload = ",\"1234\",";
+        let mut bytes: Vec<u8> = vec![0xFF, 0xFE]; // UTF-16 LE BOM
+        for c in payload.encode_utf16() {
+            bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        let decoded = decode_tasklist_stdout(&bytes);
+        assert_eq!(decoded, payload);
+    }
+
+    /// UTF-16 BE BOM is rare for tasklist but should also decode cleanly —
+    /// the safer default keeps us from regressing if someone runs cqs under
+    /// a wrapper (or through `iconv`/`PowerShell` redirection) that flips
+    /// the byte order.
+    #[test]
+    fn decode_tasklist_stdout_utf16_be_bom() {
+        let payload = ",\"5678\",";
+        let mut bytes: Vec<u8> = vec![0xFE, 0xFF]; // UTF-16 BE BOM
+        for c in payload.encode_utf16() {
+            bytes.extend_from_slice(&c.to_be_bytes());
+        }
+        let decoded = decode_tasklist_stdout(&bytes);
+        assert_eq!(decoded, payload);
+    }
+
+    /// UTF-8 BOM is stripped so the substring match isn't thrown off by
+    /// stray `\u{FEFF}` characters at the start of the decoded string.
+    #[test]
+    fn decode_tasklist_stdout_strips_utf8_bom() {
+        let mut bytes: Vec<u8> = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"\"cqs.exe\",\"99\",\"Console\",\"1\",\"5 K\"\n");
+        let decoded = decode_tasklist_stdout(&bytes);
+        assert!(decoded.starts_with('"'));
+        assert!(decoded.contains(",\"99\","));
+    }
+
+    /// End-to-end: UTF-16 LE-decoded tasklist output passes through the
+    /// same CSV parser the production caller uses.
+    #[test]
+    fn decode_then_csv_parse_matches_pid_in_utf16_stdout() {
+        let row = "\"cqs.exe\",\"1234\",\"Console\",\"1\",\"12,345 K\"\n";
+        let mut bytes: Vec<u8> = vec![0xFF, 0xFE];
+        for c in row.encode_utf16() {
+            bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        let decoded = decode_tasklist_stdout(&bytes);
+        assert!(
+            csv_contains_pid(&decoded, 1234),
+            "UTF-16 LE decoded output must match PID 1234 in the CSV column"
+        );
+        assert!(
+            !csv_contains_pid(&decoded, 12),
+            "UTF-16 LE decoded output must still defeat substring collisions"
+        );
+    }
+
+    /// Empty / too-short inputs don't panic on the BOM probe.
+    #[test]
+    fn decode_tasklist_stdout_handles_empty_and_short_inputs() {
+        assert_eq!(decode_tasklist_stdout(b""), "");
+        assert_eq!(decode_tasklist_stdout(b"\xFF"), "\u{FFFD}");
     }
 }
