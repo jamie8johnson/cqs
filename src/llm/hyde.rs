@@ -29,11 +29,11 @@ pub fn hyde_query_pass(
 
     let hyde_max_tokens = llm_config.hyde_max_tokens;
     let model_name = llm_config.model.clone();
-    let mut client = super::create_client(llm_config)?;
-
-    // LocalProvider: stream per-item persist so Ctrl-C mid-batch doesn't
-    // lose completed work. The Anthropic path's default no-op ignores this.
-    client.set_on_item_complete(store.stream_summary_writer(model_name, "hyde".to_string()));
+    // LocalProvider: register per-item streaming-persist callback at
+    // construction so a Ctrl-C mid-batch doesn't lose completed work.
+    // Anthropic's fetch-at-end semantics ignore the callback.
+    let on_item = Some(store.stream_summary_writer(model_name, "hyde".to_string()));
+    let client = super::create_client(llm_config, on_item)?;
 
     let max_batch_size = crate::limits::llm_max_batch_size();
     let effective_batch_size = if max_hyde > 0 {

@@ -26,14 +26,13 @@
 //!
 //! ## Streaming persist
 //!
-//! The optional callback supplied via [`set_on_item_complete`] fires once per
+//! The optional callback supplied via [`LocalProvider::with_on_item_complete`]
+//! (or via the `on_item` arg to [`crate::llm::create_client`]) fires once per
 //! successful item, in arbitrary worker order. The outer loop (e.g.
 //! `llm_summary_pass`) uses this to `INSERT OR IGNORE` each completed summary
 //! into SQLite as soon as it lands, so a Ctrl-C at 50% doesn't lose the first
 //! 50%. The final `fetch_batch_results` pass writes the same rows again; the
 //! primary-key conflict makes the double-write a no-op.
-//!
-//! [`set_on_item_complete`]: super::provider::BatchProvider::set_on_item_complete
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -50,7 +49,7 @@ use super::{local_concurrency, local_timeout, LlmClient, LlmConfig, LlmError};
 const RETRY_BACKOFFS_MS: &[u64] = &[500, 1000, 2000, 4000];
 const MAX_ATTEMPTS: usize = 4;
 
-/// Callback signature: `(custom_id, text)`. See [`BatchProvider::set_on_item_complete`].
+/// Callback signature: `(custom_id, text)`. See [`crate::llm::provider::OnItemCallback`].
 type OnItemCb = Box<dyn Fn(&str, &str) + Send + Sync>;
 
 /// OpenAI-compat `/v1/chat/completions` provider.
@@ -894,13 +893,20 @@ impl BatchProvider for LocalProvider {
     fn model_name(&self) -> &str {
         &self.model
     }
+}
 
-    fn set_on_item_complete(&mut self, cb: Box<dyn Fn(&str, &str) + Send + Sync>) {
-        // EH-V1.33-2 / RB-V1.33-10: tolerate a poisoned mutex (a sibling
-        // worker may have panicked while sharing other LocalProvider mutexes).
-        // Match the rest of this file's `lock().unwrap_or_else(|p| p.into_inner())`
-        // recovery pattern from P1.9 / P2.35 instead of panicking the caller.
+impl LocalProvider {
+    /// Register a per-item streaming-persist callback at construction.
+    ///
+    /// API-V1.36-7 / #1459 sub-7: replaces the prior `&mut self`
+    /// `set_on_item_complete` trait method. Consuming-builder shape
+    /// keeps the trait `&self`-only and avoids the Mutex-everywhere
+    /// caller cost. Internally still uses interior mutability so the
+    /// callback can be invoked concurrently from worker threads.
+    pub fn with_on_item_complete(self, cb: super::provider::OnItemCallback) -> Self {
+        // EH-V1.33-2 / RB-V1.33-10: tolerate a poisoned mutex.
         *self.on_item.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);
+        self
     }
 }
 
@@ -954,14 +960,15 @@ mod tests {
         });
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
-        let mut provider = LocalProvider::new(config).unwrap();
 
         // Verify the callback fires 3× and matches submission count.
         let count = Arc::new(AtomicUsize::new(0));
         let count_cb = Arc::clone(&count);
-        provider.set_on_item_complete(Box::new(move |_, _| {
-            count_cb.fetch_add(1, Ordering::SeqCst);
-        }));
+        let provider = LocalProvider::new(config)
+            .unwrap()
+            .with_on_item_complete(Box::new(move |_, _| {
+                count_cb.fetch_add(1, Ordering::SeqCst);
+            }));
 
         let items = make_items(3);
         let batch_id = provider
@@ -1000,13 +1007,14 @@ mod tests {
         });
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
-        let mut provider = LocalProvider::new(config).unwrap();
 
         let count = Arc::new(AtomicUsize::new(0));
         let count_cb = Arc::clone(&count);
-        provider.set_on_item_complete(Box::new(move |_, _| {
-            count_cb.fetch_add(1, Ordering::SeqCst);
-        }));
+        let provider = LocalProvider::new(config)
+            .unwrap()
+            .with_on_item_complete(Box::new(move |_, _| {
+                count_cb.fetch_add(1, Ordering::SeqCst);
+            }));
 
         let items = make_items(3);
         let batch_id = provider
@@ -1596,17 +1604,18 @@ mod tests {
         });
 
         let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
-        let mut provider = LocalProvider::new(config).unwrap();
 
         let cb_fires = Arc::new(AtomicUsize::new(0));
         let cb_fires_cb = Arc::clone(&cb_fires);
-        provider.set_on_item_complete(Box::new(move |cid, _| {
-            cb_fires_cb.fetch_add(1, Ordering::SeqCst);
-            // Panic on every 2nd item
-            if cid.ends_with("_1") {
-                panic!("intentional panic for test");
-            }
-        }));
+        let provider = LocalProvider::new(config)
+            .unwrap()
+            .with_on_item_complete(Box::new(move |cid, _| {
+                cb_fires_cb.fetch_add(1, Ordering::SeqCst);
+                // Panic on every 2nd item
+                if cid.ends_with("_1") {
+                    panic!("intentional panic for test");
+                }
+            }));
 
         let items = make_items(4);
         let batch_id = provider

@@ -458,6 +458,7 @@ macro_rules! for_each_command {
                         &$ctx,
                         &args.query,
                         args.depth,
+                        args.direction,
                         args.limit_arg.limit,
                         $cli.json || output.json,
                         args.tokens,
