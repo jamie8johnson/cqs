@@ -6,7 +6,7 @@
 mod eval_common;
 
 use cqs::embedder::{Embedder, Embedding, ModelConfig};
-use cqs::generate_nl_description;
+use cqs::generate_nl_description_with_seq_len;
 use cqs::parser::{Chunk, ChunkType, Language};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use eval_common::{fixture_path, EVAL_CASES};
@@ -54,7 +54,11 @@ fn test_recall_at_5() {
 
         for chunk in &chunks {
             // Generate embedding using NL pipeline (same as production)
-            let text = generate_nl_description(chunk);
+            // CQ-V1.36-3 (#1462): legacy 1-arg `generate_nl_description` is
+            // crate-internal; pass the model's max_seq_length explicitly.
+            // 512 matches the BGE-large default; eval correctness is not
+            // affected by the choice (chunks are short fixtures).
+            let text = generate_nl_description_with_seq_len(chunk, 512);
             let embeddings = embedder
                 .embed_documents(&[&text])
                 .expect("Failed to embed chunk");

@@ -142,11 +142,13 @@ pub fn generate_nl_with_call_context_and_summary(
 /// Generate natural language description from chunk metadata.
 ///
 /// Produces text like: "parse config. Takes path parameter. Returns config. Keywords: path, config."
+/// Caller passes the active model's `max_seq_length`; section chunks scale
+/// their content budget with that.
 ///
 /// # Example
 ///
 /// ```
-/// use cqs::generate_nl_description;
+/// use cqs::generate_nl_description_with_seq_len;
 /// use cqs::parser::{Chunk, ChunkType, Language};
 /// use std::path::PathBuf;
 ///
@@ -168,18 +170,17 @@ pub fn generate_nl_with_call_context_and_summary(
 ///     parser_version: 0,
 /// };
 ///
-/// let nl = generate_nl_description(&chunk);
+/// let nl = generate_nl_description_with_seq_len(&chunk, 512);
 /// assert!(nl.contains("parse config"));
 /// assert!(nl.contains("Parse configuration"));
 /// ```
-pub fn generate_nl_description(chunk: &Chunk) -> String {
-    generate_nl_with_template(chunk, NlTemplate::Compact)
-}
-
-/// P2.38: same as [`generate_nl_description`] but takes the active model's
-/// `max_seq_length` so the section-chunk content budget scales with model
-/// capacity. New embedding-pipeline callers should prefer this over the
-/// env-only path.
+///
+/// CQ-V1.36-3/5 (#1462): the legacy 1-arg `generate_nl_description` and
+/// `generate_nl_with_template` that read `CQS_MAX_SEQ_LENGTH` env at the
+/// call site are gone — they were a configurable-models trap that masked
+/// the bug CQ-V1.36-1 closed at the embedding sites. Callers must pass
+/// the active model's `max_seq_length` explicitly so a future caller
+/// can't accidentally re-introduce the drift.
 pub fn generate_nl_description_with_seq_len(chunk: &Chunk, model_max_seq_len: usize) -> String {
     generate_nl_with_template_and_seq_len(chunk, NlTemplate::Compact, model_max_seq_len)
 }
@@ -198,16 +199,6 @@ fn is_enrichment_skipped(layer: &str) -> bool {
             .collect()
     });
     skipped.iter().any(|s| s == layer)
-}
-
-/// P2.38: legacy 1-arg API kept for compatibility — defers to the
-/// `_with_seq_len` variant using the env override (or 512 default).
-pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
-    let model_max_seq = std::env::var("CQS_MAX_SEQ_LENGTH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(512);
-    generate_nl_with_template_and_seq_len(chunk, template, model_max_seq)
 }
 
 /// P2.38: new entry point that takes the active model's `max_seq_length`
@@ -616,7 +607,7 @@ mod tests {
             parser_version: 0,
         };
 
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(nl.contains("Load config from path"));
         assert!(nl.contains("parse config"));
         assert!(nl.contains("Takes parameters:"));
@@ -651,7 +642,7 @@ mod tests {
             parser_version: 0,
         };
 
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(nl.contains("Validates an email"));
         assert!(nl.contains("validate email"));
         // Params come from signature (no types in JS), return type from JSDoc
@@ -695,7 +686,7 @@ mod tests {
         // 3000 chars of content — should use 1800 char preview
         let content = "a".repeat(3000);
         let chunk = make_section_chunk(&content, "Title > Section", "Section");
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         // Breadcrumb + name + 1800 chars of content
         assert!(nl.contains("Title > Section"));
         assert!(nl.contains("Section"));
@@ -712,7 +703,7 @@ mod tests {
     #[test]
     fn test_markdown_nl_short_content() {
         let chunk = make_section_chunk("Short section content here.", "Guide > Intro", "Intro");
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(nl.contains("Guide > Intro"));
         assert!(nl.contains("Intro"));
         assert!(nl.contains("Short section content here."));
@@ -739,7 +730,7 @@ mod tests {
             parent_type_name: Some("CircuitBreaker".to_string()),
             parser_version: 0,
         };
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(
             nl.contains("circuit breaker method"),
             "NL should contain tokenized parent type: {}",
@@ -767,7 +758,7 @@ mod tests {
             parent_type_name: None,
             parser_version: 0,
         };
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         // Compact: no "A method named" prefix, just tokenized name
         assert!(nl.contains("process"));
         // Without parent_type_name, should not have any "X method" prefix
@@ -797,7 +788,7 @@ mod tests {
             parent_type_name: None,
             parser_version: 0,
         };
-        let nl = generate_nl_description(&chunk);
+        let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(nl.contains("standalone"));
     }
 
@@ -820,7 +811,7 @@ mod tests {
             parent_type_name: Some("CircuitBreaker".to_string()),
             parser_version: 0,
         };
-        let nl = generate_nl_with_template(&chunk, NlTemplate::DocFirst);
+        let nl = generate_nl_with_template_and_seq_len(&chunk, NlTemplate::DocFirst, 512);
         // DocFirst returns early: doc + name only, no parent type context
         assert!(
             !nl.contains("circuit breaker"),
@@ -934,7 +925,7 @@ mod tests {
         let chunk = test_chunk("lonely");
         let ctx = CallContext::default();
         let freq = std::collections::HashMap::new();
-        let base = generate_nl_description(&chunk);
+        let base = generate_nl_description_with_seq_len(&chunk, 512);
         let enriched =
             generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None, 512);
         assert_eq!(base, enriched);
