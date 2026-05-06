@@ -2,13 +2,25 @@
 
 ## Right Now
 
-**v1.36.1 shipped** — 2026-05-04 afternoon. Patch release. Headline: Qwen3-Embedding-4B preset (#1441) + FP16/BF16 ONNX output dispatch (#1442) — extends embedder to decoder-only architectures with `position_ids` input and 16-bit output tensors. Plus daemon ergonomics (server-side `wait_fresh`, idle-shutdown), HNSW perf scaling for large corpora, and 9 audit-driven fixes. 26 commits since v1.36.0; no schema bump. Tag pushed; crates.io published; GitHub Release auto-built.
+**v1.37.0 shipped** — 2026-05-05 evening. Minor release. Bundles v1.36.2 16-category audit close-out (#1456 — ~120 of 163 findings addressed) and dim-scaled batch sizes (#1464). No schema bump. Tag `v1.37.0` pushed; crates.io published; GitHub Release auto-building from `.github/workflows/release.yml`.
 
-**v1.36.2 staged** — 2026-05-04 evening. Two fixes merged but not yet released:
-- **#1450 — `busy_timeout` 5s→30s** (defense-in-depth)
-- **#1451 — `Store::drop` checkpoint TRUNCATE → PASSIVE** (the actual lock-contention root cause — see below)
+**Why minor not patch:** `RerankerMode::Llm` removed from CLI (was placeholder that errored at runtime); `cqs::limits` promoted from `pub(crate)` → `pub`; new public surface (`dim_scaled_batch`, `relativize_or_warn`, `Store::try_stored_model_name`, `BoundedScoreHeap::would_accept`, `BatchProvider::validate_model`); default behavior shifts on dim-aware sites (env overrides preserve prior).
 
-Plus 5 dependabot bumps (tokio, fast_html2md, tree-sitter-{swift,powershell}, similar 2→3) and the docs(tears) update. Worth cutting v1.36.2 before next session — the lock-contention fix is materially load-bearing for any long-running `cqs index` against any concurrent reader.
+**Audit close-out highlights** (#1456):
+- **All 56 P1s + 13 of 14 P2s** shipped or addressed via defensive variants
+- **Lying-docs cluster** (11 fixes): qwen3 presets enumerated everywhere, schema-doc citations to v26, ROADMAP "Current" current, CHANGELOG `[Unreleased]` block fixed
+- **Configurable-models** (4 fixes): `enrichment_pass` threads `model_max_seq_len`, `resolve_splade_model_dir()` auto-loads `[splade]` config at all 6 callers
+- **NaN/Inf cluster** (5 fixes): `note_boost` `±Inf` clamp, sparse weight `is_finite`, telemetry divide-by-zero, CAGRA env knobs reject zero
+- **Unbounded-read** (5 new sites capped) + **subprocess capture** (PDF / Command::output)
+- **SQLite pool / parallelism** scales with `available_parallelism().min(8)` instead of fixed 4
+- **Concurrent writer / data safety**: `Store::close()` TRUNCATE 30s timeout + PASSIVE fallback, `cqs index --force` `close()` before WAL/SHM removal, `collect_migration_files` includes full HNSW sidecar set
+- **Windows / case-insensitive FS**: `apply_resolved_edits` preserves CRLF, `note::path_matches_mention` case-insensitive on Win/macOS, `worktree::lookup_main_cqs_dir` `is_dir()` + canonicalize, `relativize_or_warn` shim at 4 sites
+- **Security**: Store::open umask `0o077` wrap, env-var redactor expanded (8 substring markers + URL userinfo), LLM debug-log body redact, `slot_dir` validation, `validate_repo_id` rejects `..`
+- **Algorithm correctness**: `extract_file_from_chunk_id` accepts 100+-window indices, SPLADE min-max `reduce` instead of `fold(0.0)`
+
+**Dim-scaled batch sizes** (#1464): new `cqs::limits::dim_scaled_batch(baseline, dim, min, max)` applied to `BRUTE_FORCE_BATCH_SIZE` (search), `hnsw_batch_size`, `cagra_stream_batch_size`, `embed_channel_depth`. Prior baselines were sized for BGE-large (1024-dim); qwen3-embedding-{4b,8b} (2560/4096-dim) used to silently 2-4× per-batch heap.
+
+**Deferred audit items filed as tracking issues** #1457-#1463: P2-14 ChunkRow strcmp (perf cascade), TC Happy tests (6), API design (8), Extensibility (3), Security (3 medium-effort), RM-V1.36-6 + CQ-V1.36-3/5 misc, P4 umbrella (12 design-level). All carry the `audit-v1.36.2` label.
 
 **Qwen3-Embedding-4B full probe complete** (2026-05-04 afternoon-evening, 6+ hour session):
 

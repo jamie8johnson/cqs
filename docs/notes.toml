@@ -1833,3 +1833,12 @@ mentions = [
     "CQS_SPLADE_ALPHA",
     "sweep",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "v1.37.0 release (2026-05-05): bundled v1.36.2 16-category audit close-out (#1456, ~120 of 163 findings) + dim-scaled batch sizes (#1464). Surface changes: RerankerMode::Llm removed from CLI; cqs::limits pub-promoted; new dim_scaled_batch helper. Deferred items as #1457-#1463."
+mentions = [
+    "1.37.0",
+    "audit",
+    "dim_scaled_batch",
+]
