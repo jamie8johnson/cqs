@@ -280,7 +280,11 @@ pub struct Cli {
     #[arg(long)]
     pub no_demote: bool,
 
-    /// Embedding model: embeddinggemma-300m (default), bge-large, e5-base, or custom
+    /// Embedding model: embeddinggemma-300m (default), bge-large, e5-base, or custom.
+    ///
+    /// Honored across all commands: `cqs <q> --model X` selects the query embedder,
+    /// `cqs index --model X` stamps X into a fresh index (or, on incremental,
+    /// requires `--force` to switch off the previously-stamped model).
     #[arg(long)]
     pub model: Option<String>,
 
