@@ -247,6 +247,29 @@ fn run_with_dispatch(
         .unwrap_or_default();
     cqs::search::router::install_slot_splade_alpha_overrides(slot_alpha_table);
 
+    // EXT-V1.36-1 (#1460): load synonym overlay from
+    // `~/.config/cqs/synonyms.toml` (user-global) and
+    // `<project>/.cqs/synonyms.toml` (project-local), with project-local
+    // taking precedence on conflict. Empty / missing / malformed files
+    // fall through to the compile-time builtins. Done once at dispatch
+    // entry so every FTS-expanded search benefits without per-call I/O.
+    {
+        let mut overlay: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        if let Some(global) = dirs::config_dir().map(|d| d.join("cqs/synonyms.toml")) {
+            for (k, v) in cqs::search::synonyms::load_synonym_overlay(&global) {
+                overlay.insert(k, v);
+            }
+        }
+        let project_local = project_cqs_dir.join("synonyms.toml");
+        for (k, v) in cqs::search::synonyms::load_synonym_overlay(&project_local) {
+            // project-local wins on key conflict (overwrites the
+            // user-global entry).
+            overlay.insert(k, v);
+        }
+        cqs::search::synonyms::install_synonym_overlay(overlay);
+    }
+
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
 
