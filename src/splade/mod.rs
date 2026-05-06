@@ -104,6 +104,84 @@ pub struct SpladeEncoder {
     tokenizer: Mutex<Option<std::sync::Arc<tokenizers::Tokenizer>>>,
     threshold: f32,
     vocab_size: usize,
+    /// SHL-V1.36-6: model's `hidden_size`, probed from `config.json`
+    /// at construction time. Falls back to 768 (the SPLADE-base /
+    /// SPLADE-Code 0.6B value) when the file is missing or malformed.
+    /// Used by the indexing-time batch-size formula in
+    /// `cli::watch::reindex::splade_batch_size_for`.
+    hidden_size: usize,
+    /// SHL-V1.36-6: model's `max_length`, probed from the loaded
+    /// tokenizer's truncation config (falls back to `config.json`'s
+    /// `max_position_embeddings`, then to a hardcoded 256). Caps the
+    /// per-token activation tensor in batched encode runs.
+    max_length: usize,
+}
+
+/// SHL-V1.36-6: read `hidden_size` from `config.json` in the SPLADE
+/// model directory. Falls back to 768 (the canonical SPLADE-base value
+/// shared by `naver/splade-cocondenser-ensembledistil` and the
+/// SPLADE-Code 0.6B base layer) when the file is missing, malformed,
+/// or the field absent. Surfaces every fallback at `tracing::debug!`.
+fn probe_splade_hidden_size(model_dir: &Path) -> usize {
+    const FALLBACK: usize = 768;
+    let path = model_dir.join("config.json");
+    if !path.exists() {
+        tracing::debug!(
+            path = %path.display(),
+            fallback = FALLBACK,
+            "SPLADE config.json missing; using fallback hidden_size"
+        );
+        return FALLBACK;
+    }
+    match std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|json| json.get("hidden_size").and_then(|v| v.as_u64()))
+        .and_then(|h| usize::try_from(h).ok())
+        .filter(|h| *h > 0)
+    {
+        Some(h) => h,
+        None => {
+            tracing::debug!(
+                path = %path.display(),
+                fallback = FALLBACK,
+                "SPLADE config.json missing/invalid hidden_size; using fallback"
+            );
+            FALLBACK
+        }
+    }
+}
+
+/// SHL-V1.36-6: read `max_length` from the loaded tokenizer's
+/// truncation config, with `config.json::max_position_embeddings` as a
+/// secondary source. Falls back to 256 (the SPLADE-base default) when
+/// neither is available. The truncation config is the truth at
+/// inference time; `max_position_embeddings` matters when the tokenizer
+/// has truncation off (rare for SPLADE).
+fn probe_splade_max_length(tokenizer: &tokenizers::Tokenizer, model_dir: &Path) -> usize {
+    const FALLBACK: usize = 256;
+    if let Some(trunc) = tokenizer.get_truncation() {
+        if trunc.max_length > 0 {
+            return trunc.max_length;
+        }
+    }
+    let path = model_dir.join("config.json");
+    if path.exists() {
+        if let Some(n) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|json| json.get("max_position_embeddings").and_then(|v| v.as_u64()))
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+        {
+            return n;
+        }
+    }
+    tracing::debug!(
+        fallback = FALLBACK,
+        "SPLADE max_length not derivable from tokenizer or config.json; using fallback"
+    );
+    FALLBACK
 }
 
 /// Probe a SPLADE model's output vocabulary by running one short inference.
@@ -430,9 +508,18 @@ impl SpladeEncoder {
         let session = create_session(&onnx_path, provider)
             .map_err(|e| SpladeError::InferenceFailed(format!("ORT session re-init: {e}")))?;
 
+        // SHL-V1.36-6: probe hidden_size and max_length so the indexing-
+        // time batch sizing can scale per-tensor activation memory across
+        // SPLADE variants (ensembledistil at 768/256 vs SPLADE-Code 0.6B
+        // at 1024/512). Both probes are best-effort — fallbacks preserve
+        // the historic batch=32 for the default ensembledistil setup.
+        let hidden_size = probe_splade_hidden_size(model_dir);
+        let max_length = probe_splade_max_length(&tokenizer, model_dir);
         tracing::info!(
             threshold,
             vocab_size = tokenizer_vocab,
+            hidden_size,
+            max_length,
             "SPLADE encoder loaded (vocab consistency verified)"
         );
 
@@ -446,6 +533,8 @@ impl SpladeEncoder {
             tokenizer: Mutex::new(Some(std::sync::Arc::new(tokenizer))),
             threshold,
             vocab_size: tokenizer_vocab,
+            hidden_size,
+            max_length,
         })
     }
 
@@ -972,6 +1061,19 @@ impl SpladeEncoder {
     /// Vocabulary size of the underlying tokenizer.
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
+    }
+
+    /// SHL-V1.36-6: model's `hidden_size` (probed from `config.json`
+    /// at construction). Used by indexing-time batch sizing.
+    pub fn hidden_size(&self) -> usize {
+        self.hidden_size
+    }
+
+    /// SHL-V1.36-6: model's effective `max_length` (probed from the
+    /// tokenizer's truncation config, with `config.json` as secondary
+    /// source). Used by indexing-time batch sizing.
+    pub fn max_length(&self) -> usize {
+        self.max_length
     }
 
     /// Decode a token ID to its string representation (for debugging).

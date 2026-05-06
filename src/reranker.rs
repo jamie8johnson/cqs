@@ -25,6 +25,19 @@ use crate::store::SearchResult;
 /// [`crate::aux_model::config_from_dir`] for `AuxModelKind::Reranker`.
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
+/// SHL-V1.36-6: HuggingFace `config.json` contains `hidden_size`, which the
+/// batch-size formula needs to scale per-tensor activation memory across
+/// rerankers of different model widths. Resolved alongside `MODEL_FILE` /
+/// `TOKENIZER_FILE` in [`OnnxReranker::model_paths`].
+const CONFIG_FILE: &str = "config.json";
+
+/// Reference `hidden_size`, paired with [`DEFAULT_RERANKER_BATCH`] and
+/// [`REFERENCE_MAX_LENGTH`]. ms-marco-MiniLM-L-6-v2's hidden_size is 384;
+/// the batch-size formula scales `(REFERENCE_HIDDEN / hidden).max(0.25)`
+/// alongside the seq factor. Custom rerankers with hidden=768 (e.g.
+/// MiniLM-L-12) get `0.5×` the seq-implied batch — keeps per-tensor memory
+/// constant.
+const REFERENCE_HIDDEN_SIZE: usize = 384;
 
 // blake3 checksums -- empty to skip validation (set after pinning a model version)
 const MODEL_BLAKE3: &str = "";
@@ -40,14 +53,62 @@ const TOKENIZER_BLAKE3: &str = "";
 /// activations than plain encoder forward passes.
 const DEFAULT_RERANKER_BATCH: usize = 32;
 
+/// Reranker reference seq-length, paired with [`DEFAULT_RERANKER_BATCH`].
+/// The [`reranker_batch_size`] formula scales the baseline batch by
+/// `(REFERENCE_MAX_LENGTH / max_length).max(0.25)` so a custom reranker
+/// running at 2048 tokens halves the batch (32 → 16) instead of OOMing
+/// at the documented default.
+const REFERENCE_MAX_LENGTH: usize = 512;
+
 /// Maximum number of candidates per ORT `session.run()` in the reranker.
 ///
-/// Reads `CQS_RERANKER_BATCH`; falls back to [`DEFAULT_RERANKER_BATCH`] when
-/// unset, unparseable, or zero.
-fn reranker_batch_size() -> usize {
+/// SHL-V1.36-6 (#1463 follow-up): scales the baseline 32 by the loaded
+/// model's `(hidden_size, max_length)` so per-tensor activation memory
+/// stays roughly constant across rerankers. Long-context rerankers
+/// (`CQS_RERANKER_MAX_LENGTH=2048`) and wider rerankers
+/// (hidden_size=768 vs the 384 baseline) used to OOM 8 GB GPUs at the
+/// documented default 32. Now both factors collapse onto the same
+/// formula:
+///
+/// ```text
+/// batch = 32 * (REFERENCE_HIDDEN / hidden).max(0.25)
+///            * (REFERENCE_MAX_LENGTH / max_length).max(0.25)
+/// ```
+///
+/// rounded to a power of two clamped to `[1, 256]`. Each factor floors
+/// at 0.25 so neither dim alone collapses the batch to 1 on extreme
+/// models — net floor is 32 * 0.25 * 0.25 = 2.
+///
+/// `hidden_size` is probed from `config.json` at session-init time
+/// (see [`OnnxReranker::resolve_hidden_size`]); on a fetch failure or
+/// missing field the call falls back to [`REFERENCE_HIDDEN_SIZE`],
+/// which preserves the historic batch=32 for ms-marco-MiniLM-L-6-v2.
+///
+/// `CQS_RERANKER_BATCH` env wins regardless of either dim — operators
+/// with workloads they understand can pin a value.
+fn reranker_batch_size(max_length: usize, hidden_size: usize) -> usize {
     // P2.4: route through shared `parse_env_usize` so behavior matches the
     // 24 other CQS_* knobs (missing/empty/garbage/zero -> default).
-    crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH)
+    if std::env::var_os("CQS_RERANKER_BATCH").is_some() {
+        return crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH);
+    }
+    let baseline = DEFAULT_RERANKER_BATCH as f64;
+    let max_length = max_length.max(1) as f64;
+    let hidden_size = hidden_size.max(1) as f64;
+    let seq_factor = (REFERENCE_MAX_LENGTH as f64 / max_length).max(0.25);
+    let hidden_factor = (REFERENCE_HIDDEN_SIZE as f64 / hidden_size).max(0.25);
+    let scaled = (baseline * seq_factor * hidden_factor).max(1.0) as usize;
+    let rounded = scaled.next_power_of_two().clamp(1, 256);
+    if rounded != DEFAULT_RERANKER_BATCH {
+        tracing::debug!(
+            max_length = max_length as usize,
+            hidden_size = hidden_size as usize,
+            scaled,
+            rounded,
+            "reranker_batch_size: scaling baseline by (hidden_size, max_length)"
+        );
+    }
+    rounded
 }
 
 /// Resolve the reranker model source via the shared auxiliary-model
@@ -179,6 +240,12 @@ pub struct OnnxReranker {
     /// XLM-R variants) do not. Computed at session-init time by inspecting
     /// the model's input names. `None` means "session not yet loaded."
     expects_token_type_ids: Mutex<Option<bool>>,
+    /// SHL-V1.36-6: model's `hidden_size`, probed from `config.json` at
+    /// session-init time. Falls back to [`REFERENCE_HIDDEN_SIZE`] (384)
+    /// when the file is missing or malformed — preserves the historic
+    /// batch=32 for ms-marco-MiniLM-L-6-v2 if the probe fails.
+    /// `OnceCell` so the probe runs at most once per reranker instance.
+    hidden_size: OnceCell<usize>,
     /// Cached config-file `[reranker]` section so `resolve_reranker` honours
     /// `preset` / `model_path` / `tokenizer_path` set in `.cqs.toml` (P1.7).
     section: Option<AuxModelSection>,
@@ -218,6 +285,7 @@ impl OnnxReranker {
             provider,
             max_length,
             expects_token_type_ids: Mutex::new(None),
+            hidden_size: OnceCell::new(),
             section,
         })
     }
@@ -268,7 +336,7 @@ impl OnnxReranker {
             return Ok(None); // Nothing to score — empty tokenization
         }
 
-        let batch_cap = reranker_batch_size();
+        let batch_cap = reranker_batch_size(self.max_length, self.resolve_hidden_size());
         let mut scores = Vec::with_capacity(passages.len());
         for chunk in encodings.chunks(batch_cap) {
             scores.extend(self.run_chunk(chunk)?);
@@ -531,6 +599,97 @@ impl OnnxReranker {
             tracing::info!(model = %model_path.display(), "Reranker model ready");
             Ok((model_path, tokenizer_path))
         })
+    }
+
+    /// SHL-V1.36-6: probe the loaded model's `hidden_size` from
+    /// `config.json` so [`reranker_batch_size`] can scale per-tensor
+    /// memory across rerankers of different widths. Cached via the
+    /// `hidden_size: OnceCell<usize>` field — at most one probe per
+    /// reranker instance.
+    ///
+    /// Resolution mirrors the layout assumptions in [`Self::model_paths`]:
+    ///
+    ///   * **Local-bundle** branch — `config.json` lives at
+    ///     `model_path.parent().parent() / "config.json"`, i.e., the bundle
+    ///     root above the `onnx/` subdir.
+    ///   * **HF Hub** branch — fetched via the existing
+    ///     `repo.get(CONFIG_FILE)` API used for the model + tokenizer.
+    ///
+    /// Failure modes (file missing, malformed JSON, no `hidden_size`
+    /// field, fetch error) all collapse to the historic
+    /// [`REFERENCE_HIDDEN_SIZE`] (384) — preserves the existing
+    /// batch=32 for ms-marco-MiniLM-L-6-v2 when the probe can't run.
+    /// Surfaces every fallback at `tracing::debug!` so an operator
+    /// running with `RUST_LOG=cqs=debug` can correlate batch-size
+    /// surprises with the probe.
+    fn resolve_hidden_size(&self) -> usize {
+        *self.hidden_size.get_or_init(|| {
+            let _span = tracing::debug_span!("reranker_resolve_hidden_size").entered();
+            match self.probe_hidden_size() {
+                Ok(h) => {
+                    tracing::debug!(
+                        hidden_size = h,
+                        "Probed reranker hidden_size from config.json"
+                    );
+                    h
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        fallback = REFERENCE_HIDDEN_SIZE,
+                        "config.json probe failed; falling back to reference hidden_size"
+                    );
+                    REFERENCE_HIDDEN_SIZE
+                }
+            }
+        })
+    }
+
+    /// Helper for [`Self::resolve_hidden_size`] — does the actual probe.
+    /// Returns an error string per failure mode so the caller can log it
+    /// and fall back. Side-effect-free apart from the `tracing::debug!`
+    /// inside the parse path.
+    fn probe_hidden_size(&self) -> Result<usize, String> {
+        let resolved =
+            resolve_reranker(self.section.as_ref()).map_err(|e| format!("resolve: {e}"))?;
+        let config_path = if resolved.repo.is_some() {
+            // HF Hub: fetch config.json the same way we fetch model.onnx.
+            use hf_hub::api::sync::Api;
+            let repo_id = resolved
+                .repo
+                .as_deref()
+                .expect("repo.is_some() checked above");
+            let api = Api::new().map_err(|e| format!("hf api: {e}"))?;
+            api.model(repo_id.to_string())
+                .get(CONFIG_FILE)
+                .map_err(|e| format!("hf get config.json: {e}"))?
+        } else {
+            // Local bundle: `model_path` is `{dir}/onnx/model.onnx`,
+            // `config.json` is at `{dir}/config.json` per HF convention.
+            let model_path = resolved.model_path;
+            model_path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|dir| dir.join(CONFIG_FILE))
+                .ok_or_else(|| format!("model_path has no two parents: {}", model_path.display()))?
+        };
+        if !config_path.exists() {
+            return Err(format!("not found: {}", config_path.display()));
+        }
+        let raw = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+        let json: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
+        let hidden = json
+            .get("hidden_size")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| format!("no hidden_size in {}", config_path.display()))?;
+        let hidden = usize::try_from(hidden)
+            .map_err(|_| format!("hidden_size {hidden} doesn't fit in usize"))?;
+        if hidden == 0 {
+            return Err(format!("hidden_size = 0 in {}", config_path.display()));
+        }
+        Ok(hidden)
     }
 
     /// Get or initialize the ONNX session
@@ -830,6 +989,124 @@ impl Reranker for LlmReranker {
             "LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)"
                 .to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod batch_scaling_tests {
+    use super::{
+        reranker_batch_size, DEFAULT_RERANKER_BATCH, REFERENCE_HIDDEN_SIZE, REFERENCE_MAX_LENGTH,
+    };
+
+    /// Process-wide lock for the env-override tests so parallel cargo
+    /// test runs don't observe each other's `CQS_RERANKER_BATCH` writes.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Reference shape (hidden=384, seq=512) reproduces the historic
+    /// baseline 32 — existing operator setups see no behavior change.
+    /// Pinning this catches a refactor that accidentally re-derives
+    /// the rounded value.
+    #[test]
+    fn baseline_dims_return_default_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(
+            reranker_batch_size(REFERENCE_MAX_LENGTH, REFERENCE_HIDDEN_SIZE),
+            DEFAULT_RERANKER_BATCH
+        );
+    }
+
+    /// SHL-V1.36-6 motivating case: a custom 2048-token reranker at
+    /// the baseline width. seq_factor = 512/2048 = 0.25, hidden_factor =
+    /// 1.0; batch = 32 * 0.25 * 1.0 = 8.
+    #[test]
+    fn long_seq_reduces_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(2048, REFERENCE_HIDDEN_SIZE), 8);
+    }
+
+    /// 8K-seq rerankers shouldn't degenerate to batch=1. The 0.25 floor
+    /// in `seq_factor` keeps batch ≥ 8 at the reference hidden_size.
+    #[test]
+    fn extreme_seq_floors_at_quarter() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(8192, REFERENCE_HIDDEN_SIZE), 8);
+        assert_eq!(reranker_batch_size(32_768, REFERENCE_HIDDEN_SIZE), 8);
+    }
+
+    /// Short-seq rerankers (e.g., 256-token cross-encoders) at baseline
+    /// width get a wider batch — `512 / 256 = 2.0` so 32 → 64.
+    #[test]
+    fn short_seq_widens_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(256, REFERENCE_HIDDEN_SIZE), 64);
+        assert_eq!(reranker_batch_size(128, REFERENCE_HIDDEN_SIZE), 128);
+    }
+
+    /// hidden_size = 768 (e.g. MiniLM-L-12 / many cross-encoders) at
+    /// baseline seq halves the batch. seq_factor = 1.0, hidden_factor =
+    /// 384/768 = 0.5; batch = 32 * 1.0 * 0.5 = 16.
+    #[test]
+    fn wider_hidden_halves_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(REFERENCE_MAX_LENGTH, 768), 16);
+    }
+
+    /// hidden_size = 1024 (BERT-large class) at baseline seq quarters
+    /// the batch. seq_factor = 1.0, hidden_factor = 384/1024 ≈ 0.375;
+    /// scaled = 32 * 0.375 = 12; rounded = 16 (next power of 2).
+    #[test]
+    fn bert_large_hidden_quarters_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(REFERENCE_MAX_LENGTH, 1024), 16);
+    }
+
+    /// Compound case: a 768-hidden reranker running at 2048 seq.
+    /// seq_factor = 0.25, hidden_factor = 0.5; batch = 32 * 0.25 * 0.5 = 4.
+    /// Both factors carry their share of the OOM mitigation.
+    #[test]
+    fn wide_long_compound_reduces_batch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(2048, 768), 4);
+    }
+
+    /// Net floor at extreme model: 0.25 (seq) × 0.25 (hidden) → 32 × 0.0625
+    /// = 2 (next_power_of_two of `2.0_f64 as usize` = 2). The clamp ensures
+    /// we never return 0 or 1 even on absurd model dims.
+    #[test]
+    fn extreme_compound_floors_at_two() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        assert_eq!(reranker_batch_size(32_768, 8192), 2);
+    }
+
+    /// `CQS_RERANKER_BATCH` env wins regardless of (hidden, seq).
+    /// Operators pinning a value know their own workload — we don't
+    /// second-guess them.
+    #[test]
+    fn env_override_wins_regardless_of_dims() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("CQS_RERANKER_BATCH", "100");
+        assert_eq!(reranker_batch_size(2048, 768), 100);
+        assert_eq!(reranker_batch_size(512, 384), 100);
+        std::env::remove_var("CQS_RERANKER_BATCH");
+    }
+
+    /// Degenerate inputs (`hidden_size=0`, `max_length=0`) don't panic.
+    /// The `.max(1)` floors on both dims keep the formula safe.
+    #[test]
+    fn zero_dims_do_not_panic() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_RERANKER_BATCH");
+        let _ = reranker_batch_size(0, REFERENCE_HIDDEN_SIZE);
+        let _ = reranker_batch_size(REFERENCE_MAX_LENGTH, 0);
+        let _ = reranker_batch_size(0, 0);
     }
 }
 

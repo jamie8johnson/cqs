@@ -522,6 +522,97 @@ fn splade_batch_size_zero_falls_back_to_default() {
     assert_eq!(got, 32, "0 is not a valid batch size, falls back");
 }
 
+// ===== SHL-V1.36-6 — splade_batch_size_for(hidden, max_length) =====
+//
+// Mirrors the reranker test pattern: pin the baseline shape's batch
+// (no behavior change for ensembledistil), then verify scaling cases
+// for wider hidden / longer seq / compound / env-override.
+
+use super::reindex::splade_batch_size_for;
+
+/// Reference shape (hidden=768, max_length=256, the SPLADE-base /
+/// ensembledistil values) reproduces baseline 32 — existing operator
+/// setups see no change.
+#[test]
+fn splade_batch_size_for_baseline_returns_default() {
+    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+    std::env::remove_var("CQS_SPLADE_BATCH");
+    let got = splade_batch_size_for(768, 256);
+    if let Some(v) = prev {
+        std::env::set_var("CQS_SPLADE_BATCH", v);
+    }
+    assert_eq!(got, 32, "baseline (768, 256) → 32");
+}
+
+/// SPLADE-Code 0.6B class (hidden ≈ 1024, seq=512). hidden_factor =
+/// 768/1024 = 0.75; seq_factor = 256/512 = 0.5; scaled = 32 * 0.75 *
+/// 0.5 = 12; rounded = 16 (next power of two).
+#[test]
+fn splade_batch_size_for_splade_code_class_halves() {
+    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+    std::env::remove_var("CQS_SPLADE_BATCH");
+    let got = splade_batch_size_for(1024, 512);
+    if let Some(v) = prev {
+        std::env::set_var("CQS_SPLADE_BATCH", v);
+    }
+    assert_eq!(got, 16, "1024/512 → 16");
+}
+
+/// Wider hidden (1024) at baseline seq. hidden_factor = 0.75; scaled
+/// = 32 * 0.75 = 24; rounded = 32. (next_power_of_two(24) = 32.)
+#[test]
+fn splade_batch_size_for_wider_hidden_at_baseline_seq_holds_32() {
+    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+    std::env::remove_var("CQS_SPLADE_BATCH");
+    let got = splade_batch_size_for(1024, 256);
+    if let Some(v) = prev {
+        std::env::set_var("CQS_SPLADE_BATCH", v);
+    }
+    assert_eq!(got, 32, "1024/256 → 32 (rounded up)");
+}
+
+/// Long seq (1024) at baseline hidden. seq_factor = 256/1024 = 0.25;
+/// scaled = 32 * 0.25 = 8.
+#[test]
+fn splade_batch_size_for_long_seq_quarters_batch() {
+    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+    std::env::remove_var("CQS_SPLADE_BATCH");
+    let got = splade_batch_size_for(768, 1024);
+    if let Some(v) = prev {
+        std::env::set_var("CQS_SPLADE_BATCH", v);
+    }
+    assert_eq!(got, 8, "768/1024 → 8");
+}
+
+/// Env override wins regardless of (hidden, max_length).
+#[test]
+fn splade_batch_size_for_env_override_wins() {
+    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+    std::env::set_var("CQS_SPLADE_BATCH", "100");
+    let got = splade_batch_size_for(1024, 1024);
+    let got2 = splade_batch_size_for(384, 128);
+    match prev {
+        Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
+        None => std::env::remove_var("CQS_SPLADE_BATCH"),
+    }
+    assert_eq!(got, 100, "env override wins for wide+long shape");
+    assert_eq!(got2, 100, "env override wins for narrow+short shape");
+}
+
+/// Degenerate dims (zeros) don't panic. The `.max(1)` floors ensure
+/// the formula stays bounded.
+#[test]
+fn splade_batch_size_for_zero_dims_do_not_panic() {
+    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _ = splade_batch_size_for(0, 256);
+    let _ = splade_batch_size_for(768, 0);
+    let _ = splade_batch_size_for(0, 0);
+    if let Some(v) = prev {
+        std::env::set_var("CQS_SPLADE_BATCH", v);
+    }
+}
+
 #[test]
 fn build_splade_encoder_env_kill_switch_returns_none() {
     // CQS_WATCH_INCREMENTAL_SPLADE=0 must return None regardless of
