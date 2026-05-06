@@ -940,50 +940,33 @@ impl CagraIndex {
             }
         }
 
-        // Delete any stale sidecar up front so a crash mid-save leaves
-        // neither half of the pair, not just the blob.
+        // DS-V1.36-2 (P4-12 / #1463): atomic save with `.bak` rollback.
+        // Pre-fix, cuVS wrote directly to the final path, destroying the
+        // previous good blob on any mid-save failure. Now: stage to a tmp
+        // path, atomic_replace onto the live name, restore from `.bak` on
+        // failure. Mirrors `src/hnsw/persist.rs:467-484` and the SPLADE
+        // pattern (DS-V1.36-5).
         let meta_path = meta_path_for(path);
-        let _ = std::fs::remove_file(&meta_path);
+        let blob_hash = save_blob_atomic_with_rollback(self, &gpu, path)?;
 
-        // cuVS takes a filename, so we hand it the final path directly.
-        // include_dataset=true keeps the blob self-contained — the library
-        // doesn't need the original dataset on disk to deserialize.
-        let path_str = path.to_str().ok_or_else(|| {
-            CagraError::Io(format!(
-                "CAGRA save path is not valid UTF-8: {}",
-                path.display()
-            ))
-        })?;
-        tracing::info!(
-            n_vectors = self.id_map.len(),
-            dim = self.dim,
-            "Serializing CAGRA index to disk"
-        );
-        gpu.index
-            .serialize(&gpu.resources, path_str, true)
-            .map_err(|e| CagraError::Cuvs(format!("cuvsCagraSerialize failed: {}", e)))?;
-
-        // Checksum the blob we just wrote so load() can detect corruption.
-        let blob_hash = blake3_of_path(path)?;
-
-        // Read splade_generation indirectly — CagraIndex doesn't hold a
-        // Store reference, so the caller supplies it via a separate
-        // `save_with_meta` entry point. For now, default to 0 and rely on
-        // callers using `save_with_store` when they want the coarse
-        // staleness check. See build_vector_index_with_config.
         let meta = CagraMeta {
             magic: CAGRA_META_MAGIC.to_string(),
             version: CAGRA_META_VERSION,
             dim: self.dim,
             chunk_count: self.id_map.len(),
+            // splade_generation default of 0 — callers wanting the coarse
+            // staleness check should use `save_with_store`.
             splade_generation: 0,
             id_map: self.id_map.clone(),
             blake3: blob_hash,
         };
 
+        // Meta-write failure after the blob is in place leaves a blob
+        // without a sidecar — load() rejects → next caller rebuilds. Both
+        // sides are safe; clean up so we don't leave the pair half-formed.
         if let Err(e) = write_meta_atomic(&meta_path, &meta) {
-            // Don't leave an orphan .cagra without a matching sidecar.
             let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(&meta_path);
             return Err(e);
         }
 
@@ -1032,16 +1015,6 @@ impl CagraIndex {
             }
         }
 
-        let meta_path = meta_path_for(path);
-        let _ = std::fs::remove_file(&meta_path);
-
-        let path_str = path.to_str().ok_or_else(|| {
-            CagraError::Io(format!(
-                "CAGRA save path is not valid UTF-8: {}",
-                path.display()
-            ))
-        })?;
-
         // splade_generation is not a perfect staleness signal (deletes only,
         // not inserts) but it still catches the common reindex-with-GC case.
         let generation = match store.splade_generation() {
@@ -1055,17 +1028,10 @@ impl CagraIndex {
             }
         };
 
-        tracing::info!(
-            n_vectors = self.id_map.len(),
-            dim = self.dim,
-            splade_generation = generation,
-            "Serializing CAGRA index to disk"
-        );
-        gpu.index
-            .serialize(&gpu.resources, path_str, true)
-            .map_err(|e| CagraError::Cuvs(format!("cuvsCagraSerialize failed: {}", e)))?;
-
-        let blob_hash = blake3_of_path(path)?;
+        // DS-V1.36-2 (P4-12 / #1463): atomic save with `.bak` rollback.
+        // See `save` above for the full rationale.
+        let meta_path = meta_path_for(path);
+        let blob_hash = save_blob_atomic_with_rollback(self, &gpu, path)?;
 
         let meta = CagraMeta {
             magic: CAGRA_META_MAGIC.to_string(),
@@ -1079,12 +1045,14 @@ impl CagraIndex {
 
         if let Err(e) = write_meta_atomic(&meta_path, &meta) {
             let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(&meta_path);
             return Err(e);
         }
 
         tracing::info!(
             path = %path.display(),
             n_vectors = self.id_map.len(),
+            splade_generation = generation,
             "CAGRA index persisted"
         );
         Ok(())
@@ -1287,6 +1255,149 @@ fn blake3_of_path(path: &Path) -> Result<String, CagraError> {
         ))
     })?;
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// DS-V1.36-2 (P4-12 / #1463): write the cuVS blob via stage-tmp + atomic-replace
+/// with `.bak` rollback so a mid-save failure can restore the prior good blob.
+///
+/// Sequence (mirrors `src/hnsw/persist.rs:467-484` and the SPLADE pattern):
+///   1. Refuse if a stale `<path>.bak` already exists — it's a recovery
+///      breadcrumb from a prior failed save and must be cleared first.
+///   2. cuVS serializes the index to `<path>.<suffix>.tmp` (NOT the live path).
+///   3. Hash the temp file — feeds the meta sidecar and validates the write.
+///   4. If `<path>` already exists, rename it to `<path>.bak` (with parent
+///      fsync) so we have something to restore on failure.
+///   5. atomic_replace tmp → live (the load-bearing rename).
+///   6. On failure: restore `.bak` → live, fsync, remove tmp, return.
+///   7. On success: remove `.bak` with parent fsync.
+///
+/// Returns the blake3 hex digest of the blob now at `path` so the caller can
+/// stamp it into the sidecar.
+#[cfg(feature = "cuda-index")]
+fn save_blob_atomic_with_rollback(
+    cagra: &CagraIndex,
+    gpu: &GpuState,
+    path: &Path,
+) -> Result<String, CagraError> {
+    let parent = path.parent().ok_or_else(|| {
+        CagraError::Io(format!("CAGRA save path has no parent: {}", path.display()))
+    })?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("index.cagra");
+    let bak_path = parent.join(format!("{}.bak", file_name));
+    let tmp_path = parent.join(format!(".{}.{:016x}.tmp", file_name, crate::temp_suffix()));
+
+    // (1) Stale-`.bak` guard. A leftover means a prior save failed mid-rollback.
+    if bak_path.exists() {
+        return Err(CagraError::Io(format!(
+            "stale {} from prior failed save; manual recovery required \
+             (rename to {} or remove if confirmed bad) before retrying",
+            bak_path.display(),
+            path.display(),
+        )));
+    }
+
+    // (2) cuVS serialize to tmp — never overwrites the live blob.
+    let tmp_str = tmp_path.to_str().ok_or_else(|| {
+        CagraError::Io(format!(
+            "CAGRA tmp path is not valid UTF-8: {}",
+            tmp_path.display()
+        ))
+    })?;
+
+    tracing::info!(
+        n_vectors = cagra.id_map.len(),
+        dim = cagra.dim,
+        tmp = %tmp_path.display(),
+        "Serializing CAGRA index to disk"
+    );
+    if let Err(e) = gpu.index.serialize(&gpu.resources, tmp_str, true) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(CagraError::Cuvs(format!("cuvsCagraSerialize failed: {e}")));
+    }
+
+    // (3) Checksum the tmp before promoting — load() validates against this.
+    let blob_hash = match blake3_of_path(&tmp_path) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    };
+
+    // (4) Back up existing live file. Skipped on first save.
+    let backed_up = if path.exists() {
+        if let Err(e) = std::fs::rename(path, &bak_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(CagraError::Io(format!(
+                "Failed to back up {} -> {} before save: {}",
+                path.display(),
+                bak_path.display(),
+                e,
+            )));
+        }
+        true
+    } else {
+        false
+    };
+
+    if backed_up {
+        // fsync parent so the `.bak` rename is durable before atomic_replace.
+        if let Ok(f) = std::fs::File::open(parent) {
+            if let Err(e) = f.sync_all() {
+                tracing::debug!(
+                    error = %e,
+                    dir = %parent.display(),
+                    "fsync of CAGRA parent after backup failed (non-fatal)"
+                );
+            }
+        }
+    }
+
+    // (5) atomic_replace tmp -> live.
+    if let Err(e) = crate::fs::atomic_replace(&tmp_path, path) {
+        // (6) Roll back: restore .bak -> live, cleanup tmp, return.
+        let _ = std::fs::remove_file(&tmp_path);
+        if backed_up {
+            if let Err(restore_err) = std::fs::rename(&bak_path, path) {
+                tracing::error!(
+                    path = %path.display(),
+                    error = %restore_err,
+                    "Failed to restore CAGRA backup during save rollback — \
+                     manual recovery required (rename .bak)"
+                );
+                return Err(CagraError::Io(format!(
+                    "CAGRA save failed and rollback failed: \
+                     atomic_replace error={e}; restore error={restore_err}; \
+                     manual recovery — rename {bak} to {path}",
+                    bak = bak_path.display(),
+                    path = path.display(),
+                )));
+            }
+            if let Ok(f) = std::fs::File::open(parent) {
+                let _ = f.sync_all();
+            }
+        }
+        return Err(CagraError::Io(format!(
+            "Failed to promote {} -> {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )));
+    }
+
+    // (7) Successful save: remove `.bak`, fsync.
+    if backed_up {
+        let _ = std::fs::remove_file(&bak_path);
+        if let Ok(f) = std::fs::File::open(parent) {
+            let _ = f.sync_all();
+        }
+    }
+
+    Ok(blob_hash)
 }
 
 /// Write the CAGRA sidecar via write-temp + rename to avoid a torn JSON on
@@ -1778,6 +1889,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ====== DS-V1.36-2 (P4-12 / #1463) — `.bak` rollback pattern ======
+
+    /// First save (no prior file) leaves no `.bak` and no `.tmp`. Pins the
+    /// "skipped backup" branch.
+    #[test]
+    fn save_no_prior_file_leaves_no_bak() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.cagra");
+        let bak = dir.path().join("test.cagra.bak");
+        assert!(!path.exists());
+
+        build_test_index(8).save(&path).expect("first save");
+
+        assert!(path.exists(), "save must create the live file");
+        assert!(!bak.exists(), "first save must not leave a .bak behind");
+        // Tmp file pattern: `.<file>.<hex16>.tmp`. Glob-check none survived.
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with(".test.cagra.") && n.ends_with(".tmp")
+            })
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "save must clean up its tmp file; left behind: {:?}",
+            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Successful save with a prior live file: tmp staged, atomic_replace
+    /// promotes, `.bak` gets cleaned up after the new blob lands. The new
+    /// blob is loadable and the prior `.bak` is gone.
+    #[test]
+    fn save_with_prior_file_replaces_and_cleans_up_bak() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.cagra");
+        let bak = dir.path().join("test.cagra.bak");
+
+        // First save establishes a prior live file.
+        build_test_index(8).save(&path).expect("first save");
+        let v1_bytes = std::fs::read(&path).expect("read v1");
+        assert!(!v1_bytes.is_empty());
+
+        // Second save — must rename existing -> .bak, atomic_replace, then
+        // clean up .bak after success.
+        build_test_index(16).save(&path).expect("second save");
+
+        assert!(path.exists(), "live file must be present after save");
+        assert!(
+            !bak.exists(),
+            "successful save must clean up .bak; left at {}",
+            bak.display(),
+        );
+
+        // The post-save blob is a valid index loadable at the new chunk count.
+        let loaded = CagraIndex::load(&path, EMBEDDING_DIM, 16)
+            .expect("post-save blob must load with new chunk count");
+        assert_eq!(loaded.len(), 16);
+    }
+
+    /// Stale `.bak` left over from a prior failed save must block the next
+    /// save with an actionable error so the operator notices and clears it.
+    /// Pre-fix, the cuVS serialize would clobber the live file (the only
+    /// good copy) without warning.
+    #[test]
+    fn save_refuses_when_stale_bak_exists() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.cagra");
+        let bak = dir.path().join("test.cagra.bak");
+
+        // First save establishes a live file.
+        build_test_index(8).save(&path).expect("first save");
+        let live_bytes_before = std::fs::read(&path).expect("read live before");
+
+        // Simulate a prior crashed save: a stale `.bak` lingers next to it.
+        std::fs::write(&bak, b"stale-bak-from-prior-crash").unwrap();
+
+        // The next save MUST refuse with an error mentioning recovery.
+        let err = build_test_index(16)
+            .save(&path)
+            .expect_err("save must refuse when stale .bak exists");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("stale") && msg.contains("manual recovery"),
+            "stale-bak guard must surface an actionable error, got: {msg}"
+        );
+
+        // The live file must remain untouched (still loadable at the
+        // ORIGINAL chunk count of 8).
+        let live_bytes_after = std::fs::read(&path).expect("read live after");
+        assert_eq!(
+            live_bytes_before, live_bytes_after,
+            "live blob must survive byte-for-byte when save bails on stale .bak"
+        );
+        let loaded =
+            CagraIndex::load(&path, EMBEDDING_DIM, 8).expect("live blob must still load post-bail");
+        assert_eq!(loaded.len(), 8);
     }
 
     /// Mismatched chunk count must fail to load — protects us from handing
