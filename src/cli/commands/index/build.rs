@@ -336,8 +336,26 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // If interrupted during rebuild, the backup remains recoverable.
     let backup_path = cqs_dir.join("index.db.bak");
     let store = if index_path.exists() && !force {
-        Store::open(&index_path)
-            .with_context(|| format!("Failed to open store at {}", index_path.display()))?
+        let store = Store::open(&index_path)
+            .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
+
+        // #1459 item 5a: catch the silent dim-mismatch footgun. The global
+        // `--model` flag already parses for `cqs index`, but without `--force`
+        // we keep the prior store init — so a `cqs index --model X` against an
+        // index that was built for `Y` would feed X-dim embeddings into a
+        // store whose schema is pinned to Y-dim. Bail explicitly with a
+        // recovery hint so the operator gets the actionable error instead of
+        // a downstream embedding write that silently corrupts the index.
+        let mc = cli.try_model_config()?;
+        let stored = store.try_stored_model_name().with_context(|| {
+            format!(
+                "Failed to read model_name from {} metadata while checking for \
+                 model drift",
+                index_path.display()
+            )
+        })?;
+        check_index_model_drift(stored.as_deref(), &mc.name, &mc.repo, &index_path)?;
+        store
     } else {
         // Read LLM summaries from existing DB before destroying it.
         // Summaries are keyed by content_hash (blake3 of source content) so they're
@@ -1474,6 +1492,37 @@ pub(crate) fn consume_dirty_marker(cqs_dir: &Path) -> bool {
 // the join — store + cqs_dir → on-disk + in-memory index — had no direct
 // pin. These tests close that gap with a minimal `dim=16` corpus so the
 // HNSW build runs in milliseconds.
+
+/// #1459 item 5a: bail if the existing index's stored model name doesn't
+/// match the resolved model. Match permissively against both the canonical
+/// preset name (e.g. `bge-large`) and the repo string (e.g.
+/// `BAAI/bge-large-en-v1.5`) — operators pass either form interchangeably,
+/// as `cmd_model_swap`'s no-op short-circuit also does.
+fn check_index_model_drift(
+    stored: Option<&str>,
+    requested_name: &str,
+    requested_repo: &str,
+    index_path: &Path,
+) -> Result<()> {
+    let Some(stored_name) = stored else {
+        return Ok(());
+    };
+    let target_matches = stored_name == requested_name || stored_name == requested_repo;
+    if target_matches {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Index at {} was built for model `{stored}`, but `--model` resolved to \
+         `{requested}`. Re-run with `cqs index --force --model {requested}` to rebuild \
+         against the new model (the old index is backed up to `index.db.bak`). \
+         Pass `--model {stored}` (or unset --model / CQS_EMBEDDING_MODEL) to keep \
+         incremental indexing on the existing model.",
+        index_path.display(),
+        stored = stored_name,
+        requested = requested_name,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1736,6 +1785,72 @@ mentions = []
         assert!(
             !marker.exists(),
             "marker must be removed once consumed so the next index run sees a clean slate"
+        );
+    }
+
+    // ====== #1459 item 5a — `cqs index --model` drift detection ======
+
+    /// No stored model (fresh DB) → drift check is a no-op.
+    #[test]
+    fn check_index_model_drift_no_stored_passes() {
+        let path = Path::new("/tmp/x/index.db");
+        check_index_model_drift(None, "bge-large", "BAAI/bge-large-en-v1.5", path)
+            .expect("no stored model must pass through");
+    }
+
+    /// Stored == requested name → pass.
+    #[test]
+    fn check_index_model_drift_name_match_passes() {
+        let path = Path::new("/tmp/x/index.db");
+        check_index_model_drift(
+            Some("bge-large"),
+            "bge-large",
+            "BAAI/bge-large-en-v1.5",
+            path,
+        )
+        .expect("matching name must pass");
+    }
+
+    /// Stored == requested repo (but not the short name) → pass. Operators
+    /// often have `model_name = "BAAI/bge-large-en-v1.5"` from a `cqs index
+    /// --force` of an earlier session and pass `--model bge-large` later.
+    #[test]
+    fn check_index_model_drift_repo_match_passes() {
+        let path = Path::new("/tmp/x/index.db");
+        check_index_model_drift(
+            Some("BAAI/bge-large-en-v1.5"),
+            "bge-large",
+            "BAAI/bge-large-en-v1.5",
+            path,
+        )
+        .expect("matching repo must pass");
+    }
+
+    /// The footgun case: stored = bge-large, requested = embeddinggemma-300m.
+    /// Pre-fix, this silently fed 768-dim embeddings into a 1024-dim store.
+    /// Post-fix, the index command bails with a recovery hint.
+    #[test]
+    fn check_index_model_drift_mismatch_bails() {
+        let path = Path::new("/tmp/x/index.db");
+        let err = check_index_model_drift(
+            Some("bge-large"),
+            "embeddinggemma-300m",
+            "google/embeddinggemma-300m",
+            path,
+        )
+        .expect_err("mismatch must bail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`bge-large`"),
+            "error must name the stored model: {msg}"
+        );
+        assert!(
+            msg.contains("`embeddinggemma-300m`"),
+            "error must name the requested model: {msg}"
+        );
+        assert!(
+            msg.contains("--force"),
+            "error must point at --force as the recovery path: {msg}"
         );
     }
 }
