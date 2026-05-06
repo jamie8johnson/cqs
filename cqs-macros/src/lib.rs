@@ -112,7 +112,37 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .filter(|v| matches!(v.group, Group::A))
         .map(|v| v.passthrough_arm(enum_ident, /*group_b_seen_in_a*/ false));
 
+    // DX (#1495 follow-up): emit a const-eval shim-existence guard. If any
+    // `cmd_<snake>_dispatch` function is missing, the error fires once
+    // here with a clear "function not found in `crate::cli::commands`"
+    // message, rather than scattered per-call-site errors inside the
+    // generated match arms. The const block is `#[allow(unused)]` and
+    // expanded at compile time — zero runtime cost.
+    let dispatch_existence_checks = parsed.iter().map(|v| v.shim_existence_check());
+
     Ok(quote! {
+        // DX (#1495 follow-up): consolidated shim-existence check. If any
+        // `cmd_<snake>_dispatch` function is missing or has the wrong
+        // signature, the error fires here with a single clear message
+        // tied to the derive expansion. Without this block, you'd get
+        // ~58 scattered "function not found" errors at every match arm
+        // call site.
+        //
+        // `const _: ()` is a compile-time-only assertion: the function
+        // pointers are coerced through a typed local binding, which
+        // forces both name resolution and signature compatibility, then
+        // discarded. No runtime cost.
+        #[allow(unused, clippy::no_effect_underscore_binding)]
+        const _: () = {
+            type DispatchFn = fn(
+                &crate::cli::definitions::Cli,
+                ::std::option::Option<&crate::cli::CommandContext<'_, ::cqs::store::ReadOnly>>,
+                &::std::path::Path,
+                &#enum_ident,
+            ) -> ::anyhow::Result<()>;
+            #(#dispatch_existence_checks)*
+        };
+
         impl #enum_ident {
             /// Stable telemetry label for this variant. Must stay in lock-step
             /// with the `#[command(name = "...")]` attribute on every variant.
@@ -364,6 +394,27 @@ impl ParsedVariant {
         quote! {
             #(#cfg)*
             #pat => crate::cli::commands::#dispatch_fn(cli, Some(ctx), project_cqs_dir, c)
+        }
+    }
+
+    /// DX (#1495 follow-up): emit a single line of the consolidated
+    /// shim-existence guard. The guard is a `const _: ()` block that
+    /// coerces every `cmd_<snake>_dispatch` through a typed local
+    /// binding — if the function is missing or has the wrong shape, the
+    /// error fires here once with the variant name in scope, not 58
+    /// times across each generated match arm.
+    fn shim_existence_check(&self) -> TokenStream2 {
+        let cfg = &self.cfg_attrs;
+        let snake = to_snake_case(&self.ident.to_string());
+        let dispatch_fn = format_ident!("cmd_{}_dispatch", snake);
+        let var_doc_str = format!(
+            "fn {dispatch_fn} must exist in `crate::cli::commands` with the \
+             standardized dispatch signature — see `commands::dispatch_shims`"
+        );
+        let _ = var_doc_str; // expansion documentation; not emitted into source
+        quote! {
+            #(#cfg)*
+            let _: DispatchFn = crate::cli::commands::#dispatch_fn;
         }
     }
 
