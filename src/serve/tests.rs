@@ -1864,6 +1864,65 @@ mod auth_tests {
         );
     }
 
+    // ─── SEC-V1.36-6 regression: extractor 400 doesn't echo URI ─────────
+    //
+    // Pin axum 0.8 + tower-http 0.6 behavior: when `Query<T>` rejects a
+    // malformed query string, the 400 body is the serde error
+    // ("Failed to deserialize query string: <field>: <error>") — the
+    // URI itself (and the values inside `?token=...&...`) is NEVER
+    // echoed. Combined with P1.11's TraceLayer span (`path = %req.uri().path()`,
+    // not full URI) and the auth middleware's `needs_url_strip`
+    // 302-redirect on any `?token=...` URL, an extractor failure
+    // cannot leak a token.
+    //
+    // The audit-finding SEC-V1.36-6 (#1461 sub-item) speculated that
+    // tower-http's debug log echoes the URI — it does not for the
+    // P1.11-modified make_span_with we actually deploy. The test
+    // below regression-guards both the body shape and the absence
+    // of token-shaped values across the four `Query<T>` handlers.
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_v136_6_extractor_400_body_does_not_echo_query_string() {
+        let fixture = fixture_state();
+        // No auth — exercise the extractor's own rejection path (auth's
+        // needs_url_strip would 302-redirect before the extractor fired
+        // when auth is on, so this is the strict-worst-case path).
+        let app = test_router(fixture.state());
+
+        // `max_nodes` is Option<usize>; sending "foo" fails to parse and
+        // triggers Query<GraphQuery>'s rejection. Token in same query string.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/graph?max_nodes=foo&token=secret123abcdef")
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot /api/graph");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .expect("body");
+        let body = std::str::from_utf8(&bytes).unwrap_or("<non-utf8 body>");
+
+        assert!(
+            !body.contains("secret123abcdef"),
+            "SEC-V1.36-6: extractor 400 body must not echo query-string \
+             values (would leak ?token=...). Body was: {body:?}"
+        );
+        // Pin the actual body shape so future axum bumps that change
+        // the rejection format trip this test instead of silently
+        // shipping a regression.
+        assert!(
+            body.contains("Failed to deserialize query string"),
+            "expected serde-style rejection body, got: {body:?}"
+        );
+    }
+
     // ─── #1345 idle eviction ──────────────────────────────────────────────
 
     /// `wait_for_idle` returns when the gap between "now" and the
