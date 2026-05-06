@@ -123,66 +123,76 @@ pub(crate) fn cmd_trace(
             path: result,
         };
 
-        if matches!(format, OutputFormat::Json) {
-            crate::cli::json_envelope::emit_json(&trace_result)?;
-        } else if matches!(format, OutputFormat::Mermaid) {
-            if let Some(ref path) = trace_result.path {
-                println!("graph TD");
-                for (i, hop) in path.iter().enumerate() {
-                    let id = node_letter(i);
-                    let label = if hop.project.is_empty() {
-                        mermaid_escape(&hop.name)
-                    } else {
-                        format!(
-                            "{} [{}]",
-                            mermaid_escape(&hop.name),
-                            mermaid_escape(&hop.project)
-                        )
-                    };
-                    println!("    {}[\"{}\"]", id, label);
-                }
-                for i in 0..path.len().saturating_sub(1) {
-                    println!("    {} --> {}", node_letter(i), node_letter(i + 1));
-                }
-            } else {
-                println!("graph TD");
-                println!(
-                    "    %% No call path found from {} to {} within depth {}",
-                    source, target, max_depth
-                );
+        // P4-3 (#1463): exhaustive match instead of if/else-if chains so a
+        // future `OutputFormat` variant fails to compile until every render
+        // site adds an arm. Pre-fix the `else` arm silently absorbed unknown
+        // formats as "text".
+        match format {
+            OutputFormat::Json => {
+                crate::cli::json_envelope::emit_json(&trace_result)?;
             }
-        } else if let Some(ref path) = trace_result.path {
-            println!(
-                "Call path from {} to {} ({} hop{}, cross-project):",
-                source.cyan(),
-                target.cyan(),
-                path.len().saturating_sub(1),
-                if path.len().saturating_sub(1) == 1 {
-                    ""
+            OutputFormat::Mermaid => {
+                if let Some(ref path) = trace_result.path {
+                    println!("graph TD");
+                    for (i, hop) in path.iter().enumerate() {
+                        let id = node_letter(i);
+                        let label = if hop.project.is_empty() {
+                            mermaid_escape(&hop.name)
+                        } else {
+                            format!(
+                                "{} [{}]",
+                                mermaid_escape(&hop.name),
+                                mermaid_escape(&hop.project)
+                            )
+                        };
+                        println!("    {}[\"{}\"]", id, label);
+                    }
+                    for i in 0..path.len().saturating_sub(1) {
+                        println!("    {} --> {}", node_letter(i), node_letter(i + 1));
+                    }
                 } else {
-                    "s"
-                }
-            );
-            println!();
-            for (i, hop) in path.iter().enumerate() {
-                let prefix = if i == 0 {
-                    "  ".to_string()
-                } else {
-                    "  \u{2192} ".to_string()
-                };
-                if hop.project.is_empty() {
-                    println!("{}{}", prefix, hop.name.cyan());
-                } else {
-                    println!("{}{} [{}]", prefix, hop.name.cyan(), hop.project.dimmed());
+                    println!("graph TD");
+                    println!(
+                        "    %% No call path found from {} to {} within depth {}",
+                        source, target, max_depth
+                    );
                 }
             }
-        } else {
-            println!(
-                "No call path found from {} to {} within depth {} (cross-project).",
-                source.cyan(),
-                target.cyan(),
-                max_depth
-            );
+            OutputFormat::Text => {
+                if let Some(ref path) = trace_result.path {
+                    println!(
+                        "Call path from {} to {} ({} hop{}, cross-project):",
+                        source.cyan(),
+                        target.cyan(),
+                        path.len().saturating_sub(1),
+                        if path.len().saturating_sub(1) == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    );
+                    println!();
+                    for (i, hop) in path.iter().enumerate() {
+                        let prefix = if i == 0 {
+                            "  ".to_string()
+                        } else {
+                            "  \u{2192} ".to_string()
+                        };
+                        if hop.project.is_empty() {
+                            println!("{}{}", prefix, hop.name.cyan());
+                        } else {
+                            println!("{}{} [{}]", prefix, hop.name.cyan(), hop.project.dimmed());
+                        }
+                    }
+                } else {
+                    println!(
+                        "No call path found from {} to {} within depth {} (cross-project).",
+                        source.cyan(),
+                        target.cyan(),
+                        max_depth
+                    );
+                }
+            }
         }
         return Ok(());
     }
@@ -201,22 +211,31 @@ pub(crate) fn cmd_trace(
 
     // Trivial case: source == target
     if source_name == target_name {
-        if matches!(format, OutputFormat::Json) {
-            let trivial_path = vec![source_name.clone()];
-            let result =
-                build_trace_output(store, &source_name, &target_name, Some(&trivial_path), root)?;
-            crate::cli::json_envelope::emit_json(&result)?;
-        } else if matches!(format, OutputFormat::Mermaid) {
-            let rel_file = cqs::rel_display(&source_chunk.file, root);
-            println!("graph TD");
-            println!(
-                "    A[\"{} ({}:{})\"]",
-                mermaid_escape(&source_name),
-                mermaid_escape(&rel_file),
-                source_chunk.line_start
-            );
-        } else {
-            println!("{} and {} are the same function.", source_name, target_name);
+        match format {
+            OutputFormat::Json => {
+                let trivial_path = vec![source_name.clone()];
+                let result = build_trace_output(
+                    store,
+                    &source_name,
+                    &target_name,
+                    Some(&trivial_path),
+                    root,
+                )?;
+                crate::cli::json_envelope::emit_json(&result)?;
+            }
+            OutputFormat::Mermaid => {
+                let rel_file = cqs::rel_display(&source_chunk.file, root);
+                println!("graph TD");
+                println!(
+                    "    A[\"{} ({}:{})\"]",
+                    mermaid_escape(&source_name),
+                    mermaid_escape(&rel_file),
+                    source_chunk.line_start
+                );
+            }
+            OutputFormat::Text => {
+                println!("{} and {} are the same function.", source_name, target_name);
+            }
         }
         return Ok(());
     }
@@ -228,14 +247,16 @@ pub(crate) fn cmd_trace(
     let path = bfs_shortest_path(&graph.forward, &source_name, &target_name, max_depth);
 
     match path {
-        Some(names) => {
-            if matches!(format, OutputFormat::Json) {
+        Some(names) => match format {
+            OutputFormat::Json => {
                 let result =
                     build_trace_output(store, &source_name, &target_name, Some(&names), root)?;
                 crate::cli::json_envelope::emit_json(&result)?;
-            } else if matches!(format, OutputFormat::Mermaid) {
+            }
+            OutputFormat::Mermaid => {
                 format_mermaid(store, root, &names)?;
-            } else {
+            }
+            OutputFormat::Text => {
                 println!(
                     "Call path from {} to {} ({} hop{}):",
                     source_name.cyan(),
@@ -266,19 +287,21 @@ pub(crate) fn cmd_trace(
                     }
                 }
             }
-        }
-        None => {
-            if matches!(format, OutputFormat::Json) {
+        },
+        None => match format {
+            OutputFormat::Json => {
                 let result = build_trace_output(store, &source_name, &target_name, None, root)?;
                 crate::cli::json_envelope::emit_json(&result)?;
-            } else if matches!(format, OutputFormat::Mermaid) {
+            }
+            OutputFormat::Mermaid => {
                 // Empty graph with comment
                 println!("graph TD");
                 println!(
                     "    %% No call path found from {} to {} within depth {}",
                     source_name, target_name, max_depth
                 );
-            } else {
+            }
+            OutputFormat::Text => {
                 println!(
                     "No call path found from {} to {} within depth {}.",
                     source_name.cyan(),
@@ -286,7 +309,7 @@ pub(crate) fn cmd_trace(
                     max_depth
                 );
             }
-        }
+        },
     }
 
     Ok(())
