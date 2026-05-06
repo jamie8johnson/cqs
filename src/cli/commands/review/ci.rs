@@ -16,11 +16,16 @@ pub(crate) fn cmd_ci(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_ci", ?format, ?gate, ?max_tokens).entered();
 
-    if matches!(format, crate::cli::OutputFormat::Mermaid) {
-        anyhow::bail!("Mermaid output is not supported for ci — use text or json");
-    }
-
-    let json = matches!(format, crate::cli::OutputFormat::Json);
+    // P4-3 (#1463): exhaustive match — Mermaid bails, Json/Text drive a
+    // boolean used downstream by `apply_token_budget`. The match shape
+    // means a future `OutputFormat` variant fails to compile here.
+    let json = match format {
+        crate::cli::OutputFormat::Mermaid => {
+            anyhow::bail!("Mermaid output is not supported for ci — use text or json");
+        }
+        crate::cli::OutputFormat::Json => true,
+        crate::cli::OutputFormat::Text => false,
+    };
     let store = &ctx.store;
     let root = &ctx.root;
 

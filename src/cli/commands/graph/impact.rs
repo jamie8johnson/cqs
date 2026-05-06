@@ -45,16 +45,20 @@ pub(crate) fn cmd_impact(
         )?;
         truncate_impact_sections(&mut result, limit);
 
-        if matches!(format, OutputFormat::Mermaid) {
-            println!("{}", impact_to_mermaid(&result));
-            return Ok(());
-        }
-        if matches!(format, OutputFormat::Json) {
-            let json = impact_to_json(&result)?;
-            crate::cli::json_envelope::emit_json(&json)?;
-        } else {
-            let rel_file = "(cross-project)";
-            display_impact_text(&result, root, rel_file);
+        // P4-3 (#1463): exhaustive match — adding a new `OutputFormat`
+        // variant fails to compile until every render site adds an arm.
+        match format {
+            OutputFormat::Mermaid => {
+                println!("{}", impact_to_mermaid(&result));
+            }
+            OutputFormat::Json => {
+                let json = impact_to_json(&result)?;
+                crate::cli::json_envelope::emit_json(&json)?;
+            }
+            OutputFormat::Text => {
+                let rel_file = "(cross-project)";
+                display_impact_text(&result, root, rel_file);
+            }
         }
         return Ok(());
     }
@@ -84,29 +88,30 @@ pub(crate) fn cmd_impact(
 
     truncate_impact_sections(&mut result, limit);
 
-    if matches!(format, OutputFormat::Mermaid) {
-        println!("{}", impact_to_mermaid(&result));
-        return Ok(());
-    }
-
-    if matches!(format, OutputFormat::Json) {
-        let mut json = impact_to_json(&result)?;
-        if do_suggest_tests {
-            let suggestions_json = format_test_suggestions(&suggestions);
-            if let Some(obj) = json.as_object_mut() {
-                obj.insert(
-                    "test_suggestions".into(),
-                    serde_json::json!(suggestions_json),
-                );
-            }
+    match format {
+        OutputFormat::Mermaid => {
+            println!("{}", impact_to_mermaid(&result));
         }
-        crate::cli::json_envelope::emit_json(&json)?;
-    } else {
-        let rel_file = cqs::rel_display(&chunk.file, root);
-        display_impact_text(&result, root, &rel_file);
+        OutputFormat::Json => {
+            let mut json = impact_to_json(&result)?;
+            if do_suggest_tests {
+                let suggestions_json = format_test_suggestions(&suggestions);
+                if let Some(obj) = json.as_object_mut() {
+                    obj.insert(
+                        "test_suggestions".into(),
+                        serde_json::json!(suggestions_json),
+                    );
+                }
+            }
+            crate::cli::json_envelope::emit_json(&json)?;
+        }
+        OutputFormat::Text => {
+            let rel_file = cqs::rel_display(&chunk.file, root);
+            display_impact_text(&result, root, &rel_file);
 
-        if do_suggest_tests && !suggestions.is_empty() {
-            display_test_suggestions(&suggestions);
+            if do_suggest_tests && !suggestions.is_empty() {
+                display_test_suggestions(&suggestions);
+            }
         }
     }
 
