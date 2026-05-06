@@ -25,7 +25,9 @@ mod types;
 pub use error::StoreError;
 
 // Row types (crate-internal)
-pub(crate) use rows::{CandidateRow, ChunkRow};
+pub(crate) use rows::{
+    CandidateRow, ChunkRow, CHUNK_ROW_SELECT_COLUMNS, CHUNK_ROW_SELECT_COLUMNS_PREFIXED,
+};
 
 // Line number helper (used by rows and other store modules)
 pub use rows::clamp_line_number;

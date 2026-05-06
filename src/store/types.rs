@@ -316,22 +316,23 @@ impl<Mode> Store<Mode> {
         tracing::debug!("querying type users");
 
         self.rt.block_on(async {
-            let rows: Vec<ChunkRow> = sqlx::query(
-                "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name,
-                        c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
-                 FROM type_edges te
-                 JOIN chunks c ON te.source_chunk_id = c.id
-                 WHERE te.target_type_name = ?1
-                 ORDER BY c.origin, c.line_start
+            let sql = format!(
+                "SELECT DISTINCT {cols} \
+                 FROM type_edges te \
+                 JOIN chunks c ON te.source_chunk_id = c.id \
+                 WHERE te.target_type_name = ?1 \
+                 ORDER BY c.origin, c.line_start \
                  LIMIT ?2",
-            )
-            .bind(type_name)
-            .bind(limit_to_sql(limit))
-            .fetch_all(&self.pool)
-            .await?
-            .iter()
-            .map(ChunkRow::from_row)
-            .collect();
+                cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS_PREFIXED,
+            );
+            let rows: Vec<ChunkRow> = sqlx::query(&sql)
+                .bind(type_name)
+                .bind(limit_to_sql(limit))
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(ChunkRow::from_row)
+                .collect();
 
             Ok(rows.into_iter().map(ChunkSummary::from).collect())
         })
@@ -398,14 +399,16 @@ impl<Mode> Store<Mode> {
             const BATCH_SIZE: usize = max_rows_per_statement(1);
             for batch in type_names.chunks(BATCH_SIZE) {
                 let placeholders = super::helpers::make_placeholders(batch.len());
+                // target_type_name appended AFTER the pinned ChunkRow columns
+                // so the ordinal contract for `from_row` (0..15) holds; read
+                // by ordinal 16.
                 let sql = format!(
-                    "SELECT te.target_type_name, c.id, c.origin, c.language, c.chunk_type, c.name,
-                            c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
-                     FROM type_edges te
-                     JOIN chunks c ON te.source_chunk_id = c.id
-                     WHERE te.target_type_name IN ({})
+                    "SELECT {cols}, te.target_type_name \
+                     FROM type_edges te \
+                     JOIN chunks c ON te.source_chunk_id = c.id \
+                     WHERE te.target_type_name IN ({placeholders}) \
                      ORDER BY te.target_type_name, c.origin, c.line_start",
-                    placeholders
+                    cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS_PREFIXED,
                 );
                 let mut q = sqlx::query(&sql);
                 for name in batch {
@@ -414,7 +417,7 @@ impl<Mode> Store<Mode> {
                 let rows: Vec<_> = q.fetch_all(&self.pool).await?;
                 for row in rows {
                     use sqlx::Row;
-                    let type_name: String = row.get("target_type_name");
+                    let type_name: String = row.get(16);
                     let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
                     result.entry(type_name).or_default().push(chunk);
                 }
