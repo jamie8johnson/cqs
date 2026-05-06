@@ -2,27 +2,30 @@
 
 ## Right Now
 
-**Post-v1.38.0 autopilot wave (2026-05-06 afternoon, 6 PRs merged + 1 in CI)**: user invoked `/effort max` and asked for "deferred because large" issue work. Triage of 15 open issues identified 3 candidates classified as size-deferred not design-deferred (#1458 TC Happy tests, #1452 perf, #1366 proc-macro). Walking the actual code revealed #1452 and #1366 had load-bearing design surface (schema/recovery + handler-signature standardization respectively) and got triaged with detailed analysis comments to GitHub rather than half-shipped. The TC Happy umbrella shipped clean as three PRs (one per cluster), then five more PRs landed against the P4 umbrella + API design umbrella as adjacent autopilot wins.
+**Post-v1.38.0 autopilot wave (2026-05-06, 9 PRs merged)**: user invoked `/effort max` and asked for "deferred because large" issue work, then later said "go with 2a" on #1366 specifically. Triage of 15 open issues identified 3 size-deferred candidates (#1458 TC Happy tests, #1452 perf, #1366 proc-macro). Walking the actual code revealed #1452 had load-bearing design surface (schema migration vs zero-vec convention, recovery semantics) and got triaged with a detailed analysis comment instead. #1366 went the full distance with the 2a handler-signature standardization. The TC Happy umbrella shipped as three clean PRs (one per cluster). Five more PRs landed against the P4 umbrella + API design umbrella + the proc-macro derive refactor.
 
-**Merged this wave (6)**:
+**Merged this wave (9)**:
 - **#1487** — test(context): TC-HAP-V1.36-4 + 7 builder tests (closes 2/5 sub-items in #1458). 4 tests for `build_compact_data` / `build_full_data` (path normalization, error path, external-caller classification) + `pack_by_relevance` ignored test. Inlined Store + call-graph fixture because `cqs::test_helpers` is `#[cfg(test)]`-gated in lib crate.
 - **#1488** — test(watch+train): TC-HAP-V1.36-9 + 10 daemon GC + train-data subprocess tests. 3 GC tests exercising `enumerate_files` + prune_missing end-to-end with project-relative-pathed chunks. 2 train-data subprocess tests (`slow-tests`-gated) spinning a real git repo.
 - **#1489** — test(pipeline): TC-HAP-V1.36-8 prepare_for_embedding tests. 3 `#[ignore]`-gated tests covering fresh-batch / store-cache-hit / empty-batch branches. Verified against the default model.
 - **#1490** — fix(cli): tasklist UTF-16 BOM blind-spot (P4-10 / refs #1463). Pre-fix, `process_exists` used `String::from_utf8_lossy`, missing UTF-16 LE BOM-prefixed Windows output and silently classifying live PIDs as stale. New `decode_tasklist_stdout` handles UTF-16 LE/BE/UTF-8 BOMs.
 - **#1491** — fix(splade): `.bak` rollback for save (DS-V1.36-5 / P4-13 / refs #1463). Mirrors HNSW pattern: stale-`.bak` guard, rename live → `.bak`, fsync, atomic_replace, restore on failure, cleanup on success. Pre-fix, a cross-device EXDEV failure could destroy the only good blob.
 - **#1492** — fix(cagra): `.bak` rollback for save (DS-V1.36-2 / P4-12 / refs #1463). Same pattern applied to `CagraIndex::save` + `save_with_store`. cuVS now serializes to a tmp path before atomic_replace; sidecar written AFTER the new blob lands rather than removed up front.
-
-**In CI (1)**: #1493 — fix(index): drop never-emitted `IndexBackendError::ChecksumMismatch` / `LoadFailed` variants (API-V1.36-6 / refs #1459). `grep -rn` found zero constructors; trait doc explained why (every backend handles integrity failures via `tracing::warn!` + `Ok(None)`). Variants were misleading-but-unused.
+- **#1493** — fix(index): drop never-emitted `IndexBackendError::ChecksumMismatch` / `LoadFailed` variants (API-V1.36-6 / refs #1459). `grep -rn` found zero constructors; trait doc explained why (every backend handles integrity failures via `tracing::warn!` + `Ok(None)`). Variants were misleading-but-unused.
+- **#1494** — docs(tears): post-v1.38.0 autopilot wave snapshot.
+- **#1495** — refactor(cli): `#[derive(CqsCommands)]` proc-macro replaces `for_each_command!` registry (closes #1366). 1598 ins / 1029 del. New workspace member `cqs-macros` (proc-macro crate) emits `Commands::variant_name` + `batch_support` + `dispatch_group_a` + `dispatch_group_b` from per-variant `#[cqs_cmd(group, batch)]` attributes. Each of 58 variants gets a `cmd_<snake>_dispatch` shim (centralized in `commands/dispatch_shims.rs`) with the standardized signature `(cli, ctx, project_cqs_dir, &Commands) -> Result<()>`. The 778-line `src/cli/registry.rs` central table is gone. Variant-name kebab-case auto-derives from ident (matches clap's defaults — preserves all existing telemetry strings). Cfg-gated variants forwarded to every emitted arm. Telemetry / batch-support / dispatch order all unchanged.
 
 **Audit umbrella state after this wave**:
 - ✅ #1458 (TC Happy 5 tests) — all sub-items shipped
 - ✅ #1460 / #1461 / #1462 — closed in v1.38.0
-- ⏳ #1459 (P3 API design) — 6/8 sub-items shipped (4/7/8/9 in v1.38.0, 6 in flight as #1493). 4 design-discussion items remain (1, 2, 3, 5)
+- ✅ #1366 (proc-macro CLI derive) — closed by #1495
+- ⏳ #1459 (P3 API design) — 7/8 sub-items shipped (4/7/8/9 in v1.38.0, 6 in #1493). 3 design-discussion items remain (1, 2, 5)
 - ⏳ #1463 (P4 design-level) — 12 hard items, 3 shipped this wave (P4-10/12/13). 9 remain — Windows daemon (P4-7/8/9), extensibility refactors (P4-3/4/5/6), HNSW id_map memory (P4-11), TC adversarial concurrent writer (P4-1)
 
-**Triaged as needing design discussion** (analysis comments posted to GitHub):
+**Triaged as needing design discussion** (analysis comment posted to GitHub):
 - **#1452** — skip first-pass embed when `--llm-summaries`. Schema (`embedding BLOB NOT NULL`) requires migration vs zero-vec convention. Enrichment-pass early-skip leaves chunks unembedded. Summary-eligibility gap. Recovery semantics for crash mid-state. All three branch points need maintainer input.
-- **#1366** — proc-macro CLI derive. Current `for_each_command!` takes per-variant inline dispatch bodies with non-uniform handler signatures. Derive macro requires either ~50-handler signature standardization or attribute-encoded call expressions (fragile). Filed for a dedicated design pass. Option 1 from issue body (CI lint) is moot — already enforced via exhaustive match in registry.rs:18-19.
+
+**Adding a top-level CLI command after #1495**: declare the variant with `#[cqs_cmd(group = "a"|"b", batch = "cli"|"daemon"|"runtime")]` on `Commands` (definitions.rs), implement the handler in `commands/<area>/`, add a small `cmd_<snake>_dispatch` shim in `commands/dispatch_shims.rs`. The shim destructures the variant out of `&Commands` and forwards to the existing handler with the same args the for_each_command! body used to bind. Cfg-gated variants get `#[cfg(feature = "...")]` next to `#[cqs_cmd(...)]` and the derive forwards it to every emitted arm.
 
 **v1.38.0 shipped** — 2026-05-06 morning. Minor release. Bundles 13 audit-driven PRs since v1.37.0 closing three umbrella tracking issues (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM) plus tracker-hygiene cleanup (3 stale issues). Six surface deletions justify the minor bump: `pub fn nl::generate_nl_description` + `generate_nl_with_template` (#1473), `pub rerank: bool` field on `Cli`/`SearchArgs` + `pub(crate) resolve_rerank_mode` (#1479), `BatchProvider::set_on_item_complete` trait method (#1470). Env overrides preserve prior behavior on every default-changed knob. Tag `v1.38.0` pushed; crates.io published; GitHub Release auto-building from `.github/workflows/release.yml`.
 
