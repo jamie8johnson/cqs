@@ -552,7 +552,7 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Hn
     fn try_open(
         &self,
         ctx: &crate::index::BackendContext<'_, Mode>,
-    ) -> std::result::Result<Option<Box<dyn VectorIndex>>, crate::index::IndexBackendError> {
+    ) -> std::result::Result<Option<Box<dyn VectorIndex>>, crate::store::StoreError> {
         let dirty = match ctx.store.is_hnsw_dirty(crate::HnswKind::Enriched) {
             Ok(d) => d,
             Err(e) => {

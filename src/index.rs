@@ -5,46 +5,17 @@
 
 use std::path::Path;
 
-use thiserror::Error;
-
 use crate::embedder::Embedding;
 use crate::store::{ClearHnswDirty, Store, StoreError};
 
-/// Errors produced by [`IndexBackend::try_open`].
-///
-/// EH-V1.33-7 / #1374: previously `try_open` returned `anyhow::Result`,
-/// which leaked the `anyhow` dependency into a public lib-side trait
-/// (cqs convention is `thiserror` for library APIs, `anyhow` only in
-/// CLI). Most error paths in current backends — checksum mismatches,
-/// failed loads, dirty-flag-reads — are already self-handled with
-/// `tracing::warn!` + `Ok(None)` so the next backend can take over.
-/// The variants below are reserved for the small set of cases where a
-/// backend wants a hard failure to bubble up to the selector (currently
-/// unused; future backends like USearch / Metal / ROCm can adopt as
-/// needed). CLI sites consume this with `?` into `anyhow::Result` exactly
-/// as today via the `From` impl.
-///
-/// API-V1.36-6 (#1459 sub-6): the previous `ChecksumMismatch` and
-/// `LoadFailed` variants were documented as never-emitted — every
-/// backend converts internal load failures to `Ok(None)` and
-/// `tracing::warn!` to fall through to the next backend. Removing
-/// them tightens the type to "store-level abort only", matching the
-/// trait contract. Backend implementations that handle integrity
-/// failures internally still log via `tracing::warn!` and return
-/// `Ok(None)`, exactly as before.
-#[derive(Debug, Error)]
-pub enum IndexBackendError {
-    /// A backend-internal store query failed in a way that can't be
-    /// recovered by falling through to the next backend.
-    #[error("store error: {0}")]
-    Store(#[from] StoreError),
-}
-
-/// Convenience for CLI consumers that want to fold backend errors into
-/// `anyhow::Error` chains. Standard `thiserror`-derived error already
-/// implements `std::error::Error`, so `anyhow::Result<...>` accepts it
-/// via `?`.
-pub type Result<T> = std::result::Result<T, IndexBackendError>;
+// API-V1.36-6 follow-up: the `IndexBackendError` wrapper enum was a
+// single-variant `Store(StoreError)` after #1493 dropped its two
+// never-emitted variants. The wrapper added no information — every
+// non-fall-through error a backend produces is a store-level error,
+// every other failure mode is self-handled via `tracing::warn!` +
+// `Ok(None)`. The trait now returns `Result<_, StoreError>` directly;
+// `anyhow::Result<_>` still consumes it via `?` exactly as before
+// because `StoreError: std::error::Error`.
 
 /// Result from a vector index search
 #[derive(Debug, Clone)]
@@ -172,7 +143,7 @@ pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
     fn try_open(
         &self,
         ctx: &BackendContext<'_, Mode>,
-    ) -> std::result::Result<Option<Box<dyn VectorIndex>>, IndexBackendError>;
+    ) -> std::result::Result<Option<Box<dyn VectorIndex>>, StoreError>;
 }
 
 /// #1348 / EX-V1.33-2: declare the registered backends as a single table.
