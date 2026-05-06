@@ -104,7 +104,15 @@ pub(super) fn encode_splade_for_changed_files(
     store: &Store,
     changed_files: &[PathBuf],
 ) {
-    let batch_size = splade_batch_size();
+    // SHL-V1.36-6: read the encoder's probed dims so the batch size
+    // scales with model width / seq length. ensembledistil at 768/256
+    // gets the historic 32; SPLADE-Code 0.6B at 1024/512 gets 8 instead
+    // of OOMing.
+    let (hidden_size, max_length) = {
+        let enc = encoder_mu.lock().unwrap_or_else(|p| p.into_inner());
+        (enc.hidden_size(), enc.max_length())
+    };
+    let batch_size = splade_batch_size_for(hidden_size, max_length);
     let _span = tracing::info_span!(
         "encode_splade_for_changed_files",
         n_files = changed_files.len(),
@@ -192,14 +200,60 @@ pub(super) fn encode_splade_for_changed_files(
     }
 }
 
+/// SPLADE baseline batch + reference dims, paired so the formula in
+/// [`splade_batch_size_for`] returns 32 for the canonical SPLADE-base
+/// shape (hidden=768, max_length=256). Mirrors the reranker / embedder
+/// patterns.
+const DEFAULT_SPLADE_BATCH: usize = 32;
+const SPLADE_REFERENCE_HIDDEN: usize = 768;
+const SPLADE_REFERENCE_MAX_LENGTH: usize = 256;
+
 /// SPLADE batch size for incremental encoding. Mirrors the reranker
 /// batch pattern (#963). Default 32 matches the reranker default.
+///
+/// Legacy free function. Callers that have a [`SpladeEncoder`] in
+/// scope should use [`splade_batch_size_for`] instead so the batch
+/// scales by the loaded model's `(hidden_size, max_length)`. Kept as
+/// a backwards-compatible no-op for the env-only path.
 pub(super) fn splade_batch_size() -> usize {
     std::env::var("CQS_SPLADE_BATCH")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(32)
+        .unwrap_or(DEFAULT_SPLADE_BATCH)
+}
+
+/// SHL-V1.36-6: SPLADE batch size scaled by `(hidden_size, max_length)`.
+/// Mirrors `reranker::reranker_batch_size`. Lets SPLADE-Code 0.6B at
+/// 1024-hidden / 512-seq use a smaller batch than ensembledistil at
+/// 768/256, instead of OOMing the same default. `CQS_SPLADE_BATCH` env
+/// continues to win regardless of the loaded model's dims.
+///
+/// Formula:
+///   batch = 32 * (REFERENCE_HIDDEN / hidden).max(0.25)
+///              * (REFERENCE_MAX_LENGTH / max_length).max(0.25)
+/// rounded to a power of two clamped to `[1, 256]`.
+pub(super) fn splade_batch_size_for(hidden_size: usize, max_length: usize) -> usize {
+    if std::env::var_os("CQS_SPLADE_BATCH").is_some() {
+        return splade_batch_size(); // env override path
+    }
+    let baseline = DEFAULT_SPLADE_BATCH as f64;
+    let hidden_size = hidden_size.max(1) as f64;
+    let max_length = max_length.max(1) as f64;
+    let hidden_factor = (SPLADE_REFERENCE_HIDDEN as f64 / hidden_size).max(0.25);
+    let seq_factor = (SPLADE_REFERENCE_MAX_LENGTH as f64 / max_length).max(0.25);
+    let scaled = (baseline * hidden_factor * seq_factor).max(1.0) as usize;
+    let rounded = scaled.next_power_of_two().clamp(1, 256);
+    if rounded != DEFAULT_SPLADE_BATCH {
+        tracing::debug!(
+            hidden_size = hidden_size as usize,
+            max_length = max_length as usize,
+            scaled,
+            rounded,
+            "splade_batch_size_for: scaling baseline by (hidden_size, max_length)"
+        );
+    }
+    rounded
 }
 
 /// EH-V1.33-8 (#1290): touch the stored `source_mtime` to disk's mtime so
