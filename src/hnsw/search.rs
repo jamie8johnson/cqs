@@ -118,7 +118,11 @@ impl HnswIndex {
                         return None;
                     }
                     Some(IndexResult {
-                        id: self.id_map[idx].clone(),
+                        // P4-11 follow-up: id_map is now Vec<Box<str>>;
+                        // IndexResult::id is `String`, so convert via
+                        // `to_string()` (one allocation per result, same
+                        // as the prior `String::clone()`).
+                        id: self.id_map[idx].to_string(),
                         score,
                     })
                 } else {

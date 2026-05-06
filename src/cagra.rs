@@ -229,8 +229,12 @@ pub struct CagraIndex {
     dim: usize,
     /// cuVS resources + index, protected by Mutex (CUDA contexts require serialized access)
     gpu: Mutex<GpuState>,
-    /// Mapping from internal index to chunk ID
-    id_map: Vec<String>,
+    /// Mapping from internal index to chunk ID.
+    ///
+    /// P4-11 follow-up: `Box<str>` instead of `String` to drop the
+    /// 8-byte `cap` field per entry. Mirrors the change in
+    /// `HnswIndex::id_map`. ~8 MB reduction at 1M chunks.
+    id_map: Vec<Box<str>>,
     /// RM-V1.25-19: Set when a mutex poison is observed. The CUDA stream
     /// may be in an inconsistent posture after a mid-op panic
     /// (cudaMalloc'd buffer unfreed, stream corked, resources leaked),
@@ -570,7 +574,9 @@ impl CagraIndex {
             if idx < self.id_map.len() {
                 let score = 1.0 - dist / 2.0;
                 results.push(IndexResult {
-                    id: self.id_map[idx].clone(),
+                    // P4-11 follow-up: Box<str>::to_string() — same
+                    // single-allocation cost as the prior String::clone().
+                    id: self.id_map[idx].to_string(),
                     score,
                 });
             }
@@ -827,10 +833,16 @@ impl CagraIndex {
 
         tracing::info!("CAGRA index built successfully");
 
+        // P4-11 follow-up: convert Vec<String> → Vec<Box<str>> at the
+        // CagraIndex construction boundary. `String::into_boxed_str()` is
+        // zero-copy (shrinks the existing heap allocation, drops the
+        // `cap` field). Saves ~8 bytes per entry of resident memory.
+        let id_map_boxed: Vec<Box<str>> = id_map.into_iter().map(String::into_boxed_str).collect();
+
         Ok(Self {
             dim,
             gpu: Mutex::new(GpuState { resources, index }),
-            id_map,
+            id_map: id_map_boxed,
             poisoned: AtomicBool::new(false),
         })
     }
@@ -957,7 +969,10 @@ impl CagraIndex {
             // splade_generation default of 0 — callers wanting the coarse
             // staleness check should use `save_with_store`.
             splade_generation: 0,
-            id_map: self.id_map.clone(),
+            // P4-11 follow-up: convert Vec<Box<str>> → Vec<String> at the
+            // sidecar boundary (the on-disk schema stays Vec<String> for
+            // backward-compatible `serde_json` decode).
+            id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
             blake3: blob_hash,
         };
 
@@ -1039,7 +1054,10 @@ impl CagraIndex {
             dim: self.dim,
             chunk_count: self.id_map.len(),
             splade_generation: generation,
-            id_map: self.id_map.clone(),
+            // P4-11 follow-up: convert Vec<Box<str>> → Vec<String> at the
+            // sidecar boundary (the on-disk schema stays Vec<String> for
+            // backward-compatible `serde_json` decode).
+            id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
             blake3: blob_hash,
         };
 
@@ -1203,7 +1221,13 @@ impl CagraIndex {
         Ok(Self {
             dim: meta.dim,
             gpu: Mutex::new(GpuState { resources, index }),
-            id_map: meta.id_map,
+            // P4-11 follow-up: convert Vec<String> → Vec<Box<str>> at the
+            // load boundary. Zero-copy via `String::into_boxed_str()`.
+            id_map: meta
+                .id_map
+                .into_iter()
+                .map(String::into_boxed_str)
+                .collect(),
             poisoned: AtomicBool::new(false),
         })
     }
