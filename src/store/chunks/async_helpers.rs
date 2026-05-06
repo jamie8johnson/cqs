@@ -32,9 +32,8 @@ impl<Mode> Store<Mode> {
         for batch in ids.chunks(BATCH_SIZE) {
             let placeholders = crate::store::helpers::make_placeholders(batch.len());
             let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name, vendored
-                 FROM chunks WHERE id IN ({})",
-                placeholders
+                "SELECT {cols} FROM chunks WHERE id IN ({placeholders})",
+                cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
             );
 
             let rows: Vec<_> = {
@@ -131,10 +130,11 @@ impl<Mode> Store<Mode> {
         }
 
         let placeholders = crate::store::helpers::make_placeholders(ids.len());
+        // PERF: pinned columns first so ChunkRow::from_row ordinals stay stable;
+        // `embedding` appended after (read by index 16 below).
         let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name, embedding, vendored
-             FROM chunks WHERE id IN ({})",
-            placeholders
+            "SELECT {cols}, embedding FROM chunks WHERE id IN ({placeholders})",
+            cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
         );
 
         let rows: Vec<_> = {

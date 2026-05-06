@@ -152,15 +152,11 @@ impl<Mode> Store<Mode> {
     pub fn get_chunks_by_origin(&self, origin: &str) -> Result<Vec<ChunkSummary>, StoreError> {
         let _span = tracing::debug_span!("get_chunks_by_origin", origin = %origin).entered();
         self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, content_hash, parent_id, parent_type_name
-                 FROM chunks WHERE origin = ?1
-                 ORDER BY line_start",
-            )
-            .bind(origin)
-            .fetch_all(&self.pool)
-            .await?;
+            let sql = format!(
+                "SELECT {cols} FROM chunks WHERE origin = ?1 ORDER BY line_start",
+                cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
+            );
+            let rows: Vec<_> = sqlx::query(&sql).bind(origin).fetch_all(&self.pool).await?;
 
             Ok(rows
                 .iter()
@@ -190,11 +186,9 @@ impl<Mode> Store<Mode> {
             for batch in origins.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                            line_start, line_end, content_hash, parent_id, parent_type_name
-                     FROM chunks WHERE origin IN ({})
+                    "SELECT {cols} FROM chunks WHERE origin IN ({placeholders}) \
                      ORDER BY origin, line_start",
-                    placeholders
+                    cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
                 );
 
                 let mut query = sqlx::query(&sql);
@@ -205,7 +199,8 @@ impl<Mode> Store<Mode> {
                 let rows: Vec<_> = query.fetch_all(&self.pool).await?;
                 for row in &rows {
                     let chunk = ChunkSummary::from(ChunkRow::from_row(row));
-                    let origin_key: String = row.get("origin");
+                    // origin is at ordinal 1 in CHUNK_ROW_SELECT_COLUMNS
+                    let origin_key: String = row.get(1);
                     result.entry(origin_key).or_default().push(chunk);
                 }
             }
@@ -235,11 +230,9 @@ impl<Mode> Store<Mode> {
             for batch in names.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                            line_start, line_end, content_hash, parent_id, parent_type_name
-                     FROM chunks WHERE name IN ({})
+                    "SELECT {cols} FROM chunks WHERE name IN ({placeholders}) \
                      ORDER BY origin, line_start",
-                    placeholders
+                    cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
                 );
 
                 let rows: Vec<_> = {
@@ -536,21 +529,24 @@ impl<Mode> Store<Mode> {
     ) -> Result<(Vec<ChunkSummary>, i64), StoreError> {
         let _span = tracing::debug_span!("chunks_paged", after_rowid, limit).entered();
         self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT rowid, id, origin, language, chunk_type, name, signature, content, doc, \
-                 line_start, line_end, content_hash, window_idx, parent_id, parent_type_name \
-                 FROM chunks WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
-            )
-            .bind(after_rowid)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await?;
+            // rowid appended AFTER the pinned ChunkRow columns so the
+            // ordinal contract for `ChunkRow::from_row` (0..15) holds.
+            let sql = format!(
+                "SELECT {cols}, rowid FROM chunks WHERE rowid > ?1 \
+                 ORDER BY rowid ASC LIMIT ?2",
+                cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
+            );
+            let rows: Vec<_> = sqlx::query(&sql)
+                .bind(after_rowid)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await?;
 
             let mut max_rowid = after_rowid;
             let chunks: Vec<ChunkSummary> = rows
                 .iter()
                 .map(|row| {
-                    let rowid: i64 = row.get("rowid");
+                    let rowid: i64 = row.get(16);
                     if rowid > max_rowid {
                         max_rowid = rowid;
                     }
