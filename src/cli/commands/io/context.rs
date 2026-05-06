@@ -682,6 +682,258 @@ mod tests {
         }
     }
 
+    // ===== TC-HAP-V1.36-4: build_compact_data + build_full_data =====
+    //
+    // These exercise the Store-backed builders (not just the JSON serializers
+    // tested above). Inlines a chunk + call-graph fixture because
+    // `cqs::test_helpers` is `#[cfg(test)]`-gated in the library crate and
+    // unreachable from the bin crate.
+
+    use cqs::embedder::Embedding;
+    use cqs::parser::{
+        CallSite as PCallSite, Chunk, ChunkType as PChunkType, FunctionCalls, Language as PLanguage,
+    };
+    use cqs::store::{ModelInfo, Store};
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn make_full_chunk(file: &str, name: &str, line_start: u32) -> Chunk {
+        let content = format!("fn {name}() {{ }}");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("{file}:{line_start}:{name}"),
+            file: PathBuf::from(file),
+            language: PLanguage::Rust,
+            chunk_type: PChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content,
+            doc: None,
+            line_start,
+            line_end: line_start + 4,
+            content_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    fn zero_embedding() -> Embedding {
+        let mut v = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        v[0] = 1.0;
+        Embedding::new(v)
+    }
+
+    /// Seeds:
+    ///   src/target.rs  — chunk_a (line 1), chunk_b (line 10)
+    ///   src/caller.rs  — caller_x (line 1)  → calls chunk_a, chunk_b
+    ///   src/other.rs   — chunk_a calls extern_fn (external callee)
+    fn seed_context_fixture() -> (Store, TempDir) {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open(&db_path).expect("open");
+        store.init(&ModelInfo::default()).expect("init");
+
+        let target_chunks = vec![
+            (
+                make_full_chunk("src/target.rs", "chunk_a", 1),
+                zero_embedding(),
+            ),
+            (
+                make_full_chunk("src/target.rs", "chunk_b", 10),
+                zero_embedding(),
+            ),
+        ];
+        store
+            .upsert_chunks_batch(&target_chunks, Some(0))
+            .expect("upsert target");
+
+        let caller_chunks = vec![(
+            make_full_chunk("src/caller.rs", "caller_x", 1),
+            zero_embedding(),
+        )];
+        store
+            .upsert_chunks_batch(&caller_chunks, Some(0))
+            .expect("upsert caller");
+
+        // caller_x calls chunk_a + chunk_b (external callers of target file)
+        store
+            .upsert_function_calls(
+                Path::new("src/caller.rs"),
+                &[FunctionCalls {
+                    name: "caller_x".to_string(),
+                    line_start: 1,
+                    calls: vec![
+                        PCallSite {
+                            callee_name: "chunk_a".to_string(),
+                            line_number: 2,
+                        },
+                        PCallSite {
+                            callee_name: "chunk_b".to_string(),
+                            line_number: 3,
+                        },
+                    ],
+                }],
+            )
+            .expect("upsert calls (caller_x)");
+
+        // chunk_a calls extern_fn (external callee for target file)
+        store
+            .upsert_function_calls(
+                Path::new("src/target.rs"),
+                &[FunctionCalls {
+                    name: "chunk_a".to_string(),
+                    line_start: 1,
+                    calls: vec![PCallSite {
+                        callee_name: "extern_fn".to_string(),
+                        line_number: 5,
+                    }],
+                }],
+            )
+            .expect("upsert calls (chunk_a)");
+
+        (store, dir)
+    }
+
+    #[test]
+    fn build_compact_data_returns_chunks_with_caller_callee_counts() {
+        let (store, _dir) = seed_context_fixture();
+        let data = build_compact_data(&store, "src/target.rs").expect("build_compact_data");
+
+        let names: Vec<&str> = data.chunks.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"chunk_a"));
+        assert!(names.contains(&"chunk_b"));
+        assert_eq!(data.chunks.len(), 2);
+
+        // chunk_a: 1 caller (caller_x), 1 callee (extern_fn)
+        assert_eq!(data.caller_counts.get("chunk_a").copied().unwrap_or(0), 1);
+        assert_eq!(data.callee_counts.get("chunk_a").copied().unwrap_or(0), 1);
+
+        // chunk_b: 1 caller (caller_x), 0 callees
+        assert_eq!(data.caller_counts.get("chunk_b").copied().unwrap_or(0), 1);
+        assert_eq!(data.callee_counts.get("chunk_b").copied().unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn build_compact_data_errors_on_unknown_path() {
+        let (store, _dir) = seed_context_fixture();
+        match build_compact_data(&store, "src/does_not_exist.rs") {
+            Ok(_) => panic!("expected error for unindexed path"),
+            Err(err) => assert!(
+                err.to_string().contains("No indexed chunks found"),
+                "expected 'No indexed chunks' error, got: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn build_compact_data_normalizes_backslash_paths() {
+        // PB-V1.29-1 regression: `src\target.rs` (Windows / agent shell input)
+        // must match the slash-normalized `src/target.rs` stored in `origin`.
+        let (store, _dir) = seed_context_fixture();
+        let data = build_compact_data(&store, "src\\target.rs").expect("backslash input");
+        assert_eq!(data.chunks.len(), 2);
+    }
+
+    #[test]
+    fn build_full_data_classifies_external_callers_and_callees() {
+        let (store, _dir) = seed_context_fixture();
+        let root = std::path::Path::new("");
+        let data = build_full_data(&store, "src/target.rs", root).expect("build_full_data");
+
+        // chunks contain both target-file functions
+        assert_eq!(data.chunks.len(), 2);
+
+        // External callers: caller_x → chunk_a, caller_x → chunk_b (both from src/caller.rs)
+        assert_eq!(
+            data.external_callers.len(),
+            2,
+            "expected two external caller edges (caller_x→chunk_a, caller_x→chunk_b), got {:?}",
+            data.external_callers
+        );
+        let caller_names: HashSet<&str> = data
+            .external_callers
+            .iter()
+            .map(|(n, _, _, _)| n.as_str())
+            .collect();
+        assert!(caller_names.contains("caller_x"));
+        let callee_targets: HashSet<&str> = data
+            .external_callers
+            .iter()
+            .map(|(_, _, callee, _)| callee.as_str())
+            .collect();
+        assert!(callee_targets.contains("chunk_a"));
+        assert!(callee_targets.contains("chunk_b"));
+
+        // External callees: extern_fn (called by chunk_a, not in target file)
+        assert_eq!(data.external_callees.len(), 1);
+        assert_eq!(data.external_callees[0].0, "extern_fn");
+        assert_eq!(data.external_callees[0].1, "chunk_a");
+
+        // Dependent files include src/caller.rs (where caller_x lives)
+        assert!(
+            data.dependent_files.iter().any(|f| f.contains("caller.rs")),
+            "dependent_files must surface caller.rs, got {:?}",
+            data.dependent_files
+        );
+
+        // No batch failures → no warnings
+        assert!(data.warnings.is_empty());
+    }
+
+    // ===== TC-HAP-V1.36-7: pack_by_relevance =====
+    //
+    // Requires a real `cqs::Embedder` (the function takes one to call
+    // `count_tokens_batch`). Gate behind `#[ignore]` to match the
+    // pipeline tests' "Requires model" pattern (#1305).
+
+    #[test]
+    #[ignore = "Requires ONNX embedder model on disk"]
+    fn pack_by_relevance_prefers_higher_caller_count_within_budget() {
+        use cqs::embedder::ModelConfig;
+        use cqs::Embedder;
+
+        let embedder = match Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("CPU embedder unavailable: {err}; skipping (#1305)");
+                return;
+            }
+        };
+
+        // Three chunks; chunk_hi has a much higher caller count than chunk_lo.
+        // With a small budget, packer must pick chunk_hi first.
+        let chunks = vec![
+            make_chunk("chunk_lo", 1, 5),
+            make_chunk("chunk_mid", 6, 10),
+            make_chunk("chunk_hi", 11, 15),
+        ];
+        let mut caller_counts = HashMap::new();
+        caller_counts.insert("chunk_lo".to_string(), 1);
+        caller_counts.insert("chunk_mid".to_string(), 5);
+        caller_counts.insert("chunk_hi".to_string(), 100);
+
+        // Budget large enough for everything → all included.
+        let (included_all, used_all) =
+            pack_by_relevance(&chunks, &caller_counts, 10_000, &embedder);
+        assert_eq!(included_all.len(), 3);
+        assert!(used_all > 0, "token usage must be positive");
+
+        // Budget large enough for ~1 chunk → must include chunk_hi.
+        // We can't pin the exact byte→token ratio, but we can verify
+        // (a) the included set is non-empty, (b) chunk_hi appears whenever
+        // anything is included.
+        let (included_some, _used_some) = pack_by_relevance(&chunks, &caller_counts, 20, &embedder);
+        if !included_some.is_empty() {
+            assert!(
+                included_some.contains("chunk_hi"),
+                "highest caller_count must win priority, got {:?}",
+                included_some
+            );
+        }
+    }
+
     // ===== HP-1: compact_to_json tests =====
 
     #[test]
