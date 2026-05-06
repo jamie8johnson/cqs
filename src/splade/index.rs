@@ -441,24 +441,119 @@ impl SpladeIndex {
             total_bytes = (SPLADE_INDEX_HEADER_LEN as u64).saturating_add(body_bytes);
         }
 
+        // DS-V1.36-5 (P4-13 / #1463): mirror the HNSW save's `.bak` rollback
+        // pattern. Pre-fix, `atomic_replace` overwrote the previous good
+        // `splade.index.bin` directly, so a fallback failure (cross-device
+        // EXDEV running out of disk after the source was promoted but before
+        // the rename completed) destroyed the prior index without recovery.
+        // The new sequence:
+        //   1. Refuse to save if a stale `.bak` already exists (pre-existing
+        //      crash recovery breadcrumb — operator must clear it manually).
+        //   2. Rename the live `splade.index.bin` -> `splade.index.bin.bak`.
+        //   3. fsync the parent directory so the `.bak` rename is durable.
+        //   4. atomic_replace the tmp into place (the load-bearing write).
+        //   5. On atomic_replace failure: restore the live name from `.bak`,
+        //      fsync the parent, return the error.
+        //   6. On success: remove `.bak` after a parent fsync.
+        // Mirrors `src/hnsw/persist.rs:467-484`.
+        let bak_path = {
+            let file_name = path
+                .file_name()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_else(|| "splade.index".into());
+            parent.join(format!("{}.bak", file_name))
+        };
+
+        // (1) Stale-`.bak` guard. A leftover means a previous save failed
+        // mid-rollback and the operator has not cleared it; bail loudly so
+        // we don't clobber the only live copy.
+        if bak_path.exists() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(SpladeIndexPersistError::Io(std::io::Error::other(format!(
+                "stale {} from prior failed save; manual recovery required \
+                 (rename to {} or remove if confirmed bad) before retrying",
+                bak_path.display(),
+                path.display(),
+            ))));
+        }
+
+        // (2) Back up the existing file so we can roll back if step 4 fails.
+        // Skipped on first save (path doesn't exist yet — nothing to back up).
+        let backed_up = if path.exists() {
+            std::fs::rename(path, &bak_path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                SpladeIndexPersistError::Io(std::io::Error::other(format!(
+                    "Failed to back up {} -> {} before save: {}",
+                    path.display(),
+                    bak_path.display(),
+                    e,
+                )))
+            })?;
+            true
+        } else {
+            false
+        };
+
+        // (3) fsync the parent directory so the `.bak` rename is durable
+        // before atomic_replace proceeds. Best-effort: log at debug on
+        // platforms that don't support directory fsync.
+        if backed_up {
+            if let Ok(f) = std::fs::File::open(parent) {
+                if let Err(e) = f.sync_all() {
+                    tracing::debug!(
+                        error = %e,
+                        dir = %parent.display(),
+                        "fsync of SPLADE parent directory after backup failed (non-fatal)"
+                    );
+                }
+            }
+        }
+
+        // (4) atomic_replace tmp -> path. This is the load-bearing write.
         // Audit PB-NEW-3 / PB-NEW-4 / PB-NEW-5: atomic rename with
         // cross-device fallback and parent-dir fsync. The full sequence
-        // (fsync tmp -> rename -> EXDEV fallback with fsync -> parent-dir
-        // fsync) now lives in `cqs::fs::atomic_replace`; the previous
-        // inline implementation was the fourth copy of this pattern and
-        // two siblings had shipped without one of the fsync calls
-        // (DS-V1.25-1, DS-V1.25-4).
-        //
-        // The BufWriter above already flushed and sync_all'd the tmp
-        // file, but atomic_replace re-fsyncs the path it reopens — this
-        // is effectively free compared to the write itself and matches
-        // the invariant the helper advertises.
-        crate::fs::atomic_replace(&tmp_path, path).map_err(|e| {
-            // Best-effort cleanup of our own tmp on unexpected error
-            // before returning.
+        // lives in `cqs::fs::atomic_replace`. The BufWriter above already
+        // flushed and sync_all'd the tmp file, but atomic_replace re-fsyncs
+        // the path it reopens — effectively free.
+        if let Err(e) = crate::fs::atomic_replace(&tmp_path, path) {
+            // (5) Roll back: restore .bak -> live name. Best-effort cleanup
+            // of our own tmp file on unexpected error before returning.
             let _ = std::fs::remove_file(&tmp_path);
-            SpladeIndexPersistError::Io(e)
-        })?;
+            if backed_up {
+                if let Err(restore_err) = std::fs::rename(&bak_path, path) {
+                    tracing::error!(
+                        path = %path.display(),
+                        error = %restore_err,
+                        "Failed to restore backup during SPLADE save rollback — \
+                         manual recovery required (rename {}.bak to {})",
+                        path.display(),
+                        path.display(),
+                    );
+                    return Err(SpladeIndexPersistError::Io(std::io::Error::other(format!(
+                        "SPLADE save failed and rollback failed: \
+                         atomic_replace error={e}; restore error={restore_err}; \
+                         manual recovery — rename {bak} to {path}",
+                        bak = bak_path.display(),
+                        path = path.display(),
+                    ))));
+                }
+                // fsync after restore so the restore rename is durable.
+                if let Ok(f) = std::fs::File::open(parent) {
+                    let _ = f.sync_all();
+                }
+            }
+            return Err(SpladeIndexPersistError::Io(e));
+        }
+
+        // (6) Successful save. Remove `.bak` and fsync the parent so the
+        // unlink is durable. Both are best-effort — a leftover `.bak` is a
+        // recovery breadcrumb, not a corruption risk.
+        if backed_up {
+            let _ = std::fs::remove_file(&bak_path);
+            if let Ok(f) = std::fs::File::open(parent) {
+                let _ = f.sync_all();
+            }
+        }
 
         tracing::info!(
             path = %path.display(),
@@ -1216,5 +1311,89 @@ mod tests {
         hasher.update(&bytes[0..32]);
         hasher.update(&bytes[64..]);
         assert_eq!(hasher.finalize().to_hex().to_string(), expected_hex);
+    }
+
+    // ====== DS-V1.36-5 (P4-13 / #1463) — `.bak` rollback pattern ======
+
+    /// First save (no prior file) leaves no `.bak` — there's nothing to
+    /// back up. Pins the "skipped backup" branch.
+    #[test]
+    fn save_no_prior_file_leaves_no_bak() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let bak = dir.path().join("splade.index.bin.bak");
+        assert!(!path.exists());
+        assert!(!bak.exists());
+
+        make_test_index().save(&path, 1).unwrap();
+
+        assert!(path.exists(), "save must create the live file");
+        assert!(
+            !bak.exists(),
+            "first save (no prior file) must not leave a .bak behind"
+        );
+    }
+
+    /// Successful save with a prior live file: live file is replaced and
+    /// the `.bak` cleanup step removes the backup. Pins the success path
+    /// of the new rollback machinery.
+    #[test]
+    fn save_with_prior_file_replaces_and_cleans_up_bak() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let bak = dir.path().join("splade.index.bin.bak");
+
+        // First save — establishes a prior live file.
+        let v1 = SpladeIndex::build(vec![("chunk_v1".to_string(), vec![(7u32, 0.25f32)])]);
+        v1.save(&path, 1).unwrap();
+        let v1_bytes = std::fs::read(&path).unwrap();
+
+        // Second save — must rename existing -> .bak, then clean up .bak
+        // after success. The `.bak` is never visible to other callers.
+        let v2 = SpladeIndex::build(vec![("chunk_v2".to_string(), vec![(8u32, 0.5f32)])]);
+        v2.save(&path, 2).unwrap();
+        let v2_bytes = std::fs::read(&path).unwrap();
+
+        assert_ne!(v1_bytes, v2_bytes, "second save must replace the file");
+        assert!(
+            !bak.exists(),
+            "successful save must clean up .bak; left behind: {}",
+            bak.display(),
+        );
+
+        // The post-save file is a valid index loadable at the new generation.
+        let loaded = SpladeIndex::load(&path, 2).unwrap().unwrap();
+        assert_eq!(loaded.id_map, vec!["chunk_v2".to_string()]);
+    }
+
+    /// Stale `.bak` left over from a prior failed save must block the next
+    /// save with an actionable error so the operator notices and clears it.
+    /// Pre-fix, the next save would clobber the live file (the only good
+    /// copy) without warning.
+    #[test]
+    fn save_refuses_when_stale_bak_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let bak = dir.path().join("splade.index.bin.bak");
+
+        // First save establishes a live file.
+        make_test_index().save(&path, 1).unwrap();
+        // Simulate a prior crashed save: a stale `.bak` lingers next to it.
+        std::fs::write(&bak, b"stale-bak-from-prior-crash").unwrap();
+
+        // The next save MUST refuse with an error mentioning recovery.
+        let err = make_test_index().save(&path, 2).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("stale") && msg.contains("manual recovery"),
+            "stale-bak guard must surface an actionable error, got: {msg}"
+        );
+
+        // The live file must remain untouched (still loadable at gen=1).
+        let loaded = SpladeIndex::load(&path, 1).unwrap();
+        assert!(
+            loaded.is_some(),
+            "live file must survive intact when save bails on stale .bak"
+        );
     }
 }
