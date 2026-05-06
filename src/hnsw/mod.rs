@@ -290,8 +290,19 @@ unsafe impl Sync for LoadedHnsw {}
 pub struct HnswIndex {
     /// Internal state - either built in memory or loaded from disk
     pub(crate) inner: HnswInner,
-    /// Mapping from internal index to chunk ID
-    pub(crate) id_map: Vec<String>,
+    /// Mapping from internal index to chunk ID.
+    ///
+    /// P4-11 (#1463 follow-up): `Box<str>` instead of `String` saves the
+    /// 8-byte `cap` field per entry without changing heap layout. At 1M
+    /// chunks, ~8 MB reduction in resident size. The audit's original
+    /// "halves overhead" claim assumed `Vec<Arc<str>>` deduplication,
+    /// but every chunk_id in the id_map is unique by construction —
+    /// `Arc<str>` would have ADDED 16 bytes (ArcInner header) per entry.
+    /// `Box<str>` is the smaller-fix that delivers actual reduction
+    /// without an architectural change. The real fix (mmap'd id_map
+    /// alongside the HNSW graph file) remains a separate item; that's
+    /// the only path to constant-RAM regardless of corpus size.
+    pub(crate) id_map: Vec<Box<str>>,
     /// Configurable search width (defaults to ef_search())
     pub(crate) ef_search: usize,
     /// Embedding dimension of vectors in this index
@@ -354,7 +365,14 @@ impl HnswIndex {
     /// inserted. Used by callers (e.g. the `cqs watch` background-rebuild
     /// swap path in #1090) to dedup an external delta against what the
     /// rebuild thread already snapshot-ingested before replaying.
-    pub fn ids(&self) -> &[String] {
+    ///
+    /// P4-11 follow-up: returns `&[Box<str>]` after the storage shrunk
+    /// from `Vec<String>` to `Vec<Box<str>>`. Callers that compared
+    /// against `&str` literals via `String == &str` (`id == "delta_a"`)
+    /// must now deref both sides (`&**id == "delta_a"`); `Box<str>`
+    /// doesn't implement `PartialEq<str>` directly. The existing
+    /// watch-rebuild test sites have been updated accordingly.
+    pub fn ids(&self) -> &[Box<str>] {
         &self.id_map
     }
 
@@ -408,7 +426,9 @@ impl HnswIndex {
         // positions, which the SQLite post-filter already tolerates.
         let base_idx = self.id_map.len();
         for (id, _) in items {
-            self.id_map.push(id.clone());
+            // P4-11 follow-up: `Box::from(id.as_str())` clones the
+            // bytes once into a tight `Box<str>` (no `cap` field).
+            self.id_map.push(Box::from(id.as_str()));
         }
 
         let owned_vecs: Vec<Vec<f32>> = items.iter().map(|(_, emb)| emb.to_vec()).collect();
@@ -437,10 +457,11 @@ impl HnswIndex {
 /// PERF-39: This uses two passes (validate then build). Merging into one pass would
 /// require partial rollback on mid-iteration dimension errors, complicating the code
 /// for no real gain — this is only called from test/build paths with small N.
+#[allow(clippy::type_complexity)]
 pub(crate) fn prepare_index_data(
     embeddings: Vec<(String, crate::Embedding)>,
     expected_dim: usize,
-) -> Result<(Vec<String>, Vec<f32>, usize), HnswError> {
+) -> Result<(Vec<Box<str>>, Vec<f32>, usize), HnswError> {
     let n = embeddings.len();
     if n == 0 {
         return Err(HnswError::Build("No embeddings to index".into()));
@@ -459,13 +480,16 @@ pub(crate) fn prepare_index_data(
     }
 
     // Build ID map and flat data vector
-    let mut id_map = Vec::with_capacity(n);
+    let mut id_map: Vec<Box<str>> = Vec::with_capacity(n);
     let cap = n
         .checked_mul(expected_dim)
         .ok_or_else(|| HnswError::Build("embedding count * dimension would overflow".into()))?;
     let mut data = Vec::with_capacity(cap);
     for (chunk_id, embedding) in embeddings {
-        id_map.push(chunk_id);
+        // P4-11 follow-up: `String::into_boxed_str()` is zero-copy —
+        // shrinks the existing heap allocation in place and drops the
+        // `cap` field. ~8 bytes saved per entry.
+        id_map.push(chunk_id.into_boxed_str());
         data.extend(embedding.into_inner());
     }
 

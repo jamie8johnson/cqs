@@ -166,7 +166,7 @@ impl HnswIndex {
             DistCosine,
         );
 
-        let mut id_map: Vec<String> = Vec::with_capacity(capacity);
+        let mut id_map: Vec<Box<str>> = Vec::with_capacity(capacity);
         let mut total_inserted = 0usize;
         let mut batch_num = 0usize;
 
@@ -198,7 +198,8 @@ impl HnswIndex {
                 }
                 let insert_idx = id_map.len();
                 tracing::trace!("Adding {} to HNSW index at {}", chunk_id, insert_idx);
-                id_map.push(chunk_id.clone());
+                // P4-11 follow-up: clone bytes into Box<str> (no cap field).
+                id_map.push(Box::from(chunk_id.as_str()));
                 data_for_insert.push((embedding.as_vec(), insert_idx));
             }
 

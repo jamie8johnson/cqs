@@ -815,8 +815,18 @@ impl HnswIndex {
             ))
         })?;
         let id_map_reader = std::io::BufReader::new(id_map_file);
-        let id_map: Vec<String> = serde_json::from_reader(id_map_reader)
+        // P4-11 follow-up: deserialize as `Vec<String>` (serde does that
+        // by default), then convert in place to `Vec<Box<str>>`. The
+        // wire format is unchanged — same JSON `[String, ...]` — so
+        // existing `index.hnsw.id_map` files load without migration.
+        // `String::into_boxed_str()` is zero-copy (shrinks the
+        // existing heap allocation, drops the `cap` field).
+        let id_map_strings: Vec<String> = serde_json::from_reader(id_map_reader)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
+        let id_map: Vec<Box<str>> = id_map_strings
+            .into_iter()
+            .map(String::into_boxed_str)
+            .collect();
 
         // SEC-15: Cap element count to prevent memory exhaustion from crafted id_map files.
         // 10M entries at ~64 bytes average ID = ~640MB — well above any real codebase.

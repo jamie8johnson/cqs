@@ -988,8 +988,10 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
 
     let idx = state.hnsw_index.expect("rebuild was swapped in");
     assert_eq!(idx.len(), 5, "3 from new_idx + 2 from delta");
-    assert!(idx.ids().iter().any(|id| id == "delta_a"));
-    assert!(idx.ids().iter().any(|id| id == "delta_b"));
+    // P4-11 follow-up: id_map is `Vec<Box<str>>`; comparing `Box<str>`
+    // against `&str` requires deref both sides via `&**id == "..."`.
+    assert!(idx.ids().iter().any(|id| &**id == "delta_a"));
+    assert!(idx.ids().iter().any(|id| &**id == "delta_b"));
     assert_eq!(state.incremental_count, 0);
     assert!(state.pending_rebuild.is_none());
 }
@@ -1172,7 +1174,8 @@ fn drain_pending_rebuild_dedups_against_known_ids() {
         4,
         "3 from new_idx + 1 genuinely-new delta entry — same-hash duplicates skipped"
     );
-    assert!(idx.ids().iter().any(|id| id == "c_new"));
+    // P4-11 follow-up: id_map is `Vec<Box<str>>`; deref both sides.
+    assert!(idx.ids().iter().any(|id| &**id == "c_new"));
 }
 
 #[test]
