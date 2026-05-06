@@ -221,10 +221,17 @@ pub struct CrossProjectResult {
     pub score: f32,
 }
 
-/// Search across all registered projects
+/// Search across all registered projects.
+///
+/// #1459 item 1a: takes a full `SearchFilter` so the cross-project path
+/// honors the same `--lang` / `--include-type` / `--exclude-type` /
+/// `--path` / `--name-boost` / `--rrf` / `--include-docs` flag surface
+/// the top-level `cqs <q>` exposes. Pre-fix, the function accepted only
+/// `(query_text, limit, threshold)` and hardcoded an "RRF off, no
+/// filters" call shape inside `search_single_project`.
 pub fn search_across_projects(
     query_embedding: &crate::Embedding,
-    query_text: &str,
+    filter: &crate::SearchFilter,
     limit: usize,
     threshold: f32,
 ) -> Result<Vec<CrossProjectResult>, ProjectError> {
@@ -272,7 +279,7 @@ pub fn search_across_projects(
                 .project
                 .iter()
                 .filter_map(|entry| {
-                    match search_single_project(entry, query_embedding, query_text, limit, threshold) {
+                    match search_single_project(entry, query_embedding, filter, limit, threshold) {
                         Ok(v) => Some(v),
                         Err(e) => {
                             tracing::warn!(project = %entry.name, error = %e, "Search failed for project");
@@ -306,7 +313,7 @@ pub fn search_across_projects(
             .project
             .par_iter()
             .filter_map(|entry| {
-                match search_single_project(entry, query_embedding, query_text, limit, threshold) {
+                match search_single_project(entry, query_embedding, filter, limit, threshold) {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::warn!(project = %entry.name, error = %e, "Search failed for project");
@@ -347,7 +354,7 @@ pub fn search_across_projects(
 fn search_single_project(
     entry: &ProjectEntry,
     query_embedding: &crate::Embedding,
-    query_text: &str,
+    filter: &crate::SearchFilter,
     limit: usize,
     threshold: f32,
 ) -> Result<Vec<CrossProjectResult>, anyhow::Error> {
@@ -374,14 +381,9 @@ fn search_single_project(
     let store = crate::Store::open_readonly(&index_path)?;
     let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
     let index = crate::hnsw::HnswIndex::try_load_with_ef(cqs_dir, None, store.dim());
-    let filter = crate::store::helpers::SearchFilter {
-        query_text: query_text.to_string(),
-        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
-        ..Default::default()
-    };
     let results = store.search_filtered_with_index(
         query_embedding,
-        &filter,
+        filter,
         limit,
         threshold,
         index.as_deref(),

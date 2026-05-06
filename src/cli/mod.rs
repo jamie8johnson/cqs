@@ -453,69 +453,75 @@ mod tests {
         }
     }
 
-    /// #1459 item 3: `cqs ref reindex` (visible_alias of update) accepts the
-    /// LLM/HyDE flag set at parity with `cqs index`. The `--apply` flag is
-    /// intentionally NOT exposed for refs and should fail to parse.
-    #[cfg(feature = "llm-summaries")]
+    /// #1459 item 1a: `cqs project search` accepts the same filter knobs
+    /// the top-level `cqs <q>` does (`--lang`, `--include-type`,
+    /// `--exclude-type`, `--path`, `--name-boost`, `--rrf`,
+    /// `--include-docs`). Pre-fix, only `--limit` and `--threshold`
+    /// parsed, so cross-project searches couldn't be filtered the way
+    /// per-project searches could.
     #[test]
-    fn test_cmd_ref_reindex_llm_flags_parse() {
+    fn test_cmd_project_search_full_flag_parity() {
+        // Mirrors the top-level `cqs <q>` clap shape: `--include-type` /
+        // `--exclude-type` use repeated flag invocations (no
+        // value_delimiter), matching `cli/definitions.rs`.
         let cli = Cli::try_parse_from([
             "cqs",
-            "ref",
-            "reindex",
-            "tokio",
-            "--llm-summaries",
-            "--improve-docs",
-            "--max-docs",
-            "100",
-            "--hyde-queries",
-            "--max-hyde",
-            "50",
+            "project",
+            "search",
+            "license activation",
+            "-n",
+            "20",
+            "-t",
+            "0.4",
+            "--name-boost",
+            "0.5",
+            "-l",
+            "rust",
+            "--include-type",
+            "function",
+            "--include-type",
+            "struct",
+            "--exclude-type",
+            "test",
+            "-p",
+            "src/**",
+            "--rrf",
+            "--include-docs",
         ])
-        .expect("ref reindex must accept LLM/HyDE flag set at parity with cqs index");
+        .expect("project search must accept full top-level filter surface");
         match cli.command {
-            Some(Commands::Ref { ref subcmd }) => match subcmd {
-                commands::RefCommand::Update {
-                    name,
-                    llm_summaries,
-                    improve_docs,
-                    max_docs,
-                    hyde_queries,
-                    max_hyde,
+            Some(Commands::Project { ref subcmd, .. }) => match subcmd {
+                commands::ProjectCommand::Search {
+                    query,
+                    limit,
+                    threshold,
+                    name_boost,
+                    lang,
+                    include_type,
+                    exclude_type,
+                    path,
+                    rrf,
+                    include_docs,
                     ..
                 } => {
-                    assert_eq!(name, "tokio");
-                    assert!(llm_summaries);
-                    assert!(improve_docs);
-                    assert_eq!(*max_docs, Some(100));
-                    assert!(hyde_queries);
-                    assert_eq!(*max_hyde, Some(50));
+                    assert_eq!(query, "license activation");
+                    assert_eq!(*limit, 20);
+                    assert!((*threshold - 0.4).abs() < 0.001);
+                    assert!((*name_boost - 0.5).abs() < 0.001);
+                    assert_eq!(lang.as_deref(), Some("rust"));
+                    let inc = include_type.as_ref().expect("include-type set");
+                    assert!(inc.iter().any(|s| s == "function"));
+                    assert!(inc.iter().any(|s| s == "struct"));
+                    let exc = exclude_type.as_ref().expect("exclude-type set");
+                    assert!(exc.iter().any(|s| s == "test"));
+                    assert_eq!(path.as_deref(), Some("src/**"));
+                    assert!(*rrf);
+                    assert!(*include_docs);
                 }
-                _ => panic!("Expected Update subcommand"),
+                _ => panic!("Expected Search subcommand"),
             },
-            _ => panic!("Expected Ref command"),
+            _ => panic!("Expected Project command"),
         }
-    }
-
-    /// `--apply` is the in-place rewrite mode on `cqs index`. Refs typically
-    /// point at vendored/external code that must not be silently rewritten,
-    /// so `--apply` is not wired through to `cqs ref reindex`.
-    #[cfg(feature = "llm-summaries")]
-    #[test]
-    fn test_cmd_ref_reindex_apply_flag_rejected() {
-        let result = Cli::try_parse_from([
-            "cqs",
-            "ref",
-            "reindex",
-            "tokio",
-            "--llm-summaries",
-            "--improve-docs",
-            "--apply",
-        ]);
-        assert!(
-            result.is_err(),
-            "--apply must be rejected for `cqs ref reindex` to keep external source files safe"
-        );
     }
 
     // ===== --ref flag tests =====
