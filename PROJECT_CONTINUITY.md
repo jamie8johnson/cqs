@@ -2,6 +2,31 @@
 
 ## Right Now
 
+**Post-v1.37.0 autopilot wave (2026-05-05 evening, 8 PRs)**: triaged 20 open issues, closed 3 stale (#1107, #1108, #1395 — all already shipped in prior PRs), shipped 8 PRs against the audit umbrella issues #1459-#1462:
+
+- **#1468** — perf(store): pin ChunkRow SELECT column order, switch to ordinal access (closes #1457 / P2-14). Replaced per-column `row.get("name")` strcmp scans with positional reads. 9 SELECT sites updated (vs 5 in the issue — agent's investigation found 4 more: query.rs:238 batch-by-names, query.rs:540 chunks_paged with rowid prefix, types.rs:320, types.rs:402).
+- **#1469** — test(serve): SEC-V1.36-6 regression test (closes the SEC sub-item of #1461 as a non-issue). Direct verification against axum 0.8 / tower-http 0.6 source showed the audit's leak claim doesn't match upstream behavior — Query<T> rejection body is `"Failed to deserialize..."`, no URI; P1.11 already redacts the trace span. Shipped as regression-guard test + handlers.rs doc-comment so the audit isn't re-litigated.
+- **#1470** — refactor(cli, llm): API ergonomics bundle (closes 3 of 8 sub-items in #1459). `cqs onboard --direction <both|callers|callees>` (default callees, back-compat); `BatchProvider::set_on_item_complete` `&mut self` → builder at construction (`with_on_item_complete` consuming, `create_client` gains `on_item: Option<OnItemCallback>`); `--limit` defaults harmonised to 5 (was 3 on `where`, 10 on `gather`).
+- **#1471** — perf(daemon): poll() listener fd instead of WouldBlock-sleep (closes RM-V1.36-8 of #1462). Replaces the 500ms `thread::sleep` busy-poll in the daemon accept loop with `libc::poll(..., 1000ms)`. Drops idle wake rate from 120/min → 60/min, parked threads consume zero CPU.
+- **#1472** — feat(splade): per-slot α tables in `slot.toml [splade.alpha]` (closes #1453). RwLock-protected static loaded once at dispatch entry; precedence: per-cat env > global env > slot.toml > category default. 5 slot tests + 3 router precedence tests.
+- **#1473** — refactor(nl): drop legacy env-only NL-gen wrappers (closes CQ-V1.36-3 + CQ-V1.36-5 of #1462). `generate_nl_description` and `generate_nl_with_template` were `pub` traps that read `CQS_MAX_SEQ_LENGTH` env. After v1.37.0's CQ-V1.36-1 fix, leaving them invited the configurable-models bug to come back. Per "no external users", clean-cut delete.
+- **#1474** — refactor(language): test_name_patterns into LanguageDef (closes EXT-V1.36-3 of #1460). Single source of truth: lib.rs::is_test_chunk and store/calls::TEST_NAME_PATTERNS now both flow from `Registry::all_test_name_patterns()` with a cross-language fallback in escaped SQL LIKE form. Tightens the SQL filter (was loose `Test%` matching TestRegistry/TestSuite — pre-AC-4 — now `Test\_%`).
+- **#1475** — feat(cli): `cqs ref reindex` visible alias for `cqs ref update` (closes API-V1.36-3 of #1459). One-line `#[command(visible_alias = "reindex")]`.
+
+**Issues stale-closed (already done in prior PRs):**
+- #1107 — slot.toml model persistence shipped in #1112; verified via `slot_create()` calling `write_slot_model` and `dispatch.rs:225` reading via `read_slot_model`.
+- #1108 — content_hash on 5 hot SELECTs shipped in #1112; verified all 5 sites carry the column, eval shows 0 warnings.
+- #1395 — token-count GPU routing shipped in #1398 (Option A: dropped the routing branch entirely; `apply_windowing` enforces the bound).
+
+**Items investigated but parked**:
+- **RM-V1.36-6** — config flock + reqwest. Audit's concern doesn't match current code: `add_reference_to_config` at `src/config.rs:808` is self-contained (no reqwest under flock); the only caller `cmd_ref_add` does network/index work BEFORE calling it. Stale finding.
+- **EXT-V1.36-8 (1)** — `is_cross_language_query` consume `Language::valid_names()`. Already implemented: `language_names()` in router.rs uses `REGISTRY.all().map(|def| def.name).collect()`. Stale finding.
+- **#1452** — skip first-pass embed when `--llm-summaries`. Risky (enrichment-crash recovery, incremental-run preservation); deferred for a dedicated session with end-to-end test infrastructure.
+- **#1366** — proc-macro CLI derive. Per-variant body uniqueness makes a single-PR derive macro infeasible without coordinated handler refactoring; kept as the audit-tagged "dedicated session" item. Existing `for_each_command!` macro table already produces compile errors for missing rows, so the safety floor is in place.
+- **API-V1.36-9** — drop `--rerank` bool. ~5 test sites pin the bool at parse time; PR overhead exceeds value in this session — straightforward delete + test updates for a follow-up.
+
+**Next-session candidates**: TC-HAP-V1.36-{4,7,8,9,10} (need real Store fixtures), SEC-V1.36-{9,10} (concurrent connection cap, daemon socket TOCTOU), EXT-V1.36-1 (synonyms TOML overlay), the API-design design-discussions in #1459 (1, 2, 5, 6).
+
 **v1.37.0 shipped** — 2026-05-05 evening. Minor release. Bundles v1.36.2 16-category audit close-out (#1456 — ~120 of 163 findings addressed) and dim-scaled batch sizes (#1464). No schema bump. Tag `v1.37.0` pushed; crates.io published; GitHub Release auto-building from `.github/workflows/release.yml`.
 
 **Why minor not patch:** `RerankerMode::Llm` removed from CLI (was placeholder that errored at runtime); `cqs::limits` promoted from `pub(crate)` → `pub`; new public surface (`dim_scaled_batch`, `relativize_or_warn`, `Store::try_stored_model_name`, `BoundedScoreHeap::would_accept`, `BatchProvider::validate_model`); default behavior shifts on dim-aware sites (env overrides preserve prior).
