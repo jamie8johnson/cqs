@@ -842,6 +842,7 @@ dependencies = [
  "clap_complete",
  "codebook-tree-sitter-latex",
  "colored",
+ "cqs-macros",
  "crossbeam-channel",
  "ctrlc",
  "cuvs",
@@ -944,6 +945,15 @@ dependencies = [
  "tree-sitter-zig",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "cqs-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

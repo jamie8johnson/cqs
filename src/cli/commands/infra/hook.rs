@@ -51,7 +51,7 @@ pub(crate) const HOOK_MARKER_CURRENT: &str = "# cqs:hook v1";
 pub(crate) const MANAGED_HOOKS: &[&str] = &["post-checkout", "post-merge", "post-rewrite"];
 
 /// `cqs hook` subcommand surface.
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 pub(crate) enum HookCommand {
     /// Install cqs hooks into `.git/hooks/`. Idempotent — re-running is
     /// safe; already-installed cqs hooks are upgraded in place.

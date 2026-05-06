@@ -334,9 +334,10 @@ impl Cli {
     }
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, cqs_macros::CqsCommands)]
 pub(super) enum Commands {
     /// Download model and create .cqs/
+    #[cqs_cmd(group = "a", batch = "cli")]
     Init {
         /// P2.12: emit a structured JSON envelope summarizing the init.
         /// Keeps `cqs init` parity with the rest of the CLI's `--json`
@@ -350,6 +351,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// One-line-per-function summary for a file
+    #[cqs_cmd(group = "b", batch = "cli")]
     Brief {
         /// File path (as stored in index, e.g. src/lib.rs)
         path: String,
@@ -357,6 +359,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Check model, index, hardware
+    #[cqs_cmd(group = "a", batch = "cli")]
     Doctor {
         /// Auto-fix detected issues (stale→index, schema→migrate)
         #[arg(long)]
@@ -379,16 +382,19 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Index current project
+    #[cqs_cmd(group = "a", batch = "cli")]
     Index {
         #[command(flatten)]
         args: args::IndexArgs,
     },
     /// Show index statistics
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Stats {
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Watch for changes and reindex
+    #[cqs_cmd(group = "a", batch = "cli")]
     Watch {
         /// Debounce interval in milliseconds. Default 500ms suits inotify
         /// on native Linux; WSL DrvFS (/mnt/) and --poll mode auto-bump to
@@ -407,6 +413,7 @@ pub(super) enum Commands {
         serve: bool,
     },
     /// What functions, callers, and tests are affected by current diff
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Affected {
         /// Git ref to diff against (default: unstaged changes)
         #[arg(long)]
@@ -423,8 +430,10 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Batch mode: read commands from stdin, output JSONL
+    #[cqs_cmd(group = "a", batch = "cli")]
     Batch,
     /// Semantic git blame: who changed a function, when, and why
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Blame {
         #[command(flatten)]
         args: args::BlameArgs,
@@ -432,14 +441,17 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Interactive REPL for cqs commands
+    #[cqs_cmd(group = "a", batch = "cli")]
     Chat,
     /// Generate shell completions
+    #[cqs_cmd(group = "a", batch = "cli")]
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
     /// Show type dependencies: who uses a type, or what types a function uses
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Deps {
         #[command(flatten)]
         args: args::DepsArgs,
@@ -447,6 +459,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Find functions that call a given function
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Callers {
         #[command(flatten)]
         args: args::CallersArgs,
@@ -454,6 +467,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Find functions called by a given function
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Callees {
         #[command(flatten)]
         args: args::CallersArgs,
@@ -461,6 +475,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Guided codebase tour: entry point → call chain → types → tests
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Onboard {
         #[command(flatten)]
         args: args::OnboardArgs,
@@ -468,6 +483,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Brute-force nearest neighbors for a function by cosine similarity
+    #[cqs_cmd(group = "b", batch = "cli")]
     Neighbors {
         /// Function name or file:function
         name: String,
@@ -478,16 +494,19 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// List and manage notes
+    #[cqs_cmd(group = "a", batch = "runtime")]
     Notes {
         #[command(subcommand)]
         subcmd: NotesCommand,
     },
     /// Manage reference indexes for multi-index search
+    #[cqs_cmd(group = "a", batch = "cli")]
     Ref {
         #[command(subcommand)]
         subcmd: RefCommand,
     },
     /// Semantic diff between indexed snapshots
+    #[cqs_cmd(group = "a", batch = "cli")]
     Diff {
         #[command(flatten)]
         args: args::DiffArgs,
@@ -495,6 +514,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Detect semantic drift between a reference and the project
+    #[cqs_cmd(group = "a", batch = "cli")]
     Drift {
         #[command(flatten)]
         args: args::DriftArgs,
@@ -502,6 +522,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Generate a function card (signature, callers, callees, similar)
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Explain {
         #[command(flatten)]
         args: args::ExplainArgs,
@@ -509,6 +530,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Find code similar to a given function
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Similar {
         #[command(flatten)]
         args: args::SimilarArgs,
@@ -516,6 +538,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Impact analysis: what breaks if you change a function
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Impact {
         #[command(flatten)]
         args: args::ImpactArgs,
@@ -524,6 +547,7 @@ pub(super) enum Commands {
     },
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
+    #[cqs_cmd(group = "b", batch = "daemon")]
     ImpactDiff {
         #[command(flatten)]
         args: args::ImpactDiffArgs,
@@ -531,6 +555,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Comprehensive diff review: impact + notes + risk scoring
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Review {
         #[command(flatten)]
         args: args::ReviewArgs,
@@ -538,6 +563,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// CI pipeline analysis: impact + risk + dead code + gate
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Ci {
         #[command(flatten)]
         args: args::CiArgs,
@@ -545,6 +571,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Trace call chain between two functions
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Trace {
         #[command(flatten)]
         args: args::TraceArgs,
@@ -552,6 +579,7 @@ pub(super) enum Commands {
         output: OutputArgs,
     },
     /// Find tests that exercise a function
+    #[cqs_cmd(group = "b", batch = "daemon")]
     TestMap {
         #[command(flatten)]
         args: args::TestMapArgs,
@@ -559,6 +587,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// What do I need to know to work on this file
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Context {
         #[command(flatten)]
         args: args::ContextArgs,
@@ -566,6 +595,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Find functions with no callers (dead code detection)
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Dead {
         #[command(flatten)]
         args: args::DeadArgs,
@@ -573,6 +603,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Gather minimal code context to answer a question
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Gather {
         #[command(flatten)]
         args: args::GatherArgs,
@@ -580,22 +611,26 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Manage cross-project search registry
+    #[cqs_cmd(group = "a", batch = "cli")]
     Project {
         #[command(subcommand)]
         subcmd: ProjectCommand,
     },
     /// Remove stale chunks and rebuild index
+    #[cqs_cmd(group = "a", batch = "cli")]
     Gc {
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Codebase quality snapshot — dead code, staleness, hotspots, coverage
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Health {
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Toggle audit mode (exclude notes from search/read)
     #[command(name = "audit-mode")]
+    #[cqs_cmd(group = "a", batch = "cli")]
     AuditMode {
         /// State: on or off (omit to query current state)
         state: Option<AuditModeState>,
@@ -606,6 +641,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Usage telemetry dashboard — command frequency, categories, sessions
+    #[cqs_cmd(group = "a", batch = "cli")]
     Telemetry {
         /// Reset: archive current telemetry and start fresh
         #[arg(long)]
@@ -620,6 +656,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Check index freshness — list stale and missing files
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Stale {
         #[command(flatten)]
         args: args::StaleArgs,
@@ -627,6 +664,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Auto-suggest notes from codebase patterns (dead code, untested hotspots)
+    #[cqs_cmd(group = "b", batch = "runtime")]
     Suggest {
         #[command(flatten)]
         args: args::SuggestArgs,
@@ -634,6 +672,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Read a file with notes injected as comments
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Read {
         #[command(flatten)]
         args: args::ReadArgs,
@@ -641,6 +680,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Reconstruct source file from index (works without source on disk)
+    #[cqs_cmd(group = "b", batch = "cli")]
     Reconstruct {
         /// File path (as indexed)
         path: String,
@@ -648,6 +688,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Find functions related by shared callers, callees, or types
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Related {
         #[command(flatten)]
         args: args::RelatedArgs,
@@ -655,6 +696,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Suggest where to add new code matching a description
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Where {
         #[command(flatten)]
         args: args::WhereArgs,
@@ -662,6 +704,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Pre-investigation dashboard: search, group, count callers/tests, check staleness
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Scout {
         #[command(flatten)]
         args: args::ScoutArgs,
@@ -669,6 +712,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Task planning with template classification: classify + scout + checklist
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Plan {
         #[command(flatten)]
         args: args::PlanArgs,
@@ -676,6 +720,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// One-shot implementation context: scout + code + impact + placement + notes
+    #[cqs_cmd(group = "b", batch = "daemon")]
     Task {
         #[command(flatten)]
         args: args::TaskArgs,
@@ -684,6 +729,7 @@ pub(super) enum Commands {
     },
     /// Convert documents (PDF, HTML, CHM) to Markdown
     #[cfg(feature = "convert")]
+    #[cqs_cmd(group = "a", batch = "cli")]
     Convert {
         /// File or directory to convert
         path: String,
@@ -719,6 +765,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// Export a HuggingFace model to ONNX format for use with cqs
+    #[cqs_cmd(group = "a", batch = "cli")]
     ExportModel {
         /// HuggingFace model repo ID
         #[arg(long)]
@@ -731,6 +778,7 @@ pub(super) enum Commands {
         dim: Option<u64>,
     },
     /// Generate training data for fine-tuning from git history
+    #[cqs_cmd(group = "a", batch = "cli")]
     TrainData {
         /// Paths to git repositories to process
         #[arg(long, required = true, num_args = 1..)]
@@ -761,6 +809,7 @@ pub(super) enum Commands {
         verbose: bool,
     },
     /// Extract (NL, code) training pairs from index as JSONL
+    #[cqs_cmd(group = "b", batch = "cli")]
     TrainPairs {
         /// Output JSONL file path.
         ///
@@ -783,11 +832,13 @@ pub(super) enum Commands {
     },
     /// Manage the embeddings cache (stats, prune, compact). Project-scoped
     /// at `<project>/.cqs/embeddings_cache.db`.
+    #[cqs_cmd(group = "a", batch = "cli")]
     Cache {
         #[command(subcommand)]
         subcmd: CacheCommand,
     },
     /// Manage named slots — side-by-side full indexes under `.cqs/slots/<name>/`
+    #[cqs_cmd(group = "a", batch = "cli")]
     Slot {
         #[command(subcommand)]
         subcmd: SlotCommand,
@@ -798,6 +849,7 @@ pub(super) enum Commands {
     /// Exits 1 if no daemon is running. Use `--json` for machine-readable
     /// output. Reuses [`cqs::daemon_translate::daemon_ping`] under the hood
     /// so other tools (e.g. `cqs doctor --verbose`) can pull the same data.
+    #[cqs_cmd(group = "a", batch = "cli")]
     Ping {
         /// Output as JSON.
         ///
@@ -819,6 +871,7 @@ pub(super) enum Commands {
     /// `--wait` polls until the snapshot reports `state == fresh` or the
     /// `--wait-secs` budget expires. Polling happens client-side so the
     /// daemon thread is never pinned by a long wait.
+    #[cqs_cmd(group = "a", batch = "cli")]
     Status {
         /// Report watch-mode freshness (currently the only mode).
         #[arg(long)]
@@ -847,6 +900,7 @@ pub(super) enum Commands {
     /// `cqs batch` JSON dance. No-op when no daemon is running — a fresh CLI
     /// process has no caches to invalidate.
     #[command(visible_alias = "invalidate")]
+    #[cqs_cmd(group = "a", batch = "daemon")]
     Refresh {
         /// Emit a structured JSON envelope summarizing the refresh outcome.
         /// P2.14: brings `cqs refresh` in line with the rest of the CLI's
@@ -858,6 +912,7 @@ pub(super) enum Commands {
         output: TextJsonArgs,
     },
     /// First-class eval harness: run query set against current index, print R@K
+    #[cqs_cmd(group = "b", batch = "cli")]
     Eval {
         #[command(flatten)]
         args: super::commands::EvalCmdArgs,
@@ -870,11 +925,13 @@ pub(super) enum Commands {
     /// daemon isn't running, the hook touches `.cqs/.dirty` as a fallback;
     /// the daemon promotes that marker into a one-shot reconcile on next
     /// start.
+    #[cqs_cmd(group = "a", batch = "cli")]
     Hook {
         #[command(subcommand)]
         subcmd: HookCommand,
     },
     /// Show / list / swap the embedding model recorded in the index
+    #[cqs_cmd(group = "a", batch = "cli")]
     Model {
         #[command(subcommand)]
         subcmd: ModelCommand,
@@ -885,6 +942,7 @@ pub(super) enum Commands {
     /// local exploration. Pair `--open` to launch a browser tab.
     /// Spec: `docs/plans/2026-04-21-cqs-serve-v1.md`.
     #[cfg(feature = "serve")]
+    #[cqs_cmd(group = "a", batch = "cli")]
     Serve {
         /// TCP port to bind. Default 8080.
         #[arg(long, default_value_t = 8080)]
@@ -947,120 +1005,52 @@ pub(crate) enum BatchSupport {
     Daemon,
 }
 
-// #1097: `Commands::batch_support()` and `Commands::variant_name()` are
-// generated from the single registration table in `crate::cli::registry`.
-// Adding a new variant forces a row there because every emitter expands to
-// an exhaustive match — no row, no compile.
+// #1366: `Commands::batch_support()`, `Commands::variant_name()`,
+// `dispatch_group_a()`, and `dispatch_group_b()` are emitted by
+// `cqs_macros::CqsCommands` derive on the enum above (see line 337). The
+// previous `for_each_command!` central registry table + `gen_*_impl!`
+// emitters are gone — per-variant attributes now carry the metadata the
+// table used to centralize.
 //
-// `gen_batch_support_impl!` and `gen_variant_name_impl!` are the emitters;
-// `for_each_command!` invokes them with the row list (split into
-// `group_a:` and `group_b:` brace groups so the dispatch emitters can
-// emit different RHS per group without nested macros). Keeping the
-// emitters here means the generated `impl Commands` blocks stay in the
-// same module as the enum, which is where readers expect to find them.
-macro_rules! gen_batch_support_impl {
-    (
-        cli = $_cli:ident,
-        ctx = $_ctx:ident,
-        project_cqs_dir = $_pcd:ident,
-        group_a: {
-            $(
-                $(#[$a_attr:meta])*
-                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
-            ),* $(,)?
-        }
-        group_b: {
-            $(
-                $(#[$b_attr:meta])*
-                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
-            ),* $(,)?
-        }
-    ) => {
-        impl Commands {
-            /// Classify this variant for daemon dispatch.
-            ///
-            /// Exhaustive match generated from `crate::cli::registry`.
-            /// Adding a new `Commands` variant without registering it is a
-            /// compile error — the whole point of the refactor (issue
-            /// #1097, EX-V1.29-1).
-            ///
-            /// `#[allow(unused_variables)]` because most rows use a static
-            /// `BatchSupport::Cli` / `BatchSupport::Daemon` and don't read
-            /// the bound fields (e.g., `Cache { ref subcmd }`). Only Notes
-            /// and Suggest reference their bindings in the `$bs` expression.
-            #[allow(unused_variables)]
-            pub(crate) fn batch_support(&self) -> BatchSupport {
-                match self {
-                    $(
-                        $(#[$a_attr])*
-                        $a_bind => $a_bs,
-                    )*
-                    $(
-                        $(#[$b_attr])*
-                        $b_bind => $b_bs,
-                    )*
-                }
-            }
-        }
-    };
+// Runtime batch_support helpers for variants whose support level depends
+// on the inner subcommand:
+
+/// `cqs notes list` is daemon-dispatchable (read-only); mutations
+/// (`add`/`update`/`remove`) must hit the CLI so the filesystem reindex
+/// fires. Wired in via `#[cqs_cmd(batch = "runtime")]` on the `Notes`
+/// variant.
+#[allow(dead_code)] // referenced by name from the derive-generated match
+pub(crate) fn notes_batch_support(cmd: &Commands) -> BatchSupport {
+    match cmd {
+        Commands::Notes { subcmd } => match subcmd {
+            crate::cli::commands::NotesCommand::List { .. } => BatchSupport::Daemon,
+            _ => BatchSupport::Cli,
+        },
+        _ => unreachable!("notes_batch_support called on non-Notes variant"),
+    }
 }
 
-macro_rules! gen_variant_name_impl {
-    (
-        cli = $_cli:ident,
-        ctx = $_ctx:ident,
-        project_cqs_dir = $_pcd:ident,
-        group_a: {
-            $(
-                $(#[$a_attr:meta])*
-                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
-            ),* $(,)?
-        }
-        group_b: {
-            $(
-                $(#[$b_attr:meta])*
-                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
-            ),* $(,)?
-        }
-    ) => {
-        impl Commands {
-            /// Static command label used for tracing spans. `Commands` does
-            /// not derive `Debug` (it would clutter help output), so we
-            /// hand-roll a discriminant→string map. Generated from the
-            /// registry.
-            pub(crate) fn variant_name(&self) -> &'static str {
-                match self {
-                    $(
-                        $(#[$a_attr])*
-                        $a_wild => $a_name,
-                    )*
-                    $(
-                        $(#[$b_attr])*
-                        $b_wild => $b_name,
-                    )*
-                }
+/// `cqs suggest --apply` rewrites notes.toml + reindexes (write); the
+/// dry-run path is read-only and daemon-dispatchable.
+#[allow(dead_code)]
+pub(crate) fn suggest_batch_support(cmd: &Commands) -> BatchSupport {
+    match cmd {
+        Commands::Suggest { args, .. } => {
+            if args.apply {
+                BatchSupport::Cli
+            } else {
+                BatchSupport::Daemon
             }
         }
-    };
+        _ => unreachable!("suggest_batch_support called on non-Suggest variant"),
+    }
 }
 
-// `batch_support` and `variant_name` only consume the row metadata — they
-// do not emit `$body`. Pass placeholder identifiers (`_cli`, `_ctx`,
-// `_pcd`) for the cli/ctx/project_cqs_dir parameters. Macro_rules drops
-// captured-but-unemitted tokens, so the placeholders never appear in the
-// generated code and never need to resolve.
-crate::cli::registry::for_each_command!(
-    gen_batch_support_impl,
-    cli = _cli,
-    ctx = _ctx,
-    project_cqs_dir = _pcd
-);
-crate::cli::registry::for_each_command!(
-    gen_variant_name_impl,
-    cli = _cli,
-    ctx = _ctx,
-    project_cqs_dir = _pcd
-);
+// (Old `gen_batch_support_impl!` / `gen_variant_name_impl!` macros and
+// their invocations were removed when the `cqs_macros::CqsCommands`
+// derive landed. The derive emits `Commands::batch_support`,
+// `Commands::variant_name`, `dispatch_group_a`, and `dispatch_group_b`
+// from per-variant `#[cqs_cmd(...)]` attributes — see the enum above.)
 
 #[cfg(test)]
 mod tests {

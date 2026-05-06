@@ -13,7 +13,10 @@ mod files;
 pub(crate) mod json_envelope;
 mod limits;
 mod pipeline;
-mod registry;
+// #1366: `mod registry` removed — the central `for_each_command!` table
+// it owned has been replaced by per-variant `#[cqs_cmd(...)]` attributes
+// on `Commands` (see `definitions.rs` and the `cqs_macros::CqsCommands`
+// derive). Per-variant dispatch shims live in `commands::dispatch_shims`.
 mod signal;
 pub(crate) mod staleness;
 mod store;
@@ -23,7 +26,7 @@ mod watch;
 // Re-export definitions (clap structs, enums, helpers) for external use
 pub(crate) use definitions::{
     parse_finite_f32, parse_nonzero_usize, parse_unit_f32, validate_finite_f32, AuditModeState,
-    GateThreshold,
+    BatchSupport, GateThreshold,
 };
 pub use definitions::{Cli, OutputFormat};
 
