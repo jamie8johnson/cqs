@@ -818,7 +818,8 @@ mod tests {
         match input.cmd {
             BatchCmd::Where { ref args, .. } => {
                 assert_eq!(args.description, "new CLI command");
-                assert_eq!(args.limit, 3); // default
+                // API-V1.36-8 (#1459): --limit defaults harmonised to 5.
+                assert_eq!(args.limit, 5);
             }
             _ => panic!("Expected Where command"),
         }
