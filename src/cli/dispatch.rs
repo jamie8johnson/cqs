@@ -270,6 +270,26 @@ fn run_with_dispatch(
         cqs::search::synonyms::install_synonym_overlay(overlay);
     }
 
+    // EXT-V1.36-8 sub-2 (#1460): load classifier vocab overlay from
+    // `~/.config/cqs/classifier.toml` (user-global) and
+    // `<project>/.cqs/classifier.toml` (project-local). Same precedence
+    // shape as the synonym overlay above — user-global plus project-local
+    // appended; AhoCorasick rebuilt once with the merged set.
+    {
+        let mut neg: Vec<String> = Vec::new();
+        let mut multi: Vec<String> = Vec::new();
+        if let Some(global) = dirs::config_dir().map(|d| d.join("cqs/classifier.toml")) {
+            let (g_neg, g_multi) = cqs::search::router::load_classifier_vocab_overlay(&global);
+            neg.extend(g_neg);
+            multi.extend(g_multi);
+        }
+        let project_local = project_cqs_dir.join("classifier.toml");
+        let (p_neg, p_multi) = cqs::search::router::load_classifier_vocab_overlay(&project_local);
+        neg.extend(p_neg);
+        multi.extend(p_multi);
+        cqs::search::router::install_classifier_vocab_overlay(neg, multi);
+    }
+
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
 

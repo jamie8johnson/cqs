@@ -368,18 +368,36 @@ static CONCEPTUAL_NOUNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
 /// matching (`query.contains("not ")`) which false-fired on words like
 /// `cannot`, `piano`, `nano`, `volcano`, `casino`. Switched to exact
 /// word-token matching against the `words` vec already computed upstream.
-const NEGATION_TOKENS: &[&str] = &[
-    "not",
-    "without",
-    "except",
-    "never",
-    "avoid",
-    "no",
-    "don't",
-    "doesn't",
-    "shouldn't",
-    "exclude",
-];
+///
+/// EXT-V1.36-8 sub-2 (#1460): the compile-time floor below is the default;
+/// operators add domain phrases (`ignoring`, `without using`, etc.) via
+/// [`install_classifier_vocab_overlay`] from
+/// `~/.config/cqs/classifier.toml` and `<project>/.cqs/classifier.toml`.
+fn builtin_negation_tokens() -> std::collections::HashSet<String> {
+    [
+        "not",
+        "without",
+        "except",
+        "never",
+        "avoid",
+        "no",
+        "don't",
+        "doesn't",
+        "shouldn't",
+        "exclude",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Runtime-extensible negation token set. Initialized lazily with the
+/// compile-time floor; merged with TOML-overlay extras via
+/// [`install_classifier_vocab_overlay`]. Token lookups are word-exact
+/// case-sensitive (the upstream `words` vec is already lowercased before
+/// the lookup, so set entries are stored lowercase too).
+static NEGATION_TOKENS: LazyLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::RwLock::new(builtin_negation_tokens()));
 
 /// Structural keywords from programming languages
 const STRUCTURAL_KEYWORDS: &[&str] = &[
@@ -455,24 +473,192 @@ static STRUCTURAL_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
 /// patterns require explicit sequencing / enumeration phrasing
 /// ("first do X then do Y") so the category actually captures multi-step
 /// intent, not any coordinated phrase.
-const MULTISTEP_PATTERNS: &[&str] = &[
-    "and then",
-    "before ",
-    "after ",
-    " or also ",
-    "first ",
-    "then ",
-    "both ",
-    "between ",
-];
+///
+/// EXT-V1.36-8 sub-2 (#1460): operators extend via TOML overlay
+/// (e.g. ordering verbs in non-English domain queries) without a rebuild.
+fn builtin_multistep_patterns() -> Vec<String> {
+    [
+        "and then",
+        "before ",
+        "after ",
+        " or also ",
+        "first ",
+        "then ",
+        "both ",
+        "between ",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
 
-/// Aho-Corasick automaton over [`MULTISTEP_PATTERNS`]. Raw substring match —
-/// the pattern strings already carry their own trailing / leading space
-/// where word-boundary semantics are needed.
-static MULTISTEP_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
-    AhoCorasick::new(MULTISTEP_PATTERNS)
-        .expect("MULTISTEP_PATTERNS is a valid pattern set (static)")
-});
+/// Aho-Corasick automaton over multistep patterns. Built once on first
+/// access, rebuilt by [`install_classifier_vocab_overlay`] when an overlay
+/// merges in extra patterns. `RwLock<Arc<AhoCorasick>>` so the hot search
+/// path (`is_match`) just clones the inner Arc — cheap, stable across the
+/// rest of the call.
+static MULTISTEP_PATTERNS_AC: LazyLock<std::sync::RwLock<std::sync::Arc<AhoCorasick>>> =
+    LazyLock::new(|| {
+        let patterns = builtin_multistep_patterns();
+        let ac =
+            AhoCorasick::new(&patterns).expect("builtin MULTISTEP_PATTERNS is a valid pattern set");
+        std::sync::RwLock::new(std::sync::Arc::new(ac))
+    });
+
+/// EXT-V1.36-8 sub-2 (#1460): merge a classifier-vocab overlay into the
+/// runtime NEGATION + MULTISTEP sets. Called once at CLI/daemon startup
+/// after parsing `~/.config/cqs/classifier.toml` (user-global) and
+/// `<project>/.cqs/classifier.toml` (project-local; layered on top).
+///
+/// `extra_negation` entries are lowercased and merged into the negation
+/// set. `extra_multistep` entries are merged with the builtin patterns
+/// and a new `AhoCorasick` automaton is built — empty/whitespace-only
+/// entries are dropped at the loader.
+///
+/// Both vecs empty → no-op.
+pub fn install_classifier_vocab_overlay(extra_negation: Vec<String>, extra_multistep: Vec<String>) {
+    if extra_negation.is_empty() && extra_multistep.is_empty() {
+        return;
+    }
+    if !extra_negation.is_empty() {
+        let mut g = NEGATION_TOKENS.write().unwrap_or_else(|p| p.into_inner());
+        for tok in extra_negation {
+            g.insert(tok.to_lowercase());
+        }
+    }
+    if !extra_multistep.is_empty() {
+        // Rebuild the AC over the union of builtins + overlay so the
+        // overlay extends rather than replaces the set.
+        let mut all = builtin_multistep_patterns();
+        for pat in extra_multistep {
+            if !pat.trim().is_empty() && !all.contains(&pat) {
+                all.push(pat);
+            }
+        }
+        let new_ac = match AhoCorasick::new(&all) {
+            Ok(ac) => ac,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Classifier vocab overlay multistep patterns rejected by AhoCorasick — \
+                     keeping builtin AC"
+                );
+                return;
+            }
+        };
+        let mut g = MULTISTEP_PATTERNS_AC
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        *g = std::sync::Arc::new(new_ac);
+    }
+}
+
+/// Test-only: reset both vocab tables to the compile-time builtins.
+#[cfg(test)]
+pub(crate) fn reset_classifier_vocab_for_test() {
+    {
+        let mut g = NEGATION_TOKENS.write().unwrap_or_else(|p| p.into_inner());
+        *g = builtin_negation_tokens();
+    }
+    {
+        let patterns = builtin_multistep_patterns();
+        let ac = AhoCorasick::new(&patterns).expect("rebuild builtin AC");
+        let mut g = MULTISTEP_PATTERNS_AC
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        *g = std::sync::Arc::new(ac);
+    }
+}
+
+/// EXT-V1.36-8 sub-2 (#1460): parse a `classifier.toml` overlay from disk.
+///
+/// Schema:
+/// ```toml
+/// [classifier]
+/// negation_tokens = ["ignoring", "without using"]
+/// multistep_patterns = ["sequentially", "step by step"]
+/// ```
+///
+/// Returns `(extra_negation, extra_multistep)`. Missing file → `(empty,
+/// empty)` (no warn). Malformed TOML → warn + empty. Bounded read at 4 KiB.
+pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> (Vec<String>, Vec<String>) {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 4096;
+
+    let mut file = match std::fs::File::open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to open classifier vocab overlay; falling back to builtins"
+            );
+            return (Vec::new(), Vec::new());
+        }
+        Ok(f) => f,
+    };
+    let mut raw = String::new();
+    if let Err(e) = (&mut file).take(MAX_BYTES).read_to_string(&mut raw) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Bounded read of classifier vocab failed; falling back to builtins"
+        );
+        return (Vec::new(), Vec::new());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct File {
+        classifier: Option<ClassifierSection>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ClassifierSection {
+        #[serde(default)]
+        negation_tokens: Vec<String>,
+        #[serde(default)]
+        multistep_patterns: Vec<String>,
+    }
+
+    let parsed: File = match toml::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Classifier vocab overlay is malformed TOML; falling back to builtins"
+            );
+            return (Vec::new(), Vec::new());
+        }
+    };
+
+    let section = match parsed.classifier {
+        Some(s) => s,
+        None => return (Vec::new(), Vec::new()),
+    };
+
+    // Drop empty / whitespace-only entries before they reach the
+    // AhoCorasick builder — the builder can panic on `""` and any
+    // whitespace-only pattern would either match constantly or be useless.
+    let neg: Vec<String> = section
+        .negation_tokens
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    let multi: Vec<String> = section
+        .multistep_patterns
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if !neg.is_empty() || !multi.is_empty() {
+        tracing::debug!(
+            path = %path.display(),
+            negation_added = neg.len(),
+            multistep_added = multi.len(),
+            "Loaded classifier vocab overlay"
+        );
+    }
+    (neg, multi)
+}
 
 // ── Classification ───────────────────────────────────────────────────
 
@@ -728,7 +914,11 @@ fn classify_query_inner(query: &str) -> Classification {
     // 1. Negation trumps everything — "sort without allocating".
     //    Phase 5: enriched summaries inject positive vocabulary ("allocates",
     //    "uses heap") that fights the negation, so route to the base index.
-    if words.iter().any(|w| NEGATION_TOKENS.contains(w)) {
+    let negation_hit = {
+        let g = NEGATION_TOKENS.read().unwrap_or_else(|p| p.into_inner());
+        words.iter().any(|w| g.contains(*w))
+    };
+    if negation_hit {
         return Classification {
             category: QueryCategory::Negation,
             confidence: Confidence::High,
@@ -838,7 +1028,14 @@ fn classify_query_inner(query: &str) -> Classification {
     //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
     //    showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
     //    Summaries inject vocabulary that displaces the conjunction terms.
-    if MULTISTEP_PATTERNS_AC.is_match(&query_lower) {
+    let multistep_hit = {
+        let ac = MULTISTEP_PATTERNS_AC
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        ac.is_match(&query_lower)
+    };
+    if multistep_hit {
         return Classification {
             category: QueryCategory::MultiStep,
             confidence: Confidence::Low,
@@ -1352,6 +1549,152 @@ mod tests {
         // Phase 5: negation routes to base — summaries inject positive
         // vocabulary that fights the "without" clause.
         assert_eq!(c.strategy, SearchStrategy::DenseBase);
+    }
+
+    // ─── EXT-V1.36-8 sub-2: classifier vocab overlay ────────────────────
+
+    /// An overlay-installed negation token routes a query into the
+    /// `Negation` category, just like a builtin would.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_negation_token_routes_to_negation_category() {
+        reset_classifier_vocab_for_test();
+        // "ignoring" isn't in the builtin set; pre-overlay it should NOT
+        // hit the negation branch.
+        let pre = classify_query("find functions ignoring case");
+        assert_ne!(
+            pre.category,
+            QueryCategory::Negation,
+            "ignoring is not a builtin — pre-overlay must not be Negation; got {:?}",
+            pre.category
+        );
+
+        install_classifier_vocab_overlay(vec!["ignoring".to_string()], Vec::new());
+
+        let post = classify_query("find functions ignoring case");
+        assert_eq!(
+            post.category,
+            QueryCategory::Negation,
+            "post-overlay 'ignoring' must route to Negation; got {:?}",
+            post.category
+        );
+
+        reset_classifier_vocab_for_test();
+    }
+
+    /// An overlay-installed multistep pattern routes a query into the
+    /// `MultiStep` category.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_multistep_pattern_routes_to_multistep_category() {
+        reset_classifier_vocab_for_test();
+        // "sequentially" isn't in the builtin set.
+        let pre = classify_query("walk the tree sequentially");
+        assert_ne!(
+            pre.category,
+            QueryCategory::MultiStep,
+            "sequentially is not a builtin — pre-overlay must not be MultiStep; got {:?}",
+            pre.category
+        );
+
+        install_classifier_vocab_overlay(Vec::new(), vec!["sequentially".to_string()]);
+
+        let post = classify_query("walk the tree sequentially");
+        assert_eq!(
+            post.category,
+            QueryCategory::MultiStep,
+            "post-overlay 'sequentially' must route to MultiStep; got {:?}",
+            post.category
+        );
+
+        reset_classifier_vocab_for_test();
+    }
+
+    /// `reset_classifier_vocab_for_test` restores the builtin sets so a
+    /// post-reset query lands the same as if no overlay was ever installed.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_reset_restores_builtins() {
+        reset_classifier_vocab_for_test();
+        install_classifier_vocab_overlay(vec!["ignoring".to_string()], Vec::new());
+        // confirm the overlay is live
+        assert_eq!(
+            classify_query("find functions ignoring case").category,
+            QueryCategory::Negation
+        );
+        // reset and confirm the overlay is gone
+        reset_classifier_vocab_for_test();
+        assert_ne!(
+            classify_query("find functions ignoring case").category,
+            QueryCategory::Negation,
+            "after reset, overlay-only token should no longer trigger Negation"
+        );
+    }
+
+    /// Empty overlays are no-ops.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_empty_is_noop() {
+        reset_classifier_vocab_for_test();
+        install_classifier_vocab_overlay(Vec::new(), Vec::new());
+        // Builtin negation still works — sanity check.
+        assert_eq!(
+            classify_query("sort without allocating").category,
+            QueryCategory::Negation
+        );
+        reset_classifier_vocab_for_test();
+    }
+
+    /// `load_classifier_vocab_overlay` parses the typed `[classifier]` section.
+    #[test]
+    fn classifier_overlay_loader_parses_typed_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("classifier.toml");
+        std::fs::write(
+            &path,
+            "[classifier]\n\
+             negation_tokens = [\"ignoring\", \"without using\"]\n\
+             multistep_patterns = [\"sequentially\", \"step by step\"]\n",
+        )
+        .unwrap();
+
+        let (neg, multi) = load_classifier_vocab_overlay(&path);
+        assert_eq!(
+            neg,
+            vec!["ignoring".to_string(), "without using".to_string()]
+        );
+        assert_eq!(
+            multi,
+            vec!["sequentially".to_string(), "step by step".to_string()]
+        );
+    }
+
+    /// Missing file → empty pair (no warn).
+    #[test]
+    fn classifier_overlay_loader_missing_file_returns_empty() {
+        let (neg, multi) =
+            load_classifier_vocab_overlay(std::path::Path::new("/nonexistent/classifier.toml"));
+        assert!(neg.is_empty());
+        assert!(multi.is_empty());
+    }
+
+    /// Empty / whitespace-only entries are filtered before reaching
+    /// `AhoCorasick::new` (which would panic on `""`).
+    #[test]
+    fn classifier_overlay_loader_drops_empty_entries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("classifier.toml");
+        std::fs::write(
+            &path,
+            "[classifier]\n\
+             negation_tokens = [\"ignoring\", \"\", \"   \"]\n\
+             multistep_patterns = [\"step by step\", \"\"]\n",
+        )
+        .unwrap();
+
+        let (neg, multi) = load_classifier_vocab_overlay(&path);
+        assert_eq!(neg, vec!["ignoring".to_string()]);
+        assert_eq!(multi, vec!["step by step".to_string()]);
     }
 
     #[test]
