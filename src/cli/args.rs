@@ -83,22 +83,9 @@ pub(crate) enum RerankerMode {
     Onnx,
 }
 
-/// Resolve the effective reranker mode from the `(--reranker, --rerank)`
-/// pair. `--reranker` (explicit enum) wins when set; otherwise `--rerank`
-/// (bool) is mapped to `Onnx`. Both unset → `None`.
-///
-/// Used by `SearchArgs` and `Cli` (top-level search) to keep the bool flag
-/// working for muscle memory / batch scripts while exposing the full enum.
-pub(crate) fn resolve_rerank_mode(
-    explicit: Option<RerankerMode>,
-    rerank_bool: bool,
-) -> RerankerMode {
-    match (explicit, rerank_bool) {
-        (Some(m), _) => m,
-        (None, true) => RerankerMode::Onnx,
-        (None, false) => RerankerMode::None,
-    }
-}
+// API-V1.36-9 (#1459): `resolve_rerank_mode` removed along with the
+// legacy `--rerank` bool. Callers now use
+// `self.reranker.unwrap_or(RerankerMode::None)` directly.
 
 /// Shared `--limit / -n` argument for graph commands that previously had no
 /// per-subcommand limit (callers, callees, deps, impact, test-map, trace,
@@ -183,21 +170,15 @@ pub(crate) struct SearchArgs {
     #[arg(long)]
     pub include_docs: bool,
 
-    /// Re-rank results with cross-encoder (slower, more accurate).
-    ///
-    /// Boolean shorthand for `--reranker onnx`. `--reranker <mode>` (P2-14,
-    /// #1372) is the canonical form; this stays for muscle memory and batch
-    /// scripts. If both are passed, `--reranker` wins.
-    #[arg(long)]
-    pub rerank: bool,
-
-    /// Reranker mode: `none|onnx|llm` (#1372).
+    /// Reranker mode: `none|onnx` (#1372).
     ///
     /// Mirrors `cqs eval --reranker`. `none` is the default; `onnx` runs the
-    /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`; `llm`
-    /// is reserved for the production wiring landing in #1220 and currently
-    /// errors with a "not yet implemented" message. Takes precedence over
-    /// the legacy `--rerank` bool when both are passed.
+    /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
+    ///
+    /// API-V1.36-9 (#1459): the legacy `--rerank` bool was a "two flags for
+    /// one knob" shorthand for `--reranker onnx`. Per "no external users"
+    /// project policy, dropped without an alias — `--reranker onnx` is the
+    /// canonical form.
     #[arg(long = "reranker", value_enum)]
     pub reranker: Option<RerankerMode>,
 
@@ -258,10 +239,10 @@ pub(crate) struct SearchArgs {
 }
 
 impl SearchArgs {
-    /// Effective reranker mode after resolving `(--reranker, --rerank)` (#1372).
-    /// Returns `RerankerMode::None` when neither flag is set.
+    /// Effective reranker mode. Returns `RerankerMode::None` when no flag is set.
+    /// API-V1.36-9 (#1459): legacy `--rerank` bool gone; `--reranker` is canonical.
     pub(crate) fn rerank_mode(&self) -> RerankerMode {
-        resolve_rerank_mode(self.reranker, self.rerank)
+        self.reranker.unwrap_or(RerankerMode::None)
     }
 
     /// `true` if any reranker stage is selected (Onnx or Llm).
