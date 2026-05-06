@@ -11,8 +11,8 @@ use axum::{
 use tower::util::ServiceExt;
 
 use super::{
-    allowed_host_set, build_router, now_epoch_secs, wait_for_idle, AllowedHosts, AppState,
-    AuthMode, NoAuthAcknowledgement,
+    allowed_host_set, build_router, enforce_concurrency_cap, now_epoch_secs, wait_for_idle,
+    AllowedHosts, AppState, AuthMode, NoAuthAcknowledgement,
 };
 use crate::embedder::Embedding;
 use crate::parser::{Chunk, ChunkType, Language};
@@ -1920,6 +1920,93 @@ mod auth_tests {
         assert!(
             body.contains("Failed to deserialize query string"),
             "expected serde-style rejection body, got: {body:?}"
+        );
+    }
+
+    // ─── SEC-V1.36-9 concurrent-request cap ────────────────────────────
+    //
+    // Outermost middleware caps in-flight requests so an attacker on
+    // `--bind 0.0.0.0` can't fan out N connections each holding a 64 KiB
+    // pre-auth body buffer. `try_acquire` makes saturation return 503
+    // immediately, never queue.
+
+    /// Saturation: when no permit is available, `enforce_concurrency_cap`
+    /// returns 503 without invoking the downstream service. Drives a tiny
+    /// router with just the cap middleware so the assertion is on the
+    /// middleware itself, not threaded through the production layer stack.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_v136_9_concurrency_cap_returns_503_when_saturated() {
+        use axum::middleware::from_fn_with_state;
+        use axum::{routing::get, Router};
+
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        // Pre-acquire the only permit so the middleware sees a saturated
+        // semaphore on `try_acquire`.
+        let _held = sem.clone().try_acquire_owned().expect("initial permit");
+
+        let app: Router =
+            Router::new()
+                .route("/", get(|| async { "ok" }))
+                .layer(from_fn_with_state(
+                    std::sync::Arc::clone(&sem),
+                    enforce_concurrency_cap,
+                ));
+
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "saturated semaphore must return 503"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024)
+            .await
+            .expect("body");
+        let body = std::str::from_utf8(&bytes).unwrap_or("<non-utf8>");
+        assert!(
+            body.contains("concurrency cap"),
+            "503 body should name the cap, got: {body:?}"
+        );
+    }
+
+    /// Pass-through: when a permit is available, requests succeed and the
+    /// permit is released after the response. A second back-to-back request
+    /// should also succeed (permit dropped, semaphore re-permits).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_v136_9_concurrency_cap_passes_through_with_permits() {
+        use axum::middleware::from_fn_with_state;
+        use axum::{routing::get, Router};
+
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+
+        let make_app = || {
+            Router::new()
+                .route("/", get(|| async { "ok" }))
+                .layer(from_fn_with_state(
+                    std::sync::Arc::clone(&sem),
+                    enforce_concurrency_cap,
+                ))
+        };
+
+        // First request: permit acquired, dropped after the response.
+        let resp1 = make_app()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot 1");
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // Second request: permit available again.
+        let resp2 = make_app()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot 2");
+        assert_eq!(
+            resp2.status(),
+            StatusCode::OK,
+            "permit must be released after first request"
         );
     }
 

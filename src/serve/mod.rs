@@ -28,7 +28,7 @@ use axum::{
     extract::{Request, State},
     http::{header, StatusCode},
     middleware::{from_fn_with_state, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -286,8 +286,38 @@ async fn touch_idle_clock(State(state): State<AppState>, request: Request, next:
 /// [`AuthMode::Disabled`], the auth layer is omitted — the
 /// [`NoAuthAcknowledgement`] proof token inside that variant
 /// guarantees an explicit opt-in (#1136).
+/// SEC-V1.36-9 (#1461): cap concurrent in-flight requests pre-everything.
+/// `try_acquire` returns immediately — saturation is `503 Service
+/// Unavailable`, never a queued allocation. Sits as the outermost
+/// middleware so it gates EVERY downstream layer (auth, host allowlist,
+/// body limit, compression, trace) — no buffer is allocated, no auth
+/// constant-time compare is run, until the request holds a permit.
+async fn enforce_concurrency_cap(
+    State(sem): State<Arc<tokio::sync::Semaphore>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let permit = match sem.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!("serve: concurrent-request cap saturated — returning 503 (SEC-V1.36-9)");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Server at concurrency cap; retry shortly",
+            )
+                .into_response();
+        }
+    };
+    let response = next.run(req).await;
+    drop(permit);
+    response
+}
+
 pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: AuthMode) -> Router {
     let touch_state = state.clone();
+    let conn_sem = Arc::new(tokio::sync::Semaphore::new(
+        crate::limits::serve_max_concurrent_requests(),
+    ));
     let mut app = Router::new()
         .route("/health", get(handlers::health))
         .route("/api/stats", get(handlers::stats))
@@ -374,6 +404,15 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
                 request_id,
             )
         }))
+        // SEC-V1.36-9 (#1461): outermost middleware. Caps concurrent
+        // in-flight requests so an attacker on `--bind 0.0.0.0` can't
+        // fan out N connections each holding a 64 KiB pre-auth body
+        // buffer (bound only by FD limit otherwise). `try_acquire`
+        // makes saturation return 503 immediately — no queueing, no
+        // allocation past the permit check. Sits OUTSIDE every other
+        // layer (auth, host, body-limit, compression, trace) so the
+        // body buffer is never allocated for over-cap requests.
+        .layer(from_fn_with_state(conn_sem, enforce_concurrency_cap))
 }
 
 /// Build the allowed-`Host` set for DNS-rebinding protection.

@@ -436,6 +436,37 @@ pub fn parse_env_duration_secs(key: &str, default_secs: u64) -> std::time::Durat
 /// and the tokio runtime. `0` disables the idle shutdown entirely.
 pub const SERVE_IDLE_MINUTES_DEFAULT: u64 = 30;
 
+// ============ SEC-V1.36-9 cqs serve concurrent-request cap ============
+
+/// Default ceiling on concurrent in-flight requests in `cqs serve`. Sized
+/// for an interactive single-user UI plus a generous buffer for fan-out
+/// from agent tooling. Each request can hold up to a 64 KiB body buffer
+/// pre-auth (RequestBodyLimitLayer) plus per-handler scratch state, so
+/// 256 × 64 KiB = 16 MiB worst-case pre-auth memory ceiling — well below
+/// any sensible memory budget. Bound only by FD limit otherwise.
+pub const SERVE_MAX_CONCURRENT_REQUESTS_DEFAULT: usize = 256;
+
+/// Resolve the in-flight request cap for `cqs serve`.
+///
+/// SEC-V1.36-9 (#1461): the request body limit is per-request; without an
+/// outer cap, an attacker on `--bind 0.0.0.0` (or any LAN/--no-auth bind)
+/// can fan out N concurrent connections, each holding a 64 KiB pre-auth
+/// buffer. Bounded only by FD limit. The cap below sits on the outermost
+/// middleware layer (`enforce_concurrency_cap` in `src/serve/mod.rs`) and
+/// uses `try_acquire` so saturation returns `503 Service Unavailable`
+/// instantly — no queueing, no allocation.
+///
+/// `CQS_SERVE_MAX_CONCURRENT_REQUESTS` overrides per-launch, clamped to
+/// `[1, 8192]`. Tests can drive saturation by setting this to `1`.
+pub fn serve_max_concurrent_requests() -> usize {
+    parse_env_usize_clamped(
+        "CQS_SERVE_MAX_CONCURRENT_REQUESTS",
+        SERVE_MAX_CONCURRENT_REQUESTS_DEFAULT,
+        1,
+        8192,
+    )
+}
+
 /// Resolve the idle-shutdown threshold for `cqs serve` in minutes.
 /// `CQS_SERVE_IDLE_MINUTES=0` disables idle eviction (server runs until
 /// killed). Garbage / missing values fall back to
