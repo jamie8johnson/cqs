@@ -1,8 +1,10 @@
 # Roadmap
 
-## Current: v1.36.2 (cut 2026-05-04)
+## Current: v1.37.0 (cut 2026-05-05)
 
-Patch release. No schema bump.
+Minor release. No schema bump.
+
+**v1.37.0 (2026-05-05):** v1.36.2 16-category audit close-out (#1456) — ~120 of 163 audit findings addressed. All 56 P1s + 13 of 14 P2s shipped or addressed via defensive variants. Plus dim-scaled batch sizes (#1464) so `BRUTE_FORCE_BATCH_SIZE` / `hnsw_batch_size` / `cagra_stream_batch_size` / `embed_channel_depth` keep per-batch heap roughly constant across embedding dim (qwen3-embedding-{4b,8b} at 2560/4096-dim used to silently 2-4× the heap). Surface changes that argue minor: `RerankerMode::Llm` removed from CLI (was placeholder that errored at runtime); `cqs::limits` promoted from `pub(crate)` → `pub`; new public surface (`dim_scaled_batch`, `relativize_or_warn`, `Store::try_stored_model_name`, `BoundedScoreHeap::would_accept`, `BatchProvider::validate_model`); `DEFAULT_QUERY_CACHE_SIZE` 128→1024; `MAX_CONCURRENT_DAEMON_CLIENTS` scales with cores. ~28 deferred P3/P4 items filed as tracking issues #1457-#1463.
 
 **v1.36.2 (2026-05-04):** critical fix — long-running `cqs index` runs no longer crash with `(code: 5) database is locked` when a concurrent short-lived `cqs` invocation overlaps the indexer's writes (#1451 `Store::drop` checkpoint TRUNCATE → PASSIVE; the indexer's WAL contention with `cqs stats` / similar polling was surfacing fatal mid-transaction `SQLITE_BUSY`). Plus `busy_timeout` 5s → 30s defense-in-depth (#1450) and 5 dependency bumps from dependabot.
 
