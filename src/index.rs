@@ -23,27 +23,21 @@ use crate::store::{ClearHnswDirty, Store, StoreError};
 /// unused; future backends like USearch / Metal / ROCm can adopt as
 /// needed). CLI sites consume this with `?` into `anyhow::Result` exactly
 /// as today via the `From` impl.
+///
+/// API-V1.36-6 (#1459 sub-6): the previous `ChecksumMismatch` and
+/// `LoadFailed` variants were documented as never-emitted — every
+/// backend converts internal load failures to `Ok(None)` and
+/// `tracing::warn!` to fall through to the next backend. Removing
+/// them tightens the type to "store-level abort only", matching the
+/// trait contract. Backend implementations that handle integrity
+/// failures internally still log via `tracing::warn!` and return
+/// `Ok(None)`, exactly as before.
 #[derive(Debug, Error)]
 pub enum IndexBackendError {
     /// A backend-internal store query failed in a way that can't be
     /// recovered by falling through to the next backend.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
-
-    /// Persisted index file failed integrity check (blake3 mismatch,
-    /// magic-bytes mismatch, dim mismatch, chunk-count mismatch).
-    /// Distinct from `LoadFailed` because the operator-facing message
-    /// differs: a checksum mismatch usually means the file is stale and
-    /// safe to delete, while a load failure may indicate a deeper
-    /// corruption.
-    #[error("index integrity check failed: {0}")]
-    ChecksumMismatch(String),
-
-    /// Persisted index file deserialization failed for reasons other
-    /// than a clean integrity mismatch (truncation, IO error during
-    /// read, library deserialization error).
-    #[error("index load failed: {0}")]
-    LoadFailed(String),
 }
 
 /// Convenience for CLI consumers that want to fold backend errors into
