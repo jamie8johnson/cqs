@@ -9,6 +9,7 @@
 
 #![cfg(unix)]
 
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -132,12 +133,19 @@ pub(super) fn spawn_daemon_thread(
         // so operators can see whether the cap is being approached.
         let mut last_inflight_report = std::time::Instant::now();
         let inflight_report_interval = Duration::from_secs(60);
-        // RM-V1.25-9: Poll accept with a short sleep so the loop
-        // can notice SIGTERM and drain cleanly instead of blocking
-        // indefinitely on a syscall that systemd has to kill.
-        // Listener was set non-blocking at bind time.
-        // RM-V1.25-8: also break on Ctrl+C (`check_interrupted`) so
-        // the main loop's `.join()` on shutdown completes promptly.
+        // RM-V1.25-9 + RM-V1.36-8: wait for the listener to become
+        // readable via `libc::poll` with a 1-second timeout, then
+        // accept(). Replaces the prior 500ms thread::sleep busy-poll
+        // (`WouldBlock` arm) — the kernel parks this thread until
+        // either a connection arrives or the timeout fires, instead
+        // of cycling 2 wakeups/sec on an idle daemon. The 1-second
+        // timeout still bounds shutdown latency: `daemon_should_exit`
+        // is checked at the top of every iteration so SIGTERM /
+        // Ctrl+C drains within ~1s. Listener was set non-blocking
+        // at bind time so `accept()` returns immediately when poll()
+        // says ready, and any spurious POLLIN re-loops cleanly.
+        let listener_fd = listener.as_raw_fd();
+        const POLL_TIMEOUT_MS: i32 = 1000;
         loop {
             if daemon_should_exit() {
                 tracing::info!("Daemon accept loop draining on shutdown signal");
@@ -163,6 +171,34 @@ pub(super) fn spawn_daemon_thread(
                     "Daemon client count"
                 );
                 last_inflight_report = std::time::Instant::now();
+            }
+            // Park until the listener fd is readable or the timeout
+            // expires. SAFETY: `pfd` is a zeroed `pollfd` initialised
+            // here with our fd; `libc::poll` only reads the input
+            // fields and writes `revents` — no aliasing concerns.
+            let mut pfd = libc::pollfd {
+                fd: listener_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let n = unsafe { libc::poll(&mut pfd, 1, POLL_TIMEOUT_MS) };
+            if n == 0 {
+                // Timeout — loop back to re-check daemon_should_exit
+                // and the periodic idle/inflight tickers.
+                continue;
+            }
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    // EINTR — signal arrived (e.g. SIGTERM); fall
+                    // through to next iteration so daemon_should_exit
+                    // can short-circuit the loop on the next pass.
+                    continue;
+                }
+                tracing::warn!(error = %err, "poll() on daemon listener failed");
+                // Brief back-off so a hard error doesn't tight-loop.
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
             }
             match listener.accept() {
                 Ok((stream, _addr)) => {
@@ -210,14 +246,11 @@ pub(super) fn spawn_daemon_thread(
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // RM-V1.36-8 / P3: 500 ms instead of 100 ms — agents
-                    // poll on the order of seconds, no need for 10 Hz
-                    // accept-loop wakeups when idle (was 600 wasted
-                    // scheduler trips/min × N daemons). Trade-off: shutdown
-                    // latency rises from up-to-100ms to up-to-500ms; agents
-                    // already tolerate sub-second startup. Real fix
-                    // (epoll/mio) is follow-up.
-                    std::thread::sleep(Duration::from_millis(500));
+                    // Spurious wake — POLLIN fired but accept() found
+                    // no pending connection (e.g. EAGAIN race on the
+                    // backlog). Fall through to the next loop iteration
+                    // without sleeping; the kernel didn't lie, the
+                    // pending connection was just consumed in between.
                 }
                 Err(e) => {
                     // Warn, not debug: EMFILE/ENFILE/ECONNABORTED are
