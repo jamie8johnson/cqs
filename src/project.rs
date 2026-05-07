@@ -490,7 +490,16 @@ mod tests {
         );
     }
 
-    #[cfg(all(unix, target_os = "linux"))]
+    /// TC-HAP-V1.38-10 (#1463): the production `save()` writes the
+    /// registry with `mode(0o600)` under `#[cfg(unix)]` — the test was
+    /// previously gated `#[cfg(all(unix, target_os = "linux"))]`, which
+    /// arbitrarily excluded macOS even though the same Unix
+    /// `OpenOptionsExt::mode()` path runs there. Dropping the
+    /// `target_os = "linux"` constraint aligns the test gate with the
+    /// production gate so a developer running `cargo test` on macOS
+    /// catches a regression in the SEC-V1.33-3 atomic-write path the
+    /// same way Linux CI does.
+    #[cfg(unix)]
     #[test]
     fn test_save_writes_file_with_0o600_perms() {
         // SEC-V1.33-3 regression coverage: the saved registry file must be
