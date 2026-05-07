@@ -138,6 +138,30 @@ pub fn dim_scaled_batch(baseline: usize, dim: usize, min: usize, max: usize) -> 
     scaled.clamp(min, max)
 }
 
+/// Stage-1 dense-retrieval candidate pool size for `search_hybrid` /
+/// `search_filtered_with_index`. The pool feeds RRF + SPLADE fusion +
+/// reranker; it caps the recall ceiling regardless of how many results
+/// the operator finally asks for.
+///
+/// Pre-#1583 the formula was `limit.saturating_mul(5).max(100)`, with a
+/// hardcoded floor of 100. Empirically that floor was leaving R@5 +0.9pp
+/// and R@20 +3.7pp on the table on cqs's own v3.v2 218q eval — gold for
+/// the harder queries genuinely sits deeper in the dense ranking than
+/// 100 candidates allows. The default floor is now 500; `CQS_SEARCH_CANDIDATE_FLOOR`
+/// is an env override for operators who want to push it further (or
+/// lower it on memory-constrained boxes where the 5× HNSW work isn't
+/// worth the recall lift).
+///
+/// `saturating_mul` guards against pathological `limit` (audit
+/// TC-ADV-5: `limit >= usize::MAX / 5` would panic with naive
+/// `limit * 5`).
+pub fn candidate_count_for(limit: usize) -> usize {
+    use std::sync::OnceLock;
+    static FLOOR: OnceLock<usize> = OnceLock::new();
+    let floor = *FLOOR.get_or_init(|| parse_env_usize("CQS_SEARCH_CANDIDATE_FLOOR", 500));
+    limit.saturating_mul(5).max(floor)
+}
+
 // ============ SHL-V1.29-7: hotspot / dead-cluster thresholds ============
 //
 // `HOTSPOT_MIN_CALLERS`, `DEAD_CLUSTER_MIN_SIZE`, `SUGGEST_HOTSPOT_POOL`
@@ -672,6 +696,43 @@ mod tests {
             parse_env_usize_clamped("CQS_TEST_USIZE_BELOW_MIN_DEFAULT", 0, 1, 100),
             1
         );
+    }
+
+    // ===== #1583: candidate_count_for tests =====
+
+    /// `candidate_count_for` must respect the floor when the linear ramp
+    /// (`limit * 5`) is below it. Default floor is 500.
+    #[test]
+    fn candidate_count_floor_is_at_least_500() {
+        // limit=20 (eval default) → linear=100, floor=500 → 500
+        let pool = candidate_count_for(20);
+        assert!(
+            pool >= 500,
+            "candidate_count for limit=20 must hit the >=500 floor, got {pool}"
+        );
+        // limit=5 (search default) → linear=25, floor=500 → 500
+        let small = candidate_count_for(5);
+        assert!(
+            small >= 500,
+            "candidate_count for limit=5 must hit the >=500 floor, got {small}"
+        );
+    }
+
+    /// Above the floor the pool grows linearly with `limit * 5`.
+    #[test]
+    fn candidate_count_scales_linearly_above_floor() {
+        // limit=200 → linear=1000, floor=500 → 1000 (linear wins)
+        assert_eq!(candidate_count_for(200), 1000);
+        // limit=500 → linear=2500
+        assert_eq!(candidate_count_for(500), 2500);
+    }
+
+    /// TC-ADV-5 saturating-multiply guard preserved: `limit >= usize::MAX/5`
+    /// must NOT panic.
+    #[test]
+    fn candidate_count_saturating_does_not_panic_on_huge_limit() {
+        let pool = candidate_count_for(usize::MAX / 4);
+        assert_eq!(pool, usize::MAX, "saturating_mul must clamp at usize::MAX");
     }
 
     /// SHL-V1.36 / dim_scaled_batch — pin the formula at the dim values we

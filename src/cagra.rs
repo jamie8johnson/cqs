@@ -444,17 +444,21 @@ impl CagraIndex {
         // corpus), and CAGRA then errored out with the result reaching
         // the caller as an empty Vec — a silent zero-result regression.
         // Force `itopk_size >= k` and refuse the search if the cap can't
-        // honour it; the caller falls back to HNSW.
+        // honour it.
         // AC-V1.38-9 (#1463): saturating_mul mirrors the HNSW search
         // path — pathological `k` values now saturate rather than
         // panic/wrap.
+        // Defense-in-depth: dispatch sites read `VectorIndex::max_k()`
+        // (returns `Some(itopk_max)` for this backend) and trim `k` so
+        // the call below succeeds. This branch only fires when a caller
+        // bypasses the dispatch helper — log loudly and bail.
         let itopk_size = k.saturating_mul(2).clamp(itopk_min, itopk_max).max(k);
         if itopk_size > itopk_max {
             tracing::warn!(
                 k,
                 itopk_max,
                 n_vectors = self.len(),
-                "CAGRA: k exceeds itopk_max — caller should fall back to HNSW"
+                "CAGRA: k exceeds itopk_max — caller bypassed `cap_k_to_backend`"
             );
             return Vec::new();
         }
@@ -616,6 +620,27 @@ impl VectorIndex for CagraIndex {
 
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    /// CAGRA enforces `itopk_size >= k` and `itopk_size <= itopk_max`.
+    /// `cagra_itopk_max_default(n_vectors)` produces 441 at 14k chunks,
+    /// 532 at 100k, 640 at 1M. A request for `k > itopk_max` would cause
+    /// `search_impl` to return an empty Vec — see the safety net at the
+    /// top of `search_impl`. Dispatch sites read this cap and trim `k`
+    /// before calling, so the cap there is defense-in-depth and this
+    /// trait method is the primary contract.
+    ///
+    /// Honors `CQS_CAGRA_ITOPK_MAX` (the same env override `search_impl`
+    /// uses) so a single knob controls both the actual cap and the
+    /// reported cap; otherwise dispatch could trim to the default value
+    /// while the search-time read of the env raised the real ceiling and
+    /// vice versa.
+    fn max_k(&self) -> Option<usize> {
+        let cap = std::env::var("CQS_CAGRA_ITOPK_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| cagra_itopk_max_default(self.len()));
+        Some(cap)
     }
 
     /// GPU-native filtered search: builds a bitset from the predicate and

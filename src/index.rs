@@ -97,6 +97,20 @@ pub trait VectorIndex: Send + Sync {
     fn is_poisoned(&self) -> bool {
         false
     }
+
+    /// Maximum `k` this backend can serve in a single search call.
+    ///
+    /// Returns `None` when the backend has no upper bound (HNSW: bounded
+    /// only by index size). Returns `Some(cap)` when the backend silently
+    /// fails or returns empty for `k > cap` — CAGRA enforces
+    /// `itopk_size >= k` and `itopk_size <= itopk_max(n_vectors)`, so
+    /// `k > itopk_max` collapses to an empty Vec which the SPLADE-fusion
+    /// path treats as "dense leg found nothing" rather than "backend
+    /// refused". Dispatch sites should cap `k` at `max_k()` before the
+    /// call so the index returns its actual capacity instead of nothing.
+    fn max_k(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Inputs every [`IndexBackend`] needs to decide whether it can serve, and
@@ -320,6 +334,14 @@ mod tests {
         assert_eq!(index.len(), 42);
         assert!(!index.is_empty());
         assert_eq!(index.name(), "Mock");
+    }
+
+    /// Default `max_k` returns `None` — backends that don't enforce a per-call
+    /// upper bound (HNSW, brute force, MockIndex) leave it at the default.
+    #[test]
+    fn test_max_k_default_none() {
+        let index = MockIndex::new(1000);
+        assert_eq!(index.max_k(), None);
     }
 
     /// HNSW always sits in the slice as the priority-0 fallback. With the
