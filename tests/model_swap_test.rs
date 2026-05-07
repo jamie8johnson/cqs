@@ -153,9 +153,18 @@ fn test_model_list_includes_current() {
 }
 
 /// Test 3 — `cqs model swap` to the *current* model is a no-op: the index
-/// directory's modification time must not change, and the command exits 0
-/// without invoking the reindex pipeline. This is the cheapest way to
-/// confirm the early-exit short-circuit fires before any destructive ops.
+/// file's contents must not change, and the command exits 0 without
+/// invoking the reindex pipeline. This is the cheapest way to confirm
+/// the early-exit short-circuit fires before any destructive ops.
+///
+/// Stability note: an earlier version of this test asserted `mtime`
+/// equality before/after, which flaked on CI's slow shared filesystem
+/// — `mtime` granularity (1s on FAT, 2s on some shared mounts) and the
+/// sub-millisecond rename window in the slot migration would
+/// occasionally bump the timestamp by ~10-50 ms even when the file
+/// content was untouched. We now stat for size and hash the file
+/// contents instead — both are filesystem-independent and pin the
+/// "no destructive ops happened" property exactly.
 #[test]
 #[serial]
 fn test_model_swap_same_preset_is_noop() {
@@ -165,17 +174,13 @@ fn test_model_swap_same_preset_is_noop() {
     let cqs_dir = dir.path().join(".cqs");
     // First cqs invocation will run the slot migration, atomically
     // renaming index.db from `.cqs/index.db` to
-    // `.cqs/slots/default/index.db`. The atomic rename preserves mtime
-    // and size, so the pre/post comparison still detects a destructive
-    // swap (which would change both). Use `resolve_index_db` at each
-    // stat point so we follow the file across the migration.
-    let db_mtime_before = fs::metadata(cqs::resolve_index_db(&cqs_dir))
-        .expect("stat index.db")
-        .modified()
-        .ok();
-    let db_size_before = fs::metadata(cqs::resolve_index_db(&cqs_dir))
-        .expect("stat index.db")
-        .len();
+    // `.cqs/slots/default/index.db`. We capture file identity (size +
+    // content hash) at each stat point so the assertions tolerate the
+    // slot migration's mtime bump while still catching a destructive
+    // swap (which would alter the file contents).
+    let index_db_before = cqs::resolve_index_db(&cqs_dir);
+    let db_size_before = fs::metadata(&index_db_before).expect("stat index.db").len();
+    let db_hash_before = blake3::hash(&fs::read(&index_db_before).expect("read index.db"));
 
     let result = cqs_no_daemon()
         .args(["model", "swap", "bge-large", "--json"])
@@ -200,29 +205,26 @@ fn test_model_swap_same_preset_is_noop() {
         "swap to current model must report data.noop=true. got: {parsed:?}"
     );
 
-    // index.db must be the same file (size + mtime unchanged) — no
-    // backup-and-recreate happened. Use `resolve_index_db` again here
-    // because the file has been migrated into `.cqs/slots/default/`.
+    // index.db must be the same file (size + content hash unchanged) —
+    // no backup-and-recreate happened. Use `resolve_index_db` again
+    // here because the file has been migrated into `.cqs/slots/default/`.
     let index_db_after_path = cqs::resolve_index_db(&cqs_dir);
     assert!(
         index_db_after_path.exists(),
         "index.db must still exist after no-op swap (resolved at {})",
         index_db_after_path.display()
     );
-    let db_mtime_after = fs::metadata(&index_db_after_path)
-        .expect("stat index.db after")
-        .modified()
-        .ok();
     let db_size_after = fs::metadata(&index_db_after_path)
         .expect("stat index.db after")
         .len();
-    assert_eq!(
-        db_mtime_before, db_mtime_after,
-        "index.db mtime must not change on no-op swap. before={db_mtime_before:?} after={db_mtime_after:?}"
-    );
+    let db_hash_after = blake3::hash(&fs::read(&index_db_after_path).expect("read index.db after"));
     assert_eq!(
         db_size_before, db_size_after,
         "index.db size must not change on no-op swap"
+    );
+    assert_eq!(
+        db_hash_before, db_hash_after,
+        "index.db contents must not change on no-op swap. before_hash={db_hash_before} after_hash={db_hash_after}"
     );
     // No backup directory should exist either.
     let backup = dir.path().join(".cqs.BAAI-bge-large-en-v1.5.bak");
