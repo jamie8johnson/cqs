@@ -260,8 +260,16 @@ fn extract_l5x_regions(source: &str) -> Vec<StRegion> {
     let mut regions = Vec::new();
 
     for st_match in L5X_ST_CONTENT_RE.captures_iter(source) {
-        let full = st_match.get(0).unwrap();
-        let inner = st_match.get(1).unwrap();
+        // RB-V1.38-6 (#1463): group 0 is the full match (always present
+        // when an iter yields a Captures); group 1 is the unconditional
+        // capture in `<STContent>(.*?)</STContent>`. `.expect()` documents
+        // the invariant — a regex tweak that adds an alternation or
+        // optional group would surface here at panic time instead of
+        // hiding behind `.unwrap()`.
+        let full = st_match.get(0).expect("captures group 0 always present");
+        let inner = st_match
+            .get(1)
+            .expect("L5X_ST_CONTENT_RE: group 1 is unconditional");
         let start_byte = full.start();
         let line_start = line_of(source, start_byte);
 
@@ -363,9 +371,23 @@ fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
     let mut regions = Vec::new();
 
     for block in L5K_ROUTINE_BLOCK_RE.captures_iter(source) {
-        let routine_name = block.get(1).unwrap().as_str().to_string();
-        let block_content = block.get(2).unwrap().as_str();
-        let block_start = block.get(0).unwrap().start();
+        // RB-V1.38-6 (#1463): groups 1 and 2 are unconditional captures in
+        // L5K_ROUTINE_BLOCK_RE (`(\w+)\b([^\x00]*?)`); group 0 is always
+        // present on an iter Captures. `.expect()` over `.unwrap()` makes
+        // the invariant survive a regex refactor at panic message time.
+        let routine_name = block
+            .get(1)
+            .expect("L5K_ROUTINE_BLOCK_RE: group 1 (routine name) unconditional")
+            .as_str()
+            .to_string();
+        let block_content = block
+            .get(2)
+            .expect("L5K_ROUTINE_BLOCK_RE: group 2 (block content) unconditional")
+            .as_str();
+        let block_start = block
+            .get(0)
+            .expect("captures group 0 always present")
+            .start();
 
         // Check if this routine is type ST
         let is_st = block_content
@@ -384,7 +406,13 @@ fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
 
         // Try ST_CONTENT := [ ... ]; block first
         let st_source = if let Some(st_block) = L5K_ST_CONTENT_BLOCK_RE.captures(block_content) {
-            let inner = st_block.get(1).unwrap().as_str();
+            // RB-V1.38-6 (#1463): group 1 is the unconditional `(.*?)` in
+            // `ST_CONTENT\s*:=\s*\[(.*?)\]\s*;` — present whenever the outer
+            // captures matched.
+            let inner = st_block
+                .get(1)
+                .expect("L5K_ST_CONTENT_BLOCK_RE: group 1 (inner) unconditional")
+                .as_str();
             // Lines inside the bracket block, trimmed
             inner
                 .lines()

@@ -311,8 +311,13 @@ pub struct Cli {
     pub verbose: bool,
 
     /// Resolved model config (set by dispatch, not CLI).
+    ///
+    /// API-V1.38-5 (#1463): `pub(super)` because the field is `#[arg(skip)]`
+    /// — clap doesn't need it `pub`, and only `cli::dispatch` (writer) and
+    /// `cli::definitions::Cli::try_model_config` (reader) touch it. External
+    /// readers should go through `try_model_config()` (still `pub`).
     #[arg(skip)]
-    pub resolved_model: Option<cqs::embedder::ModelConfig>,
+    pub(super) resolved_model: Option<cqs::embedder::ModelConfig>,
 }
 
 impl Cli {
