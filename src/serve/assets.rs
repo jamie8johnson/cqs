@@ -55,7 +55,15 @@ pub(crate) async fn index_html() -> Result<Response, ServeError> {
 /// Paths outside the embedded set return 404. There's no filesystem
 /// fallthrough — keeps the binary the single source of truth.
 pub(crate) async fn static_asset(Path(path): Path<String>) -> Result<Response, ServeError> {
-    tracing::info!(path = %path, "serve::static_asset");
+    // SEC-V1.38-5 (#1463): cap user-controlled path string at 256 chars
+    // before logging at info. Same shape as `chunk_detail`. Embedded-asset
+    // names are short; a hostile token-bearing client sending KB-long
+    // paths can't inflate journald via this route.
+    tracing::info!(
+        path = %path.chars().take(256).collect::<String>(),
+        path_len = path.len(),
+        "serve::static_asset"
+    );
 
     let (body, content_type) = match path.as_str() {
         "app.css" => (APP_CSS, "text/css; charset=utf-8"),

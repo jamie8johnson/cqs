@@ -301,14 +301,34 @@ pub fn parse_env_usize(key: &str, default: usize) -> usize {
 /// values are clamped (not rejected) so a misconfigured env var still
 /// yields a usable value rather than the unclamped default. Missing/zero/
 /// garbage falls back to `default` (also clamped to the range).
+///
+/// SEC-V1.38-9 (#1463): an operator setting an unrealistically large
+/// value (e.g. `CQS_SERVE_MAX_CONCURRENT_REQUESTS=4294967295` to try to
+/// "disable" the cap) sees a structured warn so the clamp isn't silent.
+/// The value still clamps to `max` — operator gets a usable value plus
+/// an audit trail.
 pub fn parse_env_usize_clamped(key: &str, default: usize, min: usize, max: usize) -> usize {
-    let clamp = |n: usize| n.clamp(min, max);
+    let clamp_with_warn = |n: usize, source: &str| {
+        let clamped = n.clamp(min, max);
+        if n != clamped {
+            tracing::warn!(
+                env = key,
+                value = n,
+                clamped,
+                min,
+                max,
+                source,
+                "env var clamped to allowed range"
+            );
+        }
+        clamped
+    };
     match std::env::var(key) {
         Ok(v) => match v.parse::<usize>() {
-            Ok(n) if n > 0 => clamp(n),
-            _ => clamp(default),
+            Ok(n) if n > 0 => clamp_with_warn(n, "env"),
+            _ => clamp_with_warn(default, "default-after-parse-failure"),
         },
-        Err(_) => clamp(default),
+        Err(_) => default.clamp(min, max),
     }
 }
 

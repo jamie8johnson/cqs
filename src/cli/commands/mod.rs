@@ -572,9 +572,21 @@ pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["--no-pager", "diff", "--no-color"]);
     if let Some(b) = base {
-        if b.starts_with('-') || b.contains('\0') {
+        // SEC-V1.38-7 (#1463): stricter ref validation matching git's own
+        // `check-ref-format` rules. Reject leading `-` (option-injection),
+        // any of `\0\n\r\t` (newlines and tabs are control-char injections
+        // that git strips at parse time but the validation gate should
+        // assert), and cap length at 255 chars (git's own ref-name limit).
+        // The dash check is kept structural rather than relying on the
+        // arg-position not being reordered by future refactors.
+        if b.is_empty()
+            || b.len() > 255
+            || b.starts_with('-')
+            || b.contains(['\0', '\n', '\r', '\t'])
+        {
             anyhow::bail!(
-                "Invalid base ref '{}': must not start with '-' or contain null bytes",
+                "Invalid base ref '{}': must be 1..=255 chars, not start with '-', \
+                 not contain null / newline / tab",
                 b
             );
         }
@@ -1091,29 +1103,68 @@ mod tests {
         assert_eq!(used, 30);
     }
 
-    // HP-3: run_git_diff rejects base refs starting with '-' (flag injection)
+    // HP-3 + SEC-V1.38-7: run_git_diff rejects base refs starting with '-' (flag injection)
     #[test]
     fn test_run_git_diff_rejects_dash_prefix() {
         let result = run_git_diff(Some("--exec=whoami"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("must not start with '-'"),
+            err.contains("must be 1..=255 chars"),
             "Expected dash-prefix rejection, got: {}",
             err
         );
     }
 
-    // HP-3: run_git_diff rejects base refs containing null bytes
+    // HP-3 + SEC-V1.38-7: run_git_diff rejects base refs containing null bytes
     #[test]
     fn test_run_git_diff_rejects_null_bytes() {
         let result = run_git_diff(Some("main\0--exec=whoami"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("contain null bytes"),
+            err.contains("not contain null"),
             "Expected null-byte rejection, got: {}",
             err
+        );
+    }
+
+    // SEC-V1.38-7: run_git_diff rejects newlines + tabs (control-char injection)
+    #[test]
+    fn test_run_git_diff_rejects_newlines_and_tabs() {
+        for bad in ["main\nrm -rf /", "main\rfoo", "main\tfoo"] {
+            let result = run_git_diff(Some(bad));
+            assert!(result.is_err(), "ref `{bad:?}` must be rejected");
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("not contain null / newline / tab"),
+                "ref `{bad:?}` rejection message wrong: {err}"
+            );
+        }
+    }
+
+    // SEC-V1.38-7: run_git_diff rejects refs > 255 chars (git's own ref-name limit)
+    #[test]
+    fn test_run_git_diff_rejects_oversize_ref() {
+        let big = "a".repeat(256);
+        let result = run_git_diff(Some(&big));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must be 1..=255 chars"),
+            "256-char ref rejection wrong: {err}"
+        );
+    }
+
+    // SEC-V1.38-7: run_git_diff rejects empty ref
+    #[test]
+    fn test_run_git_diff_rejects_empty_ref() {
+        let result = run_git_diff(Some(""));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must be 1..=255 chars"),
+            "empty ref rejection wrong: {err}"
         );
     }
 

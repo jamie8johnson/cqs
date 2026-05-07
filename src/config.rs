@@ -591,7 +591,12 @@ impl Config {
         let mut merged = user_config.override_with(project_config);
         merged.validate();
 
-        tracing::debug!(?merged, "Effective config");
+        // SEC-V1.38-8 (#1463): drop `?merged` for the same reason as the
+        // per-file `Loaded config` event above — the merged Config
+        // carries `llm_api_base` userinfo and shouldn't land in journald
+        // verbatim. A future log line re-adding contents must redact
+        // userinfo at the field level (see `redact_userinfo` in `llm/mod.rs`).
+        tracing::debug!("Effective config built");
         merged
     }
 
@@ -782,7 +787,14 @@ impl Config {
 
         match toml::from_str::<Self>(&content) {
             Ok(config) => {
-                tracing::debug!(path = %path.display(), ?config, "Loaded config");
+                // SEC-V1.38-8 (#1463): drop `?config` to avoid spilling
+                // `llm_api_base` (which can carry `https://user:pass@host`
+                // userinfo) to journald at debug. The path field is enough
+                // to confirm "we loaded a config from here"; structural
+                // contents of interest land via the relevant subsystem
+                // (LLM resolve, model resolve, etc.) at their own log
+                // sites with field-level redaction.
+                tracing::debug!(path = %path.display(), "Loaded config");
                 Ok(Some(config))
             }
             Err(e) => Err(format!("Failed to parse config {}: {}", path.display(), e)),

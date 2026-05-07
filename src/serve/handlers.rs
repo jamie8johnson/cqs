@@ -199,7 +199,16 @@ pub(crate) async fn chunk_detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ChunkDetail>, ServeError> {
-    tracing::info!(chunk_id = %id, "serve::chunk_detail");
+    // SEC-V1.38-5 (#1463): cap user-controlled path string at 256 chars
+    // before logging at info to limit journald inflation. The full id is
+    // still passed downstream for the lookup; this only bounds the log
+    // event field. Mirrors the SEC-V1.30.1-2 / OB-V1.30.1-10 pattern that
+    // demoted `serve::search` query-text logging.
+    tracing::info!(
+        chunk_id = %id.chars().take(256).collect::<String>(),
+        id_len = id.len(),
+        "serve::chunk_detail"
+    );
 
     let id_clone = id.clone();
     let detail = with_blocking(&state, "chunk_detail", move |store| {

@@ -44,13 +44,19 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
     if !canonical.starts_with(&project_canonical) {
         bail!("Invalid path");
     }
-    if !file_path.exists() {
-        bail!("Invalid path");
-    }
 
+    // SEC-V1.38-6 (#1463): drop the redundant `file_path.exists()` check
+    // — `dunce::canonicalize` above already proved existence — and route
+    // the size cap and the read both through `&canonical`. Pre-fix, the
+    // size cap stat'd the unresolved `file_path` while the read consumed
+    // `canonical`; a symlink swap between the two narrowed but didn't
+    // close the bypass window. Same-path stat-then-read is still TOCTOU
+    // against a swap mid-syscall, but the residual race is at the OS
+    // level rather than amplified by inconsistent path use here.
+    //
     // P3 #107: env-overridable via CQS_READ_MAX_FILE_SIZE (default 10 MiB).
     let max_file_size = crate::cli::limits::read_max_file_size();
-    let metadata = std::fs::metadata(&file_path).context("Failed to read file metadata")?;
+    let metadata = std::fs::metadata(&canonical).context("Failed to read file metadata")?;
     if metadata.len() > max_file_size {
         bail!(
             "File too large: {} bytes (max {} bytes; CQS_READ_MAX_FILE_SIZE)",
