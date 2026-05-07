@@ -68,6 +68,18 @@ Default-slot ranges reflect natural variance from the TRT→CUDA EP swap in #157
 
 - [x] **Reranker V2 retrain with post-mortem fixes — tested 2026-04-20, PARKED.** Executed all three fixes: hard-negatives mined from cqs's own v3_pools (9175 cqs-domain graded training rows), TIE labels preserved as 0.5, pool cap lowered default 100→20. Trained UniXcoder three ways: pointwise BCE unweighted, pointwise BCE with auto `pos_weight=3.28`, pairwise `MarginRankingLoss(margin=0.3)`. **All three converged on −5 to −9pp R@5** (unweighted: −6.4 test / −7.3 dev; weighted: −5.5 / −9.2; pairwise: −5.5 / −9.2). R@20 unchanged across all three — gold IS in pool, weak score head consistently demotes it. Pairwise hit 98% train accuracy → fits train pairs perfectly, doesn't generalize. Conclusion: 326 queries × ~30 candidates is too thin to fine-tune a 125M cross-encoder against hard stage-1 negatives. Bottleneck is corpus size + base strength, not loss choice. Shippable wins (windowing + pool cap default + eval tooling) landed in v1.28.2 (PR #1060). Tooling kept: `evals/label_reranker_v3.py`, `evals/rerank_ab_eval.py`, `evals/train_reranker_v2_pairwise.py`. Next attempt would need 10x more queries (Gemma-augmented synthetic) or 5x bigger base (bge-reranker-large at ~3x latency).
 
+- [x] **Reranker re-evaluation post-v1.39.0 — 2026-05-07, CLOSED as definitive null.** User hypothesis: ~100 audit fixes, schema bumps, tokenizer truncation fix (#1384), per-category α retune (v1.36) since 2026-04-20 might have flipped the verdict. Re-ran all four candidates against the v3.v2 fixture on the post-v1.39.0 default slot (EmbeddingGemma + per-cat α + Unknown=0.80). **All four still net-negative, gap actually widened on dev:**
+
+  | Reranker | Test R@5 | Dev R@5 | Δ vs no-reranker baseline |
+  |---|---:|---:|---:|
+  | **No reranker (baseline)** | **67.9%** | **80.7%** | — |
+  | `cross-encoder/ms-marco-MiniLM-L-6-v2` (off-the-shelf default) | 56.0% | 64.2% | -11.9pp test / -16.5pp dev |
+  | reranker-v2-cqs-graded-unweighted (BCE) | 55.0% | 60.6% | -12.9pp / -20.1pp |
+  | reranker-v2-cqs-graded-weighted (pos_weight=3.28) | 52.3% | 58.7% | -15.6pp / -22.0pp |
+  | reranker-v2-cqs-pairwise (MarginRankingLoss) | 57.8% | 55.0% | -10.1pp / -25.7pp |
+
+  R@20 within 1-4pp of baseline across all four — gold IS in the pool, every reranker just demotes it. Stage-1 (EmbeddingGemma + SPLADE + RRF) is now strong enough that the cross-encoder's `(query, NL_desc + signature + content + doc)` scoring adds noise rather than signal at the rank-5 boundary. **The 2026-04-20 verdict was robust**, not artifact of pre-fix bugs. cqs-side reranker work is closed; rerankers stay opt-in via `--rerank` and README documents the regression. Future revisit only on: (a) v4-scale labelled fixture (1526q/split, 14× v3 N), (b) base ≥5× bigger (bge-reranker-large at ~3× latency), or (c) project-specific labelled set proving lift on a different corpus.
+
 ### CPU Lane
 
 **Retrieval quality:**
