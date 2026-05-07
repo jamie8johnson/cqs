@@ -700,17 +700,27 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 **Live codebase eval** — 218 queries (109 test + 109 dev) over the cqs source tree, each with a dual-judge (Gemma-4 + Claude) consensus gold chunk. v3.v2 fixture. Categories: `identifier_lookup`, `behavioral`, `conceptual`, `structural`, `negation`, `type_filtered`, `multi_step`, `cross_language` — every category N ≥ 16. Hard mode; measures the full production pipeline.
 
-**Per-preset:**
-
-The `embeddinggemma-300m` row reflects the v1.36.0 per-category SPLADE α retune (2026-05-03) on the gemma slot at 13,359 chunks — `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70, plus `Unknown` 1.00→0.80 (catch-all hedge for misroutes). Other rows are pre-retune (apples-to-apples 2026-05-02 on cqs v1.35.0, all 5 slots reindexed `--force --llm-summaries`); their numbers will shift up under the new alphas, but a fresh sweep across all five slots is queued.
+**Default preset** (`embeddinggemma-300m`, v1.36 per-category SPLADE α retune):
 
 | Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@1 | Agg R@5 | Agg R@20 |
 |--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|--------:|---------:|
 | **embeddinggemma-300m** (default, v1.36 α) | 308M | 48.6% | **72.5%** | 83.5% | **53.2%** | **79.8%** | **93.6%** | **50.9%** | **76.2%** | **88.6%** |
+
+The retune (2026-05-03) on the gemma slot at 13,359 chunks set per-category SPLADE alphas: `Structural` 0.90→0.60, `Behavioral` 0.80→1.00, `Conceptual` 0.70→0.80, `TypeFiltered` 1.00→0.00, `CrossLanguage` 0.10→0.70, plus `Unknown` 1.00→0.80 (catch-all hedge for misroutes).
+
+<details>
+<summary><b>Other presets</b> (pre-retune — kept for reference, will shift up under v1.36+ alphas)</summary>
+
+These rows are apples-to-apples 2026-05-02 on cqs v1.35.0 (all 5 slots reindexed `--force --llm-summaries`) but use the *old* per-category α defaults. A re-sweep across the 4 non-gemma slots is queued; until it lands, do not use these rows for direct preset-vs-preset comparison against the gemma row above.
+
+| Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@1 | Agg R@5 | Agg R@20 |
+|--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|--------:|---------:|
 | bge-large-ft (pre-retune) | 335M | 45.0% | 71.6% | 85.3% | 50.5% | 75.2% | 87.2% | 47.7% | 73.4% | 86.2% |
 | BGE-large (pre-retune) | 335M | 43.1% | 68.8% | 82.6% | 51.4% | 75.2% | 86.2% | 47.2% | 72.0% | 84.4% |
 | v9-200k (pre-retune) | 110M | 44.0% | 67.9% | 79.8% | 45.9% | 69.7% | 81.7% | 45.0% | 68.8% | 80.7% |
 | nomic-coderank (pre-retune) | 137M | 43.1% | 67.0% | 78.0% | 46.8% | 68.8% | 79.8% | 45.0% | 67.9% | 78.9% |
+
+</details>
 
 Per-slot summary coverage at measurement: `default` 62.1%, `gemma` 99.0%, `bge-ft` 62.1%, `v9` 67.6%, `coderank` 65.5%. Variance is structural — only `chunk_type.is_code()` chunks are summary-eligible (markdown / json / ini are skipped at `src/llm/mod.rs:115`), and tokenizers produce different chunk-type distributions. Each slot has all *its* eligible chunks summarized.
 
@@ -949,7 +959,7 @@ Token budgeting works across all context commands: `--tokens N` packs results by
 
 ## Performance
 
-Measured 2026-04-16 on the cqs codebase itself (562 files, 15,516 chunks) with CUDA GPU (NVIDIA RTX A6000, 48 GB) on WSL2 Ubuntu. Embedder: BGE-large (1024-dim). SPLADE: ensembledistil (110M, off-the-shelf). Raw measurements: [`evals/performance-v1.27.0.json`](evals/performance-v1.27.0.json).
+Measured 2026-04-16 on the cqs codebase itself (562 files, 15,516 chunks) with CUDA GPU (NVIDIA RTX A6000, 48 GB) on WSL2 Ubuntu. Embedder: **BGE-large (1024-dim)** — the v1.27.0 default at the time of the bench. The v1.35.0+ default switched to `embeddinggemma-300m` (768-dim, 308M params); per-doc embed latency is lower on that backbone but the rest of the table — daemon query, indexer throughput, RAM, GC — are model-agnostic. SPLADE: ensembledistil (110M, off-the-shelf). Raw measurements: [`evals/performance-v1.27.0.json`](evals/performance-v1.27.0.json). A v1.38.0 re-bench against the current default is queued; until it lands, treat the embedding-throughput rows as upper-bound for BGE-large and approximate for gemma.
 
 | Metric | Value |
 |--------|-------|

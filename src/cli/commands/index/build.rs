@@ -22,6 +22,23 @@ use crate::cli::{
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
 pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
+    // AC-V1.38-7 (#1463): hard-fail on `cqs index --model <typo>`. The
+    // shared resolver `ModelConfig::resolve` silently falls back to the
+    // default preset when the name doesn't match any built-in — fine for
+    // read paths (`cqs <q>`), wrong for the operator-driven write path
+    // because it can produce an index built against a different model
+    // than the one the operator typed. The drift check runs against the
+    // resolved (post-fallback) name and so misses this case when default
+    // happens to align with the existing index. Catching it here before
+    // any state mutation puts the typo in front of the operator.
+    if let Some(name) = cli.model.as_deref() {
+        if cqs::embedder::ModelConfig::from_preset(name).is_none() {
+            anyhow::bail!(
+                "Unknown model preset `--model {name}`. Run `cqs model list` to see available \
+                 presets, or pass a custom HuggingFace repo via `[embedding] repo` in `cqs.toml`."
+            );
+        }
+    }
     let force = args.force;
     let dry_run = args.dry_run;
     let no_ignore = args.no_ignore;
@@ -1800,6 +1817,21 @@ mentions = []
     }
 
     // ====== #1459 item 5a — `cqs index --model` drift detection ======
+
+    /// AC-V1.38-7 (#1463): the strict-preset gate at the top of `cmd_index`
+    /// rejects unknown CLI presets so an operator typo doesn't silently
+    /// resolve to the default. The unit-level analogue: `from_preset`
+    /// returns `None` for the typo, which is what the bail-on-`is_none()`
+    /// branch keys off of. Pin the contract here so a future preset-rename
+    /// can't make the check vacuous.
+    #[test]
+    fn unknown_preset_rejected_by_from_preset() {
+        assert!(cqs::embedder::ModelConfig::from_preset("bgelarge").is_none());
+        assert!(cqs::embedder::ModelConfig::from_preset("not-a-real-preset").is_none());
+        assert!(cqs::embedder::ModelConfig::from_preset("").is_none());
+        // Sanity: a real preset still resolves.
+        assert!(cqs::embedder::ModelConfig::from_preset("embeddinggemma-300m").is_some());
+    }
 
     /// No stored model (fresh DB) → drift check is a no-op.
     #[test]

@@ -368,10 +368,26 @@ pub(crate) fn sanitize_json_floats(value: &mut serde_json::Value) {
 pub fn format_envelope_to_string(value: &serde_json::Value) -> Result<String> {
     match serde_json::to_string_pretty(value) {
         Ok(s) => Ok(s),
-        Err(_) => {
+        Err(first) => {
+            // EH-V1.38-9 (#1463): preserve the original error so the
+            // sanitize-retry path can surface it on a retry failure. The
+            // typical case is NaN / Infinity in a leaf field (which the
+            // sanitize fixes), but `to_string_pretty` can also fail on
+            // serde custom Serialize errors or recursion limits — a
+            // retry doesn't fix those, and the operator deserves the
+            // first error in the log instead of the redundant second.
+            tracing::debug!(
+                error = %first,
+                "to_string_pretty failed; retrying after float-sanitize"
+            );
             let mut sanitized = value.clone();
             sanitize_json_floats(&mut sanitized);
-            Ok(serde_json::to_string_pretty(&sanitized)?)
+            serde_json::to_string_pretty(&sanitized).map_err(|second| {
+                anyhow::anyhow!(
+                    "JSON serialization failed; \
+                     first error: {first}; sanitize-retry error: {second}"
+                )
+            })
         }
     }
 }
