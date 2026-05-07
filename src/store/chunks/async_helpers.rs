@@ -562,9 +562,17 @@ impl<'a, Mode> Iterator for EmbeddingBatchIterator<'a, Mode> {
             };
 
             let result = self.store.rt.block_on(async {
+                // DS-V1.38-1 (#1463 / #1452 follow-up): exclude chunks with
+                // `needs_embedding=1` so production callers (CAGRA build,
+                // UMAP projection, brute-force kNN in `cqs neighbors`) don't
+                // load zero-vec sentinels into their search structures.
+                // The sibling `EmbeddingHashBatchIterator` already had this
+                // gate; without it here, `--llm-summaries` chunks land in
+                // CAGRA's flat buffer as (0,…,0) and the index advertises a
+                // search neighborhood of "things near the origin" for them.
                 let sql = format!(
                     "SELECT rowid, id, {col} FROM chunks \
-                     WHERE rowid > ?1 AND {col} IS NOT NULL \
+                     WHERE rowid > ?1 AND {col} IS NOT NULL AND needs_embedding = 0 \
                      ORDER BY rowid ASC LIMIT ?2"
                 );
                 let rows: Vec<_> = sqlx::query(&sql)

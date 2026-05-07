@@ -465,9 +465,26 @@ impl Store<ReadWrite> {
             // vector and must clear the flag so the chunk becomes
             // visible to HNSW build / search hydration. For chunks
             // already at `needs_embedding=0` this is a no-op write.
+            //
+            // DS-V1.38-2 (#1463): also repopulate `embedding_base` when
+            // it was previously NULL. The first-pass-skip path inserts
+            // chunks with `embedding_base = NULL` (per
+            // `upsert_chunks_unembedded_batch`); without this, every
+            // `--llm-summaries` reindex permanently leaves the chunk
+            // invisible to `build_hnsw_base_index` (which filters
+            // `WHERE embedding_base IS NOT NULL`), silently degrading
+            // the DenseBase routing target (conceptual / behavioral /
+            // negation queries).
+            //
+            // Using `COALESCE(chunks.embedding_base, t.embedding)`
+            // preserves the prior base bytes for chunks that were
+            // already populated, so the enrichment-time second pass
+            // (which overwrites `embedding` with the call-context
+            // enriched vector) doesn't trash their base copy.
             let result = sqlx::query(
                 "UPDATE chunks SET \
                     embedding = t.embedding, \
+                    embedding_base = COALESCE(chunks.embedding_base, t.embedding), \
                     enrichment_hash = COALESCE(t.enrichment_hash, chunks.enrichment_hash), \
                     needs_embedding = 0 \
                  FROM _update_embeddings t \
@@ -1340,6 +1357,14 @@ mod tests {
     /// base HNSW with corrupt zeros for every partial-state chunk —
     /// the base index is the routing-fallback channel and silently
     /// degrading it is the original-bug shape this PR fixed.
+    ///
+    /// DS-V1.38-2 (#1463) follow-up: `update_embeddings_with_hashes_batch`
+    /// now repopulates `embedding_base` (when previously NULL) using
+    /// `COALESCE(chunks.embedding_base, t.embedding)`. Pre-fix every
+    /// `--llm-summaries` cycle permanently degraded base-HNSW coverage
+    /// for affected chunks; post-fix the first enrichment hit fills
+    /// the base bytes and the chunk becomes routable on the DenseBase
+    /// path (conceptual / behavioral / negation queries).
     #[test]
     fn unembedded_chunks_have_null_embedding_base() {
         let (store, _dir) = setup_store();
@@ -1357,20 +1382,27 @@ mod tests {
             "skip-first-pass chunks must be invisible to base_embedding_count"
         );
 
-        // Post-enrichment: embedding overwrites with real bytes; embedding_base
-        // is intentionally LEFT NULL (the perf trade-off — base coverage is
-        // restored on a non-skip reindex of the chunk content).
+        // Post-enrichment: enrichment writes the real `embedding` AND
+        // repopulates the previously-NULL `embedding_base` (DS-V1.38-2).
+        // The base index now sees the chunk and DenseBase routing serves
+        // it correctly.
         let real_emb = mock_embedding(0.5);
         let updates = vec![(c.id.clone(), real_emb, Some("hash".to_string()))];
         store.update_embeddings_with_hashes_batch(&updates).unwrap();
         assert_eq!(
             store.base_embedding_count().unwrap(),
-            0,
-            "post-enrichment, base_embedding_count must STILL be 0 — \
-             enrichment refreshes only `embedding`, not `embedding_base`. \
-             Base coverage returns on the next non-skip reindex of the chunk."
+            1,
+            "DS-V1.38-2: post-enrichment, base_embedding_count must be 1 — \
+             enrichment refreshes `embedding` AND repopulates a previously-NULL \
+             `embedding_base` so base-HNSW coverage closes for `--llm-summaries` chunks."
         );
     }
+
+    // DS-V1.38-2 (#1463): the "preserve existing embedding_base" invariant
+    // is already covered by `test_enrichment_does_not_overwrite_base` in
+    // `src/store/chunks/async_helpers.rs`. The above test
+    // (`unembedded_chunks_have_null_embedding_base`) covers the
+    // sibling NULL → COALESCE → repopulate case introduced by DS-V1.38-2.
 
     /// #1221: end-to-end vendored-flag round-trip. With the default
     /// prefix list configured on the store, a chunk whose origin

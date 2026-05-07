@@ -480,7 +480,8 @@ impl BatchContext {
         }
         self.last_staleness_check.set(Some(now));
 
-        let index_path = self.cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        let index_path = cqs::resolve_index_db(&self.cqs_dir);
         let current_id = match DbFileIdentity::from_path(&index_path) {
             Some(id) => id,
             None => {
@@ -604,7 +605,8 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_manual_invalidation").entered();
         self.invalidate_mutable_caches();
 
-        let index_path = self.cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        let index_path = cqs::resolve_index_db(&self.cqs_dir);
         // #968: pass the shared runtime so manual refreshes keep using
         // the same worker pool as the session they're refreshing.
         let new_store =
@@ -785,7 +787,8 @@ impl BatchContext {
         // RB-3: surface overflow as None (treated same as "missing mtime")
         // instead of silently wrapping past `i64::MAX`. Different shape from
         // `unix_secs_i64()` — reads file mtime, not wall-clock.
-        let last_indexed_at = std::fs::metadata(self.cqs_dir.join(cqs::INDEX_DB_FILENAME))
+        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        let last_indexed_at = std::fs::metadata(cqs::resolve_index_db(&self.cqs_dir))
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -2040,7 +2043,8 @@ impl BatchView {
         // RB-3: surface overflow as None (treated same as "missing mtime")
         // instead of silently wrapping past `i64::MAX`. Different shape from
         // `unix_secs_i64()` — reads file mtime, not wall-clock.
-        let last_indexed_at = std::fs::metadata(self.cqs_dir.join(cqs::INDEX_DB_FILENAME))
+        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        let last_indexed_at = std::fs::metadata(cqs::resolve_index_db(&self.cqs_dir))
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -2334,7 +2338,15 @@ pub(crate) fn create_context_with_runtime(
     // Capture initial index.db identity (inode/size/mtime on unix).
     // DS-V1.25-6: previously this was mtime alone, which sub-second
     // replacements on WSL NTFS could miss.
-    let index_id = DbFileIdentity::from_path(&cqs_dir.join(cqs::INDEX_DB_FILENAME));
+    // DS-V1.38-3 (#1463): stat the slot-aware index path, not
+    // `cqs_dir/index.db` directly. After PR #1105 a slot-migrated
+    // project keeps the live DB at `.cqs/slots/<active>/index.db`;
+    // a literal `cqs_dir/index.db` join points at a path that
+    // doesn't exist, `from_path` returns None, and the daemon's
+    // mutable caches never invalidate when the operator runs
+    // `cqs index`. `resolve_index_db` honors slot resolution and
+    // falls back cleanly on legacy projects.
+    let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db(&cqs_dir));
     if index_id.is_none() {
         tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
     }
