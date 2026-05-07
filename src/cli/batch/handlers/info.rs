@@ -113,7 +113,7 @@ pub(in crate::cli::batch) fn dispatch_similar(
     // CQ-V1.25-2: shared with CLI's cmd_similar (which currently does not
     // clamp — adding clamp here + constant would regress; keep parity and
     // let CLI gain its clamp in a separate fix).
-    let limit = args.limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
+    let limit = args.limit_arg.limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;

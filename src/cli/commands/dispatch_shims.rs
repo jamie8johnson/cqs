@@ -599,7 +599,7 @@ pub fn cmd_similar_dispatch(
         commands::cmd_similar(
             ctx,
             &args.name,
-            args.limit,
+            args.limit_arg.limit,
             args.threshold,
             cli.json || output.json,
         )
@@ -787,7 +787,7 @@ pub fn cmd_gather_dispatch(
             query: &args.query,
             expand: args.depth,
             direction: args.direction,
-            limit: args.limit,
+            limit: args.limit_arg.limit,
             max_tokens: args.tokens,
             ref_name: args.ref_name.as_deref(),
             json: cli.json || output.json,
@@ -868,7 +868,7 @@ pub fn cmd_related_dispatch(
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
     must_be!(cmd, Commands::Related { args, output } => {
-        commands::cmd_related(ctx, &args.name, args.limit, cli.json || output.json)
+        commands::cmd_related(ctx, &args.name, args.limit_arg.limit, cli.json || output.json)
     })
 }
 
@@ -880,7 +880,7 @@ pub fn cmd_where_dispatch(
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
     must_be!(cmd, Commands::Where { args, output } => {
-        commands::cmd_where(ctx, &args.description, args.limit, cli.json || output.json)
+        commands::cmd_where(ctx, &args.description, args.limit_arg.limit, cli.json || output.json)
     })
 }
 
@@ -895,7 +895,7 @@ pub fn cmd_scout_dispatch(
         commands::cmd_scout(
             ctx,
             &args.query,
-            args.limit,
+            args.limit_arg.limit,
             cli.json || output.json,
             args.tokens,
         )
@@ -913,7 +913,7 @@ pub fn cmd_plan_dispatch(
         commands::cmd_plan(
             ctx,
             &args.description,
-            args.limit,
+            args.limit_arg.limit,
             cli.json || output.json,
             args.tokens,
         )
@@ -931,7 +931,7 @@ pub fn cmd_task_dispatch(
         commands::cmd_task(
             ctx,
             &args.description,
-            args.limit,
+            args.limit_arg.limit,
             cli.json || output.json,
             args.tokens,
             args.brief,

@@ -653,7 +653,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Search { ref args, .. } => {
                 assert_eq!(args.query, "hello");
-                assert_eq!(args.limit, 5); // default
+                assert_eq!(args.limit_arg.limit, 5); // default
             }
             _ => panic!("Expected Search command"),
         }
@@ -666,7 +666,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Search { ref args, .. } => {
                 assert_eq!(args.query, "hello");
-                assert_eq!(args.limit, 3);
+                assert_eq!(args.limit_arg.limit, 3);
                 assert!(args.name_only);
             }
             _ => panic!("Expected Search command"),
@@ -785,7 +785,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Scout { ref args, .. } => {
                 assert_eq!(args.query, "error handling");
-                assert_eq!(args.limit, 5); // default
+                assert_eq!(args.limit_arg.limit, 5); // default
             }
             _ => panic!("Expected Scout command"),
         }
@@ -805,7 +805,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Scout { ref args, .. } => {
                 assert_eq!(args.query, "error handling");
-                assert_eq!(args.limit, 20);
+                assert_eq!(args.limit_arg.limit, 20);
                 assert_eq!(args.tokens, Some(2000));
             }
             _ => panic!("Expected Scout command"),
@@ -819,7 +819,7 @@ mod tests {
             BatchCmd::Where { ref args, .. } => {
                 assert_eq!(args.description, "new CLI command");
                 // API-V1.36-8 (#1459): --limit defaults harmonised to 5.
-                assert_eq!(args.limit, 5);
+                assert_eq!(args.limit_arg.limit, 5);
             }
             _ => panic!("Expected Where command"),
         }
@@ -977,7 +977,7 @@ mod tests {
         let scout = BatchCmd::Scout {
             args: crate::cli::args::ScoutArgs {
                 query: "foo".into(),
-                limit: 5,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
                 tokens: None,
             },
             output: TextJsonArgs { json: false },

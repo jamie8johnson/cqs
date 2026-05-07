@@ -31,7 +31,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
     let opts = cqs::GatherOptions {
         expand_depth: args.depth.clamp(0, 5),
         direction: args.direction,
-        limit: args.limit.clamp(1, 100),
+        limit: args.limit_arg.limit.clamp(1, 100),
         ..cqs::GatherOptions::default()
     };
 
@@ -194,7 +194,7 @@ pub(in crate::cli::batch) fn dispatch_task(
     let tokens = args.tokens;
     let _span = tracing::info_span!("batch_task", description).entered();
     let embedder = ctx.embedder()?;
-    let limit = args.limit.clamp(1, 10);
+    let limit = args.limit_arg.limit.clamp(1, 10);
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.test_chunks()?;
     let result = cqs::task_with_resources(
@@ -237,7 +237,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
     // CQ-V1.25-2: shared with CLI's cmd_scout.
-    let limit = args.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
+    let limit = args.limit_arg.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let (content_map, token_info) = if let Some(budget) = tokens {
@@ -275,7 +275,7 @@ pub(in crate::cli::batch) fn dispatch_where(
     let description = args.description.as_str();
     let _span = tracing::info_span!("batch_where", description).entered();
     let embedder = ctx.embedder()?;
-    let limit = args.limit.clamp(1, 10);
+    let limit = args.limit_arg.limit.clamp(1, 10);
     let result = cqs::suggest_placement(&ctx.store(), embedder, description, limit)?;
 
     let output = crate::cli::commands::build_where_output(&result, description, &ctx.root);
@@ -462,8 +462,14 @@ pub(in crate::cli::batch) fn dispatch_plan(
     let _span = tracing::info_span!("batch_plan", description).entered();
 
     let embedder = ctx.embedder()?;
-    let result = cqs::plan::plan(&ctx.store(), embedder, description, &ctx.root, args.limit)
-        .context("Plan generation failed")?;
+    let result = cqs::plan::plan(
+        &ctx.store(),
+        embedder,
+        description,
+        &ctx.root,
+        args.limit_arg.limit,
+    )
+    .context("Plan generation failed")?;
 
     let mut json = serde_json::to_value(&result)?;
     if let Some(budget) = tokens {
