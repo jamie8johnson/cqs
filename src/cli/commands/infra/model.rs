@@ -119,19 +119,24 @@ pub(crate) fn daemon_control_hint(hint: DaemonHint) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// `cqs model` subcommand surface.
+///
+/// API-V1.38-1 (#1463): each variant flattens [`crate::cli::definitions::TextJsonArgs`]
+/// (`output: TextJsonArgs`) instead of an inline `json: bool`. Matches the
+/// pattern used across Project / Ref / Slot / Cache / Notes / Init / Doctor /
+/// Stats / Affected / Brief / Refresh / Ping / Status / Convert. Future shared
+/// output knobs (`--pretty`, `--ndjson`) become a one-line addition to
+/// `TextJsonArgs` instead of a multi-file edit.
 #[derive(clap::Subcommand)]
 pub(crate) enum ModelCommand {
     /// Show the model recorded in the current index, plus on-disk size.
     Show {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
     /// List built-in embedding model presets, marking the current one with `*`.
     List {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
     /// Swap the indexed embedder: backup `.cqs/`, reindex with the new
     /// preset, restore on failure.
@@ -142,9 +147,8 @@ pub(crate) enum ModelCommand {
         /// if the reindex fails — only use when you have a separate backup.
         #[arg(long)]
         no_backup: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
 }
 
@@ -199,13 +203,13 @@ struct ModelSwapOutput {
 pub(crate) fn cmd_model(cli: &Cli, subcmd: &ModelCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_model").entered();
     match subcmd {
-        ModelCommand::Show { json } => cmd_model_show(cli.json || *json),
-        ModelCommand::List { json } => cmd_model_list(cli.json || *json),
+        ModelCommand::Show { output } => cmd_model_show(cli.json || output.json),
+        ModelCommand::List { output } => cmd_model_list(cli.json || output.json),
         ModelCommand::Swap {
             preset,
             no_backup,
-            json,
-        } => cmd_model_swap(cli, preset, *no_backup, cli.json || *json),
+            output,
+        } => cmd_model_swap(cli, preset, *no_backup, cli.json || output.json),
     }
 }
 

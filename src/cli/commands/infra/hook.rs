@@ -52,6 +52,9 @@ pub(crate) const MANAGED_HOOKS: &[&str] = &["post-checkout", "post-merge", "post
 
 /// `cqs hook` subcommand surface.
 #[derive(clap::Subcommand, Debug, Clone)]
+/// API-V1.38-1 (#1463): every variant flattens
+/// [`crate::cli::definitions::TextJsonArgs`] (`output: TextJsonArgs`) instead
+/// of an inline `json: bool`. Matches the codebase-wide pattern.
 pub(crate) enum HookCommand {
     /// Install cqs hooks into `.git/hooks/`. Idempotent — re-running is
     /// safe; already-installed cqs hooks are upgraded in place.
@@ -61,16 +64,14 @@ pub(crate) enum HookCommand {
         /// existing third-party hooks.
         #[arg(long)]
         no_overwrite: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
     /// Remove cqs-managed hooks from `.git/hooks/`. Hooks that don't
     /// carry the cqs marker are left alone (they may be third-party).
     Uninstall {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
     /// Internal: hook scripts call this. Posts a `reconcile` socket
     /// message; falls back to touching `.cqs/.dirty` if the daemon is
@@ -85,14 +86,13 @@ pub(crate) enum HookCommand {
         args: Vec<String>,
         /// Output as JSON. Default is silent on success, brief stderr on
         /// failure — hooks shouldn't pollute git's output channel.
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
     /// Show installed hooks + daemon connectivity.
     Status {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: crate::cli::definitions::TextJsonArgs,
     },
 }
 
@@ -150,10 +150,13 @@ struct FireReport {
 /// Top-level dispatch. Each variant handles its own JSON-vs-text output.
 pub(crate) fn cmd_hook(subcmd: HookCommand) -> Result<()> {
     match subcmd {
-        HookCommand::Install { no_overwrite, json } => cmd_install(no_overwrite, json),
-        HookCommand::Uninstall { json } => cmd_uninstall(json),
-        HookCommand::Fire { name, args, json } => cmd_fire(name, args, json),
-        HookCommand::Status { json } => cmd_status(json),
+        HookCommand::Install {
+            no_overwrite,
+            output,
+        } => cmd_install(no_overwrite, output.json),
+        HookCommand::Uninstall { output } => cmd_uninstall(output.json),
+        HookCommand::Fire { name, args, output } => cmd_fire(name, args, output.json),
+        HookCommand::Status { output } => cmd_status(output.json),
     }
 }
 
