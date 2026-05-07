@@ -112,7 +112,13 @@ impl BatchKind {
 /// Trait for LLM batch API providers.
 /// Abstracts the batch submission, polling, and result fetching lifecycle.
 /// Currently implemented for Anthropic's Messages Batches API.
-pub trait BatchProvider {
+///
+/// API-V1.38-3 (#1463): `Send + Sync` matches the sibling traits
+/// `VectorIndex`, `IndexBackend`, `Reranker`. Both shipping impls
+/// (`LlmClient` in `llm/batch.rs`, `LocalProvider` in `llm/local.rs`)
+/// already satisfy it; making it explicit means the next async-batch
+/// refactor doesn't surface as a confusing object-safety error.
+pub trait BatchProvider: Send + Sync {
     /// Submit a batch under the given `kind`. The kind selects which prompt
     /// builder constructs the user message from each `BatchSubmitItem`'s
     /// `(content, context, language)` triple (or, for [`BatchKind::Prebuilt`],

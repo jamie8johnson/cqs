@@ -2236,19 +2236,33 @@ fn write_json_line(
             buf.push(b'\n');
             out.write_all(&buf)
         }
-        Err(_) => {
+        Err(first) => {
             // NaN / Infinity in the payload caused `to_writer` to fail
             // partway through. The buffer holds a half-written prefix
             // (`{"data":...`) — discard it and retry via the sanitize-
             // and-retry path that the CLI / chat surfaces share.
             // Mirrors `format_envelope_to_string`'s recovery semantics.
+            //
+            // EH-V1.38-9 (#1463): preserve the first error. NaN is the
+            // typical cause but `to_writer` can also fail on a downstream
+            // `io::Write` error (broken socket, full disk) or on serde
+            // custom Serialize errors — a sanitize-retry doesn't fix
+            // those, and the operator needs the first error to diagnose.
+            tracing::debug!(
+                error = %first,
+                "to_writer failed; retrying after float-sanitize"
+            );
             let wrapped = crate::cli::json_envelope::wrap_value(value);
             let mut sanitized = wrapped;
             sanitize_json_floats(&mut sanitized);
             match serde_json::to_string(&sanitized) {
                 Ok(s) => writeln!(out, "{}", s),
                 Err(e) => {
-                    tracing::warn!(error = %e, "JSON serialization failed after sanitization");
+                    tracing::warn!(
+                        first_error = %first,
+                        retry_error = %e,
+                        "JSON serialization failed before AND after sanitization"
+                    );
                     let fallback = crate::cli::json_envelope::wrap_error(
                         crate::cli::json_envelope::error_codes::INTERNAL,
                         "JSON serialization failed",
