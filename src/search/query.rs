@@ -40,6 +40,31 @@ pub(crate) fn type_boost_factor() -> f32 {
     crate::search::scoring::knob::resolve_knob("type_boost")
 }
 
+/// Trim `k` to the backend's reported `max_k` cap.
+///
+/// CAGRA enforces `itopk_size >= k` and `itopk_size <= itopk_max`, where
+/// `itopk_max` is `(log2(n_vectors) * 32).clamp(128, 4096)` — 441 at 14k
+/// chunks, 532 at 100k, 640 at 1M. A request with `k > itopk_max`
+/// returns an empty Vec; in the SPLADE-fusion path this collapses the
+/// dense leg to zero scores, and at `splade_alpha = 1.0` the fused
+/// score is `1.0·d + 0.0·s = 0` for everyone — R@5 craters from ~0.66
+/// to ~0.16 on the v3.v2 test set when `candidate_count` crosses 441.
+/// HNSW reports `max_k = None` and is unaffected.
+fn cap_k_to_backend(idx: &dyn VectorIndex, k: usize) -> usize {
+    match idx.max_k() {
+        Some(cap) if k > cap => {
+            tracing::debug!(
+                requested = k,
+                cap,
+                backend = idx.name(),
+                "k trimmed to backend max_k"
+            );
+            cap
+        }
+        _ => k,
+    }
+}
+
 impl<Mode> Store<Mode> {
     /// Defensive guard for query-time embedder/index dim mismatch.
     ///
@@ -537,7 +562,14 @@ impl<Mode> Store<Mode> {
 
         // Dense results from vector index (HNSW or CAGRA)
         let dense_results = if let Some(idx) = index {
-            idx.search_with_filter(query, candidate_count, &predicate)
+            // Cap k at the backend's max_k. CAGRA reports an itopk-derived
+            // cap (~441 at 14k chunks) above which the GPU search returns
+            // an empty Vec; without trimming, a candidate_count of 500
+            // collapses the dense leg to zero results and α-fusion of
+            // 1.0·0 + 0.0·s = 0 produces near-random R@K. HNSW reports
+            // None and is unaffected.
+            let effective_k = cap_k_to_backend(idx, candidate_count);
+            idx.search_with_filter(query, effective_k, &predicate)
         } else {
             // Rust 1.95: hybrid search without a vector index is a misconfig
             // (build error or partial index load). Mark cold so the dense
@@ -726,6 +758,11 @@ impl<Mode> Store<Mode> {
                 || filter.exclude_types.is_some()
                 || filter.languages.is_some();
 
+            // Cap to backend max_k (see `cap_k_to_backend` doc): CAGRA's
+            // itopk_max enforces an effective ceiling above which it returns
+            // empty results. Apply once for both filtered and unfiltered
+            // arms below.
+            let effective_k = cap_k_to_backend(idx, candidate_count);
             let index_results = if has_type_or_lang_filter {
                 // Build traversal-time filter from chunk metadata
                 let meta = self.chunk_type_language_map()?;
@@ -742,9 +779,9 @@ impl<Mode> Store<Mode> {
                         false
                     }
                 };
-                idx.search_with_filter(query, candidate_count, &predicate)
+                idx.search_with_filter(query, effective_k, &predicate)
             } else {
-                idx.search(query, candidate_count)
+                idx.search(query, effective_k)
             };
 
             if index_results.is_empty() {
@@ -1431,6 +1468,70 @@ mod tests {
         // Typical limit scales linearly above the floor.
         let typical = candidate_count_for(200);
         assert_eq!(typical, 1000);
+    }
+
+    /// Regression for the CAGRA itopk_max cliff. Pre-fix, when
+    /// `candidate_count` exceeded the backend's `max_k`, the backend silently
+    /// returned an empty Vec; in the SPLADE-fusion path with `α = 1.0` this
+    /// collapsed R@5 from ~0.66 to ~0.16 on v3.v2 test queries when
+    /// `CQS_SEARCH_CANDIDATE_FLOOR` crossed 441 (the cap for a 14k corpus).
+    /// `cap_k_to_backend` now trims `k` to the reported cap so the index
+    /// returns its actual capacity instead.
+    #[test]
+    fn test_cap_k_to_backend_trims_to_max_k() {
+        use crate::embedder::Embedding;
+        use crate::index::{IndexResult, VectorIndex};
+
+        struct CappedMock;
+        impl VectorIndex for CappedMock {
+            fn search(&self, _query: &Embedding, _k: usize) -> Vec<IndexResult> {
+                vec![]
+            }
+            fn len(&self) -> usize {
+                10_000
+            }
+            fn name(&self) -> &'static str {
+                "CappedMock"
+            }
+            fn dim(&self) -> usize {
+                crate::EMBEDDING_DIM
+            }
+            fn max_k(&self) -> Option<usize> {
+                Some(441)
+            }
+        }
+        struct UncappedMock;
+        impl VectorIndex for UncappedMock {
+            fn search(&self, _query: &Embedding, _k: usize) -> Vec<IndexResult> {
+                vec![]
+            }
+            fn len(&self) -> usize {
+                10_000
+            }
+            fn name(&self) -> &'static str {
+                "UncappedMock"
+            }
+            fn dim(&self) -> usize {
+                crate::EMBEDDING_DIM
+            }
+        }
+
+        let capped: Box<dyn VectorIndex> = Box::new(CappedMock);
+        let uncapped: Box<dyn VectorIndex> = Box::new(UncappedMock);
+
+        // Capped backend: requests above cap get trimmed.
+        assert_eq!(super::cap_k_to_backend(capped.as_ref(), 500), 441);
+        assert_eq!(super::cap_k_to_backend(capped.as_ref(), 442), 441);
+        // Below or at the cap: pass through unchanged.
+        assert_eq!(super::cap_k_to_backend(capped.as_ref(), 441), 441);
+        assert_eq!(super::cap_k_to_backend(capped.as_ref(), 100), 100);
+
+        // Uncapped backend (HNSW shape): k always passes through.
+        assert_eq!(super::cap_k_to_backend(uncapped.as_ref(), 500), 500);
+        assert_eq!(
+            super::cap_k_to_backend(uncapped.as_ref(), usize::MAX),
+            usize::MAX
+        );
     }
 
     /// Integration regression: exercise `search_filtered_with_index` with a
