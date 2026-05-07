@@ -1842,3 +1842,25 @@ mentions = [
     "audit",
     "dim_scaled_batch",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "v1.38.0 audit cycle (2026-05-06, 13 cluster PRs #1514-#1526): post-v1.38 fresh full-codebase audit run by 16 parallel auditor agents on opus surfaced 154 findings (P1=50, P2=37, P3=55, P4=12). Closed ~36 P1/P2 items across 13 cluster PRs. Highest-impact: Cluster A (needs_embedding wiring) closed silent search-quality regression on --llm-summaries workflows where CAGRA/UMAP/brute-force kNN were loading zero-vec sentinels. Cluster B (lying-docs) fixed 4 P1 lying-doc rows in README/SECURITY where --improve-docs was claimed in-place but is patch-default since v1.30.1. Cluster F (algorithm correctness) caught a silent SPLADE search regression where BoundedScoreHeap::would_accept tiebreak was strict-gt, dropping smaller-id candidates at tied scores. Schema unchanged (still v27)."
+mentions = [
+    "1.38.0",
+    "audit",
+    "needs_embedding",
+    "BoundedScoreHeap",
+    "lying-docs",
+    "#1463",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Audit-cycle workflow that worked end-to-end same-day: (1) spawn 16 parallel auditor agents on opus (8 per batch), each writing per-category file `docs/audit-batch{1,2}-<cat>.md` to avoid concurrent-write races. (2) Aggregate to `docs/audit-findings.md`. (3) Triage agent classifies into P1/P2/P3/P4 + identifies cross-cutting clusters. (4) Implement clusters as one PR each, with explicit 'what's NOT in scope' deferral list per PR body. (5) After PRs land, update umbrella issue body inline with 'closed by #N' status. ~13 PRs/day with audit-mode ON throughout."
+mentions = [
+    "audit",
+    "skill-pattern",
+    "auditor agent",
+    "audit-batch1",
+]
