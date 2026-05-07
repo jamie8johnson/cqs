@@ -86,11 +86,26 @@ const REFERENCE_MAX_LENGTH: usize = 512;
 ///
 /// `CQS_RERANKER_BATCH` env wins regardless of either dim — operators
 /// with workloads they understand can pin a value.
-fn reranker_batch_size(max_length: usize, hidden_size: usize) -> usize {
+///
+/// EX-V1.38-3 (#1463): `[reranker] batch = N` in `.cqs.toml` is now
+/// consulted as a fallback. Precedence: env > TOML > computed default.
+fn reranker_batch_size(
+    max_length: usize,
+    hidden_size: usize,
+    section: Option<&AuxModelSection>,
+) -> usize {
     // P2.4: route through shared `parse_env_usize` so behavior matches the
     // 24 other CQS_* knobs (missing/empty/garbage/zero -> default).
     if std::env::var_os("CQS_RERANKER_BATCH").is_some() {
         return crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH);
+    }
+    if let Some(b) = section.and_then(|s| s.batch).filter(|n| *n > 0) {
+        tracing::debug!(
+            source = "config",
+            batch = b,
+            "reranker_batch_size: using [reranker] batch from .cqs.toml"
+        );
+        return b;
     }
     let baseline = DEFAULT_RERANKER_BATCH as f64;
     let max_length = max_length.max(1) as f64;
@@ -259,24 +274,47 @@ impl OnnxReranker {
 
     /// Create a reranker, threading a `[reranker]` config section through to
     /// `resolve_reranker` so `.cqs.toml` preset / model_path are honoured (P1.7).
+    ///
+    /// EX-V1.38-3 (#1463): `[reranker] max_length = N` in `.cqs.toml` is
+    /// consulted as a fallback. Env var precedence: `CQS_RERANKER_MAX_LENGTH`
+    /// wins, then the TOML field, then the compiled-in default 512.
     pub fn with_section(section: Option<AuxModelSection>) -> Result<Self, RerankerError> {
         let provider = select_provider();
         let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
             Ok(val) => match val.parse::<usize>() {
                 Ok(len) => {
-                    tracing::info!(max_length = len, "Using custom reranker max_length");
+                    tracing::info!(
+                        source = "env",
+                        max_length = len,
+                        "Using custom reranker max_length"
+                    );
                     len
                 }
                 Err(e) => {
                     tracing::warn!(
                         value = %val,
                         error = %e,
-                        "Invalid CQS_RERANKER_MAX_LENGTH, using default 512"
+                        "Invalid CQS_RERANKER_MAX_LENGTH, falling through to TOML / default"
                     );
-                    512
+                    section
+                        .as_ref()
+                        .and_then(|s| s.max_length)
+                        .filter(|n| *n > 0)
+                        .unwrap_or(512)
                 }
             },
-            Err(_) => 512,
+            Err(_) => section
+                .as_ref()
+                .and_then(|s| s.max_length)
+                .filter(|n| *n > 0)
+                .inspect(|n| {
+                    tracing::info!(
+                        source = "config",
+                        max_length = n,
+                        "Using custom reranker max_length"
+                    );
+                })
+                .unwrap_or(512),
         };
         Ok(Self {
             session: Mutex::new(None),
@@ -336,7 +374,11 @@ impl OnnxReranker {
             return Ok(None); // Nothing to score — empty tokenization
         }
 
-        let batch_cap = reranker_batch_size(self.max_length, self.resolve_hidden_size());
+        let batch_cap = reranker_batch_size(
+            self.max_length,
+            self.resolve_hidden_size(),
+            self.section.as_ref(),
+        );
         let mut scores = Vec::with_capacity(passages.len());
         for chunk in encodings.chunks(batch_cap) {
             scores.extend(self.run_chunk(chunk)?);
@@ -1011,7 +1053,7 @@ mod batch_scaling_tests {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
         assert_eq!(
-            reranker_batch_size(REFERENCE_MAX_LENGTH, REFERENCE_HIDDEN_SIZE),
+            reranker_batch_size(REFERENCE_MAX_LENGTH, REFERENCE_HIDDEN_SIZE, None),
             DEFAULT_RERANKER_BATCH
         );
     }
@@ -1023,7 +1065,7 @@ mod batch_scaling_tests {
     fn long_seq_reduces_batch() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(2048, REFERENCE_HIDDEN_SIZE), 8);
+        assert_eq!(reranker_batch_size(2048, REFERENCE_HIDDEN_SIZE, None), 8);
     }
 
     /// 8K-seq rerankers shouldn't degenerate to batch=1. The 0.25 floor
@@ -1032,8 +1074,8 @@ mod batch_scaling_tests {
     fn extreme_seq_floors_at_quarter() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(8192, REFERENCE_HIDDEN_SIZE), 8);
-        assert_eq!(reranker_batch_size(32_768, REFERENCE_HIDDEN_SIZE), 8);
+        assert_eq!(reranker_batch_size(8192, REFERENCE_HIDDEN_SIZE, None), 8);
+        assert_eq!(reranker_batch_size(32_768, REFERENCE_HIDDEN_SIZE, None), 8);
     }
 
     /// Short-seq rerankers (e.g., 256-token cross-encoders) at baseline
@@ -1042,8 +1084,8 @@ mod batch_scaling_tests {
     fn short_seq_widens_batch() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(256, REFERENCE_HIDDEN_SIZE), 64);
-        assert_eq!(reranker_batch_size(128, REFERENCE_HIDDEN_SIZE), 128);
+        assert_eq!(reranker_batch_size(256, REFERENCE_HIDDEN_SIZE, None), 64);
+        assert_eq!(reranker_batch_size(128, REFERENCE_HIDDEN_SIZE, None), 128);
     }
 
     /// hidden_size = 768 (e.g. MiniLM-L-12 / many cross-encoders) at
@@ -1053,7 +1095,7 @@ mod batch_scaling_tests {
     fn wider_hidden_halves_batch() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(REFERENCE_MAX_LENGTH, 768), 16);
+        assert_eq!(reranker_batch_size(REFERENCE_MAX_LENGTH, 768, None), 16);
     }
 
     /// hidden_size = 1024 (BERT-large class) at baseline seq quarters
@@ -1063,7 +1105,7 @@ mod batch_scaling_tests {
     fn bert_large_hidden_quarters_batch() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(REFERENCE_MAX_LENGTH, 1024), 16);
+        assert_eq!(reranker_batch_size(REFERENCE_MAX_LENGTH, 1024, None), 16);
     }
 
     /// Compound case: a 768-hidden reranker running at 2048 seq.
@@ -1073,7 +1115,7 @@ mod batch_scaling_tests {
     fn wide_long_compound_reduces_batch() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(2048, 768), 4);
+        assert_eq!(reranker_batch_size(2048, 768, None), 4);
     }
 
     /// Net floor at extreme model: 0.25 (seq) × 0.25 (hidden) → 32 × 0.0625
@@ -1083,7 +1125,7 @@ mod batch_scaling_tests {
     fn extreme_compound_floors_at_two() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        assert_eq!(reranker_batch_size(32_768, 8192), 2);
+        assert_eq!(reranker_batch_size(32_768, 8192, None), 2);
     }
 
     /// `CQS_RERANKER_BATCH` env wins regardless of (hidden, seq).
@@ -1093,8 +1135,8 @@ mod batch_scaling_tests {
     fn env_override_wins_regardless_of_dims() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("CQS_RERANKER_BATCH", "100");
-        assert_eq!(reranker_batch_size(2048, 768), 100);
-        assert_eq!(reranker_batch_size(512, 384), 100);
+        assert_eq!(reranker_batch_size(2048, 768, None), 100);
+        assert_eq!(reranker_batch_size(512, 384, None), 100);
         std::env::remove_var("CQS_RERANKER_BATCH");
     }
 
@@ -1104,9 +1146,9 @@ mod batch_scaling_tests {
     fn zero_dims_do_not_panic() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_RERANKER_BATCH");
-        let _ = reranker_batch_size(0, REFERENCE_HIDDEN_SIZE);
-        let _ = reranker_batch_size(REFERENCE_MAX_LENGTH, 0);
-        let _ = reranker_batch_size(0, 0);
+        let _ = reranker_batch_size(0, REFERENCE_HIDDEN_SIZE, None);
+        let _ = reranker_batch_size(REFERENCE_MAX_LENGTH, 0, None);
+        let _ = reranker_batch_size(0, 0, None);
     }
 }
 
@@ -1563,6 +1605,8 @@ mod tests {
             preset: Some("ms-marco-minilm".to_string()),
             model_path: None,
             tokenizer_path: None,
+            batch: None,
+            max_length: None,
         };
         let cfg = resolve_reranker(Some(&section)).expect("resolve must succeed for preset");
 
@@ -1619,6 +1663,8 @@ mod tests {
             preset: Some("ms-marco-minilm".to_string()),
             model_path: None,
             tokenizer_path: None,
+            batch: None,
+            max_length: None,
         };
         let reranker = OnnxReranker::with_section(Some(section.clone()))
             .expect("with_section must construct without model load");
