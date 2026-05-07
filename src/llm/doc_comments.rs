@@ -162,7 +162,15 @@ pub fn doc_comment_pass(
     // Phase 1: Collect candidates
     let mut candidates: Vec<ChunkSummary> = Vec::new();
     let mut cursor = 0i64;
-    const PAGE_SIZE: usize = 500;
+    // SHL-V1.38-7 (#1463): same `CQS_LLM_PASS_PAGE_SIZE` knob as
+    // `collect_eligible_chunks` in `llm/mod.rs`. Two paginators were
+    // hand-coded with the literal 500 — operators can now tune both
+    // via one env var.
+    let page_size = std::env::var("CQS_LLM_PASS_PAGE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(500);
 
     let stats = store.stats()?;
     tracing::info!(
@@ -171,7 +179,7 @@ pub fn doc_comment_pass(
     );
 
     loop {
-        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
+        let (chunks, next) = store.chunks_paged(cursor, page_size)?;
         if chunks.is_empty() {
             break;
         }

@@ -91,7 +91,14 @@ pub(crate) fn collect_eligible_chunks(
     let mut cached = 0usize;
     let mut skipped = 0usize;
     let mut cursor = 0i64;
-    const PAGE_SIZE: usize = 500;
+    // SHL-V1.38-7 (#1463): operator-tunable via `CQS_LLM_PASS_PAGE_SIZE`.
+    // Smaller page (50-100) reduces peak heap on large repos; larger
+    // (1000+) reduces SQLite round-trip overhead on fast SSDs.
+    let page_size = std::env::var("CQS_LLM_PASS_PAGE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(500);
     let mut items: Vec<EligibleChunk> = Vec::new();
     let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
     let effective_limit = if max_items == 0 {
@@ -102,7 +109,7 @@ pub(crate) fn collect_eligible_chunks(
 
     let mut batch_full = false;
     loop {
-        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
+        let (chunks, next) = store.chunks_paged(cursor, page_size)?;
         if chunks.is_empty() {
             break;
         }
