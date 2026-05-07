@@ -1002,6 +1002,33 @@ async fn migrate_v26_to_v27(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     .execute(&mut *conn)
     .await?;
 
+    // DS-V1.38-8 (#1463): backfill `needs_embedding=1` for any
+    // pre-v27 row that has `embedding_base IS NULL`. Combined with
+    // DS-V1.38-2 (enrichment_pass repopulates `embedding_base` from
+    // the row's `embedding` on first hit), this trips the next
+    // `cqs index --force` or `cqs index --llm-summaries` cycle into
+    // filling the missing base bytes — restoring base-HNSW coverage
+    // for `cqs <q> --rerank` / DenseBase routing on legacy projects
+    // that pre-date the v17→v18 base-column split (or that ran
+    // earlier `--llm-summaries` cycles before DS-V1.38-2 closed the
+    // permanent-NULL trap).
+    let backfilled = sqlx::query(
+        "UPDATE chunks SET needs_embedding = 1 \
+         WHERE embedding_base IS NULL AND needs_embedding = 0",
+    )
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+
+    if backfilled > 0 {
+        tracing::info!(
+            backfilled,
+            "v27 migration: marked {backfilled} chunks with NULL embedding_base \
+             as needs_embedding=1 — they'll re-embed on the next enrichment_pass \
+             so base-HNSW coverage repopulates"
+        );
+    }
+
     tracing::info!(
         "Migrated to v27: chunks.needs_embedding flag + partial index. \
          Enables --llm-summaries first-pass-embed skip (#1452)."
@@ -3619,13 +3646,32 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Seed a pre-migration v26 chunk.
+            // Seed a pre-migration v26 chunk WITH embedding_base populated
+            // (the post-v17 invariant for properly-indexed rows).
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 embedding_base, created_at, updated_at) \
+                 VALUES ('pre_v27', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v27', \
+                 '', '', 'h', 1, 10, X'00', X'00', '2026-05-06', '2026-05-06')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // DS-V1.38-8 (#1463): also seed a row with NULL embedding_base
+            // — represents legacy chunks where Phase 5 (#878) never filled
+            // the base column, or chunks from a `--llm-summaries` cycle
+            // that pre-dated DS-V1.38-2's enrichment-time base repopulate.
+            // The migration must mark these as needs_embedding=1 so the
+            // next index pass triggers a re-embed and the base-HNSW
+            // coverage gap closes.
             sqlx::query(
                 "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
                  signature, content, content_hash, line_start, line_end, embedding, \
                  created_at, updated_at) \
-                 VALUES ('pre_v27', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v27', \
-                 '', '', 'h', 1, 10, X'00', '2026-05-06', '2026-05-06')",
+                 VALUES ('pre_v27_no_base', 'file:lib.rs', 'file', 'rust', 'function', \
+                 'pre_v27_no_base', '', '', 'h_nb', 1, 10, X'00', '2026-05-06', '2026-05-06')",
             )
             .execute(&pool)
             .await
@@ -3642,10 +3688,11 @@ mod tests {
                     .unwrap();
             assert_eq!(v, "27");
 
-            // Pre-migration row has needs_embedding = 0 (DEFAULT). Existing
-            // chunks were embedded under the v26 contract; the migration must
-            // not flip them to "needs embedding" or every reindex would
-            // re-enrich them and waste GPU.
+            // Properly-indexed pre-migration row has needs_embedding = 0
+            // (DEFAULT). Existing chunks with a real `embedding_base` were
+            // embedded under the v26 contract; the migration must not flip
+            // them to "needs embedding" or every reindex would re-enrich
+            // them and waste GPU.
             let (pre_flag,): (i64,) =
                 sqlx::query_as("SELECT needs_embedding FROM chunks WHERE id = 'pre_v27'")
                     .fetch_one(&pool)
@@ -3653,7 +3700,21 @@ mod tests {
                     .unwrap();
             assert_eq!(
                 pre_flag, 0,
-                "pre-migration chunk must retain needs_embedding=0 (already embedded)"
+                "pre-migration chunk with real embedding_base must retain needs_embedding=0"
+            );
+
+            // DS-V1.38-8: rows with NULL embedding_base get backfilled to
+            // needs_embedding=1 so the next index pass repopulates the
+            // base column.
+            let (no_base_flag,): (i64,) =
+                sqlx::query_as("SELECT needs_embedding FROM chunks WHERE id = 'pre_v27_no_base'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                no_base_flag, 1,
+                "DS-V1.38-8: pre-migration chunk with NULL embedding_base must be marked \
+                 needs_embedding=1 so the next enrichment_pass repopulates the base column"
             );
 
             // The partial index exists.
