@@ -309,10 +309,10 @@ After these 10 PRs: P3 cleanup batch (single PR per category — doc tweaks, min
 ### Test Coverage (happy path)
 | ID | Title | Difficulty | Status |
 |---|---|---|---|
-| TC-HAP-V1.38-1 | `cqs project search` filter knobs (#1507) parse-only — no behavioral assertions | medium | pending |
-| TC-HAP-V1.38-2 | `cqs ref reindex --llm-summaries` (#1506) parse-only — never runs LLM/HyDE pass | medium | pending |
-| TC-HAP-V1.38-3 | `enrichment_pass` itself untested despite #1497 carve-out | medium | pending |
-| TC-HAP-V1.38-4 | `cqs index --model X` drift detection (#1505) helper unit-tested but no end-to-end CLI test | easy | pending |
+| TC-HAP-V1.38-1 | `cqs project search` filter knobs (#1507) parse-only — no behavioral assertions | medium | ✅ #1562 |
+| TC-HAP-V1.38-2 | `cqs ref reindex --llm-summaries` (#1506) parse-only — never runs LLM/HyDE pass | medium | ✅ #1563 |
+| TC-HAP-V1.38-3 | `enrichment_pass` itself untested despite #1497 carve-out | medium | deferred (needs embedder load) |
+| TC-HAP-V1.38-4 | `cqs index --model X` drift detection (#1505) helper unit-tested but no end-to-end CLI test | easy | ✅ #1560 |
 
 ---
 
@@ -422,12 +422,12 @@ After these 10 PRs: P3 cleanup batch (single PR per category — doc tweaks, min
 ### Test Coverage (happy path)
 | ID | Title | Difficulty | Status |
 |---|---|---|---|
-| TC-HAP-V1.38-5 | `cmd_dead` CLI handler untested end-to-end | easy | pending |
-| TC-HAP-V1.38-6 | `cmd_explain` CLI handler untested end-to-end (`tests/graph_test.rs:explain_*` reimplement BFS in-process) | easy | pending |
-| TC-HAP-V1.38-7 | `cmd_install` / `cmd_status` for git hooks have no direct test | medium | pending |
-| TC-HAP-V1.38-8 | `cmd_trace --cross-project` arm has zero tests | medium | pending |
-| TC-HAP-V1.38-9 | `Reranker::test_reranker_new` weak — never asserts model loads or scores plausibly | easy | pending |
-| TC-HAP-V1.38-10 | `test_save_writes_file_with_0o600_perms` `target_os = "linux"`-gated; macOS coverage absent | easy | pending |
+| TC-HAP-V1.38-5 | `cmd_dead` CLI handler untested end-to-end | easy | ✅ #1557 |
+| TC-HAP-V1.38-6 | `cmd_explain` CLI handler untested end-to-end (`tests/graph_test.rs:explain_*` reimplement BFS in-process) | easy | ✅ #1558 |
+| TC-HAP-V1.38-7 | `cmd_install` / `cmd_status` for git hooks have no direct test | medium | ✅ #1556 |
+| TC-HAP-V1.38-8 | `cmd_trace --cross-project` arm has zero tests | medium | ✅ #1564 (also fixed slot-blindness bug in `from_config`) |
+| TC-HAP-V1.38-9 | `Reranker::test_reranker_new` weak — never asserts model loads or scores plausibly | easy | ✅ #1559 |
+| TC-HAP-V1.38-10 | `test_save_writes_file_with_0o600_perms` `target_os = "linux"`-gated; macOS coverage absent | easy | ✅ #1561 |
 
 ---
 
