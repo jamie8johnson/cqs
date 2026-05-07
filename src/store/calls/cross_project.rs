@@ -81,7 +81,16 @@ impl CrossProjectContext {
         let _span = tracing::info_span!("cross_project_from_config").entered();
         let config = crate::config::Config::load(root);
 
-        let db_path = root.join(".cqs/index.db");
+        // TC-HAP-V1.38-8 (#1463): use the slot-aware resolver so post-#1105
+        // slot layouts (`.cqs/slots/<active>/index.db`) work for
+        // `cqs trace --cross-project` and friends. Pre-fix, this path
+        // hardcoded `.cqs/index.db`, which only existed in the legacy
+        // pre-slots layout — every cross-project command silently
+        // bailed with "unable to open database file" on slot-migrated
+        // projects. The `tests/cli_trace_cross_project_test.rs`
+        // integration test now exercises this path end-to-end.
+        let cqs_dir = crate::resolve_index_dir(root);
+        let db_path = crate::resolve_index_db(&cqs_dir);
         // #946 typestate: cross-project reads only — open read-only. If the DB
         // doesn't exist yet, propagate the error; creating it here would
         // corrupt the invariant that cross-project queries never mutate.
