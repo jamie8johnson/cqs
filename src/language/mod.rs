@@ -336,6 +336,20 @@ pub struct LanguageDef {
     /// Used by `find_test_chunks` for SQL `content LIKE '%marker%'` filtering.
     /// E.g., Rust: `&["#[test]", "#[cfg(test)]"]`, Java: `&["@Test"]`, Python: `&["def test_"]`.
     pub test_markers: &'static [&'static str],
+    /// Endpoint annotation markers — language-specific decorators/annotations
+    /// that classify a function/method as an HTTP endpoint. Empty when the
+    /// language has no canonical endpoint convention OR the convention is
+    /// not a pure substring-match (e.g. Python's `@app.route(`-style needs
+    /// its own logic).
+    ///
+    /// EX-V1.38-2 (#1463): single source of truth for the per-language
+    /// endpoint classifier. Pre-fix, C#/Java/Kotlin post-processors carried
+    /// their own hardcoded `header.contains("[HttpGet]") || ...` chains —
+    /// adding Spring's `@RestController` or xUnit's `[Theory(...)]` meant
+    /// editing two unrelated spots. C#: `[Http*]` / `[Route(`. Java/Kotlin:
+    /// `@*Mapping` family. Python's `app.route(`-style stays inline because
+    /// the pattern needs `decorated_definition` walking, not substring.
+    pub endpoint_markers: &'static [&'static str],
     /// Test path patterns — file path suffixes/directories (SQL LIKE syntax).
     /// E.g., `&["%_test.rs", "%/tests/%"]`. Empty = use global defaults.
     pub test_path_patterns: &'static [&'static str],
