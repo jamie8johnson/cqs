@@ -200,6 +200,19 @@ fn run_with_dispatch(
         cqs::search::router::install_classifier_vocab_overlay(neg, multi);
     }
 
+    // EX-V1.38-3 (#1463): install reranker pool-sizing overrides from
+    // `[reranker]` TOML so cli/limits.rs::rerank_pool_max +
+    // rerank_over_retrieval_multiplier honor the durable config.
+    // Env vars still win — see those helpers for the precedence chain.
+    {
+        let (pool_max, over_retrieval) = config
+            .reranker
+            .as_ref()
+            .map(|s| (s.pool_max, s.over_retrieval))
+            .unwrap_or((None, None));
+        crate::cli::limits::install_reranker_pool_overrides(pool_max, over_retrieval);
+    }
+
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
 

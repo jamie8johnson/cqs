@@ -1607,6 +1607,8 @@ mod tests {
             tokenizer_path: None,
             batch: None,
             max_length: None,
+            pool_max: None,
+            over_retrieval: None,
         };
         let cfg = resolve_reranker(Some(&section)).expect("resolve must succeed for preset");
 
@@ -1665,6 +1667,8 @@ mod tests {
             tokenizer_path: None,
             batch: None,
             max_length: None,
+            pool_max: None,
+            over_retrieval: None,
         };
         let reranker = OnnxReranker::with_section(Some(section.clone()))
             .expect("with_section must construct without model load");
