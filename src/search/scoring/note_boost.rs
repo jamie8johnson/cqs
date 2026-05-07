@@ -496,4 +496,75 @@ mod tests {
         let index = NoteBoostIndex::new(&notes);
         assert_eq!(index.boost("src/lib.rs", "my_fn"), 1.0);
     }
+
+    /// TC-ADV-V1.38-2 (#1463): the consumer-side NaN/±Inf clamp at the
+    /// `boost` call site has only been protected by the test pinning the
+    /// SQLite round-trip (`test_upsert_notes_infinity_sentiment_roundtrips`).
+    /// A future refactor that inlined the clamp into the producer would
+    /// silently revert P1-36's BoundedScoreHeap drop fix. These tests
+    /// pin the boost-side contract directly: regardless of how a NaN or
+    /// ±Inf sentiment lands in the index, the multiplier is finite.
+    #[test]
+    fn boost_clamps_inf_sentiment_to_finite_multiplier() {
+        let pos_inf = make_note(f32::INFINITY, &["my_fn"]);
+        let neg_inf = make_note(f32::NEG_INFINITY, &["my_fn"]);
+
+        // Exact-name path: NoteBoostIndex with name-mention.
+        let idx_pos = NoteBoostIndex::new(std::slice::from_ref(&pos_inf));
+        let m_pos = idx_pos.boost("src/lib.rs", "my_fn");
+        assert!(m_pos.is_finite(), "+Inf must clamp to finite; got {m_pos}");
+        assert!(
+            (0.0..=2.0).contains(&m_pos),
+            "+Inf must clamp inside [0, 2]; got {m_pos}"
+        );
+
+        let idx_neg = NoteBoostIndex::new(std::slice::from_ref(&neg_inf));
+        let m_neg = idx_neg.boost("src/lib.rs", "my_fn");
+        assert!(m_neg.is_finite(), "-Inf must clamp to finite; got {m_neg}");
+        assert!(
+            (0.0..=2.0).contains(&m_neg),
+            "-Inf must clamp inside [0, 2]; got {m_neg}"
+        );
+
+        // OwnedNoteBoostIndex (the production hot path) — same contract.
+        let owned_pos = OwnedNoteBoostIndex::new(std::slice::from_ref(&pos_inf));
+        let m_pos = owned_pos.boost("src/lib.rs", "my_fn");
+        assert!(
+            m_pos.is_finite(),
+            "OwnedNoteBoostIndex +Inf must clamp; got {m_pos}"
+        );
+
+        let owned_neg = OwnedNoteBoostIndex::new(std::slice::from_ref(&neg_inf));
+        let m_neg = owned_neg.boost("src/lib.rs", "my_fn");
+        assert!(
+            m_neg.is_finite(),
+            "OwnedNoteBoostIndex -Inf must clamp; got {m_neg}"
+        );
+    }
+
+    /// TC-ADV-V1.38-2 follow-up: NaN sentiment must produce a finite
+    /// multiplier (the comment says "f32::clamp panics on NaN, so handle
+    /// non-finite up front" — this pins that path).
+    #[test]
+    fn boost_treats_nan_sentiment_as_finite_multiplier() {
+        let nan_note = make_note(f32::NAN, &["my_fn"]);
+
+        let idx = NoteBoostIndex::new(std::slice::from_ref(&nan_note));
+        let m = idx.boost("src/lib.rs", "my_fn");
+        assert!(m.is_finite(), "NaN must clamp to finite; got {m}");
+        // Implementation collapses NaN → 0.0 sentiment, so the multiplier
+        // is exactly 1.0. Pin that contract.
+        assert!(
+            (m - 1.0).abs() < f32::EPSILON,
+            "NaN sentiment must collapse to multiplier=1.0 (no boost); got {m}"
+        );
+
+        let owned = OwnedNoteBoostIndex::new(std::slice::from_ref(&nan_note));
+        let m = owned.boost("src/lib.rs", "my_fn");
+        assert!(m.is_finite(), "OwnedNoteBoostIndex NaN must clamp; got {m}");
+        assert!(
+            (m - 1.0).abs() < f32::EPSILON,
+            "OwnedNoteBoostIndex NaN → 1.0; got {m}"
+        );
+    }
 }
