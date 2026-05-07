@@ -278,6 +278,7 @@ These limitations are tracked as Windows-specific issues in the v1.33.0 audit ba
 - Contains: code chunks, embeddings (768-dim vectors for default embeddinggemma-300m since v1.35.0; 1024-dim for bge-large preset), file metadata
 - Add `.cqs/` to `.gitignore` to avoid committing
 - Database is **not encrypted** - it contains your code
+- Schema v27 (#1497) adds `chunks.needs_embedding`; chunks created during a `--llm-summaries` reindex skip the initial cold embed and get embedded once the LLM-enriched description is available, then cleared by `enrichment_pass`. This is behavior-visible to anyone tracing a "why isn't this chunk in HNSW yet?" path mid-index — see `docs/audit-triage.md` Cluster A for the gap closures (DS-V1.38-1/2/3/8, #1514).
 
 ## CI/CD Security
 

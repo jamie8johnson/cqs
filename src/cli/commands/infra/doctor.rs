@@ -541,18 +541,26 @@ fn out(json: bool, line: &str) {
 fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut bool) {
     let _span = tracing::info_span!("doctor_local_llm").entered();
 
-    let api_base = std::env::var("CQS_LLM_API_BASE").ok();
-    let model = std::env::var("CQS_LLM_MODEL").ok();
-
-    match api_base.as_deref() {
-        Some(s) if !s.is_empty() => {
+    // RB-V1.38-4 (#1463): bind validated values once instead of relying
+    // on the early-return + later `.unwrap()` pattern. The original shape
+    // (`api_base.unwrap()` at line 582) was safe today because the
+    // `_ => return` arms above guaranteed `Some(non-empty)`, but any
+    // refactor adding a third arm without `return` (e.g. a "lenient"
+    // mode) silently turns the unwrap into a panic. Binding here makes
+    // the invariant compile-time.
+    let base = match std::env::var("CQS_LLM_API_BASE")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => {
             out(
                 json,
                 &format!("  {} CQS_LLM_API_BASE: {}", "[✓]".green(), s),
             );
-            records.push(CheckRecord::ok("local_llm", "api_base", s.to_string()));
+            records.push(CheckRecord::ok("local_llm", "api_base", s.clone()));
+            s
         }
-        _ => {
+        None => {
             let msg = "CQS_LLM_API_BASE is required when CQS_LLM_PROVIDER=local. \
                  Set CQS_LLM_API_BASE=http://localhost:8080/v1 (or your server's URL).";
             out(json, &format!("  {} {}", "[✗]".red(), msg));
@@ -560,14 +568,17 @@ fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut 
             *any_failed = true;
             return;
         }
-    }
+    };
 
-    match model.as_deref() {
-        Some(s) if !s.is_empty() => {
+    match std::env::var("CQS_LLM_MODEL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => {
             out(json, &format!("  {} CQS_LLM_MODEL: {}", "[✓]".green(), s));
-            records.push(CheckRecord::ok("local_llm", "model", s.to_string()));
+            records.push(CheckRecord::ok("local_llm", "model", s));
         }
-        _ => {
+        None => {
             let msg = "CQS_LLM_MODEL is required when CQS_LLM_PROVIDER=local. \
                  Set CQS_LLM_MODEL=<your-model-name>.";
             out(json, &format!("  {} {}", "[✗]".red(), msg));
@@ -579,7 +590,6 @@ fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut 
 
     // Endpoint reachability probe: GET `{api_base}/models` with a tight
     // timeout. We don't want doctor to hang if the user typo'd a URL.
-    let base = api_base.unwrap();
     let probe_url = format!("{}/models", base.trim_end_matches('/'));
     // SEC-V1.30.1-7 (#1223): same-origin policy matches the production
     // submit path so doctor and the real `LocalProvider` agree on what

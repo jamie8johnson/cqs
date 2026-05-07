@@ -677,18 +677,30 @@ impl ModelConfig {
                 tracing::info!(model = %cfg.name, source = "config", "Resolved model config");
                 return cfg;
             }
-            // Not a known preset — check if custom fields are present
-            let has_repo = embedding_cfg.repo.is_some();
-            let has_dim = embedding_cfg.dim.is_some();
-            if has_repo && has_dim {
-                let dim = embedding_cfg.dim.expect("guarded by has_dim");
+            // RB-V1.38-8 (#1463): bind once via let-else so the guard +
+            // unwrap pattern doesn't drift on refactor. Custom-model TOML
+            // is user input — a future validation block that mutates
+            // `dim` to None on the way through could silently turn the
+            // old `expect("guarded by has_dim")` into a panic. Type-level
+            // invariant > runtime guard.
+            let (Some(repo_owned), Some(dim)) = (embedding_cfg.repo.as_ref(), embedding_cfg.dim)
+            else {
+                tracing::warn!(
+                    model = %embedding_cfg.model,
+                    has_repo = embedding_cfg.repo.is_some(),
+                    has_dim = embedding_cfg.dim.is_some(),
+                    "Unknown model in config and missing required custom fields (repo, dim), falling back to default"
+                );
+                return Self::default_model();
+            };
+            {
                 if dim == 0 {
                     tracing::warn!(model = %embedding_cfg.model, "Custom model has dim=0, falling back to default");
                     return Self::default_model();
                 }
 
                 // SEC-28: Validate repo format — must be "org/model" without injection chars
-                let repo = embedding_cfg.repo.as_ref().expect("guarded by has_repo");
+                let repo = repo_owned;
                 if !repo.contains('/')
                     || repo.contains('"')
                     || repo.contains('\n')
@@ -738,7 +750,9 @@ impl ModelConfig {
 
                 let cfg = Self {
                     name: embedding_cfg.model.clone(),
-                    repo: embedding_cfg.repo.clone().expect("guarded by has_repo"),
+                    // RB-V1.38-8: `repo_owned` was bound by the let-else
+                    // above; clone here because the struct owns a String.
+                    repo: repo_owned.clone(),
                     onnx_path,
                     tokenizer_path,
                     dim,
@@ -757,12 +771,11 @@ impl ModelConfig {
                 tracing::info!(model = %cfg.name, source = "config-custom", "Resolved custom model config");
                 return cfg;
             }
-            tracing::warn!(
-                model = %embedding_cfg.model,
-                has_repo,
-                has_dim,
-                "Unknown model in config and missing required custom fields (repo, dim), falling back to default"
-            );
+            // RB-V1.38-8 (#1463): the warn for "missing repo/dim" moved
+            // up into the let-else above so the type-level invariant is
+            // explicit. This block is unreachable code after the early
+            // return; intentional empty trailing arm to mirror the old
+            // structure for git-blame readability.
         }
 
         // 4. Default — see `define_embedder_presets!` for the row marked
