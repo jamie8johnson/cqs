@@ -233,7 +233,9 @@ fn parse_server_code(
 
     let mut ts_parser = tree_sitter::Parser::new();
     if let Err(e) = ts_parser.set_language(&grammar) {
-        tracing::warn!(error = ?e, %language, "Failed to set tree-sitter language for ASPX server code");
+        // EH-V1.38-8 (#1463): Display matches the sibling `%e` pattern
+        // 5 lines below at the `set_included_ranges` warn.
+        tracing::warn!(error = %e, %language, "Failed to set tree-sitter language for ASPX server code");
         return vec![];
     }
 

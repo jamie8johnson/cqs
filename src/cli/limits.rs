@@ -204,21 +204,46 @@ pub(crate) fn batch_max_line_len() -> usize {
 /// back to the supplied default. Zero is rejected because every caller
 /// here treats the value as a non-zero size limit; a caller that wants to
 /// disable a check should remove the call, not set it to zero.
+///
+/// EH-V1.38-10 (#1463): warn loudly on a malformed-but-set value so an
+/// operator who typoed `CQS_RERANK_POOL_MAX=128 ` (trailing space) or
+/// `=abc` sees the silent-default fall-through instead of debugging
+/// "why isn't my env var doing anything." Mirrors the warn pattern in
+/// every other env-knob helper in the repo (gather.rs, trace.rs,
+/// pipeline/types.rs, etc.).
 fn parse_env_usize(key: &str, default: usize) -> usize {
     match std::env::var(key) {
-        Ok(v) => v
-            .parse::<usize>()
-            .ok()
-            .filter(|n| *n > 0)
-            .unwrap_or(default),
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    env = key,
+                    value = %v,
+                    "Invalid env var (must be positive usize), using default {default}"
+                );
+                default
+            }
+        },
         Err(_) => default,
     }
 }
 
 /// Same as [`parse_env_usize`] but for `u64`-shaped byte limits.
+///
+/// EH-V1.38-10 (#1463): same warn-on-malformed contract.
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     match std::env::var(key) {
-        Ok(v) => v.parse::<u64>().ok().filter(|n| *n > 0).unwrap_or(default),
+        Ok(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    env = key,
+                    value = %v,
+                    "Invalid env var (must be positive u64), using default {default}"
+                );
+                default
+            }
+        },
         Err(_) => default,
     }
 }

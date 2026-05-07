@@ -49,8 +49,10 @@ impl Parser {
         };
         let mut parser = tree_sitter::Parser::new();
         if let Err(e) = parser.set_language(&grammar) {
+            // EH-V1.38-8 (#1463): Display, not Debug — matches the
+            // sibling `error = %e` pattern at line 79.
             tracing::warn!(
-                error = ?e,
+                error = %e,
                 %language,
                 start_byte,
                 end_byte,

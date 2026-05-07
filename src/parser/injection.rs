@@ -274,8 +274,10 @@ fn build_injection_tree(
     let grammar = language.try_grammar()?;
     let mut parser = tree_sitter::Parser::new();
     if let Err(e) = parser.set_language(&grammar) {
+        // EH-V1.38-8 (#1463): Display, not Debug — matches the
+        // sibling `error = %e` pattern at line 287.
         tracing::warn!(
-            error = ?e,
+            error = %e,
             %language,
             "Failed to set language for injection"
         );

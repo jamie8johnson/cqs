@@ -1322,15 +1322,41 @@ impl Embedder {
         // `Vec<f32>`; the f32 fast path pays one extra `.to_vec()`
         // (~few MB/batch) for shape uniformity vs branching the rest
         // of the function body.
+        // EH-V1.38-7 (#1463): preserve the swallowed f32 / f16 errors when
+        // the bf16 fallback also fails, so the surfaced error reflects
+        // the real root cause instead of just the last branch's
+        // "wrong-dtype" trail. Pre-fix all three branches collapsed to a
+        // bare bf16 error: an actual ORT failure ("session output index
+        // out of range", "tensor backing memory invalid") on the f32
+        // path was invisible.
+        //
+        // Each non-bf16 error is also logged at debug as the cascade
+        // walks past it — operators with `RUST_LOG=cqs=debug` see the
+        // dtype-probe progression directly. The chain stays cheap: the
+        // happy f32 path returns immediately; only fallback hits the
+        // logging + carry overhead.
         let (shape_vec, data_vec): (Vec<i64>, Vec<f32>) = match output.try_extract_tensor::<f32>() {
             Ok((s, d)) => (s.to_vec(), d.to_vec()),
-            Err(_) => match output.try_extract_tensor::<half::f16>() {
-                Ok((s, d)) => (s.to_vec(), d.iter().map(|h| h.to_f32()).collect()),
-                Err(_) => {
-                    let (s, d) = output.try_extract_tensor::<half::bf16>().map_err(ort_err)?;
-                    (s.to_vec(), d.iter().map(|h| h.to_f32()).collect())
+            Err(e_f32) => {
+                tracing::debug!(error = %e_f32, "f32 tensor extract failed, trying f16");
+                match output.try_extract_tensor::<half::f16>() {
+                    Ok((s, d)) => (s.to_vec(), d.iter().map(|h| h.to_f32()).collect()),
+                    Err(e_f16) => {
+                        tracing::debug!(error = %e_f16, "f16 tensor extract failed, trying bf16");
+                        match output.try_extract_tensor::<half::bf16>() {
+                            Ok((s, d)) => (s.to_vec(), d.iter().map(|h| h.to_f32()).collect()),
+                            Err(e_bf16) => {
+                                // Surface all three so the operator sees which dtype
+                                // probe was the real failure, not just the last one.
+                                return Err(EmbedderError::InferenceFailed(format!(
+                                    "tensor extract failed for all dtypes — f32: {e_f32}; \
+                                     f16: {e_f16}; bf16: {e_bf16}"
+                                )));
+                            }
+                        }
+                    }
                 }
-            },
+            }
         };
         let shape: &[i64] = &shape_vec;
         let data: &[f32] = &data_vec;
