@@ -247,7 +247,11 @@ const DEFAULT_PROVIDER: &str = "anthropic";
 /// [`PROVIDERS`]. The factory [`create_client`] looks the entry up by
 /// name; tests compare it as a plain `&str` (e.g. `"anthropic"`,
 /// `"local"`).
-#[derive(Debug)]
+///
+/// SEC-V1.38-1 (#1463): hand-written `Debug` redacts `api_base` userinfo
+/// before emitting. The five downstream sites that log `LlmConfig` /
+/// `?config` previously echoed `https://user:pass@host` shapes verbatim
+/// to journald.
 pub struct LlmConfig {
     pub provider: &'static str,
     pub api_base: String,
@@ -255,6 +259,48 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     /// Max tokens for HyDE query predictions (default: 150).
     pub hyde_max_tokens: u32,
+}
+
+impl LlmConfig {
+    /// Render `api_base` with any `user[:pass]@host` userinfo segment
+    /// stripped. Use this in every `tracing::*` site instead of
+    /// `%self.api_base`. Pre-fix the userinfo could land in journald
+    /// at `info!` level whenever the daemon started up.
+    ///
+    /// Returns `"[redacted]"` for unparseable URLs (so a misformatted
+    /// env var doesn't accidentally leak the raw bytes through this
+    /// helper either).
+    pub fn redacted_api_base(&self) -> String {
+        redact_userinfo(&self.api_base)
+    }
+}
+
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("provider", &self.provider)
+            .field("api_base", &self.redacted_api_base())
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("hyde_max_tokens", &self.hyde_max_tokens)
+            .finish()
+    }
+}
+
+/// Strip `user[:pass]@` userinfo from a URL, leaving scheme + host + path.
+/// Returns `[redacted]` for inputs that don't look like a URL.
+fn redact_userinfo(url: &str) -> String {
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        let host_part = if let Some(at_pos) = after_scheme.find('@') {
+            &after_scheme[at_pos + 1..]
+        } else {
+            after_scheme
+        };
+        format!("{}://{}", &url[..scheme_end], host_part)
+    } else {
+        "[redacted]".to_string()
+    }
 }
 
 impl LlmConfig {
@@ -674,7 +720,18 @@ struct ApiError {
 
 #[derive(Deserialize)]
 struct ApiErrorDetail {
+    /// Anthropic's `error.message` is intentionally NOT logged anywhere
+    /// (SEC-V1.38-2 #1463 + SEC-V1.36-2 / P2 #33) — it can echo prompt
+    /// fragments. Field still deserialized to keep parse-or-skip
+    /// semantics if Anthropic ships a response missing `type`.
+    #[allow(dead_code)]
     message: String,
+    /// SEC-V1.38-2 (#1463): structural error type
+    /// (`invalid_request_error`, `authentication_error`, …). Safe to
+    /// log; does not echo input fragments. Optional because not every
+    /// upstream populates it.
+    #[serde(default)]
+    r#type: String,
 }
 
 /// A summary entry ready for storage.
@@ -687,6 +744,45 @@ pub struct SummaryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SEC-V1.38-1 (#1463): verify both `LlmConfig::redacted_api_base()`
+    /// and the hand-rolled `Debug` impl strip `user[:pass]@host` userinfo.
+    /// A regression that exposed the userinfo would surface here AND in
+    /// every downstream `tracing::*` site at once (those all route through
+    /// `redacted_api_base` after this PR).
+    #[test]
+    fn redacted_api_base_strips_userinfo() {
+        let cfg = LlmConfig {
+            provider: "anthropic",
+            api_base: "https://user:supersecret@vllm.internal/v1".to_string(),
+            model: "test".to_string(),
+            max_tokens: 100,
+            hyde_max_tokens: 50,
+        };
+        let redacted = cfg.redacted_api_base();
+        assert!(
+            !redacted.contains("supersecret") && !redacted.contains("user:"),
+            "redacted_api_base must strip userinfo; got {redacted}"
+        );
+        assert!(
+            redacted.contains("vllm.internal"),
+            "redacted_api_base must keep host; got {redacted}"
+        );
+        let debug_str = format!("{cfg:?}");
+        assert!(
+            !debug_str.contains("supersecret") && !debug_str.contains("user:"),
+            "LlmConfig Debug must redact userinfo; got {debug_str}"
+        );
+    }
+
+    /// `redact_userinfo` returns `[redacted]` for inputs that don't look
+    /// like URLs so a misformatted env var doesn't accidentally leak its
+    /// raw bytes through the helper.
+    #[test]
+    fn redact_userinfo_handles_non_url_inputs() {
+        assert_eq!(redact_userinfo("not-a-url"), "[redacted]");
+        assert_eq!(redact_userinfo(""), "[redacted]");
+    }
 
     // ENV_MUTEX hoisted to module-wide `LLM_ENV_LOCK` (#1312 / #1305) so
     // these tests serialize against `hyde::tests`, `doc_comments::tests`, and
