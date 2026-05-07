@@ -1854,6 +1854,47 @@ mentions = []
         .expect("matching name must pass");
     }
 
+    /// TC-ADV-V1.38-6 (#1463): drift detection is byte-exact `==`. Pin
+    /// case-sensitivity so a future case-fold is a deliberate change —
+    /// `--model BGE-Large` against stored `bge-large` currently DOES bail.
+    /// Operator who hits this needs to know it's a name-not-content drift
+    /// instead of running a 30-min `--force` rebuild they don't actually
+    /// need; documenting the contract in a test puts the case-fold
+    /// migration on a clear next step.
+    #[test]
+    fn check_index_model_drift_is_case_sensitive_pin() {
+        let path = Path::new("/tmp/x/index.db");
+        let result = check_index_model_drift(
+            Some("bge-large"),
+            "BGE-Large",
+            "BAAI/bge-large-en-v1.5",
+            path,
+        );
+        assert!(
+            result.is_err(),
+            "current contract: byte-exact match — case differences trigger drift"
+        );
+    }
+
+    /// TC-ADV-V1.38-6 (#1463): whitespace in stored model name (e.g. a
+    /// migration that landed `format!("{}\n", name)`) currently fails the
+    /// `stored == requested` check. Pin so a future migration writes are
+    /// either trimmed at write-time or this test flips deliberately.
+    #[test]
+    fn check_index_model_drift_rejects_whitespace_drift() {
+        let path = Path::new("/tmp/x/index.db");
+        let result = check_index_model_drift(
+            Some("bge-large\n"),
+            "bge-large",
+            "BAAI/bge-large-en-v1.5",
+            path,
+        );
+        assert!(
+            result.is_err(),
+            "whitespace drift in stored name currently bails — pin so a future trim is deliberate"
+        );
+    }
+
     /// Stored == requested repo (but not the short name) → pass. Operators
     /// often have `model_name = "BAAI/bge-large-en-v1.5"` from a `cqs index
     /// --force` of an earlier session and pass `--model bge-large` later.
