@@ -288,53 +288,16 @@ fn publish_watch_snapshot(
 /// PB-3: Check if a path is under a WSL DrvFS automount root.
 ///
 /// Default automount root is `/mnt/`, but users can customize it via `automount.root`
-/// in `/etc/wsl.conf`. Reads the config once via `OnceLock` and caches the result.
+/// in `/etc/wsl.conf`.
+///
+/// PL-V1.38-4 (#1463): delegates to `cqs::config::wsl_automount_root_or_default`
+/// so this helper and `is_wsl_drvfs_path` share a single OnceLock-cached
+/// source of truth. Pre-fix, the two helpers maintained independent
+/// caches and only the watch helper read `/etc/wsl.conf` — operators
+/// with custom `automount.root` had `coarse_fs_resolution` return 0
+/// instead of 2s for their `/win/c/...` paths.
 fn is_under_wsl_automount(path: &str) -> bool {
-    static AUTOMOUNT_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let root = AUTOMOUNT_ROOT
-        .get_or_init(|| parse_wsl_automount_root().unwrap_or_else(|| "/mnt/".to_string()));
-    path.starts_with(root.as_str())
-}
-
-/// Parse the `automount.root` value from `/etc/wsl.conf`.
-/// Returns `None` if the file doesn't exist or doesn't contain the setting.
-fn parse_wsl_automount_root() -> Option<String> {
-    // RM-V1.33-7: bound the read at 64 KiB. `/etc/wsl.conf` is normally
-    // a few hundred bytes; a hostile symlink or bind mount pointing at a
-    // multi-GB file would otherwise OOM the watch loop on first event.
-    use std::io::Read;
-    const MAX_WSL_CONF_BYTES: u64 = 64 * 1024;
-    let mut content = String::new();
-    std::fs::File::open("/etc/wsl.conf")
-        .ok()?
-        .take(MAX_WSL_CONF_BYTES)
-        .read_to_string(&mut content)
-        .ok()?;
-    let mut in_automount = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_automount = trimmed
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .trim()
-                .eq_ignore_ascii_case("automount");
-            continue;
-        }
-        if in_automount {
-            if let Some((key, value)) = trimmed.split_once('=') {
-                if key.trim().eq_ignore_ascii_case("root") {
-                    let mut root = value.trim().to_string();
-                    // Ensure trailing slash for prefix matching
-                    if !root.ends_with('/') {
-                        root.push('/');
-                    }
-                    return Some(root);
-                }
-            }
-        }
-    }
-    None
+    path.starts_with(cqs::config::wsl_automount_root_or_default())
 }
 
 /// #1002: Build a `Gitignore` matcher rooted at the project, combining the
