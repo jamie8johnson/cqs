@@ -4,6 +4,8 @@ Audit date: 2026-05-06
 Source: `docs/audit-findings.md` (154 findings across 16 categories, batches 1+2)
 Calibration: matches `docs/audit-triage-v1.36.2-final.md` priority matrix.
 
+> **Cycle status (2026-05-07):** ~58 findings closed across 25 cluster PRs (#1514–#1552). The per-row `Status` column in this document is a **snapshot at audit time** and was not updated as cluster PRs landed. **Canonical closure list lives in the [#1463 umbrella issue comment](https://github.com/jamie8johnson/cqs/issues/1463#issuecomment-4395768972).** Items still pending are all genuinely big — multi-PR architectural changes or platform-specific scaffolding (API-V1.38-6/9/10, DS-V1.38-4, SHL-V1.38-6, PL-V1.38-2, plus 12 P4 carry-overs).
+
 ## Summary by Priority
 
 | Priority | Count | Disposition |
