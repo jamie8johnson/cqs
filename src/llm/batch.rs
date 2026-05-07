@@ -153,7 +153,17 @@ impl LlmClient {
     }
 
     /// Poll until a batch completes. Returns when status is "ended".
+    ///
+    /// OB-V1.38-4 (#1463): Anthropic batches typically take 10-30 minutes;
+    /// this is the leaf span where the wall-clock waiting actually happens.
+    /// Entry span + closing `elapsed_ms` make "why did the LLM summary pass
+    /// take 47 minutes?" attributable to API slowness vs local processing.
+    /// The non-success terminal arms (canceling/canceled/expired) also fire
+    /// a structured `tracing::warn!` with the same field shape so an
+    /// operator sees them in journald instead of just `Err(...)`.
     pub(super) fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<(), LlmError> {
+        let _span = tracing::info_span!("wait_for_batch", batch_id).entered();
+        let started = std::time::Instant::now();
         if !super::is_valid_anthropic_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
@@ -189,10 +199,20 @@ impl LlmClient {
 
             match batch.processing_status.as_str() {
                 "ended" => {
-                    tracing::info!(batch_id, "Batch complete");
+                    tracing::info!(
+                        batch_id,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "Batch complete"
+                    );
                     return Ok(());
                 }
-                "canceling" | "canceled" | "expired" => {
+                status @ ("canceling" | "canceled" | "expired") => {
+                    tracing::warn!(
+                        batch_id,
+                        status,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "Batch ended in non-success state"
+                    );
                     return Err(LlmError::BatchFailed(format!(
                         "Batch {} ended with status: {}",
                         batch_id, batch.processing_status

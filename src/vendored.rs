@@ -63,9 +63,27 @@ pub fn is_vendored_origin(origin: &str, prefixes: &[String]) -> bool {
 /// empty (operators can disable vendored detection by passing an
 /// explicit empty list in `.cqs.toml`). `override_list = None` falls
 /// back to [`DEFAULT_VENDORED_PREFIXES`].
+///
+/// AC-V1.38-8 (#1463): each override entry is matched as an exact path
+/// segment. Entries containing `/` (e.g. `"vendor/oss-lib"`) will never
+/// match — the match is segment-equality, not sub-path containment.
+/// Warn at resolution so an operator who set `vendored_paths = [...]`
+/// in `.cqs.toml` sees that their entry is dead config instead of
+/// silently failing to tag any chunks.
 pub fn effective_prefixes(override_list: Option<&[String]>) -> Vec<String> {
     match override_list {
-        Some(ov) => ov.to_vec(),
+        Some(ov) => {
+            for entry in ov {
+                if entry.contains('/') || entry.contains('\\') {
+                    tracing::warn!(
+                        entry = %entry,
+                        "vendored_paths entry contains a path separator and will never match — \
+                         use a bare directory segment (e.g. `vendor`, not `vendor/oss-lib`)"
+                    );
+                }
+            }
+            ov.to_vec()
+        }
         None => DEFAULT_VENDORED_PREFIXES
             .iter()
             .map(|s| s.to_string())

@@ -520,6 +520,11 @@ pub fn install_classifier_vocab_overlay(extra_negation: Vec<String>, extra_multi
     if extra_negation.is_empty() && extra_multistep.is_empty() {
         return;
     }
+    // OB-V1.38-3 (#1463): info-level so operators editing
+    // `~/.config/cqs/classifier.toml` see their config land in journald
+    // without RUST_LOG=debug. Fires only when at least one set is non-empty.
+    let neg_count = extra_negation.len();
+    let multi_count = extra_multistep.len();
     if !extra_negation.is_empty() {
         let mut g = NEGATION_TOKENS.write().unwrap_or_else(|p| p.into_inner());
         for tok in extra_negation {
@@ -551,6 +556,11 @@ pub fn install_classifier_vocab_overlay(extra_negation: Vec<String>, extra_multi
             .unwrap_or_else(|p| p.into_inner());
         *g = std::sync::Arc::new(new_ac);
     }
+    tracing::info!(
+        negation_added = neg_count,
+        multistep_added = multi_count,
+        "Installed classifier vocab overlay"
+    );
 }
 
 /// Test-only: reset both vocab tables to the compile-time builtins.
@@ -687,9 +697,18 @@ static SLOT_SPLADE_ALPHA: std::sync::RwLock<Option<std::collections::HashMap<Str
 /// `to_string()`); values are pre-validated to `[0.0, 1.0]` finite by
 /// [`crate::slot::read_slot_splade_alpha_table`].
 pub fn install_slot_splade_alpha_overrides(table: std::collections::HashMap<String, f32>) {
+    // OB-V1.38-3 (#1463): info-level when an operator's slot α overrides
+    // actually take, so the journald audit trail records whether the
+    // `slot.toml [splade.alpha]` table was applied. Empty tables stay
+    // silent — every dispatch installs an empty table when no overlay
+    // exists, and we don't want a per-command log line for that case.
+    let entries = table.len();
     match SLOT_SPLADE_ALPHA.write() {
         Ok(mut g) => {
             *g = Some(table);
+            if entries > 0 {
+                tracing::info!(entries, "Installed per-slot SPLADE α overrides");
+            }
         }
         Err(_) => {
             tracing::warn!(

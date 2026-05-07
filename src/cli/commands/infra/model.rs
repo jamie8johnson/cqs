@@ -85,7 +85,10 @@ pub(crate) fn daemon_control_hint(hint: DaemonHint) -> &'static str {
             }
         }
     }
-    #[cfg(target_os = "macos")]
+    // PL-V1.38-6 (#1463): cfg(unix) covers macOS + every BSD + illumos —
+    // pkill works identically on all of them, and the daemon (cfg(unix))
+    // builds on FreeBSD/OpenBSD/NetBSD/illumos too.
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         match hint {
             DaemonHint::Start => "cqs watch --serve &",
@@ -97,7 +100,7 @@ pub(crate) fn daemon_control_hint(hint: DaemonHint) -> &'static str {
             }
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(unix))]
     {
         match hint {
             DaemonHint::Start => "cqs watch --serve",

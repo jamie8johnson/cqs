@@ -389,8 +389,25 @@ fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
         let path = git_dir.join(hook);
         // RB-V1.36-3: capped read; oversize files are treated as not-present
         // to fall through to the "leave foreign hook alone" branch.
+        //
+        // EH-V1.38-6 (#1463): distinguish NotFound (expected, fine) from
+        // permission-denied / oversize / other I/O errors so an operator
+        // doesn't see "hook not present" while a perm-locked or oversize
+        // file silently survives. The report bucket stays the same to avoid
+        // a schema change; the warn is the operator-facing signal.
         match read_hook_capped(&path) {
-            Err(_) => report.not_present.push(hook.to_string()),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        hook = hook,
+                        path = %path.display(),
+                        error = %e,
+                        kind = ?e.kind(),
+                        "Hook present but unreadable; treating as not-present (uninstall will not touch it)"
+                    );
+                }
+                report.not_present.push(hook.to_string());
+            }
             Ok(content) => {
                 if content.contains(HOOK_MARKER_PREFIX) {
                     std::fs::remove_file(&path)
@@ -532,8 +549,24 @@ fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
         let path = git_dir.join(hook);
         // RB-V1.36-3: capped read; oversize files are reported as foreign
         // (since we can't tell whether they contain HOOK_MARKER_PREFIX).
+        //
+        // EH-V1.38-6 (#1463): same NotFound-vs-other split as `do_uninstall`
+        // — an operator running `cqs hook status` should see a warn for
+        // permission-denied / oversize files instead of the discrepancy
+        // hiding under a "missing" label.
         match read_hook_capped(&path) {
-            Err(_) => report.missing.push(hook.to_string()),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        hook = hook,
+                        path = %path.display(),
+                        error = %e,
+                        kind = ?e.kind(),
+                        "Hook present but unreadable; reporting as missing"
+                    );
+                }
+                report.missing.push(hook.to_string());
+            }
             Ok(content) => {
                 if content.contains(HOOK_MARKER_PREFIX) {
                     report.installed.push(hook.to_string());

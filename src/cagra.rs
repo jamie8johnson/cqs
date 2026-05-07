@@ -1537,12 +1537,19 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
         let dim = ctx.store.dim();
         let gpu_available = CagraIndex::gpu_available_for(chunk_count as usize, dim);
         if chunk_count < cagra_threshold || !gpu_available {
-            tracing::debug!(
+            // OB-V1.38-5 (#1463): info-level so an operator with default log
+            // filtering can see the GPU/CPU fallback decision in journald.
+            // One line per Store init (not per query), tagged with the same
+            // `backend` / `source` shape as the success arms (cagra=persisted
+            // / built; hnsw=cagra-ineligible) so log filters work uniformly.
+            tracing::info!(
+                backend = "hnsw",
+                source = "cagra-ineligible",
                 chunk_count,
                 cagra_threshold,
                 dim,
                 gpu_available,
-                "CAGRA backend ineligible — falling through"
+                "Vector index backend selected"
             );
             return Ok(None);
         }

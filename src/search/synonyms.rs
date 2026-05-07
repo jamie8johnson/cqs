@@ -82,10 +82,17 @@ pub fn install_synonym_overlay(extras: HashMap<String, Vec<String>>) {
     if extras.is_empty() {
         return;
     }
+    // OB-V1.38-3 (#1463): info-level so an operator who edited
+    // `~/.config/cqs/synonyms.toml` (or the project-local override) sees
+    // their config landing in journald without RUST_LOG=debug. Fires only
+    // when the merged input is non-empty, so the default no-overlay case
+    // stays silent.
+    let entries = extras.len();
     let mut g = SYNONYMS.write().unwrap_or_else(|p| p.into_inner());
     for (k, v) in extras {
         g.insert(k.to_lowercase(), v);
     }
+    tracing::info!(entries, "Installed synonym overlay");
 }
 
 /// Test-only: reset the synonym table to the compile-time builtins.

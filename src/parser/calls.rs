@@ -1094,24 +1094,29 @@ fn another() {
     }
 
     /// Diagnostic: verify type queries compile for all languages with type_query defined
+    ///
+    /// EX-V1.38-10 (#1463): iterate `Language::all_variants()` filtered by
+    /// `def().type_query.is_some()` instead of a hand-rolled array — a
+    /// new language with a type query gets covered automatically. FSharp
+    /// has a `type_query` registered on its LanguageDef but the query
+    /// has a pre-existing tree-sitter-fsharp node-type mismatch (`type`
+    /// is not a valid node), so we skip it here. Removing the registration
+    /// is a separate cleanup; the test should still cover every other
+    /// language whose `type_query.is_some()`.
     #[test]
     fn test_type_queries_compile() {
         let parser = Parser::new().unwrap();
-        let languages_with_types = [
-            Language::Rust,
-            Language::TypeScript,
-            Language::Python,
-            Language::Go,
-            Language::Java,
-            Language::C,
-            Language::CSharp,
-            // FSharp type query has pre-existing compile issues (#node-type mismatch)
-            Language::Scala,
-            Language::Cpp,
-            Language::Php,
-            Language::Zig,
-        ];
-        for lang in languages_with_types {
+        let mut covered = 0usize;
+        for lang in Language::all_variants().iter().copied() {
+            if lang == Language::FSharp {
+                continue;
+            }
+            let Some(def) = lang.try_def() else {
+                continue;
+            };
+            if def.type_query.is_none() {
+                continue;
+            }
             let result = parser.get_type_query(lang);
             assert!(
                 result.is_ok(),
@@ -1119,6 +1124,12 @@ fn another() {
                 lang,
                 result.err()
             );
+            covered += 1;
         }
+        assert!(
+            covered > 0,
+            "test_type_queries_compile asserted nothing — \
+             no Language has a `type_query` defined"
+        );
     }
 }
