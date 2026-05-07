@@ -845,6 +845,29 @@ fn test_last_indexed_mtime_recency_prune() {
     );
 }
 
+#[test]
+fn prune_last_indexed_mtime_by_age_ignores_size_threshold() {
+    // RM-V1.38-7 (#1463): age-only prune fires regardless of map size,
+    // so a daemon below the threshold still ages out stale entries.
+    let now = SystemTime::now();
+    let two_days = Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS + 86_400);
+    let one_minute = Duration::from_secs(60);
+    let old = now.checked_sub(two_days).unwrap();
+    let fresh = now.checked_sub(one_minute).unwrap();
+
+    let mut tiny: HashMap<PathBuf, SystemTime> = HashMap::new();
+    tiny.insert(PathBuf::from("old_a.rs"), old);
+    tiny.insert(PathBuf::from("old_b.rs"), old);
+    tiny.insert(PathBuf::from("fresh.rs"), fresh);
+    // Size = 3, well below LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT (5_000).
+    // Size-gated `prune_last_indexed_mtime` would be a no-op here; the
+    // age-only variant still drops the two stale entries.
+    let pruned = super::gc::prune_last_indexed_mtime_by_age(&mut tiny);
+    assert_eq!(pruned, 2, "age-only prune must drop entries past cutoff");
+    assert_eq!(tiny.len(), 1, "fresh entry survives");
+    assert!(tiny.contains_key(&PathBuf::from("fresh.rs")));
+}
+
 // ===== Constants tests =====
 
 #[test]

@@ -459,13 +459,26 @@ impl LocalProvider {
             )));
         }
 
-        // P2.73: cap the stash so a long-running daemon submitting batches
-        // without ever calling `fetch_batch_results` doesn't grow memory
-        // unbounded. 128 batches is plenty — production callers drain in
-        // submit order, so when this cap fires it's a leak signal.
+        // P2.73 + RM-V1.38-2 (#1463): cap the stash so a long-running
+        // daemon submitting batches without ever calling
+        // `fetch_batch_results` doesn't grow memory unbounded. Two caps:
+        // (1) batch count (production callers drain in submit order, so
+        // this firing is a leak signal), (2) total bytes — a single
+        // un-fetched batch holding 5-10 KB responses × tens of thousands
+        // of items can be 100s of MB; 128 such batches would be multi-GB.
+        // Evict while EITHER cap is over budget.
         const MAX_STASH_BATCHES: usize = 128;
+        const MAX_STASH_BYTES: usize = 256 * 1024 * 1024;
         let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
-        while stash.len() >= MAX_STASH_BATCHES {
+        loop {
+            let count = stash.len();
+            let bytes: usize = stash
+                .values()
+                .flat_map(|m| m.values().map(|v| v.len()))
+                .sum();
+            if count < MAX_STASH_BATCHES && bytes <= MAX_STASH_BYTES {
+                break;
+            }
             // Pick the lexicographically smallest UUID as a stable evictee —
             // HashMap insertion order isn't preserved, and the alternative
             // (rebuild as IndexMap) is more invasive than this finding warrants.
@@ -476,8 +489,11 @@ impl LocalProvider {
             stash.remove(&stale_key);
             tracing::warn!(
                 batch_id = %stale_key,
-                cap = MAX_STASH_BATCHES,
-                "LocalProvider stash exceeded cap; evicting unfetched entry — \
+                count_cap = MAX_STASH_BATCHES,
+                bytes_cap = MAX_STASH_BYTES,
+                count_now = count,
+                bytes_now = bytes,
+                "LocalProvider stash exceeded count or byte cap; evicting unfetched entry — \
                  callers should drain via fetch_batch_results"
             );
         }
