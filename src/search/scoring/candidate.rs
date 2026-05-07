@@ -779,6 +779,77 @@ mod tests {
         );
     }
 
+    /// TC-ADV-V1.38-8 (#1463): pin the contract for non-finite thresholds.
+    /// `threshold = NaN` → IEEE-754 says `score >= NaN` is always false →
+    /// silent empty result set. Pin this so a future `is_finite` rejection
+    /// at the public boundary is a deliberate change.
+    #[test]
+    fn test_score_candidate_nan_threshold_returns_empty() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: f32::NAN,
+        };
+        let score = score_candidate(&emb, None, "src/lib.rs", &ctx);
+        assert!(
+            score.is_none(),
+            "NaN threshold currently filters out all results — pin contract"
+        );
+    }
+
+    /// TC-ADV-V1.38-8 (#1463): `threshold = -∞` → all candidates pass.
+    /// Pin behavior so an operator-supplied `--threshold -inf` (e.g. via
+    /// shell typo `-1e9999`) doesn't surprise downstream callers.
+    #[test]
+    fn test_score_candidate_neg_inf_threshold_passes_all() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: f32::NEG_INFINITY,
+        };
+        let score = score_candidate(&emb, None, "src/lib.rs", &ctx);
+        assert!(
+            score.is_some(),
+            "-∞ threshold currently passes all candidates — pin contract"
+        );
+    }
+
+    /// TC-ADV-V1.38-8 (#1463): `threshold = +∞` → no candidates pass.
+    #[test]
+    fn test_score_candidate_pos_inf_threshold_returns_empty() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: f32::INFINITY,
+        };
+        let score = score_candidate(&emb, None, "src/lib.rs", &ctx);
+        assert!(
+            score.is_none(),
+            "+∞ threshold currently filters all candidates — pin contract"
+        );
+    }
+
     #[test]
     fn test_score_candidate_glob_filters() {
         let emb = test_embedding(1.0);

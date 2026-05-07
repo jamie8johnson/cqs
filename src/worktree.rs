@@ -340,6 +340,22 @@ mod tests {
         );
     }
 
+    /// TC-ADV-V1.38-4 (#1463): a stray `.cqs` *file* (mistaken
+    /// `touch .cqs`, packaged tarball with the wrong entry) must NOT be
+    /// treated as an index dir. P1-43 changed `own_cqs.exists()` →
+    /// `own_cqs.is_dir()`; pin the `is_dir()` contract so a future
+    /// regression to `.exists()` is caught at test time.
+    #[test]
+    fn lookup_ignores_stray_cqs_file_falls_through() {
+        let dir = TempDir::new().unwrap();
+        // Create a stray FILE named `.cqs` instead of a directory.
+        std::fs::write(dir.path().join(crate::INDEX_DIR), b"oops").unwrap();
+        match lookup_main_cqs_dir(dir.path()) {
+            MainIndexLookup::NotWorktree => { /* expected */ }
+            other => panic!("stray .cqs file must fall through to NotWorktree, got {other:?}"),
+        }
+    }
+
     /// `lookup_main_cqs_dir` returns `OwnIndex` when the directory
     /// has its own `.cqs/` regardless of worktree status — the
     /// worktree's own index always wins.
