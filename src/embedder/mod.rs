@@ -53,8 +53,15 @@ pub enum EmbedderError {
     },
     #[error("Query cannot be empty")]
     EmptyQuery,
-    #[error("HuggingFace Hub error: {0}")]
-    HfHub(String),
+    /// HuggingFace Hub model download failure.
+    ///
+    /// API-V1.38-9 (#1463): renamed from `HfHub` for naming parity with
+    /// [`crate::reranker::RerankerError::ModelDownload`] — both wrap the
+    /// same `hf_hub::ApiError` shape and emit the same display string,
+    /// so a future shared error handler can pattern-match on a single
+    /// variant name across the embedder + reranker boundary.
+    #[error("Model download failed: {0}")]
+    ModelDownload(String),
 }
 
 /// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
@@ -1552,15 +1559,15 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
     let api = ApiBuilder::from_env()
         .with_retries(5)
         .build()
-        .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
+        .map_err(|e| EmbedderError::ModelDownload(e.to_string()))?;
     let repo = api.model(config.repo.clone());
 
     let model_path = repo
         .get(&config.onnx_path)
-        .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
+        .map_err(|e| EmbedderError::ModelDownload(e.to_string()))?;
     let tokenizer_path = repo
         .get(&config.tokenizer_path)
-        .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
+        .map_err(|e| EmbedderError::ModelDownload(e.to_string()))?;
 
     // Fetch the ONNX external-data sidecar for models that exceed the 2GB
     // protobuf limit. The Rust ONNX Runtime expects the .onnx_data file to
