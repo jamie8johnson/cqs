@@ -777,6 +777,15 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     }
 
     // Global env override: CQS_SPLADE_ALPHA
+    //
+    // AC-V1.38-5 (#1463): mirror the per-cat arm's structure so a
+    // malformed `CQS_SPLADE_ALPHA=NaN` / `CQS_SPLADE_ALPHA=foo` /
+    // non-unicode value warns instead of silently falling through. Pre-
+    // fix the catch-all `_ => {}` collapsed parse errors, non-finite
+    // values, and `NotUnicode` together — operator who typoed
+    // `CQS_SPLADE_ALPHA=O.7` (capital O) got the per-cat default
+    // silently and chased an A/B that didn't reflect the env they
+    // thought was active.
     #[allow(clippy::collapsible_match)]
     match std::env::var("CQS_SPLADE_ALPHA") {
         Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
@@ -791,8 +800,27 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
                 );
                 return alpha;
             }
+            tracing::warn!(
+                var = "CQS_SPLADE_ALPHA",
+                value = %val,
+                "Non-finite global SPLADE alpha, using default"
+            );
         }
-        _ => {}
+        Ok(val) => {
+            tracing::warn!(
+                var = "CQS_SPLADE_ALPHA",
+                value = %val,
+                "Invalid global SPLADE alpha (parse error), using default"
+            );
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(e) => {
+            tracing::warn!(
+                var = "CQS_SPLADE_ALPHA",
+                error = %e,
+                "Global SPLADE alpha env var has non-unicode value — ignored"
+            );
+        }
     }
 
     // #1453: per-slot SPLADE α overrides from `slot.toml [splade.alpha]`.

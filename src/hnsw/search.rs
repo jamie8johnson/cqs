@@ -89,8 +89,15 @@ impl HnswIndex {
 
         // Adaptive ef_search: baseline self.ef_search or 2*k (whichever is larger),
         // capped at index size (searching more than the index is pointless for small indexes).
+        //
+        // AC-V1.38-9 (#1463): `saturating_mul` instead of `*` so a
+        // pathological caller that smuggles in `k = usize::MAX-1` (e.g. a
+        // misbehaving daemon client) saturates at usize::MAX rather than
+        // panicking on debug or wrapping silently in release. The
+        // `.min(index_size)` immediately after still bounds the value
+        // for the underlying library.
         let index_size = self.id_map.len();
-        let ef_search = self.ef_search.max(k * 2).min(index_size);
+        let ef_search = self.ef_search.max(k.saturating_mul(2)).min(index_size);
 
         let neighbors = match filter {
             Some(f) => {

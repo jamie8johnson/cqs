@@ -321,11 +321,15 @@ pub(crate) fn bfs_expand(
         .iter()
         .map(|(k, (s, _))| (k.as_str(), *s))
         .collect();
+    // AC-V1.38-3 (#1463): use `total_cmp` to match the rest of the
+    // search/scoring pipeline (BoundedScoreHeap, MMR, apply_parent_boost
+    // re-sort, search_across_projects merge). `partial_cmp().unwrap_or(Equal)`
+    // collapses NaN to "equal to everyone", which makes the secondary
+    // `name asc` tiebreak inherit the input slice's NaN position (not
+    // stable under sort). `total_cmp` gives a deterministic total order
+    // over all f32 values including NaN.
     seeds.sort_by(|(a_name, a_score), (b_name, b_score)| {
-        b_score
-            .partial_cmp(a_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a_name.cmp(b_name))
+        b_score.total_cmp(a_score).then_with(|| a_name.cmp(b_name))
     });
 
     let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();

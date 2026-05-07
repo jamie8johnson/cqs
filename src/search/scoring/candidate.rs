@@ -101,8 +101,18 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
                 }
                 let count = *parent_counts.get(r.chunk.name.as_str())?;
                 if count >= 2 {
-                    let boost =
-                        1.0 + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children);
+                    // AC-V1.38-6 (#1463): final clamp on the boost value
+                    // covers the ULP overshoot AC-V1.25-4's count clamp
+                    // doesn't reach — operator overrides like
+                    // `parent_boost_cap=1.20, parent_boost_per_child=0.03`
+                    // produce `max_children = 6.6666665` and the
+                    // multiplied-back value can land at
+                    // 1.0000004... above the documented cap. One f32.min
+                    // matches the doc-comment promise ("capped at
+                    // `parent_boost_cap`").
+                    let boost = (1.0
+                        + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children))
+                    .min(cfg.parent_boost_cap);
                     tracing::debug!(
                         name = %r.chunk.name,
                         child_count = count,
@@ -235,13 +245,34 @@ impl BoundedScoreHeap {
         if !score.is_finite() {
             return false;
         }
+        // AC-V1.38-1 (#1463): a capacity-zero heap accepts nothing. Pre-fix
+        // the `peek() == None` arm fell through to `true` here, but `push`
+        // unconditionally rejects everything at capacity 0; trusting the
+        // mismatch yielded `would_accept(any) == true` followed by silent
+        // drop. Now both branches agree.
+        if self.capacity == 0 {
+            return false;
+        }
         if self.heap.len() < self.capacity {
             return true;
         }
         if let Some(Reverse((OrderedFloat(worst_score), _))) = self.heap.peek() {
-            // total_cmp matches the eviction comparator in push().
-            score.total_cmp(worst_score).is_gt()
+            // AC-V1.38-1 (#1463): the at-capacity branch must match the
+            // eviction-comparator contract documented above (`(score, id)`
+            // ascending: tied score → smaller id wins). Pre-fix
+            // `total_cmp(worst_score).is_gt()` returned `false` on tied
+            // scores, so the SPLADE caller `continue`d and never invoked
+            // `push()` — silently dropping a smaller-id incoming chunk
+            // that should have evicted the largest-id heap entry. We
+            // don't have the incoming `id` here, so the safe move is to
+            // be permissive on tied scores and let `push()` apply the
+            // full comparator: an extra cheap `id.to_string()` per tied
+            // score is cheaper than a wrong-result regression. Strict
+            // `Greater` for the score-strictly-better fast path; `Equal`
+            // falls through to `push()`'s eviction-on-id-less branch.
+            !score.total_cmp(worst_score).is_lt()
         } else {
+            // capacity > 0 but heap empty → space available.
             true
         }
     }
