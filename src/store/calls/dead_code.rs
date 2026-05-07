@@ -69,13 +69,40 @@ impl<Mode> Store<Mode> {
 
     /// Phase 1: Query all callable chunks with no callers in the call graph.
     /// Returns lightweight metadata without content/doc to minimize memory.
+    ///
+    /// Tier-1 noise filters (cqs/issues — `cqs dead` over-reporting):
+    /// - **Exclude `Property` chunk_type.** CSS `rule_set`s and similar
+    ///   language-property nodes are classified as `Callable` for search
+    ///   purposes but are not function-shaped. They have no callers by
+    ///   construction — surfacing them in dead-code output is pure noise.
+    /// - **Exclude documentation file extensions.** Markdown/AsciiDoc/RST
+    ///   files often contain example code blocks that the parser
+    ///   extracts as Rust/Python/etc. functions. Those functions live in
+    ///   docs, not in the project's call graph; flagging them as dead
+    ///   makes the operator chase noise. `.css`/`.html` extensions
+    ///   covered by the chunk-type filter; `.scss`/`.sass`/`.less` listed
+    ///   here too in case future parsers treat them as code.
     async fn fetch_uncalled_functions(&self) -> Result<Vec<LightChunk>, StoreError> {
         let callable = ChunkType::callable_sql_list();
+        // Document-shaped paths: code blocks inside these files are
+        // illustrative, not part of the project's call graph.
+        let doc_path_excludes = "
+                AND c.origin NOT LIKE '%.md'
+                AND c.origin NOT LIKE '%.mdx'
+                AND c.origin NOT LIKE '%.adoc'
+                AND c.origin NOT LIKE '%.rst'
+                AND c.origin NOT LIKE '%.txt'
+                AND c.origin NOT LIKE '%.tex'
+                AND c.origin NOT LIKE '%.scss'
+                AND c.origin NOT LIKE '%.sass'
+                AND c.origin NOT LIKE '%.less'";
         let sql = format!(
             "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
                     c.line_start, c.line_end, c.parent_id
              FROM chunks c
              WHERE c.chunk_type IN ({callable})
+               AND c.chunk_type != 'property'
+               {doc_path_excludes}
                AND NOT EXISTS (SELECT 1 FROM function_calls fc WHERE fc.callee_name = c.name LIMIT 1)
                AND c.parent_id IS NULL
              ORDER BY c.origin, c.line_start"
@@ -325,6 +352,88 @@ mod tests {
     }
 
     // ===== Dead code: confidence scoring tests =====
+
+    /// Tier-1 filter regression: a `Property` chunk (e.g., a CSS `rule_set`)
+    /// must not appear in dead-code output even when nothing calls it. The
+    /// SQL gate at `fetch_uncalled_functions` excludes `chunk_type =
+    /// 'property'` because Property nodes are not function-shaped — they
+    /// inhabit a different syntactic universe (style rules, language
+    /// property accessors) and surfacing them is pure noise.
+    #[test]
+    fn test_property_chunks_excluded() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+        let css_rule = crate::parser::Chunk {
+            id: "src/serve/assets/app.css:10:rule_hash".to_string(),
+            file: std::path::PathBuf::from("src/serve/assets/app.css"),
+            language: crate::parser::Language::Css,
+            chunk_type: crate::parser::ChunkType::Property,
+            name: ".my-button".to_string(),
+            signature: ".my-button { ... }".to_string(),
+            content: ".my-button { color: red; }".to_string(),
+            doc: None,
+            line_start: 10,
+            line_end: 12,
+            content_hash: "rule_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&css_rule, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let all_names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !all_names.contains(&".my-button"),
+            "CSS Property chunk must be excluded from dead-code output: got {all_names:?}"
+        );
+    }
+
+    /// Tier-1 filter regression: a function chunk extracted from a
+    /// markdown code block (file ends in `.md`) must not appear in
+    /// dead-code output. The chunker treats fenced-code blocks inside
+    /// docs as Rust functions; those are illustrative examples, not
+    /// dead code in the project's call graph. The SQL gate's
+    /// `c.origin NOT LIKE '%.md'` clause closes this surface.
+    #[test]
+    fn test_doc_extension_chunks_excluded() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+        let md_func = crate::parser::Chunk {
+            id: "docs/example.md:42:doc_hash".to_string(),
+            file: std::path::PathBuf::from("docs/example.md"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: "doc_example_fn".to_string(),
+            signature: "fn doc_example_fn()".to_string(),
+            content: "fn doc_example_fn() { println!(\"hello\"); }".to_string(),
+            doc: None,
+            line_start: 42,
+            line_end: 44,
+            content_hash: "doc_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&md_func, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let all_names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !all_names.contains(&"doc_example_fn"),
+            "function from .md doc-block must be excluded from dead-code output: got {all_names:?}"
+        );
+    }
 
     #[test]
     fn test_confidence_assignment() {
