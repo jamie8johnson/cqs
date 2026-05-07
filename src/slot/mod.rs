@@ -1287,6 +1287,78 @@ mod tests {
         assert!(write_active_slot(dir.path(), "active").is_err()); // reserved
     }
 
+    /// TC-ADV-V1.38-5 (#1463): pin DS-V1.33-2's `crate::temp_suffix()` race
+    /// fix. Pre-fix, two concurrent `write_active_slot` calls each staged
+    /// to a fixed `active_slot.tmp` and one would clobber the other's temp
+    /// file before the rename, leaving the on-disk file partially written
+    /// or truncated. The DS-V1.33-2 fix appended a 64-bit suffix to each
+    /// temp filename so concurrent writers don't share the staging path.
+    ///
+    /// This test exercises the temp-collision avoidance directly: spawn 8
+    /// threads × 50 writes each interleaving "slot_a" and "slot_b", join
+    /// all, then assert the final on-disk content is exactly one of those
+    /// two strings (not partial bytes, not empty, not mixed). A revert of
+    /// `temp_suffix()` to a fixed name would fail this test under load on
+    /// a CI runner with enough parallelism to expose the race.
+    ///
+    /// We bypass the slots lock here because the test target is
+    /// `write_active_slot`'s own atomic-replace contract — production
+    /// callers serialize via the lock, but the temp-collision-avoidance
+    /// is the function's own internal invariant.
+    #[test]
+    fn write_active_slot_two_concurrent_writers_dont_corrupt() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = TempDir::new().unwrap();
+        let cqs = Arc::new(dir.path().to_path_buf());
+
+        // Pre-create the cqs dir so write_active_slot's `if !exists`
+        // branch doesn't race on `create_dir_all`.
+        std::fs::create_dir_all(cqs.as_path()).unwrap();
+
+        const THREADS: usize = 8;
+        const WRITES_PER_THREAD: usize = 50;
+        let mut handles = Vec::with_capacity(THREADS);
+        for tid in 0..THREADS {
+            let cqs = Arc::clone(&cqs);
+            handles.push(thread::spawn(move || {
+                let pick = if tid % 2 == 0 { "slot_a" } else { "slot_b" };
+                for _ in 0..WRITES_PER_THREAD {
+                    write_active_slot(cqs.as_path(), pick)
+                        .expect("concurrent write_active_slot must not error");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker panicked");
+        }
+
+        // Final on-disk content must be exactly one valid slot name —
+        // never empty, never partial, never a mix.
+        let final_path = active_slot_path(cqs.as_path());
+        let bytes = std::fs::read(&final_path).expect("active_slot exists after writers");
+        let s = std::str::from_utf8(&bytes)
+            .expect("active_slot is valid UTF-8")
+            .trim_end();
+        assert!(
+            s == "slot_a" || s == "slot_b",
+            "final active_slot must be exactly slot_a or slot_b, got {s:?} ({} bytes)",
+            bytes.len()
+        );
+
+        // No leftover .tmp files (each writer's atomic_replace consumed
+        // its own temp).
+        for entry in std::fs::read_dir(cqs.as_path()).unwrap().flatten() {
+            let name = entry.file_name();
+            let name_s = name.to_string_lossy();
+            assert!(
+                !name_s.contains(".tmp"),
+                "leftover tmp file detected: {name_s}"
+            );
+        }
+    }
+
     // ── list_slots ───────────────────────────────────────────────────────
 
     #[test]
