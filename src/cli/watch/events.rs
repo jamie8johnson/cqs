@@ -359,18 +359,24 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
                             // capture them so `drain_pending_rebuild` can
                             // replay them after the swap.
                             //
-                            // P2.72: cap the delta. If the rebuild stalls long
-                            // enough to accumulate >MAX_PENDING_REBUILD_DELTA
-                            // entries, latch `delta_saturated` and stop
+                            // P2.72 + SHL-V1.38-1 (#1463): cap the delta. The
+                            // cap is dim-aware via `pending_rebuild_delta_max`
+                            // — 5,000 baseline at 1024-dim, scaled inversely
+                            // by dim so a 4096-dim model gets ~1,250 (still
+                            // ~20 MB worst case) instead of 80 MB. If the
+                            // rebuild stalls long enough to accumulate above
+                            // the cap, latch `delta_saturated` and stop
                             // appending. The drain path will discard the
                             // rebuilt index instead of swapping a stale
                             // snapshot; the next threshold rebuild reads
                             // SQLite fresh and recovers everything.
-                            if pending.delta.len() + pairs.len() > MAX_PENDING_REBUILD_DELTA {
+                            let delta_cap = super::rebuild::pending_rebuild_delta_max(store.dim());
+                            if pending.delta.len() + pairs.len() > delta_cap {
                                 if !pending.delta_saturated {
                                     tracing::warn!(
-                                        cap = MAX_PENDING_REBUILD_DELTA,
+                                        cap = delta_cap,
                                         current = pending.delta.len(),
+                                        dim = store.dim(),
                                         "Pending HNSW rebuild delta saturated; \
                                          abandoning in-flight rebuild — next threshold \
                                          rebuild will pick up changes from SQLite"

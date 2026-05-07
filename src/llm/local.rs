@@ -45,9 +45,42 @@ use reqwest::StatusCode;
 use super::provider::{BatchProvider, BatchSubmitItem};
 use super::{local_concurrency, local_timeout, LlmClient, LlmConfig, LlmError};
 
-/// Retry backoff schedule: 4 attempts, 500ms → 1s → 2s → 4s (7.5s window).
-const RETRY_BACKOFFS_MS: &[u64] = &[500, 1000, 2000, 4000];
-const MAX_ATTEMPTS: usize = 4;
+/// Default retry backoff schedule: 4 attempts, 500ms → 1s → 2s → 4s
+/// (7.5s window). Use [`retry_backoffs_ms`] to read the effective
+/// schedule, which honors `CQS_LLM_RETRY_BACKOFFS_MS` if set.
+const DEFAULT_RETRY_BACKOFFS_MS: &[u64] = &[500, 1000, 2000, 4000];
+
+/// SHL-V1.38-10 (#1463): the static schedule above can't ride out
+/// transient 5xx bursts on a saturated local vLLM serving GPU. Operators
+/// can pass a longer schedule (e.g. `"500,1000,2000,4000,8000,16000"`)
+/// to extend the window without source edits. Empty / unparseable / any
+/// non-positive entry → fall back to the default. Returns owned `Vec<u64>`
+/// because the env-derived path can't return a `&'static`; callers iterate
+/// or index identically. `MAX_ATTEMPTS` follows the resolved length so
+/// the two stay in sync without further env knobs.
+fn retry_backoffs_ms() -> Vec<u64> {
+    let raw = match std::env::var("CQS_LLM_RETRY_BACKOFFS_MS") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return DEFAULT_RETRY_BACKOFFS_MS.to_vec(),
+    };
+    let parsed: Result<Vec<u64>, _> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<u64>())
+        .collect();
+    match parsed {
+        Ok(v) if !v.is_empty() && v.iter().all(|&n| n > 0) => v,
+        _ => {
+            tracing::warn!(
+                value = %raw,
+                "Invalid CQS_LLM_RETRY_BACKOFFS_MS (must be a comma-separated list of positive u64), \
+                 using default {DEFAULT_RETRY_BACKOFFS_MS:?}"
+            );
+            DEFAULT_RETRY_BACKOFFS_MS.to_vec()
+        }
+    }
+}
 
 /// Callback signature: `(custom_id, text)`. See [`crate::llm::provider::OnItemCallback`].
 type OnItemCb = Box<dyn Fn(&str, &str) + Send + Sync>;
@@ -479,7 +512,12 @@ impl LocalProvider {
         });
 
         let mut last_err: Option<String> = None;
-        for attempt in 0..MAX_ATTEMPTS {
+        // SHL-V1.38-10 (#1463): resolve schedule once per item; the
+        // env var is read at top of the retry loop, not per-attempt,
+        // so an in-flight `setenv` doesn't shift the schedule mid-flight.
+        let backoffs = retry_backoffs_ms();
+        let max_attempts = backoffs.len();
+        for attempt in 0..max_attempts {
             let _item_span = tracing::debug_span!(
                 "local_item",
                 custom_id = %item.custom_id,
@@ -544,7 +582,7 @@ impl LocalProvider {
 
                     // Retriable: 429 (rate limit), 5xx. Skip: 4xx ≠ 429.
                     if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                        let backoff = RETRY_BACKOFFS_MS[attempt.min(RETRY_BACKOFFS_MS.len() - 1)];
+                        let backoff = backoffs[attempt.min(backoffs.len() - 1)];
                         let body_preview = body_preview(r);
                         tracing::warn!(
                             attempt,
@@ -554,7 +592,7 @@ impl LocalProvider {
                             "local retry"
                         );
                         last_err = Some(format!("HTTP {}", status));
-                        if attempt < MAX_ATTEMPTS - 1 {
+                        if attempt < max_attempts - 1 {
                             std::thread::sleep(Duration::from_millis(backoff));
                         }
                         continue;
@@ -573,7 +611,7 @@ impl LocalProvider {
                     // reqwest error: timeout, connection refused, DNS, TLS...
                     // All retriable — we can't tell a transient hiccup from
                     // "server down" without trying again.
-                    let backoff = RETRY_BACKOFFS_MS[attempt.min(RETRY_BACKOFFS_MS.len() - 1)];
+                    let backoff = backoffs[attempt.min(backoffs.len() - 1)];
                     if e.is_timeout() {
                         tracing::warn!(
                             timeout_secs = self.timeout.as_secs(),
@@ -592,7 +630,7 @@ impl LocalProvider {
                         );
                     }
                     last_err = Some(e.to_string());
-                    if attempt < MAX_ATTEMPTS - 1 {
+                    if attempt < max_attempts - 1 {
                         std::thread::sleep(Duration::from_millis(backoff));
                     }
                     continue;
@@ -604,7 +642,7 @@ impl LocalProvider {
         Err(LlmError::BatchFailed(format!(
             "Local request to {} failed after {} attempts: {}",
             url,
-            MAX_ATTEMPTS,
+            max_attempts,
             last_err.unwrap_or_else(|| "unknown".to_string())
         )))
     }

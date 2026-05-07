@@ -72,7 +72,7 @@ mod rebuild;
 use rebuild::{
     clear_hnsw_dirty_with_retry, drain_pending_rebuild, hnsw_rebuild_threshold,
     resolve_index_aware_model_for_watch, spawn_hnsw_rebuild, try_init_embedder, EmbedderBackoff,
-    PendingRebuild, MAX_PENDING_REBUILD_DELTA,
+    PendingRebuild,
 };
 #[cfg(test)]
 use rebuild::{RebuildOutcome, RebuildResult};
