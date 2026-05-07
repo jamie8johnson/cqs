@@ -236,9 +236,23 @@ fn cmd_model_show(json: bool) -> Result<()> {
     let store = Store::open_readonly(&index_path)
         .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
 
-    let model = store
-        .stored_model_name()
-        .unwrap_or_else(|| "<unrecorded>".to_string());
+    // EH-V1.38-3 (#1463): `cqs model show` is the operator's first-line
+    // diagnostic for "what model built this index?". Distinguish "fresh
+    // DB / never indexed" (Ok(None) → `<unrecorded>`) from "metadata
+    // table broken / sqlite I/O failure" (Err → `<read-error>`) so the
+    // user picks `cqs index` vs `cqs doctor` correctly.
+    let model = match store.try_stored_model_name() {
+        Ok(Some(name)) => name,
+        Ok(None) => "<unrecorded>".to_string(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                index_path = %index_path.display(),
+                "cqs model show: failed to read stored_model_name from metadata"
+            );
+            format!("<read-error: {e}>")
+        }
+    };
     let dim = store.dim();
     let total_chunks = match store.chunk_count() {
         Ok(n) => n,

@@ -1034,7 +1034,28 @@ pub fn cmd_watch(
     // running `cqs watch` with `CQS_EMBEDDING_MODEL=wrong-model` would embed
     // new chunks with a different dim than the index, corrupting
     // incremental reindex.
-    let stored_model_for_watch = store.stored_model_name();
+    //
+    // EH-V1.38-1 (#1463): the lossy `stored_model_name()` returns `None`
+    // on real SQL errors (corrupt metadata, schema skew, sqlite I/O),
+    // not just on fresh DBs. Without surfacing the error the watch loop
+    // falls back to CLI/env/config resolution and silently writes
+    // wrong-dim embeddings into the live store. Use the strict variant
+    // and warn loudly on read failure so journald shows the cause.
+    let stored_model_for_watch = match store.try_stored_model_name() {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                index_path = %index_path.display(),
+                "Watch loop failed to read stored_model_name from metadata — \
+                 falling back to CLI/env/config resolution. If the index \
+                 actually has a recorded model, the fallback may produce a \
+                 wrong-dim embedder and corrupt the incremental reindex; \
+                 stop the daemon and run `cqs index --force` to repair."
+            );
+            None
+        }
+    };
     let project_config_for_watch = cqs::config::Config::load(&root);
     let model_config_owned = ModelConfig::resolve_for_query(
         stored_model_for_watch.as_deref(),

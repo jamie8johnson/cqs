@@ -183,8 +183,25 @@ pub(super) fn resolve_index_aware_model_for_watch(
     root: &std::path::Path,
     cli_model: Option<&str>,
 ) -> Result<ModelConfig> {
+    // EH-V1.38-2 (#1463): use the strict variant so a corrupt-metadata
+    // read surfaces as an error in journald instead of silently
+    // collapsing to None and triggering a wrong-dim embedder pick. The
+    // open-readonly Err arm already warns; mirror that on the metadata
+    // read.
     let stored = match cqs::Store::open_readonly(index_path) {
-        Ok(s) => s.stored_model_name(),
+        Ok(s) => match s.try_stored_model_name() {
+            Ok(opt) => opt,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    index_path = %index_path.display(),
+                    "Daemon thread failed to read stored_model_name from metadata — \
+                     falling back to CLI/env/config resolution. Wrong-dim \
+                     embedder risk; investigate metadata health before next reindex."
+                );
+                None
+            }
+        },
         Err(e) => {
             tracing::warn!(
                 error = %e,
