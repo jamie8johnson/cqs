@@ -384,21 +384,39 @@ pub fn resolve_splade_model_dir_with_config(
 
 /// Maximum characters for SPLADE input truncation.
 /// Configurable via `CQS_SPLADE_MAX_CHARS` (default 4000).
+///
+/// PF-V1.38-4 (#1463): cached via OnceLock at first call. Pre-fix, every
+/// `encode_*` invocation re-read the env var — at 17k chunks per reindex
+/// that's ~18k getenv syscalls per pass. The env value is read at
+/// process-start (or first encode call); operators tuning the knob need
+/// to restart the daemon to pick up a change, which matches the contract
+/// of every other compiled-in default in the SPLADE encode hot path.
 fn splade_max_chars() -> usize {
-    std::env::var("CQS_SPLADE_MAX_CHARS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&n: &usize| n > 0)
-        .unwrap_or(4000)
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("CQS_SPLADE_MAX_CHARS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &usize| n > 0)
+            .unwrap_or(4000)
+    })
 }
 
 impl SpladeEncoder {
     /// Default SPLADE threshold, overridable via `CQS_SPLADE_THRESHOLD` env var.
+    ///
+    /// PF-V1.38-4 (#1463): cached via OnceLock at first call. Same
+    /// rationale as `splade_max_chars` — env-thrash on the encode hot
+    /// path, no test fixtures mutate this var (no daemon-time reload
+    /// expected).
     pub fn default_threshold() -> f32 {
-        std::env::var("CQS_SPLADE_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.01)
+        static CACHED: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        *CACHED.get_or_init(|| {
+            std::env::var("CQS_SPLADE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.01)
+        })
     }
 
     /// Load SPLADE model from a directory containing model.onnx and tokenizer.json.
