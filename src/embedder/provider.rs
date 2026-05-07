@@ -183,6 +183,37 @@ fn ensure_ort_provider_libs() {
     );
 }
 
+/// #1576: detect models that use ONNX op_types TensorRT 10 cannot parse,
+/// in which case `create_session` segfaults / SIGFPEs partway through
+/// engine compilation rather than returning a clean error.
+///
+/// The two markers we've seen take down the daemon are
+/// `SimplifiedLayerNormalization` and `MultiHeadAttention` (both in the
+/// `com.microsoft` contrib-op namespace). Both are emitted by the
+/// embeddinggemma-300m ONNX export and similar Gemma-family models.
+///
+/// We could parse the ONNX graph here (proto file → enumerate nodes →
+/// check op_types) but that's slow on cold start. For the immediate
+/// fix, blocklist by model-path substring — the HuggingFace hub stores
+/// each model under a directory containing the model name, so the path
+/// is a reliable proxy. `CQS_FORCE_TENSORRT=1` overrides the blocklist
+/// for operators who have a custom export that fixes the contrib ops.
+fn model_uses_trt_incompatible_ops(model_path: &Path) -> bool {
+    if std::env::var("CQS_FORCE_TENSORRT").as_deref() == Ok("1") {
+        return false;
+    }
+    let path_str = model_path.to_string_lossy().to_lowercase();
+    // Gemma family — observed SIGFPE in TRT 10 engine compilation.
+    if path_str.contains("gemma") {
+        return true;
+    }
+    // Add additional known-incompatible markers here as they surface.
+    // Keep the list short — the right long-term fix is to parse the ONNX
+    // graph and detect the actual op_types, but the substring heuristic
+    // covers the cases we've seen without slowing down session creation.
+    false
+}
+
 /// Resolve the on-disk cache directory for TensorRT engine binaries +
 /// timing tactic results, or return `None` when caching is opted out.
 ///
@@ -327,6 +358,38 @@ pub(crate) fn create_session(
     tracing::info!(provider = ?provider, model_path = %model_path.display(), "Creating ONNX session");
 
     let mut builder = Session::builder().map_err(ort_err)?;
+
+    // #1576: pre-flight model-incompatibility check for TensorRT.
+    //
+    // Some models use Microsoft Contrib Ops (`SimplifiedLayerNormalization`,
+    // `MultiHeadAttention` in `com.microsoft` namespace, etc.) that
+    // TensorRT 10's ONNX parser cannot handle. Per the existing comment
+    // at `detect_provider`, the documented workaround is
+    // `CQS_DISABLE_TENSORRT=1`. But the failure mode isn't a clean error
+    // — TRT engine compilation segfaults / SIGFPEs partway through,
+    // taking the daemon down. We observed this in production with
+    // `embeddinggemma-300m`: 4 daemon SIGFPE crashes in one session.
+    //
+    // Auto-skip TRT for model paths that match the known-incompatible
+    // pattern. CUDA is the next provider in line and handles these ops
+    // gracefully (it falls back to ORT's reference kernel for unknown
+    // contrib ops).
+    let provider = if matches!(provider, ExecutionProvider::TensorRT { .. })
+        && model_uses_trt_incompatible_ops(model_path)
+    {
+        let device_id = match provider {
+            ExecutionProvider::TensorRT { device_id } => device_id,
+            _ => 0,
+        };
+        tracing::info!(
+            model_path = %model_path.display(),
+            "Model is in the TensorRT incompatibility list; downgrading provider to CUDA \
+             (set CQS_FORCE_TENSORRT=1 to override)"
+        );
+        ExecutionProvider::CUDA { device_id }
+    } else {
+        provider
+    };
 
     let session = match provider {
         ExecutionProvider::CUDA { device_id } => builder
@@ -575,5 +638,87 @@ mod tests {
         }
 
         assert!(result.is_none(), "opt-out must yield None");
+    }
+
+    // ===== #1576: TRT-incompatible model detection =====
+
+    /// `model_uses_trt_incompatible_ops` must flag Gemma-family ONNX
+    /// paths because TRT 10's parser SIGFPEs on
+    /// `SimplifiedLayerNormalization` / `MultiHeadAttention` Microsoft
+    /// contrib ops emitted by these models.
+    #[test]
+    fn trt_blocklist_flags_gemma_family() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Drop any operator override so we exercise the default behavior.
+        let prev = std::env::var_os("CQS_FORCE_TENSORRT");
+        unsafe { std::env::remove_var("CQS_FORCE_TENSORRT") };
+
+        let path = Path::new(
+            "/home/user/.cache/huggingface/hub/models--onnx-community--embeddinggemma-300m-ONNX/snapshots/abc/onnx/model.onnx",
+        );
+        let result = model_uses_trt_incompatible_ops(path);
+
+        unsafe {
+            if let Some(v) = prev {
+                std::env::set_var("CQS_FORCE_TENSORRT", v);
+            }
+        }
+        assert!(
+            result,
+            "Gemma model path must be flagged as TRT-incompatible"
+        );
+    }
+
+    /// `model_uses_trt_incompatible_ops` must NOT flag known-compatible
+    /// models (BGE-large, MiniLM, SPLADE). Pin so a future blocklist
+    /// expansion doesn't accidentally swallow these.
+    #[test]
+    fn trt_blocklist_passes_compatible_models() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("CQS_FORCE_TENSORRT");
+        unsafe { std::env::remove_var("CQS_FORCE_TENSORRT") };
+
+        for path in &[
+            "/cache/models--BAAI--bge-large-en-v1.5/snapshots/x/model.onnx",
+            "/cache/models--cross-encoder--ms-marco-MiniLM-L-6-v2/onnx/model.onnx",
+            "/cache/splade-onnx/model.onnx",
+        ] {
+            let p = Path::new(path);
+            assert!(
+                !model_uses_trt_incompatible_ops(p),
+                "{path} must NOT be flagged as TRT-incompatible"
+            );
+        }
+
+        unsafe {
+            if let Some(v) = prev {
+                std::env::set_var("CQS_FORCE_TENSORRT", v);
+            }
+        }
+    }
+
+    /// `CQS_FORCE_TENSORRT=1` overrides the blocklist for operators
+    /// who have a custom export that fixes the contrib ops.
+    #[test]
+    fn trt_blocklist_force_env_overrides() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("CQS_FORCE_TENSORRT");
+        // SAFETY: ENV_LOCK held — single-threaded for this env var.
+        unsafe { std::env::set_var("CQS_FORCE_TENSORRT", "1") };
+
+        let path =
+            Path::new("/cache/models--onnx-community--embeddinggemma-300m-ONNX/onnx/model.onnx");
+        let result = model_uses_trt_incompatible_ops(path);
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CQS_FORCE_TENSORRT", v),
+                None => std::env::remove_var("CQS_FORCE_TENSORRT"),
+            }
+        }
+        assert!(
+            !result,
+            "CQS_FORCE_TENSORRT=1 must override the Gemma blocklist"
+        );
     }
 }
