@@ -59,6 +59,7 @@ const DEFAULTS: LanguageDef = LanguageDef {
     field_style: FieldStyle::None,
     skip_line_prefixes: &[],
     custom_chunk_parser: None,
+    chunk_call_parser: None,
     custom_all_parser: None,
     custom_call_parser: None,
     function_keywords: &[],
@@ -4370,6 +4371,10 @@ static LANG_MARKDOWN: LanguageDef = LanguageDef {
     ],
     line_comment_prefixes: &["<!--"],
     aliases: &["md"],
+    // EX-V1.38-6 (#1463): per-chunk reference extractor. Replaces the
+    // hardcoded `if chunk.language == Language::Markdown` literal in
+    // `Parser::extract_calls_from_chunk`.
+    chunk_call_parser: Some(crate::parser::markdown::extract_calls_from_markdown_chunk),
     ..DEFAULTS
 };
 
@@ -8545,6 +8550,7 @@ static LANG_ASPX: LanguageDef = LanguageDef {
     // `custom_call_parser` is None, so ASPX files still get call/type
     // extraction without a dedicated calls-only function.
     custom_chunk_parser: Some(crate::parser::aspx::parse_aspx_chunks),
+    chunk_call_parser: None,
     custom_all_parser: Some(crate::parser::aspx::parse_aspx_all),
     // ASPX wraps C# / VB.NET — dispatch to .NET pattern defaults.
     patterns: Some(&patterns_data::DOTNET),
