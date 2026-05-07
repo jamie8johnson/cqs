@@ -783,8 +783,14 @@ pub(super) enum Commands {
         #[arg(long, default_value = ".")]
         output: std::path::PathBuf,
         /// Embedding dimension override (auto-detected from config.json if omitted)
+        ///
+        /// API-V1.38-7 (#1463): `usize` aligns with `ModelConfig.dim`,
+        /// `EmbeddingConfig.dim`, `VectorIndex::dim()` etc. — every other
+        /// dim field in the codebase. The previous `Option<u64>` parsed
+        /// identically (`--dim 768`) but required `as usize` casts at the
+        /// handler boundary.
         #[arg(long)]
-        dim: Option<u64>,
+        dim: Option<usize>,
     },
     /// Generate training data for fine-tuning from git history
     #[cqs_cmd(group = "a", batch = "cli")]
@@ -894,7 +900,12 @@ pub(super) enum Commands {
         ///
         /// Note: `cqs eval --require-fresh-secs` has the same semantics;
         /// default differs by use case (eval default = 600, status = 30).
-        #[arg(long, default_value_t = 30)]
+        ///
+        /// API-V1.38-8 (#1463): `--require-fresh-secs` exposed as a
+        /// visible alias so an agent that learned the eval-side spelling
+        /// can use it on `cqs status` too. Both spellings parse to the
+        /// same field; prefer `--wait-secs` in CI scripts (shorter).
+        #[arg(long, visible_alias = "require-fresh-secs", default_value_t = 30)]
         wait_secs: u64,
         /// Output as JSON. Without this, prints a one-line human summary.
         ///

@@ -42,7 +42,7 @@ fn validate_repo_id(repo: &str) -> anyhow::Result<()> {
 pub(crate) fn cmd_export_model(
     repo: &str,
     output: &Path,
-    dim_override: Option<u64>,
+    dim_override: Option<usize>,
 ) -> anyhow::Result<()> {
     let _span = tracing::info_span!("export_model", repo).entered();
 
@@ -148,7 +148,7 @@ pub(crate) fn cmd_export_model(
 }
 
 /// Resolve embedding dimension: --dim override > config.json auto-detect > None.
-fn resolve_dim(dim_override: Option<u64>, output_dir: &Path) -> Option<u64> {
+fn resolve_dim(dim_override: Option<usize>, output_dir: &Path) -> Option<usize> {
     let _span = tracing::info_span!("resolve_dim").entered();
     if let Some(d) = dim_override {
         tracing::info!(dim = d, "Using --dim override");
@@ -157,7 +157,8 @@ fn resolve_dim(dim_override: Option<u64>, output_dir: &Path) -> Option<u64> {
     let detected = std::fs::read_to_string(output_dir.join("config.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|j| j["hidden_size"].as_u64());
+        .and_then(|j| j["hidden_size"].as_u64())
+        .map(|n| n as usize);
     match detected {
         Some(d) => {
             tracing::info!(dim = d, "Auto-detected dim from config.json hidden_size");
@@ -174,7 +175,7 @@ fn resolve_dim(dim_override: Option<u64>, output_dir: &Path) -> Option<u64> {
 fn write_model_toml(
     output_dir: &Path,
     repo: &str,
-    resolved_dim: Option<u64>,
+    resolved_dim: Option<usize>,
 ) -> anyhow::Result<()> {
     let toml_path = output_dir.join("model.toml");
     let dim_line = match resolved_dim {
