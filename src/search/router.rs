@@ -895,161 +895,229 @@ pub fn classify_query(query: &str) -> Classification {
     classification
 }
 
+/// Lowered query + tokenized words, computed once per query. Passed to each
+/// `try_classify_*` so they don't repeat the lowercase + split work.
+struct QueryContext<'a> {
+    lower: &'a str,
+    words: &'a [&'a str],
+}
+
 /// Inner body of [`classify_query`] — split so the outer function can log the
-/// chosen category once regardless of which branch fires. Keeps the early
-/// `return` chain intact so the priority order reads top-to-bottom.
+/// chosen category once regardless of which branch fires.
+///
+/// P4-4 (#1463): refactored from a stack of `if X { return Classification {...} }`
+/// blocks into a chain of `try_classify_*(&ctx)` helpers returning
+/// `Option<Classification>`. The priority order still reads top-to-bottom in the
+/// `or_else` chain, but each classifier is now independently unit-testable —
+/// the previous shape forced every test to construct the full lower/words
+/// context and run the entire 9-step priority chain just to verify a single
+/// classifier's behavior.
 fn classify_query_inner(query: &str) -> Classification {
     let query_lower = query.to_lowercase();
     let words: Vec<&str> = query_lower.split_whitespace().collect();
+    let ctx = QueryContext {
+        lower: &query_lower,
+        words: &words,
+    };
 
-    if words.is_empty() {
-        return Classification {
+    if let Some(c) = try_classify_empty(&ctx) {
+        return c;
+    }
+    try_classify_negation(&ctx)
+        .or_else(|| try_classify_identifier(&ctx))
+        .or_else(|| try_classify_cross_language(&ctx))
+        .or_else(|| try_classify_type_filtered(&ctx))
+        .or_else(|| try_classify_structural(&ctx))
+        .or_else(|| try_classify_behavioral(&ctx))
+        .or_else(|| try_classify_conceptual(&ctx))
+        .or_else(|| try_classify_multistep(&ctx))
+        .unwrap_or(Classification {
             category: QueryCategory::Unknown,
             confidence: Confidence::Low,
             strategy: SearchStrategy::DenseDefault,
             type_hints: None,
-        };
-    }
+        })
+}
 
-    // 1. Negation trumps everything — "sort without allocating".
-    //    Phase 5: enriched summaries inject positive vocabulary ("allocates",
-    //    "uses heap") that fights the negation, so route to the base index.
+/// Priority 0: empty query — short-circuits before any other check runs so
+/// downstream classifiers can assume `words` is non-empty.
+fn try_classify_empty(ctx: &QueryContext) -> Option<Classification> {
+    if ctx.words.is_empty() {
+        Some(Classification {
+            category: QueryCategory::Unknown,
+            confidence: Confidence::Low,
+            strategy: SearchStrategy::DenseDefault,
+            type_hints: None,
+        })
+    } else {
+        None
+    }
+}
+
+/// Priority 1: Negation trumps everything — "sort without allocating".
+/// Phase 5: enriched summaries inject positive vocabulary ("allocates",
+/// "uses heap") that fights the negation, so route to the base index.
+fn try_classify_negation(ctx: &QueryContext) -> Option<Classification> {
     let negation_hit = {
         let g = NEGATION_TOKENS.read().unwrap_or_else(|p| p.into_inner());
-        words.iter().any(|w| g.contains(*w))
+        ctx.words.iter().any(|w| g.contains(*w))
     };
     if negation_hit {
-        return Classification {
+        Some(Classification {
             category: QueryCategory::Negation,
             confidence: Confidence::High,
             strategy: SearchStrategy::DenseBase,
             type_hints: None,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 2. Identifier lookup — all tokens look like identifiers
-    if is_identifier_query(&query_lower, &words) {
-        return Classification {
+/// Priority 2: Identifier lookup — all tokens look like identifiers.
+fn try_classify_identifier(ctx: &QueryContext) -> Option<Classification> {
+    if is_identifier_query(ctx.lower, ctx.words) {
+        Some(Classification {
             category: QueryCategory::IdentifierLookup,
             confidence: Confidence::High,
             strategy: SearchStrategy::NameOnly,
             type_hints: None,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 3. Cross-language — mentions 2+ language names or "equivalent"/"translate".
-    //    These benefit from the enriched index (summaries add canonical
-    //    vocabulary that bridges language-specific syntax).
-    if is_cross_language_query(&query_lower, &words) {
-        return Classification {
+/// Priority 3: Cross-language — mentions 2+ language names or
+/// "equivalent"/"translate". These benefit from the enriched index
+/// (summaries add canonical vocabulary that bridges language-specific
+/// syntax).
+fn try_classify_cross_language(ctx: &QueryContext) -> Option<Classification> {
+    if is_cross_language_query(ctx.lower, ctx.words) {
+        Some(Classification {
             category: QueryCategory::CrossLanguage,
             confidence: Confidence::High,
             strategy: SearchStrategy::DenseDefault,
             type_hints: None,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 4. Type-filtered — "all structs", "every enum", "test functions"
-    //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
-    //    showed +8.4pp R@1 on base vs enriched (41.7% vs 33.3%, N=24).
-    //    Summaries add generic vocabulary that dilutes the specific type signal.
-    let type_hints = extract_type_hints(&query_lower);
+/// Priority 4: Type-filtered — "all structs", "every enum",
+/// "test functions". 2026-04-13: route to base. Enrichment ablation at 78%
+/// summary coverage showed +8.4pp R@1 on base vs enriched (41.7% vs 33.3%,
+/// N=24). Summaries add generic vocabulary that dilutes the specific type
+/// signal.
+fn try_classify_type_filtered(ctx: &QueryContext) -> Option<Classification> {
+    let type_hints = extract_type_hints(ctx.lower);
     if type_hints.is_some() {
-        return Classification {
+        Some(Classification {
             category: QueryCategory::TypeFiltered,
             confidence: Confidence::Medium,
             strategy: SearchStrategy::DenseBase,
             type_hints,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 5. Structural — type keywords + "functions that" patterns
-    if is_structural_query(&query_lower) {
-        return Classification {
+/// Priority 5: Structural — type keywords + "functions that" patterns.
+fn try_classify_structural(ctx: &QueryContext) -> Option<Classification> {
+    if is_structural_query(ctx.lower) {
+        Some(Classification {
             category: QueryCategory::Structural,
             confidence: Confidence::Medium,
             strategy: SearchStrategy::DenseWithTypeHints,
             type_hints: None,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 6. Behavioral — action verbs, "code that does X".
-    //    Phase 5: behavioral queries use verbs the query author chose; enriched
-    //    summaries standardize those verbs ("handles" → "processes"), which
-    //    washes out the specific verb the user asked about. Route to base.
-    //
-    //    2026-04-10 update: same-corpus A/B at 50% summary coverage shows
-    //    behavioral routing produces 0pp delta — the routing fires but the
-    //    affected queries' gold answers are mostly callable types where
-    //    base ≈ enriched after enrichment_hash dedupe. Keeping the route on
-    //    base because the historical research data still says behavioral
-    //    is hurt by summaries; we just can't measure the effect on this
-    //    corpus shape. See research/enrichment.md for the data.
-    if is_behavioral_query(&query_lower, &words) {
-        return Classification {
+/// Priority 6: Behavioral — action verbs, "code that does X".
+/// Phase 5: behavioral queries use verbs the query author chose; enriched
+/// summaries standardize those verbs ("handles" → "processes"), which
+/// washes out the specific verb the user asked about. Route to base.
+///
+/// 2026-04-10 update: same-corpus A/B at 50% summary coverage shows
+/// behavioral routing produces 0pp delta — the routing fires but the
+/// affected queries' gold answers are mostly callable types where
+/// base ≈ enriched after enrichment_hash dedupe. Keeping the route on
+/// base because the historical research data still says behavioral
+/// is hurt by summaries; we just can't measure the effect on this
+/// corpus shape. See research/enrichment.md for the data.
+fn try_classify_behavioral(ctx: &QueryContext) -> Option<Classification> {
+    if is_behavioral_query(ctx.lower, ctx.words) {
+        Some(Classification {
             category: QueryCategory::Behavioral,
             confidence: Confidence::Medium,
             strategy: SearchStrategy::DenseBase,
             type_hints: None,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 7. Conceptual — abstract nouns, short non-identifier queries.
-    //
-    //    2026-04-10 update: ROUTING REVERSED. Phase 5 originally routed
-    //    conceptual to DenseBase based on the historical research finding
-    //    "summaries hurt conceptual −15pp". That finding was measured on a
-    //    corpus where only callable types were summarized.
-    //
-    //    After the eligibility expansion in PR #878 (summaries now cover
-    //    structs / enums / impls / traits / classes / etc.), conceptual
-    //    queries' gold answers are mostly type definitions where the
-    //    summary actively helps bridge code → concept ("a service container
-    //    that resolves dependencies" → "dependency injection"). Routing
-    //    those queries to the base index strips the helpful signal.
-    //
-    //    Same-corpus A/B at 50% coverage measured −3.7pp R@1 on conceptual
-    //    when routing was on. Keeping conceptual on the enriched index
-    //    until / unless the summary coverage shape changes again.
-    //
-    //    The lesson: routing rules are coupled to corpus shape, not to
-    //    a category-intrinsic property. They need to be re-validated any
-    //    time summary coverage changes meaningfully.
-    if is_conceptual_query(&query_lower, &words) {
-        return Classification {
+/// Priority 7: Conceptual — abstract nouns, short non-identifier queries.
+///
+/// 2026-04-10 update: ROUTING REVERSED. Phase 5 originally routed
+/// conceptual to DenseBase based on the historical research finding
+/// "summaries hurt conceptual −15pp". That finding was measured on a
+/// corpus where only callable types were summarized.
+///
+/// After the eligibility expansion in PR #878 (summaries now cover
+/// structs / enums / impls / traits / classes / etc.), conceptual
+/// queries' gold answers are mostly type definitions where the
+/// summary actively helps bridge code → concept ("a service container
+/// that resolves dependencies" → "dependency injection"). Routing
+/// those queries to the base index strips the helpful signal.
+///
+/// Same-corpus A/B at 50% coverage measured −3.7pp R@1 on conceptual
+/// when routing was on. Keeping conceptual on the enriched index
+/// until / unless the summary coverage shape changes again.
+///
+/// The lesson: routing rules are coupled to corpus shape, not to
+/// a category-intrinsic property. They need to be re-validated any
+/// time summary coverage changes meaningfully.
+fn try_classify_conceptual(ctx: &QueryContext) -> Option<Classification> {
+    if is_conceptual_query(ctx.lower, ctx.words) {
+        Some(Classification {
             category: QueryCategory::Conceptual,
             confidence: Confidence::Medium,
             strategy: SearchStrategy::DenseDefault,
             type_hints: None,
-        };
+        })
+    } else {
+        None
     }
+}
 
-    // 8. Multi-step — conjunctions
-    //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
-    //    showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
-    //    Summaries inject vocabulary that displaces the conjunction terms.
+/// Priority 8: Multi-step — conjunctions.
+/// 2026-04-13: route to base. Enrichment ablation at 78% summary coverage
+/// showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
+/// Summaries inject vocabulary that displaces the conjunction terms.
+fn try_classify_multistep(ctx: &QueryContext) -> Option<Classification> {
     let multistep_hit = {
         let ac = MULTISTEP_PATTERNS_AC
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        ac.is_match(&query_lower)
+        ac.is_match(ctx.lower)
     };
     if multistep_hit {
-        return Classification {
+        Some(Classification {
             category: QueryCategory::MultiStep,
             confidence: Confidence::Low,
             strategy: SearchStrategy::DenseBase,
             type_hints: None,
-        };
-    }
-
-    // 9. Unknown — default
-    Classification {
-        category: QueryCategory::Unknown,
-        confidence: Confidence::Low,
-        strategy: SearchStrategy::DenseDefault,
-        type_hints: None,
+        })
+    } else {
+        None
     }
 }
 
@@ -1549,6 +1617,45 @@ mod tests {
         // Phase 5: negation routes to base — summaries inject positive
         // vocabulary that fights the "without" clause.
         assert_eq!(c.strategy, SearchStrategy::DenseBase);
+    }
+
+    /// P4-4 (#1463): each `try_classify_*` is independently testable now —
+    /// run it with a hand-built `QueryContext` instead of going through the
+    /// full priority chain. This pins the classifier's intrinsic behavior
+    /// (was identifier? yes/no) without coupling to whether some earlier
+    /// arm fires first.
+    #[test]
+    fn try_classify_helpers_short_circuit_on_match() {
+        // Empty context → empty classifier matches, returns Unknown.
+        let empty_ctx = QueryContext {
+            lower: "",
+            words: &[],
+        };
+        let c = try_classify_empty(&empty_ctx).expect("empty must match");
+        assert_eq!(c.category, QueryCategory::Unknown);
+
+        // Identifier classifier returns None on a free-form query.
+        let lower = "validates user input".to_string();
+        let words: Vec<&str> = lower.split_whitespace().collect();
+        let ctx = QueryContext {
+            lower: &lower,
+            words: &words,
+        };
+        assert!(
+            try_classify_identifier(&ctx).is_none(),
+            "identifier classifier must not fire on free-form query"
+        );
+
+        // Identifier classifier matches on a snake_case token.
+        let lower = "search_filtered".to_string();
+        let words: Vec<&str> = lower.split_whitespace().collect();
+        let ctx = QueryContext {
+            lower: &lower,
+            words: &words,
+        };
+        let c = try_classify_identifier(&ctx).expect("identifier must match snake_case");
+        assert_eq!(c.category, QueryCategory::IdentifierLookup);
+        assert_eq!(c.strategy, SearchStrategy::NameOnly);
     }
 
     // ─── EXT-V1.36-8 sub-2: classifier vocab overlay ────────────────────
