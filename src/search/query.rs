@@ -10,6 +10,7 @@ use sqlx::Row;
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
+use crate::limits::candidate_count_for;
 use crate::nl::normalize_for_fts;
 use crate::parser::ChunkType;
 use crate::store::helpers::{
@@ -509,10 +510,11 @@ impl<Mode> Store<Mode> {
             }
         };
 
-        // TC-ADV-5: `limit * 5` overflows `usize` for pathological inputs
-        // (e.g. `usize::MAX / 4`). Use saturating multiplication so the
-        // candidate pool stays bounded at `usize::MAX` instead of panicking.
-        let candidate_count = limit.saturating_mul(5).max(100);
+        // #1583: dense-retrieval pool floor 500 (was 100 pre-#1583).
+        // `cqs::limits::candidate_count_for` enforces the floor and
+        // honors `CQS_SEARCH_CANDIDATE_FLOOR`. TC-ADV-5 `saturating_mul`
+        // guard preserved (pathological `limit >= usize::MAX / 5`).
+        let candidate_count = candidate_count_for(limit);
 
         // Build chunk filter predicate
         let meta = self.chunk_type_language_map()?;
@@ -717,8 +719,9 @@ impl<Mode> Store<Mode> {
         if let Some(idx) = index {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
-            // TC-ADV-5: saturating multiply — see `search_hybrid` for details.
-            let candidate_count = limit.saturating_mul(5).max(100);
+            // #1583: see `search_hybrid` for the floor rationale +
+            // CQS_SEARCH_CANDIDATE_FLOOR override.
+            let candidate_count = candidate_count_for(limit);
             let has_type_or_lang_filter = filter.include_types.is_some()
                 || filter.exclude_types.is_some()
                 || filter.languages.is_some();
@@ -1397,30 +1400,37 @@ mod tests {
 
     // ===== TC-ADV-5: candidate-count multiply overflow guards =====
     //
-    // `search_hybrid` and `search_filtered_with_index` both compute
-    // `candidate_count = limit.saturating_mul(5).max(100)`. The `saturating_mul`
-    // replaces a previous `limit * 5` that would panic with arithmetic overflow
-    // when `limit >= usize::MAX / 5`. Agents or badly-shaped CLI flags could
-    // feed a huge `limit`; a panic in search is unacceptable.
+    // `search_hybrid` and `search_filtered_with_index` both compute the
+    // dense-retrieval pool size via `cqs::limits::candidate_count_for`.
+    // Pre-#1583 the formula was `limit.saturating_mul(5).max(100)` inline
+    // at each site; #1583 hoisted the floor to 500 and made it
+    // env-overridable via `CQS_SEARCH_CANDIDATE_FLOOR`. The
+    // `saturating_mul` guard against `limit >= usize::MAX / 5` panics is
+    // preserved.
 
     /// Direct arithmetic regression for the saturating-multiply expression.
     /// Guards against a refactor that reverts to naive `limit * 5`.
     #[test]
     fn test_candidate_count_saturating_multiply() {
+        use crate::limits::candidate_count_for;
+
         // usize::MAX / 4 would overflow `limit * 5`.
         let limit = usize::MAX / 4;
-        let candidate_count = limit.saturating_mul(5).max(100);
+        let candidate_count = candidate_count_for(limit);
 
         // Saturating — no panic — and bounded at usize::MAX.
         assert_eq!(candidate_count, usize::MAX);
 
-        // Small limit still respects the floor of 100.
-        let small = 5usize.saturating_mul(5).max(100);
-        assert_eq!(small, 100);
+        // Small limit respects the new #1583 floor of 500 (was 100).
+        let small = candidate_count_for(5);
+        assert!(
+            small >= 500,
+            "candidate_count for limit=5 must hit the floor (>=500), got {small}"
+        );
 
-        // Typical limit scales linearly.
-        let typical = 50usize.saturating_mul(5).max(100);
-        assert_eq!(typical, 250);
+        // Typical limit scales linearly above the floor.
+        let typical = candidate_count_for(200);
+        assert_eq!(typical, 1000);
     }
 
     /// Integration regression: exercise `search_filtered_with_index` with a
