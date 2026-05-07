@@ -168,15 +168,43 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
     }
     drop(payload); // free wire buffer; child has it now
 
-    let output = child
-        .wait_with_output()
-        .context("failed to wait for UMAP subprocess")?;
+    // RM-V1.38-4 (#1463): bounded streaming read of stdout/stderr instead
+    // of `wait_with_output()` (which buffers both unbounded). Mirrors the
+    // RM-V1.36-2 PDF converter pattern. Stdout carries the coord lines
+    // (~64 bytes per chunk × N chunks); cap at a generous ceiling so
+    // pathological / hostile script output can't OOM the indexer process.
+    // Default 1 GiB (sufficient for ~16M chunks at 64 bytes/line),
+    // env-overridable via `CQS_UMAP_MAX_STDOUT_BYTES`.
+    use std::io::Read;
+    let max_stdout_bytes: usize = std::env::var("CQS_UMAP_MAX_STDOUT_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024 * 1024 * 1024);
+    let mut stdout_buf = Vec::with_capacity(64 * 1024);
+    let mut stderr_buf = Vec::with_capacity(8 * 1024);
+    if let Some(s) = child.stdout.take() {
+        let _ = s
+            .take((max_stdout_bytes as u64) + 1)
+            .read_to_end(&mut stdout_buf);
+    }
+    if let Some(s) = child.stderr.take() {
+        // 1 MiB cap on stderr — operators only need the tail for diagnostics.
+        let _ = s.take(1024 * 1024).read_to_end(&mut stderr_buf);
+    }
+    let status = child.wait().context("failed to wait for UMAP subprocess")?;
+    if stdout_buf.len() > max_stdout_bytes {
+        anyhow::bail!(
+            "UMAP subprocess stdout exceeded CQS_UMAP_MAX_STDOUT_BYTES ({} bytes) — \
+             output truncated; run with a smaller corpus or raise the cap",
+            max_stdout_bytes
+        );
+    }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_buf);
         anyhow::bail!(
             "UMAP projection failed (exit {}): {}",
-            output.status,
+            status,
             stderr.trim()
         );
     }
@@ -184,12 +212,12 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
     // Echo the script's stderr at info level so per-run diagnostics surface
     // in the journal (it includes per-row coords range, which is useful
     // for spotting degenerate runs).
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&stderr_buf);
     for line in stderr.lines() {
         tracing::info!(target: "cqs::umap", "{line}");
     }
 
-    let stdout = String::from_utf8(output.stdout).context("UMAP stdout is not UTF-8")?;
+    let stdout = String::from_utf8(stdout_buf).context("UMAP stdout is not UTF-8")?;
     let mut coords: Vec<(String, f64, f64)> = Vec::with_capacity(n_rows);
     for (lineno, line) in stdout.lines().enumerate() {
         let mut parts = line.splitn(3, '\t');
