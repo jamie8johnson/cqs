@@ -43,6 +43,7 @@ const DEFAULTS: LanguageDef = LanguageDef {
     extract_qualified_method: None,
     post_process_chunk: None,
     test_markers: &[],
+    endpoint_markers: &[],
     test_path_patterns: &[],
     test_name_patterns: &[],
     structural_matchers: None,
@@ -491,6 +492,7 @@ static LANG_CPP: LanguageDef = LanguageDef {
     extract_qualified_method: Some(extract_qualified_method_cpp),
     post_process_chunk: Some(post_process_cpp_cpp as PostProcessChunkFn),
     test_markers: &["TEST(", "TEST_F(", "EXPECT_", "ASSERT_"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%\\_test.cpp", "%\\_test.cc"],
     entry_point_names: &["main"],
     doc_format: "javadoc",
@@ -578,18 +580,16 @@ fn post_process_csharp_csharp(
             &node_text[..node_text.floor_char_boundary(200)]
         };
 
-        if header.contains("[Test]")
-            || header.contains("[Fact]")
-            || header.contains("[Theory]")
-            || header.contains("[TestMethod]")
-        {
+        // EX-V1.38-2 (#1463): consult LANG_CSHARP.{test_markers,endpoint_markers}
+        // instead of inline literals so adding xUnit's `[Theory(...)]` (already
+        // there) or new Spring-style annotations is one row in the LanguageDef
+        // entry below, not a duplicated edit.
+        if LANG_CSHARP.test_markers.iter().any(|m| header.contains(*m)) {
             *chunk_type = ChunkType::Test;
-        } else if header.contains("[HttpGet]")
-            || header.contains("[HttpPost]")
-            || header.contains("[HttpPut]")
-            || header.contains("[HttpDelete]")
-            || header.contains("[HttpPatch]")
-            || header.contains("[Route(")
+        } else if LANG_CSHARP
+            .endpoint_markers
+            .iter()
+            .any(|m| header.contains(*m))
         {
             *chunk_type = ChunkType::Endpoint;
         }
@@ -733,6 +733,14 @@ static LANG_CSHARP: LanguageDef = LanguageDef {
     container_body_kinds: &["declaration_list"],
     post_process_chunk: Some(post_process_csharp_csharp as PostProcessChunkFn),
     test_markers: &["[Test]", "[Fact]", "[Theory]", "[TestMethod]"],
+    endpoint_markers: &[
+        "[HttpGet]",
+        "[HttpPost]",
+        "[HttpPut]",
+        "[HttpDelete]",
+        "[HttpPatch]",
+        "[Route(",
+    ],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%Tests.cs"],
     entry_point_names: &["Main"],
     trait_method_names: &[
@@ -1043,6 +1051,7 @@ static LANG_CUDA: LanguageDef = LanguageDef {
     container_body_kinds: &["field_declaration_list"],
     extract_qualified_method: Some(extract_qualified_method_cuda),
     test_markers: &["TEST(", "TEST_F(", "EXPECT_", "ASSERT_"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%\\_test.cu"],
     entry_point_names: &["main"],
     doc_format: "javadoc",
@@ -1156,6 +1165,7 @@ static LANG_DART: LanguageDef = LanguageDef {
     ],
     container_body_kinds: &["class_body", "extension_body", "enum_body"],
     test_markers: &["@test", "test("],
+    endpoint_markers: &[],
     test_path_patterns: &["%_test.dart", "%/test/%"],
     entry_point_names: &["main"],
     doc_format: "triple_slash",
@@ -1398,6 +1408,7 @@ static LANG_ELIXIR: LanguageDef = LanguageDef {
     container_body_kinds: &["do_block"],
     post_process_chunk: Some(post_process_elixir_elixir as PostProcessChunkFn),
     test_markers: &["test ", "describe "],
+    endpoint_markers: &[],
     test_path_patterns: &["%/test/%", "%_test.exs"],
     entry_point_names: &["start", "init", "handle_call", "handle_cast", "handle_info"],
     trait_method_names: &[
@@ -1743,6 +1754,7 @@ static LANG_FSHARP: LanguageDef = LanguageDef {
     ],
     extract_container_name: Some(extract_container_name_fsharp_fsharp),
     test_markers: &["[<Test>]", "[<Fact>]", "[<Theory>]"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%Tests.fs"],
     entry_point_names: &["main"],
     trait_method_names: &["Equals", "GetHashCode", "ToString", "CompareTo", "Dispose"],
@@ -2432,6 +2444,7 @@ static LANG_HASKELL: LanguageDef = LanguageDef {
     container_body_kinds: &["class_declarations", "instance_declarations"],
     post_process_chunk: Some(post_process_haskell_haskell as PostProcessChunkFn),
     test_markers: &["hspec", "describe", "it ", "prop "],
+    endpoint_markers: &[],
     test_path_patterns: &["%/test/%", "%Spec.hs", "%Test.hs"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -3060,17 +3073,13 @@ fn post_process_java_java(
             &node_text[..node_text.floor_char_boundary(200)]
         };
 
-        if header.contains("@Test")
-            || header.contains("@ParameterizedTest")
-            || header.contains("@RepeatedTest")
-        {
+        // EX-V1.38-2 (#1463): consult LANG_JAVA.{test_markers,endpoint_markers}.
+        if LANG_JAVA.test_markers.iter().any(|m| header.contains(*m)) {
             *chunk_type = ChunkType::Test;
-        } else if header.contains("@GetMapping")
-            || header.contains("@PostMapping")
-            || header.contains("@PutMapping")
-            || header.contains("@DeleteMapping")
-            || header.contains("@PatchMapping")
-            || header.contains("@RequestMapping")
+        } else if LANG_JAVA
+            .endpoint_markers
+            .iter()
+            .any(|m| header.contains(*m))
         {
             *chunk_type = ChunkType::Endpoint;
         }
@@ -3198,6 +3207,14 @@ static LANG_JAVA: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body"],
     post_process_chunk: Some(post_process_java_java as PostProcessChunkFn),
     test_markers: &["@Test", "@ParameterizedTest", "@RepeatedTest"],
+    endpoint_markers: &[
+        "@GetMapping",
+        "@PostMapping",
+        "@PutMapping",
+        "@DeleteMapping",
+        "@PatchMapping",
+        "@RequestMapping",
+    ],
     test_path_patterns: &["%/test/%", "%/tests/%", "%Test.java"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -3352,6 +3369,7 @@ static LANG_JAVASCRIPT: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body"],
     post_process_chunk: Some(post_process_javascript_javascript as PostProcessChunkFn),
     test_markers: &["describe(", "it(", "test("],
+    endpoint_markers: &[],
     test_path_patterns: &["%.test.%", "%.spec.%", "%/tests/%"],
     entry_point_names: &[
         "handler",
@@ -3581,6 +3599,7 @@ static LANG_JULIA: LanguageDef = LanguageDef {
     ],
     post_process_chunk: Some(post_process_julia_julia as PostProcessChunkFn),
     test_markers: &["@test", "@testset"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/test/%", "%_test.jl"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -3647,17 +3666,13 @@ fn post_process_kotlin_kotlin(
         } else {
             &node_text[..node_text.floor_char_boundary(200)]
         };
-        if header.contains("@Test")
-            || header.contains("@ParameterizedTest")
-            || header.contains("@RepeatedTest")
-        {
+        // EX-V1.38-2 (#1463): consult LANG_KOTLIN.{test_markers,endpoint_markers}.
+        if LANG_KOTLIN.test_markers.iter().any(|m| header.contains(*m)) {
             *chunk_type = ChunkType::Test;
-        } else if header.contains("@GetMapping")
-            || header.contains("@PostMapping")
-            || header.contains("@PutMapping")
-            || header.contains("@DeleteMapping")
-            || header.contains("@PatchMapping")
-            || header.contains("@RequestMapping")
+        } else if LANG_KOTLIN
+            .endpoint_markers
+            .iter()
+            .any(|m| header.contains(*m))
         {
             *chunk_type = ChunkType::Endpoint;
         }
@@ -3824,6 +3839,14 @@ static LANG_KOTLIN: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body"],
     post_process_chunk: Some(post_process_kotlin_kotlin),
     test_markers: &["@Test", "@ParameterizedTest"],
+    endpoint_markers: &[
+        "@GetMapping",
+        "@PostMapping",
+        "@PutMapping",
+        "@DeleteMapping",
+        "@PatchMapping",
+        "@RequestMapping",
+    ],
     test_path_patterns: &["%/test/%", "%/tests/%", "%Test.kt"],
     entry_point_names: &["main"],
     trait_method_names: &["equals", "hashCode", "toString", "compareTo", "iterator"],
@@ -4592,6 +4615,7 @@ static LANG_OBJC: LanguageDef = LanguageDef {
     container_body_kinds: &["implementation_definition"],
     post_process_chunk: Some(post_process_objc_objc),
     test_markers: &["- (void)test"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/Tests/%", "%Tests.m"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -4758,6 +4782,7 @@ static LANG_OCAML: LanguageDef = LanguageDef {
     container_body_kinds: &["structure"],
     post_process_chunk: Some(post_process_ocaml_ocaml as PostProcessChunkFn),
     test_markers: &["let%test", "let%expect_test", "let test_"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/test/%", "%_test.ml"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -5027,6 +5052,7 @@ static LANG_PHP: LanguageDef = LanguageDef {
     container_body_kinds: &["declaration_list"],
     post_process_chunk: Some(post_process_php_php),
     test_markers: &["@test", "function test"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%/Tests/%", "%Test.php"],
     trait_method_names: &[
         "__construct",
@@ -5181,6 +5207,7 @@ static LANG_POWERSHELL: LanguageDef = LanguageDef {
     ],
     extract_container_name: Some(extract_container_name_ps_powershell),
     test_markers: &["Describe ", "It ", "Context "],
+    endpoint_markers: &[],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%.Tests.ps1"],
     doc_convention: "Use comment-based help: .SYNOPSIS, .PARAMETER, .OUTPUTS sections.",
     post_process_chunk: Some(post_process_powershell_powershell as PostProcessChunkFn),
@@ -5422,6 +5449,7 @@ static LANG_PYTHON: LanguageDef = LanguageDef {
     ],
     post_process_chunk: Some(post_process_python_python as PostProcessChunkFn),
     test_markers: &["def test_", "pytest"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%\\_test.py", "%/test\\_%"],
     entry_point_names: &["__init__", "setup", "teardown"],
     trait_method_names: &[
@@ -5668,6 +5696,7 @@ static LANG_R: LanguageDef = LanguageDef {
     test_file_suggestion: Some(|stem, parent| format!("{parent}/tests/testthat/test-{stem}.R")),
     post_process_chunk: Some(post_process_r_r as PostProcessChunkFn),
     test_markers: &["test_that", "expect_"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%/testthat/%", "test-%.R", "test_%.R"],
     doc_format: "r_roxygen",
     doc_convention: "Use roxygen2 format: @param, @return, @export tags.",
@@ -6029,6 +6058,7 @@ static LANG_RAZOR: LanguageDef = LanguageDef {
     container_body_kinds: &["declaration_list"],
     post_process_chunk: Some(post_process_razor_razor),
     test_markers: &["[Test]", "[Fact]", "[Theory]", "[TestMethod]"],
+    endpoint_markers: &[],
     entry_point_names: &["Main", "OnInitializedAsync", "OnParametersSetAsync"],
     trait_method_names: &[
         "Equals",
@@ -6118,6 +6148,7 @@ static LANG_RUBY: LanguageDef = LanguageDef {
     ],
     test_file_suggestion: Some(|stem, parent| format!("{parent}/spec/{stem}_spec.rb")),
     test_markers: &["describe ", "it ", "context "],
+    endpoint_markers: &[],
     test_path_patterns: &["%/spec/%", "%/test/%", "%\\_spec.rb", "%\\_test.rb"],
     trait_method_names: &[
         "to_s",
@@ -6340,6 +6371,7 @@ static LANG_RUST: LanguageDef = LanguageDef {
     extract_container_name: Some(extract_container_name_rust_rust),
     post_process_chunk: Some(post_process_rust_rust as PostProcessChunkFn),
     test_markers: &["#[test]", "#[cfg(test)]"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%\\_test.rs"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -6528,6 +6560,7 @@ static LANG_SCALA: LanguageDef = LanguageDef {
     ],
     container_body_kinds: &["template_body"],
     test_markers: &["@Test", "\"should", "it should"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/test/%", "%/tests/%", "%Spec.scala", "%Test.scala"],
     entry_point_names: &["main"],
     trait_method_names: &[
@@ -7357,6 +7390,7 @@ static LANG_SWIFT: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body", "protocol_body"],
     post_process_chunk: Some(post_process_swift_swift),
     test_markers: &["func test"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/Tests/%", "%Tests.swift"],
     entry_point_names: &["main"],
     trait_method_names: &["hash", "encode", "init", "deinit", "description"],
@@ -7584,6 +7618,7 @@ static LANG_TYPESCRIPT: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body"],
     post_process_chunk: Some(post_process_typescript_typescript as PostProcessChunkFn),
     test_markers: &["describe(", "it(", "test("],
+    endpoint_markers: &[],
     test_path_patterns: &["%.test.%", "%.spec.%", "%/tests/%"],
     entry_point_names: &[
         "handler",
@@ -7876,6 +7911,7 @@ static LANG_VBNET: LanguageDef = LanguageDef {
     ],
     post_process_chunk: Some(post_process_vbnet_vbnet),
     test_markers: &["<Test>", "<Fact>", "<Theory>", "<TestMethod>"],
+    endpoint_markers: &[],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%Tests.vb"],
     entry_point_names: &["Main"],
     trait_method_names: &[
@@ -8456,6 +8492,7 @@ static LANG_ZIG: LanguageDef = LanguageDef {
     ],
     post_process_chunk: Some(post_process_zig_zig),
     test_markers: &["test "],
+    endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%_test.zig"],
     entry_point_names: &["main"],
     doc_convention: "Use /// doc comments describing parameters and return values.",
