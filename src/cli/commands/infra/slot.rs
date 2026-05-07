@@ -203,7 +203,22 @@ fn collect_slot_entry(project_cqs_dir: &Path, name: &str, active: &str) -> SlotL
     let (chunks, model, dim) = match cqs::Store::open_readonly_small(&index_path) {
         Ok(store) => {
             let count = store.chunk_count().ok();
-            let model = store.stored_model_name();
+            // EH-V1.38-4 (#1463): mirror the open-store warn ladder for
+            // metadata-read failures so a corrupt-but-openable slot
+            // surfaces in journald instead of showing a blank model
+            // column identical to a fresh slot.
+            let model = match store.try_stored_model_name() {
+                Ok(opt) => opt,
+                Err(e) => {
+                    tracing::warn!(
+                        slot = name,
+                        error = %e,
+                        path = %index_path.display(),
+                        "Slot metadata read failed during listing — model column will be empty"
+                    );
+                    None
+                }
+            };
             let dim = u64::try_from(store.dim()).ok();
             (count, model, dim)
         }
