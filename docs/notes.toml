@@ -1885,3 +1885,17 @@ mentions = [
     "skill-pattern",
     "cluster-PR",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "v1.38.0 audit cycle final (2026-05-07, 6 more cluster PRs #1544-#1549, 23 cluster PRs total): pushed past the earlier 'remaining ~6 architectural items' punchlist by treating the medium-effort items as their own focused clusters. Highest-leverage findings closed: PL-V1.38-4 (WSL-DrvFS detector unification — fixes second-save-drop on custom automount.root), SHL-V1.38-9 (3 summary_queue env knobs), EX-V1.38-2 (test/endpoint_markers consolidation in 3 langs via LanguageDef field), EX-V1.38-3 partial (reranker batch+max_length in [reranker] TOML), EX-V1.38-6 (Markdown call extractor → chunk_call_parser trait field). ~58 findings closed across the cycle. ~6 items remain, all genuinely big (API-V1.38-6/9/10, DS-V1.38-4, SHL-V1.38-6, PL-V1.38-2)."
+mentions = [
+    "1.38.0",
+    "audit",
+    "#1463",
+    "PL-V1.38-4",
+    "SHL-V1.38-9",
+    "EX-V1.38-2",
+    "EX-V1.38-3",
+    "EX-V1.38-6",
+]

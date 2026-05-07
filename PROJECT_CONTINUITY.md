@@ -2,7 +2,27 @@
 
 ## Right Now
 
-**v1.38.0 audit cycle continuation (2026-05-07 morning, 14 more cluster PRs #1528–#1542)**: building on the initial 13 cluster PRs from the prior session, this wave processed the remaining P2/P3 items in 14 cluster PRs covering ~52 audit findings. Plus #1531 test-flake fix (`test_model_swap_same_preset_is_noop` mtime equality → blake3 content hash) and #1527 tears housekeeping. After this wave, the audit umbrella has ~6 items left, all bigger architectural / cross-cutting changes.
+**v1.38.0 audit cycle continuation extended (2026-05-07 late morning, 6 more cluster PRs #1544–#1549)**: pushed past the earlier "remaining ~6 architectural items" punchlist; closed all but a few that are genuinely larger refactors. Each cluster delivered focused mechanical changes — the audit-fix prompts had enough specificity that even the medium-effort items collapsed to clean PRs.
+
+**Cluster PRs in this extension (#1544–#1549)**:
+- **#1544** (Cluster BB) — API-V1.38-10 concrete-bug portion: `--limit 0` rejected at parse time across 8 args structs (SearchArgs/GatherArgs/ScoutArgs/RelatedArgs/WhereArgs/PlanArgs/TaskArgs + top-level Cli). Test pin updated. The structural LimitArg fan-out (61 caller sites) deferred.
+- **#1545** (Cluster CC) — SHL-V1.38-9: `summary_queue` 3 hardcoded constants → env-overridable. New `CQS_SUMMARY_FLUSH_ROWS` (64), `CQS_SUMMARY_FLUSH_INTERVAL_MS` (200), `CQS_SUMMARY_HARD_CAP_ROWS` (10000). Single `summary_queue_config()` resolver; `hard_cap_rows` promoted from const to instance field.
+- **#1546** (Cluster DD) — PL-V1.38-4: WSL-DrvFS detector unification. Promoted `parse_wsl_automount_root` + new `wsl_automount_root_or_default()` to `crate::config`. Both `is_wsl_drvfs_path` and `is_under_wsl_automount` now share one OnceLock cache. Closes a real second-save-drop bug for operators with custom `automount.root` (`/win/` instead of `/mnt/`) where `coarse_fs_resolution` was returning 0 instead of 2s.
+- **#1547** (Cluster EE) — EX-V1.38-2: `LanguageDef.endpoint_markers` field added. C#/Java/Kotlin post-processors consult `LANG_X.test_markers` and `LANG_X.endpoint_markers` instead of inline literals. Python stays inline (decorator-text walking, not pure substring).
+- **#1548** (Cluster FF) — EX-V1.38-3 partial: reranker `batch` + `max_length` configurable in `.cqs.toml [reranker]`. Precedence: env > TOML > computed default. `pool_max` / `over_retrieval` deferred (need config plumbing through `cli/limits.rs`).
+- **#1549** (Cluster GG) — EX-V1.38-6: `LanguageDef.chunk_call_parser` trait field. Markdown registers `extract_calls_from_markdown_chunk`; the `Language::Markdown` literal in `extract_calls_from_chunk` is gone.
+
+**Audit umbrella (#1463) state after this extension**:
+- ✅ Almost everything else closed across the 23 cluster PRs (#1514–#1549) of the v1.38 cycle. ~58 findings closed total.
+- ⏳ **Remaining items, all genuinely big**:
+  - **API-V1.38-6** (top-level Cli flags ignored on subcommand) — needs `global = true` on 20+ flags + handler updates OR shared `SearchKnobsArgs` struct flatten across 7 commands
+  - **API-V1.38-9** (HfHub error variant collapse) — multi-error-source rename touching `EmbedderError` + `RerankerError` constructors at ~20 sites
+  - **API-V1.38-10** structural fan-out (LimitArg → 7 sister args) — 61 caller sites
+  - **DS-V1.38-4** (HNSW load_with_dim TOCTOU) — multi-PR architectural change
+  - **SHL-V1.38-6** (parse_channel_depth byte-budget) — bigger refactor
+  - **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner
+
+**v1.38.0 audit cycle continuation (2026-05-07 morning, 14 cluster PRs #1528–#1542)**: building on the initial 13 cluster PRs from the prior session, this wave processed the remaining P2/P3 items in 14 cluster PRs covering ~52 audit findings. Plus #1531 test-flake fix (`test_model_swap_same_preset_is_noop` mtime equality → blake3 content hash) and #1527 tears housekeeping.
 
 **Cluster PRs in this continuation (#1528–#1542, 14 PRs + #1531 flake)**:
 - **#1528** (Cluster M, 10 P3) — mechanical sweep: API-V1.38-5 `pub(super)`, PL-V1.38-6 cfg(unix), EH-V1.38-6 hook NotFound vs perm, RB-V1.38-6/7 regex `.expect()`, AC-V1.38-8 vendored slash warn, EX-V1.38-10 `Language::all_variants()`, OB-V1.38-3 (synonym/classifier/SPLADE α overlay info logs), OB-V1.38-4 (wait_for_batch span+elapsed_ms), OB-V1.38-5 (CAGRA fall-through info)
