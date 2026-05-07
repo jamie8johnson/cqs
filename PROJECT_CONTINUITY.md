@@ -2,7 +2,26 @@
 
 ## Right Now
 
-**v1.38.0 audit cycle continuation extended (2026-05-07 late morning, 6 more cluster PRs #1544–#1549)**: pushed past the earlier "remaining ~6 architectural items" punchlist; closed all but a few that are genuinely larger refactors. Each cluster delivered focused mechanical changes — the audit-fix prompts had enough specificity that even the medium-effort items collapsed to clean PRs.
+**v1.38.0 audit cycle TC-HAP test-coverage sweep (2026-05-07 late morning, 8 more cluster PRs #1556–#1564)**: per-finding test-coverage backfill of the TC-HAP-V1.38-* sub-items on #1463, picking up where the structural/behavioral cluster work left off. Added end-to-end CLI binary tests for the previously-untested `cqs hook install/status`, `cqs dead`, `cqs explain`, `cqs index --model` drift, `cqs project search` filter behavior, `cqs ref reindex --llm-summaries` validation, `cqs trace --cross-project`, plus strengthened `test_reranker_new` and aligned `test_save_writes_file_with_0o600_perms` cfg gate with production. Total ~17 new tests across 8 PRs.
+
+**Cluster PRs in this TC-HAP sweep (#1556–#1564)**:
+- **#1556** (Cluster MM) — TC-HAP-V1.38-7 `cmd_install` + `cmd_status` end-to-end test for git hook install/status. Surfaced the `--no-overwrite` flag-naming gotcha (the actual default install correctly skips foreign hooks).
+- **#1557** (Cluster NN) — TC-HAP-V1.38-5 `cmd_dead` end-to-end test. Pins `data.dead[*].name` envelope.
+- **#1558** (Cluster OO) — TC-HAP-V1.38-6 `cmd_explain` end-to-end test. Single test covers both call directions in one seeded store: `func_b` callers contains `func_a`; `func_a` callees contains `func_b`.
+- **#1559** (Cluster PP) — TC-HAP-V1.38-9 strengthened `test_reranker_new` (now pins lazy-load contract, max_length default, section.is_none()) plus new `test_reranker_with_section_honours_max_length` for EX-V1.38-3 TOML fallback.
+- **#1560** (Cluster QQ) — TC-HAP-V1.38-4 `cqs index --model` drift end-to-end test. Both bail and pass branches.
+- **#1561** (Cluster RR) — TC-HAP-V1.38-10 `test_save_writes_file_with_0o600_perms` cfg gate aligned with production (`#[cfg(unix)]` instead of `#[cfg(all(unix, target_os = "linux"))]`).
+- **#1562** (Cluster SS) — TC-HAP-V1.38-1 `cqs project search` filter behavior. Extracted `build_project_search_filter` helper + 9 tests pinning the precedence cascade.
+- **#1563** (Cluster TT) — TC-HAP-V1.38-2 `cqs ref reindex` LLM/HyDE flag-dependency end-to-end test. Pins both bails (`--improve-docs requires --llm-summaries`, `--improve-all requires --improve-docs`) plus sanity counterpart.
+- **#1564** (Cluster UU) — TC-HAP-V1.38-8 `cqs trace --cross-project` end-to-end test. Surfaced and FIXED a real bug in `CrossProjectContext::from_config`: hardcoded `.cqs/index.db` post-#1105 silently broke ALL 5 cross-project commands (trace, callers, deps, impact, test-map) on slot-migrated projects. Fix: use `crate::resolve_index_db` slot-aware resolver.
+
+**TC-HAP-V1.38-* status post-sweep**: 1, 2, 4, 5, 6, 7, 8, 9, 10 closed. Only TC-HAP-V1.38-3 (`enrichment_pass` itself untested) deferred — needs a real embedder load (~91 MB), no cheap unit-test path without mocking.
+
+**Big bug surfaced**: `cross_project::from_config` slot-blindness was a 100% silent break on all post-#1105 projects using `--cross-project`. Found and fixed in #1564. Existing 12 cross_project unit tests didn't catch it because they construct `CrossProjectContext::new(stores)` directly, bypassing `from_config`.
+
+---
+
+**v1.38.0 audit cycle continuation extended (2026-05-07 morning, 6 more cluster PRs #1544–#1549)**: pushed past the earlier "remaining ~6 architectural items" punchlist; closed all but a few that are genuinely larger refactors. Each cluster delivered focused mechanical changes — the audit-fix prompts had enough specificity that even the medium-effort items collapsed to clean PRs.
 
 **Cluster PRs in this extension (#1544–#1549)**:
 - **#1544** (Cluster BB) — API-V1.38-10 concrete-bug portion: `--limit 0` rejected at parse time across 8 args structs (SearchArgs/GatherArgs/ScoutArgs/RelatedArgs/WhereArgs/PlanArgs/TaskArgs + top-level Cli). Test pin updated. The structural LimitArg fan-out (61 caller sites) deferred.
