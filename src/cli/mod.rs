@@ -1116,12 +1116,23 @@ mod tests {
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 100);
 
-        // Verify that limit 0 gets clamped to 1
+        // API-V1.38-10 (#1463): `-n 0` is now rejected at parse time
+        // (`value_parser = parse_nonzero_usize`) instead of silently
+        // clamped to 1. Pin the new contract: clap rejects 0 with a
+        // clear error rather than producing a usable cli that the
+        // dispatcher then has to fix up.
         let argv2 = ["cqs", "-n", "0", "query"];
-        let mut cli = Cli::try_parse_from(argv2).unwrap();
-        config::apply_config_defaults_with_argv(&mut cli, &config, argv2);
-        cli.limit = cli.limit.clamp(1, 100);
-        assert_eq!(cli.limit, 1);
+        let result = Cli::try_parse_from(argv2);
+        match result {
+            Ok(_) => panic!("--limit 0 must be rejected at parse time"),
+            Err(e) => {
+                let err = e.to_string();
+                assert!(
+                    err.contains("value must be at least 1"),
+                    "rejection message must guide the operator: got {err}"
+                );
+            }
+        }
 
         // Verify normal limits pass through
         let argv3 = ["cqs", "-n", "10", "query"];

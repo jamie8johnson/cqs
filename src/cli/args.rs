@@ -118,7 +118,11 @@ pub(crate) struct SearchArgs {
     pub query: String,
 
     /// Max results
-    #[arg(short = 'n', long, default_value = "5")]
+    ///
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time —
+    /// search with limit=0 is semantically meaningless and previously
+    /// returned an empty result set silently.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
 
     /// Min similarity threshold
@@ -268,7 +272,8 @@ pub(crate) struct GatherArgs {
     pub direction: cqs::GatherDirection,
     /// Max chunks to return.
     /// API-V1.36-8 (#1459): default harmonised to 5 across the CLI.
-    #[arg(short = 'n', long, default_value = "5")]
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
     /// Maximum token budget (overrides --limit with token-based packing)
     #[arg(long, value_parser = parse_nonzero_usize)]
@@ -311,7 +316,8 @@ pub(crate) struct ScoutArgs {
     /// Search query to investigate
     pub query: String,
     /// Max file groups to return
-    #[arg(short = 'n', long, default_value = "5")]
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
     /// Maximum token budget (includes chunk content within budget)
     #[arg(long, value_parser = parse_nonzero_usize)]
@@ -469,7 +475,8 @@ pub(crate) struct RelatedArgs {
     /// Function name or file:function
     pub name: String,
     /// Max results per category
-    #[arg(short = 'n', long, default_value = "5")]
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
 }
 
@@ -517,7 +524,8 @@ pub(crate) struct WhereArgs {
     pub description: String,
     /// Max file suggestions.
     /// API-V1.36-8 (#1459): default harmonised to 5 across the CLI.
-    #[arg(short = 'n', long, default_value = "5")]
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
 }
 
@@ -527,7 +535,8 @@ pub(crate) struct PlanArgs {
     /// Task description to plan
     pub description: String,
     /// Max scout file groups
-    #[arg(short = 'n', long, default_value = "5")]
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
     /// Maximum token budget
     #[arg(long, value_parser = parse_nonzero_usize)]
@@ -543,7 +552,8 @@ pub(crate) struct TaskArgs {
     /// Task description
     pub description: String,
     /// Max file groups to return
-    #[arg(short = 'n', long, default_value = "5")]
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
     /// Maximum token budget (waterfall across sections)
     #[arg(long, value_parser = parse_nonzero_usize)]

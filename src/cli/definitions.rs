@@ -154,7 +154,12 @@ pub struct Cli {
     pub query: Option<String>,
 
     /// Max results
-    #[arg(short = 'n', long, default_value = "5")]
+    ///
+    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time — search
+    /// with limit=0 is semantically meaningless and previously coerced
+    /// (via the dispatcher's `cli.limit.clamp(1, 100)` at dispatch.rs:204)
+    /// instead of failing fast at the boundary.
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
 
     /// Min similarity threshold
