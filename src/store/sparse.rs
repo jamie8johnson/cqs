@@ -1051,4 +1051,73 @@ mod tests {
             assert_eq!(c2.1[0].0, 21, "c2 must contain new token 21 (v2)");
         });
     }
+
+    /// TC-ADV-V1.38-3 (#1463): pin write-path behavior for non-finite
+    /// weights. The read path (P1-21/31/37) filters NaN/Inf at load
+    /// time; the write path at line 218/231 binds the f32 directly via
+    /// `push_bind`. Document the current contract so a future write-side
+    /// scrubber is a deliberate change.
+    ///
+    /// Current behavior (pinned by this test):
+    /// - `+Infinity` weight: SQLite stores `Inf`; load_all_sparse_vectors
+    ///   filters it out at read time so the row is silently skipped.
+    /// - `NaN` weight: SQLite's binding of NaN is implementation-defined;
+    ///   may store NaN (filtered at read) or coerce. We assert the
+    ///   upsert succeeds without panic and that the read-side filter
+    ///   masks any non-finite values from downstream search.
+    ///
+    /// The "right" long-term fix is to scrub at write-time so the bytes
+    /// never reach disk. This test will need flipping when that lands.
+    #[test]
+    fn test_upsert_sparse_vectors_inf_weight_filtered_at_read() {
+        let (store, _dir) = setup_store();
+        insert_test_chunk(&store, "c1");
+        // Mix one finite weight with one +Inf weight.
+        let result = store.upsert_sparse_vectors(&[(
+            "c1".to_string(),
+            vec![(1u32, 0.5f32), (2u32, f32::INFINITY)],
+        )]);
+        assert!(
+            result.is_ok(),
+            "upsert with +Inf weight currently succeeds (write-path doesn't validate); err = {:?}",
+            result.err()
+        );
+        // Read-side filter must mask non-finite: only the finite token 1
+        // survives the load.
+        let loaded = store.load_all_sparse_vectors().unwrap();
+        let c1 = &loaded[0];
+        assert!(
+            c1.1.iter().all(|(_, w)| w.is_finite()),
+            "read path must filter non-finite weights: {:?}",
+            c1.1
+        );
+        assert!(
+            c1.1.iter().any(|(t, _)| *t == 1),
+            "finite weight survives the round-trip"
+        );
+    }
+
+    #[test]
+    fn test_upsert_sparse_vectors_nan_weight_does_not_panic() {
+        let (store, _dir) = setup_store();
+        insert_test_chunk(&store, "c1");
+        // NaN binding behavior is sqlx-dependent; some drivers coerce
+        // NaN→NULL, which would violate the NOT NULL constraint and
+        // surface as Err. We accept either outcome — what we pin is
+        // "doesn't panic" and "if it succeeds, read-side filter masks".
+        let result = store.upsert_sparse_vectors(&[("c1".to_string(), vec![(1u32, f32::NAN)])]);
+        if let Ok(_count) = result {
+            let loaded = store.load_all_sparse_vectors().unwrap();
+            for (_id, weights) in &loaded {
+                for (_, w) in weights {
+                    assert!(
+                        w.is_finite(),
+                        "NaN must not survive the round-trip: weight = {w}"
+                    );
+                }
+            }
+        }
+        // If Err, the contract is "writes reject NaN" — also acceptable
+        // and pinned by the assertion that we got Ok-or-Err, not panic.
+    }
 }
