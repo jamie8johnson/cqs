@@ -78,7 +78,10 @@ use rebuild::{
 use rebuild::{RebuildOutcome, RebuildResult};
 
 mod gc;
-use gc::{prune_last_indexed_mtime, run_daemon_periodic_gc, run_daemon_startup_gc};
+use gc::{
+    prune_last_indexed_mtime, prune_last_indexed_mtime_by_age, run_daemon_periodic_gc,
+    run_daemon_startup_gc,
+};
 #[cfg(test)]
 use gc::{LAST_INDEXED_PRUNE_AGE_SECS, LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT};
 
@@ -1246,6 +1249,14 @@ pub fn cmd_watch(
     }
     let mut last_periodic_gc = std::time::Instant::now();
 
+    // RM-V1.38-7 (#1463): cadence for the age-only prune of
+    // `last_indexed_mtime`. Pre-fix the prune only fired when the map
+    // crossed `CQS_WATCH_PRUNE_SIZE_THRESHOLD`; daemons running below
+    // the threshold for weeks accumulated stale entries forever. This
+    // tick fires once per hour from the idle branch.
+    const LAST_INDEXED_AGE_PRUNE_INTERVAL_SECS: u64 = 3600;
+    let mut last_age_prune = std::time::Instant::now();
+
     // #1182 Layer 2: periodic full-tree reconciliation cadence. Same
     // gating model as the GC tick — `--serve` only, opt-out via
     // `CQS_WATCH_RECONCILE=0`. Initialised to "now" so the first tick
@@ -1423,6 +1434,27 @@ pub fn cmd_watch(
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
                     drop(lock);
                 } else {
+                    // RM-V1.38-7 (#1463): age-only prune fires hourly on
+                    // idle ticks regardless of map size. The size-gated
+                    // `prune_last_indexed_mtime` still runs in the event
+                    // path; this idle-tick variant catches daemons that
+                    // sit below the threshold but accumulate stale
+                    // entries from deleted/moved files.
+                    if last_age_prune.elapsed()
+                        >= Duration::from_secs(LAST_INDEXED_AGE_PRUNE_INTERVAL_SECS)
+                    {
+                        let removed =
+                            prune_last_indexed_mtime_by_age(&mut state.last_indexed_mtime);
+                        if removed > 0 {
+                            tracing::debug!(
+                                removed,
+                                remaining = state.last_indexed_mtime.len(),
+                                "Age-only prune of last_indexed_mtime fired (idle tick)"
+                            );
+                        }
+                        last_age_prune = std::time::Instant::now();
+                    }
+
                     cycles_since_clear += 1;
                     // Clear embedder session and HNSW index after ~5 minutes idle
                     // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.

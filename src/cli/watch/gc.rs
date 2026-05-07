@@ -61,6 +61,20 @@ pub(super) fn prune_last_indexed_mtime(map: &mut HashMap<PathBuf, SystemTime>) -
     if map.len() <= last_indexed_prune_size_threshold() {
         return 0;
     }
+    prune_last_indexed_mtime_by_age(map)
+}
+
+/// RM-V1.38-7 (#1463): age-only prune of `last_indexed_mtime`. Identical
+/// retention policy to [`prune_last_indexed_mtime`] but ignores the
+/// size-threshold gate. Called from the watch loop's idle branch on a
+/// time-shaped cadence so a daemon that sits below the size threshold
+/// for weeks still ages out stale entries (deleted/moved files) instead
+/// of accumulating them indefinitely. Pre-fix the trigger was peak-shaped:
+/// only when the map crossed the threshold did the prune fire, and the
+/// trigger never re-armed once the map quiesced below it.
+///
+/// Cheap: pure in-memory `SystemTime` comparison. No I/O.
+pub(super) fn prune_last_indexed_mtime_by_age(map: &mut HashMap<PathBuf, SystemTime>) -> usize {
     let before = map.len();
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS))
