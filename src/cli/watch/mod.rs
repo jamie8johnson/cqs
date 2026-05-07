@@ -1670,18 +1670,29 @@ pub fn cmd_watch(
         let poll = Duration::from_millis(50);
         let mut handle_opt = Some(handle);
         while std::time::Instant::now() < deadline {
-            match handle_opt.as_ref() {
-                Some(h) if h.is_finished() => {
-                    if let Err(e) = handle_opt.take().unwrap().join() {
+            // RB-V1.38-10 (#1463): drain via `if let Some(h) = handle_opt
+            // .take_if(...)` so the unwrap-after-`as_ref` brittleness goes
+            // away. Refactor adding a third take site between the
+            // `as_ref` and `take` would silently turn the old `.unwrap()`
+            // into a daemon-shutdown panic.
+            let finished = handle_opt
+                .as_ref()
+                .map(|h| h.is_finished())
+                .unwrap_or(false);
+            if finished {
+                if let Some(h) = handle_opt.take() {
+                    if let Err(e) = h.join() {
                         tracing::warn!(?e, "Daemon socket thread panicked during shutdown");
                     } else {
                         tracing::info!("Daemon socket thread joined cleanly");
                     }
-                    break;
                 }
-                Some(_) => std::thread::sleep(poll),
-                None => break,
+                break;
             }
+            if handle_opt.is_none() {
+                break;
+            }
+            std::thread::sleep(poll);
         }
         if handle_opt.is_some() {
             // P3.22: log audit verified — the warn fires whenever the deadline
@@ -1711,9 +1722,17 @@ pub fn cmd_watch(
             let poll = Duration::from_millis(100);
             let mut handle_opt = Some(handle);
             while std::time::Instant::now() < deadline {
-                match handle_opt.as_ref() {
-                    Some(h) if h.is_finished() => {
-                        if let Err(e) = handle_opt.take().unwrap().join() {
+                // RB-V1.38-10 (#1463): same drain shape as the daemon
+                // socket-thread join above. The `as_ref` view followed
+                // by `take().unwrap()` was safe today but brittle to a
+                // refactor adding an intervening `take()`.
+                let finished = handle_opt
+                    .as_ref()
+                    .map(|h| h.is_finished())
+                    .unwrap_or(false);
+                if finished {
+                    if let Some(h) = handle_opt.take() {
+                        if let Err(e) = h.join() {
                             tracing::warn!(
                                 ?e,
                                 "Background HNSW rebuild thread panicked during shutdown"
@@ -1721,11 +1740,13 @@ pub fn cmd_watch(
                         } else {
                             tracing::info!("Background HNSW rebuild thread joined cleanly");
                         }
-                        break;
                     }
-                    Some(_) => std::thread::sleep(poll),
-                    None => break,
+                    break;
                 }
+                if handle_opt.is_none() {
+                    break;
+                }
+                std::thread::sleep(poll);
             }
             if handle_opt.is_some() {
                 tracing::warn!(

@@ -119,7 +119,12 @@ pub(super) fn extract_field_names(content: &str, language: Language) -> Vec<Stri
                 // Strip pointer/reference markers (C/C++)
                 name.map(|n| n.trim_start_matches(['*', '&']))
             }
-            FieldStyle::None => unreachable!(),
+            // RB-V1.38-9 (#1463): exhaustive match — `FieldStyle::None`
+            // is filtered by the early-return at line 84, but the
+            // type-level invariant restoration here means a future
+            // fourth variant on `FieldStyle` is a compile error instead
+            // of a runtime panic on every source file.
+            FieldStyle::None => return Vec::new(),
         };
 
         if let Some(name) = validate_field_name(field) {
