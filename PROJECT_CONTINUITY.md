@@ -19,15 +19,16 @@
 
 **Big bug surfaced**: `cross_project::from_config` slot-blindness was a 100% silent break on all post-#1105 projects using `--cross-project`. Found and fixed in #1564. Existing 12 cross_project unit tests didn't catch it because they construct `CrossProjectContext::new(stores)` directly, bypassing `from_config`.
 
-**Two more cluster PRs (#1566–#1567)** after the TC-HAP sweep, both lighter follow-up cleanup:
+**Four more cluster PRs (#1566–#1567, #1569–#1570)** after the TC-HAP sweep, picking off the architectural punchlist:
 - **#1566** (Cluster VV) — SHL-V1.38-6: `parse_channel_depth` default halved 512 → 256. Cuts the worst-case buffered ParsedBatch ceiling from ~256 MB to ~128 MB on large repos. Practical fill level is ~10 messages so the cap reduction is harmless; CQS_PARSE_CHANNEL_DEPTH env override remains.
 - **#1567** (Cluster WW) — API-V1.38-9: `EmbedderError::HfHub` renamed → `EmbedderError::ModelDownload` for naming parity with `RerankerError::ModelDownload`. The full `AuxModelError::Download` collapse via `#[from]` is deferred since the embedder's HF download path doesn't currently route through `aux_model::resolve` — variant-name harmonization captures the consistency win without restructuring the resolver chain.
+- **#1569** (Cluster XX) — API-V1.38-10 structural fan-out: 8 inline `pub limit: usize` definitions across SearchArgs/GatherArgs/ScoutArgs/SimilarArgs/RelatedArgs/WhereArgs/PlanArgs/TaskArgs converted to `#[command(flatten)] pub limit_arg: LimitArg`. LimitArg gains the `parse_nonzero_usize` gate so the 7 graph commands already on it also reject `--limit 0` at parse time. ~25 caller sites updated `args.limit` → `args.limit_arg.limit`.
+- **#1570** (Cluster YY) — DS-V1.38-4 easy mitigation: file-existence check in `HnswIndex::load_with_dim` moved INSIDE the shared-lock critical section, closing the TOCTOU window where a concurrent `save()` could rename files between the reader's existence check and lock acquisition. Bundle-rename atomic refactor for the half-renamed-set hazard remains deferred.
 
-**Audit umbrella (#1463) state after this entire post-summary sweep**: ~62 findings closed across 30+ cluster PRs of the v1.38 cycle. Truly remaining items are all genuinely big architectural refactors:
-- API-V1.38-6 (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Bigger than expected.
-- API-V1.38-10 structural fan-out (LimitArg → 7 sister args, 61 caller sites)
-- DS-V1.38-4 (HNSW load_with_dim TOCTOU) — multi-PR architectural change
-- PL-V1.38-2 (SPLADE Windows umask) — needs Windows test runner
+**Audit umbrella (#1463) state after this entire post-summary sweep**: ~64 findings closed across 33+ cluster PRs of the v1.38 cycle. Truly remaining items shrunk to:
+- **API-V1.38-6** (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Plus the underlying `cqs::scout()` lib function doesn't accept filter knobs at all — bigger than the audit estimated.
+- **DS-V1.38-4 deeper hazard** (HNSW half-renamed-set under a lock-then-rename window) — needs bundle-into-single-file refactor with a migration path for existing indexes.
+- **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner.
 
 Plus 12 P4 carry-overs all on tracking issues (#1512 Windows daemon, #1461 Windows ACL, etc.) requiring infrastructure that isn't on this Linux/WSL workstation.
 

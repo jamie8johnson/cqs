@@ -4,7 +4,7 @@ Audit date: 2026-05-06
 Source: `docs/audit-findings.md` (154 findings across 16 categories, batches 1+2)
 Calibration: matches `docs/audit-triage-v1.36.2-final.md` priority matrix.
 
-> **Cycle status (2026-05-07):** ~58 findings closed across 25 cluster PRs (#1514–#1552). The per-row `Status` column in this document is a **snapshot at audit time** and was not updated as cluster PRs landed. **Canonical closure list lives in the [#1463 umbrella issue comment](https://github.com/jamie8johnson/cqs/issues/1463#issuecomment-4395768972).** Items still pending are all genuinely big — multi-PR architectural changes or platform-specific scaffolding (API-V1.38-6/9/10, DS-V1.38-4, SHL-V1.38-6, PL-V1.38-2, plus 12 P4 carry-overs).
+> **Cycle status (2026-05-07):** ~64 findings closed across 33+ cluster PRs (#1514–#1570). The per-row `Status` column in this document is a **snapshot at audit time** and was updated periodically as cluster PRs landed. **Canonical closure list lives in the [#1463 umbrella issue comment](https://github.com/jamie8johnson/cqs/issues/1463#issuecomment-4395768972).** Truly remaining items: API-V1.38-6 (clap conflict — bigger than the audit estimated), DS-V1.38-4 deeper hazard (bundle-rename atomic refactor for HNSW save), PL-V1.38-2 (Windows runner), plus 12 P4 carry-overs on tracking issues.
 
 ## Summary by Priority
 
@@ -303,7 +303,7 @@ After these 10 PRs: P3 cleanup batch (single PR per category — doc tweaks, min
 ### Data Safety
 | ID | Title | Difficulty | Status |
 |---|---|---|---|
-| DS-V1.38-4 | HNSW `load_with_dim` existence check before shared lock — concurrent saver renames files out from under reader | medium | pending |
+| DS-V1.38-4 | HNSW `load_with_dim` existence check before shared lock — concurrent saver renames files out from under reader | medium | ✅ #1570 (easy mitigation; bundle-rename for half-state hazard deferred) |
 | DS-V1.38-8 | v26→v27 migration leaves `embedding_base IS NULL` rows un-flagged for re-embed | medium | pending |
 
 ### Test Coverage (happy path)
@@ -325,8 +325,8 @@ After these 10 PRs: P3 cleanup batch (single PR per category — doc tweaks, min
 | API-V1.38-5 | `Cli::resolved_model` `pub` instead of `pub(super)` | easy | pending |
 | API-V1.38-7 | `ExportModel.dim` is `Option<u64>` while every other dim field is `usize` | easy | pending |
 | API-V1.38-8 | Two flags for the same semantic — `--wait-secs` (status) vs `--require-fresh-secs` (eval) | easy | pending |
-| API-V1.38-9 | `EmbedderError::HfHub(String)` and `RerankerError::ModelDownload(String)` sibling stringified errors | medium | pending |
-| API-V1.38-10 | `LimitArg` flattened in 6 places; inline `limit: usize` still in 7 sister args | easy | pending |
+| API-V1.38-9 | `EmbedderError::HfHub(String)` and `RerankerError::ModelDownload(String)` sibling stringified errors | medium | ✅ #1567 (variant-name harmonization; full type collapse via `AuxModelError` deferred — embedder doesn't route through aux_model::resolve) |
+| API-V1.38-10 | `LimitArg` flattened in 6 places; inline `limit: usize` still in 7 sister args | easy | ✅ #1544 (concrete `--limit 0` rejection) + ✅ #1569 (structural fan-out across 8 sister args) |
 
 ### Error Handling
 | ID | Title | Difficulty | Status |
@@ -361,7 +361,7 @@ After these 10 PRs: P3 cleanup batch (single PR per category — doc tweaks, min
 | SHL-V1.38-2 | `--require-fresh-secs` capped at hardcoded `600u64` (not env-overridable) | easy | pending |
 | SHL-V1.38-3 | `PIPELINE_FAN_OUT_LIMIT = 50` silently truncates — no env override | easy | pending |
 | SHL-V1.38-5 | `STREAM_BATCH_SIZE = 1024` UMAP path dim-blind, no env | easy | pending |
-| SHL-V1.38-6 | `parse_channel_depth() = 512` ignores file size + chunk fan-out | easy | pending |
+| SHL-V1.38-6 | `parse_channel_depth() = 512` ignores file size + chunk fan-out | easy | ✅ #1566 (default halved 512 → 256; full byte-budget derivation deferred) |
 | SHL-V1.38-7 | LLM-pass `PAGE_SIZE = 500` literal duplicated in two files, no env | easy | pending |
 | SHL-V1.38-8 | Reconcile streaming `BATCH = 1000` files hardcoded | easy | pending |
 | SHL-V1.38-9 | `summary_queue` thresholds (64/200ms/10_000) hardcoded | medium | pending |
