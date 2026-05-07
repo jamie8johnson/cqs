@@ -2,400 +2,95 @@
 
 ## Right Now
 
-**v1.39.0 shipped** — 2026-05-07 afternoon. Minor release. 88 commits since v1.38.0 across three threads: (a) v1.38.0-cohort audit follow-ups #1487–#1511, (b) the post-v1.38 audit cycle of 154 findings catalogued in PR #1515 (#1514 et seq., shipped across ~33 cluster PRs from #1514 through #1570), (c) post-cycle hardening of the watch/reindex path against daemon crashes (#1572, #1575, #1577). Tag `v1.39.0` pushed; crates.io published (cqs 1.39.0 + cqs-macros 0.1.0 — first publish of the proc-macro crate after #1495's split); GitHub Release auto-building from `.github/workflows/release.yml`.
+**v1.39.0 shipped** — 2026-05-07. Minor release on crates.io (cqs 1.39.0 + cqs-macros 0.1.0 — first publish of the proc-macro crate after #1495's split). 88 commits since v1.38.0 across three threads:
+- v1.38.0-cohort audit follow-ups (#1487–#1511)
+- post-v1.38 audit cycle of 154 findings catalogued in PR #1515 — ~64 closed across ~33 cluster PRs (#1514–#1570)
+- post-cycle hardening of the watch/reindex path (#1572, #1575, #1577)
 
-**Operational note from this release**: #1495's `cqs-macros` workspace split (which landed AFTER v1.38.0 was tagged) had `publish = false`, blocking `cargo publish -p cqs` for v1.39.0 with "no matching package named cqs-macros found". Fixed in #1579: dropped the publish=false flag, filled in standard Cargo.toml metadata (license, repository, keywords, categories), then published cqs-macros 0.1.0 first followed by cqs 1.39.0. Going forward both crates need version bumps coordinated whenever cqs-macros's surface changes.
-
-**Headline operator-visible changes in this release**:
-- Daemon stops SIGFPE'ing on EmbeddingGemma reindex (#1577 TRT-incompatibility blocklist; root cause in #1576 upstream). Pre-fix observed 4 daemon crashes/day.
-- Cross-project commands (`trace`, `callers`, `deps`, `impact`, `test_map`) work again on slot-migrated projects since #1105 (#1564 fix surfaced via TC-HAP-V1.38-8 test).
-- Atomic per-file reindex (#1575): mid-batch crash leaves no asymmetric state between `function_calls` and chunks/FTS.
+**Headline operator-visible changes**:
+- Daemon stops SIGFPE'ing on EmbeddingGemma reindex (#1577 TRT-incompatibility blocklist; root cause #1576 upstream). Pre-fix observed 4 daemon crashes/day.
+- Cross-project commands (`trace`, `callers`, `deps`, `impact`, `test_map`) work again on slot-migrated projects since #1105 (#1564 fix).
+- Atomic per-file reindex (#1575) — mid-batch crash leaves no asymmetric state between `function_calls` and chunks/FTS.
 - `cqs dead` noise rate cut from ~80% to ~30% (#1572 — Property + doc-extension filters).
 - Graph commands now reject `--limit 0` at parse time (#1569 LimitArg fan-out).
 
-**Audit umbrella (#1463) state at v1.39.0 cut**: ~64 findings closed across 33+ cluster PRs of the v1.38 cycle. Truly remaining items shrunk to:
-- **API-V1.38-6** (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Plus the underlying `cqs::scout()` lib function doesn't accept filter knobs at all — bigger than the audit estimated.
-- **DS-V1.38-4 deeper hazard** (HNSW half-renamed-set under a lock-then-rename window) — needs bundle-into-single-file refactor with a migration path for existing indexes.
-- **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner.
-- **TC-HAP-V1.38-3** (`enrichment_pass` itself untested) — needs real embedder load (~91 MB ms-marco/MiniLM).
-- 12 P4 carry-overs all on tracking issues (#1512 Windows daemon, #1461 Windows ACL, etc.) requiring infrastructure not on this Linux/WSL workstation.
-
-Plus follow-up issues filed during this cycle: #1573 (cqs dead tier-2/3 false-positive sources — macro-invocation edges, struct-field-assignment edges, dyn-dispatch trait methods), #1574 (closed by #1575), #1576 (upstream TRT 10 SIGFPE on Microsoft contrib ops).
-
----
-
-**v1.38.0 audit cycle TC-HAP test-coverage sweep (2026-05-07 late morning, 8 more cluster PRs #1556–#1564)**: per-finding test-coverage backfill of the TC-HAP-V1.38-* sub-items on #1463, picking up where the structural/behavioral cluster work left off. Added end-to-end CLI binary tests for the previously-untested `cqs hook install/status`, `cqs dead`, `cqs explain`, `cqs index --model` drift, `cqs project search` filter behavior, `cqs ref reindex --llm-summaries` validation, `cqs trace --cross-project`, plus strengthened `test_reranker_new` and aligned `test_save_writes_file_with_0o600_perms` cfg gate with production. Total ~17 new tests across 8 PRs.
-
-**Cluster PRs in this TC-HAP sweep (#1556–#1564)**:
-- **#1556** (Cluster MM) — TC-HAP-V1.38-7 `cmd_install` + `cmd_status` end-to-end test for git hook install/status. Surfaced the `--no-overwrite` flag-naming gotcha (the actual default install correctly skips foreign hooks).
-- **#1557** (Cluster NN) — TC-HAP-V1.38-5 `cmd_dead` end-to-end test. Pins `data.dead[*].name` envelope.
-- **#1558** (Cluster OO) — TC-HAP-V1.38-6 `cmd_explain` end-to-end test. Single test covers both call directions in one seeded store: `func_b` callers contains `func_a`; `func_a` callees contains `func_b`.
-- **#1559** (Cluster PP) — TC-HAP-V1.38-9 strengthened `test_reranker_new` (now pins lazy-load contract, max_length default, section.is_none()) plus new `test_reranker_with_section_honours_max_length` for EX-V1.38-3 TOML fallback.
-- **#1560** (Cluster QQ) — TC-HAP-V1.38-4 `cqs index --model` drift end-to-end test. Both bail and pass branches.
-- **#1561** (Cluster RR) — TC-HAP-V1.38-10 `test_save_writes_file_with_0o600_perms` cfg gate aligned with production (`#[cfg(unix)]` instead of `#[cfg(all(unix, target_os = "linux"))]`).
-- **#1562** (Cluster SS) — TC-HAP-V1.38-1 `cqs project search` filter behavior. Extracted `build_project_search_filter` helper + 9 tests pinning the precedence cascade.
-- **#1563** (Cluster TT) — TC-HAP-V1.38-2 `cqs ref reindex` LLM/HyDE flag-dependency end-to-end test. Pins both bails (`--improve-docs requires --llm-summaries`, `--improve-all requires --improve-docs`) plus sanity counterpart.
-- **#1564** (Cluster UU) — TC-HAP-V1.38-8 `cqs trace --cross-project` end-to-end test. Surfaced and FIXED a real bug in `CrossProjectContext::from_config`: hardcoded `.cqs/index.db` post-#1105 silently broke ALL 5 cross-project commands (trace, callers, deps, impact, test-map) on slot-migrated projects. Fix: use `crate::resolve_index_db` slot-aware resolver.
-
-**TC-HAP-V1.38-* status post-sweep**: 1, 2, 4, 5, 6, 7, 8, 9, 10 closed. Only TC-HAP-V1.38-3 (`enrichment_pass` itself untested) deferred — needs a real embedder load (~91 MB), no cheap unit-test path without mocking.
-
-**Big bug surfaced**: `cross_project::from_config` slot-blindness was a 100% silent break on all post-#1105 projects using `--cross-project`. Found and fixed in #1564. Existing 12 cross_project unit tests didn't catch it because they construct `CrossProjectContext::new(stores)` directly, bypassing `from_config`.
-
-**Four more cluster PRs (#1566–#1567, #1569–#1570)** after the TC-HAP sweep, picking off the architectural punchlist:
-- **#1566** (Cluster VV) — SHL-V1.38-6: `parse_channel_depth` default halved 512 → 256. Cuts the worst-case buffered ParsedBatch ceiling from ~256 MB to ~128 MB on large repos. Practical fill level is ~10 messages so the cap reduction is harmless; CQS_PARSE_CHANNEL_DEPTH env override remains.
-- **#1567** (Cluster WW) — API-V1.38-9: `EmbedderError::HfHub` renamed → `EmbedderError::ModelDownload` for naming parity with `RerankerError::ModelDownload`. The full `AuxModelError::Download` collapse via `#[from]` is deferred since the embedder's HF download path doesn't currently route through `aux_model::resolve` — variant-name harmonization captures the consistency win without restructuring the resolver chain.
-- **#1569** (Cluster XX) — API-V1.38-10 structural fan-out: 8 inline `pub limit: usize` definitions across SearchArgs/GatherArgs/ScoutArgs/SimilarArgs/RelatedArgs/WhereArgs/PlanArgs/TaskArgs converted to `#[command(flatten)] pub limit_arg: LimitArg`. LimitArg gains the `parse_nonzero_usize` gate so the 7 graph commands already on it also reject `--limit 0` at parse time. ~25 caller sites updated `args.limit` → `args.limit_arg.limit`.
-- **#1570** (Cluster YY) — DS-V1.38-4 easy mitigation: file-existence check in `HnswIndex::load_with_dim` moved INSIDE the shared-lock critical section, closing the TOCTOU window where a concurrent `save()` could rename files between the reader's existence check and lock acquisition. Bundle-rename atomic refactor for the half-renamed-set hazard remains deferred.
-
-**Audit umbrella (#1463) state after this entire post-summary sweep**: ~64 findings closed across 33+ cluster PRs of the v1.38 cycle. Truly remaining items shrunk to:
-- **API-V1.38-6** (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Plus the underlying `cqs::scout()` lib function doesn't accept filter knobs at all — bigger than the audit estimated.
-- **DS-V1.38-4 deeper hazard** (HNSW half-renamed-set under a lock-then-rename window) — needs bundle-into-single-file refactor with a migration path for existing indexes.
-- **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner.
-
-Plus 12 P4 carry-overs all on tracking issues (#1512 Windows daemon, #1461 Windows ACL, etc.) requiring infrastructure that isn't on this Linux/WSL workstation.
-
----
-
-**v1.38.0 audit cycle continuation extended (2026-05-07 morning, 6 more cluster PRs #1544–#1549)**: pushed past the earlier "remaining ~6 architectural items" punchlist; closed all but a few that are genuinely larger refactors. Each cluster delivered focused mechanical changes — the audit-fix prompts had enough specificity that even the medium-effort items collapsed to clean PRs.
-
-**Cluster PRs in this extension (#1544–#1549)**:
-- **#1544** (Cluster BB) — API-V1.38-10 concrete-bug portion: `--limit 0` rejected at parse time across 8 args structs (SearchArgs/GatherArgs/ScoutArgs/RelatedArgs/WhereArgs/PlanArgs/TaskArgs + top-level Cli). Test pin updated. The structural LimitArg fan-out (61 caller sites) deferred.
-- **#1545** (Cluster CC) — SHL-V1.38-9: `summary_queue` 3 hardcoded constants → env-overridable. New `CQS_SUMMARY_FLUSH_ROWS` (64), `CQS_SUMMARY_FLUSH_INTERVAL_MS` (200), `CQS_SUMMARY_HARD_CAP_ROWS` (10000). Single `summary_queue_config()` resolver; `hard_cap_rows` promoted from const to instance field.
-- **#1546** (Cluster DD) — PL-V1.38-4: WSL-DrvFS detector unification. Promoted `parse_wsl_automount_root` + new `wsl_automount_root_or_default()` to `crate::config`. Both `is_wsl_drvfs_path` and `is_under_wsl_automount` now share one OnceLock cache. Closes a real second-save-drop bug for operators with custom `automount.root` (`/win/` instead of `/mnt/`) where `coarse_fs_resolution` was returning 0 instead of 2s.
-- **#1547** (Cluster EE) — EX-V1.38-2: `LanguageDef.endpoint_markers` field added. C#/Java/Kotlin post-processors consult `LANG_X.test_markers` and `LANG_X.endpoint_markers` instead of inline literals. Python stays inline (decorator-text walking, not pure substring).
-- **#1548** (Cluster FF) — EX-V1.38-3 partial: reranker `batch` + `max_length` configurable in `.cqs.toml [reranker]`. Precedence: env > TOML > computed default. `pool_max` / `over_retrieval` deferred (need config plumbing through `cli/limits.rs`).
-- **#1549** (Cluster GG) — EX-V1.38-6: `LanguageDef.chunk_call_parser` trait field. Markdown registers `extract_calls_from_markdown_chunk`; the `Language::Markdown` literal in `extract_calls_from_chunk` is gone.
-
-**Audit umbrella (#1463) state after this extension**:
-- ✅ Almost everything else closed across the 23 cluster PRs (#1514–#1549) of the v1.38 cycle. ~58 findings closed total.
-- ⏳ **Remaining items, all genuinely big**:
-  - **API-V1.38-6** (top-level Cli flags ignored on subcommand) — needs `global = true` on 20+ flags + handler updates OR shared `SearchKnobsArgs` struct flatten across 7 commands
-  - **API-V1.38-9** (HfHub error variant collapse) — multi-error-source rename touching `EmbedderError` + `RerankerError` constructors at ~20 sites
-  - **API-V1.38-10** structural fan-out (LimitArg → 7 sister args) — 61 caller sites
-  - **DS-V1.38-4** (HNSW load_with_dim TOCTOU) — multi-PR architectural change
-  - **SHL-V1.38-6** (parse_channel_depth byte-budget) — bigger refactor
-  - **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner
-
-**v1.38.0 audit cycle continuation (2026-05-07 morning, 14 cluster PRs #1528–#1542)**: building on the initial 13 cluster PRs from the prior session, this wave processed the remaining P2/P3 items in 14 cluster PRs covering ~52 audit findings. Plus #1531 test-flake fix (`test_model_swap_same_preset_is_noop` mtime equality → blake3 content hash) and #1527 tears housekeeping.
-
-**Cluster PRs in this continuation (#1528–#1542, 14 PRs + #1531 flake)**:
-- **#1528** (Cluster M, 10 P3) — mechanical sweep: API-V1.38-5 `pub(super)`, PL-V1.38-6 cfg(unix), EH-V1.38-6 hook NotFound vs perm, RB-V1.38-6/7 regex `.expect()`, AC-V1.38-8 vendored slash warn, EX-V1.38-10 `Language::all_variants()`, OB-V1.38-3 (synonym/classifier/SPLADE α overlay info logs), OB-V1.38-4 (wait_for_batch span+elapsed_ms), OB-V1.38-5 (CAGRA fall-through info)
-- **#1529** (Cluster N, 5 P2) — API-V1.38-3 `BatchProvider: Send + Sync`, AC-V1.38-7 strict-preset gate at `cmd_index`, EH-V1.38-9 first-error preservation in JSON sanitize-retry, DOC-V1.38-6/8 README perf+per-preset doc fixes
-- **#1530** (Cluster O, 5 P2) — RB-V1.38-4/8/9/10 robustness sweep (4 guard/unwrap pairs hardened to type-level invariants), DOC-V1.38-7 (SECURITY.md v27 schema)
-- **#1531** — test(model-swap) flake fix: blake3 content hash replaces mtime equality
-- **#1532** (Cluster P, 4 P2/P3) — SHL-V1.38-1 dim-aware `MAX_PENDING_REBUILD_DELTA` + `CQS_PENDING_REBUILD_DELTA_MAX`, SHL-V1.38-4 daemon socket cap aligned to CLI `MAX_DIFF_BYTES`, SHL-V1.38-10 `CQS_LLM_RETRY_BACKOFFS_MS`, OB-V1.38-7 SPLADE stale-bak structured warn
-- **#1533** (Cluster Q, 6 P3) — security sweep: SEC-V1.38-5 path log caps, SEC-V1.38-6 `validate_and_read_file` TOCTOU narrowing, SEC-V1.38-7 `run_git_diff` ref hardening, SEC-V1.38-8 `Config` debug redaction, DS-V1.38-5 prune Err propagation, SEC-V1.38-9 `parse_env_usize_clamped` warn-on-clamp
-- **#1534** (Cluster R, 2 P3) — RM-V1.38-2 stash byte budget, RM-V1.38-7 age-only idle-tick prune
-- **#1535** (Cluster S, 2 P3) — EX-V1.38-5 task waterfall env knobs, EX-V1.38-8 Go FuncName via `DocFormat.prepend_func_name`
-- **#1536** (Cluster T, 5 P3) — SHL env-override sweep: SHL-V1.38-2/3/5/7/8 (5 new env knobs)
-- **#1537** (Cluster U, 2 P3) — API-V1.38-7 `Option<u64>` → `Option<usize>` on `ExportModel.dim`, API-V1.38-8 `--wait-secs` ↔ `--require-fresh-secs` visible_alias
-- **#1538** (Cluster V, 4 TC-ADV) — regression backfill: TC-ADV-V1.38-4 `lookup_main_cqs_dir` stray file, TC-ADV-V1.38-6 drift case-sensitivity + whitespace, TC-ADV-V1.38-8 `score_candidate` non-finite threshold (3 tests)
-- **#1539** (Cluster W, 4 P3) — TC-ADV-V1.38-3 sparse vectors NaN/Inf write contract, TC-ADV-V1.38-9 overlay 4 KiB cap, AC-V1.38-4 `try_classify_negation` connective-context gate (closes the bare-noun misclassification footgun)
-- **#1540** (Cluster X, 1 P2) — API-V1.38-1: `ModelCommand` (3 variants) + `HookCommand` (4 variants) → flattened `TextJsonArgs`
-- **#1541** (Cluster Y, 2) — PL-V1.38-5 `cqs init` gitignore-everything-but-self (closes SEC-1 footgun where `cqs init && git add .` committed `audit-mode.json` + telemetry), DS-V1.38-7 `write_active_slot` slots-lock contract documented
-- **#1542** (Cluster Z, 2 TC-ADV) — TC-ADV-V1.38-5 `write_active_slot` 8-thread × 50-write race test, TC-ADV-V1.38-7 `truncate_at_char_boundary` extracted + 6 unit tests (emoji boundary snap-back at byte 99 / cap 100)
-
-**Schema unchanged (still v27).** New env knobs introduced: `CQS_RERANK_POOL_MAX` (renamed in cluster L doc fix), `CQS_PENDING_REBUILD_DELTA_MAX`, `CQS_LLM_RETRY_BACKOFFS_MS`, `CQS_TASK_WATERFALL_{SCOUT,CODE,IMPACT,PLACEMENT}`, `CQS_EVAL_FRESH_BUDGET_CEILING`, `CQS_PIPELINE_FAN_OUT`, `CQS_UMAP_STREAM_BATCH`, `CQS_LLM_PASS_PAGE_SIZE`, `CQS_RECONCILE_BATCH`. All documented in README env-var table.
-
-**Items still pending in #1463** (audit cycle umbrella) after this wave:
-- API-V1.38-6 (top-level Cli search flags ignored on subcommand) — needs `global = true` on 20+ flags or shared `SearchKnobsArgs` struct flattened into 7 search-wrapping commands; bigger surface
-- API-V1.38-9 (HfHub/ModelDownload error variant collapse via `aux_model::ResolveError`) — investigated; current shape stringifies hf_hub::ApiError directly, the audit's collapse pattern needs more work than expected
-- API-V1.38-10 (LimitArg fan-out across 7 sister args) — 61 `args.limit` / `cli.limit` caller sites
-- DS-V1.38-4 (HNSW `load_with_dim` TOCTOU) — multi-PR architectural change
-- PL-V1.38-4 (WSL-DrvFS detector divergence) — needs `parse_wsl_automount_root` promotion
-- SHL-V1.38-6 (parse_channel_depth byte-budget) — bigger refactor
-- SHL-V1.38-9 (summary_queue 3 knobs) — medium
-- EX-V1.38-2/3/6 — separate clusters (EX-V1.38-3 investigated; needs threading through 4 resolvers)
-- PL-V1.38-2 — Windows test runner needed
-
-**v1.38.0 audit cycle prior (2026-05-06, 13 cluster PRs #1514–#1526)**: post-v1.38 fresh full-codebase audit run by 16 parallel auditor agents on opus surfaced 154 findings (P1=50, P2=37, P3=55, P4=12). Triage agent classified into priority + identified 10 cross-cutting clusters; cluster PRs closed ~36 P1/P2 items. Highest-impact: **Cluster A** (needs_embedding wiring, DS-V1.38-1/2/3/8) closed silent search-quality regression on `--llm-summaries` workflows where CAGRA / UMAP / brute-force kNN were loading zero-vec sentinels. **Cluster B** (lying-docs sweep) fixed 4 P1 lying-doc rows in README/SECURITY where `--improve-docs` claimed in-place writeback while the code has been patch-default since v1.30.1. **Cluster F** (algorithm correctness) caught a silent SPLADE search regression where `BoundedScoreHeap::would_accept` tiebreak was strict-gt, dropping smaller-id incoming candidates at tied scores. Schema unchanged (still v27).
-
-**Cluster PRs in priority order**:
-- **#1514** — fix(store, batch): close needs_embedding wiring gaps + slot-aware staleness (DS-V1.38-1/2/3/8). EmbeddingBatchIterator now filters `needs_embedding=0`. enrichment_pass repopulates `embedding_base` via COALESCE. BatchContext staleness uses `resolve_index_db` for slot-aware paths. v27 migration backfills NULL-base rows to `needs_embedding=1`.
-- **#1515** — audit(v1.38.0): aggregated 154 findings + P1/P2/P3/P4 triage. 18 files committed: 16 per-category source files, audit-findings.md (1483 lines), audit-triage.md (488 lines, 10 clusters, top-10 PR list).
-- **#1516** — docs: stop lying about --improve-docs, fix CONTRIBUTING + SECURITY drift, backfill CHANGELOG (DOC-V1.38-1/2/3/4/5/9 + PL-V1.38-3). 7 doc surfaces fixed.
-- **#1517** — fix(cli): finish stored_model_name lossy-caller migration (EH-V1.38-1/2/3/4). 4 destructive-op call sites now use try_stored_model_name with structured `tracing::error!` + recovery hints.
-- **#1518** — fix(search, hnsw, cagra): algorithm correctness sweep (AC-V1.38-1/2/3/5/6/9). Six total_cmp / saturating-arithmetic adoptions plus the BoundedScoreHeap tiebreak fix.
-- **#1519** — sec: redact api_base userinfo, drop Anthropic error.message echo, atomic patch write, ref-update symlink-redirect notice (SEC-V1.38-1/2/3/4). New LlmConfig::redacted_api_base() + hand-rolled Debug.
-- **#1520** — perf: cache test-pattern registry, SPLADE id_map Box<str>, hoist redundant joins (PF-V1.38-1/2/7/8). is_test_chunk OnceLock saves ~30k allocations per query.
-- **#1521** — test: TC-ADV regression-test backfill for shipped fixes (TC-ADV-V1.38-1/2/10). 5 new tests pinning SEC-V1.36-7 path-traversal rejection, P1-36 NoteBoostIndex clamps, embedding_to_bytes finiteness contract.
-- **#1522** — fix(rm): cap subprocess output for UMAP + export-model (RM-V1.38-4/5). New CQS_UMAP_MAX_STDOUT_BYTES env knob; export_model deps probe + ONNX export both gated.
-- **#1523** — fix(robustness): cap commondir read, replace daemon panic with bail, saturating UMAP capacity (RB-V1.38-1/2/5).
-- **#1524** — fix: SPLADE α slot resolver warns, ref-update entry span, drift detection structured warn (Cluster J partial: EH-V1.38-5, OB-V1.38-1/2).
-- **#1525** — fix(splade): replace 10 production .unwrap() with .expect() invariant comments (RB-V1.38-3).
-- **#1526** — fix(error-handling): tensor cascade error preservation, %e for tree-sitter, warn on malformed env (EH-V1.38-7/8/10).
-
-**Audit umbrella state after v1.38 cycle**:
-- ✅ #1463 (P4 design-level) — 9 items closed across the v1.36 + v1.38 cycles (P4-3/4/5/6/10/11/12/13 + carry-overs). Open: P4-1 (concurrent writer test), P4-7/8/9 (Windows daemon — under #1512), and the v1.38-cycle P4 carry-overs (12 items, mostly extensibility refactors)
-- ⏳ #1459 (P3 API design) — 7/8 sub-items shipped across v1.36/v1.37/v1.38 (4/7/8/9 in v1.38.0, 6 in #1493, items 1/3/5 closed by #1505/#1506/#1507). Item 2 (project/ref verb consolidation) remains open; user investigation found ref + project are genuinely distinct primitives so a literal deprecation alias would break the self-managed search path.
-- ⏳ #1512 (Windows daemon named pipes) — open; needs Windows test runner
-
-**Earlier post-v1.38.0 autopilot wave (2026-05-06, 11 PRs #1487–#1497)**: user invoked `/effort max` and asked for "deferred because large" issue work, then went the full distance on the two big triage items as separate user-prompted decisions: "go with 2a" on #1366 (proc-macro CLI derive — handler signatures standardized across all 58 variants) and "schema migration is fine" on #1452 (skip first-pass embed under `--llm-summaries`). Triage of 15 open issues identified 3 size-deferred candidates (#1458 TC Happy tests, #1452 perf, #1366 proc-macro); all three landed. The TC Happy umbrella shipped as three clean PRs (one per cluster). Five more PRs landed against the P4 umbrella + API design umbrella + the proc-macro derive refactor + the perf rewrite.
-
-**Merged this wave (11)**:
-- **#1487** — test(context): TC-HAP-V1.36-4 + 7 builder tests (closes 2/5 sub-items in #1458). 4 tests for `build_compact_data` / `build_full_data` (path normalization, error path, external-caller classification) + `pack_by_relevance` ignored test. Inlined Store + call-graph fixture because `cqs::test_helpers` is `#[cfg(test)]`-gated in lib crate.
-- **#1488** — test(watch+train): TC-HAP-V1.36-9 + 10 daemon GC + train-data subprocess tests. 3 GC tests exercising `enumerate_files` + prune_missing end-to-end with project-relative-pathed chunks. 2 train-data subprocess tests (`slow-tests`-gated) spinning a real git repo.
-- **#1489** — test(pipeline): TC-HAP-V1.36-8 prepare_for_embedding tests. 3 `#[ignore]`-gated tests covering fresh-batch / store-cache-hit / empty-batch branches. Verified against the default model.
-- **#1490** — fix(cli): tasklist UTF-16 BOM blind-spot (P4-10 / refs #1463). Pre-fix, `process_exists` used `String::from_utf8_lossy`, missing UTF-16 LE BOM-prefixed Windows output and silently classifying live PIDs as stale. New `decode_tasklist_stdout` handles UTF-16 LE/BE/UTF-8 BOMs.
-- **#1491** — fix(splade): `.bak` rollback for save (DS-V1.36-5 / P4-13 / refs #1463). Mirrors HNSW pattern: stale-`.bak` guard, rename live → `.bak`, fsync, atomic_replace, restore on failure, cleanup on success. Pre-fix, a cross-device EXDEV failure could destroy the only good blob.
-- **#1492** — fix(cagra): `.bak` rollback for save (DS-V1.36-2 / P4-12 / refs #1463). Same pattern applied to `CagraIndex::save` + `save_with_store`. cuVS now serializes to a tmp path before atomic_replace; sidecar written AFTER the new blob lands rather than removed up front.
-- **#1493** — fix(index): drop never-emitted `IndexBackendError::ChecksumMismatch` / `LoadFailed` variants (API-V1.36-6 / refs #1459). `grep -rn` found zero constructors; trait doc explained why (every backend handles integrity failures via `tracing::warn!` + `Ok(None)`). Variants were misleading-but-unused.
-- **#1494** — docs(tears): post-v1.38.0 autopilot wave snapshot.
-- **#1495** — refactor(cli): `#[derive(CqsCommands)]` proc-macro replaces `for_each_command!` registry (closes #1366). 1598 ins / 1029 del. New workspace member `cqs-macros` (proc-macro crate) emits `Commands::variant_name` + `batch_support` + `dispatch_group_a` + `dispatch_group_b` from per-variant `#[cqs_cmd(group, batch)]` attributes. Each of 58 variants gets a `cmd_<snake>_dispatch` shim (centralized in `commands/dispatch_shims.rs`) with the standardized signature `(cli, ctx, project_cqs_dir, &Commands) -> Result<()>`. The 778-line `src/cli/registry.rs` central table is gone. Variant-name kebab-case auto-derives from ident (matches clap's defaults — preserves all existing telemetry strings). Cfg-gated variants forwarded to every emitted arm. Telemetry / batch-support / dispatch order all unchanged.
-- **#1496** — docs(tears): mid-wave snapshot.
-- **#1497** — perf(index): skip first-pass embed when `--llm-summaries` (closes #1452). Schema **v27** migration adds `chunks.needs_embedding INTEGER NOT NULL DEFAULT 0` plus partial index `idx_chunks_needs_embedding WHERE needs_embedding=1`. Pipeline gains `EmbedStageContext::skip_first_pass_embed`; when set, GPU+CPU stages emit zero-vec sentinels stamped `needs_embedding=1` for cache-miss chunks instead of running real ONNX inference. Cache hits still pass through with their real embeddings. `store_stage` slices each batch by `cached_count` and routes the sentinel half through new `Store::upsert_chunks_unembedded_batch`. Enrichment trigger extended (`needs_embedding > 0 || total_calls > 0`) and the per-chunk early-skip carves out `needs_embedding=1` so partial-state chunks always get the base NL embedding (byte-identical to first-pass output via `nl/mod.rs:104-108` collapse). Ambiguous-name chunks at `needs_embedding=1` get an EMPTY `CallContext` so they don't inherit unrelated callers. `update_embeddings_with_hashes_batch` clears the flag on every row it writes. Visibility filters: HNSW build (`IdHashEmbeddingIter`), `Store::search_by_name`, and `Store::search_fts_only` all add `WHERE needs_embedding = 0` so partial-state chunks are invisible until enrichment lands. End-to-end smoke confirmed: cache-disabled `--force --llm-summaries` on a 5-chunk fixture routed all 5 through the unembedded path, enrichment cleared all flags, real embeddings landed, search returned hits.
-
-**Audit umbrella state after this wave**:
-- ✅ #1458 (TC Happy 5 tests) — all sub-items shipped
-- ✅ #1460 / #1461 / #1462 — closed in v1.38.0
-- ✅ #1366 (proc-macro CLI derive) — closed by #1495
-- ✅ #1452 (skip first-pass embed) — closed by #1497
-- ⏳ #1459 (P3 API design) — 7/8 sub-items shipped (4/7/8/9 in v1.38.0, 6 in #1493). 3 design-discussion items remain (1, 2, 5)
-- ⏳ #1463 (P4 design-level) — 12 hard items, 3 shipped this wave (P4-10/12/13). 9 remain — Windows daemon (P4-7/8/9), extensibility refactors (P4-3/4/5/6), HNSW id_map memory (P4-11), TC adversarial concurrent writer (P4-1)
-
-**Schema v27 (post-#1497)**: `chunks.needs_embedding` carries the "was this chunk's embedding actually written" bit. Plain `cqs index` and `cqs index --force` (no LLM flag) leave it at 0 throughout. `cqs index --llm-summaries` (and `--force --llm-summaries`) routes new/changed chunks at 1 with a zero-vec sentinel; enrichment_pass clears them. HNSW build + `search_by_name` + `search_fts_only` all filter `WHERE needs_embedding = 0`. The visibility gate is local — LLM summary failure leaves quality (no summary boost) but never blocks visibility, because enrichment_pass produces embeddings from base NL when no summary exists.
-
-**Adding a top-level CLI command after #1495**: declare the variant with `#[cqs_cmd(group = "a"|"b", batch = "cli"|"daemon"|"runtime")]` on `Commands` (definitions.rs), implement the handler in `commands/<area>/`, add a small `cmd_<snake>_dispatch` shim in `commands/dispatch_shims.rs`. The shim destructures the variant out of `&Commands` and forwards to the existing handler with the same args the for_each_command! body used to bind. Cfg-gated variants get `#[cfg(feature = "...")]` next to `#[cqs_cmd(...)]` and the derive forwards it to every emitted arm.
-
-**Skipping first-pass embed (post-#1497)**: route happens automatically when `--llm-summaries` is set. Callers of `run_index_pipeline` outside of `cmd_index` (currently `cqs ref add` / `cqs ref update`) pass `false` for the new `skip_first_pass_embed: bool` arg — refs don't run the LLM summary pass, so first-pass IS the only embed and must not be skipped. Adding new callers: pass `false` unless an LLM enrichment pass is guaranteed to follow on the same store and overwrite every chunk's embedding.
-
-**v1.38.0 shipped** — 2026-05-06 morning. Minor release. Bundles 13 audit-driven PRs since v1.37.0 closing three umbrella tracking issues (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM) plus tracker-hygiene cleanup (3 stale issues). Six surface deletions justify the minor bump: `pub fn nl::generate_nl_description` + `generate_nl_with_template` (#1473), `pub rerank: bool` field on `Cli`/`SearchArgs` + `pub(crate) resolve_rerank_mode` (#1479), `BatchProvider::set_on_item_complete` trait method (#1470). Env overrides preserve prior behavior on every default-changed knob. Tag `v1.38.0` pushed; crates.io published; GitHub Release auto-building from `.github/workflows/release.yml`.
-
-**v1.38.0 highlights**:
-- **Per-slot SPLADE α tables** (#1472 / #1453) — `slot.toml [splade.alpha]`. Gemma-tuned globals no longer handicap qwen3-{4b,8b} or future presets.
-- **Synonym + classifier vocab TOML overlays** (#1482, #1483) — operator-extensible FTS expansion dictionary and classifier negation/multistep vocab without rebuilding the binary. Manufacturing/industrial vocabulary path opened (`plc`/`scada`/`opc`/`hmi`).
-- **`cqs serve` concurrent-request cap** (#1477, SEC-V1.36-9) — outermost middleware, default 256, env-overridable. Pre-auth memory ceiling.
-- **Daemon socket parent-dir TOCTOU hardening** (#1478, SEC-V1.36-10) — `/tmp/cqs-<uid>/` (0o700) instead of bare `/tmp/`. `ensure_socket_parent_dir` refuses files/symlinks at the path.
-- **ChunkRow ordinal access** (#1468, P2-14) — search-hydration hot path, ~16 strcmps × ~300 rows × 50 queries dropped to zero.
-- **Daemon accept loop poll()** (#1471, RM-V1.36-8) — `libc::poll` instead of WouldBlock+sleep busy-poll. Idle wakes 120/min → 60/min, parked threads zero CPU.
-- **`cqs onboard --direction <both|callers|callees>`** (#1470, API-V1.36-4) — depth+direction now uniform across `gather`/`onboard`/`test-map`.
-- **`cqs ref reindex` alias** (#1475, API-V1.36-3) for `cqs ref update`.
-- **Tightened SQL test-chunk filter** (#1474, EXT-V1.36-3) — `Test\_%` not `Test%`; production-named types no longer demoted.
-
-**Audit umbrella state after v1.38.0**:
-- ✅ #1460 (P3 Extensibility) closed
-- ✅ #1461 (P3 Security) closed
-- ✅ #1462 (P3 misc CQ/RM) closed
-- ⏳ #1458 (TC Happy 5 tests) — need real Store fixtures
-- ⏳ #1459 (P3 API design) — 5/8 sub-items shipped; 4 design-discussion items remain (1, 2, 5, 6)
-- ⏳ #1463 (P4 design-level) — 12 hard items, parked per audit's own tagging
-
-**Standalone open issues** still pending: #1452 (skip first-pass embed when `--llm-summaries` — risky pipeline restructuring), #1366 (proc-macro CLI derive — large refactor needs dedicated session).
-
-**Operational note from this release cycle**: `cargo publish --features gpu-index` fails verification on the package-build step because the workspace `[patch.crates-io]` cuvs-patched fork doesn't ship in the package (cuvs upstream API mismatch surfaces during verify). The standard `cargo publish` (no features) works — gpu-index is feature-gated and the verify step compiles without it. Same pattern applies to all future releases on the cuvs-patched workspace.
-
-**Post-v1.37.0 autopilot wave (2026-05-05 evening, 8 PRs)**: triaged 20 open issues, closed 3 stale (#1107, #1108, #1395 — all already shipped in prior PRs), shipped 8 PRs against the audit umbrella issues #1459-#1462:
-
-- **#1468** — perf(store): pin ChunkRow SELECT column order, switch to ordinal access (closes #1457 / P2-14). Replaced per-column `row.get("name")` strcmp scans with positional reads. 9 SELECT sites updated (vs 5 in the issue — agent's investigation found 4 more: query.rs:238 batch-by-names, query.rs:540 chunks_paged with rowid prefix, types.rs:320, types.rs:402).
-- **#1469** — test(serve): SEC-V1.36-6 regression test (closes the SEC sub-item of #1461 as a non-issue). Direct verification against axum 0.8 / tower-http 0.6 source showed the audit's leak claim doesn't match upstream behavior — Query<T> rejection body is `"Failed to deserialize..."`, no URI; P1.11 already redacts the trace span. Shipped as regression-guard test + handlers.rs doc-comment so the audit isn't re-litigated.
-- **#1470** — refactor(cli, llm): API ergonomics bundle (closes 3 of 8 sub-items in #1459). `cqs onboard --direction <both|callers|callees>` (default callees, back-compat); `BatchProvider::set_on_item_complete` `&mut self` → builder at construction (`with_on_item_complete` consuming, `create_client` gains `on_item: Option<OnItemCallback>`); `--limit` defaults harmonised to 5 (was 3 on `where`, 10 on `gather`).
-- **#1471** — perf(daemon): poll() listener fd instead of WouldBlock-sleep (closes RM-V1.36-8 of #1462). Replaces the 500ms `thread::sleep` busy-poll in the daemon accept loop with `libc::poll(..., 1000ms)`. Drops idle wake rate from 120/min → 60/min, parked threads consume zero CPU.
-- **#1472** — feat(splade): per-slot α tables in `slot.toml [splade.alpha]` (closes #1453). RwLock-protected static loaded once at dispatch entry; precedence: per-cat env > global env > slot.toml > category default. 5 slot tests + 3 router precedence tests.
-- **#1473** — refactor(nl): drop legacy env-only NL-gen wrappers (closes CQ-V1.36-3 + CQ-V1.36-5 of #1462). `generate_nl_description` and `generate_nl_with_template` were `pub` traps that read `CQS_MAX_SEQ_LENGTH` env. After v1.37.0's CQ-V1.36-1 fix, leaving them invited the configurable-models bug to come back. Per "no external users", clean-cut delete.
-- **#1474** — refactor(language): test_name_patterns into LanguageDef (closes EXT-V1.36-3 of #1460). Single source of truth: lib.rs::is_test_chunk and store/calls::TEST_NAME_PATTERNS now both flow from `Registry::all_test_name_patterns()` with a cross-language fallback in escaped SQL LIKE form. Tightens the SQL filter (was loose `Test%` matching TestRegistry/TestSuite — pre-AC-4 — now `Test\_%`).
-- **#1475** — feat(cli): `cqs ref reindex` visible alias for `cqs ref update` (closes API-V1.36-3 of #1459). One-line `#[command(visible_alias = "reindex")]`.
-
-**Issues stale-closed (already done in prior PRs):**
-- #1107 — slot.toml model persistence shipped in #1112; verified via `slot_create()` calling `write_slot_model` and `dispatch.rs:225` reading via `read_slot_model`.
-- #1108 — content_hash on 5 hot SELECTs shipped in #1112; verified all 5 sites carry the column, eval shows 0 warnings.
-- #1395 — token-count GPU routing shipped in #1398 (Option A: dropped the routing branch entirely; `apply_windowing` enforces the bound).
-
-**Items investigated but parked**:
-- **RM-V1.36-6** — config flock + reqwest. Audit's concern doesn't match current code: `add_reference_to_config` at `src/config.rs:808` is self-contained (no reqwest under flock); the only caller `cmd_ref_add` does network/index work BEFORE calling it. Stale finding.
-- **EXT-V1.36-8 (1)** — `is_cross_language_query` consume `Language::valid_names()`. Already implemented: `language_names()` in router.rs uses `REGISTRY.all().map(|def| def.name).collect()`. Stale finding.
-- **#1452** — skip first-pass embed when `--llm-summaries`. Risky (enrichment-crash recovery, incremental-run preservation); deferred for a dedicated session with end-to-end test infrastructure.
-- **#1366** — proc-macro CLI derive. Per-variant body uniqueness makes a single-PR derive macro infeasible without coordinated handler refactoring; kept as the audit-tagged "dedicated session" item. Existing `for_each_command!` macro table already produces compile errors for missing rows, so the safety floor is in place.
-- **API-V1.36-9** — drop `--rerank` bool. ~5 test sites pin the bool at parse time; PR overhead exceeds value in this session — straightforward delete + test updates for a follow-up.
-
-**Next-session candidates**: TC-HAP-V1.36-{4,7,8,9,10} (need real Store fixtures), SEC-V1.36-{9,10} (concurrent connection cap, daemon socket TOCTOU), EXT-V1.36-1 (synonyms TOML overlay), the API-design design-discussions in #1459 (1, 2, 5, 6).
-
-**v1.37.0 shipped** — 2026-05-05 evening. Minor release. Bundles v1.36.2 16-category audit close-out (#1456 — ~120 of 163 findings addressed) and dim-scaled batch sizes (#1464). No schema bump. Tag `v1.37.0` pushed; crates.io published; GitHub Release auto-building from `.github/workflows/release.yml`.
-
-**Why minor not patch:** `RerankerMode::Llm` removed from CLI (was placeholder that errored at runtime); `cqs::limits` promoted from `pub(crate)` → `pub`; new public surface (`dim_scaled_batch`, `relativize_or_warn`, `Store::try_stored_model_name`, `BoundedScoreHeap::would_accept`, `BatchProvider::validate_model`); default behavior shifts on dim-aware sites (env overrides preserve prior).
-
-**Audit close-out highlights** (#1456):
-- **All 56 P1s + 13 of 14 P2s** shipped or addressed via defensive variants
-- **Lying-docs cluster** (11 fixes): qwen3 presets enumerated everywhere, schema-doc citations to v26, ROADMAP "Current" current, CHANGELOG `[Unreleased]` block fixed
-- **Configurable-models** (4 fixes): `enrichment_pass` threads `model_max_seq_len`, `resolve_splade_model_dir()` auto-loads `[splade]` config at all 6 callers
-- **NaN/Inf cluster** (5 fixes): `note_boost` `±Inf` clamp, sparse weight `is_finite`, telemetry divide-by-zero, CAGRA env knobs reject zero
-- **Unbounded-read** (5 new sites capped) + **subprocess capture** (PDF / Command::output)
-- **SQLite pool / parallelism** scales with `available_parallelism().min(8)` instead of fixed 4
-- **Concurrent writer / data safety**: `Store::close()` TRUNCATE 30s timeout + PASSIVE fallback, `cqs index --force` `close()` before WAL/SHM removal, `collect_migration_files` includes full HNSW sidecar set
-- **Windows / case-insensitive FS**: `apply_resolved_edits` preserves CRLF, `note::path_matches_mention` case-insensitive on Win/macOS, `worktree::lookup_main_cqs_dir` `is_dir()` + canonicalize, `relativize_or_warn` shim at 4 sites
-- **Security**: Store::open umask `0o077` wrap, env-var redactor expanded (8 substring markers + URL userinfo), LLM debug-log body redact, `slot_dir` validation, `validate_repo_id` rejects `..`
-- **Algorithm correctness**: `extract_file_from_chunk_id` accepts 100+-window indices, SPLADE min-max `reduce` instead of `fold(0.0)`
-
-**Dim-scaled batch sizes** (#1464): new `cqs::limits::dim_scaled_batch(baseline, dim, min, max)` applied to `BRUTE_FORCE_BATCH_SIZE` (search), `hnsw_batch_size`, `cagra_stream_batch_size`, `embed_channel_depth`. Prior baselines were sized for BGE-large (1024-dim); qwen3-embedding-{4b,8b} (2560/4096-dim) used to silently 2-4× per-batch heap.
-
-**Deferred audit items filed as tracking issues** #1457-#1463: P2-14 ChunkRow strcmp (perf cascade), TC Happy tests (6), API design (8), Extensibility (3), Security (3 medium-effort), RM-V1.36-6 + CQ-V1.36-3/5 misc, P4 umbrella (12 design-level). All carry the `audit-v1.36.2` label.
-
-**Qwen3-Embedding-4B full probe complete** (2026-05-04 afternoon-evening, 6+ hour session):
-
-Results vs gemma canonical (post-α-retune v1.36.0):
-
-| Slot / Tuning | Split | R@1 | R@5 | R@20 |
-|---|---|---:|---:|---:|
-| qwen3-4b base (FP16 batch=1 seq=4096) | TEST | 35.8% | 56.0% | 74.3% |
-| qwen3-4b +summaries +enrichment | TEST | 48.6% | 67.9% | 81.7% |
-| qwen3-4b +summaries +tuned α | TEST | 45.0% | **69.7%** | 81.7% |
-| **gemma-300m canonical** | TEST | **49.1%** | **72.5%** | **86.2%** |
-| qwen3-4b base | DEV | 45.9% | 70.6% | 86.2% |
-| qwen3-4b +summaries +enrichment | DEV | 50.5% | 75.2% | 89.9% |
-| qwen3-4b +summaries +tuned α | DEV | 49.5% | **77.1%** | 89.9% |
-| **gemma-300m canonical** | DEV | **50.9%** | **79.8%** | 88.6% |
-
-**Bottom line: gemma-300m wins.** Qwen3-4B at 13× the parameters, 3.3× the dim, 2× the context — loses by 2.7-2.8pp R@5 even with full enrichment + per-cat α tuning + Unknown hedge. Architecture isn't the lever; gemma's been pre-tuned and code-specialized.
-
-Per-category α picks for qwen3-4b diverged dramatically from gemma's (5 of 8 categories shifted by ≥0.4 absolute α; identifier_lookup 1.00→0.15, structural_search 0.60→0.15). **This proves per-model α sets are needed** — filed as **#1453**.
-
-Engineering wins from the probe (worth more than the eval result):
-- **DB-lock root cause found** (#1451): `Store::drop`'s `wal_checkpoint(TRUNCATE)` blocked the long-running indexer's writes. Repro'd 3× in this session — three crashes with identical "(code: 5) database is locked" terminating runs after 5-25min of work. Switched to `PASSIVE` + 1s timeout; verified under deliberate stress polling. Same shape of bug `EmbeddingCache::drop` had fixed months ago (#1343); slot store had drifted.
-- **WSL2 ceiling probed**: 4B FP32 (16 GB mmap) crashes WSL during load; 4B FP16 (8 GB mmap) loads cleanly. Confirms the WSL2 single-file mmap ceiling is somewhere in 8-16 GB on this hardware (96GB RAM, 32GB swap, autoMemoryReclaim=disabled).
-- **GPU-OOM cascade understood**: 4B FP16 at batch=8 OOMs at 48.5/49 GB; batch=2 fits with 30 GB headroom; batch=1 fits with 40 GB headroom. CPU fallback fundamentally broken for FP16 models — ORT CPU EP can't execute the FP16 Cast nodes ("GetElementType is not implemented") — so any GPU OOM at FP16 is fatal without batch=1.
-- **Cross-slot summary copy works** (saved $3-4 of Haiku spend): 7674/12881 chunk hashes overlapped between gemma and qwen3-4b slots; only 1269 fresh summaries needed. Cost ~$1.27.
-
-Open issues filed:
-- **#1452** — `perf(index): skip first-pass embed when --llm-summaries guarantees enrichment overwrite`. The `cqs index --force --llm-summaries` pipeline embeds every chunk twice (raw, then enriched-overwrite). On qwen3-4b that's ~30 min of wasted GPU. Roughly halves the time when picked up.
-- **#1453** — `feat(splade): per-slot α tables — gemma-tuned globals don't generalize`. Includes the qwen3-4b sweep matrix. Proposes `slot.toml [splade.alpha]` section with the existing precedence chain (env > slot > preset > global default).
-
-**Qwen3-8B is now feasible** to probe: FP16 dispatch landed (#1442), DB-lock fixed (#1451), batch=1 envelope confirmed safe at FP16 8GB mmap on this hardware. ETA ~2-3 hours bare reindex + ~30 min summary batch + ~30 min enrichment. Not on the critical path but the probe is cheap given the engineering investment we already paid.
-
-**v1.36.0 (two days prior)** — Per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge. Schema v25→v26 (composite `(source_type, origin)` index on chunks). Plus the critical readonly-migration bug fix.
-
-**Eval baseline (post-α-retune, v1.36.0 default):**
-
-| Metric | v1.35 (BGE α) | v1.36 (gemma α + Unknown=0.80) | Δ |
-|---|---:|---:|---:|
-| Test R@5 | 68.8% | **72.5%** | +3.7pp |
-| Dev R@5 | 76.1% | **79.8%** | +3.7pp |
-| Agg R@1 | 49.1% | **50.9%** | +1.8pp |
-| Agg R@5 | 72.5% | **76.2%** | +3.7pp |
-| Agg R@20 | 86.2% | **88.6%** | +2.4pp |
-
-Sweep methodology: 11 alphas × 2 splits × 8 categories = 176 R@K data points on the gemma slot (13,359 chunks). Joint-optimal α picked by argmax of mean(test R@5, dev R@5). Critical insight: the rule-based `classify_query()` misroutes many fixture-labelled queries to `QueryCategory::Unknown`, where pre-v1.36 default α=1.00 (pure dense) was the worst point in the global sweep. Setting `Unknown=0.80` reclaims most of the predicted lift. Sweep artifacts at `/tmp/gemma-alpha-sweep/`.
-
-**Other rows in the README "Retrieval Quality" table are still pre-retune** (BGE-large, bge-large-ft, v9-200k, nomic-coderank were measured under v1.35 alphas). A 5-slot rerun under the new alphas is queued; their numbers will shift up but the gemma row stays the leader.
-
-**In parallel, qwen3-8b ceiling probe waiting for an overnight window.** Engineering envelope is unblocked (#1394 retries + CPU-warm gate, #1396 routing-threshold scaling); a single bare reindex pass is ~5–7 hours, plus another ~5–7 for the summary reindex. Full restart protocol in `~/training-data/research/models.md` "Qwen3-Embedding-8B ceiling probe — overnight restart protocol" section.
-
-**Recent shipped (today, 2026-05-03):**
-- v1.36.0 release prep (earlier session). Headline: per-category α retune + Unknown hedge + schema v26.
-- 13 audit follow-up PRs landed (#1398 #1399 #1400 #1401 #1402 #1403 #1404 #1405 #1406 #1407 #1408 #1409 #1410 #1411 #1412 #1413 #1414).
-- **Post-release autopilot wave 1 (2026-05-03 evening, 7 PRs)**:
-  - #1428 — `.claude/scheduled_tasks.lock` removed from repo + gitignored
-  - #1429 — perf(impact): `Arc<str>` keys in reverse-BFS + build_test_map (closes #1377 — P3-55, finalizes the umbrella)
-  - #1430 — fix(serve): `--open` suppressed under auth to keep token off subprocess argv (closes #1337)
-  - #1431 — fix(hnsw): widen `test_build_batched` search windows to top-N (post-#1370 small-tier flake; unblocked main CI)
-  - #1432 — test(gc): `cmd_gc` end-to-end test (closes #1358)
-  - #1433 — fix(hook): embed POSIX-translated `cqs.exe` path on Windows installs (closes #1354)
-  - #1434 — feat(serve): idle-shutdown after `CQS_SERVE_IDLE_MINUTES` (closes #1345)
-- **Luxury route (this session, 2026-05-04 early morning, 4 PRs of the 5 picks)**:
-  Highest-taste open items, picked by aesthetic merit not effort:
-  - #1436 — feat(daemon): server-side `wait_fresh` — single round-trip, zero polling (closes #1228 / RM-2). New `FreshNotifier` (`Mutex<bool> + Condvar`); watch loop publishes, daemon parks parked clients on `Condvar::wait_timeout` until next `false → true` transition. Replaces the 250 ms-poll loop (4-5k connect/parse round-trips per 60 s wait at default budget).
-  - #1437 — refactor(batch): macro-table dispatch + uniform `&args` handlers (closes #1216). Collapses 33-arm hand-written dispatch into single `for_each_batch_cmd!` table that emits both `is_pipeable` and `dispatch`. Adding a new variant: declare on `BatchCmd` + write handler + add one row, all compile-enforced. Refactored ~30 handlers to uniform `fn(ctx, &XArgs)` signature; `Reconcile` + `WaitFresh` wrapped in `ReconcileArgs` / `WaitFreshArgs` for shape uniformity.
-  - #1438 — test(serve): `cqs serve` end-to-end smoke test (closes #1359). Spawns `cqs serve --port 0`, parses banner for token + ephemeral port, runs three real HTTP/1.1 GETs (Bearer 200, no auth 401, /api/graph 200+JSON). Pins the SEC-1.30-V1 layer-composition order — auth + host-allowlist + body-limit + trace + compression. Uncovered gotchas pinned in code comments: banner-reader threads must keep draining (else server hits EPIPE); Bearer auth dodges the `?token=` 303 redirect; bare `127.0.0.1` Host header beats the port-0 allowlist mismatch.
-  - #1439 — perf(reconcile): stream `enumerate_files` + batched mtime lookup (closes #1229 / RM-5). New `enumerate_files_iter() -> impl Iterator<Item = PathBuf>` and `Store::fingerprints_for_origins(origins: &[&str])`. Reconcile no-pre-walk path streams 1k-file batches; peak heap is `O(batch_size)` regardless of tree size. ~12 MB transient → bounded ~per-batch on a 100k-file repo.
-- **Skipped from luxury picks: #1366(b)** — `cqs-cli-derive` proc-macro crate. Deferred: the proper version requires extracting ~50 variant bodies into uniform handlers + new proc-macro crate (~6 hours of single-mega-PR work). Better fit for a dedicated session — the four merged PRs don't block it.
-
-### Recent release history (compressed)
-
-- **v1.36.1** — Qwen3-Embedding-4B preset + position_ids ONNX input (#1441); FP16/BF16 output tensor dispatch (#1442); daemon server-side `wait_fresh` (#1436); daemon idle-shutdown (#1434); HNSW defaults scale by corpus size (#1425); reconcile streaming + batched mtime (#1439); plus 9 audit fixes. No schema bump.
-- **v1.36.0** — per-category SPLADE α retuned for EmbeddingGemma (test/dev R@5 +3.7pp); schema v25→v26 composite chunks index; `--reranker <none|onnx|llm>` exposed on `cqs search`; readonly migration bug (#1413) caught during eval validation. 13 audit follow-up fixes bundled.
-- **v1.35.0** — default embedder swap to embeddinggemma-300m + tokenizer truncation fix (#1384). Truncation fix surfaced via apples-to-apples comparison; bge-large-ft / v9-200k / coderank had been silently dropping ~90% of long-section content.
-- **v1.34.0** — bundled the post-v1.33.0 audit close-out (24 fix PRs) + EmbeddingGemma-300m preset (#1301), `cqs eval --reranker` (#1303), `slow-tests` Phase 2 (#1302), ci-slow.yml stabilization. Same day as v1.33.0.
-- **v1.33.0** — eval-matcher drift fix (#1284), placeholder-cache 30s startup tax fix (#1288, CI test job 38min→6min), chunk orphan pipeline prune (#1283), `bge-large-ft` preset (#1289), daemon test refactor + nightly CI workflow (#1292, #1286 Phase 1).
-- **v1.32.0** — HNSW load-phase flock self-deadlock fix (#1261); structural-trust three-tier (#1221); worktree → main-index discovery (#1254); note kind taxonomy (#1133); persistent TRT engine cache (#1260). Schema v23→v25.
-
-### v1.33.0 audit close-out
-
-16-category audit produced 167 findings; triaged P1=47/P2=41/P3=56/P4=23. **24 fix PRs landed**; 25 medium-effort items filed as tracking issues (#1337-#1377). Coverage: 129 ✅ closed / 15 🎫 issue-tracked / 0 ⬜ open.
-
-**Operational lesson from the audit:** PR #1380 was needed to recover **112 lost ✅ flips** in `docs/audit-triage.md` after force-pushed rebases naively resolved triage-row conflicts using older agents' pre-flip snapshots. Source-code fixes were unaffected; only the bookkeeping rolled back. Mitigation: keep triage flips append-only OR move each PR's triage update into a separate narrow PR per cluster.
-
-### Outstanding follow-ups (small, optional)
-
-- Retroactive vendored / kind tagging for pre-v25 rows — operator can `cqs index --force` if they want immediate flagging.
-- `cuvs` crate update — upstream PRs #1840 (serialize/deserialize) + #2019 (search_with_filter) both merged into rapidsai/cuvs; `[patch.crates-io]` entry on `jamie8johnson/cuvs-patched` becomes redundant once a new cuvs crate publishes (RAPIDS ~2-month cadence).
-
-## Open issues
-
-**Sweep targets (small, contained — pick first):**
-
-| # | Title | Why open / scope |
+**Operational lesson from this release**: #1495's `cqs-macros` workspace split (which landed AFTER v1.38.0 was tagged) had `publish = false`, blocking `cargo publish -p cqs` for v1.39.0. Fixed in #1579: dropped publish=false, filled in standard Cargo.toml metadata, then published cqs-macros 0.1.0 first followed by cqs 1.39.0. **Going forward both crates need version bumps coordinated whenever cqs-macros's surface changes.**
+
+## Audit umbrellas — current state
+
+- ✅ **#1463 (P4 design-level)** — ~64 of 154 findings closed across the v1.38 cycle. Truly remaining (all genuinely big or platform-blocked):
+  - **API-V1.38-6** (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Lib `cqs::scout()` doesn't accept filter knobs at all.
+  - **DS-V1.38-4 deeper hazard** (HNSW half-renamed-set under a lock-then-rename window) — needs bundle-into-single-file refactor + migration path. Easy mitigation already shipped in #1570.
+  - **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner.
+  - **TC-HAP-V1.38-3** (`enrichment_pass` itself untested) — needs real embedder load (~91 MB).
+  - 12 P4 carry-overs all tracked separately (#1512 Windows daemon, #1461 Windows ACL, etc.).
+- ⏳ **#1459 (P3 API design)** — 7 of 8 sub-items shipped. Item 2 (project/ref verb consolidation) remains; user investigation found ref + project are genuinely distinct primitives.
+- ✅ **#1460, #1461, #1462** — closed in v1.38.0
+- ✅ **#1366** (proc-macro CLI derive) — closed by #1495
+- ✅ **#1452** (skip first-pass embed) — closed by #1497
+- ✅ **#1453** (per-slot SPLADE α) — closed by #1472
+- ✅ **#1458** (TC Happy 5 tests) — closed in v1.39.0 cycle
+
+## Open issues (re-verified 2026-05-07)
+
+All 15 open issues are still relevant — none stale.
+
+| # | Status | Why open |
 |---|---|---|
-| 1107 | `cqs slot create --model` not persisted | Validates the arg but doesn't write to slot.toml. Mechanical fix. |
-| 1108 | `content_hash` storm — 5 hot SELECTs missing column | ~2,180 warnings/eval; 5 SELECT statements need the column added. |
-| 1395 | GPU-vs-CPU routing should use token count | Proper redesign of #1396's interim threshold scaling. |
+| #106 | tier-3 | ort 2.0-rc.12 stable release blocked on upstream pykeio |
+| #255 | tier-3 | Pre-built reference packages — signing/registry design (infra, not code) |
+| #717 | tier-3 | HNSW mmap — needs lib swap to hnswlib-rs (nightly-only) |
+| #916 | tier-2 | SPLADE mmap — audit-deprioritized (59 MB transient) |
+| #1043 | platform | Windows network drives — needs Windows test runner |
+| #1139 | enhancement | structural_matchers shared library — partially landed (per-language data exists; cross-language sharing remains) |
+| #1140 | enhancement | Embedder preset extras map — explicitly skipped per autopilot directive |
+| #1350 | architecture | apply_scoring_pipeline hand-coded — P4-14 deferred |
+| #1351 | architecture | HNSW DistCosine type-baked — needs persist migration |
+| #1391 | enhancement | NVRTX (TensorRT-RTX) — blocked on ORT Linux platform gate |
+| #1459 | umbrella | API design — 1 of 8 items remaining (project/ref verb consolidation) |
+| #1463 | umbrella | P4 — see audit umbrella state above |
+| #1512 | platform | Windows daemon named pipes — needs Windows runner |
+| #1573 | new | cqs dead tier 2/3 false-positive sources (filed during v1.39.0 cycle) |
+| #1576 | upstream | TensorRT 10 SIGFPE during ONNX engine compilation for Gemma — filed against NVIDIA |
 
-**v1.33.0 audit (medium-effort, batchable):**
+## Recent release history (compressed)
 
-| Range | Theme |
-|-------|-------|
-| #1337-#1359 | P4 batch — partially landed: #1337 #1345 #1354 #1358 closed this session; remaining P4 items (#1350 #1351 #1359 #1366) are architecture-class or "hard" labelled |
-| #1366 | P3-49: structural CLI registry — proc-macro crate; needs dedicated session for body extraction across ~50 variants |
-| #1377 | ✅ Closed by #1429 (P3-55 BFS Arc<str> finalized the umbrella) |
-| #1345 | ✅ Closed by #1434 (idle eviction) |
-| #1354 | ✅ Closed by #1433 (Windows hook PATH) |
-| #1358 | ✅ Closed by #1432 (cmd_gc e2e test) |
-| #1337 | ✅ Closed by #1430 (token leak via xdg-open argv) |
-| #1228 | ✅ Closed by #1436 (server-side wait_fresh) |
-| #1216 | ✅ Closed by #1437 (macro-table dispatch) |
-| #1359 | ✅ Closed by #1438 (cqs serve smoke test) |
-| #1229 | ✅ Closed by #1439 (streaming enumerate_files_iter) |
+- **v1.39.0** (2026-05-07) — 88-commit minor release. v1.38 audit cycle + post-cycle hardening (atomic reindex #1575, TRT blocklist #1577, cqs dead noise filter #1572). Schema unchanged at v27.
+- **v1.38.0** (2026-05-06) — 13 audit-driven PRs closing #1460/#1461/#1462. Per-slot SPLADE α tables (#1472), TOML overlays for FTS synonyms + classifier vocab, `cqs serve` concurrent-request cap (#1477), daemon socket TOCTOU hardening (#1478). No schema bump.
+- **v1.37.0** (2026-05-05) — v1.36.2 audit close-out (#1456): 120/163 findings addressed. Dim-scaled batch sizes (#1464). Promoted `cqs::limits` to `pub`. `RerankerMode::Llm` removed.
+- **v1.36.2** (2026-05-04) — critical fix (#1451): long-running `cqs index` no longer crashes with SQLITE_BUSY when concurrent `cqs` invocations overlap. busy_timeout 5s → 30s.
+- **v1.36.1** (2026-05-04) — qwen3-embedding-4b preset (#1441/#1442) — 7.4 GB FP16, 2560-dim, 4096 max-seq.
+- **v1.36.0** (2026-05-03) — schema v25→v26. Per-category SPLADE α retuned for EmbeddingGemma + Unknown=0.80 catch-all hedge. Net agg lift R@5 +3.7pp. 13 audit-followup fixes including critical readonly-migration bug (#1413).
+- **v1.35.0** (2026-05-02) — default embedder swap BGE-large → EmbeddingGemma-300m + tokenizer-truncation correctness fix (#1384) for fine-tuned BERT-family presets.
+- **v1.34.0** (2026-05-02) — post-v1.33.0 audit close-out (24 fix PRs, 129 findings) + EmbeddingGemma preset.
+- **v1.33.0** (2026-05-02) — eval-matcher drift fix (#1284), placeholder-cache 30s startup tax fix (#1288, CI 38min→6min), `bge-large-ft` LoRA preset.
 
-**Filed during today's qwen3 work (deferred):**
+## Schema state
 
-| # | Title | Status |
-|---|---|---|
-| 1391 | TRT-RTX wiring | Blocked on ORT 2.0.0-rc.12 Linux platform gate |
-| 1392 | `CQS_DISABLE_CPU_WARM` env var | ✅ Closed by #1394 |
-| 1395 | Token-count routing | Open (sweep target) |
+- **v27** (post-#1497, v1.38.0+) — `chunks.needs_embedding INTEGER NOT NULL DEFAULT 0` plus partial index. Drives `--llm-summaries` skip-first-pass embed: chunks land with zero-vec sentinel + `needs_embedding=1`; HNSW build and search hide them until `enrichment_pass` clears the flag.
+- v27 migration backfills `needs_embedding=1` for any pre-v27 row with `embedding_base IS NULL` so legacy chunks repopulate the base-HNSW on the next index pass.
+- HNSW build, `Store::search_by_name`, `Store::search_fts_only` all filter `WHERE needs_embedding = 0`.
 
-**Pre-existing tier-3 issues (long-running, lower priority):**
+## Adding a top-level CLI command (post-#1495)
 
-| # | Title | Why open |
-|---|---|---|
-| 106 | ort dependency is pre-release RC | Blocks on upstream pykeio cutting a stable 2.0 |
-| 255 | Pre-built reference packages | Signing/registry design (infra, not code) |
-| 717 | perf: HNSW fully loaded into RAM | Needs lib swap to hnswlib-rs (nightly-only) |
-| 916 | perf: mmap SPLADE index | Audit-deprioritized — 59 MB peak transient, dominated by parse-side allocations |
-| 1043 | `is_slow_mmap_fs` ignores Windows network drives | Linux/WSL unaffected; needs Windows test runner |
-| 1139 | EX-V1.30-3: structural_matchers shared library | Touches 50+ language modules; explicitly skipped per autopilot directive |
-| 1140 | EX-V1.30-4: Embedder preset extras map | Skipped per autopilot directive |
-| 1216 | ✅ Closed by #1437 — macro-table dispatch + uniform `&args` handlers |
-| 1228 | ✅ Closed by #1436 — server-side `wait_fresh` parks on `FreshNotifier`, single round-trip |
-| 1229 | ✅ Closed by #1439 — `enumerate_files_iter` + batched fingerprints, O(batch) heap |
-| 1244 | RM-4: HNSW snapshot 17 MB | Audit's "240×" claim assumed nonexistent u32 chunk_ids; actual win ~1 MB via `[u8; 32]` repr |
-| 1286 | Overnight CI workflow Phase 3 | Phase 1 (#1293) + Phase 2 (#1302) shipped; Phase 3 (CLI subprocess test binary collapse) lower priority after #1288's PR-time CI win |
-
-## Parked
-
-Strategic frontier candidates if redirected:
-
-- **#1131 follow-on** — wire USearch / SIMD brute-force as `IndexBackend` candidates (trait scaffolding from #1131 already in).
-- **EmbeddingGemma-300m, Qwen3-Embedding-8B, NV-Embed-v2** — embedder eval queue, all eval-required.
-- **HyDE on v3 dev** — most promising untested representation lever. Per-category routing required. Killed at v1.28.3 attempt; index-time variant never properly retested at v3 N.
-- **Reranker V2 properly retrained** — Phase 3 attempt failed (-24pp R@5 full pool). Three fixes in post-mortem (TIE labels, domain-shifted hard negatives, pool cap), ~1-2 weeks work. Re-attempt only with 10× more queries OR bge-reranker-large.
-- **Knowledge-augmented retrieval** — call/type graph as structured filter. multi_step queries weakest at 28-43% R@1.
+Declare the variant with `#[cqs_cmd(group = "a"|"b", batch = "cli"|"daemon"|"runtime")]` on `Commands` (definitions.rs), implement the handler in `commands/<area>/`, add a small `cmd_<snake>_dispatch` shim in `commands/dispatch_shims.rs`. The shim destructures the variant out of `&Commands` and forwards to the handler. Cfg-gated variants get `#[cfg(feature = "...")]` next to `#[cqs_cmd(...)]` and the derive forwards it to every emitted arm.
 
 ## Operational pitfalls (rolling forward)
 
-- **Main is protected** — `git push` to main is rejected. Always create a branch + PR. `git push origin main` wastes a round trip.
+- **Main is protected** — `git push` to main is rejected. Always create a branch + PR.
 - **Always use `--body-file` for `gh pr create`** — never inline heredocs (PowerShell mangles + Claude Code captures the whole multiline as a permission entry, corrupting `settings.local.json`).
 - **WSL git credential helper** — `git push` from `~/training-data` needs `git config --global credential.helper '/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe'`. Already configured globally for cqs.
-- **Squash-merge + rebase trap** — when a PR is squash-merged and a follow-up branch was based off it, rebase fails (commits ≠ squash). Cherry-pick the follow-up's commits onto a fresh branch from main.
-- **Auto-merge disabled on this repo** — `gh pr merge --auto` returns "auto merge is not allowed". Watch CI manually + merge when green.
-- **Cargo publish 413** = "exclude" list missing. `evals/` etc. now in `Cargo.toml` exclude list.
-- **Always confirm test wins on dev before declaring** — single-split A/B is noisy at N=109. ColBERT 2-stage taught this.
-- **Smoke-test against real producer output** — synthetic fixtures only catch what you anticipate.
-- **No time estimates in specs** — wall-time predictions are unreliable. Use compute units / step counts / size anchors instead.
-- **`enumerate_files` returns relative paths** — joining with project root before `parse_file()` is mandatory; otherwise the parser resolves against cargo's CWD and parses the wrong tree.
+- **Squash-merge + rebase trap** — when a PR is squash-merged and a follow-up branch was based off it, rebase fails. Cherry-pick onto fresh main.
+- **Auto-merge disabled** — `gh pr merge --auto` returns "auto merge is not allowed". Watch CI manually + merge when green.
+- **`cargo publish --features gpu-index` fails verification** — the workspace `[patch.crates-io]` cuvs-patched fork doesn't ship in the package. Use plain `cargo publish` (no features); gpu-index is feature-gated.
+- **cqs-macros must publish first** — when bumping cqs that depends on cqs-macros, publish cqs-macros to crates.io first or `cargo publish -p cqs` errors with "no matching package named cqs-macros".
+- **`cargo publish` 413 errors** = excludes missing. `evals/` etc. are in `Cargo.toml`'s `exclude` list.
+- **`enumerate_files` returns relative paths** — joining with project root before `parse_file()` is mandatory; otherwise the parser resolves against cargo's CWD.
 - **`type_edges` parser tracks signature-level uses only** — params, returns, fields. Not expression-level (`let x = T::new()`). Test assertions on "who uses type T?" must check signature users.
 - **Daemon GPU "activity" is misleading** — ORT keeps the CUDA context warm; A6000 sits at P2/1800MHz/84W with 0 actual compute work. True idle (P8) requires stopping the daemon.
-- **CI cqs test job runs ~30-40 min** serialised on a single GPU runner. Fixed-interval `/loop` heartbeats > 60min should go to cloud schedule (`/schedule`).
-- **vllm 0.19 has tight pins** on `flashinfer==0.6.6` and `lark==1.2.2`. Bumping these without bumping vllm itself breaks the Gemma server. The vllm-serve env runs a `transformers 5.6.0.dev0` build that vllm theoretically rejects — tolerated at runtime, fragile if vllm ever bumps.
-- **`pylate 1.4.0` pins `sentence-transformers==5.1.1` exactly** with no newer pylate available. Conflict is dormant unless ColBERT eval is run; cleanest fix would be a dedicated `colbert-eval` env.
-- **HF preset tokenizers may ship `truncation: {max_length: 512}` baked into `tokenizer.json`** (HF's `optimum-cli` enables it by default on export). Affects bge-large-ft and v9-200k locally. cqs windowing/counting paths must clone-and-disable truncation before counting tokens, otherwise long sections silently chunk into 1-2 windows when they need 12+ — see PR #1384. Inference paths intentionally keep truncation. When adding a new preset, sanity-check `python -c "from tokenizers import Tokenizer; print(Tokenizer.from_file('tokenizer.json').get_truncation())"` before relying on token counts.
+- **CI cqs test job runs ~6-12 min** post-#1288/#1302 (was 38 min). Fixed-interval `/loop` heartbeats > 60min should go to cloud schedule (`/schedule`).
+- **HF preset tokenizers may ship `truncation: {max_length: 512}` baked into `tokenizer.json`** — affects bge-large-ft, v9-200k, coderank. Cqs windowing/counting must clone-and-disable truncation before counting tokens. See PR #1384. When adding a new preset, check `python -c "from tokenizers import Tokenizer; print(Tokenizer.from_file('tokenizer.json').get_truncation())"` first.
+- **Triage-flip durability** (audit-cycle lesson): force-pushed rebases naively resolve triage-row conflicts using older agents' pre-flip snapshots. Mitigation: keep triage flips append-only OR move each PR's triage update into a separate narrow PR per cluster.
 
 ## Collaboration calibration (still load-bearing)
 
@@ -407,22 +102,16 @@ Strategic frontier candidates if redirected:
 
 ## Eval baselines
 
-Canonical slate: `evals/queries/v3_test.v2.json` (109q) + `evals/queries/v3_dev.v2.json` (109q). Both fixtures refreshed 2026-04-25 (PR #1109) — gold chunks re-pinned to current line numbers.
+Canonical slate: `evals/queries/v3_test.v2.json` (109q) + `evals/queries/v3_dev.v2.json` (109q). Both fixtures refreshed 2026-04-25 (PR #1109).
 
-**Current baseline (apples-to-apples 2026-05-02, all 5 slots `cqs index --force --llm-summaries` post #1384 truncation fix):**
+**Baseline (v3.v2 218q dual-judge, post-v1.39.0 default — embeddinggemma-300m + per-cat α + Unknown=0.80):**
 
-| Slot | dev R@1 | dev R@5 | dev R@20 | test R@1 | test R@5 | test R@20 |
-|---|---:|---:|---:|---:|---:|---:|
-| BGE-large | 51.4% | 75.2% | 86.2% | 43.1% | 68.8% | 82.6% |
-| embeddinggemma-300m | 49.5% | 76.1% | 89.0% | **48.6%** | 68.8% | 83.5% |
-| bge-large-ft | 50.5% | 75.2% | 87.2% | 45.0% | **71.6%** | **85.3%** |
-| v9-200k | 45.9% | 69.7% | 81.7% | 44.0% | 67.9% | 79.8% |
-| nomic-coderank | 46.8% | 68.8% | 79.8% | 43.1% | 67.0% | 78.0% |
+| Metric | Test | Dev |
+|---|---:|---:|
+| R@1 | 44.0% | 55.0% |
+| R@5 | 67.9% / 69.7% | 78.0% / 80.7% |
+| R@20 | 80.7% / 84.4% | 91.7% / 92.7% |
 
-Per-slot summary coverage at measurement (capped by `chunk_type.is_code()` eligibility filter at `src/llm/mod.rs:115` — markdown / json / ini chunks are deliberately skipped, so coverage % varies with each tokenizer's chunk-type distribution):
+The R@5/R@20 ranges reflect the natural variance from one query rank-shifting at the boundary; both numbers comfortably above their canonical baselines. v4 fixtures (1526/split, 14× v3 N) exist for any A/B that needs tighter noise floors.
 
-- default 62.1%, bge-large-ft 62.1%, gemma 99.0%, v9 67.6%, coderank 65.5%
-
-**Apples-to-apples does not mean equal coverage** — it means each slot has all *its* eligible chunks summarized, which is now true. The 62-99% spread is structural, not API-bound (`cached=9222 skipped=10238 api_needed=3` in the 2026-05-02 fill-in run).
-
-Full per-category breakdowns + methodology in `~/training-data/research/models.md` "Five-Way A/B" section. v4 fixtures (1526/split, 14× v3 N) exist for any A/B that needs tighter noise floors.
+**Strategic frontier candidates** (when redirected): wire USearch / SIMD brute-force as `IndexBackend` candidates (#1131 trait scaffolding already in); HyDE on v3 dev with index-time per-category routing (never properly tested at v3 N); reranker V2 properly retrained (Phase 3 attempt failed -24pp R@5 full pool; ~1-2 weeks work with 10× more queries OR bge-reranker-large); knowledge-augmented retrieval (call/type graph as structured filter; multi_step queries weakest at 28-43% R@1).
