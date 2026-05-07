@@ -476,7 +476,18 @@ impl SpladeIndex {
         // (1) Stale-`.bak` guard. A leftover means a previous save failed
         // mid-rollback and the operator has not cleared it; bail loudly so
         // we don't clobber the only live copy.
+        //
+        // OB-V1.38-7 (#1463): emit a structured warn before the early
+        // return so journald records "SPLADE save refused — stale .bak"
+        // independent of the error chain that propagates upward. The
+        // anyhow::Error string still carries the recovery hint, but a
+        // structured event lets operators alert on this condition.
         if bak_path.exists() {
+            tracing::warn!(
+                bak_path = %bak_path.display(),
+                live_path = %path.display(),
+                "SPLADE save refused — stale .bak from prior failed save, manual recovery required"
+            );
             let _ = std::fs::remove_file(&tmp_path);
             return Err(SpladeIndexPersistError::Io(std::io::Error::other(format!(
                 "stale {} from prior failed save; manual recovery required \

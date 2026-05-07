@@ -56,7 +56,8 @@ pub(super) struct PendingRebuild {
     /// finished) instead of leaking a detached worker. `None` if the spawn
     /// itself failed — the channel disconnect path then handles cleanup.
     pub(super) handle: Option<std::thread::JoinHandle<()>>,
-    /// P2.72: latched once `delta` exceeds `MAX_PENDING_REBUILD_DELTA`. When
+    /// P2.72: latched once `delta` exceeds the dim-aware
+    /// [`pending_rebuild_delta_max`] cap. When
     /// set, the drain path discards the rebuilt index instead of swapping
     /// (the missed embeddings would silently disappear); the next threshold
     /// rebuild reads fresh state from SQLite and recovers cleanly.
@@ -84,7 +85,30 @@ pub(crate) struct RebuildResult {
 /// vector backlog is possible — every entry is `Vec<f32>` of `dim` floats.
 /// 5,000 entries × 1024 dim × 4 bytes ≈ 20 MB worst case, recoverable by the
 /// next threshold rebuild's fresh SQLite scan.
-pub(super) const MAX_PENDING_REBUILD_DELTA: usize = 5_000;
+///
+/// SHL-V1.38-1 (#1463): the constant value below is the *baseline at
+/// 1024-dim*. The actual cap is dim-scaled by [`pending_rebuild_delta_max`]
+/// so a 4096-dim Qwen3-style backbone gets ~1,250 entries (still ~20 MB)
+/// instead of the dim-blind 5,000 (which would be ~80 MB). Bound on both
+/// sides via `dim_scaled_batch(_, dim, 500, 50_000)` so a tiny-dim
+/// preset doesn't go unbounded either. Operators can override the
+/// baseline via `CQS_PENDING_REBUILD_DELTA_MAX`.
+pub(super) const MAX_PENDING_REBUILD_DELTA_BASELINE: usize = 5_000;
+
+/// SHL-V1.38-1 (#1463): dim-aware resolution of the pending-rebuild
+/// delta cap. Reads `CQS_PENDING_REBUILD_DELTA_MAX` for a baseline override
+/// (rejected if 0 or unparseable, falls back to the compiled-in baseline),
+/// then dim-scales via [`crate::limits::dim_scaled_batch`] so wider models
+/// don't blow the per-rebuild memory budget. Returns the absolute cap
+/// (entries, not bytes).
+pub(super) fn pending_rebuild_delta_max(dim: usize) -> usize {
+    let baseline = std::env::var("CQS_PENDING_REBUILD_DELTA_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_PENDING_REBUILD_DELTA_BASELINE);
+    cqs::limits::dim_scaled_batch(baseline, dim, 500, 50_000)
+}
 
 pub(super) type RebuildOutcome = Result<Option<RebuildResult>, anyhow::Error>;
 

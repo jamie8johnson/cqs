@@ -106,11 +106,16 @@ pub(super) fn handle_socket_client(
     // single-allocation cost without the dead amortization story.
     let mut line = String::with_capacity(8192);
 
-    // Read request (max 1MB). Wrap reader in .take() so allocation is
-    // bounded *before* we accept a giant line — the post-hoc size check
-    // below still fires if a client sends exactly the cap worth of data.
+    // SHL-V1.38-4 (#1463): align with the CLI's `MAX_DIFF_BYTES` so a
+    // multi-MB diff (`cqs review --stdin`, `cqs impact --diff`) routed
+    // through the daemon doesn't fail with `TooLarge` while the same
+    // diff via direct CLI succeeds. The 1 MB literal predated the
+    // review/impact daemon-routing additions and silently capped them.
+    // +4 KB JSON-envelope headroom for the daemon protocol wrapping.
     use std::io::Read as _;
-    let mut reader = std::io::BufReader::new(&stream).take(1_048_577);
+    let max_request_bytes = crate::cli::limits::max_diff_bytes().saturating_add(4 * 1024);
+    let take_cap = (max_request_bytes as u64).saturating_add(1);
+    let mut reader = std::io::BufReader::new(&stream).take(take_cap);
 
     enum ParseOutcome {
         Ok(serde_json::Value),
@@ -121,7 +126,7 @@ pub(super) fn handle_socket_client(
     }
     let parse_outcome = match std::io::BufRead::read_line(&mut reader, &mut line) {
         Ok(0) => ParseOutcome::Empty,
-        Ok(n) if n > 1_048_576 => ParseOutcome::TooLarge,
+        Ok(n) if n > max_request_bytes => ParseOutcome::TooLarge,
         Err(e) => ParseOutcome::IoError(e.to_string()),
         Ok(_) => match serde_json::from_str(line.trim()) {
             Ok(v) => ParseOutcome::Ok(v),

@@ -144,16 +144,26 @@ fn join_worker(client: UnixStream, handle: thread::JoinHandle<()>) {
 // return a structured error.
 // ─────────────────────────────────────────────────────────────────────
 #[test]
-fn daemon_rejects_exactly_one_mib_boundary() {
+#[serial_test::serial(daemon_socket_env)]
+fn daemon_rejects_oversize_request_boundary() {
+    // SHL-V1.38-4 (#1463): the cap is now `max_diff_bytes() + 4 KiB`
+    // (default 50 MiB + 4 KiB) so multi-MB diffs from `cqs review
+    // --stdin` and `cqs impact --diff` route through the daemon at
+    // parity with the CLI path. Lower the cap via `CQS_MAX_DIFF_BYTES`
+    // so this test stays cheap (a 50 MB write blocks the harness on
+    // slow CI runners) and still exercises the boundary structurally.
+    //
+    // #[serial(daemon_socket_env)] groups this with the 500 KB
+    // companion test below — both touch CQS_MAX_DIFF_BYTES.
+    std::env::set_var("CQS_MAX_DIFF_BYTES", "65536"); // 64 KiB
+                                                      // Effective cap = 64 KiB + 4 KiB envelope headroom = 68 KiB.
+    let cap_bytes = 64 * 1024 + 4 * 1024;
+    let payload = vec![b'a'; cap_bytes + 1];
+
     let (_dir, ctx) = test_ctx();
     let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
 
-    // 1 MiB + 1 byte, no newline. The daemon's `read_line` reads up to
-    // the take() limit of 1_048_577, then the size check fires.
-    let payload = vec![b'a'; 1_048_577];
-    // Writing 1 MiB to a socket blocks if the peer doesn't read. The
-    // handler is actively reading, so this should complete.
-    client.write_all(&payload).expect("write 1 MiB + 1 payload");
+    client.write_all(&payload).expect("write oversize payload");
     // Half-close the write side so the peer's read_line terminates
     // without needing a newline. Without this, the peer keeps reading
     // (up to the take() cap) and we both deadlock waiting for more.
@@ -166,7 +176,7 @@ fn daemon_rejects_exactly_one_mib_boundary() {
     assert_eq!(
         resp.get("status").and_then(|v| v.as_str()),
         Some("error"),
-        "1 MiB + 1 byte must return a structured error envelope: {line}"
+        "oversize payload must return a structured error envelope: {line}"
     );
     assert_eq!(
         resp.get("message").and_then(|v| v.as_str()),
@@ -174,6 +184,7 @@ fn daemon_rejects_exactly_one_mib_boundary() {
         "message must name the exact failure mode so the client can surface it: {line}"
     );
     join_worker(client, handle);
+    std::env::remove_var("CQS_MAX_DIFF_BYTES");
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -357,7 +368,12 @@ fn daemon_rejects_non_string_args() {
 // — that's the contract we pin.
 // ─────────────────────────────────────────────────────────────────────
 #[test]
+#[serial_test::serial(daemon_socket_env)]
 fn daemon_accepts_500kb_arg_within_mib_line() {
+    // #[serial(daemon_socket_env)] groups with the boundary test above
+    // so its `CQS_MAX_DIFF_BYTES=65536` env mutation can't accidentally
+    // shrink the cap mid-flight here — the 500 KB payload would then
+    // exceed the per-conn cap and get rejected.
     let (_dir, ctx) = test_ctx();
     let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
 
