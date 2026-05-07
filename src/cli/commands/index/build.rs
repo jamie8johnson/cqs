@@ -1511,6 +1511,17 @@ fn check_index_model_drift(
     if target_matches {
         return Ok(());
     }
+    // OB-V1.38-2 (#1463): emit a structured warn alongside the bail
+    // string so daemon-mode operators (and journald harvesters) see
+    // the drift event in their structured log stream. Pre-fix only
+    // stderr saw it — daemon-spawned `cqs index` would silently fail
+    // an alert path.
+    tracing::warn!(
+        stored_model = %stored_name,
+        requested_model = %requested_name,
+        index_path = %index_path.display(),
+        "Index model drift detected — refusing to clobber the existing index"
+    );
     anyhow::bail!(
         "Index at {} was built for model `{stored}`, but `--model` resolved to \
          `{requested}`. Re-run with `cqs index --force --model {requested}` to rebuild \
