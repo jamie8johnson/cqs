@@ -377,6 +377,17 @@ pub struct AuxModelSection {
     /// Explicit path to `tokenizer.json`. Inferred from `model_path`'s
     /// parent when omitted; rejected when set without `model_path`.
     pub tokenizer_path: Option<PathBuf>,
+    /// EX-V1.38-3 (#1463): batch size for the cross-encoder reranker.
+    /// Reranker-only; SPLADE ignores this field. `None` falls through
+    /// to `CQS_RERANKER_BATCH` (env), then the dim-aware computed
+    /// default in [`crate::reranker::reranker_batch_size`]. Set via
+    /// `[reranker] batch = N` in `.cqs.toml`.
+    pub batch: Option<usize>,
+    /// EX-V1.38-3 (#1463): max input token length for the cross-encoder.
+    /// Reranker-only. `None` falls through to `CQS_RERANKER_MAX_LENGTH`
+    /// (env), then the compiled-in default 512. Set via
+    /// `[reranker] max_length = N` in `.cqs.toml`.
+    pub max_length: Option<usize>,
 }
 
 /// Optional overrides for search scoring parameters.
