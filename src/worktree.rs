@@ -86,9 +86,22 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
         dir.join(&gitdir)
     };
 
-    // Read `<gitdir>/commondir` → relative path back to canonical `.git/`
+    // Read `<gitdir>/commondir` → relative path back to canonical `.git/`.
+    //
+    // RB-V1.38-1 (#1463): cap the read at MAX_GIT_FILE_BYTES (4 KiB),
+    // matching the .git-file read above (RB-V1.33-2 sibling). Pre-fix
+    // `read_to_string` was unbounded — a hostile or corrupt
+    // `<gitdir>/commondir` (the path ultimately derives from the
+    // worktree's untrusted `.git` link) could OOM the CLI on every
+    // invocation from inside a worktree.
+    use std::io::Read;
     let commondir_file = gitdir.join("commondir");
-    let commondir_relative = std::fs::read_to_string(&commondir_file).ok()?;
+    let mut commondir_relative = String::with_capacity(64);
+    std::fs::File::open(&commondir_file)
+        .ok()?
+        .take(MAX_GIT_FILE_BYTES)
+        .read_to_string(&mut commondir_relative)
+        .ok()?;
     let commondir_relative = commondir_relative.trim();
     if commondir_relative.is_empty() {
         return None;

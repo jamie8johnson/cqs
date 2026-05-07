@@ -119,7 +119,25 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
         "UMAP id_max_len exceeds wire format: {id_max_len} > u32::MAX"
     );
 
-    let mut payload: Vec<u8> = Vec::with_capacity(12 + n_rows * (2 + id_max_len + dim * 4));
+    // RB-V1.38-5 (#1463): the per-row size formula and the n_rows
+    // multiplication can each overflow on a 64-bit host even when the
+    // individual operands fit in u32 (the `ensure!` block above only
+    // validates each operand). Use saturating arithmetic so a
+    // pathological input bails with an explicit error instead of
+    // panicking on `Vec::with_capacity` or wrapping silently and
+    // hitting an out-of-bounds extend later.
+    let per_row = 2usize
+        .saturating_add(id_max_len)
+        .saturating_add(dim.saturating_mul(4));
+    let body_bytes = n_rows.saturating_mul(per_row);
+    let total_capacity = body_bytes.saturating_add(12);
+    anyhow::ensure!(
+        total_capacity < usize::MAX,
+        "UMAP payload size overflow: n_rows={} × per_row={} would exceed usize::MAX",
+        n_rows,
+        per_row,
+    );
+    let mut payload: Vec<u8> = Vec::with_capacity(total_capacity);
     payload.extend_from_slice(&(n_rows as u32).to_le_bytes());
     payload.extend_from_slice(&(dim as u32).to_le_bytes());
     payload.extend_from_slice(&(id_max_len as u32).to_le_bytes());
