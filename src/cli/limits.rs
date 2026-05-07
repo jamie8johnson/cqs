@@ -57,20 +57,71 @@ pub(crate) const RERANK_OVER_RETRIEVAL_MULTIPLIER: usize = 4;
 /// Honored by [`rerank_pool_size`].
 pub(crate) const RERANK_POOL_MAX: usize = 20;
 
-/// Resolve the over-retrieval multiplier honoring `CQS_RERANK_OVER_RETRIEVAL`.
-/// Falls back to [`RERANK_OVER_RETRIEVAL_MULTIPLIER`] when the env var is
-/// unset, empty, or unparseable. Zero is rejected so a misconfigured env
-/// can't silently degrade reranking to single-candidate mode.
-pub(crate) fn rerank_over_retrieval_multiplier() -> usize {
-    parse_env_usize(
-        "CQS_RERANK_OVER_RETRIEVAL",
-        RERANK_OVER_RETRIEVAL_MULTIPLIER,
-    )
+/// EX-V1.38-3 (#1463): process-global cache of the resolved
+/// `[reranker] pool_max` and `over_retrieval` TOML overrides. Set once
+/// at dispatch entry via [`install_reranker_pool_overrides`]; consulted
+/// by the resolvers below as a fallback between env and the compiled
+/// default.
+static RERANKER_POOL_OVERRIDES: std::sync::OnceLock<RerankerPoolOverrides> =
+    std::sync::OnceLock::new();
+
+#[derive(Default, Debug, Clone, Copy)]
+struct RerankerPoolOverrides {
+    pool_max: Option<usize>,
+    over_retrieval: Option<usize>,
 }
 
-/// Resolve the reranker pool cap honoring `CQS_RERANK_POOL_MAX`.
+/// Install the `[reranker]` pool-max + over-retrieval overrides (read
+/// once from `.cqs.toml`) into the process-global cache. Called from
+/// `cli::dispatch` after `Config::load`. Idempotent — first writer wins,
+/// second silently no-ops (matches the OnceLock contract used by the
+/// search/router overlay installers).
+pub(crate) fn install_reranker_pool_overrides(
+    pool_max: Option<usize>,
+    over_retrieval: Option<usize>,
+) {
+    let _ = RERANKER_POOL_OVERRIDES.set(RerankerPoolOverrides {
+        pool_max,
+        over_retrieval,
+    });
+}
+
+fn reranker_pool_overrides() -> RerankerPoolOverrides {
+    RERANKER_POOL_OVERRIDES.get().copied().unwrap_or_default()
+}
+
+/// Resolve the over-retrieval multiplier honoring (in priority):
+///   1. `CQS_RERANK_OVER_RETRIEVAL` env var (operator override).
+///   2. `[reranker] over_retrieval = N` in `.cqs.toml` (durable config).
+///   3. [`RERANK_OVER_RETRIEVAL_MULTIPLIER`] compile-time default.
+///
+/// Zero is rejected at every layer so a misconfigured value can't silently
+/// degrade reranking to single-candidate mode.
+pub(crate) fn rerank_over_retrieval_multiplier() -> usize {
+    if std::env::var_os("CQS_RERANK_OVER_RETRIEVAL").is_some() {
+        return parse_env_usize(
+            "CQS_RERANK_OVER_RETRIEVAL",
+            RERANK_OVER_RETRIEVAL_MULTIPLIER,
+        );
+    }
+    reranker_pool_overrides()
+        .over_retrieval
+        .filter(|n| *n > 0)
+        .unwrap_or(RERANK_OVER_RETRIEVAL_MULTIPLIER)
+}
+
+/// Resolve the reranker pool cap honoring (in priority):
+///   1. `CQS_RERANK_POOL_MAX` env var (operator override).
+///   2. `[reranker] pool_max = N` in `.cqs.toml` (durable config).
+///   3. [`RERANK_POOL_MAX`] compile-time default.
 pub(crate) fn rerank_pool_max() -> usize {
-    parse_env_usize("CQS_RERANK_POOL_MAX", RERANK_POOL_MAX)
+    if std::env::var_os("CQS_RERANK_POOL_MAX").is_some() {
+        return parse_env_usize("CQS_RERANK_POOL_MAX", RERANK_POOL_MAX);
+    }
+    reranker_pool_overrides()
+        .pool_max
+        .filter(|n| *n > 0)
+        .unwrap_or(RERANK_POOL_MAX)
 }
 
 /// Compute the over-retrieval pool size for a given user-facing limit.

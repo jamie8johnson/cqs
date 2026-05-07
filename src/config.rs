@@ -388,6 +388,19 @@ pub struct AuxModelSection {
     /// (env), then the compiled-in default 512. Set via
     /// `[reranker] max_length = N` in `.cqs.toml`.
     pub max_length: Option<usize>,
+    /// EX-V1.38-3 (#1463): hard cap on the cross-encoder over-retrieval
+    /// pool. Reranker-only. `None` falls through to `CQS_RERANK_POOL_MAX`
+    /// (env), then the compiled-in default 20. Set via
+    /// `[reranker] pool_max = N` in `.cqs.toml`. Resolved at dispatch
+    /// entry into a process-global OnceLock consulted by
+    /// [`crate::cli::limits::rerank_pool_max`].
+    pub pool_max: Option<usize>,
+    /// EX-V1.38-3 (#1463): over-retrieval multiplier — at
+    /// `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates
+    /// for the cross-encoder. Reranker-only. `None` falls through to
+    /// `CQS_RERANK_OVER_RETRIEVAL` (env), then the compiled-in default 4.
+    /// Set via `[reranker] over_retrieval = N` in `.cqs.toml`.
+    pub over_retrieval: Option<usize>,
 }
 
 /// Optional overrides for search scoring parameters.
