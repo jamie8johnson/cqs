@@ -1864,3 +1864,24 @@ mentions = [
     "auditor agent",
     "audit-batch1",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "v1.38.0 audit cycle continuation (2026-05-07, 14 more cluster PRs #1528-#1542 + #1531 flake fix): processed remaining P2/P3 from the triage. Highest-leverage items: Cluster Y PL-V1.38-5 closed a real SEC-1 footgun where `cqs init && git add .` was committing audit-mode.json + telemetry + binary index — gitignore now `*\n!.gitignore\n` (ignore-everything-but-self). Cluster W AC-V1.38-4 added connective-context gate to negation classifier (single-token `cqs exclude` no longer misroutes to Negation). Cluster Q SEC-V1.38-7 hardened run_git_diff ref validation to git's check-ref-format rules. ~52 audit findings closed across this continuation. ~6 architectural items remain (API-V1.38-6/9/10, DS-V1.38-4, PL-V1.38-4, SHL-V1.38-6/9, EX-V1.38-2/3/6) — separate cluster work each."
+mentions = [
+    "1.38.0",
+    "audit",
+    "#1463",
+    "PL-V1.38-5",
+    "AC-V1.38-4",
+    "SEC-V1.38-7",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Cluster-PR cadence stability: the 14-PR continuation hit a steady ~10-12 min cadence per PR (CI ~6-8 min + merge + sync + next branch + edits + push). One CI flake (mtime equality on slow shared FS) was the only friction; replaced with blake3 content hash. Test gating discipline: every cluster PR included `cargo test --features gpu-index --lib <pattern>` results in the body, plus `cargo clippy -- -D warnings` and `cargo fmt --check`. Body templates included an explicit 'What's NOT in scope' section so subsequent clusters can reference the deferral lineage."
+mentions = [
+    "audit",
+    "skill-pattern",
+    "cluster-PR",
+]
