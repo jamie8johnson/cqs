@@ -2,7 +2,29 @@
 
 ## Right Now
 
-**Post-v1.38.0 autopilot wave (2026-05-06, 11 PRs merged)**: user invoked `/effort max` and asked for "deferred because large" issue work, then went the full distance on the two big triage items as separate user-prompted decisions: "go with 2a" on #1366 (proc-macro CLI derive — handler signatures standardized across all 58 variants) and "schema migration is fine" on #1452 (skip first-pass embed under `--llm-summaries`). Triage of 15 open issues identified 3 size-deferred candidates (#1458 TC Happy tests, #1452 perf, #1366 proc-macro); all three landed. The TC Happy umbrella shipped as three clean PRs (one per cluster). Five more PRs landed against the P4 umbrella + API design umbrella + the proc-macro derive refactor + the perf rewrite.
+**v1.38.0 audit cycle (2026-05-06, 13 cluster PRs #1514–#1526)**: post-v1.38 fresh full-codebase audit run by 16 parallel auditor agents on opus surfaced 154 findings (P1=50, P2=37, P3=55, P4=12). Triage agent classified into priority + identified 10 cross-cutting clusters; cluster PRs closed ~36 P1/P2 items. Highest-impact: **Cluster A** (needs_embedding wiring, DS-V1.38-1/2/3/8) closed silent search-quality regression on `--llm-summaries` workflows where CAGRA / UMAP / brute-force kNN were loading zero-vec sentinels. **Cluster B** (lying-docs sweep) fixed 4 P1 lying-doc rows in README/SECURITY where `--improve-docs` claimed in-place writeback while the code has been patch-default since v1.30.1. **Cluster F** (algorithm correctness) caught a silent SPLADE search regression where `BoundedScoreHeap::would_accept` tiebreak was strict-gt, dropping smaller-id incoming candidates at tied scores. Schema unchanged (still v27).
+
+**Cluster PRs in priority order**:
+- **#1514** — fix(store, batch): close needs_embedding wiring gaps + slot-aware staleness (DS-V1.38-1/2/3/8). EmbeddingBatchIterator now filters `needs_embedding=0`. enrichment_pass repopulates `embedding_base` via COALESCE. BatchContext staleness uses `resolve_index_db` for slot-aware paths. v27 migration backfills NULL-base rows to `needs_embedding=1`.
+- **#1515** — audit(v1.38.0): aggregated 154 findings + P1/P2/P3/P4 triage. 18 files committed: 16 per-category source files, audit-findings.md (1483 lines), audit-triage.md (488 lines, 10 clusters, top-10 PR list).
+- **#1516** — docs: stop lying about --improve-docs, fix CONTRIBUTING + SECURITY drift, backfill CHANGELOG (DOC-V1.38-1/2/3/4/5/9 + PL-V1.38-3). 7 doc surfaces fixed.
+- **#1517** — fix(cli): finish stored_model_name lossy-caller migration (EH-V1.38-1/2/3/4). 4 destructive-op call sites now use try_stored_model_name with structured `tracing::error!` + recovery hints.
+- **#1518** — fix(search, hnsw, cagra): algorithm correctness sweep (AC-V1.38-1/2/3/5/6/9). Six total_cmp / saturating-arithmetic adoptions plus the BoundedScoreHeap tiebreak fix.
+- **#1519** — sec: redact api_base userinfo, drop Anthropic error.message echo, atomic patch write, ref-update symlink-redirect notice (SEC-V1.38-1/2/3/4). New LlmConfig::redacted_api_base() + hand-rolled Debug.
+- **#1520** — perf: cache test-pattern registry, SPLADE id_map Box<str>, hoist redundant joins (PF-V1.38-1/2/7/8). is_test_chunk OnceLock saves ~30k allocations per query.
+- **#1521** — test: TC-ADV regression-test backfill for shipped fixes (TC-ADV-V1.38-1/2/10). 5 new tests pinning SEC-V1.36-7 path-traversal rejection, P1-36 NoteBoostIndex clamps, embedding_to_bytes finiteness contract.
+- **#1522** — fix(rm): cap subprocess output for UMAP + export-model (RM-V1.38-4/5). New CQS_UMAP_MAX_STDOUT_BYTES env knob; export_model deps probe + ONNX export both gated.
+- **#1523** — fix(robustness): cap commondir read, replace daemon panic with bail, saturating UMAP capacity (RB-V1.38-1/2/5).
+- **#1524** — fix: SPLADE α slot resolver warns, ref-update entry span, drift detection structured warn (Cluster J partial: EH-V1.38-5, OB-V1.38-1/2).
+- **#1525** — fix(splade): replace 10 production .unwrap() with .expect() invariant comments (RB-V1.38-3).
+- **#1526** — fix(error-handling): tensor cascade error preservation, %e for tree-sitter, warn on malformed env (EH-V1.38-7/8/10).
+
+**Audit umbrella state after v1.38 cycle**:
+- ✅ #1463 (P4 design-level) — 9 items closed across the v1.36 + v1.38 cycles (P4-3/4/5/6/10/11/12/13 + carry-overs). Open: P4-1 (concurrent writer test), P4-7/8/9 (Windows daemon — under #1512), and the v1.38-cycle P4 carry-overs (12 items, mostly extensibility refactors)
+- ⏳ #1459 (P3 API design) — 7/8 sub-items shipped across v1.36/v1.37/v1.38 (4/7/8/9 in v1.38.0, 6 in #1493, items 1/3/5 closed by #1505/#1506/#1507). Item 2 (project/ref verb consolidation) remains open; user investigation found ref + project are genuinely distinct primitives so a literal deprecation alias would break the self-managed search path.
+- ⏳ #1512 (Windows daemon named pipes) — open; needs Windows test runner
+
+**Earlier post-v1.38.0 autopilot wave (2026-05-06, 11 PRs #1487–#1497)**: user invoked `/effort max` and asked for "deferred because large" issue work, then went the full distance on the two big triage items as separate user-prompted decisions: "go with 2a" on #1366 (proc-macro CLI derive — handler signatures standardized across all 58 variants) and "schema migration is fine" on #1452 (skip first-pass embed under `--llm-summaries`). Triage of 15 open issues identified 3 size-deferred candidates (#1458 TC Happy tests, #1452 perf, #1366 proc-macro); all three landed. The TC Happy umbrella shipped as three clean PRs (one per cluster). Five more PRs landed against the P4 umbrella + API design umbrella + the proc-macro derive refactor + the perf rewrite.
 
 **Merged this wave (11)**:
 - **#1487** — test(context): TC-HAP-V1.36-4 + 7 builder tests (closes 2/5 sub-items in #1458). 4 tests for `build_compact_data` / `build_full_data` (path normalization, error path, external-caller classification) + `pack_by_relevance` ignored test. Inlined Store + call-graph fixture because `cqs::test_helpers` is `#[cfg(test)]`-gated in lib crate.
