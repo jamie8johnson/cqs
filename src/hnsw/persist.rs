@@ -703,9 +703,29 @@ impl HnswIndex {
         let data_path = dir.join(format!("{}.hnsw.data", basename));
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
 
-        if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
-            return Err(HnswError::NotFound(dir.display().to_string()));
-        }
+        // DS-V1.38-4 (#1463): existence check moved INSIDE the
+        // shared-lock critical section. Pre-fix, a reader checked
+        // file existence at line 706 BEFORE acquiring the lock at
+        // line 734 — between those two points, a concurrent `save()`
+        // could take the exclusive lock, rename the four files into
+        // `.bak`, and complete. The reader then waited up to ~1s for
+        // the shared lock; if save finished within that window, the
+        // reader proceeded with files that had already been replaced,
+        // and `verify_hnsw_checksums` failed with a confusing
+        // checksum-mismatch error during a normal concurrent rebuild.
+        //
+        // The lock-acquisition path doesn't depend on the four data
+        // files existing (the lock file is a separate `.hnsw.lock`),
+        // so this reorder is safe and closes the TOCTOU window: any
+        // saver that wants to rename files MUST first take the
+        // exclusive lock, and we now check existence only AFTER our
+        // shared lock is held.
+        //
+        // The deeper hazard — a half-renamed set where save N+1 has
+        // moved graph but not yet data — remains and is tracked as
+        // the larger "bundle into single .hnsw.bundle for atomic
+        // replace" refactor. The lock-then-existence check at least
+        // ensures we don't observe in-progress renames.
 
         // Acquire shared lock for the read phase only (released before
         // return). Protects the on-disk graph/data/ids/checksum files
@@ -758,6 +778,16 @@ impl HnswIndex {
         }
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared, released after read)");
+
+        // DS-V1.38-4 (#1463): existence check NOW happens under the
+        // shared lock. A concurrent `save()` that wanted to rename
+        // these files would need the exclusive lock — which it can't
+        // get while we hold the shared lock. So the files we observe
+        // here are guaranteed to remain in place for the duration of
+        // the load.
+        if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
+            return Err(HnswError::NotFound(dir.display().to_string()));
+        }
 
         tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
         verify_hnsw_checksums(dir, basename)?;
