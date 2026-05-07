@@ -1510,10 +1510,17 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
         &self,
         ctx: &crate::index::BackendContext<'_, Mode>,
     ) -> std::result::Result<Option<Box<dyn VectorIndex>>, crate::store::StoreError> {
+        // P4-6 (#1463): resolution order is env > [index.policy] > default.
+        // The env var has been the only knob since v1.25; the config layer
+        // just adds a per-project pin without requiring shell setup. A
+        // missing / unparseable env var falls through to the policy table;
+        // a missing policy falls through to the built-in default.
+        const CAGRA_THRESHOLD_DEFAULT: u64 = 5000;
         let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(5000);
+            .or_else(|| ctx.policy.and_then(|p| p.cagra_threshold))
+            .unwrap_or(CAGRA_THRESHOLD_DEFAULT);
         let chunk_count = ctx.store.chunk_count().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
             0

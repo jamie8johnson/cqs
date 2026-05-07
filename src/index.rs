@@ -112,6 +112,11 @@ pub struct BackendContext<'a, Mode: ClearHnswDirty> {
     /// Optional HNSW search-time `ef` knob — passed to [`crate::HnswIndex::try_load_with_ef`].
     /// Ignored by GPU backends that have their own runtime knobs.
     pub ef_search: Option<usize>,
+    /// Backend selection policy from `[index.policy]` in `.cqs.toml`.
+    /// `None` when the project's config has no policy override (or no
+    /// `[index]` table at all); each backend then falls through to the
+    /// env > built-in default chain. P4-6 / #1463.
+    pub policy: Option<&'a crate::config::IndexPolicy>,
 }
 
 /// Pluggable vector-index backend. Each backend (HNSW, CAGRA, future

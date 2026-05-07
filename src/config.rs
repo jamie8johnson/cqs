@@ -419,12 +419,11 @@ pub struct Config {
 /// `[index]` section of `.cqs.toml`. Drives index-pipeline behaviour
 /// that doesn't fit cleanly under the existing top-level fields.
 ///
-/// Currently a single knob (#1221): override the vendored-path prefix
-/// list used to flag chunks for the `trust_level: "vendored-code"`
-/// downgrade. `None` (the field absent in TOML) → cqs's default list
-/// (`vendor`, `node_modules`, `third_party`, `.cargo`, `target`,
-/// `dist`, `build`); `Some(empty)` → vendored detection disabled;
-/// `Some(non_empty)` → use exactly those segment names.
+/// Two nested sub-tables today:
+///
+///   - `vendored_paths` (#1221): override the vendored-path prefix list
+///   - `[index.policy]` (P4-6 / #1463): backend selection knobs
+///     previously surfaced only as env vars
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Override list of bare directory-segment names that flag a chunk
@@ -434,6 +433,34 @@ pub struct IndexConfig {
     /// matching algorithm + default list.
     #[serde(default)]
     pub vendored_paths: Option<Vec<String>>,
+    /// Backend selection policy (`[index.policy]` sub-table).
+    ///
+    /// P4-6 (#1463): exposes the knobs that backends previously read
+    /// only from env vars (`CQS_CAGRA_THRESHOLD`, `CQS_CAGRA_PERSIST`)
+    /// so projects can pin them per-repo without shell setup. Env vars
+    /// still win — the resolution order in each backend's `try_open`
+    /// is `env > [index.policy] > built-in default`.
+    #[serde(default)]
+    pub policy: Option<IndexPolicy>,
+}
+
+/// `[index.policy]` — backend selection knobs.
+///
+/// P4-6 (#1463). Each field is `Option<T>`: `None` means "fall through
+/// to env / built-in default", `Some(v)` means "use this value unless
+/// the corresponding env var overrides it".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IndexPolicy {
+    /// Minimum chunk count below which the CAGRA backend declines to
+    /// load (returns `Ok(None)`, falling through to HNSW). Env override:
+    /// `CQS_CAGRA_THRESHOLD`. Built-in default: 5000.
+    #[serde(default)]
+    pub cagra_threshold: Option<u64>,
+    /// Whether CAGRA persists its index blob to disk between
+    /// invocations. Env override: `CQS_CAGRA_PERSIST` (`0` / `false`
+    /// disables). Built-in default: `true`.
+    #[serde(default)]
+    pub cagra_persist: Option<bool>,
 }
 
 /// SEC-3: Redact a URL for logging — masks credentials (user:pass@host) and
@@ -1614,6 +1641,66 @@ llm_max_tokens = 200
         assert!(
             emb.tokenizer_path.is_none(),
             "tokenizer_path should be None when not specified"
+        );
+    }
+
+    // ===== P4-6 (#1463): [index.policy] parsing =====
+
+    /// `[index.policy]` round-trips through the config loader and
+    /// surfaces both `cagra_threshold` and `cagra_persist`.
+    #[test]
+    fn index_policy_parses_cagra_fields() {
+        let toml = r#"
+        [index.policy]
+        cagra_threshold = 1000
+        cagra_persist = false
+        "#;
+        let config: Config = toml::from_str(toml).expect("toml must parse");
+        let policy = config
+            .index
+            .as_ref()
+            .and_then(|ic| ic.policy.as_ref())
+            .expect("[index.policy] should be present");
+        assert_eq!(policy.cagra_threshold, Some(1000));
+        assert_eq!(policy.cagra_persist, Some(false));
+    }
+
+    /// `[index]` without a nested `policy` table parses cleanly with
+    /// `policy = None` so a project that only sets `vendored_paths`
+    /// keeps working.
+    #[test]
+    fn index_policy_absent_when_only_vendored_paths_set() {
+        let toml = r#"
+        [index]
+        vendored_paths = ["vendor", "third_party"]
+        "#;
+        let config: Config = toml::from_str(toml).expect("toml must parse");
+        let ic = config.index.as_ref().expect("[index] section present");
+        assert!(ic.vendored_paths.is_some());
+        assert!(
+            ic.policy.is_none(),
+            "missing [index.policy] subtable must surface as None"
+        );
+    }
+
+    /// Partial policy (only `cagra_threshold`, no `cagra_persist`) is
+    /// allowed — each field is `Option<T>` independently.
+    #[test]
+    fn index_policy_partial_is_valid() {
+        let toml = r#"
+        [index.policy]
+        cagra_threshold = 750
+        "#;
+        let config: Config = toml::from_str(toml).expect("toml must parse");
+        let policy = config
+            .index
+            .as_ref()
+            .and_then(|ic| ic.policy.as_ref())
+            .expect("[index.policy] should be present");
+        assert_eq!(policy.cagra_threshold, Some(750));
+        assert_eq!(
+            policy.cagra_persist, None,
+            "absent cagra_persist must be None, not a default"
         );
     }
 
