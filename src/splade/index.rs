@@ -712,23 +712,49 @@ impl SpladeIndex {
         if &header[0..4] != SPLADE_INDEX_MAGIC {
             return Err(SpladeIndexPersistError::BadMagic);
         }
-        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        // RB-V1.38-3 (#1463): replace `.try_into().unwrap()` with `expect`
+        // and an explicit invariant message. The slice ranges are
+        // statically derived from the fixed `SPLADE_INDEX_HEADER_LEN` (64
+        // bytes); `read_exact` above guarantees the buffer is full, so
+        // each `try_into` of an N-byte sub-range into `[u8; N]` is
+        // structurally infallible. `expect` documents that and surfaces
+        // the failure mode (a refactor that miscounts header bytes)
+        // loudly instead of silently propagating an `unwrap()` panic.
+        let version = u32::from_le_bytes(
+            header[4..8]
+                .try_into()
+                .expect("invariant: header[4..8] is 4 bytes (SPLADE_INDEX_HEADER_LEN = 64)"),
+        );
         if version != SPLADE_INDEX_VERSION {
             return Err(SpladeIndexPersistError::UnsupportedVersion(
                 version,
                 SPLADE_INDEX_VERSION,
             ));
         }
-        let disk_generation = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let disk_generation = u64::from_le_bytes(
+            header[8..16]
+                .try_into()
+                .expect("invariant: header[8..16] is 8 bytes"),
+        );
         if disk_generation != expected_generation {
             return Err(SpladeIndexPersistError::GenerationMismatch {
                 disk: disk_generation,
                 store: expected_generation,
             });
         }
-        let chunk_count = u64::from_le_bytes(header[16..24].try_into().unwrap());
-        let token_count = u64::from_le_bytes(header[24..32].try_into().unwrap());
-        let stored_hash: [u8; 32] = header[32..64].try_into().unwrap();
+        let chunk_count = u64::from_le_bytes(
+            header[16..24]
+                .try_into()
+                .expect("invariant: header[16..24] is 8 bytes"),
+        );
+        let token_count = u64::from_le_bytes(
+            header[24..32]
+                .try_into()
+                .expect("invariant: header[24..32] is 8 bytes"),
+        );
+        let stored_hash: [u8; 32] = header[32..64]
+            .try_into()
+            .expect("invariant: header[32..64] is 32 bytes (CHECKSUM_LEN)");
 
         // Audit PF-4: pre-allocate the body Vec from known file size. The
         // previous `Vec::new()` caused ~log₂(59MB) reallocations on a typical
@@ -791,7 +817,15 @@ impl SpladeIndex {
 
         for _ in 0..chunk_count_usize {
             need(&body, cursor, 4)?;
-            let len = u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
+            // RB-V1.38-3 (#1463): `need(&body, cursor, 4)?` above ensures
+            // the 4-byte slice exists; `try_into` of a 4-byte slice into
+            // `[u8; 4]` is structurally infallible. `expect` documents the
+            // invariant.
+            let len = u32::from_le_bytes(
+                body[cursor..cursor + 4]
+                    .try_into()
+                    .expect("invariant: need(_, cursor, 4)? guarantees 4-byte slice"),
+            ) as usize;
             cursor += 4;
             need(&body, cursor, len)?;
             // Audit PF-5: `.to_string()` here allocates an owned String from
@@ -829,18 +863,35 @@ impl SpladeIndex {
 
         for _ in 0..token_count_usize {
             need(&body, cursor, 8)?;
-            let token_id = u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap());
+            // RB-V1.38-3 (#1463): each `try_into` is gated by the
+            // preceding `need(&body, cursor, N)?`; `expect` documents
+            // the invariant so a future refactor that breaks the
+            // bound check fails loudly instead of through `unwrap()`.
+            let token_id = u32::from_le_bytes(
+                body[cursor..cursor + 4]
+                    .try_into()
+                    .expect("invariant: need(_, cursor, 8)? guarantees 4-byte token_id slice"),
+            );
             cursor += 4;
-            let posting_count =
-                u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
+            let posting_count = u32::from_le_bytes(
+                body[cursor..cursor + 4]
+                    .try_into()
+                    .expect("invariant: same need() covers the posting_count u32"),
+            ) as usize;
             cursor += 4;
             need(&body, cursor, posting_count.saturating_mul(8))?;
             let mut postings_for_token: Vec<(usize, f32)> = Vec::with_capacity(posting_count);
             for _ in 0..posting_count {
                 let chunk_idx =
-                    u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
+                    u32::from_le_bytes(body[cursor..cursor + 4].try_into().expect(
+                        "invariant: need(_, cursor, posting_count*8)? covers chunk_idx u32",
+                    )) as usize;
                 cursor += 4;
-                let weight = f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap());
+                let weight = f32::from_le_bytes(
+                    body[cursor..cursor + 4]
+                        .try_into()
+                        .expect("invariant: same need() covers the weight f32"),
+                );
                 cursor += 4;
                 if chunk_idx >= id_map.len() {
                     return Err(SpladeIndexPersistError::CorruptData(format!(
