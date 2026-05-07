@@ -266,14 +266,48 @@ pub(crate) fn build_budgeted_task(
 }
 
 /// Waterfall budget weight for the scout section (file groups, chunk roles).
-const WATERFALL_SCOUT: f64 = 0.15;
+const WATERFALL_SCOUT_DEFAULT: f64 = 0.15;
 /// Waterfall budget weight for the code section (gathered chunks with content).
-const WATERFALL_CODE: f64 = 0.50;
+const WATERFALL_CODE_DEFAULT: f64 = 0.50;
 /// Waterfall budget weight for the impact section (risk scores + tests).
-const WATERFALL_IMPACT: f64 = 0.15;
+const WATERFALL_IMPACT_DEFAULT: f64 = 0.15;
 /// Waterfall budget weight for the placement section (where to add).
-const WATERFALL_PLACEMENT: f64 = 0.10;
+const WATERFALL_PLACEMENT_DEFAULT: f64 = 0.10;
 // Notes section takes whatever budget remains (no explicit constant needed).
+
+/// EX-V1.38-5 (#1463): operator-tunable waterfall weight. Reads
+/// `CQS_TASK_WATERFALL_<name>` (e.g. `CQS_TASK_WATERFALL_CODE=0.6`),
+/// rejects non-finite / negative / >1 values, falls back to `default`.
+fn waterfall_weight(name: &str, default: f64) -> f64 {
+    let key = format!("CQS_TASK_WATERFALL_{name}");
+    match std::env::var(&key) {
+        Ok(v) => match v.parse::<f64>() {
+            Ok(n) if n.is_finite() && (0.0..=1.0).contains(&n) => n,
+            _ => {
+                tracing::warn!(
+                    env = %key,
+                    value = %v,
+                    "Invalid waterfall weight (must be finite, 0.0..=1.0); using default {default}"
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+fn waterfall_scout() -> f64 {
+    waterfall_weight("SCOUT", WATERFALL_SCOUT_DEFAULT)
+}
+fn waterfall_code() -> f64 {
+    waterfall_weight("CODE", WATERFALL_CODE_DEFAULT)
+}
+fn waterfall_impact() -> f64 {
+    waterfall_weight("IMPACT", WATERFALL_IMPACT_DEFAULT)
+}
+fn waterfall_placement() -> f64 {
+    waterfall_weight("PLACEMENT", WATERFALL_PLACEMENT_DEFAULT)
+}
 
 pub(crate) fn cmd_task(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -410,7 +444,7 @@ pub(crate) fn waterfall_pack(
     let mut remaining = budget;
 
     // 1. Scout section — pack file groups by relevance
-    let scout_budget = ((budget as f64 * WATERFALL_SCOUT) as usize).min(remaining);
+    let scout_budget = ((budget as f64 * waterfall_scout()) as usize).min(remaining);
     let group_texts: Vec<String> = result
         .scout
         .file_groups
@@ -440,7 +474,7 @@ pub(crate) fn waterfall_pack(
     // budget. That overshoot is absorbed here via saturating_sub on `remaining`,
     // which reduces downstream section budgets proportionally. The total output
     // may slightly exceed `budget` by at most one item's token count.
-    let code_budget = ((budget as f64 * WATERFALL_CODE) as usize
+    let code_budget = ((budget as f64 * waterfall_code()) as usize
         + scout_budget.saturating_sub(scout_used))
     .min(remaining);
     let code_refs: Vec<&str> = result.code.iter().map(|c| c.content.as_str()).collect();
@@ -451,7 +485,7 @@ pub(crate) fn waterfall_pack(
     remaining = remaining.saturating_sub(code_used);
 
     // 3. Impact section (+ surplus) — risk by score, tests by depth
-    let impact_budget = ((budget as f64 * WATERFALL_IMPACT) as usize
+    let impact_budget = ((budget as f64 * waterfall_impact()) as usize
         + code_budget.saturating_sub(code_used))
     .min(remaining);
     let risk_texts: Vec<String> = result
@@ -499,7 +533,7 @@ pub(crate) fn waterfall_pack(
     remaining = remaining.saturating_sub(risk_used + tests_used);
 
     // 4. Placement section (+ surplus)
-    let placement_budget = ((budget as f64 * WATERFALL_PLACEMENT) as usize
+    let placement_budget = ((budget as f64 * waterfall_placement()) as usize
         + impact_budget.saturating_sub(risk_used + tests_used))
     .min(remaining);
     let placement_texts: Vec<String> = result
@@ -926,7 +960,10 @@ mod tests {
     #[test]
     fn test_waterfall_allocation_percentages() {
         // Notes takes the remainder, so the explicit weights must sum to ≤1.0
-        let total = WATERFALL_SCOUT + WATERFALL_CODE + WATERFALL_IMPACT + WATERFALL_PLACEMENT;
+        let total = WATERFALL_SCOUT_DEFAULT
+            + WATERFALL_CODE_DEFAULT
+            + WATERFALL_IMPACT_DEFAULT
+            + WATERFALL_PLACEMENT_DEFAULT;
         assert!(
             (0.9..=1.0).contains(&total),
             "Explicit budget weights must leave a small remainder for notes, got {total}"
@@ -936,10 +973,10 @@ mod tests {
     #[test]
     fn test_waterfall_section_budgets() {
         let budget: usize = 1000;
-        let scout = (budget as f64 * WATERFALL_SCOUT) as usize;
-        let code = (budget as f64 * WATERFALL_CODE) as usize;
-        let impact = (budget as f64 * WATERFALL_IMPACT) as usize;
-        let placement = (budget as f64 * WATERFALL_PLACEMENT) as usize;
+        let scout = (budget as f64 * waterfall_scout()) as usize;
+        let code = (budget as f64 * waterfall_code()) as usize;
+        let impact = (budget as f64 * waterfall_impact()) as usize;
+        let placement = (budget as f64 * waterfall_placement()) as usize;
         let notes = budget - scout - code - impact - placement;
         assert_eq!(scout + code + impact + placement + notes, budget);
     }
@@ -1023,10 +1060,10 @@ mod tests {
     fn test_waterfall_surplus_forwarding() {
         let budget: usize = 1000;
         let weights = [
-            WATERFALL_SCOUT,
-            WATERFALL_CODE,
-            WATERFALL_IMPACT,
-            WATERFALL_PLACEMENT,
+            WATERFALL_SCOUT_DEFAULT,
+            WATERFALL_CODE_DEFAULT,
+            WATERFALL_IMPACT_DEFAULT,
+            WATERFALL_PLACEMENT_DEFAULT,
         ];
         let base_budgets: Vec<usize> = weights
             .iter()

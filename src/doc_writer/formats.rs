@@ -22,6 +22,16 @@ pub struct DocFormat {
     pub suffix: &'static str,
     /// Where the doc comment is inserted relative to the function.
     pub position: InsertionPosition,
+    /// EX-V1.38-8 (#1463): subject-first first-line template. Some
+    /// languages convention the first doc-comment line to lead with the
+    /// function name (Go: `// FuncName does X`). When `Some`, the
+    /// formatter prepends `func_name + " "` to the first line. `None`
+    /// = no prepend (the default for every language other than Go).
+    /// Pre-fix this was a hardcoded `if language == Language::Go { ... }`
+    /// in the formatter; promoting to the format struct removes the
+    /// language-name literal and lets a future "subject-first" preset
+    /// (Erlang `%% function/arity:`, custom house style) opt in.
+    pub prepend_func_name: bool,
 }
 
 /// Where a doc comment is placed relative to the function definition.
@@ -54,72 +64,85 @@ fn doc_format_from_tag(tag: &str) -> DocFormat {
             line_prefix: "/// ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "python_docstring" => DocFormat {
             prefix: "\"\"\"",
             line_prefix: "",
             suffix: "\"\"\"",
             position: InsertionPosition::InsideBody,
+            prepend_func_name: false,
         },
         "go_comment" => DocFormat {
             prefix: "",
             line_prefix: "// ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            // EX-V1.38-8 (#1463): Go convention is "// FuncName does X".
+            prepend_func_name: true,
         },
         "javadoc" => DocFormat {
             prefix: "/**",
             line_prefix: " * ",
             suffix: " */",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "hash_comment" => DocFormat {
             prefix: "",
             line_prefix: "# ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "elixir_doc" => DocFormat {
             prefix: "@doc \"\"\"",
             line_prefix: "",
             suffix: "\"\"\"",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "lua_ldoc" => DocFormat {
             prefix: "",
             line_prefix: "--- ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "haskell_haddock" => DocFormat {
             prefix: "",
             line_prefix: "-- | ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "ocaml_doc" => DocFormat {
             prefix: "(** ",
             line_prefix: "",
             suffix: " *)",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "erlang_edoc" => DocFormat {
             prefix: "",
             line_prefix: "%% ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "r_roxygen" => DocFormat {
             prefix: "",
             line_prefix: "#' ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         "block_comment" => DocFormat {
             prefix: "(*",
             line_prefix: "",
             suffix: "*)",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
         // "default" and any unknown tag
         _ => DocFormat {
@@ -127,6 +150,7 @@ fn doc_format_from_tag(tag: &str) -> DocFormat {
             line_prefix: "// ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
+            prepend_func_name: false,
         },
     }
 }
@@ -153,13 +177,15 @@ pub fn format_doc_comment(text: &str, language: Language, indent: &str, func_nam
 
     let mut result = String::new();
 
-    // For Go: prepend function name to first line per convention
-    let go_first_line: String;
-    let effective_lines: Vec<&str> = if language == Language::Go {
+    // EX-V1.38-8 (#1463): subject-first prepend driven by `DocFormat
+    // .prepend_func_name` instead of a `Language::Go` literal. Go is the
+    // only currently-shipped language with this convention; other languages
+    // can opt in by setting the flag in `doc_format_from_tag`.
+    let prepended_first_line: String;
+    let effective_lines: Vec<&str> = if format.prepend_func_name {
         if let Some(&first) = lines.first() {
-            // "FuncName does X" — capitalize first char of description if needed
-            go_first_line = format!("{func_name} {first}");
-            let mut v = vec![go_first_line.as_str()];
+            prepended_first_line = format!("{func_name} {first}");
+            let mut v = vec![prepended_first_line.as_str()];
             v.extend_from_slice(&lines[1..]);
             v
         } else {

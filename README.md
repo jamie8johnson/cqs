@@ -834,6 +834,10 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_MAX_REFERENCES` | `20` | Max number of reference indexes loaded from `[references]` blocks. Each reference holds a separate SQLite DB + HNSW index (~50-100 MB RAM each). Hit on a `cqs ref`-heavy workspace? Bump it; `0`/garbage falls back to default. SHL-V1.30-6. |
 | `CQS_GATHER_DEPTH` | `1` (`gather` default) | BFS expansion depth for the shared `gather` pipeline. Honored as a fallback by `task` when `CQS_TASK_GATHER_DEPTH` is unset. SHL-V1.30-4. |
 | `CQS_TASK_GATHER_DEPTH` | `2` | BFS expansion depth used inside `cqs task` (number of call-graph hops from each modify target). Takes precedence over `CQS_GATHER_DEPTH` for the task pipeline only. SHL-V1.30-4. |
+| `CQS_TASK_WATERFALL_SCOUT` | `0.15` | Fraction of `cqs task --max-tokens` allocated to the scout section (file groups + chunk roles). Operators packing more code or impact info can shift weight via this knob. Bounded `0.0..=1.0`. v1.38: EX-V1.38-5 / #1463. |
+| `CQS_TASK_WATERFALL_CODE` | `0.50` | Fraction of `cqs task --max-tokens` allocated to the code section (gathered chunks). v1.38: EX-V1.38-5 / #1463. |
+| `CQS_TASK_WATERFALL_IMPACT` | `0.15` | Fraction of `cqs task --max-tokens` allocated to the impact section (risk + tests). v1.38: EX-V1.38-5 / #1463. |
+| `CQS_TASK_WATERFALL_PLACEMENT` | `0.10` | Fraction of `cqs task --max-tokens` allocated to the placement section (where to add). The notes section gets the remainder (default 0.10). v1.38: EX-V1.38-5 / #1463. |
 | `CQS_ONBOARD_CALLEE_FETCH` | `30` | Max callees `cqs onboard` fetches content for after BFS. Excess callees are surfaced as `summary.callees_truncated` in JSON and a `tracing::warn!`. SHL-V1.30-5. |
 | `CQS_ONBOARD_CALLER_FETCH` | `15` | Max callers `cqs onboard` fetches content for. Truncation surfaces as `summary.callers_truncated`. SHL-V1.30-5. |
 | `CQS_NOTES_MAX_FILE_SIZE` | `10485760` (10 MiB) | Max size of `notes.toml` accepted by both read and rewrite paths. A larger file is rejected with `InvalidData`. Bump on workspaces with very large note collections. SHL-V1.30-7. |
