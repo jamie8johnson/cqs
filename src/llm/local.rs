@@ -889,6 +889,18 @@ impl BatchProvider for LocalProvider {
         items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
+        // API-V1.38-4 (#1463): mirror `LlmClient::submit_batch`'s
+        // contract — validate the configured model up front so a wrong
+        // provider/model combo (`--provider local --model claude-haiku-4-5`)
+        // fails fast with the offending name in the error instead of
+        // surfacing as an opaque vLLM/Ollama API error after the batch
+        // has been built. The default `validate_model` impl on the
+        // trait accepts any non-empty name, so the local provider
+        // currently rejects empty strings only — but the call site is
+        // now in place so a future provider-level tightening flows
+        // through both providers symmetrically.
+        self.validate_model(&self.model)?;
+
         // #1347: dispatch on `BatchKind` once. Adding a new kind is one
         // arm. The historical purpose-label strings ("prebuilt" / "doc" /
         // "hyde") are kept stable so existing log greps still match.
