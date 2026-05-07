@@ -597,6 +597,25 @@ fn cmd_ref_remove(name: &str, json: bool) -> Result<()> {
 
 /// Re-index a reference from its source directory.
 fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> Result<()> {
+    // OB-V1.38-1 (#1463): per-subcommand entry span. The parent
+    // `cmd_ref` span carries `cmd_ref` only; without a child here,
+    // structured-trace consumers can't tell which ref name was reindexed
+    // or which post-pipeline pass (LLM / HyDE / docs / enrichment) is
+    // the slow leg without RUST_LOG=debug. Mirrors the
+    // `cmd_project_search` per-subcommand span pattern in
+    // `src/cli/commands/infra/project.rs`.
+    #[cfg(feature = "llm-summaries")]
+    let _span = tracing::info_span!(
+        "cmd_ref_update",
+        ref_name = %name,
+        llm_summaries = opts.llm_summaries,
+        improve_docs = opts.improve_docs,
+        hyde_queries = opts.hyde_queries
+    )
+    .entered();
+    #[cfg(not(feature = "llm-summaries"))]
+    let _span = tracing::info_span!("cmd_ref_update", ref_name = %name).entered();
+
     // #1459 item 3: enforce flag-dependency invariants up front so misuse
     // bails before the (potentially long) index pipeline runs. Mirrors
     // `cmd_index`'s pre-flight at `src/cli/commands/index/build.rs`.

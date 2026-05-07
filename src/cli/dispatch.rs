@@ -136,10 +136,25 @@ fn run_with_dispatch(
     // table, install. Slot-resolution failure (missing project, malformed
     // slot.toml) → empty table → router falls through to env / preset /
     // default precedence as before.
-    let slot_alpha_table = cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir)
-        .ok()
-        .map(|s| cqs::slot::read_slot_splade_alpha_table(project_cqs_dir, &s.name))
-        .unwrap_or_default();
+    // EH-V1.38-5 (#1463): mirror the EH-V1.30.1-3 fix shape applied 30
+    // lines above. Pre-fix `.ok().map(...).unwrap_or_default()` silently
+    // collapsed slot-resolution errors (typo, missing slot file) into
+    // an empty α table — operator who passed `--slot foo` saw default-
+    // slot α overrides with the only signal being different search
+    // results from what they asked for.
+    let slot_alpha_table = match cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir)
+    {
+        Ok(resolved) => cqs::slot::read_slot_splade_alpha_table(project_cqs_dir, &resolved.name),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                slot = ?cli.slot,
+                "Slot resolution failed when looking up SPLADE α overrides — \
+                 falling back to env / preset / default α precedence"
+            );
+            Default::default()
+        }
+    };
     cqs::search::router::install_slot_splade_alpha_overrides(slot_alpha_table);
 
     // EXT-V1.36-1 (#1460): load synonym overlay from
