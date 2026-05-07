@@ -2,7 +2,39 @@
 
 ## Right Now
 
-**v1.38.0 audit cycle (2026-05-06, 13 cluster PRs #1514–#1526)**: post-v1.38 fresh full-codebase audit run by 16 parallel auditor agents on opus surfaced 154 findings (P1=50, P2=37, P3=55, P4=12). Triage agent classified into priority + identified 10 cross-cutting clusters; cluster PRs closed ~36 P1/P2 items. Highest-impact: **Cluster A** (needs_embedding wiring, DS-V1.38-1/2/3/8) closed silent search-quality regression on `--llm-summaries` workflows where CAGRA / UMAP / brute-force kNN were loading zero-vec sentinels. **Cluster B** (lying-docs sweep) fixed 4 P1 lying-doc rows in README/SECURITY where `--improve-docs` claimed in-place writeback while the code has been patch-default since v1.30.1. **Cluster F** (algorithm correctness) caught a silent SPLADE search regression where `BoundedScoreHeap::would_accept` tiebreak was strict-gt, dropping smaller-id incoming candidates at tied scores. Schema unchanged (still v27).
+**v1.38.0 audit cycle continuation (2026-05-07 morning, 14 more cluster PRs #1528–#1542)**: building on the initial 13 cluster PRs from the prior session, this wave processed the remaining P2/P3 items in 14 cluster PRs covering ~52 audit findings. Plus #1531 test-flake fix (`test_model_swap_same_preset_is_noop` mtime equality → blake3 content hash) and #1527 tears housekeeping. After this wave, the audit umbrella has ~6 items left, all bigger architectural / cross-cutting changes.
+
+**Cluster PRs in this continuation (#1528–#1542, 14 PRs + #1531 flake)**:
+- **#1528** (Cluster M, 10 P3) — mechanical sweep: API-V1.38-5 `pub(super)`, PL-V1.38-6 cfg(unix), EH-V1.38-6 hook NotFound vs perm, RB-V1.38-6/7 regex `.expect()`, AC-V1.38-8 vendored slash warn, EX-V1.38-10 `Language::all_variants()`, OB-V1.38-3 (synonym/classifier/SPLADE α overlay info logs), OB-V1.38-4 (wait_for_batch span+elapsed_ms), OB-V1.38-5 (CAGRA fall-through info)
+- **#1529** (Cluster N, 5 P2) — API-V1.38-3 `BatchProvider: Send + Sync`, AC-V1.38-7 strict-preset gate at `cmd_index`, EH-V1.38-9 first-error preservation in JSON sanitize-retry, DOC-V1.38-6/8 README perf+per-preset doc fixes
+- **#1530** (Cluster O, 5 P2) — RB-V1.38-4/8/9/10 robustness sweep (4 guard/unwrap pairs hardened to type-level invariants), DOC-V1.38-7 (SECURITY.md v27 schema)
+- **#1531** — test(model-swap) flake fix: blake3 content hash replaces mtime equality
+- **#1532** (Cluster P, 4 P2/P3) — SHL-V1.38-1 dim-aware `MAX_PENDING_REBUILD_DELTA` + `CQS_PENDING_REBUILD_DELTA_MAX`, SHL-V1.38-4 daemon socket cap aligned to CLI `MAX_DIFF_BYTES`, SHL-V1.38-10 `CQS_LLM_RETRY_BACKOFFS_MS`, OB-V1.38-7 SPLADE stale-bak structured warn
+- **#1533** (Cluster Q, 6 P3) — security sweep: SEC-V1.38-5 path log caps, SEC-V1.38-6 `validate_and_read_file` TOCTOU narrowing, SEC-V1.38-7 `run_git_diff` ref hardening, SEC-V1.38-8 `Config` debug redaction, DS-V1.38-5 prune Err propagation, SEC-V1.38-9 `parse_env_usize_clamped` warn-on-clamp
+- **#1534** (Cluster R, 2 P3) — RM-V1.38-2 stash byte budget, RM-V1.38-7 age-only idle-tick prune
+- **#1535** (Cluster S, 2 P3) — EX-V1.38-5 task waterfall env knobs, EX-V1.38-8 Go FuncName via `DocFormat.prepend_func_name`
+- **#1536** (Cluster T, 5 P3) — SHL env-override sweep: SHL-V1.38-2/3/5/7/8 (5 new env knobs)
+- **#1537** (Cluster U, 2 P3) — API-V1.38-7 `Option<u64>` → `Option<usize>` on `ExportModel.dim`, API-V1.38-8 `--wait-secs` ↔ `--require-fresh-secs` visible_alias
+- **#1538** (Cluster V, 4 TC-ADV) — regression backfill: TC-ADV-V1.38-4 `lookup_main_cqs_dir` stray file, TC-ADV-V1.38-6 drift case-sensitivity + whitespace, TC-ADV-V1.38-8 `score_candidate` non-finite threshold (3 tests)
+- **#1539** (Cluster W, 4 P3) — TC-ADV-V1.38-3 sparse vectors NaN/Inf write contract, TC-ADV-V1.38-9 overlay 4 KiB cap, AC-V1.38-4 `try_classify_negation` connective-context gate (closes the bare-noun misclassification footgun)
+- **#1540** (Cluster X, 1 P2) — API-V1.38-1: `ModelCommand` (3 variants) + `HookCommand` (4 variants) → flattened `TextJsonArgs`
+- **#1541** (Cluster Y, 2) — PL-V1.38-5 `cqs init` gitignore-everything-but-self (closes SEC-1 footgun where `cqs init && git add .` committed `audit-mode.json` + telemetry), DS-V1.38-7 `write_active_slot` slots-lock contract documented
+- **#1542** (Cluster Z, 2 TC-ADV) — TC-ADV-V1.38-5 `write_active_slot` 8-thread × 50-write race test, TC-ADV-V1.38-7 `truncate_at_char_boundary` extracted + 6 unit tests (emoji boundary snap-back at byte 99 / cap 100)
+
+**Schema unchanged (still v27).** New env knobs introduced: `CQS_RERANK_POOL_MAX` (renamed in cluster L doc fix), `CQS_PENDING_REBUILD_DELTA_MAX`, `CQS_LLM_RETRY_BACKOFFS_MS`, `CQS_TASK_WATERFALL_{SCOUT,CODE,IMPACT,PLACEMENT}`, `CQS_EVAL_FRESH_BUDGET_CEILING`, `CQS_PIPELINE_FAN_OUT`, `CQS_UMAP_STREAM_BATCH`, `CQS_LLM_PASS_PAGE_SIZE`, `CQS_RECONCILE_BATCH`. All documented in README env-var table.
+
+**Items still pending in #1463** (audit cycle umbrella) after this wave:
+- API-V1.38-6 (top-level Cli search flags ignored on subcommand) — needs `global = true` on 20+ flags or shared `SearchKnobsArgs` struct flattened into 7 search-wrapping commands; bigger surface
+- API-V1.38-9 (HfHub/ModelDownload error variant collapse via `aux_model::ResolveError`) — investigated; current shape stringifies hf_hub::ApiError directly, the audit's collapse pattern needs more work than expected
+- API-V1.38-10 (LimitArg fan-out across 7 sister args) — 61 `args.limit` / `cli.limit` caller sites
+- DS-V1.38-4 (HNSW `load_with_dim` TOCTOU) — multi-PR architectural change
+- PL-V1.38-4 (WSL-DrvFS detector divergence) — needs `parse_wsl_automount_root` promotion
+- SHL-V1.38-6 (parse_channel_depth byte-budget) — bigger refactor
+- SHL-V1.38-9 (summary_queue 3 knobs) — medium
+- EX-V1.38-2/3/6 — separate clusters (EX-V1.38-3 investigated; needs threading through 4 resolvers)
+- PL-V1.38-2 — Windows test runner needed
+
+**v1.38.0 audit cycle prior (2026-05-06, 13 cluster PRs #1514–#1526)**: post-v1.38 fresh full-codebase audit run by 16 parallel auditor agents on opus surfaced 154 findings (P1=50, P2=37, P3=55, P4=12). Triage agent classified into priority + identified 10 cross-cutting clusters; cluster PRs closed ~36 P1/P2 items. Highest-impact: **Cluster A** (needs_embedding wiring, DS-V1.38-1/2/3/8) closed silent search-quality regression on `--llm-summaries` workflows where CAGRA / UMAP / brute-force kNN were loading zero-vec sentinels. **Cluster B** (lying-docs sweep) fixed 4 P1 lying-doc rows in README/SECURITY where `--improve-docs` claimed in-place writeback while the code has been patch-default since v1.30.1. **Cluster F** (algorithm correctness) caught a silent SPLADE search regression where `BoundedScoreHeap::would_accept` tiebreak was strict-gt, dropping smaller-id incoming candidates at tied scores. Schema unchanged (still v27).
 
 **Cluster PRs in priority order**:
 - **#1514** — fix(store, batch): close needs_embedding wiring gaps + slot-aware staleness (DS-V1.38-1/2/3/8). EmbeddingBatchIterator now filters `needs_embedding=0`. enrichment_pass repopulates `embedding_base` via COALESCE. BatchContext staleness uses `resolve_index_db` for slot-aware paths. v27 migration backfills NULL-base rows to `needs_embedding=1`.
