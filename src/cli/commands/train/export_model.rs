@@ -262,6 +262,37 @@ mod tests {
         assert!(validate_repo_id("-evil/model").is_err());
     }
 
+    /// TC-ADV-V1.38-1 (#1463): SEC-V1.36-7 added an explicit `..`
+    /// path-traversal rejection at the top of `validate_repo_id` so a
+    /// hostile `org/../../etc/passwd` couldn't escape `optimum`'s CWD.
+    /// The fix shipped without a regression test — a future refactor
+    /// that simplified the validator to rely on the char-set whitelist
+    /// alone (`.` and `/` are both allowed individually) would silently
+    /// revert the fix.
+    #[test]
+    fn validate_repo_id_rejects_parent_directory_refs() {
+        assert!(
+            validate_repo_id("org/../../etc/passwd").is_err(),
+            "classic path-traversal must be rejected"
+        );
+        assert!(
+            validate_repo_id("..").is_err(),
+            "bare `..` must be rejected"
+        );
+        assert!(
+            validate_repo_id("foo/..").is_err(),
+            "`..` as a segment must be rejected"
+        );
+        assert!(
+            validate_repo_id("a..b/c").is_err(),
+            "`..` as a substring (even mid-segment) must be rejected"
+        );
+        assert!(
+            validate_repo_id("../escape/model").is_err(),
+            "`..` at start must be rejected"
+        );
+    }
+
     #[test]
     fn write_model_toml_comments_dim_when_unknown() {
         let dir = tempfile::TempDir::new().unwrap();

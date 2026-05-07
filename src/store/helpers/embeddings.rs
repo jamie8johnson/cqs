@@ -107,6 +107,58 @@ mod tests {
         assert!(embedding_to_bytes(&emb, wrong_dim).is_err());
     }
 
+    /// TC-ADV-V1.38-10 (#1463): pin the current write-side contract for
+    /// non-finite embedding values. `embedding_to_bytes` validates dim
+    /// but NOT finiteness — `bytemuck::cast_slice` happily passes NaN /
+    /// ±Inf through to disk. The read-side counterpart
+    /// (`test_embedding_slice_passes_nan_bytes_through` below) pins
+    /// passthrough on load; this pins the same shape on save.
+    ///
+    /// Pre-fix this contract was undocumented and untested. A NaN
+    /// reaching SQLite via any of the 19 unchecked
+    /// `Embedding::new(...)` constructors poisons every cosine score
+    /// touching the chunk and only surfaces downstream as silent
+    /// drops in `BoundedScoreHeap::push` (which filters non-finite
+    /// scores). The audit recommends flipping this to the rejecting
+    /// form (mirroring `Embedding::try_new`); pinning current behavior
+    /// is the prerequisite so a follow-up PR can flip it loudly.
+    #[test]
+    fn test_embedding_to_bytes_passes_nan_through() {
+        let mut v = vec![0.5f32; crate::EMBEDDING_DIM];
+        v[0] = f32::NAN;
+        let emb = Embedding::new(v);
+        let bytes = embedding_to_bytes(&emb, crate::EMBEDDING_DIM)
+            .expect("dim is valid; current contract: NaN bytes pass through");
+        assert_eq!(bytes.len(), crate::EMBEDDING_DIM * 4);
+        // Round-trip via `embedding_slice` and verify the NaN survives.
+        let round = embedding_slice(&bytes, crate::EMBEDDING_DIM).unwrap();
+        assert!(
+            round[0].is_nan(),
+            "current contract: NaN passes write/read round-trip without rejection"
+        );
+    }
+
+    #[test]
+    fn test_embedding_to_bytes_passes_inf_through() {
+        let mut v = vec![0.5f32; crate::EMBEDDING_DIM];
+        v[0] = f32::INFINITY;
+        v[1] = f32::NEG_INFINITY;
+        let emb = Embedding::new(v);
+        let bytes = embedding_to_bytes(&emb, crate::EMBEDDING_DIM)
+            .expect("dim is valid; current contract: ±Inf bytes pass through");
+        let round = embedding_slice(&bytes, crate::EMBEDDING_DIM).unwrap();
+        assert_eq!(
+            round[0],
+            f32::INFINITY,
+            "current contract: +Inf passes write/read round-trip"
+        );
+        assert_eq!(
+            round[1],
+            f32::NEG_INFINITY,
+            "current contract: -Inf passes write/read round-trip"
+        );
+    }
+
     #[test]
     fn test_bytes_to_embedding_1024_dim() {
         let data = vec![0.5f32; 1024];
