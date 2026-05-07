@@ -612,21 +612,35 @@ pub(super) fn reindex_files(
     for ((i, _), emb) in to_embed.into_iter().zip(new_embeddings) {
         by_index.insert(i, emb);
     }
-    let embeddings: Vec<Embedding> = (0..chunk_count)
-        .map(|i| {
-            by_index.remove(&i).unwrap_or_else(|| {
-                // Should be unreachable: every chunk index is filled either
-                // from `cached` or from `to_embed` above. If we ever land
-                // here, the upstream split lost a chunk.
+    // RB-V1.38-2 (#1463): replace the daemon-killing `panic!` with a
+    // graceful early return. Pre-fix any future code path where
+    // `new_embeddings.len() != to_embed.len()` (partial ORT batch
+    // failure, embedder API change, etc.) would crash the watch
+    // thread mid-reindex. The watch loop already recovers from a
+    // returned `Err` by logging and skipping the file batch on the
+    // next tick — much better than a hard crash that drops the
+    // entire daemon. The "should be unreachable" invariant is
+    // preserved as a `tracing::error!` so any real-world hit shows
+    // up in journald.
+    let mut embeddings: Vec<Embedding> = Vec::with_capacity(chunk_count);
+    for i in 0..chunk_count {
+        match by_index.remove(&i) {
+            Some(e) => embeddings.push(e),
+            None => {
                 tracing::error!(
                     chunk_index = i,
                     chunk_count,
-                    "missing embedding at chunk index — upstream split lost a chunk"
+                    by_index_remaining = by_index.len(),
+                    "missing embedding at chunk index — upstream split lost a chunk; \
+                     skipping this reindex batch (next tick will retry from SQLite)"
                 );
-                panic!("missing embedding at chunk index {i} (chunk_count={chunk_count})")
-            })
-        })
-        .collect();
+                anyhow::bail!(
+                    "watch reindex: chunk index {i} missing embedding (chunk_count={chunk_count}); \
+                     daemon will retry on next tick"
+                );
+            }
+        }
+    }
 
     // P2.67: build calls_by_id directly from `per_file_chunk_calls` (collected
     // by `parse_file_all_with_chunk_calls` above) instead of re-parsing every
