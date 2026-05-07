@@ -1288,11 +1288,95 @@ mod tests {
         );
     }
 
+    /// TC-HAP-V1.38-9 (#1463): `test_reranker_new` previously asserted only
+    /// `Result::is_ok()` — it did not verify any post-construction
+    /// invariants, so a regression that flipped `max_length` to 0, broke
+    /// the lazy-load contract, or dropped the cached `[reranker]` config
+    /// section would slip through CI silently. A `model loads + scores
+    /// plausibly` assertion lives in `test_rerank_reorders_by_relevance`
+    /// (gated `#[ignore]` because the model is ~91 MB) — this test pins
+    /// the cheap-to-check construction contract that runs on every PR.
     #[test]
     fn test_reranker_new() {
-        // Construction should succeed (no model download yet — lazy)
-        let reranker = OnnxReranker::new();
-        assert!(reranker.is_ok());
+        let reranker = OnnxReranker::new().expect("new() must succeed");
+
+        // Lazy-load contract: no session, tokenizer, model_paths, or
+        // hidden_size probe at construction time — first rerank() call
+        // populates these. A regression that eagerly loads the model
+        // here would block test startup behind a 91 MB HF download.
+        assert!(
+            reranker.session.lock().unwrap().is_none(),
+            "session must be lazily loaded — none at construction"
+        );
+        assert!(
+            reranker.tokenizer.lock().unwrap().is_none(),
+            "tokenizer must be lazily loaded — none at construction"
+        );
+        assert!(
+            reranker.model_paths.get().is_none(),
+            "model_paths must be lazily resolved — empty at construction"
+        );
+        assert!(
+            reranker.hidden_size.get().is_none(),
+            "hidden_size must be lazily probed — empty at construction"
+        );
+        assert!(
+            reranker.expects_token_type_ids.lock().unwrap().is_none(),
+            "expects_token_type_ids is computed at session-init — none at construction"
+        );
+
+        // Default max_length must match the compiled-in default. A
+        // regression that left it at 0 would cause integer-division
+        // panics inside `reranker_batch_size`'s seq_factor calculation.
+        assert_eq!(
+            reranker.max_length, 512,
+            "max_length default must be 512 (no env, no TOML)"
+        );
+
+        // No section means env+default precedence chain only — the
+        // cached section field stays None.
+        assert!(
+            reranker.section.is_none(),
+            "new() supplies no [reranker] section"
+        );
+    }
+
+    /// TC-HAP-V1.38-9 (#1463): `[reranker] max_length = N` in `.cqs.toml`
+    /// must flow through to the constructed reranker when the env var is
+    /// unset. Pins the EX-V1.38-3 fallback chain shape: env > TOML >
+    /// default. The env-wins-over-TOML branch is exercised below.
+    #[test]
+    fn test_reranker_with_section_honours_max_length() {
+        // SAFETY: section path runs only when env is unset; clear it
+        // for this test. The test is `#[serial]`-style only by virtue
+        // of being short-lived in the lib test runner — no other
+        // CQS_RERANKER_MAX_LENGTH test runs in this suite.
+        let prior = std::env::var("CQS_RERANKER_MAX_LENGTH").ok();
+        // SAFETY: setting/removing env vars during tests; not thread-safe in
+        // parallel test runs but no other CQS_RERANKER_MAX_LENGTH test exists.
+        unsafe { std::env::remove_var("CQS_RERANKER_MAX_LENGTH") };
+
+        let section = AuxModelSection {
+            preset: None,
+            model_path: None,
+            tokenizer_path: None,
+            batch: None,
+            max_length: Some(256),
+            pool_max: None,
+            over_retrieval: None,
+        };
+        let reranker =
+            OnnxReranker::with_section(Some(section.clone())).expect("with_section must succeed");
+        assert_eq!(
+            reranker.max_length, 256,
+            "TOML [reranker] max_length=256 must flow through when env unset"
+        );
+
+        // Restore env so we don't leak state to sibling tests.
+        // SAFETY: same as above.
+        if let Some(v) = prior {
+            unsafe { std::env::set_var("CQS_RERANKER_MAX_LENGTH", v) };
+        }
     }
 
     #[test]
