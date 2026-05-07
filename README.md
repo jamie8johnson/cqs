@@ -656,8 +656,9 @@ cqs index --no-ignore      # Index everything
 cqs index --force          # Re-index all files
 cqs index --dry-run        # Show what would be indexed
 cqs index --llm-summaries  # Generate LLM summaries (requires ANTHROPIC_API_KEY)
-cqs index --llm-summaries --improve-docs  # Generate + write doc comments to source files
-cqs index --llm-summaries --improve-all   # Write doc comments to ALL functions (not just undocumented)
+cqs index --llm-summaries --improve-docs  # Stage doc comments as patches under .cqs/proposed-docs/<rel>.patch (review with git apply)
+cqs index --llm-summaries --improve-docs --apply  # Skip the review gate and write doc comments directly to source files
+cqs index --llm-summaries --improve-all   # Stage doc comments for ALL functions (not just undocumented)
 cqs index --llm-summaries --hyde-queries  # Generate HyDE query predictions for better recall
 cqs index --llm-summaries --max-docs 100  # Limit doc comment generation to N functions
 cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N functions
@@ -667,10 +668,10 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 **Parse → Describe → Embed → Enrich → Index → Search → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 20+ other chunk types across 54 languages (plus L5X/L5K PLC exports — see `define_chunk_types!` in `src/language/mod.rs` for the full list). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination. Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — Configurable embedding model (`embeddinggemma-300m` default since v1.35.0; `bge-large`, `bge-large-ft`, `E5-base`, `v9-200k`, `nomic-coderank`, `qwen3-embedding-4b`, `qwen3-embedding-8b` presets, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
-4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
+4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` writes proposed doc comments as `.cqs/proposed-docs/<rel>.patch` patches for review (apply with `git apply`); pass `--apply` to write them directly to source. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
 7. **Reason** — Call graph traversal, type dependency analysis, impact scoring, risk assessment, and smart context assembly build on the indexed data to answer questions like "what breaks if I change X?" in a single call.

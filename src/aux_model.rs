@@ -135,7 +135,14 @@ fn is_suspicious_cache_path(path: &Path) -> Option<&'static str> {
     }
     let s = path.to_string_lossy();
 
-    // World-writable / shared-tmp surfaces.
+    // World-writable / shared-tmp surfaces. Linux + macOS use the literal
+    // path list below; PL-V1.38-3 (#1463) extends the check to honor
+    // `std::env::temp_dir()` (handles `$TMPDIR=/var/run/...` setups,
+    // macOS's per-user `/var/folders/...`, and Windows's
+    // `%TEMP%`/`%TMP%`). On Windows the doc-comment originally promised
+    // %TEMP%/%TMP% coverage but only the Linux literals fired; this
+    // closes the gap so a hostile `HF_HOME=C:\Users\Public\hf` is
+    // flagged.
     for prefix in [
         "/tmp/",
         "/tmp",
@@ -146,6 +153,27 @@ fn is_suspicious_cache_path(path: &Path) -> Option<&'static str> {
     ] {
         if s == prefix || s.starts_with(&format!("{prefix}/")) {
             return Some("under world-writable temp dir");
+        }
+    }
+    let platform_tmp = std::env::temp_dir();
+    if path.starts_with(&platform_tmp) {
+        return Some("under platform temp_dir (HF_HOME points at $TMPDIR / %TEMP% / %TMP%)");
+    }
+    #[cfg(windows)]
+    {
+        // %PUBLIC% (typically `C:\Users\Public`) and %ProgramData%
+        // (typically `C:\ProgramData`) are world-writable on Windows
+        // by default and are common drive-by-download / shared-state
+        // surfaces. Mirror the Linux `/tmp` treatment.
+        for var in ["PUBLIC", "ProgramData"] {
+            if let Some(v) = std::env::var_os(var) {
+                let p = std::path::PathBuf::from(v);
+                if path.starts_with(&p) {
+                    return Some(
+                        "under Windows world-writable shared dir (%PUBLIC% / %ProgramData%)",
+                    );
+                }
+            }
         }
     }
 
