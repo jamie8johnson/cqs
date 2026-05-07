@@ -105,7 +105,34 @@ const DEFAULT_FLUSH_INTERVAL_MS: u64 = 200;
 /// Hard cap on queue depth. Past this, the next `push` runs a synchronous
 /// flush before enqueueing so the queue cannot grow without bound under
 /// a runaway producer.
-const HARD_CAP_ROWS: usize = 10_000;
+const DEFAULT_HARD_CAP_ROWS: usize = 10_000;
+
+/// SHL-V1.38-9 (#1463): operator-tunable summary-queue thresholds.
+/// Pre-fix all three were `const`. With the local vLLM provider sustaining
+/// ~50 chunks/sec the queue can hit 64 in <2 sec, triggering a flush every
+/// 2 sec — fine but tunable lets an operator on a slow disk push to
+/// 256+/500ms. Returns `(flush_threshold_rows, flush_interval, hard_cap_rows)`.
+fn summary_queue_config() -> (usize, Duration, usize) {
+    let rows = std::env::var("CQS_SUMMARY_FLUSH_ROWS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_FLUSH_THRESHOLD_ROWS);
+    let interval_ms = std::env::var("CQS_SUMMARY_FLUSH_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_FLUSH_INTERVAL_MS);
+    let hard_cap = std::env::var("CQS_SUMMARY_HARD_CAP_ROWS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_HARD_CAP_ROWS);
+    // Defensive: hard_cap must exceed flush threshold or backpressure
+    // fires before normal flush ever can.
+    let hard_cap = hard_cap.max(rows.saturating_add(1));
+    (rows, Duration::from_millis(interval_ms), hard_cap)
+}
 
 /// After this many consecutive auto-flush failures, the conditional flush
 /// path in `push` stops trying. The explicit final flush at end of LLM
@@ -141,6 +168,10 @@ pub(crate) struct PendingSummaryQueue {
     flush_threshold_rows: usize,
     /// Time-since-last-flush threshold.
     flush_interval: Duration,
+    /// Hard cap on queue depth before backpressure (synchronous flush
+    /// in `push` before enqueueing). SHL-V1.38-9: instance field instead
+    /// of const so `CQS_SUMMARY_HARD_CAP_ROWS` can override per-process.
+    hard_cap_rows: usize,
     /// Counter of consecutive flush failures. Bumped in `flush`'s error
     /// path, reset to 0 on success. When ≥ [`MAX_CONSECUTIVE_FLUSH_FAILURES`],
     /// `should_flush` returns false so `push`'s conditional auto-flush
@@ -150,15 +181,21 @@ pub(crate) struct PendingSummaryQueue {
 }
 
 impl PendingSummaryQueue {
-    /// Build a new queue tied to `pool` + `rt`. Defaults to the constants
-    /// above; tests construct via [`PendingSummaryQueue::with_thresholds`].
+    /// Build a new queue tied to `pool` + `rt`. Reads tunables via
+    /// [`summary_queue_config`] (env-overridable since SHL-V1.38-9);
+    /// tests construct via [`PendingSummaryQueue::with_thresholds`].
     pub(crate) fn new(pool: SqlitePool, rt: Arc<Runtime>) -> Self {
-        Self::with_thresholds(
+        let (rows, interval, hard_cap) = summary_queue_config();
+        Self {
+            queue: Mutex::new(Vec::new()),
+            last_flush: Mutex::new(Instant::now()),
             pool,
             rt,
-            DEFAULT_FLUSH_THRESHOLD_ROWS,
-            Duration::from_millis(DEFAULT_FLUSH_INTERVAL_MS),
-        )
+            flush_threshold_rows: rows,
+            flush_interval: interval,
+            hard_cap_rows: hard_cap,
+            consecutive_flush_failures: AtomicU8::new(0),
+        }
     }
 
     /// Test-friendly constructor for choosing custom thresholds.
@@ -176,6 +213,7 @@ impl PendingSummaryQueue {
             rt,
             flush_threshold_rows,
             flush_interval,
+            hard_cap_rows: DEFAULT_HARD_CAP_ROWS,
             consecutive_flush_failures: AtomicU8::new(0),
         }
     }
@@ -184,6 +222,7 @@ impl PendingSummaryQueue {
     /// the `cfg(test)` gate. Kept private since callers should go through
     /// `new`.
     #[cfg(not(test))]
+    #[allow(dead_code)]
     fn with_thresholds(
         pool: SqlitePool,
         rt: Arc<Runtime>,
@@ -197,6 +236,7 @@ impl PendingSummaryQueue {
             rt,
             flush_threshold_rows,
             flush_interval,
+            hard_cap_rows: DEFAULT_HARD_CAP_ROWS,
             consecutive_flush_failures: AtomicU8::new(0),
         }
     }
@@ -216,11 +256,11 @@ impl PendingSummaryQueue {
         // enqueueing so the in-memory footprint stays bounded.
         let at_cap = {
             let q = lock_recover(&self.queue, "queue.push.cap_check");
-            q.len() >= HARD_CAP_ROWS
+            q.len() >= self.hard_cap_rows
         };
         if at_cap {
             tracing::warn!(
-                hard_cap = HARD_CAP_ROWS,
+                hard_cap = self.hard_cap_rows,
                 "summary queue at hard cap; flushing synchronously before enqueue"
             );
             if let Err(e) = self.flush() {

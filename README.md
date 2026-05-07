@@ -809,6 +809,9 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_HOTSPOT_MIN_CALLERS` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum caller count for "untested hotspot" / "high risk" detectors. Default scales with corpus size (1k→5, 100k→11, 1M→14). SHL-V1.29-7. |
 | `CQS_DEAD_CLUSTER_MIN_SIZE` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum dead functions in a single file to flag as a "dead code cluster" in `cqs suggest`. Scales with corpus size. SHL-V1.29-7. |
 | `CQS_SUGGEST_HOTSPOT_POOL` | auto (4× hotspot count, clamped `[20, 200]`) | Pool size `cqs suggest` evaluates for risk patterns. SHL-V1.29-7. |
+| `CQS_SUMMARY_FLUSH_INTERVAL_MS` | `200` | Time-based flush threshold (ms) for the in-memory summary queue. An idle workload that pushed one row this many milliseconds ago auto-flushes. Bump (e.g. `500`) to coalesce more on slow disks. v1.38: SHL-V1.38-9 / #1463. |
+| `CQS_SUMMARY_FLUSH_ROWS` | `64` | Row-count threshold for auto-flush of the summary queue. Bump (e.g. `256`) on a saturated local-LLM pipeline to reduce per-flush transaction overhead. v1.38: SHL-V1.38-9 / #1463. |
+| `CQS_SUMMARY_HARD_CAP_ROWS` | `10000` | Hard cap on summary-queue depth — the next `push` runs a synchronous flush before enqueueing once at the cap (backpressure). Defensive: must exceed `CQS_SUMMARY_FLUSH_ROWS` (clamped at runtime). v1.38: SHL-V1.38-9 / #1463. |
 | `CQS_SUMMARY_VALIDATION` | `loose` | LLM summary validation strictness. `strict`: drop summaries matching injection patterns; `loose`: log + keep matches; `off`: skip. Length cap (1500 chars) is always enforced via deterministic truncation. (#1170) |
 | `CQS_RISK_HIGH` | `5.0` | Risk score threshold above which a function is "High" risk. Drives `cqs review` CI gating; override on monorepos where the default classifies too aggressively. SHL-V1.29-8. |
 | `CQS_RISK_MEDIUM` | `2.0` | Risk score threshold above which a function is "Medium" risk. SHL-V1.29-8. |
