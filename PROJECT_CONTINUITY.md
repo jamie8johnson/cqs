@@ -19,6 +19,18 @@
 
 **Big bug surfaced**: `cross_project::from_config` slot-blindness was a 100% silent break on all post-#1105 projects using `--cross-project`. Found and fixed in #1564. Existing 12 cross_project unit tests didn't catch it because they construct `CrossProjectContext::new(stores)` directly, bypassing `from_config`.
 
+**Two more cluster PRs (#1566–#1567)** after the TC-HAP sweep, both lighter follow-up cleanup:
+- **#1566** (Cluster VV) — SHL-V1.38-6: `parse_channel_depth` default halved 512 → 256. Cuts the worst-case buffered ParsedBatch ceiling from ~256 MB to ~128 MB on large repos. Practical fill level is ~10 messages so the cap reduction is harmless; CQS_PARSE_CHANNEL_DEPTH env override remains.
+- **#1567** (Cluster WW) — API-V1.38-9: `EmbedderError::HfHub` renamed → `EmbedderError::ModelDownload` for naming parity with `RerankerError::ModelDownload`. The full `AuxModelError::Download` collapse via `#[from]` is deferred since the embedder's HF download path doesn't currently route through `aux_model::resolve` — variant-name harmonization captures the consistency win without restructuring the resolver chain.
+
+**Audit umbrella (#1463) state after this entire post-summary sweep**: ~62 findings closed across 30+ cluster PRs of the v1.38 cycle. Truly remaining items are all genuinely big architectural refactors:
+- API-V1.38-6 (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Bigger than expected.
+- API-V1.38-10 structural fan-out (LimitArg → 7 sister args, 61 caller sites)
+- DS-V1.38-4 (HNSW load_with_dim TOCTOU) — multi-PR architectural change
+- PL-V1.38-2 (SPLADE Windows umask) — needs Windows test runner
+
+Plus 12 P4 carry-overs all on tracking issues (#1512 Windows daemon, #1461 Windows ACL, etc.) requiring infrastructure that isn't on this Linux/WSL workstation.
+
 ---
 
 **v1.38.0 audit cycle continuation extended (2026-05-07 morning, 6 more cluster PRs #1544–#1549)**: pushed past the earlier "remaining ~6 architectural items" punchlist; closed all but a few that are genuinely larger refactors. Each cluster delivered focused mechanical changes — the audit-fix prompts had enough specificity that even the medium-effort items collapsed to clean PRs.
