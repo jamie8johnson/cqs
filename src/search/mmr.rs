@@ -90,9 +90,26 @@ pub(crate) fn mmr_rerank(candidates: &[MmrCandidate<'_>], limit: usize, lambda: 
             };
 
             let mmr = lambda * cand.score - (1.0 - lambda) * max_sim;
-            // Tie-break on score (then implicit input-order via i ordering)
-            // so the result is deterministic across runs.
-            if mmr > best_mmr || (mmr == best_mmr && best_idx == usize::MAX) {
+            // AC-V1.38-2 (#1463): use `total_cmp` instead of `f32 ==`. Raw
+            // float comparison treats NaN as `not greater AND not equal`,
+            // so a NaN MMR (which would imply an upstream bug — degenerate
+            // cosine, etc.) silently skips the candidate; the loop may
+            // exit with `best_idx == usize::MAX` and return short.
+            // `total_cmp` gives a deterministic total order over all
+            // f32 values including NaN, matching the rest of the
+            // search/scoring pipeline (BoundedScoreHeap, parent_boost
+            // re-sort, etc.).
+            //
+            // Tie-break: only the first candidate with the best MMR
+            // wins (i ascending). The `best_idx == usize::MAX` guard is
+            // preserved so the very first iteration always seeds the
+            // winner.
+            let take = match mmr.total_cmp(&best_mmr) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Equal => best_idx == usize::MAX,
+                std::cmp::Ordering::Less => false,
+            };
+            if take {
                 best_mmr = mmr;
                 best_idx = i;
             }

@@ -445,7 +445,10 @@ impl CagraIndex {
         // the caller as an empty Vec — a silent zero-result regression.
         // Force `itopk_size >= k` and refuse the search if the cap can't
         // honour it; the caller falls back to HNSW.
-        let itopk_size = (k * 2).clamp(itopk_min, itopk_max).max(k);
+        // AC-V1.38-9 (#1463): saturating_mul mirrors the HNSW search
+        // path — pathological `k` values now saturate rather than
+        // panic/wrap.
+        let itopk_size = k.saturating_mul(2).clamp(itopk_min, itopk_max).max(k);
         if itopk_size > itopk_max {
             tracing::warn!(
                 k,
