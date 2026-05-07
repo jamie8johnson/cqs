@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Post-v1.38.0 work. Schema bumped to v27 (#1497). Headline changes are the v1.38.0-cohort audit follow-ups (#1487–#1511) plus the post-v1.38 audit cycle (PR #1515 catalogues 154 findings; cluster fixes ship as #1514 et seq.).
+
+### Added
+
+- **`cqs index --model X`** stamps the embedder into a fresh index and bails with an actionable error on incremental drift (#1505, API-V1.36 item 5 / #1459). New `check_index_model_drift` helper at the top of the non-force branch matches against both the canonical preset name and the repo string. Pre-fix passing `--model X` against an index built for `Y` silently fed X-dim embeddings into the Y-dim store.
+- **`cqs ref reindex` LLM/HyDE flag parity with `cqs index`** (#1506, API-V1.36 item 3 / #1459). New flags: `--llm-summaries`, `--improve-docs`, `--improve-all`, `--max-docs N`, `--hyde-queries`, `--max-hyde N`. `--apply` is intentionally not exposed for refs (vendored / external code must not be silently rewritten); `--improve-docs` always writes patches under `<ref-dir>/proposed-docs/`. Pipeline order mirrors `cmd_index`: LLM summaries → doc comments → HyDE → enrichment_pass.
+- **`cqs project search` filter knob parity with top-level `cqs <q>`** (#1507, API-V1.36 item 1 / #1459). New flags: `--name-boost`, `-l/--lang`, `--include-type`, `--exclude-type`, `-p/--path`, `--rrf`, `--include-docs`. `search_across_projects` now takes a `&SearchFilter` instead of `(query_text, limit, threshold)`; each project applies the filter consistently before results are merged.
+- **`[index.policy]` config section in `.cqs.toml`** (#1511, P4-6 / #1463). Operators pin per-project backend knobs without env-setup. Currently exposes `cagra_threshold` (default 5000) and `cagra_persist` (default true). Resolution order in each backend's `try_open` is env > `[index.policy]` > built-in default. New `cqs::config::IndexPolicy` struct + `BackendContext.policy: Option<&IndexPolicy>` field.
+- **Schema v27** (#1497) adds `chunks.needs_embedding INTEGER NOT NULL DEFAULT 0` plus a partial index. Drives the `--llm-summaries` skip-first-pass embed (#1452): chunks land with the zero-vec sentinel + `needs_embedding=1`; HNSW build and search hide them until `enrichment_pass` clears the flag. v27 migration also backfills `needs_embedding=1` for any pre-v27 row with `embedding_base IS NULL` so legacy chunks repopulate the base-HNSW on the next index pass (DS-V1.38-8, #1514).
+- **Proc-macro `#[derive(cqs_macros::CqsCommands)]`** replaces the `for_each_command!` table (#1495, #1366). `Commands` enum variants pick up dispatch + `variant_name()` + `batch_support()` from per-variant `#[cqs(...)]` attributes; a missing handler is a compile-time error. `cqs-macros/` is a new workspace crate. Adding a new top-level command drops from 5 coordinated edits to 1.
+- **CAGRA / SPLADE atomic-save with `.bak` rollback** (#1492, #1491, P4-12 / P4-13 / #1463). Parity with HNSW save: stage to a `.tmp`, rename existing live file to `.bak`, atomic_replace tmp → live, restore from `.bak` on failure. A stale `.bak` from a prior crashed save makes the next save bail loudly (manual recovery breadcrumb).
+- **Public surface**: `cqs::Store::try_stored_model_name` (#1497) — strict variant of `stored_model_name` that distinguishes "no row" from "query failed". Destructive operations (rebuild, slot promote, model swap) should use this; lossy variant remains for diagnostic surfaces.
+
+### Changed
+
+- **`cmd_model_swap` reads metadata via `try_stored_model_name`** (#1504, P1-18 / audit-v1.36.2). A corrupt-metadata read no longer silently triggers the destructive backup+rebuild path against an unreadable index; bails with a recovery hint pointing at `cqs index --force --model <preset>`.
+- **HNSW + CAGRA `id_map: Vec<String>` → `Vec<Box<str>>`** (#1502, P4-11 / RM-V1.36-9 / #1463). ~33% RSS savings (24+len → 16+len bytes per entry) at scale. On-disk format unchanged.
+- **Reranker + SPLADE batch sizes scale by `hidden_size` and `max_length`** (#1503, SHL-V1.36-6 / #1463). Pre-fix the literal 32 was tuned for ms-marco-MiniLM (384-hidden, 256-max-length); on a Qwen3-1B reranker the same batch OOM'd a 24 GB GPU. New formula: `baseline * (REFERENCE_HIDDEN/hidden).max(0.25) * (REFERENCE_MAX_LENGTH/max_length).max(0.25)`, rounded to power of 2, clamped `[1, 256]`.
+- **`OutputFormat` matches at every render site are exhaustive** (#1508, P4-3 / #1463). 16 `if matches!(format, OutputFormat::X)` chains across `graph/{trace,impact}` and `review/{ci,diff_review}` converted to `match format { ... }`. Adding a new variant fails to compile until every site adds an arm.
+- **`classify_query_inner` priority chain** is now a chain of `try_classify_*(&ctx) -> Option<Classification>` helpers (#1509, P4-4 / #1463). Each classifier independently unit-testable. No vtable indirection on the search hot path.
+- **Four LLM prompt builders share `build_prompt_with_envelope`** (#1510, P4-5 / #1463). The truncate + sanitize + sentinel-pair scaffold is hoisted; each `build_*_prompt` provides only its task-specific instructions.
+- **`IndexBackend::try_open` returns `Result<_, StoreError>` directly** (#1501, post-#1493). `IndexBackendError` wrapper enum dropped; both never-emitted variants gone in #1493 already. Anyhow callers consume `StoreError` through `?` exactly as before.
+
+### Fixed
+
+- **`EmbeddingBatchIterator` filters `needs_embedding=0`** (#1514, DS-V1.38-1 / #1463). Pre-fix CAGRA build, UMAP projection, and brute-force kNN loaded the (0,…,0) zero-vec sentinel for every #1452 chunk, advertising "near-origin" neighborhoods in CAGRA's flat buffer. The hash sibling already had this gate; the non-hash variant had drifted.
+- **`update_embeddings_with_hashes_batch` repopulates `embedding_base`** (#1514, DS-V1.38-2 / #1463). Pre-fix every `--llm-summaries` reindex permanently left `embedding_base` NULL for affected chunks, hiding them from `build_hnsw_base_index` and silently degrading the DenseBase routing target (conceptual / behavioral / negation queries). COALESCE preserves prior bytes for already-populated rows.
+- **`BatchContext` staleness checks honor slot resolution** (#1514, DS-V1.38-3 / #1463). Five sites in `cli/batch/mod.rs` now resolve `cqs::resolve_index_db(&self.cqs_dir)` instead of joining `cqs_dir/INDEX_DB_FILENAME` directly. On slot-migrated projects (post-#1105) the daemon's mutable caches now invalidate when the operator runs `cqs index`; pre-fix they never did.
+- **#1502 CI flake fix**: `Box<str>` doesn't impl `PartialEq<str>` so the watch tests had to deref both sides (`&**id == "delta_a"`).
+- **Tasklist UTF-16 BOM blind-spot** in `process_exists` on Windows (#1490, P4-10 / #1463). BOM detected and decoded via `String::from_utf16_lossy`.
+- **GC test scaffolding** for the gitignore-prune branch added (#1488).
+
+### Removed
+
+- **`IndexBackendError` enum** (#1501). All call sites returned `Store(StoreError)` after #1493 dropped the two never-emitted variants. Trait surface simplified to `Result<_, StoreError>`.
+
 ## [1.38.0] - 2026-05-06
 
 Minor release. No schema bump. Bundles 13 audit-driven PRs that close three umbrella tracking issues from the v1.36.2 audit (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM) plus tracker-hygiene cleanup (3 stale issues that already shipped in prior PRs). Six surface deletions justify the minor bump despite the size; env overrides preserve prior behavior on every default-changed knob.

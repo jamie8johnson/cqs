@@ -45,7 +45,7 @@ cqs cannot reliably distinguish a legitimate doc comment from a malicious one. D
 | **Reference content** (`cqs ref add`) | Third-party code indexed for cross-project search; less curated than the user's own code, blended into search results without an explicit trust signal | Yes — survives until ref is removed |
 | **Shared notes** (`docs/notes.toml`) | A cloned repo can ship committed notes that bias rankings and surface in agent context. `audit-mode` mitigates ranking influence at runtime, but not the first-encounter case | Yes — survives in the indexed repo |
 | **LLM-generated summaries** (`cqs index --llm-summaries`) | Claude is prompted with chunk content; a poisoned chunk can produce a summary that contains injection text. The summary text is cached in the `llm_summaries` table keyed by `(content_hash, purpose)` (search for `CREATE TABLE IF NOT EXISTS llm_summaries` in `src/schema.sql`); the post-summary embedding flows through the normal `embeddings_cache.db` (purpose `embedding`, the same purpose served to search) and is replayed to downstream agents | Yes — cached in `llm_summaries` table + `embeddings_cache.db` |
-| **Doc-comment generation** (`cqs index --llm-summaries --improve-docs`) | LLM output is **written back to source files in place**. A poisoned chunk can produce a doc comment that lands in the user's repo on commit | **Yes — commits the LLM's output into git** |
+| **Doc-comment generation** (`cqs index --llm-summaries --improve-docs`) | LLM output is staged as patch files under `.cqs/proposed-docs/` for review (default since v1.30.1); only `--apply` writes back to source files in place. A poisoned chunk can still land a doc comment in the user's repo on commit if `--apply` is used or the patch is accepted unread | Patch-only by default — see Mitigation #3 below; `--apply` reverts to in-place writes |
 | **Search result blending** | RRF merges chunks across project + references; the consuming agent sees a single ranked list with no in-protocol trust signal distinguishing user code from third-party content | Yes — every query |
 
 ### Current mitigations
@@ -95,7 +95,7 @@ The only network activity is:
 |------|----------|-----------|-------|
 | `--llm-summaries` | api.anthropic.com | Function bodies (up to 8000 chars), chunk type, language | Requires `ANTHROPIC_API_KEY`. Opt-in via `cqs index --llm-summaries` |
 | `--hyde-queries` | api.anthropic.com | Function NL descriptions, signatures | Requires `--llm-summaries`. Generates synthetic search queries per function |
-| `--improve-docs` | api.anthropic.com | Function bodies (for doc generation) | Requires `--llm-summaries`. Writes doc comments back to source files |
+| `--improve-docs` | api.anthropic.com | Function bodies (for doc generation) | Requires `--llm-summaries`. Stages doc comments as patches under `.cqs/proposed-docs/` for review (default); `--apply` writes them in place |
 
 - **Model export** (`cqs export-model`): Spawns Python `optimum.exporters.onnx` which downloads the specified HuggingFace model and converts to ONNX format
 
@@ -220,7 +220,7 @@ cqs has **two** symlink-handling regimes, depending on the entry point.
 
 ### Directory walks (`cqs index`, `cqs ref add`, `cqs watch` reconcile, `cqs convert`)
 
-Symlinks are **skipped** entirely — `enumerate_files` / `enumerate_files_iter` (`src/lib.rs:813`, `WalkBuilder::follow_links(false)`) and `cqs convert`'s archive extraction skip them in extract paths. The walker never opens the link's target.
+Symlinks are **skipped** entirely — `enumerate_files` / `enumerate_files_iter` in `src/lib.rs` (search for `WalkBuilder::follow_links(false)`) and `cqs convert`'s archive extraction skip them in extract paths. The walker never opens the link's target.
 
 | Scenario | Behavior |
 |----------|----------|
