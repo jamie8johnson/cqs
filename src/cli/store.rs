@@ -99,20 +99,16 @@ fn open_store_with<Mode>(
     Ok((store, paths))
 }
 
-/// Open the project store, returning the store, project root, and slot dir.
-/// Bails with a user-friendly message if no index exists.
-///
-/// Kept for legacy in-tree callers that don't (yet) flow through
-/// `CommandContext`. New code should prefer
-/// [`open_project_store_for_slot`] which honors the `--slot` flag.
-#[allow(dead_code)]
-pub(crate) fn open_project_store() -> Result<(cqs::Store, PathBuf, PathBuf)> {
-    let (store, paths) = open_store_with(cqs::Store::open, None)?;
-    Ok((store, paths.root, paths.slot_dir))
-}
+// CQ-V1.38-2 (#1463): `open_project_store()` (zero-arg, slot-bypass)
+// previously parked here `#[allow(dead_code)]` for "legacy in-tree
+// callers" that don't exist. Removing it eliminates the slot-bypass
+// regression footgun — every code path now goes through
+// [`open_project_store_for_slot`] which honors the `--slot` flag.
+// If a future caller genuinely needs slot-default behavior, pass
+// `slot_flag: None` to the slot-aware variant explicitly.
 
-/// Slot-aware variant of [`open_project_store`]. Honors the resolved slot flag
-/// from CLI / env / file.
+/// Open the project store honoring the resolved `--slot` flag from CLI / env / file.
+/// Bails with a user-friendly message if no index exists.
 pub(crate) fn open_project_store_for_slot(
     slot_flag: Option<&str>,
 ) -> Result<(cqs::Store, SlotPaths)> {

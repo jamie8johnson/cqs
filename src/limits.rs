@@ -434,19 +434,11 @@ pub fn parse_env_u64(key: &str, default: u64) -> u64 {
 // `freshness_poll_ms_initial` + matching env override) has no
 // semantic in the new architecture.
 
-/// Parse a duration-in-seconds env var into a `std::time::Duration`,
-/// falling back to `default_secs` on missing/empty/garbage/zero values.
-/// P2.4: convenience wrapper for the common `parse_env_u64(...) -> from_secs`
-/// pattern used by serve/watch timeouts.
-///
-/// Marked `#[allow(dead_code)]` because the call sites that will consume it
-/// (`serve` shutdown grace, `watch` debounce ceiling) live in agent-D-owned
-/// modules and will land in a follow-up. The helper is parked here to keep
-/// the env-var contract centralized.
-#[allow(dead_code)]
-pub fn parse_env_duration_secs(key: &str, default_secs: u64) -> std::time::Duration {
-    std::time::Duration::from_secs(parse_env_u64(key, default_secs))
-}
+// CQ-V1.38-1 (#1463): `parse_env_duration_secs` previously parked here
+// `#[allow(dead_code)]` for callers in `serve`/`watch` follow-up work
+// that never materialised — those sites use `parse_env_u64` directly.
+// Removed; if a future caller wants the duration wrapper, re-add it
+// then with the call site in the same PR.
 
 // ============ #1345 cqs serve idle eviction ============
 
