@@ -849,6 +849,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_PARSER_MAX_FILE_SIZE` | `52428800` (50 MiB) | Per-file size cap inside the parser. Files above this are skipped with a warn. Distinct from `CQS_MAX_FILE_SIZE` (which gates file enumeration before the parser even runs). |
 | `CQS_PDF_MAX_BYTES` | `104857600` (100 MiB) | Max stdout bytes captured from the `pdf_to_md.py` subprocess invocation. v1.36.2: previously unbounded — a hostile or pathological PDF could spew arbitrary text into an in-memory `Vec<u8>`. Bump if vendor docs legitimately produce more than 100 MiB of text. |
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
+| `CQS_UMAP_MAX_STDOUT_BYTES` | `1073741824` (1 GiB) | Max stdout bytes captured from the `run_umap.py` subprocess invocation (one ~64-byte coord line per chunk). Default ceiling sized for ~16M-chunk corpora; bump if you index more. v1.38: previously unbounded via `wait_with_output()` — a pathological / hostile script could OOM the indexer process (RM-V1.38-4 / #1463). |
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
 | `CQS_READ_MAX_FILE_SIZE` | `10485760` (10 MiB) | Max file size that `cqs read` will open (full-file body emit + note injection). Distinct from `CQS_MAX_DISPLAY_FILE_SIZE` because `cqs read` emits the entire file, not just a snippet. |

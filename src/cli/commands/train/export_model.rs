@@ -56,12 +56,45 @@ pub(crate) fn cmd_export_model(
     // PB-29/EH-32: Find a working Python interpreter first
     let python = find_python()?;
 
-    // OB-26: Check Python deps, capture stderr for diagnostics
-    let check = std::process::Command::new(&python)
-        .args(["-c", "import optimum; import sentence_transformers"])
-        .output()?;
-    if !check.status.success() {
-        let stderr = String::from_utf8_lossy(&check.stderr);
+    // RM-V1.38-5 (#1463): bounded subprocess output. Both `Command::output()`
+    // calls used to buffer stdout/stderr unbounded — `optimum.exporters.onnx`
+    // can print multi-MB progress logs on a large export and a wedged HF
+    // download can grow RAM for hours. Mirror the RM-V1.36-2 PDF converter
+    // pattern (spawn + take MAX_BYTES). Operators only need the tail of
+    // stderr for diagnostics; stdout is purely informational.
+    use std::io::Read;
+    use std::process::Stdio;
+
+    /// Read up to `max` bytes from the spawned child's stdout+stderr,
+    /// then wait. Returns (status, stdout_buf, stderr_buf, stdout_truncated).
+    fn run_capped(
+        cmd: &mut std::process::Command,
+        max_stdout: u64,
+        max_stderr: u64,
+    ) -> std::io::Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>, bool)> {
+        let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let mut stdout_buf = Vec::with_capacity(8 * 1024);
+        let mut stderr_buf = Vec::with_capacity(4 * 1024);
+        if let Some(s) = child.stdout.take() {
+            let _ = s.take(max_stdout + 1).read_to_end(&mut stdout_buf);
+        }
+        if let Some(s) = child.stderr.take() {
+            let _ = s.take(max_stderr).read_to_end(&mut stderr_buf);
+        }
+        let status = child.wait()?;
+        let truncated = stdout_buf.len() as u64 > max_stdout;
+        Ok((status, stdout_buf, stderr_buf, truncated))
+    }
+
+    // OB-26: Check Python deps. Cheap probe — 4 KiB stdout + 16 KiB stderr is plenty.
+    let (check_status, _check_out, check_err, _) = run_capped(
+        std::process::Command::new(&python)
+            .args(["-c", "import optimum; import sentence_transformers"]),
+        4 * 1024,
+        16 * 1024,
+    )?;
+    if !check_status.success() {
+        let stderr = String::from_utf8_lossy(&check_err);
         anyhow::bail!(
             "Missing Python dependencies. Install with:\n  \
              pip install optimum sentence-transformers\n\n\
@@ -70,9 +103,11 @@ pub(crate) fn cmd_export_model(
         );
     }
 
-    // Export via optimum
-    let export = std::process::Command::new(&python)
-        .args([
+    // Export via optimum. 16 MiB stdout / 1 MiB stderr — plenty of headroom
+    // for legitimate progress logs but cuts off a wedged subprocess before
+    // it OOMs the indexer.
+    let (export_status, _export_out, export_err, export_truncated) = run_capped(
+        std::process::Command::new(&python).args([
             "-m",
             "optimum.exporters.onnx",
             "--model",
@@ -82,11 +117,19 @@ pub(crate) fn cmd_export_model(
             "--opset",
             "11",
             &output.to_string_lossy(),
-        ])
-        .output()?;
+        ]),
+        16 * 1024 * 1024,
+        1024 * 1024,
+    )?;
 
-    if !export.status.success() {
-        let stderr = String::from_utf8_lossy(&export.stderr);
+    if export_truncated {
+        tracing::warn!(
+            cap_bytes = 16 * 1024 * 1024,
+            "ONNX export stdout exceeded cap; truncated. Subsequent diagnostics may be incomplete."
+        );
+    }
+    if !export_status.success() {
+        let stderr = String::from_utf8_lossy(&export_err);
         anyhow::bail!("ONNX export failed:\n{}", stderr);
     }
 
