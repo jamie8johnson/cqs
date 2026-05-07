@@ -216,6 +216,15 @@ pub type CustomAllParserFn = fn(
     crate::parser::types::ParserError,
 >;
 
+/// EX-V1.38-6 (#1463): function signature for a per-chunk call/reference
+/// extractor. Distinct from [`CustomCallParserFn`] which operates on full
+/// source files in `parse_file_relationships` — this hook fires inside
+/// `Parser::extract_calls_from_chunk` when only a single already-extracted
+/// chunk is available. Markdown registers
+/// [`crate::parser::markdown::extract_calls_from_markdown_chunk`].
+pub type ChunkCallParserFn =
+    fn(chunk: &crate::parser::types::Chunk) -> Vec<crate::parser::types::CallSite>;
+
 /// Function signature for a custom relationships-only (calls + type-refs)
 /// extractor on a grammar-less language. Invoked from
 /// `Parser::parse_file_relationships`.
@@ -423,6 +432,14 @@ pub struct LanguageDef {
     /// without setting this field routes to the markdown fallback — which
     /// is usually wrong. Closes the silent-routing class from issue #954.
     pub custom_chunk_parser: Option<CustomChunkParserFn>,
+    /// EX-V1.38-6 (#1463): per-chunk call/reference extractor. Invoked
+    /// by `Parser::extract_calls_from_chunk` for languages whose chunks
+    /// don't fit the tree-sitter call-site model (Markdown links,
+    /// future natural-language doc formats, SQL stored-proc cross-refs).
+    /// `None` means the tree-sitter call extractor handles it. Pre-fix,
+    /// `extract_calls_from_chunk` had a hardcoded `if chunk.language ==
+    /// Language::Markdown { ... }` branch that this field replaces.
+    pub chunk_call_parser: Option<ChunkCallParserFn>,
     /// Custom combined chunk+calls+type-refs extraction for grammar-less languages.
     /// Used by `parse_file_all`. When `None`, falls through to the markdown default.
     /// `parse_file_relationships` also consults this field as a fallback when

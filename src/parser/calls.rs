@@ -123,12 +123,19 @@ impl Parser {
 
     /// Extract function calls from a parsed chunk
     /// Convenience method that extracts calls from the chunk's content.
+    ///
+    /// EX-V1.38-6 (#1463): per-chunk extractor consults
+    /// `LanguageDef::chunk_call_parser` first. Markdown registers
+    /// `extract_calls_from_markdown_chunk`; future grammar-less languages
+    /// (SQL stored-proc cross-refs, L5X tag references, NL doc formats)
+    /// can opt in by populating the field on their `LanguageDef`. Falls
+    /// through to the tree-sitter call extractor when unset.
     pub fn extract_calls_from_chunk(&self, chunk: &super::types::Chunk) -> Vec<CallSite> {
-        // Markdown chunks use custom reference extraction
-        if chunk.language == Language::Markdown {
-            return crate::parser::markdown::extract_calls_from_markdown_chunk(chunk);
+        if let Some(def) = chunk.language.try_def() {
+            if let Some(extractor) = def.chunk_call_parser {
+                return extractor(chunk);
+            }
         }
-
         self.extract_calls(
             &chunk.content,
             chunk.language,
