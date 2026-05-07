@@ -352,6 +352,15 @@ pub(super) fn reindex_files(
     // pipeline already does this via `parse_file_all_with_chunk_calls`; the
     // watch path was paying ~14k extra tree-sitter parses per repo-wide reindex.
     let mut per_file_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
+    // #1574: stash file-level function_calls per origin so they can be
+    // written in the SAME tx as the chunks/FTS upsert below. Pre-fix, the
+    // flat_map called `upsert_function_calls` per file synchronously,
+    // BEFORE the heavy embed phase. A daemon crash during embed (we
+    // observed SIGFPE crashes on TensorRT) left the function_calls table
+    // ahead of chunks/FTS — `cqs callers <new_fn>` worked, search /
+    // `cqs explain` didn't.
+    use std::collections::HashMap;
+    let mut all_function_calls: HashMap<PathBuf, Vec<cqs::parser::FunctionCalls>> = HashMap::new();
     let chunks: Vec<_> = files
         .iter()
         .flat_map(|rel_path| {
@@ -404,22 +413,19 @@ pub(super) fn reindex_files(
                     if !chunk_type_refs.is_empty() {
                         all_type_refs.push((rel_path.clone(), chunk_type_refs));
                     }
-                    // RT-DATA-8: Write function_calls table (file-level call graph).
-                    // Previously discarded — callers/impact/trace commands need this.
+                    // #1574: stash function_calls for atomic per-file write
+                    // alongside chunks/FTS below. Pre-fix this called
+                    // `store.upsert_function_calls` synchronously here,
+                    // BEFORE the embed phase — leaving an asymmetric state
+                    // when the daemon crashed mid-embed.
                     //
-                    // Always invoked, even on empty `calls`: the function does
-                    // DELETE WHERE file=X then INSERT current. Skipping the call
-                    // when current is empty leaks rows for files that previously
-                    // had function_calls but no longer do (audit P1 #17 / E.2:
-                    // `delete_phantom_chunks` cannot do this cleanup itself
-                    // because it would wipe the just-written rows).
-                    if let Err(e) = store.upsert_function_calls(rel_path, &calls) {
-                        tracing::warn!(
-                            path = %rel_path.display(),
-                            error = %e,
-                            "Failed to write function_calls for watched file"
-                        );
-                    }
+                    // Always stash (even with empty `calls`): the per-file
+                    // upsert below does DELETE WHERE file=X then INSERT
+                    // current. Skipping when empty leaks rows for files
+                    // that previously had function_calls but no longer do
+                    // (audit P1 #17 / E.2: `delete_phantom_chunks` cannot
+                    // do this cleanup itself).
+                    all_function_calls.insert(rel_path.clone(), calls);
                     file_chunks
                 }
                 Err(e) => {
@@ -712,13 +718,22 @@ pub(super) fn reindex_files(
         // alongside a dirty HNSW flag. `upsert_chunks_calls_and_prune` fuses
         // both operations into a single `begin_write` transaction, making the
         // reindex all-or-nothing. RT-DATA-10 / DS-37.
+        //
+        // #1574: also fold the file-level `function_calls` write into the
+        // same per-file tx (was a separate tx before the embed phase, which
+        // left an asymmetric state when the daemon crashed mid-embed).
         let live_ids: Vec<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
-        store.upsert_chunks_calls_and_prune(
+        let file_fn_calls = all_function_calls
+            .get(file)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        store.upsert_chunks_calls_and_prune_with_file_calls(
             pairs,
             mtime,
             &file_calls,
             Some(file.as_path()),
             &live_ids,
+            Some(file_fn_calls),
         )?;
 
         // #1219: populate the v23 reconcile fingerprint columns
@@ -778,6 +793,26 @@ pub(super) fn reindex_files(
                 error = %e,
                 "Reindex: failed to set v23 fingerprint columns; reconcile will use mtime fallback"
             );
+        }
+    }
+
+    // #1574: any file that parsed to ZERO chunks is in `all_function_calls`
+    // but NOT in `by_file`. The per-file upsert loop above only ran for
+    // files with at least one chunk, so empty-chunk files would leak old
+    // function_calls rows if we didn't also clear them here. Pre-fix the
+    // flat_map called `upsert_function_calls` per file unconditionally
+    // before the embed phase; this preserves that cleanup for the
+    // zero-chunk edge case (deleted-only / parser-emitted-empty) while
+    // keeping the atomic-with-chunks path for the common case.
+    for (rel_path, fcs) in &all_function_calls {
+        if !by_file.contains_key(rel_path) {
+            if let Err(e) = store.upsert_function_calls(rel_path, fcs) {
+                tracing::warn!(
+                    path = %rel_path.display(),
+                    error = %e,
+                    "Failed to write function_calls for zero-chunk watched file"
+                );
+            }
         }
     }
 
