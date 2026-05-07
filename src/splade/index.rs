@@ -161,8 +161,14 @@ impl<'a, W: Write> Write for HashingWriter<'a, W> {
 pub struct SpladeIndex {
     /// Inverted postings: token_id → [(chunk_index, weight)]
     postings: HashMap<u32, Vec<(usize, f32)>>,
-    /// Sequential chunk ID map (chunk_index → chunk_id string)
-    id_map: Vec<String>,
+    /// Sequential chunk ID map (chunk_index → chunk_id string).
+    /// PF-V1.38-2 (#1463): `Box<str>` instead of `String` to match the
+    /// HNSW + CAGRA migration in #1502 — saves 8 bytes per entry
+    /// (24+len → 16+len) at the cost of zero ergonomics (`Box<str>`
+    /// derefs to `&str` for read access). Build-once / read-many access
+    /// pattern; `push` is the only mutator and always immediately
+    /// followed by an `into_boxed_str()`-cheap conversion.
+    id_map: Vec<Box<str>>,
 }
 
 impl SpladeIndex {
@@ -177,7 +183,7 @@ impl SpladeIndex {
             for &(token_id, weight) in &sparse {
                 postings.entry(token_id).or_default().push((idx, weight));
             }
-            id_map.push(chunk_id);
+            id_map.push(chunk_id.into_boxed_str());
         }
 
         tracing::info!(
@@ -254,7 +260,10 @@ impl SpladeIndex {
                 continue;
             }
             if let Some(id) = self.id_map.get(idx) {
-                heap.push(id.clone(), score);
+                // PF-V1.38-2 (#1463): `Box<str>` derefs to `&str`; one
+                // `String::from(&str)` allocation per accepted candidate
+                // (gated by `would_accept` above so most are skipped).
+                heap.push(id.to_string(), score);
             }
         }
         let results: Vec<IndexResult> = heap
@@ -575,7 +584,10 @@ impl SpladeIndex {
     /// body size fits in `u64` for any realistic SPLADE index.
     fn write_body<W: Write>(
         writer: &mut W,
-        id_map: &[String],
+        // PF-V1.38-2 (#1463): `&[Box<str>]` matches the in-memory storage.
+        // `Box<str>` derefs to `&str` so `id.len()` and `id.as_bytes()`
+        // work unchanged below.
+        id_map: &[Box<str>],
         postings: &HashMap<u32, Vec<(usize, f32)>>,
     ) -> Result<u64, SpladeIndexPersistError> {
         let mut bytes_written: u64 = 0;
@@ -765,7 +777,8 @@ impl SpladeIndex {
                 body.len()
             )));
         }
-        let mut id_map: Vec<String> = Vec::with_capacity(chunk_count_usize);
+        // PF-V1.38-2 (#1463): `Vec<Box<str>>` matches the build-time storage.
+        let mut id_map: Vec<Box<str>> = Vec::with_capacity(chunk_count_usize);
         let mut cursor: usize = 0;
 
         fn need(body: &[u8], cursor: usize, n: usize) -> Result<(), SpladeIndexPersistError> {
@@ -795,7 +808,7 @@ impl SpladeIndex {
                 })?
                 .to_string();
             cursor += len;
-            id_map.push(id);
+            id_map.push(id.into_boxed_str());
         }
 
         let token_count_usize: usize = token_count.try_into().map_err(|_| {
@@ -1363,7 +1376,10 @@ mod tests {
 
         // The post-save file is a valid index loadable at the new generation.
         let loaded = SpladeIndex::load(&path, 2).unwrap().unwrap();
-        assert_eq!(loaded.id_map, vec!["chunk_v2".to_string()]);
+        // PF-V1.38-2 (#1463): id_map is now Vec<Box<str>>; deref each
+        // entry to compare against the expected literal.
+        assert_eq!(loaded.id_map.len(), 1);
+        assert_eq!(&*loaded.id_map[0], "chunk_v2");
     }
 
     /// Stale `.bak` left over from a prior failed save must block the next

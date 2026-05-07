@@ -647,8 +647,13 @@ pub(super) fn reindex_files(
             .push((chunk, embedding));
     }
     for (file, pairs) in &by_file {
+        // PF-V1.38-8 (#1463): hoist `root.join(file)` so the same PathBuf
+        // is reused by both the mtime cache and the v23 fingerprint
+        // write-back below. Pre-fix the join allocated twice per file —
+        // ms-scale on WSL 9P which adds up across a 200-file watch
+        // tick.
+        let abs_path = root.join(file);
         let mtime = *mtime_cache.entry(file.clone()).or_insert_with(|| {
-            let abs_path = root.join(file);
             // bundle-reconcile-stat: capture the stat error separately so
             // we can surface it via tracing instead of silently storing
             // `mtime=None` for the file. A `None` here means reconcile
@@ -714,7 +719,8 @@ pub(super) fn reindex_files(
         // the same path.
         // RB-V1.36-5 / P2-7: streaming blake3 + size-from-metadata so we
         // don't have to slurp the whole file into RAM just to hash it.
-        let abs_path = root.join(file);
+        // PF-V1.38-8 (#1463): `abs_path` was already hoisted above; reuse
+        // it instead of re-joining.
         let size_hint = std::fs::metadata(&abs_path).ok().map(|m| m.len());
         let fp = match std::fs::File::open(&abs_path) {
             Ok(f) => {

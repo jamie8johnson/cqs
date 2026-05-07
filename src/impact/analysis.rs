@@ -180,15 +180,17 @@ pub(super) fn extract_call_snippet_from_cache(
         return None;
     }
 
-    let lines: Vec<&str> = best.chunk.content.lines().collect();
+    // PF-V1.38-7 (#1463): only the 3-line window survives, but `lines().collect()`
+    // pre-fix sized the Vec to the entire chunk's line count and walked the
+    // whole iterator. For 100+ line chunks this was a wasted allocation per
+    // caller. `skip(start).take(3)` lazy-iterates only the lines we keep.
     let offset = caller.call_line.saturating_sub(best.chunk.line_start) as usize;
-    if offset < lines.len() {
-        let start = offset.saturating_sub(1);
-        // Always show 3 lines from start (consistent window regardless of position)
-        let end = (start + 3).min(lines.len());
-        Some(lines[start..end].join("\n"))
-    } else {
+    let start = offset.saturating_sub(1);
+    let snippet: Vec<&str> = best.chunk.content.lines().skip(start).take(3).collect();
+    if snippet.is_empty() {
         None
+    } else {
+        Some(snippet.join("\n"))
     }
 }
 

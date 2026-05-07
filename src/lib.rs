@@ -513,8 +513,17 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
     }
     // Path-based patterns from the language registry (all 54 languages).
     // Patterns use SQL LIKE syntax: `%` = any chars, `\_` = literal underscore.
-    // Normalize backslashes to forward slashes for cross-platform matching.
-    let normalized = file.replace('\\', "/");
+    //
+    // PF-V1.38-1 (#1463): skip the `\\` → `/` replace when there's no
+    // backslash in the input. On Linux that's the common case; the
+    // pre-fix `replace('\\', "/")` allocated a fresh `String` for every
+    // candidate even when the result was byte-identical to the input.
+    // Now allocates only on Windows-style paths.
+    let normalized: std::borrow::Cow<'_, str> = if file.contains('\\') {
+        std::borrow::Cow::Owned(file.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(file)
+    };
     for pattern in language::REGISTRY.all_test_path_patterns() {
         if sql_like_matches(&normalized, pattern) {
             return true;

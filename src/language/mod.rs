@@ -974,17 +974,32 @@ impl LanguageRegistry {
     }
 
     /// Collect all unique test path patterns from all enabled languages.
+    ///
+    /// PF-V1.38-1 (#1463): cached behind a static `OnceLock` because the
+    /// patterns depend only on compile-time `LanguageDef::test_path_patterns`
+    /// and `is_test_chunk` is called per-candidate per-search (~500
+    /// candidates per query at default `enable_demotion = true`). Pre-fix
+    /// every call walked all 54 language defs and built a fresh `Vec` +
+    /// `HashSet`. Now the dedup runs once per process; subsequent calls
+    /// are a single static-slice clone (cheap because entries are
+    /// `&'static str`). Returns a `Vec` rather than `&'static [&str]` to
+    /// keep the API shape stable for callers that expect ownership.
     pub fn all_test_path_patterns(&self) -> Vec<&'static str> {
-        let mut patterns = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for def in self.all() {
-            for pat in def.test_path_patterns {
-                if seen.insert(*pat) {
-                    patterns.push(*pat);
+        static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+        CACHE
+            .get_or_init(|| {
+                let mut patterns = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for def in self.all() {
+                    for pat in def.test_path_patterns {
+                        if seen.insert(*pat) {
+                            patterns.push(*pat);
+                        }
+                    }
                 }
-            }
-        }
-        patterns
+                patterns
+            })
+            .clone()
     }
 
     /// Collect all unique test name patterns from all enabled languages,
@@ -1021,21 +1036,27 @@ impl LanguageRegistry {
             "%\\_test\\_%",
             "%.test%",
         ];
-        let mut patterns: Vec<&'static str> = Vec::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for def in self.all() {
-            for pat in def.test_name_patterns {
-                if seen.insert(*pat) {
-                    patterns.push(*pat);
+        // PF-V1.38-1 (#1463): cached — see `all_test_path_patterns` above.
+        static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+        CACHE
+            .get_or_init(|| {
+                let mut patterns: Vec<&'static str> = Vec::new();
+                let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                for def in self.all() {
+                    for pat in def.test_name_patterns {
+                        if seen.insert(*pat) {
+                            patterns.push(*pat);
+                        }
+                    }
                 }
-            }
-        }
-        for pat in FALLBACK {
-            if seen.insert(*pat) {
-                patterns.push(*pat);
-            }
-        }
-        patterns
+                for pat in FALLBACK {
+                    if seen.insert(*pat) {
+                        patterns.push(*pat);
+                    }
+                }
+                patterns
+            })
+            .clone()
     }
 }
 
