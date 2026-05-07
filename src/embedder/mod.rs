@@ -951,6 +951,14 @@ impl Embedder {
         crate::limits::parse_env_usize("CQS_MAX_QUERY_BYTES", 32 * 1024)
     }
 
+    /// Test helper for [`truncate_at_char_boundary`]. Visibility-bridges
+    /// the free function so unit tests in the same module can exercise
+    /// it without going through `embed_query`'s ONNX model load.
+    #[cfg(test)]
+    pub(super) fn truncate_for_test(text: &str, max: usize) -> &str {
+        truncate_at_char_boundary(text, max)
+    }
+
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let _span = tracing::info_span!("embed_query").entered();
         // P3-3 (audit v1.33.0): time end-to-end so cache-hit vs. miss
@@ -964,21 +972,7 @@ impl Embedder {
         }
         // RT-RES-5: Truncate oversized input before tokenization to bound CPU work.
         let max_query_bytes = Self::max_query_bytes();
-        let text = if text.len() > max_query_bytes {
-            tracing::warn!(
-                len = text.len(),
-                max = max_query_bytes,
-                "Query text truncated before embedding"
-            );
-            // Truncate at a char boundary
-            let mut end = max_query_bytes;
-            while !text.is_char_boundary(end) && end > 0 {
-                end -= 1;
-            }
-            &text[..end]
-        } else {
-            text
-        };
+        let text = truncate_at_char_boundary(text, max_query_bytes);
 
         // Check in-memory LRU first
         {
@@ -1484,6 +1478,32 @@ impl Embedder {
 }
 
 /// Download model and tokenizer from HuggingFace Hub
+/// Truncate `text` to at most `max_bytes` bytes, snapping back to a
+/// valid UTF-8 char boundary. Returns the original `text` unchanged if
+/// it already fits.
+///
+/// RT-RES-5 / TC-ADV-V1.38-7 (#1463): factored out of `embed_query` so
+/// the boundary-snap behavior can be unit-tested without loading an
+/// ONNX session. The naive `&text[..max_bytes]` panics on multi-byte
+/// boundary crossings (a 4-byte emoji at byte position `max_bytes - 1`
+/// would slice mid-codepoint); this walks back at most `c-1 ≤ 3` bytes
+/// where `c` is the longest UTF-8 sequence length.
+fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    tracing::warn!(
+        len = text.len(),
+        max = max_bytes,
+        "Query text truncated before embedding"
+    );
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderError> {
     // CQS_ONNX_DIR: bypass HF download, load from local directory.
     // Directory must contain model.onnx and tokenizer.json.
@@ -1829,6 +1849,96 @@ fn last_token_pool(hidden: &Array3<f32>, attention_mask: &Array2<i64>) -> Vec<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== TC-ADV-V1.38-7 (#1463): truncate_at_char_boundary =====
+    //
+    // RT-RES-5's truncation logic was inline in `embed_query`. The audit
+    // flagged that no test exercised: (a) the truncate path firing at
+    // all (every test set max_query_bytes high enough that `text.len()
+    // <= max` short-circuits), (b) multi-byte UTF-8 boundary handling
+    // when the cap lands mid-codepoint. Pin both with cheap unit tests
+    // — refactored the inline block into the free
+    // `truncate_at_char_boundary(&str, usize) -> &str` so the test
+    // doesn't need an ONNX session.
+
+    #[test]
+    fn truncate_at_char_boundary_fits_under_cap() {
+        let s = "hello world";
+        let out = truncate_at_char_boundary(s, 100);
+        assert_eq!(out, s, "input under cap returns unchanged");
+        assert!(std::ptr::eq(out, s) || out == s); // structural identity
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_ascii_truncates_at_cap() {
+        let s = "abcdefghij";
+        let out = truncate_at_char_boundary(s, 5);
+        assert_eq!(out, "abcde");
+        assert!(out.len() <= 5);
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_snaps_back_on_emoji() {
+        // 99 ASCII bytes + a 4-byte emoji = 103 bytes total.
+        // Cap = 100 lands in the middle of the emoji (bytes 99..103).
+        // The naive `&text[..100]` would panic with
+        // `byte index 100 is not a char boundary`.
+        let mut s = "a".repeat(99);
+        s.push('🦀'); // 4-byte UTF-8
+        assert_eq!(s.len(), 103);
+        let out = truncate_at_char_boundary(&s, 100);
+        // Must snap back to byte 99 (just before the emoji starts) so
+        // the result is valid UTF-8.
+        assert_eq!(out.len(), 99);
+        assert!(out.chars().all(|c| c == 'a'));
+        // Sanity: the slice IS valid UTF-8 (str-typed already proves
+        // this; the assertion is the test's whole point).
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_at_exactly_cap_is_no_op() {
+        let s = "🦀🦀🦀"; // 12 bytes, 3 chars
+        let out = truncate_at_char_boundary(s, 12);
+        assert_eq!(out, s);
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_zero_cap_returns_empty() {
+        let s = "🦀abc";
+        let out = truncate_at_char_boundary(s, 0);
+        assert_eq!(out, "");
+    }
+
+    /// Snap-back convergence is bounded by 3 (the longest valid
+    /// UTF-8 sequence is 4 bytes). A 4-byte emoji at the cap boundary
+    /// snaps back at most 3 bytes — pin this so a future "snap forward"
+    /// regression that walks past `text.len()` would fail the test.
+    #[test]
+    fn truncate_at_char_boundary_walk_distance_bounded() {
+        let mut s = String::new();
+        for _ in 0..50 {
+            s.push('🦀');
+        }
+        // 200 bytes, 50 chars. Try caps 1..=200, every truncation must
+        // succeed without panic and produce valid UTF-8 (str type
+        // already guarantees this; we're asserting the function never
+        // walks off the start).
+        for cap in 1..=s.len() {
+            let out = truncate_at_char_boundary(&s, cap);
+            assert!(
+                out.len() <= cap,
+                "cap={cap}: out.len()={} exceeded cap",
+                out.len()
+            );
+            // Walk distance from cap to chosen end is at most 3 bytes.
+            assert!(
+                cap - out.len() <= 3,
+                "cap={cap}: walked back {} bytes (max 3)",
+                cap - out.len()
+            );
+        }
+    }
 
     // ===== FP16 / BF16 conversion smoke tests =====
     //
