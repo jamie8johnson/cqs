@@ -437,10 +437,25 @@ pub(crate) fn build_vector_index_with_config<Mode: ClearHnswDirty>(
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _span = tracing::info_span!("build_vector_index_with_config").entered();
+
+    // P4-6 (#1463): pull `[index.policy]` off the project config and hand
+    // it to each backend's `try_open` so policy knobs (e.g.
+    // `cagra_threshold`) are visible without backends re-loading config or
+    // re-reading env. Resolution order is still env > [index.policy] >
+    // built-in default — the policy is just a per-project pin without
+    // shell setup.
+    let project_root = crate::cli::find_project_root();
+    let project_config = cqs::config::Config::load(&project_root);
+    let policy = project_config
+        .index
+        .as_ref()
+        .and_then(|ic| ic.policy.as_ref());
+
     let ctx = cqs::index::BackendContext {
         cqs_dir,
         store,
         ef_search,
+        policy,
     };
     for backend in cqs::index::backends::<Mode>() {
         if let Some(idx) = backend.try_open(&ctx)? {
