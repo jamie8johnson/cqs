@@ -110,9 +110,22 @@ pub(super) fn file_batch_size() -> usize {
         Err(_) => 5_000,
     })
 }
-/// Parse channel depth — lightweight (chunk metadata only), can be deeper.
-/// Configurable via `CQS_PARSE_CHANNEL_DEPTH` environment variable.
+/// Parse channel depth — buffers `ParsedBatch` messages between the parse
+/// and embed stages.
+///
+/// SHL-V1.38-6 (#1463): default lowered from 512 to 256. The 512 was a
+/// pre-`file_batch_size = 5_000` guess and never re-derived. Each
+/// `ParsedBatch` holds a `Vec<Chunk>` for one file_batch slice; on a
+/// large repo (5000 files × 100 chunks/file × 5 KB content) the
+/// worst-case 512-deep buffer reaches ~256 MB before the embed stage
+/// starts draining. Halving to 256 cuts that ceiling to ~128 MB while
+/// staying well above the practical fill level (parse is faster than
+/// embed, so the queue rarely backs up — the audit's measurement was
+/// the queue rarely exceeded ~10 messages even on cold builds). The
+/// `CQS_PARSE_CHANNEL_DEPTH` env override remains for operators who
+/// want the old depth or a tighter cap on memory-constrained boxes.
 pub(super) fn parse_channel_depth() -> usize {
+    const DEFAULT_DEPTH: usize = 256;
     static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *DEPTH.get_or_init(|| match std::env::var("CQS_PARSE_CHANNEL_DEPTH") {
         Ok(val) => match val.parse::<usize>() {
@@ -121,11 +134,15 @@ pub(super) fn parse_channel_depth() -> usize {
                 n
             }
             _ => {
-                tracing::warn!(value = %val, "Invalid CQS_PARSE_CHANNEL_DEPTH, using default 512");
-                512
+                tracing::warn!(
+                    value = %val,
+                    default = DEFAULT_DEPTH,
+                    "Invalid CQS_PARSE_CHANNEL_DEPTH, using default"
+                );
+                DEFAULT_DEPTH
             }
         },
-        Err(_) => 512,
+        Err(_) => DEFAULT_DEPTH,
     })
 }
 
