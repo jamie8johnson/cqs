@@ -1,12 +1,25 @@
 # Roadmap
 
-## Current: v1.38.0 (cut 2026-05-06)
+## Current: v1.39.0 (cut 2026-05-07)
 
-Minor release. No schema bump.
+Minor release. Schema v27 (bumped from v26 in #1497).
 
-**v1.38.0 (2026-05-06):** post-v1.37.0 autopilot wave — 13 audit-driven PRs since #1467 close three umbrella tracking issues from the v1.36.2 audit (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM). Headline: per-slot SPLADE α tables (#1472), TOML overlays for FTS synonyms + classifier vocab (#1482, #1483), `cqs serve` outermost concurrent-request cap (#1477), daemon socket parent-dir TOCTOU hardening (#1478), ChunkRow ordinal access on the search-hydration hot path (#1468), daemon accept loop `libc::poll` instead of busy-poll (#1471). Six surface deletions justify the minor bump despite the size: `pub fn nl::generate_nl_description` + `generate_nl_with_template` (#1473), `pub rerank: bool` field on `Cli`/`SearchArgs` + `pub(crate) resolve_rerank_mode` (#1479), `BatchProvider::set_on_item_complete` trait method (#1470). Env overrides preserve prior behavior on every default-changed knob. Three stale-tracker issues closed alongside (#1107, #1108, #1395 — all already shipped pre-v1.37.0).
+**v1.39.0 (2026-05-07):** 88-commit minor release. Three threads:
+- v1.38.0-cohort audit follow-ups (#1487–#1511): proc-macro `#[derive(CqsCommands)]` (#1495 closes #1366), schema v27 `--llm-summaries` skip-first-pass embed (#1497 closes #1452), atomic SPLADE/CAGRA save with `.bak` rollback (#1491/#1492), `cqs ref reindex` LLM/HyDE flag parity (#1506), `cqs project search` filter knobs (#1507), `cqs index --model` drift detection (#1505), `[index.policy]` config section (#1511).
+- Post-v1.38 audit cycle: 154 findings catalogued in PR #1515; ~64 closed across ~33 cluster PRs (#1514–#1570). Sub-clusters covered needs_embedding wiring (DS-V1.38-1/2/3/8), lying-docs sweep (DOC-V1.38-1..10), stored_model_name lossy-caller migration (EH-V1.38-1/2/3/4), algorithm correctness sweep (AC-V1.38-1/2/3/5/6/9), security hardening (SEC-V1.38-1/2/3/4/8/9), env-override sweep (10 new knobs across SHL-V1.38-*), TC-HAP-V1.38 test backfill (9 of 10 sub-items).
+- Post-cycle hardening of the watch/reindex path: atomic per-file reindex (#1575 closes #1574), TRT-incompatibility blocklist for Gemma (#1577 closes #1576), `cqs dead` noise filter (#1572 closes ~50% of false positives).
 
-**v1.37.0 (2026-05-05):** v1.36.2 16-category audit close-out (#1456) — ~120 of 163 audit findings addressed. All 56 P1s + 13 of 14 P2s shipped or addressed via defensive variants. Plus dim-scaled batch sizes (#1464) so `BRUTE_FORCE_BATCH_SIZE` / `hnsw_batch_size` / `cagra_stream_batch_size` / `embed_channel_depth` keep per-batch heap roughly constant across embedding dim (qwen3-embedding-{4b,8b} at 2560/4096-dim used to silently 2-4× the heap). Surface changes that argue minor: `RerankerMode::Llm` removed from CLI (was placeholder that errored at runtime); `cqs::limits` promoted from `pub(crate)` → `pub`; new public surface (`dim_scaled_batch`, `relativize_or_warn`, `Store::try_stored_model_name`, `BoundedScoreHeap::would_accept`, `BatchProvider::validate_model`); `DEFAULT_QUERY_CACHE_SIZE` 128→1024; `MAX_CONCURRENT_DAEMON_CLIENTS` scales with cores. ~28 deferred P3/P4 items filed as tracking issues #1457-#1463.
+Headline operator-visible changes:
+- Daemon stops SIGFPE'ing on EmbeddingGemma reindex (#1577 — observed 4 daemon crashes/day pre-fix).
+- Cross-project commands (`trace`, `callers`, `deps`, `impact`, `test_map`) work again on slot-migrated projects since #1105 (#1564 fix).
+- Mid-batch crash leaves no asymmetric state between `function_calls` and chunks/FTS (#1575).
+- Graph commands now reject `--limit 0` at parse time (#1569 LimitArg fan-out).
+
+Surface changes that justify minor not patch: `EmbedderError::HfHub` → `ModelDownload` rename (#1567), `BatchProvider::set_on_item_complete` trait method dropped per #1470, new `CQS_FORCE_TENSORRT` env override (#1577), 10+ new env knobs documented in README. Schema v27 already lived in code from v1.38.0 development but ships with this release. **First publish of `cqs-macros 0.1.0`** to crates.io (workspace split landed in #1495).
+
+**v1.38.0 (2026-05-06):** 13 audit-driven PRs closing three umbrella tracking issues from the v1.36.2 audit (#1460 P3 Extensibility, #1461 P3 Security, #1462 P3 misc CQ/RM). Headline: per-slot SPLADE α tables (#1472), TOML overlays for FTS synonyms + classifier vocab (#1482, #1483), `cqs serve` outermost concurrent-request cap (#1477), daemon socket parent-dir TOCTOU hardening (#1478), ChunkRow ordinal access on the search-hydration hot path (#1468), daemon accept loop `libc::poll` instead of busy-poll (#1471). Six surface deletions justify the minor bump: `nl::generate_nl_description` + `generate_nl_with_template` (#1473), `rerank: bool` field on `Cli`/`SearchArgs` (#1479), `BatchProvider::set_on_item_complete` (#1470).
+
+**v1.37.0 (2026-05-05):** v1.36.2 16-category audit close-out (#1456) — ~120 of 163 audit findings addressed. All 56 P1s + 13 of 14 P2s shipped. Plus dim-scaled batch sizes (#1464). `cqs::limits` promoted from `pub(crate)` → `pub`. ~28 deferred P3/P4 items filed as tracking issues #1457-#1463.
 
 **v1.36.2 (2026-05-04):** critical fix — long-running `cqs index` runs no longer crash with `(code: 5) database is locked` when a concurrent short-lived `cqs` invocation overlaps the indexer's writes (#1451 `Store::drop` checkpoint TRUNCATE → PASSIVE; the indexer's WAL contention with `cqs stats` / similar polling was surfacing fatal mid-transaction `SQLITE_BUSY`). Plus `busy_timeout` 5s → 30s defense-in-depth (#1450) and 5 dependency bumps from dependabot.
 
@@ -20,18 +33,17 @@ Minor release. No schema bump.
 
 **v1.33.0 (2026-05-02):** eval-matcher drift fix (#1284, ~38% of gold chunks were going invisible after audit-driven line shifts), placeholder-cache 30s startup tax fix (#1288, CI 38min→6min), chunk-orphan pipeline prune (#1283), `bge-large-ft` LoRA preset (#1289), daemon test refactor + nightly CI workflow (#1292, #1286 Phase 1).
 
-**Eval baseline (v3.v2 218q dual-judge):**
+**Eval baseline (v3.v2 218q dual-judge, post-v1.39.0 default):**
 
-| Config | Agg R@1 | Agg R@5 | Agg R@20 |
-|---|---:|---:|---:|
-| **embeddinggemma-300m + v1.36 α (current default)** | **50.9%** | **76.2%** | **88.6%** |
-| embeddinggemma-300m + v1.35 α (BGE-tuned) | 49.1% | 72.5% | 86.2% |
-| bge-large-ft (pre-retune) | 47.7% | 73.4% | 86.2% |
-| BGE-large (pre-retune) | 47.2% | 72.0% | 84.4% |
-| v9-200k (pre-retune) | 45.0% | 68.8% | 80.7% |
-| nomic-coderank (pre-retune) | 45.0% | 67.9% | 78.9% |
+| Slot | Test R@5 | Dev R@5 | Test R@20 | Dev R@20 |
+|---|---:|---:|---:|---:|
+| **embeddinggemma-300m + v1.36 α (default)** | **67.9-69.7%** | **78.0-80.7%** | **80.7-84.4%** | **91.7-92.7%** |
+| BGE-large (pre-retune) | 68.8% | 75.2% | 82.6% | 86.2% |
+| bge-large-ft (pre-retune) | 71.6% | 75.2% | 85.3% | 87.2% |
+| v9-200k (pre-retune) | 67.9% | 69.7% | 79.8% | 81.7% |
+| nomic-coderank (pre-retune) | 67.0% | 68.8% | 78.0% | 79.8% |
 
-Other rows are pre-retune; a 5-slot rerun under the new alphas is queued. Per-split numbers + per-category breakdowns + sweep methodology in `~/training-data/research/models.md` and `/tmp/gemma-alpha-sweep/`.
+Default-slot ranges reflect natural variance from the TRT→CUDA EP swap in #1577 (one query rank-shifting at the boundary). All numbers comfortably above pre-v1.36 baselines. Per-split detail + per-category breakdowns + sweep methodology in `~/training-data/research/models.md`.
 
 (Older release detail is in the Done table at the bottom + CHANGELOG.md.)
 
