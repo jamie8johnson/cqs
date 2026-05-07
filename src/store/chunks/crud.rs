@@ -932,12 +932,73 @@ impl Store<ReadWrite> {
         prune_file: Option<&std::path::Path>,
         live_ids: &[&str],
     ) -> Result<usize, StoreError> {
+        self.upsert_chunks_calls_and_prune_inner(
+            chunks,
+            source_mtime,
+            calls,
+            prune_file,
+            live_ids,
+            None,
+        )
+    }
+
+    /// #1574: same as [`Self::upsert_chunks_calls_and_prune`] but ALSO writes
+    /// the file-level `function_calls` table in the same transaction.
+    ///
+    /// The asymmetric-state bug this closes: pre-fix, `cli/watch/reindex.rs`
+    /// called `upsert_function_calls` per-file inside the parser flat_map
+    /// BEFORE the (heavy, crash-prone) embed phase. If the daemon crashed
+    /// during embed (we observed SIGFPE crashes on TensorRT), the
+    /// function_calls table got the new state but the chunks/FTS table did
+    /// not — `cqs callers <new_fn>` worked but `cqs explain <new_fn>` and
+    /// search-by-name didn't. Folding the function_calls write into this
+    /// per-file tx makes the reindex all-or-nothing.
+    ///
+    /// `file_function_calls` MUST be paired with `prune_file` (the file the
+    /// function_calls belong to). When `prune_file = None`, this method
+    /// asserts `file_function_calls.is_none()` because there's no file
+    /// scope to delete-then-insert against.
+    pub fn upsert_chunks_calls_and_prune_with_file_calls(
+        &self,
+        chunks: &[(Chunk, Embedding)],
+        source_mtime: Option<i64>,
+        calls: &[(String, crate::parser::CallSite)],
+        prune_file: Option<&std::path::Path>,
+        live_ids: &[&str],
+        file_function_calls: Option<&[crate::parser::FunctionCalls]>,
+    ) -> Result<usize, StoreError> {
+        if file_function_calls.is_some() {
+            debug_assert!(
+                prune_file.is_some(),
+                "file_function_calls requires prune_file to scope the DELETE"
+            );
+        }
+        self.upsert_chunks_calls_and_prune_inner(
+            chunks,
+            source_mtime,
+            calls,
+            prune_file,
+            live_ids,
+            file_function_calls,
+        )
+    }
+
+    fn upsert_chunks_calls_and_prune_inner(
+        &self,
+        chunks: &[(Chunk, Embedding)],
+        source_mtime: Option<i64>,
+        calls: &[(String, crate::parser::CallSite)],
+        prune_file: Option<&std::path::Path>,
+        live_ids: &[&str],
+        file_function_calls: Option<&[crate::parser::FunctionCalls]>,
+    ) -> Result<usize, StoreError> {
         let _span = tracing::info_span!(
             "upsert_chunks_calls_and_prune",
             chunks = chunks.len(),
             calls = calls.len(),
             prune = prune_file.is_some(),
-            live_count = live_ids.len()
+            live_count = live_ids.len(),
+            file_function_calls = file_function_calls.is_some()
         )
         .entered();
         let dim = self.dim;
@@ -1111,6 +1172,15 @@ impl Store<ReadWrite> {
                 }
             }
 
+            // #1574: fold the file-level `function_calls` write into the
+            // same tx as chunks/FTS/calls so a crash here can't leave the
+            // tables in an asymmetric state where the call graph knows
+            // about a function the chunks/FTS index doesn't.
+            if let (Some(file), Some(fcs)) = (prune_file, file_function_calls) {
+                let file_str = crate::normalize_path(file);
+                crate::store::calls::write_function_calls_in_tx(&mut tx, &file_str, fcs).await?;
+            }
+
             tx.commit().await?;
             Ok(chunks.len())
         })
@@ -1201,7 +1271,119 @@ impl Store<ReadWrite> {
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
+    use crate::parser::{CallSite, FunctionCalls};
     use crate::test_helpers::{mock_embedding, setup_store};
+
+    /// #1574 regression: `upsert_chunks_calls_and_prune_with_file_calls`
+    /// must write chunks/FTS/calls AND function_calls in the same SQLite
+    /// transaction. Pre-fix the watch-mode reindex called
+    /// `upsert_function_calls` separately BEFORE the embed phase, so a
+    /// daemon crash mid-embed (we observed SIGFPE crashes on TensorRT)
+    /// left function_calls ahead of chunks/FTS — search-by-name returned
+    /// 0 hits for the new function while `cqs callers <new_fn>` worked.
+    /// This test pins the post-commit invariant: after a successful
+    /// upsert, BOTH the chunks/FTS shadow AND the function_calls table
+    /// reflect the new function.
+    #[test]
+    fn test_upsert_chunks_calls_and_prune_with_file_calls_atomic() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+
+        let chunk = make_chunk("new_fn", "src/m.rs");
+        let pairs = [(chunk.clone(), emb.clone())];
+
+        // file-level function_calls: new_fn calls callee_alpha
+        let fcs = vec![FunctionCalls {
+            name: "new_fn".to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: "callee_alpha".to_string(),
+                line_number: 2,
+            }],
+        }];
+
+        store
+            .upsert_chunks_calls_and_prune_with_file_calls(
+                &pairs,
+                Some(123),
+                &[],
+                Some(std::path::Path::new("src/m.rs")),
+                &[chunk.id.as_str()],
+                Some(&fcs),
+            )
+            .expect("upsert with file_calls must succeed");
+
+        // chunks table has the new function
+        let stored = store.get_chunks_by_ids(&[chunk.id.as_str()]).unwrap();
+        assert_eq!(stored.len(), 1, "chunk row must be present");
+        assert_eq!(stored.get(&chunk.id).unwrap().name, "new_fn");
+
+        // FTS shadow has the new function (this is the table that backs
+        // `search_by_name` — pre-fix this was the missing piece)
+        let fts_hits = store
+            .search_by_name("new_fn", 5)
+            .expect("search_by_name must succeed");
+        assert!(
+            fts_hits.iter().any(|h| h.chunk.name == "new_fn"),
+            "search_by_name must find new_fn after upsert: got {:?}",
+            fts_hits.iter().map(|h| &h.chunk.name).collect::<Vec<_>>()
+        );
+
+        // function_calls table has the new caller (this is the call-graph
+        // table that pre-fix was being written EARLY — the asymmetric
+        // state was that this had the row but FTS didn't)
+        let callers = store
+            .get_callers_full("callee_alpha")
+            .expect("get_callers_full");
+        assert!(
+            callers.iter().any(|c| c.name == "new_fn"),
+            "function_calls must record new_fn → callee_alpha: got {:?}",
+            callers.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1574 corollary: passing `None` for file_function_calls leaves the
+    /// existing function_calls rows untouched (the legacy non-atomic path).
+    /// Pin so a future refactor that defaults to "always write" doesn't
+    /// silently wipe call-graph state for callers using the legacy method.
+    #[test]
+    fn test_upsert_chunks_calls_and_prune_none_leaves_function_calls() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+
+        // Seed function_calls via the standalone API
+        let seed_fcs = vec![FunctionCalls {
+            name: "seeded_fn".to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: "seeded_callee".to_string(),
+                line_number: 2,
+            }],
+        }];
+        store
+            .upsert_function_calls(std::path::Path::new("src/m.rs"), &seed_fcs)
+            .expect("seed function_calls");
+
+        // Now run the legacy upsert (None for file_function_calls)
+        let chunk = make_chunk("other_fn", "src/m.rs");
+        let pairs = [(chunk.clone(), emb)];
+        store
+            .upsert_chunks_calls_and_prune(
+                &pairs,
+                Some(123),
+                &[],
+                Some(std::path::Path::new("src/m.rs")),
+                &[chunk.id.as_str()],
+            )
+            .expect("legacy upsert must succeed");
+
+        // Seeded function_calls row must still be present
+        let callers = store.get_callers_full("seeded_callee").unwrap();
+        assert!(
+            callers.iter().any(|c| c.name == "seeded_fn"),
+            "legacy upsert path must NOT wipe pre-existing function_calls"
+        );
+    }
 
     // ===== upsert_chunks_batch tests =====
 

@@ -9,6 +9,64 @@ use super::CallStats;
 use crate::store::helpers::StoreError;
 use crate::store::{ReadWrite, Store};
 
+/// Shared in-tx helper for writing the file-level `function_calls` table.
+///
+/// Used by both [`Store::upsert_function_calls`] (which opens its own tx) and
+/// [`Store::upsert_chunks_calls_and_prune`] (which folds the function_calls
+/// write into the same per-file tx as the chunks/FTS/calls write — see
+/// #1574 for the asymmetric-state bug this folding closes).
+///
+/// `file_str` MUST be the normalized origin path (call
+/// `crate::normalize_path` at the call site, once).
+pub(crate) async fn write_function_calls_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    file_str: &str,
+    function_calls: &[crate::parser::FunctionCalls],
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM function_calls WHERE file = ?1")
+        .bind(file_str)
+        .execute(&mut **tx)
+        .await?;
+
+    // Flatten all calls and batch insert (instead of N individual inserts)
+    let all_calls: Vec<_> = function_calls
+        .iter()
+        .flat_map(|fc| {
+            fc.calls
+                .iter()
+                .map(move |call| (&fc.name, fc.line_start, &call.callee_name, call.line_number))
+        })
+        .collect();
+
+    if !all_calls.is_empty() {
+        use crate::store::helpers::sql::max_rows_per_statement;
+        const INSERT_BATCH: usize = max_rows_per_statement(5);
+        for batch in all_calls.chunks(INSERT_BATCH) {
+            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
+            );
+            query_builder.push_values(
+                batch.iter(),
+                |mut b, (caller_name, caller_line, callee_name, call_line)| {
+                    b.push_bind(file_str)
+                        .push_bind(*caller_name)
+                        .push_bind(*caller_line as i64)
+                        .push_bind(*callee_name)
+                        .push_bind(*call_line as i64);
+                },
+            );
+            query_builder.build().execute(&mut **tx).await?;
+        }
+        tracing::info!(
+            file = %file_str,
+            functions = function_calls.len(),
+            calls = all_calls.len(),
+            "Indexed function calls"
+        );
+    }
+    Ok(())
+}
+
 impl Store<ReadWrite> {
     /// Insert or replace call sites for a chunk
     pub fn upsert_calls(
@@ -196,47 +254,7 @@ impl Store<ReadWrite> {
 
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
-
-            sqlx::query("DELETE FROM function_calls WHERE file = ?1")
-                .bind(&file_str)
-                .execute(&mut *tx)
-                .await?;
-
-            // Flatten all calls and batch insert (instead of N individual inserts)
-            let all_calls: Vec<_> = function_calls
-                .iter()
-                .flat_map(|fc| {
-                    fc.calls.iter().map(move |call| {
-                        (&fc.name, fc.line_start, &call.callee_name, call.line_number)
-                    })
-                })
-                .collect();
-
-            if !all_calls.is_empty() {
-                use crate::store::helpers::sql::max_rows_per_statement;
-                const INSERT_BATCH: usize = max_rows_per_statement(5);
-                for batch in all_calls.chunks(INSERT_BATCH) {
-                    let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
-                        sqlx::QueryBuilder::new(
-                            "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
-                        );
-                    query_builder.push_values(batch.iter(), |mut b, (caller_name, caller_line, callee_name, call_line)| {
-                        b.push_bind(&file_str)
-                            .push_bind(*caller_name)
-                            .push_bind(*caller_line as i64)
-                            .push_bind(*callee_name)
-                            .push_bind(*call_line as i64);
-                    });
-                    query_builder.build().execute(&mut *tx).await?;
-                }
-                tracing::info!(
-                    file = %file_str,
-                    functions = function_calls.len(),
-                    calls = all_calls.len(),
-                    "Indexed function calls"
-                );
-            }
-
+            write_function_calls_in_tx(&mut tx, &file_str, function_calls).await?;
             tx.commit().await?;
             Ok(())
         })

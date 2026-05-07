@@ -14,6 +14,11 @@ mod query;
 mod related;
 mod test_map;
 
+// #1574: re-export the in-tx function_calls writer so
+// `store::chunks::crud::upsert_chunks_calls_and_prune` can fold the
+// file-level call-graph write into the same per-file transaction.
+pub(crate) use crud::write_function_calls_in_tx;
+
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
