@@ -90,6 +90,13 @@ impl HnswIndex {
         // Adaptive ef_search: baseline self.ef_search or 2*k (whichever is larger),
         // capped at index size (searching more than the index is pointless for small indexes).
         //
+        // The k*2 floor only matters for ef ABOVE k: hnsw_rs internally enforces
+        // `ef = ef_arg.max(knbn)` (hnsw_rs hnsw.rs:1450, search_filter:~1500), so
+        // any ef < k is silently bumped to k inside the library. With our typical
+        // candidate_count floor of 500 (cqs::limits::candidate_count_for), passing
+        // ef=100 collapses to ef=500 inside the library; the k*2 floor here pushes
+        // it to 1000, which IS a real expansion of the candidate pool.
+        //
         // AC-V1.38-9 (#1463): `saturating_mul` instead of `*` so a
         // pathological caller that smuggles in `k = usize::MAX-1` (e.g. a
         // misbehaving daemon client) saturates at usize::MAX rather than
