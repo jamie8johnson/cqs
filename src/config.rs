@@ -109,11 +109,28 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
         Some(s) => s,
         None => return false,
     };
-    // /mnt/<letter>/  — accept upper or lowercase drive letter.
-    if let Some(rest) = s.strip_prefix("/mnt/") {
+    // PL-V1.38-4 (#1463): consult the configured `automount.root` from
+    // `/etc/wsl.conf` (cached via OnceLock) before falling back to the
+    // hardcoded `/mnt/`. Pre-fix, an operator with `automount.root=/win/`
+    // would have the watch loop's poll-mode detector recognise `/win/c/...`
+    // (via `is_under_wsl_automount`) but `is_wsl_drvfs_path` only checked
+    // `/mnt/<letter>/` — `coarse_fs_resolution` then returned 0 instead
+    // of 2s, making mtime-equality skip silently drop rapid re-saves.
+    let configured_root = wsl_automount_root_or_default();
+    if let Some(rest) = s.strip_prefix(configured_root) {
         let bytes = rest.as_bytes();
         if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'/' {
             return true;
+        }
+    }
+    // The default `/mnt/` path is also recognised even when `automount.root`
+    // is configured non-default — operators sometimes mount both paths.
+    if configured_root != "/mnt/" {
+        if let Some(rest) = s.strip_prefix("/mnt/") {
+            let bytes = rest.as_bytes();
+            if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'/' {
+                return true;
+            }
         }
     }
     // UNC paths reaching back into WSL from Windows-side tools.
@@ -121,6 +138,62 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
         return true;
     }
     false
+}
+
+/// PL-V1.38-4 (#1463): cached resolution of `automount.root` from
+/// `/etc/wsl.conf`. Single source of truth shared by `is_wsl_drvfs_path`
+/// (this module) and `is_under_wsl_automount` (`cli/watch/mod.rs`).
+/// Defaults to `"/mnt/"` when the file is missing, unreadable, or
+/// doesn't carry an `[automount] root=` setting.
+pub fn wsl_automount_root_or_default() -> &'static str {
+    static AUTOMOUNT_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    AUTOMOUNT_ROOT
+        .get_or_init(|| parse_wsl_automount_root().unwrap_or_else(|| "/mnt/".to_string()))
+        .as_str()
+}
+
+/// Parse the `automount.root` value from `/etc/wsl.conf`.
+/// Returns `None` if the file doesn't exist or doesn't contain the setting.
+///
+/// PL-V1.38-4 (#1463): promoted from `cli/watch/mod.rs` so a single
+/// source of truth backs both watch-mode poll detection and the
+/// generic `is_wsl_drvfs_path` filesystem-resolution path.
+fn parse_wsl_automount_root() -> Option<String> {
+    // RM-V1.33-7: bound the read at 64 KiB. `/etc/wsl.conf` is normally
+    // a few hundred bytes; a hostile symlink or bind mount pointing at a
+    // multi-GB file would otherwise OOM the watch loop on first event.
+    use std::io::Read;
+    const MAX_WSL_CONF_BYTES: u64 = 64 * 1024;
+    let mut content = String::new();
+    std::fs::File::open("/etc/wsl.conf")
+        .ok()?
+        .take(MAX_WSL_CONF_BYTES)
+        .read_to_string(&mut content)
+        .ok()?;
+    let mut in_automount = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_automount = trimmed
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .eq_ignore_ascii_case("automount");
+            continue;
+        }
+        if in_automount {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("root") {
+                    let mut root = value.trim().to_string();
+                    if !root.ends_with('/') {
+                        root.push('/');
+                    }
+                    return Some(root);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Returns the mtime resolution (granularity) of the filesystem holding
