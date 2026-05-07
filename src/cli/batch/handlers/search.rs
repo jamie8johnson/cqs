@@ -41,7 +41,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     if args.name_only {
         let results = ctx
             .store()
-            .search_by_name(&args.query, args.limit.clamp(1, 100))?;
+            .search_by_name(&args.query, args.limit_arg.limit.clamp(1, 100))?;
         let json_results: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
@@ -94,7 +94,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         .embed_query(&args.query)
         .context("Failed to embed query")?;
 
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, 100);
     // P3 #100: shared rerank pool sizing.
     let effective_limit = if args.rerank_active() {
         crate::cli::limits::rerank_pool_size(limit)

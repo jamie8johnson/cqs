@@ -418,7 +418,7 @@ pub(in crate::cli::batch) fn dispatch_related(
     // CQ-V1.25-2: shared with CLI's cmd_related. Previously 100 here vs
     // unbounded in CLI — lowered to 50 (per-category) to match and stop
     // quadratic blow-up on related-related queries.
-    let limit = args.limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
+    let limit = args.limit_arg.limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
 
     let result = cqs::find_related(&ctx.store(), name, limit)?;
     let output = crate::cli::commands::build_related_output(&result, &ctx.root);
@@ -592,7 +592,7 @@ mod tests {
         let (_dir, ctx) = seed_call_graph_ctx();
         let args = RelatedArgs {
             name: "caller_fn".into(),
-            limit: 10,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
         };
         let json = dispatch_related(&ctx.build_view(None), &args).expect("dispatch_related");
         // build_related_output structure varies — pin envelope shape only:

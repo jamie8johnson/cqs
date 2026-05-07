@@ -98,10 +98,16 @@ pub(crate) enum RerankerMode {
 /// "unexpected argument"). Embedding this struct via `#[command(flatten)]`
 /// gives every subcommand its own `--limit` while keeping the default in one
 /// place.
+///
+/// API-V1.38-10 (#1463): now also rejects `--limit 0` at parse time so
+/// every flattened consumer (impact / trace / onboard / explain / test_map /
+/// deps / callers + the 7 search-shaped commands once they migrate)
+/// inherits the same parse-time validation that `cqs <q>`'s top-level Cli
+/// got in #1544. limit=0 is meaningless everywhere.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct LimitArg {
     /// Max results to return (per category for impact/explain)
-    #[arg(short = 'n', long, default_value = "5")]
+    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
 }
 
@@ -117,13 +123,13 @@ pub(crate) struct SearchArgs {
     /// Search query (quote multi-word queries)
     pub query: String,
 
-    /// Max results
-    ///
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time —
-    /// search with limit=0 is semantically meaningless and previously
-    /// returned an empty result set silently.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Pre-fix, every `*Args` struct inline-defined its own `pub limit: usize`
+    /// — 8 copies that drifted on validation rules (only some had
+    /// `parse_nonzero_usize`). Centralised here so future limit-shape
+    /// changes (default, cap, parser) are one-line edits.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 
     /// Min similarity threshold
     ///
@@ -270,11 +276,10 @@ pub(crate) struct GatherArgs {
     /// Expansion direction: both, callers, callees
     #[arg(long, default_value = "both")]
     pub direction: cqs::GatherDirection,
-    /// Max chunks to return.
-    /// API-V1.36-8 (#1459): default harmonised to 5 across the CLI.
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Default 5 across all sister args.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
     /// Maximum token budget (overrides --limit with token-based packing)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
@@ -315,10 +320,9 @@ pub(crate) struct ImpactArgs {
 pub(crate) struct ScoutArgs {
     /// Search query to investigate
     pub query: String,
-    /// Max file groups to return
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
     /// Maximum token budget (includes chunk content within budget)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
@@ -356,9 +360,9 @@ pub(crate) struct DeadArgs {
 pub(crate) struct SimilarArgs {
     /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
     pub name: String,
-    /// Max results
-    #[arg(short = 'n', long, default_value = "5")]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
     /// Min similarity threshold
     #[arg(short = 't', long, default_value = "0.3", value_parser = parse_finite_f32)]
     pub threshold: f32,
@@ -474,10 +478,9 @@ pub(crate) struct TestMapArgs {
 pub(crate) struct RelatedArgs {
     /// Function name or file:function
     pub name: String,
-    /// Max results per category
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `onboard` and batch `onboard`.
@@ -522,11 +525,9 @@ pub(crate) struct ExplainArgs {
 pub(crate) struct WhereArgs {
     /// Description of the code to add
     pub description: String,
-    /// Max file suggestions.
-    /// API-V1.36-8 (#1459): default harmonised to 5 across the CLI.
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `plan` and batch `plan`.
@@ -534,10 +535,9 @@ pub(crate) struct WhereArgs {
 pub(crate) struct PlanArgs {
     /// Task description to plan
     pub description: String,
-    /// Max scout file groups
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
     /// Maximum token budget
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
@@ -551,10 +551,9 @@ pub(crate) struct PlanArgs {
 pub(crate) struct TaskArgs {
     /// Task description
     pub description: String,
-    /// Max file groups to return
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time.
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
-    pub limit: usize,
+    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
     /// Maximum token budget (waterfall across sections)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,

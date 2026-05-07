@@ -694,7 +694,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.tokens, Some(8000));
-                assert_eq!(args.limit, 20);
+                assert_eq!(args.limit_arg.limit, 20);
                 assert!(output.json);
             }
             _ => panic!("Expected Gather command"),
