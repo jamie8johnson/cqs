@@ -286,22 +286,29 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
         use cqs::daemon_translate::FreshnessWait;
         let root = crate::cli::find_project_root();
         let cqs_dir = cqs::resolve_index_dir(&root);
-        // SHL-V1.30-3: silent capping was the bug — warn when the clamp
-        // engages so an operator who passed `--require-fresh-secs 1800`
-        // sees that their long budget got truncated. The cap itself stays
-        // in place (the `wait_for_fresh` defense-in-depth at 86_400 s is
-        // still way over this), but we no longer hide the truncation.
-        let budget_secs = if wait_secs > 600 {
+        // SHL-V1.30-3 + SHL-V1.38-2 (#1463): the cap is now env-overridable
+        // via `CQS_EVAL_FRESH_BUDGET_CEILING` (default 600 s). On a slow
+        // indexer doing a fresh full-reindex of a 100k-chunk repo, embedder
+        // warmup + index build can exceed 10 min; an operator can lift
+        // the ceiling without source edits. The `wait_for_fresh`
+        // defense-in-depth at 86_400 s still bounds the absolute upper
+        // limit. Garbage / zero / unparseable env values fall back to 600.
+        let ceiling = std::env::var("CQS_EVAL_FRESH_BUDGET_CEILING")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(600);
+        let budget_secs = if wait_secs > ceiling {
             tracing::warn!(
                 requested = wait_secs,
-                capped = 600u64,
-                "--require-fresh-secs capped at 600 s (built-in eval ceiling)",
+                capped = ceiling,
+                "--require-fresh-secs capped at {ceiling} s (CQS_EVAL_FRESH_BUDGET_CEILING)",
             );
             eprintln!(
-                "[eval] --require-fresh-secs={wait_secs} capped at 600 s (built-in ceiling); \
-                 continuing with 600 s budget"
+                "[eval] --require-fresh-secs={wait_secs} capped at {ceiling} s \
+                 (CQS_EVAL_FRESH_BUDGET_CEILING); continuing with {ceiling} s budget"
             );
-            600
+            ceiling
         } else {
             wait_secs
         };

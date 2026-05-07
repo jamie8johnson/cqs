@@ -18,7 +18,22 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use cqs::Store;
 
-const STREAM_BATCH_SIZE: usize = 1024;
+/// Baseline streaming batch size for the UMAP projection's
+/// `embedding_batches` paginator at 1024-dim. At 1024-dim each batch is
+/// ~4 MB; at 4096-dim it would be ~16 MB without scaling. SHL-V1.38-5
+/// (#1463) adds dim-aware scaling so wide-dim slots don't blow heap, and
+/// `CQS_UMAP_STREAM_BATCH` for operator override.
+const STREAM_BATCH_SIZE_BASELINE: usize = 1024;
+
+/// SHL-V1.38-5 (#1463): dim-aware UMAP stream batch size with env override.
+fn umap_stream_batch_size(dim: usize) -> usize {
+    let baseline = std::env::var("CQS_UMAP_STREAM_BATCH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(STREAM_BATCH_SIZE_BASELINE);
+    cqs::limits::dim_scaled_batch(baseline, dim, 64, 8_192)
+}
 
 /// The UMAP projection script, embedded at compile time. Avoids a
 /// "script not found" failure when `cqs index --umap` runs outside the
@@ -82,8 +97,9 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
     // Collect all (id, embedding) pairs into a binary buffer for stdin.
     // Format documented in scripts/run_umap.py; keep both in sync.
     let dim = store.dim();
+    let stream_batch = umap_stream_batch_size(dim);
     let mut buffered: Vec<(String, Vec<f32>)> = Vec::new();
-    for batch in store.embedding_batches(STREAM_BATCH_SIZE) {
+    for batch in store.embedding_batches(stream_batch) {
         let batch = batch.context("read embedding batch for UMAP")?;
         for (id, emb) in batch {
             buffered.push((id, emb.as_slice().to_vec()));

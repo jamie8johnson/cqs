@@ -335,11 +335,18 @@ pub(super) fn run_daemon_reconcile_with_walk(
             }
         }
     } else {
-        // #1229 (RM-5): streaming path. Walk the tree, buffer 1k paths
-        // at a time, query the store for that batch's fingerprints,
+        // #1229 (RM-5): streaming path. Walk the tree, buffer paths
+        // in batches, query the store for that batch's fingerprints,
         // compare disk vs stored per-file. Peak heap is `O(BATCH)` —
         // independent of tree size.
-        const BATCH: usize = 1000;
+        //
+        // SHL-V1.38-8 (#1463): operator-tunable via `CQS_RECONCILE_BATCH`,
+        // clamped `[100, 32_000]`. Default 1000 picks the sweet spot
+        // between SQL round-trip count and memory footprint; small repos
+        // can drop to 100 and monorepo operators can lift to 32k for
+        // fewer SQL round-trips per reconcile.
+        let batch_cap: usize =
+            cqs::limits::parse_env_usize_clamped("CQS_RECONCILE_BATCH", 1000, 100, 32_000);
         let iter = match cqs::enumerate_files_iter(root, &exts, no_ignore) {
             Ok(it) => it,
             Err(e) => {
@@ -347,10 +354,10 @@ pub(super) fn run_daemon_reconcile_with_walk(
                 return 0;
             }
         };
-        let mut buffer: Vec<PathBuf> = Vec::with_capacity(BATCH);
+        let mut buffer: Vec<PathBuf> = Vec::with_capacity(batch_cap);
         for rel in iter {
             buffer.push(rel);
-            if buffer.len() < BATCH {
+            if buffer.len() < batch_cap {
                 continue;
             }
             process_batch(

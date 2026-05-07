@@ -8,8 +8,24 @@ use super::commands::{dispatch, BatchInput};
 use super::BatchView;
 
 /// Maximum names extracted per pipeline stage to prevent fan-out explosion.
-/// A 3-stage pipeline dispatches at most 1 + 50 + 50 = 101 calls.
-const PIPELINE_FAN_OUT_LIMIT: usize = 50;
+/// A 3-stage pipeline dispatches at most 1 + DEFAULT + DEFAULT = 101 calls
+/// at the default 50.
+///
+/// SHL-V1.38-3 (#1463): operators can override via `CQS_PIPELINE_FAN_OUT`,
+/// clamped to `[10, 1000]`. Hot functions like `Store::search_filtered`
+/// have >100 callers; capping at 50 silently truncates downstream
+/// stages. Bumping to 200+ adds ~10 s of daemon-mode latency but
+/// preserves the full call graph for agent-driven analysis.
+const PIPELINE_FAN_OUT_LIMIT_DEFAULT: usize = 50;
+
+fn pipeline_fan_out_limit() -> usize {
+    cqs::limits::parse_env_usize_clamped(
+        "CQS_PIPELINE_FAN_OUT",
+        PIPELINE_FAN_OUT_LIMIT_DEFAULT,
+        10,
+        1000,
+    )
+}
 
 /// Check if a command (first token) can receive piped names.
 /// Parses the tokens with a dummy name arg to get a `BatchCmd`, then checks
@@ -266,15 +282,16 @@ pub(crate) fn execute_pipeline(
         let mut names = extract_names(&current_value);
         tracing::debug!(stage = stage_num, count = names.len(), "Names extracted");
 
-        if names.len() > PIPELINE_FAN_OUT_LIMIT {
+        let fan_out_limit = pipeline_fan_out_limit();
+        if names.len() > fan_out_limit {
             any_truncated = true;
             tracing::info!(
                 stage = stage_num,
                 original = names.len(),
-                limit = PIPELINE_FAN_OUT_LIMIT,
+                limit = fan_out_limit,
                 "Fan-out truncated"
             );
-            names.truncate(PIPELINE_FAN_OUT_LIMIT);
+            names.truncate(fan_out_limit);
         }
 
         let total_inputs = names.len();
@@ -337,14 +354,15 @@ pub(crate) fn execute_pipeline(
         }
 
         // Intermediate stage: merge results for next stage's name extraction.
-        // Cap at PIPELINE_FAN_OUT_LIMIT to avoid unbounded intermediate growth.
+        // Cap at fan_out_limit to avoid unbounded intermediate growth.
+        let merge_cap = pipeline_fan_out_limit();
         let mut merged_names: Vec<String> = Vec::new();
         let mut merged_seen = HashSet::new();
         'merge: for (_, val) in &results {
             for n in extract_names(val) {
                 if merged_seen.insert(n.clone()) {
                     merged_names.push(n);
-                    if merged_names.len() >= PIPELINE_FAN_OUT_LIMIT {
+                    if merged_names.len() >= merge_cap {
                         break 'merge;
                     }
                 }
