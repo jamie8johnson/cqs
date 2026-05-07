@@ -91,7 +91,14 @@ pub(crate) struct EvalCmdArgs {
     ///
     /// Note: `cqs status --wait-secs` has the same semantics; default
     /// differs by use case (eval default = 600, status = 30).
-    #[arg(long = "require-fresh-secs", default_value_t = 600u64)]
+    ///
+    /// API-V1.38-8 (#1463): `--wait-secs` is a visible alias so an
+    /// agent learning the status-side spelling transfers cleanly.
+    #[arg(
+        long = "require-fresh-secs",
+        visible_alias = "wait-secs",
+        default_value_t = 600u64
+    )]
     pub require_fresh_secs: u64,
 
     /// Apply a reranker stage after retrieval. Default `none` (skip
