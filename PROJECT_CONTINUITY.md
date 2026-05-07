@@ -2,6 +2,28 @@
 
 ## Right Now
 
+**v1.39.0 shipped** — 2026-05-07 afternoon. Minor release. 88 commits since v1.38.0 across three threads: (a) v1.38.0-cohort audit follow-ups #1487–#1511, (b) the post-v1.38 audit cycle of 154 findings catalogued in PR #1515 (#1514 et seq., shipped across ~33 cluster PRs from #1514 through #1570), (c) post-cycle hardening of the watch/reindex path against daemon crashes (#1572, #1575, #1577). Tag `v1.39.0` pushed; crates.io published (cqs 1.39.0 + cqs-macros 0.1.0 — first publish of the proc-macro crate after #1495's split); GitHub Release auto-building from `.github/workflows/release.yml`.
+
+**Operational note from this release**: #1495's `cqs-macros` workspace split (which landed AFTER v1.38.0 was tagged) had `publish = false`, blocking `cargo publish -p cqs` for v1.39.0 with "no matching package named cqs-macros found". Fixed in #1579: dropped the publish=false flag, filled in standard Cargo.toml metadata (license, repository, keywords, categories), then published cqs-macros 0.1.0 first followed by cqs 1.39.0. Going forward both crates need version bumps coordinated whenever cqs-macros's surface changes.
+
+**Headline operator-visible changes in this release**:
+- Daemon stops SIGFPE'ing on EmbeddingGemma reindex (#1577 TRT-incompatibility blocklist; root cause in #1576 upstream). Pre-fix observed 4 daemon crashes/day.
+- Cross-project commands (`trace`, `callers`, `deps`, `impact`, `test_map`) work again on slot-migrated projects since #1105 (#1564 fix surfaced via TC-HAP-V1.38-8 test).
+- Atomic per-file reindex (#1575): mid-batch crash leaves no asymmetric state between `function_calls` and chunks/FTS.
+- `cqs dead` noise rate cut from ~80% to ~30% (#1572 — Property + doc-extension filters).
+- Graph commands now reject `--limit 0` at parse time (#1569 LimitArg fan-out).
+
+**Audit umbrella (#1463) state at v1.39.0 cut**: ~64 findings closed across 33+ cluster PRs of the v1.38 cycle. Truly remaining items shrunk to:
+- **API-V1.38-6** (top-level Cli flag → subcommand parity) — clap conflict on duplicate flag definitions; needs SearchArgs locals removed AND every search-wrapping handler rewritten to read from cli.*. Plus the underlying `cqs::scout()` lib function doesn't accept filter knobs at all — bigger than the audit estimated.
+- **DS-V1.38-4 deeper hazard** (HNSW half-renamed-set under a lock-then-rename window) — needs bundle-into-single-file refactor with a migration path for existing indexes.
+- **PL-V1.38-2** (SPLADE Windows umask) — needs Windows test runner.
+- **TC-HAP-V1.38-3** (`enrichment_pass` itself untested) — needs real embedder load (~91 MB ms-marco/MiniLM).
+- 12 P4 carry-overs all on tracking issues (#1512 Windows daemon, #1461 Windows ACL, etc.) requiring infrastructure not on this Linux/WSL workstation.
+
+Plus follow-up issues filed during this cycle: #1573 (cqs dead tier-2/3 false-positive sources — macro-invocation edges, struct-field-assignment edges, dyn-dispatch trait methods), #1574 (closed by #1575), #1576 (upstream TRT 10 SIGFPE on Microsoft contrib ops).
+
+---
+
 **v1.38.0 audit cycle TC-HAP test-coverage sweep (2026-05-07 late morning, 8 more cluster PRs #1556–#1564)**: per-finding test-coverage backfill of the TC-HAP-V1.38-* sub-items on #1463, picking up where the structural/behavioral cluster work left off. Added end-to-end CLI binary tests for the previously-untested `cqs hook install/status`, `cqs dead`, `cqs explain`, `cqs index --model` drift, `cqs project search` filter behavior, `cqs ref reindex --llm-summaries` validation, `cqs trace --cross-project`, plus strengthened `test_reranker_new` and aligned `test_save_writes_file_with_0o600_perms` cfg gate with production. Total ~17 new tests across 8 PRs.
 
 **Cluster PRs in this TC-HAP sweep (#1556–#1564)**:
