@@ -3,9 +3,11 @@ name = "cqs-macros"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
-description = "Internal proc-macros for the cqs crate. Not published — workspace-local only."
+description = "Internal proc-macros for the cqs crate. The `#[derive(CqsCommands)]` and supporting attribute macros that wire CLI command variants to their dispatchers; not a standalone reusable library."
 license = "MIT"
-publish = false
+repository = "https://github.com/jamie8johnson/cqs"
+keywords = ["cqs", "proc-macro"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
