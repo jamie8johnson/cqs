@@ -644,6 +644,28 @@ pub fn read_active_slot(project_cqs_dir: &Path) -> Option<String> {
 /// P3.39: routes through `crate::fs::atomic_replace` so the parent directory
 /// is fsynced after the rename — matches the durability contract of
 /// `notes.toml` / `audit-mode.json`.
+///
+/// # Caller contract (DS-V1.38-7 / #1463)
+///
+/// **The caller MUST hold the slots lock** ([`acquire_slots_lock`]) before
+/// calling this function. The atomic-replace primitive is concurrency-safe
+/// for the rename itself, but the broader read-modify-update pattern that
+/// every production caller performs (read current active slot, validate
+/// against the slots metadata, write the new pointer) needs serialization
+/// against concurrent `slot promote` / `slot create` / `migrate_legacy_*`
+/// flows. Without the lock, two writers can both validate against the same
+/// pre-state and one's update is silently overwritten.
+///
+/// Production callers verified holding the lock:
+/// - [`slot_promote`] (`acquire_slots_lock` at the top of the function)
+/// - [`slot_create`] (same)
+/// - [`migrate_legacy_index_to_default_slot`] (runs inside the slots lock)
+///
+/// Test callers run single-threaded by `serial_test::serial`. A future
+/// caller (e.g. a hypothetical `cqs slot set-default` shortcut) that
+/// forgets the lock silently loses updates under concurrency. This
+/// contract was previously implicit; making it explicit prevents that
+/// regression class.
 pub fn write_active_slot(project_cqs_dir: &Path, slot_name: &str) -> Result<(), SlotError> {
     validate_slot_name(slot_name)?;
     let _span = tracing::info_span!(

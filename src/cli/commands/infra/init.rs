@@ -38,13 +38,31 @@ pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
     }
 
     // Create .gitignore
-    // PB-V1.29-4: Windows git with `core.autocrlf=true` renders LF-only files
-    // as modified. Use CRLF on Windows so the initial commit stays quiet.
+    //
+    // PL-V1.38-5 (#1463): the original 9-entry literal listed only
+    // index.db / index.hnsw.* / *.tmp — but `.cqs/` actually carries
+    // 14+ files including `audit-mode.json` (deliberately marked SEC-1),
+    // `embeddings_cache.db`, `index.cagra*`, `index_base.hnsw.*`,
+    // `splade.index.bin*`, `slots/`, `slots.lock`, `store.db`,
+    // `telemetry*.jsonl`, `telemetry.lock`, `active_slot`. Operators
+    // running `cqs init && git add .` were committing the audit-mode
+    // SEC-1 file, telemetry hostnames + exec timing, and ~hundreds of
+    // MB of binary index data.
+    //
+    // The fix uses a `*\n!.gitignore\n` ignore-everything-but-self
+    // pattern, which survives every future addition to `.cqs/` without
+    // a corresponding `init.rs` edit. Operators who want to commit
+    // specific `.cqs/` artifacts (e.g. `notes.toml`) explicitly add a
+    // `!notes.toml` line — opt-in rather than opt-out.
+    //
+    // PB-V1.29-4: Windows git with `core.autocrlf=true` renders LF-only
+    // files as modified. Use CRLF on Windows so the initial commit
+    // stays quiet.
     let gitignore = cqs_dir.join(".gitignore");
     #[cfg(windows)]
-    let gitignore_contents = "index.db\r\nindex.db-wal\r\nindex.db-shm\r\nindex.lock\r\nindex.hnsw.graph\r\nindex.hnsw.data\r\nindex.hnsw.ids\r\nindex.hnsw.checksum\r\nindex.hnsw.lock\r\n*.tmp\r\n";
+    let gitignore_contents = "*\r\n!.gitignore\r\n";
     #[cfg(not(windows))]
-    let gitignore_contents = "index.db\nindex.db-wal\nindex.db-shm\nindex.lock\nindex.hnsw.graph\nindex.hnsw.data\nindex.hnsw.ids\nindex.hnsw.checksum\nindex.hnsw.lock\n*.tmp\n";
+    let gitignore_contents = "*\n!.gitignore\n";
     std::fs::write(&gitignore, gitignore_contents).context("Failed to create .gitignore")?;
 
     // Download model
