@@ -614,7 +614,14 @@ pub fn write_proposed_patch(
     if let Some(parent) = patch_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&patch_path, unified.as_bytes())?;
+    // SEC-V1.38-3 (#1463): atomic write so a SIGINT / OOM kill / power
+    // loss between `create_dir_all` and the write completion doesn't
+    // leave a truncated `.patch` file at the final path. The user's
+    // review workflow is `git apply .cqs/proposed-docs/**/*.patch`;
+    // `git apply` on a truncated unified diff produces partial source
+    // changes — silent corruption. Reuse the existing `atomic_write`
+    // helper in this file (line 634, used by `rewrite_file`).
+    atomic_write(&patch_path, unified.as_bytes())?;
 
     tracing::info!(
         patch = %patch_path.display(),

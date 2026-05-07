@@ -640,6 +640,36 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
         );
     }
 
+    // SEC-V1.38-4 (#1463): mirror cmd_ref_add's symlink-redirect warn so
+    // an operator who pointed `vendored-deps/ → ~/work/customer-A-private/`
+    // after the original `cqs ref add` sees a loud notice on the next
+    // update / reindex. The check is cheap (lexical normalize +
+    // canonicalize) and surfaces the same threat — vendored content
+    // swap — that SEC-V1.30.1-6 was filed for.
+    if let Ok(canonical) = dunce::canonicalize(source) {
+        match symlink_redirect_warning(source, &canonical) {
+            Ok(Some(msg)) => {
+                tracing::warn!(
+                    name = %name,
+                    user_source = %source.display(),
+                    resolved = %canonical.display(),
+                    "Source path resolved via symlink during ref update — re-indexing the resolved target"
+                );
+                if !json && !cli.quiet {
+                    eprintln!("WARN: {msg}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::debug!(
+                    source = %source.display(),
+                    error = %e,
+                    "Could not compute absolute form of source for symlink-redirect check during update"
+                );
+            }
+        }
+    }
+
     let db_path = ref_config.path.join(cqs::INDEX_DB_FILENAME);
     let ref_dir = &ref_config.path;
 

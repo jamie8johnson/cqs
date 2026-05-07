@@ -126,7 +126,8 @@ impl LocalProvider {
             let host = http_host(&llm_config.api_base);
             if !is_local_or_private_host(host) {
                 tracing::warn!(
-                    api_base = %llm_config.api_base,
+                    // SEC-V1.38-1 (#1463): redacted form so user:pass@host doesn't land in journald.
+                    api_base = %llm_config.redacted_api_base(),
                     host = host,
                     "Refusing to attach Authorization: Bearer over plaintext HTTP to a \
                      non-loopback / non-RFC1918 host. Use https:// or bind to a private \
@@ -162,7 +163,8 @@ impl LocalProvider {
             .build()?;
 
         tracing::info!(
-            api_base = %llm_config.api_base,
+            // SEC-V1.38-1 (#1463): redact userinfo from journald.
+            api_base = %llm_config.redacted_api_base(),
             model = %llm_config.model,
             concurrency,
             timeout_secs = timeout.as_secs(),

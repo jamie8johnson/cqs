@@ -25,7 +25,8 @@ pub fn llm_summary_pass(
 
     let llm_config = LlmConfig::resolve(config)?;
     tracing::debug!(
-        api_base = %llm_config.api_base,
+        // SEC-V1.38-1 (#1463): redacted form so user:pass@host doesn't land in journald.
+        api_base = %llm_config.redacted_api_base(),
         "LLM API base"
     );
     tracing::info!(

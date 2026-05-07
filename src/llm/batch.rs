@@ -79,15 +79,24 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
-            // P2 #33 (LLM half): keep the full body for operator-visible debug
+            // P2 #33 (LLM half): keep body length for operator-visible debug
             // logs, but the user-visible LlmError::Api message must NOT carry
             // remote-controlled text (raw HTTP body or parsed `error.message`,
             // both of which can echo prompt fragments).
+            //
+            // SEC-V1.38-2 (#1463): also drop `parsed_anthropic_message` from
+            // the debug record. Anthropic's 400-class responses populate
+            // `error.message` with input fragments — schema validation
+            // includes failing JSON path values, content-policy
+            // `invalid_request_error` includes the rejected snippet. With
+            // `RUST_LOG=cqs=debug` the echo lands in journald. Keep the
+            // structural `parsed.error.type` (e.g. `"invalid_request_error"`)
+            // because that doesn't echo input.
             let parsed = serde_json::from_str::<ApiError>(&body).ok();
             tracing::debug!(
                 purpose,
                 status = %status,
-                parsed_anthropic_message = parsed.as_ref().map(|p| p.error.message.as_str()).unwrap_or(""),
+                anthropic_error_type = parsed.as_ref().map(|p| p.error.r#type.as_str()).unwrap_or(""),
                 body_len = body.len(),
                 "{purpose} submission failed at LLM API",
             );
