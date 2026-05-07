@@ -1004,21 +1004,48 @@ fn try_classify_empty(ctx: &QueryContext) -> Option<Classification> {
 /// Priority 1: Negation trumps everything — "sort without allocating".
 /// Phase 5: enriched summaries inject positive vocabulary ("allocates",
 /// "uses heap") that fights the negation, so route to the base index.
+///
+/// AC-V1.38-4 (#1463): two-arm context gate. Pre-fix the classifier
+/// fired on any single negation token, including bare common nouns
+/// ("exclude", "avoid", "no") that often appear inside non-negation
+/// queries. `cqs "exclude tests"` → "find code that excludes tests"
+/// (intent: identifier-shaped) was misrouted to Negation. The gate
+/// requires the negation token to function as a CONNECTIVE — either
+/// (a) followed by ≥1 non-negation token, OR (b) preceded by a
+/// non-negation token. A single-token query that IS a negation word
+/// no longer qualifies as Negation. This catches "no", "exclude",
+/// "avoid" used as identifiers/placeholders without breaking
+/// "sort without allocating" or "behavior except race".
 fn try_classify_negation(ctx: &QueryContext) -> Option<Classification> {
-    let negation_hit = {
-        let g = NEGATION_TOKENS.read().unwrap_or_else(|p| p.into_inner());
-        ctx.words.iter().any(|w| g.contains(*w))
-    };
-    if negation_hit {
-        Some(Classification {
-            category: QueryCategory::Negation,
-            confidence: Confidence::High,
-            strategy: SearchStrategy::DenseBase,
-            type_hints: None,
-        })
-    } else {
-        None
+    if ctx.words.is_empty() {
+        return None;
     }
+    let g = NEGATION_TOKENS.read().unwrap_or_else(|p| p.into_inner());
+    let mut hit_idx = None;
+    for (i, w) in ctx.words.iter().enumerate() {
+        if g.contains(*w) {
+            hit_idx = Some(i);
+            break;
+        }
+    }
+    let hit_idx = hit_idx?;
+
+    // Connective context: hit must have a non-negation neighbor on at
+    // least one side. A single-word query like just "no" or "avoid" by
+    // itself, or a query where the only neighbors are also negation
+    // tokens, falls through to the next classifier.
+    let has_pre_context = ctx.words.iter().take(hit_idx).any(|w| !g.contains(*w));
+    let has_post_context = ctx.words.iter().skip(hit_idx + 1).any(|w| !g.contains(*w));
+    if !has_pre_context && !has_post_context {
+        return None;
+    }
+
+    Some(Classification {
+        category: QueryCategory::Negation,
+        confidence: Confidence::High,
+        strategy: SearchStrategy::DenseBase,
+        type_hints: None,
+    })
 }
 
 /// Priority 2: Identifier lookup — all tokens look like identifiers.
@@ -2073,6 +2100,43 @@ mod tests {
         let c = classify_query("not struct");
         // Negation trumps structural
         assert_eq!(c.category, QueryCategory::Negation);
+    }
+
+    /// AC-V1.38-4 (#1463): the connective-context gate must let real
+    /// multi-token negations through ("sort without allocating",
+    /// "behavior except race", "fn that doesn't panic").
+    #[test]
+    fn test_classify_negation_connective_context_passes() {
+        for query in [
+            "sort without allocating",
+            "behavior except race",
+            "fn that doesn't panic",
+            "find code without locks",
+            "search avoid contention path",
+        ] {
+            let c = classify_query(query);
+            assert_eq!(
+                c.category,
+                QueryCategory::Negation,
+                "real negation `{query}` must classify as Negation"
+            );
+        }
+    }
+
+    /// AC-V1.38-4 (#1463): bare common nouns that happen to be negation
+    /// tokens must NOT classify as Negation. `cqs "exclude"`, `cqs "no"`,
+    /// `cqs "avoid"` as single-token queries are placeholder/identifier
+    /// queries, not negations.
+    #[test]
+    fn test_classify_bare_negation_token_falls_through() {
+        for query in ["exclude", "avoid", "no", "without", "except"] {
+            let c = classify_query(query);
+            assert_ne!(
+                c.category,
+                QueryCategory::Negation,
+                "single-token negation word `{query}` must NOT classify as Negation"
+            );
+        }
     }
 
     #[test]
