@@ -65,7 +65,9 @@ fn clear_all_alpha_env() {
 ///   TypeFiltered 1.00→0.00, CrossLanguage 0.10→0.70. See router.rs for
 ///   per-variant rationale tied to the sweep numbers.
 const PER_CATEGORY_DEFAULTS: &[(QueryCategory, f32)] = &[
-    (QueryCategory::IdentifierLookup, 1.00),
+    // v1.39.x retune (2026-05-08): 1.00 → 0.85. Both v3.v2 test+dev agreed
+    // more SPLADE helps; dev category R@5 0.8889 → 1.0000.
+    (QueryCategory::IdentifierLookup, 0.85),
     // EmbeddingGemma v3.v2 sweep change (2026-05-03): 0.90 → 0.60.
     (QueryCategory::Structural, 0.60),
     // EmbeddingGemma v3.v2 sweep change (2026-05-03): 0.70 → 0.80.
@@ -300,17 +302,21 @@ mod splade_routing {
         clear_all_alpha_env();
     }
 
-    /// Identifier lookup → α=1.00 (sparse-only fallback; NameOnly strategy is what
-    /// actually fires for this category, so SPLADE alpha is moot).
+    /// Identifier lookup → α=0.85 (v1.39.x retune; was 1.00 pre-2026-05-08).
+    /// NameOnly strategy is what actually fires when classification is
+    /// confident, so the α value applies only to fall-through dense+sparse
+    /// fusion — but the per-category sweep on v3.v2 218q showed both fixtures
+    /// agreeing more SPLADE helps the residual fusion path too (dev R@5
+    /// 0.8889 → 1.0000 within the identifier_lookup category).
     #[test]
     #[serial]
-    fn test_routing_identifier_lands_on_alpha_1_00() {
+    fn test_routing_identifier_lands_on_alpha_0_85() {
         clear_all_alpha_env();
         let (cat, alpha) = route("HashMap::new");
         assert_eq!(cat, QueryCategory::IdentifierLookup);
         assert!(
-            (alpha - 1.00).abs() < f32::EPSILON,
-            "Identifier lookup should route to α=1.00, got {alpha}"
+            (alpha - 0.85).abs() < f32::EPSILON,
+            "Identifier lookup should route to α=0.85, got {alpha}"
         );
         clear_all_alpha_env();
     }
