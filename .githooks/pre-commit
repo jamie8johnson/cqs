@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-commit hook: Run cargo fmt check and verify Cargo.lock
+# Pre-commit hook: cargo fmt check, Cargo.lock sync, env-var docs sync.
 
 echo "Running cargo fmt --check..."
 cargo fmt --check
@@ -19,4 +19,23 @@ if git diff --cached --name-only | grep -q "Cargo.toml"; then
         echo "Warning: Cargo.lock changed after cargo check."
         echo "Consider staging Cargo.lock: git add Cargo.lock"
     fi
+fi
+
+# env_var_docs sync — fast, ~1s. Runs only when staged changes touch
+# either Rust source under src/ (where new CQS_* env vars get
+# introduced) or README.md (where the env-var table lives). The
+# substring-match-vs-token-match fix is pinned by 8 sibling tests
+# inside the same test binary; any regression of the matcher itself
+# fails CI loudly.
+staged="$(git diff --cached --name-only)"
+if echo "$staged" | grep -qE '^src/.*\.rs$|^README\.md$|^tests/env_var_docs\.rs$'; then
+    echo "Running cargo test --test env_var_docs..."
+    if ! cargo test --test env_var_docs --features gpu-index --quiet 2>&1 | tail -20; then
+        echo ""
+        echo "Error: env_var_docs test failed. Either:"
+        echo "  - add the missing CQS_* var to the env-var table in README.md, or"
+        echo "  - if it's a test-only fixture, name it CQS_TEST_* (allowlisted)."
+        exit 1
+    fi
+    echo "env_var_docs check passed."
 fi
