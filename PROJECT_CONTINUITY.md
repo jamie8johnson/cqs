@@ -2,9 +2,19 @@
 
 ## Right Now
 
-**Post-v1.39.2 autopilot session — 2026-05-08.** User invoked `/effort max` + autopilot through priority queue: `2 → 5 → 3/4 → 8 → 6 → 1 → 7(skip)`. **10 PRs shipped end-to-end** + telemetry reset + open-issue triage. The two originally-deferred big items now have substantial plumbing landing (SNR Phase 4 opt-in via `CQS_OUTPUT_FORMAT=v2`; polymorphic-routing Phase 1 plumbing including `Kind` enum + classifier + `Store::lookup_by_name` + `detect_kind_for_store` one-shot helper).
+**v1.40.0 shipped — 2026-05-08.** Tag pushed, crates.io published, GitHub Release auto-fires. 14-PR autopilot session culminating in a minor release driven by agent-adoption telemetry (search rate dropped from 79% → 6% mid-April → early May, per `.cqs/telemetry*.jsonl`).
 
-### Shipped this session
+**Headline shipped:**
+- SNR restoration Phases 1-4 complete (#1601, #1602, #1604, #1609, #1613) — CLI direct success now defaults to bare JSON payload; per-result fields slimmed; batch/daemon envelope slimmed. `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge; `CQS_ULTRASECURITY=1` overrides on every surface.
+- Polymorphic routing Phase 1 plumbing (#1610) + first cell shipped (#1612 `cqs impact <const>` returns kind-labeled definitions instead of empty).
+- v3.v2 eval fixture refresh (#1607) — agg R@K +6.4 / +2.7 / +3.2 pp, above v1.36-snapshot.
+- env_var_docs hardening (#1606), gitignore housekeeping (#1603), telemetry reset (clean post-SNR-Phase-1-3 baseline).
+
+**Now in flight: complete polymorphic routing Phase 1.** Per user directive after the release: sweep the remaining ~25 cells of the per-(command × kind) matrix (`cqs impact` × Type/Module/Ambiguous, then 5 more commands × 5 kinds each). Pattern established by #1612 — each cell follows the Const-fallback factoring (build kind-labeled JSON in a pure helper, factor printing into a separate function, add 2-3 unit tests). One PR per command keeps reviews tight.
+
+**Telemetry post-release (early signal, ~80 invocations since reset, mostly testing):** search rate 5/50 ≈ 10% — marginally up from 6% baseline but within sample-size noise. Real signal needs 1-2 weeks of agent-driven usage.
+
+### Shipped this session — 14 PRs
 
 | PR | Title | Notes |
 |---|---|---|
@@ -16,10 +26,14 @@
 | #1606 | fix(tests): env-var-docs substring → token match + pre-commit step | items 3+4 |
 | #1607 | chore(eval): refresh v3.v2 fixture line numbers — agg R@K +6.4/+2.7/+3.2pp | item 6 |
 | #1608 | docs(tears): autopilot session 2026-05-08 — 7 PRs + telemetry reset | early session capture |
-| #1609 | feat(json): CQS_OUTPUT_FORMAT=v2 opt-in for bare-payload (SNR Phase 4 plumbing) | opt-in shipped; flip-default deferred |
-| #1610 | feat(kind): Kind detection lib module + Store::lookup_by_name (Polymorphic routing Phase 1 plumbing) | enums/helpers/SQL building blocks ready |
+| #1609 | feat(json): CQS_OUTPUT_FORMAT=v2 opt-in for bare-payload (SNR Phase 4 plumbing) | opt-in landed |
+| #1610 | feat(kind): Kind detection lib module + Store::lookup_by_name (Polymorphic routing Phase 1 plumbing) | enums/helpers/SQL building blocks |
+| #1611 | docs(tears): autopilot session final tally — 10 PRs + plumbing | second tears capture |
+| #1612 | feat(impact): const fallback — kind-labeled definitions instead of empty | first cell of (command × kind) matrix |
+| #1613 | feat(json): flip default to bare payload on CLI direct (SNR Phase 4 proper) | **breaking change** — default cqs --json shape |
+| #1614 | chore: Release v1.40.0 | tag pushed, crates.io published, GitHub Release auto-fires |
 
-Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed at session end (Phase 4 + Kind detection are live in the `~/.cargo/bin/cqs` everyone uses).
+Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed twice during session.
 
 ### Eval-baseline snapshot post-session
 
@@ -33,23 +47,24 @@ v3.v2 refreshed (PR #1607). Default slot (EmbeddingGemma-300m + per-cat α + Unk
 
 Δ vs pre-refresh aggregate (46.3 / 74.8 / 86.2): **+6.4 / +2.7 / +3.2 pp**. Brings agg R@K above the v1.36-snapshot range (50.9 / 76.2 / 88.6). Pure fixture re-anchoring — no retrieval-side change.
 
-### Plumbing-shipped, migration-deferred
+### What's left for Phase 1 polymorphic routing
 
-Both items shipped their lib-level building blocks this session — fresh-session migrations are now mechanical:
+Per design's per-(command × kind) matrix: 6 commands × 5 kinds = 30 cells. Shipped: lib plumbing (#1610) + 2 cells (impact × Function with `kind` label, impact × Const fallback) (#1612). **~25 cells + ~36 tests remaining.** Each cell follows the Const-fallback factoring template — build kind-labeled JSON in a pure helper, factor printing into a separate function, add 2-3 unit tests. ~30-40 min per cell.
 
-- **SNR Phases 4-6.** Phase 4 plumbing is on main (#1609) — `OutputFormat::V2Bare` + `CQS_OUTPUT_FORMAT=v2` env flag + `emit_json` posture-aware dispatch. Manual verification confirmed: `CQS_OUTPUT_FORMAT=v2 cqs stats --json` emits bare payload, default emits envelope. Migration PR work: sweep `tests/cli_*.rs` (21 files, ~150 assertions) + `evals/*.py` (~50 files), flip default to `V2Bare`, ship as v1.40.0. Pickup notes in `docs/json-snr-restoration.md`.
-- **Polymorphic routing Phase 1.** Plumbing on main (#1610) — `cqs::kind::{Kind, KindHit, classify_chunk_type, classify_hits, detect_kind_for_store}` + `Store::lookup_by_name`. Migration PR work: wire `detect_kind_for_store` into each function-or-type-specialized command's dispatcher (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`); implement the per-(command × kind) behavior matrix; add `kind` and `fallback_from` fields to response shapes; ~36 tests. Pickup notes in `docs/polymorphic-routing.md`.
+| Command | Function | Type | Const | Module | Ambiguous | Status |
+|---|---|---|---|---|---|---|
+| impact | ✓ #1612 | TODO | ✓ #1612 | TODO | TODO | 2/5 |
+| callers | TODO | TODO | TODO | TODO | TODO | 0/5 |
+| callees | TODO | TODO | TODO | TODO | TODO | 0/5 |
+| test-map | TODO | TODO | TODO | TODO | TODO | 0/5 |
+| trace | TODO | TODO | TODO | TODO | TODO | 0/5 |
+| deps | TODO | TODO | TODO | TODO | TODO | 0/5 |
 
-### Pickup checklist for next session
-
-1. Run `/cqs-verify` first (CLAUDE.md mandate).
-2. Pick one of:
-   - **SNR Phase 4 flip-default** — change default `OutputFormat::V1Envelope` → `OutputFormat::V2Bare` in `src/posture.rs`, then sweep `parsed["data"][...]` → `parsed[...]` across `tests/cli_*.rs` and `evals/*.py`. Verify eval harness unchanged or set `CQS_OUTPUT_FORMAT=v1` in those scripts.
-   - **Polymorphic routing migration** — wire `detect_kind_for_store` into each command's dispatcher per the per-(command × kind) matrix in `docs/polymorphic-routing.md`. Add `kind` + `fallback_from` to response JSON.
+Per-command PRs are the right granularity (each PR adds 5 cells + ~5-6 tests + the `kind`/`fallback_from` field on the response shape). Phase 2 (`cqs about` unified entry) is contingent — only ship if Phase 1 telemetry shows agents still bouncing.
 
 ### Earlier this day (v1.39.2 cycle, before autopilot)
 
-The earlier v1.39.2 cycle is closed; section below captures it. PR #1593 inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1` — that addressed the alarm-shaped piece of the agent-friction equation. The autopilot session above made substantial progress on the remaining two friction surfaces (response-size + routing).
+The v1.39.2 cycle closed earlier today; section below captures it. PR #1593 inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1` — addressed the alarm-shaped piece of the agent-friction equation. The autopilot session above shipped the response-size and routing-Phase-1 pieces; v1.40.0 bundles all of it.
 
 ---
 
