@@ -25,6 +25,14 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
+import os
+# SNR Phase 4 (2026-05-08): cqs default flipped to bare-payload output
+# (no envelope). This script parses `parsed["data"][...]` from cqs CLI
+# direct invocations, so we pin to the legacy V1Envelope shape via
+# `CQS_OUTPUT_FORMAT=v1`. Test/eval-shape migration to bare-payload is
+# a follow-up effort.
+os.environ.setdefault("CQS_OUTPUT_FORMAT", "v1")
+
 
 QUERIES_DIR = Path(__file__).parent / "queries"
 TRAIN_PATH = QUERIES_DIR / "v3_train.json"

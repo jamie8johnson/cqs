@@ -52,7 +52,13 @@ use cqs::parser::{Chunk, ChunkType, Language};
 
 fn cqs() -> Command {
     #[allow(deprecated)]
-    Command::cargo_bin("cqs").expect("Failed to find cqs binary")
+    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
+    // SNR Phase 4 (2026-05-08): default flipped to V2Bare. These
+    // tests pin themselves to the legacy V1Envelope shape so existing
+    // `parsed["data"][...]` assertions keep working. Test-shape
+    // migration to bare-payload is a follow-up PR.
+    c.env("CQS_OUTPUT_FORMAT", "v1");
+    c
 }
 
 /// Mirror `cqs::daemon_translate::daemon_socket_path` but with explicit

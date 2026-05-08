@@ -29,6 +29,7 @@ fn cqs_status_no_flag_exits_one_with_gate_message() {
         .unwrap()
         .arg("status")
         .env("XDG_RUNTIME_DIR", tmp.path())
+        .env("CQS_OUTPUT_FORMAT", "v1") // SNR Phase 4: pin to legacy envelope
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -54,6 +55,7 @@ fn cqs_status_wait_without_watch_fresh_exits_one() {
         .unwrap()
         .args(["status", "--wait"])
         .env("XDG_RUNTIME_DIR", tmp.path())
+        .env("CQS_OUTPUT_FORMAT", "v1") // SNR Phase 4: pin to legacy envelope
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -69,6 +71,7 @@ fn cqs_status_watch_fresh_without_daemon_exits_one_with_friendly_msg() {
         .unwrap()
         .args(["status", "--watch-fresh"])
         .env("XDG_RUNTIME_DIR", tmp.path())
+        .env("CQS_OUTPUT_FORMAT", "v1") // SNR Phase 4: pin to legacy envelope
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -92,6 +95,7 @@ fn cqs_status_watch_fresh_json_no_daemon_emits_error_envelope() {
         .unwrap()
         .args(["status", "--watch-fresh", "--json"])
         .env("XDG_RUNTIME_DIR", tmp.path())
+        .env("CQS_OUTPUT_FORMAT", "v1") // SNR Phase 4: pin to legacy envelope
         .current_dir(tmp.path())
         .output()
         .unwrap();

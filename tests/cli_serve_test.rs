@@ -44,7 +44,11 @@ use tempfile::TempDir;
 
 fn cqs() -> AssertCmd {
     #[allow(deprecated)]
-    AssertCmd::cargo_bin("cqs").expect("Failed to find cqs binary")
+    let mut c = AssertCmd::cargo_bin("cqs").expect("Failed to find cqs binary");
+    // SNR Phase 4 (2026-05-08): default flipped to V2Bare. Pin tests
+    // to legacy V1Envelope shape so existing assertions keep working.
+    c.env("CQS_OUTPUT_FORMAT", "v1");
+    c
 }
 
 fn cqs_path() -> std::path::PathBuf {

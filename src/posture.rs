@@ -55,34 +55,38 @@ impl Posture {
 
 /// Wire-format selector for CLI direct (`emit_json`) success path.
 ///
-/// SNR Phase 4 ships this as opt-in via `CQS_OUTPUT_FORMAT=v2`; the
-/// default stays `V1Envelope` to keep the existing 21+ integration
-/// test files and 50+ eval harness Python scripts unmodified. A
-/// future release flips the default to `V2Bare` once consumer
-/// migration is complete (deferred work; tracked in
-/// `docs/json-snr-restoration.md` Phase 4 pickup notes).
+/// **As of SNR Phase 4 (2026-05-08, this commit), the default is
+/// [`Self::V2Bare`].** CLI direct success on a friendly-deployment
+/// process now emits the bare JSON payload on stdout — no envelope
+/// wrap. The legacy envelope shape is opt-in via `CQS_OUTPUT_FORMAT=v1`.
+/// Integration tests and the eval harness pin themselves to `v1` via
+/// env (see `tests/cli_*.rs` helpers and `evals/*.py` os.environ
+/// overrides) so the flip-default doesn't break existing assertion
+/// shapes; a follow-up PR migrates those consumers to expect the bare
+/// shape natively.
 ///
 /// **Posture interaction:** [`Posture::Adversarial`] overrides this —
 /// the verbose envelope wins regardless of `OutputFormat`. The two
 /// env vars compose: `CQS_ULTRASECURITY=1` ⇒ full envelope on every
-/// surface; `CQS_OUTPUT_FORMAT=v2` AND not adversarial ⇒ bare
-/// payload on the CLI direct success path; otherwise current envelope
-/// behavior.
+/// surface; `CQS_OUTPUT_FORMAT=v1` AND not adversarial ⇒ legacy envelope
+/// on the CLI direct success path (consumer-migration hedge); otherwise
+/// (the new default) bare payload.
 ///
 /// Batch / daemon JSONL is **not** affected by this — Phase 3 already
 /// shipped the slim `{"data": ...}` / `{"error": {...}}` shape there
 /// and the JSONL contract requires self-describing lines either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
-    /// Current behavior: CLI direct success emits the full envelope
-    /// `{data, error: null, version: 1, _meta: {...}}` to stdout.
-    /// Default; selected when `CQS_OUTPUT_FORMAT` is unset or any
-    /// value other than `v2`.
+    /// Legacy envelope shape: CLI direct success emits the full envelope
+    /// `{data, error: null, version: 1, _meta: {...}}` to stdout. Selected
+    /// by setting `CQS_OUTPUT_FORMAT=v1`. Hedge for consumer scripts that
+    /// haven't migrated to the bare shape yet.
     V1Envelope,
-    /// SNR Phase 4 target shape: CLI direct success emits the bare
-    /// JSON payload to stdout (no envelope). Failure path emits a
-    /// structured error to stderr + non-zero exit. Selected via
-    /// `CQS_OUTPUT_FORMAT=v2`.
+    /// **Default as of SNR Phase 4 (2026-05-08):** CLI direct success
+    /// emits the bare JSON payload to stdout (no envelope). Selected
+    /// when `CQS_OUTPUT_FORMAT` is unset or set to anything other than
+    /// `v1`. Restores the high-SNR baseline that the 79% → 6% search-
+    /// rate decline measured.
     V2Bare,
 }
 
@@ -90,11 +94,18 @@ impl OutputFormat {
     /// Read the env var once and return the corresponding format.
     /// Same one-syscall cost as [`Posture::current`]; intended to be
     /// called at the same dispatcher entry points.
+    ///
+    /// **SNR Phase 4 default flip (2026-05-08):** unset env or any value
+    /// other than the literal `"v1"` ⇒ [`Self::V2Bare`] (bare payload).
+    /// `CQS_OUTPUT_FORMAT=v1` ⇒ [`Self::V1Envelope`] (legacy envelope).
+    /// Inverted polarity from the original opt-in landing — opt-out
+    /// is now the legacy hedge for consumer scripts that haven't
+    /// migrated.
     pub fn current() -> Self {
-        if std::env::var("CQS_OUTPUT_FORMAT").as_deref() == Ok("v2") {
-            Self::V2Bare
-        } else {
+        if std::env::var("CQS_OUTPUT_FORMAT").as_deref() == Ok("v1") {
             Self::V1Envelope
+        } else {
+            Self::V2Bare
         }
     }
 
@@ -133,28 +144,43 @@ mod tests {
         std::env::remove_var("CQS_ULTRASECURITY");
     }
 
-    // SNR Phase 4 plumbing: OutputFormat::V2Bare opt-in via
-    // CQS_OUTPUT_FORMAT=v2; default V1Envelope preserves existing
-    // tests + eval harness behavior.
+    // SNR Phase 4 default flip (2026-05-08): default is V2Bare.
+    // CQS_OUTPUT_FORMAT=v1 opts back into the legacy envelope shape
+    // (consumer-migration hedge). Tests + eval harness pin themselves
+    // to v1 via env so the flip doesn't break existing assertion shapes.
 
     #[test]
     #[serial_test::serial]
     fn output_format_current_reads_env_var() {
         std::env::remove_var("CQS_OUTPUT_FORMAT");
-        assert_eq!(OutputFormat::current(), OutputFormat::V1Envelope);
-        std::env::set_var("CQS_OUTPUT_FORMAT", "v2");
-        assert_eq!(OutputFormat::current(), OutputFormat::V2Bare);
+        assert_eq!(
+            OutputFormat::current(),
+            OutputFormat::V2Bare,
+            "default flip: unset env is V2Bare"
+        );
         std::env::set_var("CQS_OUTPUT_FORMAT", "v1");
         assert_eq!(
             OutputFormat::current(),
             OutputFormat::V1Envelope,
-            "explicit v1 is also envelope (legacy hedge)"
+            "explicit v1 opts into legacy envelope"
         );
-        std::env::set_var("CQS_OUTPUT_FORMAT", "V2");
+        std::env::set_var("CQS_OUTPUT_FORMAT", "v2");
         assert_eq!(
             OutputFormat::current(),
-            OutputFormat::V1Envelope,
-            "case-sensitive: only lowercase 'v2' opts in"
+            OutputFormat::V2Bare,
+            "explicit v2 also yields V2Bare (idempotent with default)"
+        );
+        std::env::set_var("CQS_OUTPUT_FORMAT", "V1");
+        assert_eq!(
+            OutputFormat::current(),
+            OutputFormat::V2Bare,
+            "case-sensitive: only lowercase 'v1' opts back to envelope"
+        );
+        std::env::set_var("CQS_OUTPUT_FORMAT", "junk");
+        assert_eq!(
+            OutputFormat::current(),
+            OutputFormat::V2Bare,
+            "unrecognized value falls through to default V2Bare"
         );
         std::env::remove_var("CQS_OUTPUT_FORMAT");
     }

@@ -30,7 +30,13 @@ use tempfile::TempDir;
 
 fn cqs() -> Command {
     #[allow(deprecated)]
-    Command::cargo_bin("cqs").expect("Failed to find cqs binary")
+    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
+    // SNR Phase 4 (2026-05-08): default flipped to V2Bare. These
+    // tests pin themselves to the legacy V1Envelope shape so existing
+    // `parsed["data"][...]` assertions keep working. Test-shape
+    // migration to bare-payload is a follow-up PR.
+    c.env("CQS_OUTPUT_FORMAT", "v1");
+    c
 }
 
 /// Spin up an empty project with a `.cqs` directory so `find_project_root`
