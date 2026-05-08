@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::parser::{Chunk, ChunkType, Language};
+use crate::posture::Posture;
 
 use super::rows::ChunkRow;
 
@@ -163,11 +164,16 @@ fn maybe_wrap_content(content: &str, id: &str) -> String {
 impl SearchResult {
     /// Serialize to JSON with consistent field order and platform-normalized paths.
     ///
-    /// Equivalent to `to_json_with_origin(None)`: emits `trust_level: "user-code"`
-    /// and omits `reference_name`. Use `to_json_with_origin` when the result came
-    /// from a `cqs ref` index and the consuming agent should see that origin.
+    /// Equivalent to `to_json_with_origin(None)`. Reads `CQS_ULTRASECURITY`
+    /// via [`Posture::current`]; new code that already has a [`Posture`]
+    /// at hand should call [`Self::to_json_with_posture`].
     pub fn to_json(&self) -> serde_json::Value {
         self.to_json_with_origin(None)
+    }
+
+    /// Posture-aware variant of [`Self::to_json`].
+    pub fn to_json_with_posture(&self, posture: Posture) -> serde_json::Value {
+        self.build_chunk_json_inner(None, None, posture)
     }
 
     /// Serialize to JSON, tagging the result with its trust origin.
@@ -186,10 +192,16 @@ impl SearchResult {
     ///
     /// Closes #1167, #1169, #1221.
     pub fn to_json_with_origin(&self, ref_name: Option<&str>) -> serde_json::Value {
-        // P3-46: routed through `build_chunk_json_inner` with `base = None`
-        // so the absolute-path branch and the relative-path branch share one
-        // 12-field literal. Adding a chunk metadata field is now a one-edit.
-        self.build_chunk_json_inner(ref_name, None)
+        self.build_chunk_json_inner(ref_name, None, Posture::current())
+    }
+
+    /// Posture-aware variant of [`Self::to_json_with_origin`].
+    pub fn to_json_with_origin_and_posture(
+        &self,
+        ref_name: Option<&str>,
+        posture: Posture,
+    ) -> serde_json::Value {
+        self.build_chunk_json_inner(ref_name, None, posture)
     }
 
     /// Serialize to JSON with file paths relative to a project root.
@@ -200,27 +212,57 @@ impl SearchResult {
         self.to_json_relative_with_origin(root, None)
     }
 
+    /// Posture-aware variant of [`Self::to_json_relative`].
+    pub fn to_json_relative_with_posture(
+        &self,
+        root: &std::path::Path,
+        posture: Posture,
+    ) -> serde_json::Value {
+        self.build_chunk_json_inner(None, Some(root), posture)
+    }
+
     /// `to_json_relative` plus trust-origin tagging. See `to_json_with_origin`.
     pub fn to_json_relative_with_origin(
         &self,
         root: &std::path::Path,
         ref_name: Option<&str>,
     ) -> serde_json::Value {
-        // P3-46: routed through `build_chunk_json_inner` with `base =
-        // Some(root)` — see `to_json_with_origin` above.
-        self.build_chunk_json_inner(ref_name, Some(root))
+        self.build_chunk_json_inner(ref_name, Some(root), Posture::current())
     }
 
-    /// P3-46: shared 12-field JSON shape. `base = None` emits absolute
-    /// (normalized) paths; `base = Some(root)` strips the prefix and
-    /// normalizes. The trust-level cascade and injection-flag computation
-    /// were duplicated verbatim in `to_json_with_origin` and
-    /// `to_json_relative_with_origin` before — adding a metadata field cost
-    /// two edits; now one.
+    /// Posture-aware variant of [`Self::to_json_relative_with_origin`].
+    pub fn to_json_relative_with_origin_and_posture(
+        &self,
+        root: &std::path::Path,
+        ref_name: Option<&str>,
+        posture: Posture,
+    ) -> serde_json::Value {
+        self.build_chunk_json_inner(ref_name, Some(root), posture)
+    }
+
+    /// Shared JSON serializer. `base = None` emits absolute (normalized)
+    /// paths; `base = Some(root)` strips the prefix and normalizes.
+    ///
+    /// **Per-result wire shape (SNR Phase 2):**
+    /// - Always emit: `file`, `line_start`, `line_end`, `name`, `signature`,
+    ///   `language`, `chunk_type`, `score`, `content`.
+    /// - Conditional: `has_parent` skipped when `false`; `reference_name`
+    ///   only when `ref_name = Some(_)`.
+    /// - Posture-gated: under [`Posture::Friendly`], `trust_level` is
+    ///   skipped when `"user-code"` and `injection_flags` is skipped when
+    ///   empty (the no-signal cases). Under [`Posture::Adversarial`], both
+    ///   force-emit so adversarial-deployment consumers always see the
+    ///   trust label and the (possibly-empty) injection-flag list.
+    ///
+    /// The skip-when-default rule for `trust_level` and `injection_flags`
+    /// covers the 99% case (user-authored project code with no injection
+    /// patterns). Vendored or reference-tagged chunks always carry their
+    /// non-default trust label.
     fn build_chunk_json_inner(
         &self,
         ref_name: Option<&str>,
         base: Option<&std::path::Path>,
+        posture: Posture,
     ) -> serde_json::Value {
         let trust_level = if ref_name.is_some() {
             "reference-code"
@@ -233,6 +275,9 @@ impl SearchResult {
             None => crate::normalize_path(&self.chunk.file),
             Some(root) => crate::rel_display(&self.chunk.file, root),
         };
+        let injection_flags =
+            crate::llm::validation::detect_all_injection_patterns(&self.chunk.content);
+        let has_parent = self.chunk.parent_id.is_some();
         let mut obj = serde_json::json!({
             "file": file,
             "line_start": self.chunk.line_start,
@@ -243,12 +288,27 @@ impl SearchResult {
             "chunk_type": self.chunk.chunk_type.to_string(),
             "score": self.score,
             "content": maybe_wrap_content(&self.chunk.content, &self.chunk.id),
-            "has_parent": self.chunk.parent_id.is_some(),
-            "trust_level": trust_level,
-            "injection_flags": crate::llm::validation::detect_all_injection_patterns(&self.chunk.content),
         });
+        let map = obj.as_object_mut().expect("json! built an object");
+        // Skip-when-default: has_parent default is false (chunk is top-level).
+        if has_parent {
+            map.insert("has_parent".to_string(), serde_json::json!(true));
+        }
+        // Posture-gated: trust_level default is "user-code"; emit non-default
+        // values always, force-emit under Adversarial.
+        if posture.is_adversarial() || trust_level != "user-code" {
+            map.insert("trust_level".to_string(), serde_json::json!(trust_level));
+        }
+        // Posture-gated: injection_flags default is the empty vec; emit
+        // non-empty always, force-emit under Adversarial.
+        if posture.is_adversarial() || !injection_flags.is_empty() {
+            map.insert(
+                "injection_flags".to_string(),
+                serde_json::json!(injection_flags),
+            );
+        }
         if let Some(name) = ref_name {
-            obj["reference_name"] = serde_json::json!(name);
+            map.insert("reference_name".to_string(), serde_json::json!(name));
         }
         obj
     }
@@ -458,11 +518,25 @@ impl UnifiedResult {
         self.to_json_with_origin(None)
     }
 
+    /// Posture-aware variant of [`Self::to_json`].
+    pub fn to_json_with_posture(&self, posture: Posture) -> serde_json::Value {
+        self.to_json_with_origin_and_posture(None, posture)
+    }
+
     /// Serialize to JSON with optional trust-origin tagging. (#1167, #1169)
     pub fn to_json_with_origin(&self, ref_name: Option<&str>) -> serde_json::Value {
+        self.to_json_with_origin_and_posture(ref_name, Posture::current())
+    }
+
+    /// Posture-aware variant of [`Self::to_json_with_origin`].
+    pub fn to_json_with_origin_and_posture(
+        &self,
+        ref_name: Option<&str>,
+        posture: Posture,
+    ) -> serde_json::Value {
         match self {
             UnifiedResult::Code(r) => {
-                let mut json = r.to_json_with_origin(ref_name);
+                let mut json = r.to_json_with_origin_and_posture(ref_name, posture);
                 json["type"] = serde_json::json!("code");
                 json
             }
@@ -474,15 +548,34 @@ impl UnifiedResult {
         self.to_json_relative_with_origin(root, None)
     }
 
+    /// Posture-aware variant of [`Self::to_json_relative`].
+    pub fn to_json_relative_with_posture(
+        &self,
+        root: &std::path::Path,
+        posture: Posture,
+    ) -> serde_json::Value {
+        self.to_json_relative_with_origin_and_posture(root, None, posture)
+    }
+
     /// `to_json_relative` plus trust-origin tagging. See `to_json_with_origin`.
     pub fn to_json_relative_with_origin(
         &self,
         root: &std::path::Path,
         ref_name: Option<&str>,
     ) -> serde_json::Value {
+        self.to_json_relative_with_origin_and_posture(root, ref_name, Posture::current())
+    }
+
+    /// Posture-aware variant of [`Self::to_json_relative_with_origin`].
+    pub fn to_json_relative_with_origin_and_posture(
+        &self,
+        root: &std::path::Path,
+        ref_name: Option<&str>,
+        posture: Posture,
+    ) -> serde_json::Value {
         match self {
             UnifiedResult::Code(r) => {
-                let mut json = r.to_json_relative_with_origin(root, ref_name);
+                let mut json = r.to_json_relative_with_origin_and_posture(root, ref_name, posture);
                 json["type"] = serde_json::json!("code");
                 json
             }
@@ -562,12 +655,20 @@ mod tests {
 
     #[test]
     fn test_search_result_json_no_parent() {
+        // SNR Phase 2: `has_parent: false` is the default; skip-when-default
+        // omits it from the lean wire shape under either posture (it's not
+        // a security signal — never force-emitted). Use the explicit
+        // posture variant so the assertion is deterministic regardless of
+        // process env.
         let result = SearchResult {
             chunk: make_chunk("standalone", None),
             score: 0.85,
         };
-        let json = result.to_json();
-        assert_eq!(json["has_parent"], false);
+        let json = result.to_json_with_posture(Posture::Friendly);
+        assert!(
+            json.get("has_parent").is_none(),
+            "has_parent absent when default (false) in lean shape; got: {json}"
+        );
     }
 
     #[test]
@@ -611,14 +712,53 @@ mod tests {
     }
 
     #[test]
-    fn test_to_json_all_fields_present() {
+    fn test_to_json_all_fields_present_friendly() {
+        // SNR Phase 2: lean wire shape under Friendly posture.
+        // `make_detailed_result` chunk has parent_id=Some and is user-code
+        // with no injection patterns, so:
+        // - trust_level skipped (default "user-code")
+        // - injection_flags skipped (default empty)
+        // - has_parent emitted (non-default true)
         let result = make_detailed_result();
-        let json = result.to_json();
+        let json = result.to_json_with_posture(Posture::Friendly);
         let obj = json.as_object().expect("to_json should return an object");
 
-        // Exactly these 12 fields, no more, no fewer. (#1167 added `trust_level`;
-        // #1181 added `injection_flags`.) `reference_name` is omitted on
-        // user-code chunks via the `Option`-skip path.
+        let expected_keys: std::collections::HashSet<&str> = [
+            "file",
+            "line_start",
+            "line_end",
+            "name",
+            "signature",
+            "language",
+            "chunk_type",
+            "score",
+            "content",
+            "has_parent",
+        ]
+        .iter()
+        .copied()
+        .collect();
+
+        let actual_keys: std::collections::HashSet<&str> = obj.keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            expected_keys,
+            actual_keys,
+            "Friendly to_json field set mismatch: extra={:?}, missing={:?}",
+            actual_keys.difference(&expected_keys).collect::<Vec<_>>(),
+            expected_keys.difference(&actual_keys).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn test_to_json_all_fields_present_adversarial() {
+        // SNR Phase 2: full verbose shape under Adversarial posture.
+        // trust_level + injection_flags force-emitted even at default values
+        // so adversarial-deployment consumers always see the trust label
+        // and the (possibly-empty) injection-flag list.
+        let result = make_detailed_result();
+        let json = result.to_json_with_posture(Posture::Adversarial);
+        let obj = json.as_object().expect("to_json should return an object");
+
         let expected_keys: std::collections::HashSet<&str> = [
             "file",
             "line_start",
@@ -641,10 +781,13 @@ mod tests {
         assert_eq!(
             expected_keys,
             actual_keys,
-            "to_json field set mismatch: extra={:?}, missing={:?}",
+            "Adversarial to_json field set mismatch: extra={:?}, missing={:?}",
             actual_keys.difference(&expected_keys).collect::<Vec<_>>(),
             expected_keys.difference(&actual_keys).collect::<Vec<_>>(),
         );
+        // Force-emitted defaults present with their default values.
+        assert_eq!(json["trust_level"], "user-code");
+        assert_eq!(json["injection_flags"], serde_json::json!([]));
     }
 
     #[test]
@@ -692,12 +835,18 @@ mod tests {
 
     #[test]
     fn test_to_json_no_parent() {
+        // SNR Phase 2: has_parent=false is the default — skipped in lean
+        // shape under either posture (it's not a security signal, so no
+        // posture-gated force-emit).
         let result = SearchResult {
             chunk: make_chunk("standalone", None),
             score: 0.5,
         };
-        let json = result.to_json();
-        assert_eq!(json["has_parent"], false);
+        let json = result.to_json_with_posture(Posture::Friendly);
+        assert!(
+            json.get("has_parent").is_none(),
+            "has_parent absent when default (false) in lean shape; got: {json}"
+        );
         // parent_id itself should NOT leak into JSON
         assert!(
             json.get("parent_id").is_none(),
@@ -706,16 +855,16 @@ mod tests {
     }
 
     #[test]
-    fn test_to_json_relative_all_fields_present() {
+    fn test_to_json_relative_all_fields_present_friendly() {
+        // SNR Phase 2: same lean shape as test_to_json_all_fields_present_friendly,
+        // exercised through the relative-path emitter.
         let root = std::path::Path::new("src/engine");
         let result = make_detailed_result();
-        let json = result.to_json_relative(root);
+        let json = result.to_json_relative_with_posture(root, Posture::Friendly);
         let obj = json
             .as_object()
             .expect("to_json_relative should return an object");
 
-        // Same field set as to_json (#1167 added `trust_level`; #1181 added
-        // `injection_flags`).
         let expected_keys: std::collections::HashSet<&str> = [
             "file",
             "line_start",
@@ -727,8 +876,6 @@ mod tests {
             "score",
             "content",
             "has_parent",
-            "trust_level",
-            "injection_flags",
         ]
         .iter()
         .copied()
@@ -871,12 +1018,32 @@ mod tests {
     // ===== #1167 + #1169: trust_level / reference_name =====
 
     #[test]
-    fn test_to_json_user_code_default() {
+    fn test_to_json_user_code_friendly_skips_trust_level() {
+        // SNR Phase 2: trust_level="user-code" is the default; skipped
+        // under Friendly posture. reference_name continues to skip when
+        // ref_name is None.
         let result = SearchResult {
             chunk: make_chunk("foo", None),
             score: 0.7,
         };
-        let json = result.to_json();
+        let json = result.to_json_with_posture(Posture::Friendly);
+        assert!(
+            json.get("trust_level").is_none(),
+            "Friendly skips trust_level=user-code default; got: {json}"
+        );
+        assert!(json.get("reference_name").is_none());
+    }
+
+    #[test]
+    fn test_to_json_user_code_adversarial_emits_trust_level() {
+        // SNR Phase 2: trust_level force-emitted under Adversarial posture
+        // even at the default "user-code" value. Pin the contract so
+        // adversarial-deployment consumers always see the trust label.
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json_with_posture(Posture::Adversarial);
         assert_eq!(json["trust_level"], "user-code");
         assert!(json.get("reference_name").is_none());
     }
@@ -1032,17 +1199,39 @@ mod tests {
     }
 
     #[test]
-    fn test_injection_flags_field_present() {
-        // #1181: chunk JSON always carries `injection_flags` (empty when no
-        // patterns matched). Schema stability — consumers can rely on it.
+    fn test_injection_flags_friendly_skips_empty() {
+        // SNR Phase 2: injection_flags=[] is the default; skipped under
+        // Friendly posture. Adversarial force-emits it for consumers that
+        // always need to see the (possibly-empty) flag list.
         let result = SearchResult {
             chunk: make_chunk("foo", None),
             score: 0.7,
         };
-        let json = result.to_json();
+        let json = result.to_json_with_posture(Posture::Friendly);
+        assert!(
+            json.get("injection_flags").is_none(),
+            "Friendly skips injection_flags=[] default; got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_injection_flags_adversarial_force_emits_empty() {
+        // SNR Phase 2: under Adversarial, injection_flags is always an
+        // array (possibly empty). #1181 contract preserved for adversarial
+        // deployments.
+        let result = SearchResult {
+            chunk: make_chunk("foo", None),
+            score: 0.7,
+        };
+        let json = result.to_json_with_posture(Posture::Adversarial);
         assert!(
             json["injection_flags"].is_array(),
-            "injection_flags must always be an array (possibly empty)"
+            "Adversarial force-emits injection_flags as array (possibly empty)"
+        );
+        assert_eq!(
+            json["injection_flags"].as_array().expect("array").len(),
+            0,
+            "no injection patterns in plain content, expect empty array"
         );
     }
 

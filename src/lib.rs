@@ -81,6 +81,7 @@ pub mod index;
 pub mod language;
 pub mod note;
 pub mod parser;
+pub mod posture;
 pub mod reference;
 pub mod splade;
 pub mod store;
