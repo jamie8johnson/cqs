@@ -827,14 +827,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "v1.9.0 default model change: bare cargo test without CQS_EMBEDDING_MODEL now uses BGE-large, not E5-base. Must explicitly set CQS_EMBEDDING_MODEL=e5-base to get real E5 numbers. Caught during full re-verification run."
-mentions = [
-    "src/embedder/models.rs",
-    "tests/pipeline_eval.rs",
-]
-
-[[note]]
 sentiment = 0.5
 text = "OpenClaw codebase is unusually clean — all catches annotated, all as-any suppressed, no deprecated APIs, no floating promises. Verification before submission is critical: initial scan claimed 30 duplicate utilities, verification reduced to 6 actionable (2 clean drop-in). Always verify agent findings before filing."
 mentions = ["openclaw-contributions.md"]
@@ -959,15 +951,6 @@ mentions = ["train_lora.py"]
 
 [[note]]
 sentiment = 0.0
-text = "GIST margin sweep (Exp 28): null result for pipeline. Margin 0.03 gives +1.8pp raw R@1 (repeatable) but pipeline R@1 is within training variance (80-83% for all margins). Default 0.05 confirmed correct. Expanded eval baseline stale (90.5% was old codebase, current ~80%). Rust stress MRR collapsed to 0.046 for ALL E5-base models on v1.15.2 index — needs investigation."
-mentions = [
-    "train_lora.py",
-    "margin",
-    "GIST",
-]
-
-[[note]]
-sentiment = 0.0
 text = "Rust stress MRR ~0.04 is a known eval artifact (documented since 2026-03-27). BGE-large 0.037, E5-base 0.037-0.046. Stress eval indexes cqs src/ (~8500 Rust chunks) as noise but no other language repos. Fixture queries drown in real code. Not a regression — same since stress eval was created."
 mentions = [
     "stress_eval",
@@ -1045,14 +1028,6 @@ mentions = [
 sentiment = -0.5
 text = "Off-the-shelf SPLADE (naver/splade-cocondenser) is null on code search: 0pp BGE-large, -1.4pp E5-LoRA on v2 eval. Code-trained SPLADE needed."
 mentions = ["splade/mod.rs"]
-
-[[note]]
-sentiment = 0.5
-text = "Historical (pre-v1.23): BGE-large + LLM summaries was the best config when SPLADE was null and reranker was net-negative. Summaries +25pp behavioral/multi_step, -25pp negation. Current production (v1.27.0+) ships SPLADE per-category alpha routing — see ROADMAP for shipping alphas."
-mentions = [
-    "nl/mod.rs",
-    "enrichment.rs",
-]
 
 [[note]]
 sentiment = 0.5
@@ -1429,14 +1404,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Reranker V2 retrain pairwise (margin=0.3) matched class-weighted BCE (-5.5 test / -9.2 dev R@5). Three loss regimens (pointwise BCE / weighted BCE / pairwise margin) on the same 9k cqs-domain graded corpus converged on the same numbers. Train pair_acc hit 98% but test/dev didn't generalize → fundamentally limited by corpus size (326 queries × ~6 pairs each), not loss choice. R@20 unchanged across all three → all gold IS in pool=20, the cross-encoder consistently demotes it. To break out: 10x more queries (Gemma-augmented synthetic) OR 5x bigger base (bge-reranker-large at ~3x latency). Park the arc; v1.28.1 stage-1 is the current ceiling."
-mentions = [
-    "evals/train_reranker_v2_pairwise.py",
-    "reranker",
-]
-
-[[note]]
-sentiment = -0.5
 text = "Phase 1.4 distilled query classifier delivered 0pp R@5 lift in production despite 79.8% val accuracy and 99% Gemma teacher accuracy. Asymmetric error cost: false positives on multi_step (α=0.10, pure SPLADE) catastrophically harm queries that should have gone to behavioral (α=0.80) or other dense-leaning categories. At ~80% accuracy false-positive damage cancels true-positive lift exactly. Need ~90%+ accuracy to overcome. Oracle test (Gemma 99% as router) showed +9.2pp test R@5 sitting on the table — prize is real, classifier is the gate."
 mentions = [
     "src/classifier_head.rs",
@@ -1663,14 +1630,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "v1.30.1 audit P2: 9 of 22 prompts NEEDS FIX (~41%) vs skill expectation of 20%. Common errors: fictional API arities (atomic_replace), wrong function names (save vs save_owned), wrong error types (anyhow vs HnswError), nonexistent constants (error_codes::TIMEOUT). Fix-prompt generation needs tighter source-grounding — recurring across P1/P2/P3 phases of this audit."
-mentions = [
-    "audit-fix-prompts.md",
-    "verification",
-]
-
-[[note]]
-sentiment = -0.5
 text = "Verifier-found NEEDS FIX rate on audit fix-prompts: P1 42%, P2 41%, P3 16%. Audit skill expects ~20%. Common errors: fictional API arities, wrong function names (save vs save_owned), wrong error types (anyhow vs HnswError), nonexistent constants. Source-grounding step in fix-prompt generation needs tightening — generator produces plausible-shaped APIs without grepping for them. Verification agent is essential, not optional."
 mentions = [
     "audit-fix-prompts.md",
@@ -1694,14 +1653,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "v1.30.1 audit drained: 144 findings → 121 fixed (P1 14/14 + P2 31/31 + P3 24/24 + 5 trivial P4) across 19 PRs in 2 days; 18 hard P4s tracked as #1215-#1232. Disk cleanup recovered 176 GB (118G main debug + 58G P3 scratch dirs). Process: squash-merge --delete-branch fails locally when worktree holds branch but server-side merge succeeds — pattern on 7 of 7 P3 PRs. CI runners ran 35-43min vs typical 25-30min under saturation."
-mentions = [
-    "docs/audit-triage.md",
-    "PROJECT_CONTINUITY.md",
-]
-
-[[note]]
 sentiment = 0.0
 text = "SPLADE phase 2 (#1176, 2026-05-01): RRF on dense+sparse trails linear-α by ~1pp R@5/R@20 on test, ~4-5pp on dev R@1/R@5. Closed without merging; entry in research/models.md. Linear-α with min-max normalization is the right blend for SPLADE on cqs queries given current model+corpus."
 mentions = [
@@ -1717,19 +1668,6 @@ mentions = [
     "audit-triage.md",
     "rebase",
 ]
-
-[[note]]
-sentiment = 0.5
-text = "embeddinggemma-300m beats BGE-large on aggregate R@1 in v3.v2 218q dual-judge eval (48.2% vs 46.8%, refreshed 2026-05-02). Same R@20 (85.3%). Loses agg R@5 by 0.5pp (73.4% vs 73.9%). At 308M params vs 335M params and 768 dim vs 1024 dim, it's the strongest sub-1024-dim alternative. Worth considering as default candidate for v1.34.0 if dim reduction matters."
-mentions = [
-    "embedder/models.rs",
-    "embeddinggemma",
-]
-
-[[note]]
-sentiment = 0.5
-text = "MEMORY.md noted 'R@5 regression discovered 2026-05-01' (BGE-large agg R@5 dropped 24-25pp from canonical). Refresh on 2026-05-02 shows BGE-large agg R@5 = 73.9%, slightly HIGHER than the original 73.4% TL;DR claim. Drop was a stale measurement from a particular slot state, not a code regression. The eval pipeline is stable."
-mentions = ["eval/runner.rs"]
 
 [[note]]
 sentiment = 0.5
@@ -1844,18 +1782,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 1.0
-text = "v1.38.0 audit cycle (2026-05-06, 13 cluster PRs #1514-#1526): post-v1.38 fresh full-codebase audit run by 16 parallel auditor agents on opus surfaced 154 findings (P1=50, P2=37, P3=55, P4=12). Closed ~36 P1/P2 items across 13 cluster PRs. Highest-impact: Cluster A (needs_embedding wiring) closed silent search-quality regression on --llm-summaries workflows where CAGRA/UMAP/brute-force kNN were loading zero-vec sentinels. Cluster B (lying-docs) fixed 4 P1 lying-doc rows in README/SECURITY where --improve-docs was claimed in-place but is patch-default since v1.30.1. Cluster F (algorithm correctness) caught a silent SPLADE search regression where BoundedScoreHeap::would_accept tiebreak was strict-gt, dropping smaller-id candidates at tied scores. Schema unchanged (still v27)."
-mentions = [
-    "1.38.0",
-    "audit",
-    "needs_embedding",
-    "BoundedScoreHeap",
-    "lying-docs",
-    "#1463",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Audit-cycle workflow that worked end-to-end same-day: (1) spawn 16 parallel auditor agents on opus (8 per batch), each writing per-category file `docs/audit-batch{1,2}-<cat>.md` to avoid concurrent-write races. (2) Aggregate to `docs/audit-findings.md`. (3) Triage agent classifies into P1/P2/P3/P4 + identifies cross-cutting clusters. (4) Implement clusters as one PR each, with explicit 'what's NOT in scope' deferral list per PR body. (5) After PRs land, update umbrella issue body inline with 'closed by #N' status. ~13 PRs/day with audit-mode ON throughout."
 mentions = [
@@ -1867,7 +1793,10 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "v1.38.0 audit cycle continuation (2026-05-07, 14 more cluster PRs #1528-#1542 + #1531 flake fix): processed remaining P2/P3 from the triage. Highest-leverage items: Cluster Y PL-V1.38-5 closed a real SEC-1 footgun where `cqs init && git add .` was committing audit-mode.json + telemetry + binary index — gitignore now `*\n!.gitignore\n` (ignore-everything-but-self). Cluster W AC-V1.38-4 added connective-context gate to negation classifier (single-token `cqs exclude` no longer misroutes to Negation). Cluster Q SEC-V1.38-7 hardened run_git_diff ref validation to git's check-ref-format rules. ~52 audit findings closed across this continuation. ~6 architectural items remain (API-V1.38-6/9/10, DS-V1.38-4, PL-V1.38-4, SHL-V1.38-6/9, EX-V1.38-2/3/6) — separate cluster work each."
+text = """
+v1.38.0 audit cycle continuation (2026-05-07, 14 more cluster PRs #1528-#1542 + #1531 flake fix): processed remaining P2/P3 from the triage. Highest-leverage items: Cluster Y PL-V1.38-5 closed a real SEC-1 footgun where `cqs init && git add .` was committing audit-mode.json + telemetry + binary index — gitignore now `*
+!.gitignore
+` (ignore-everything-but-self). Cluster W AC-V1.38-4 added connective-context gate to negation classifier (single-token `cqs exclude` no longer misroutes to Negation). Cluster Q SEC-V1.38-7 hardened run_git_diff ref validation to git's check-ref-format rules. ~52 audit findings closed across this continuation. ~6 architectural items remain (API-V1.38-6/9/10, DS-V1.38-4, PL-V1.38-4, SHL-V1.38-6/9, EX-V1.38-2/3/6) — separate cluster work each."""
 mentions = [
     "1.38.0",
     "audit",
@@ -1898,4 +1827,50 @@ mentions = [
     "EX-V1.38-2",
     "EX-V1.38-3",
     "EX-V1.38-6",
+]
+
+[[note]]
+sentiment = -0.5
+text = "hnsw_rs internally floors ef to k: 'let ef = ef_arg.max(knbn)' at hnsw_rs-0.3.4/src/hnsw.rs:1450 (also in search_filter at ~1500). User-facing ef_search knob below k is silently no-op — sweep [0..k] produces byte-identical R@K. To probe ef-sensitivity meaningfully, set ef > k. Combined with our k*2 floor and the candidate_count=500 floor (#1583), ef knobs below 500 do nothing on production queries."
+mentions = [
+    "hnsw_rs",
+    "src/hnsw/search.rs",
+    "ef_search",
+]
+
+[[note]]
+sentiment = -0.5
+text = "CAGRA itopk_max scales by log2(n_vectors): (log2(n) * 32).clamp(128, 4096) — 441 at 14k chunks, 532 at 100k. CAGRA returns empty Vec when k > itopk_max. The SPLADE-fusion path (search_hybrid) had no fallback before #1584, so candidate_count > 441 silently cratered R@5 (alpha=1.0 dense-only: 0.66 → 0.17). Fix: VectorIndex::max_k() declares per-backend cap; cap_k_to_backend trims at dispatch. Lesson: per-backend k limits need a first-class trait method, not a 'caller falls back' contract."
+mentions = [
+    "src/cagra.rs",
+    "src/index.rs",
+    "src/search/query.rs",
+    "#1584",
+]
+
+[[note]]
+sentiment = -0.5
+text = "llm_summaries accumulates orphans across reindexes: keyed by content_hash, so any code change leaves old hashes cached forever. cqs stats llm_summary_count is a row count and overstates real coverage; use llm_summary_chunk_coverage_pct (per-chunk distinct, post #1589) instead. Auto-prune fires at end of cqs index --llm-summaries; --no-prune-summaries opts out for cross-slot summary copy by content_hash. On gemma slot: 14400 rows → 9317 after one prune (5083 orphans deleted), coverage % unchanged."
+mentions = [
+    "src/store/metadata.rs",
+    "llm_summaries",
+    "#1587",
+    "#1589",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Paired test+dev α sweep is the cheap robustness filter for category-level retunes. Single-fixture R@5 wins at n=8-14 are below the noise floor — 1 query crossing top-5 = 5-12pp swing. v3.v2 sweep flagged 5 categories as candidates; only identifier_lookup (n=18, both halves agreed +11.1pp at α=0.80..0.90 plateau, #1588) survived cross-fixture check. Other apparent wins (structural_search, type_filtered, multi_step) were single-query swings that didn't agree."
+mentions = [
+    "src/search/router.rs",
+    "evals/queries/v3_test.v2.json",
+    "#1588",
+]
+
+[[note]]
+sentiment = 0.0
+text = "cargo clean on configured target dir recovers a lot: 168.6 GiB freed after a heavy multi-PR session (multiple cargo build/test/clippy --features gpu-index cycles). Target dir is ~/.cargo-target/cqs/ per .cargo/config.toml. Installed binary at ~/.cargo/bin/cqs is unaffected — daemon stays running on the cached copy. Periodic clean is cheap and worth it after big release cycles."
+mentions = [
+    "cargo",
+    ".cargo/config.toml",
 ]
