@@ -419,7 +419,19 @@ cqs train-data --repos . --output out.jsonl --resume           # Resume from che
 
 ## Reranker Configuration
 
-The cross-encoder reranker model can be overridden via environment variable:
+The cross-encoder reranker is **opt-in only** because every variant we've measured is net-negative on the v3.v2 218q dual-judge eval at v1.39.0. Numbers (Δ R@5 vs no-reranker baseline of 67.9% test / 80.7% dev):
+
+| Reranker | Test R@5 | Dev R@5 |
+|---|---:|---:|
+| **No reranker (baseline)** | **67.9%** | **80.7%** |
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` (default if `--rerank` is set) | 56.0% (-11.9pp) | 64.2% (-16.5pp) |
+| In-domain UniXcoder reranker (3 training variants) | 55.0–57.8% (-10 to -13pp) | 55.0–60.6% (-20 to -26pp) |
+
+R@20 is nearly unchanged across variants — the gold answer is still in the pool, the reranker just demotes it. The bottleneck isn't a tunable knob: stage-1 retrieval (EmbeddingGemma + SPLADE + RRF) is strong enough that cross-encoder scoring on the concatenated `(query, NL_description + signature + content + doc)` pair adds noise rather than signal at the rank-5 boundary. v3.v2 at 109q × ~30 candidates is also too thin to fine-tune a 125M cross-encoder against hard stage-1 negatives — see ROADMAP.md "Reranker V2 retrain" for the full post-mortem.
+
+**Use `--rerank` only when** you have a project-specific labelled set proving lift, OR a reranker bigger than 125M (e.g. `bge-reranker-large` at ~3× latency) trained on 10×+ more queries.
+
+The model is overridable for that case:
 
 ```bash
 export CQS_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2  # default
@@ -522,7 +534,7 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs "query" --include-refs` - also search configured reference indexes
 - `cqs "name" --name-only` - definition lookup (fast, no embedding)
 - `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
-- `cqs "query" --rerank` - cross-encoder re-ranking (slower, more accurate)
+- `cqs "query" --rerank` - cross-encoder re-ranking (opt-in only; **net-negative on the v3.v2 218q eval at v1.39.0** — see Reranker Configuration below)
 - `cqs "query" --splade` - sparse-dense hybrid search (requires SPLADE model)
 - `cqs "query" --splade --splade-alpha 0.3` - tune fusion weight (0=pure sparse, 1=pure dense)
 - `cqs read <path>` - file with context notes injected as comments
