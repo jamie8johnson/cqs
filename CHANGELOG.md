@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-05-08
+
+Minor release driven by **agent-adoption telemetry**: `cqs search` rate dropped from 79% of code-intel calls in mid-April to 6% in early May as the JSON response shape accumulated fields. v1.40.0 ships the response-side fix (SNR restoration phases 1-4) and the routing-side groundwork (polymorphic routing Phase 1 plumbing + first cell). Breaking change to default JSON output justifies the minor bump.
+
+**Headline changes (full detail in Added/Changed below):**
+
+- **CLI direct success now emits bare JSON payload by default.** `cqs <cmd> --json` no longer wraps the response in an envelope; `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge. The 79% → 6% search-rate decline is the load-bearing signal we expect this to reverse.
+- **Per-result fields slimmed under friendly mode.** `trust_level`, `injection_flags`, `has_parent` skip-when-default; `CQS_ULTRASECURITY=1` force-emits everything for adversarial deployments. ~30% smaller per result in the typical case.
+- **Batch / daemon JSONL slimmed.** Per-line shape now `{"data": <payload>}` or `{"error": {...}}`; ~70 KB saved on a 1000-line fixture batch.
+- **`Posture` enum + `OutputFormat` enum.** Typed wire-format selectors threaded from request entry points down to leaf serializers — replaces process-state-dependent env-var reads in leaves.
+- **`cqs::kind` module + `Store::lookup_by_name`.** Polymorphic-routing Phase 1 building blocks: name → `Kind` (Function | Type | Const | Module | Other | Ambiguous | Multiple | NotFound) classification + exact-match SQL primitive.
+- **`cqs impact <const>` returns kind-labeled definitions instead of empty.** First cell of the per-(command × kind) matrix from `docs/polymorphic-routing.md`. Eliminates the misrouted-to-empty failure that drove agents to `grep`.
+- **v3.v2 eval fixture refresh.** 69 test + 71 dev queries re-anchored to current corpus line numbers. Aggregate R@K **+6.4 / +2.7 / +3.2 pp** vs pre-refresh — recovers the audit-driven line-shift dilution. Brings agg above the v1.36-snapshot range.
+- **env_var_docs substring → token match + pre-commit hook step.** Closes a silent miss where mentioning `CQS_FOO_BAR` in README falsely satisfied a missing-doc requirement for `CQS_FOO`.
+
+**Test impact:** 38 integration test files (`tests/cli_*.rs`) and 8 eval harness Python scripts pinned to `CQS_OUTPUT_FORMAT=v1` to preserve existing assertion shapes through the flip-default. Test-shape migration to assert bare payload natively is a follow-up.
+
+**Verified eval baseline post-release** (v3.v2 218q dual-judge, default slot, EmbeddingGemma-300m + per-cat α + Unknown=0.80):
+
+| Split | R@1 | R@5 | R@20 |
+|---|---:|---:|---:|
+| test | 49.5% | 72.5% | 84.4% |
+| dev | 56.0% | 82.6% | 94.5% |
+| **aggregate** | **52.7%** | **77.5%** | **89.4%** |
+
+Above the v1.36-snapshot range (50.9 / 76.2 / 88.6).
+
 ### Added
 
 - **`cqs::cli::json_envelope::Posture` enum + `_with_posture` emission helpers** (SNR restoration Phase 1). Caller-decided emission posture (`Friendly` | `Adversarial`), threaded from request entry points down to leaf serializers. Replaces the env-var-read-in-leaf style with a typed parameter so leaves stay process-state-independent. Phase 1 ships the type and the `_with_posture` variants of `wrap_value`, `wrap_error`, `EnvelopeMeta`, `Envelope::ok` / `Envelope::err`, `meta_json_fragment`, `emit_json`, `emit_json_error`, `emit_json_error_with_data`. No call site is migrated yet — legacy entry points continue to read `CQS_ULTRASECURITY` via `Posture::current()` so the wire shape is byte-identical. See `docs/json-snr-restoration.md` for the full 6-phase plan; this commit is "additive cleanup, no breaking change."
