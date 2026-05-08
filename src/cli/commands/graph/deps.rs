@@ -65,12 +65,85 @@ pub(crate) fn build_deps_forward(users: &[ChunkSummary], root: &Path) -> Vec<Dep
         .collect()
 }
 
+// ─── Polymorphic-routing fallback ──────────────────────────────────────────
+
+/// Polymorphic-routing kind-mismatch fallback for `cqs deps <name>`.
+/// Same shape pattern as the impact / callers / callees / test-map / trace
+/// fallbacks. Deps is dual-mode (forward = "type users", reverse =
+/// "function's used types"), so Function and Type both have valid
+/// semantics in their respective modes — the fallback fires only for
+/// kinds that don't fit deps' model at all (Const, Module, Ambiguous).
+fn deps_kind_fallback(
+    name: &str,
+    chunks: &[cqs::store::ChunkSummary],
+    json: bool,
+    kind_label: &str,
+    note: &str,
+    text_lead: &str,
+    text_redirect: &str,
+) -> Result<()> {
+    debug_assert!(
+        !chunks.is_empty(),
+        "Kind fallback called with no hits — caller must classify before dispatching"
+    );
+    if json {
+        let definitions: Vec<serde_json::Value> = chunks
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "file": cqs::normalize_path(&c.file),
+                    "line_start": c.line_start,
+                    "line_end": c.line_end,
+                    "language": c.language.to_string(),
+                    "chunk_type": c.chunk_type.to_string(),
+                    "signature": c.signature,
+                    "content": c.content,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "kind": kind_label,
+            "fallback_from": "deps",
+            "name": name,
+            "definitions": definitions,
+            "note": note,
+        });
+        crate::cli::json_envelope::emit_json(&payload)?;
+    } else {
+        println!("{text_lead}");
+        println!();
+        println!("Definitions:");
+        for c in chunks {
+            println!(
+                "  {}:{}-{} ({} {})",
+                cqs::normalize_path(&c.file),
+                c.line_start,
+                c.line_end,
+                c.language,
+                c.chunk_type
+            );
+            if !c.signature.is_empty() {
+                println!("    {}", c.signature);
+            }
+        }
+        println!();
+        println!("{text_redirect}");
+    }
+    Ok(())
+}
+
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 /// Show type dependencies.
 ///
 /// Forward (default): `cqs deps Config` -- who uses this type?
 /// Reverse: `cqs deps --reverse func_name` -- what types does this function use?
+///
+/// **Polymorphic routing (Phase 1):** detects the name's kind up-front.
+/// `Function` (with `--reverse`) and `Type` (default forward) both have
+/// valid deps semantics — the existing flow runs as today. `Const`,
+/// `Module`, and `Ambiguous` get a kind-labeled fallback because deps'
+/// "uses-of-type" / "uses-of-function" model doesn't fit those.
 pub(crate) fn cmd_deps(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
@@ -87,6 +160,48 @@ pub(crate) fn cmd_deps(
     let root = &ctx.root;
     // Task A3: cap on user list (forward) or used-types list (reverse).
     let limit = limit.clamp(1, 100);
+
+    // Polymorphic-routing kind detection (Phase 1). Const/Module/Ambiguous
+    // don't fit deps' model — fall back with a redirect note. Function
+    // and Type continue to the existing dual-mode flow below.
+    let chunks = store.lookup_by_name(name)?;
+    let hits: Vec<cqs::kind::KindHit> = chunks.iter().map(cqs::kind::KindHit::from).collect();
+    let kind = cqs::kind::classify_hits(&hits);
+    match kind {
+        cqs::kind::Kind::Const => {
+            return deps_kind_fallback(
+                name, &chunks, json, "const",
+                "consts don't have type dependencies in either direction; here are the definition sites. \
+                 Use `cqs <name>` to find references to this const.",
+                &format!("(deps) `{name}` is a const, not a function or type — type-dependency analysis doesn't apply."),
+                "Use `cqs <name>` to find references to this const.",
+            );
+        }
+        cqs::kind::Kind::Module => {
+            return deps_kind_fallback(
+                name, &chunks, json, "module",
+                "modules don't have type dependencies in this view; here are the declaration sites. \
+                 Use `cqs deps <type-or-function-in-module>` for an item-level analysis.",
+                &format!("(deps) `{name}` is a module/namespace, not a function or type — type-dependency analysis doesn't apply at this granularity."),
+                "Use `cqs deps <type-or-function-in-module>` for an item-level analysis.",
+            );
+        }
+        cqs::kind::Kind::Ambiguous => {
+            return deps_kind_fallback(
+                name, &chunks, json, "ambiguous",
+                "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
+                 Re-run `cqs deps <name>` against a more specific name (e.g. `Type::method`).",
+                &format!("(deps) `{name}` is ambiguous — matches multiple chunk kinds."),
+                "Re-run with a more specific name (e.g. `Type::method`).",
+            );
+        }
+        // Function | Type | Multiple | Other | NotFound: continue to
+        // existing flow. Function with --reverse and Type forward both
+        // have valid semantics; Multiple typically resolves via the
+        // store query's deterministic ordering; NotFound surfaces an
+        // empty result naturally.
+        _ => {}
+    }
 
     if reverse {
         // P2 #65: limit at SQL time so we don't fetch every edge of a popular
