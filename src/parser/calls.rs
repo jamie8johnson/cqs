@@ -1204,4 +1204,33 @@ fn build() {
             names
         );
     }
+
+    /// Pin the `Some(fn_path as TypeAlias)` cast pattern — Rust dispatch
+    /// tables sometimes coerce a fn-item to a fn-pointer type before
+    /// storing in `Option<fn(...) -> ...>`. The 14 `post_process_*` false
+    /// positives in src/language/languages.rs all matched this shape.
+    #[test]
+    fn test_struct_field_assignment_captures_type_cast_function() {
+        let parser = Parser::new().unwrap();
+        let source = r#"
+type PostProcessFn = fn() -> ();
+
+fn post_process_helper() {}
+
+struct Config {
+    handler: Option<PostProcessFn>,
+}
+
+const CFG: Config = Config {
+    handler: Some(post_process_helper as PostProcessFn),
+};
+"#;
+        let calls = parser.extract_calls(source, Language::Rust, 0, source.len(), 0);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(
+            names.contains(&"post_process_helper"),
+            "expected `post_process_helper` (from `Some(post_process_helper as PostProcessFn)`), got: {:?}",
+            names
+        );
+    }
 }

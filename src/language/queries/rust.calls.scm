@@ -42,3 +42,20 @@
   value: (call_expression
     arguments: (arguments (scoped_identifier
       name: (identifier) @callee))))
+
+; And `Some(fn_path as fn(T) -> R)` casts — Rust dispatch tables
+; sometimes use `as` to coerce a fn-item to a fn-pointer type before
+; storing in an Option<fn(...) -> ...> field. Closes the remaining
+; 14 `post_process_*_*` false positives in src/language/languages.rs.
+(field_initializer
+  value: (call_expression
+    arguments: (arguments
+      (type_cast_expression
+        value: (identifier) @callee))))
+
+(field_initializer
+  value: (call_expression
+    arguments: (arguments
+      (type_cast_expression
+        value: (scoped_identifier
+          name: (identifier) @callee)))))
