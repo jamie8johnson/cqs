@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.39.2] - 2026-05-08
+
+Patch release. Two follow-ons to v1.39.1's CAGRA cliff fix, both surfaced from the same exploratory loop: (1) `identifier_lookup` SPLADE α retune 1.00 → 0.85 from a paired test+dev sweep on v3.v2 218q (#1588 — closes dev category R@5 to 100%, no regressions); (2) auto-pruning of orphaned `llm_summaries` rows accumulated across reindexes (#1589, closes #1587 — the gemma slot had 5,083 orphans, now auto-pruned at end of every `cqs index --llm-summaries`).
+
 ### Added
 
 - **`Store::prune_orphaned_llm_summaries() -> Result<u64>`** + auto-fire at end of `cqs index` (#1587). Deletes `llm_summaries` rows whose `content_hash` no longer matches any chunk. Each reindex that changes any code accumulates orphans; unpruned, the table grows arbitrarily larger than the corpus and `cqs stats llm_summary_count` (a row count) overstates real coverage. On the gemma slot before this fix: 14,400 rows / 13,175 distinct chunk hashes = 109% (vivid drift). Opt-out via `cqs index --no-prune-summaries` for cross-slot summary copy by content_hash.
