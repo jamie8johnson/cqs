@@ -53,6 +53,60 @@ impl Posture {
     }
 }
 
+/// Wire-format selector for CLI direct (`emit_json`) success path.
+///
+/// SNR Phase 4 ships this as opt-in via `CQS_OUTPUT_FORMAT=v2`; the
+/// default stays `V1Envelope` to keep the existing 21+ integration
+/// test files and 50+ eval harness Python scripts unmodified. A
+/// future release flips the default to `V2Bare` once consumer
+/// migration is complete (deferred work; tracked in
+/// `docs/json-snr-restoration.md` Phase 4 pickup notes).
+///
+/// **Posture interaction:** [`Posture::Adversarial`] overrides this —
+/// the verbose envelope wins regardless of `OutputFormat`. The two
+/// env vars compose: `CQS_ULTRASECURITY=1` ⇒ full envelope on every
+/// surface; `CQS_OUTPUT_FORMAT=v2` AND not adversarial ⇒ bare
+/// payload on the CLI direct success path; otherwise current envelope
+/// behavior.
+///
+/// Batch / daemon JSONL is **not** affected by this — Phase 3 already
+/// shipped the slim `{"data": ...}` / `{"error": {...}}` shape there
+/// and the JSONL contract requires self-describing lines either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Current behavior: CLI direct success emits the full envelope
+    /// `{data, error: null, version: 1, _meta: {...}}` to stdout.
+    /// Default; selected when `CQS_OUTPUT_FORMAT` is unset or any
+    /// value other than `v2`.
+    V1Envelope,
+    /// SNR Phase 4 target shape: CLI direct success emits the bare
+    /// JSON payload to stdout (no envelope). Failure path emits a
+    /// structured error to stderr + non-zero exit. Selected via
+    /// `CQS_OUTPUT_FORMAT=v2`.
+    V2Bare,
+}
+
+impl OutputFormat {
+    /// Read the env var once and return the corresponding format.
+    /// Same one-syscall cost as [`Posture::current`]; intended to be
+    /// called at the same dispatcher entry points.
+    pub fn current() -> Self {
+        if std::env::var("CQS_OUTPUT_FORMAT").as_deref() == Ok("v2") {
+            Self::V2Bare
+        } else {
+            Self::V1Envelope
+        }
+    }
+
+    /// `true` when the bare-payload wire shape should be used on the
+    /// CLI direct success path. Returns `false` when [`Posture`] is
+    /// [`Posture::Adversarial`] — adversarial consumers always get
+    /// the full envelope regardless of `OutputFormat`.
+    pub fn emits_bare_payload(self, posture: Posture) -> bool {
+        matches!(self, Self::V2Bare) && !posture.is_adversarial()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +131,48 @@ mod tests {
             "any value other than '1' is Friendly"
         );
         std::env::remove_var("CQS_ULTRASECURITY");
+    }
+
+    // SNR Phase 4 plumbing: OutputFormat::V2Bare opt-in via
+    // CQS_OUTPUT_FORMAT=v2; default V1Envelope preserves existing
+    // tests + eval harness behavior.
+
+    #[test]
+    #[serial_test::serial]
+    fn output_format_current_reads_env_var() {
+        std::env::remove_var("CQS_OUTPUT_FORMAT");
+        assert_eq!(OutputFormat::current(), OutputFormat::V1Envelope);
+        std::env::set_var("CQS_OUTPUT_FORMAT", "v2");
+        assert_eq!(OutputFormat::current(), OutputFormat::V2Bare);
+        std::env::set_var("CQS_OUTPUT_FORMAT", "v1");
+        assert_eq!(
+            OutputFormat::current(),
+            OutputFormat::V1Envelope,
+            "explicit v1 is also envelope (legacy hedge)"
+        );
+        std::env::set_var("CQS_OUTPUT_FORMAT", "V2");
+        assert_eq!(
+            OutputFormat::current(),
+            OutputFormat::V1Envelope,
+            "case-sensitive: only lowercase 'v2' opts in"
+        );
+        std::env::remove_var("CQS_OUTPUT_FORMAT");
+    }
+
+    #[test]
+    fn output_format_emits_bare_payload_under_v2_friendly() {
+        assert!(OutputFormat::V2Bare.emits_bare_payload(Posture::Friendly));
+    }
+
+    #[test]
+    fn output_format_skips_bare_under_v1() {
+        assert!(!OutputFormat::V1Envelope.emits_bare_payload(Posture::Friendly));
+        assert!(!OutputFormat::V1Envelope.emits_bare_payload(Posture::Adversarial));
+    }
+
+    #[test]
+    fn output_format_adversarial_overrides_v2() {
+        // Posture::Adversarial wins — verbose envelope on every surface.
+        assert!(!OutputFormat::V2Bare.emits_bare_payload(Posture::Adversarial));
     }
 }
