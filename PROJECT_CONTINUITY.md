@@ -123,15 +123,17 @@ Declare the variant with `#[cqs_cmd(group = "a"|"b", batch = "cli"|"daemon"|"run
 
 Canonical slate: `evals/queries/v3_test.v2.json` (109q) + `evals/queries/v3_dev.v2.json` (109q). Both fixtures refreshed 2026-04-25 (PR #1109).
 
-**Baseline (v3.v2 218q dual-judge, post-v1.39.0 default — embeddinggemma-300m + per-cat α + Unknown=0.80):**
+**Baseline (v3.v2 218q dual-judge, 2026-05-08 post-v1.39.1 cliff fix + LLM summaries refresh + identifier_lookup α retune):**
 
-| Metric | Test | Dev |
-|---|---:|---:|
-| R@1 | 44.0% | 55.0% |
-| R@5 | 67.9% / 69.7% | 78.0% / 80.7% |
-| R@20 | 80.7% / 84.4% | 91.7% / 92.7% |
+| Metric | Test | Dev | Agg |
+|---|---:|---:|---:|
+| R@1 | 40.4% | 52.3% | 46.3% |
+| R@5 | 71.6% | 78.0% | 74.8% |
+| R@20 | 81.7% | 90.8% | 86.2% |
 
-The R@5/R@20 ranges reflect the natural variance from one query rank-shifting at the boundary; both numbers comfortably above their canonical baselines. v4 fixtures (1526/split, 14× v3 N) exist for any A/B that needs tighter noise floors.
+Per-category R@5 (post-retune): identifier_lookup 91.7% (was 86.7% pre-retune; agg n=36), multi_step 92.9%, negation 81.8%, type_filtered 69.2%, behavioral_search 65.6%, cross_language 63.6%, structural_search 62.5%, conceptual_search 56.0%.
+
+Numbers below the 2026-05-03 capture (44/55 R@1 → 40.4/52.3, 67.9/78.0 R@5 → 71.6/78.0) reflect: (a) corpus drift since 2026-05-03 (13,359 → 14,203 chunks; eval matches `(file, name, line_start)` strict so audit-cycle line shifts silently turn hits into misses — see feedback memory "Eval Line-Start Drift"); (b) the cliff fix and α retune are strict improvements on the current corpus state. Refreshing the v3.v2 fixture line numbers would lift agg R@K back into the v1.36-snapshot range without changing retrieval quality. v4 fixtures (1526/split, 14× v3 N) exist for any A/B that needs tighter noise floors.
 
 **Strategic frontier candidates** (when redirected): wire USearch / SIMD brute-force as `IndexBackend` candidates (#1131 trait scaffolding already in); HyDE on v3 dev with index-time per-category routing (never properly tested at v3 N); knowledge-augmented retrieval (call/type graph as structured filter; multi_step queries weakest at 28-43% R@1); expand v3 → v4 fixture scale (1526q/split — current 109q is data-bound for per-category sweeps).
 
