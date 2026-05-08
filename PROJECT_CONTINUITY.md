@@ -2,7 +2,21 @@
 
 ## Right Now
 
-**v1.39.2 shipping** — 2026-05-08, follow-on patch to v1.39.1 covering two threads that emerged from the same exploratory loop. Three PRs land for it: #1584 (cliff fix, already in v1.39.1), #1588 (α retune), #1589 (orphan GC). Plus #1582 (reranker closeout docs) and #1586 (tears) merged en route. Issue #1587 closes with #1589.
+**Post-v1.39.2 work in design** — 2026-05-08. Two design docs landed (PRs #1595, #1596) addressing the agent-adoption friction observed in `.cqs/telemetry*.jsonl`. No implementation yet; both pending review.
+
+The diagnostic: **`search` rate dropped from 79% of code-intel calls in mid-April to 6% in early May** as the response shape accumulated fields (envelope wrap, `_meta`, per-result `trust_level`/`injection_flags`, etc.). That's not voluntary tool refinement; it's agents avoiding a noisier surface. The fix splits across two friction surfaces:
+
+- **JSON SNR restoration** ([`docs/json-snr-restoration.md`](docs/json-snr-restoration.md), PR #1595). CLI direct success → bare payload on stdout, no envelope. Failure → structured JSON to stderr + non-zero exit. Batch/daemon JSONL → slimmed envelope. `CQS_ULTRASECURITY=1` restores full envelope + force-emits per-result security signals (adversarial-deployment opt-in). Breaking change to default JSON shape; minor bump v1.40.0; in-tree migration only. Includes `CQS_OUTPUT_FORMAT=v1|v2` feature-flag hedge for one release. ~1 week solo.
+
+- **Polymorphic command routing** ([`docs/polymorphic-routing.md`](docs/polymorphic-routing.md), PR #1596). `cqs impact CONST_NAME` returns empty today (call-graph is function-only); agent reaches for grep. Phase 1 (~1 week, ready): every function-or-type-specialized command grows a kind-mismatch fallback that returns useful, kind-labeled output instead of empty. Per-(command × kind) behavior matrix; ~36 tests; `kind` and `fallback_from` fields added to response shape. Phase 2 (~1 week, contingent): unified `cqs about <name>` entry point. Phase 2 trigger criteria explicit; do not preemptively ship.
+
+**Recommended ordering if shipping serially**: Phase 1 of polymorphic routing first (a failed query is worse than an expensive answer), then SNR restoration, then Phase 2 of polymorphic routing only if triggered. Both designs are independent; landing in the same release window amortizes consumer-migration concerns (eval harness, daemon batch protocol).
+
+The earlier v1.39.2 cycle is closed; everything below this section captures it. Earlier today (#1593) inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1`; that addressed the alarm-shaped piece of the agent-friction equation. The two designs above address the residual.
+
+---
+
+**v1.39.2 shipped** — 2026-05-08, follow-on patch to v1.39.1 covering two threads that emerged from the same exploratory loop. Three PRs land for it: #1584 (cliff fix, already in v1.39.1), #1588 (α retune), #1589 (orphan GC). Plus #1582 (reranker closeout docs) and #1586 (tears) merged en route. Issue #1587 closes with #1589.
 
 **Loop arc** (single session, started from "is the k*2 floor too high?"):
 
