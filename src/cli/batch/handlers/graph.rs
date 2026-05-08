@@ -3,13 +3,105 @@
 //! #1216: handlers take a single `&XArgs` argument (not destructured
 //! positionals) so the macro-driven `BatchCmd::dispatch` can call every
 //! row uniformly.
+//!
+//! ## Polymorphic routing (Phase 1, daemon path)
+//!
+//! Mirrors the CLI-direct sweep in `cli::commands::graph::*` (PRs #1612,
+//! #1616, #1617, #1618). Every kind-specialized dispatch handler now
+//! consults `cqs::kind::classify_hits` against an exact-name lookup
+//! before its happy-path query — Const/Type/Module/Ambiguous return a
+//! kind-labeled `{kind, fallback_from, name, definitions, note}` value
+//! instead of a misrouted-to-empty result. Function-path response shapes
+//! are unchanged.
 
 use anyhow::Result;
+
+use cqs::kind::{classify_hits, Kind, KindHit};
+use cqs::store::ChunkSummary;
 
 use super::super::BatchView;
 use crate::cli::args::{
     CallersArgs, DepsArgs, ImpactArgs, ImpactDiffArgs, RelatedArgs, TestMapArgs, TraceArgs,
 };
+
+// ─── Polymorphic-routing kind-mismatch fallback (daemon path) ──────────────
+
+/// Build the kind-labeled fallback value emitted by every dispatch_*
+/// function for non-Function kinds. Mirrors the per-command shape that
+/// the cmd_* CLI handlers ship in `cli::commands::graph::*`.
+fn build_kind_fallback_value(
+    name: &str,
+    chunks: &[ChunkSummary],
+    kind_label: &str,
+    fallback_from: &str,
+    note: &str,
+) -> serde_json::Value {
+    let definitions: Vec<serde_json::Value> = chunks
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "file": cqs::normalize_path(&c.file),
+                "line_start": c.line_start,
+                "line_end": c.line_end,
+                "language": c.language.to_string(),
+                "chunk_type": c.chunk_type.to_string(),
+                "signature": c.signature,
+                "content": c.content,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "kind": kind_label,
+        "fallback_from": fallback_from,
+        "name": name,
+        "definitions": definitions,
+        "note": note,
+    })
+}
+
+/// Detect the name's kind via `Store::lookup_by_name` + `classify_hits`.
+/// Returns the kind-labeled fallback value when the name resolves to a
+/// non-Function/Multiple/Other/NotFound kind that the dispatch handler
+/// can't process meaningfully (Const/Type/Module/Ambiguous). Returns
+/// `None` for the kinds where the existing flow is appropriate.
+///
+/// `notes` carries the per-command-specific text for each fallback kind
+/// — keeps the per-(command × kind) cell content adjacent to the call
+/// site without forcing the helper to know every redirect message.
+struct KindNotes<'a> {
+    const_note: &'a str,
+    type_note: &'a str,
+    module_note: &'a str,
+    ambiguous_note: &'a str,
+}
+
+fn try_kind_fallback(
+    ctx: &BatchView,
+    name: &str,
+    fallback_from: &str,
+    notes: KindNotes<'_>,
+) -> Result<Option<serde_json::Value>> {
+    let chunks = ctx.store().lookup_by_name(name)?;
+    let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
+    let kind = classify_hits(&hits);
+    let (label, note) = match kind {
+        Kind::Const => ("const", notes.const_note),
+        Kind::Type => ("type", notes.type_note),
+        Kind::Module => ("module", notes.module_note),
+        Kind::Ambiguous => ("ambiguous", notes.ambiguous_note),
+        // Function | Multiple | Other | NotFound: existing flow handles
+        // these — Function is the happy path, Multiple resolves
+        // deterministically, NotFound surfaces an empty result.
+        _ => return Ok(None),
+    };
+    Ok(Some(build_kind_fallback_value(
+        name,
+        &chunks,
+        label,
+        fallback_from,
+        note,
+    )))
+}
 
 /// Dispatches a dependency query for a given name, returning either the types used by it or the code locations that use it.
 ///
@@ -49,6 +141,41 @@ pub(in crate::cli::batch) fn dispatch_deps(
     // Task A3: shared cap with `cmd_deps`. Truncates after fetch so the
     // fetched set is bounded by the same value the CLI path would.
     let limit = args.limit_arg.limit.clamp(1, 100);
+
+    // Polymorphic-routing kind detection. Function and Type both have
+    // valid deps semantics in their respective modes (reverse / forward);
+    // Const/Module/Ambiguous fall back since deps' "uses-of-X" model
+    // doesn't fit those kinds. Inline kind dispatch (rather than
+    // `try_kind_fallback`) so Type passes through to the existing
+    // forward-mode query without producing a fallback shape.
+    {
+        let chunks = ctx.store().lookup_by_name(name)?;
+        let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
+        let kind = classify_hits(&hits);
+        let (label, note) = match kind {
+            Kind::Const => (
+                "const",
+                "consts don't have type dependencies in either direction; here are the definition sites. Use `cqs <name>` to find references to this const.",
+            ),
+            Kind::Module => (
+                "module",
+                "modules don't have type dependencies in this view; here are the declaration sites. Use `cqs deps <type-or-function-in-module>` for an item-level analysis.",
+            ),
+            Kind::Ambiguous => (
+                "ambiguous",
+                "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
+            ),
+            // Function | Type | Multiple | Other | NotFound: continue
+            // to existing flow. Function with --reverse and Type forward
+            // both have valid semantics.
+            _ => ("", ""),
+        };
+        if !label.is_empty() {
+            return Ok(build_kind_fallback_value(
+                name, &chunks, label, "deps", note,
+            ));
+        }
+    }
 
     if reverse {
         // P2 #65: bind the limit at SQL time.
@@ -97,6 +224,20 @@ pub(in crate::cli::batch) fn dispatch_callers(
         return Ok(serde_json::to_value(&callers)?);
     }
 
+    if let Some(fallback) = try_kind_fallback(
+        ctx,
+        name,
+        "callers",
+        KindNotes {
+            const_note: "consts don't have callers; here are the definition sites. Use `cqs <name>` or `cqs search <name>` to find references.",
+            type_note: "types don't have callers in the call-graph sense; here are the definition sites. Use `cqs deps <name>` for type-dependency callers or `cqs <name>` to find usage references.",
+            module_note: "modules don't have callers in the call-graph sense; here are the declaration sites. Use `cqs <name>` to find files that reference this module.",
+            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
+        },
+    )? {
+        return Ok(fallback);
+    }
+
     let mut callers = ctx.store().get_callers_full(name)?;
     callers.truncate(limit);
     let output = crate::cli::commands::build_callers(&callers);
@@ -141,6 +282,20 @@ pub(in crate::cli::batch) fn dispatch_callees(
         let mut callees = cross_ctx.get_callees_cross(name)?;
         callees.truncate(limit);
         return Ok(serde_json::to_value(&callees)?);
+    }
+
+    if let Some(fallback) = try_kind_fallback(
+        ctx,
+        name,
+        "callees",
+        KindNotes {
+            const_note: "consts don't have callees; the const's value is its content. Use `cqs explain <name>` or `cqs read --focus <name>` to inspect.",
+            type_note: "types don't have callees; here are the definition sites. Use `cqs deps <name>` for the type's type dependencies or `cqs callees <Type::method>` for a specific method's callees.",
+            module_note: "modules don't have callees; here are the declaration sites. Use `cqs callees <function-in-module>` for a specific function's callees.",
+            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
+        },
+    )? {
+        return Ok(fallback);
     }
 
     let mut callees = ctx.store().get_callees_full(name, None)?;
@@ -199,6 +354,20 @@ pub(in crate::cli::batch) fn dispatch_impact(
         truncate_impact_sections(&mut result, limit);
         let json = cqs::impact_to_json(&result)?;
         return Ok(json);
+    }
+
+    if let Some(fallback) = try_kind_fallback(
+        ctx,
+        name,
+        "impact",
+        KindNotes {
+            const_note: "consts don't have call-graph impact; here are the definition sites. Use `cqs <name>` or `cqs search <name>` to find references.",
+            type_note: "types don't have call-graph impact; here are the definition sites. Use `cqs deps <name>` for type-dependency analysis or `cqs <name>` to find usage references.",
+            module_note: "modules don't have call-graph impact; here are the declaration sites. Use `cqs <name>` to find files that reference this module.",
+            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
+        },
+    )? {
+        return Ok(fallback);
     }
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
@@ -292,6 +461,20 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         return Ok(serde_json::to_value(&output)?);
     }
 
+    if let Some(fallback) = try_kind_fallback(
+        ctx,
+        name,
+        "test-map",
+        KindNotes {
+            const_note: "consts don't have a call-graph; tests don't 'cover' a const value the way they cover a function. Use `cqs <name>` to find tests that reference this const by name.",
+            type_note: "types don't have a call-graph in the same sense; here are the type's definition sites. Use `cqs <name>` to find tests that reference this type, or `cqs test-map <Type::method>` for a specific method's coverage.",
+            module_note: "modules don't have a call-graph; tests cover specific functions inside the module, not the module itself. Use `cqs <name>` to find tests in this module's files.",
+            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
+        },
+    )? {
+        return Ok(fallback);
+    }
+
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let target_name = resolved.chunk.name.clone();
 
@@ -351,6 +534,24 @@ pub(in crate::cli::batch) fn dispatch_trace(
             path: result,
         };
         return Ok(serde_json::to_value(&trace_result)?);
+    }
+
+    // Polymorphic-routing kind detection on the source name. The trace
+    // BFS requires a callable starting node; if `source` is non-Function
+    // dispatch the kind-labeled fallback. Target's kind is left to
+    // `resolve_target` to surface its own typed error if missing.
+    if let Some(fallback) = try_kind_fallback(
+        ctx,
+        source,
+        "trace",
+        KindNotes {
+            const_note: "consts don't participate in the call-graph; no call path can originate from a const value. Use `cqs <source>` to find references and trace from the calling functions.",
+            type_note: "types don't have call chains; here are the type's definition sites. Use `cqs <source>` to find usage references or trace from a specific method.",
+            module_note: "modules don't participate in the call-graph as nodes. Use `cqs trace <function-in-module> <target>` for a specific function.",
+            ambiguous_note: "source name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name.",
+        },
+    )? {
+        return Ok(fallback);
     }
 
     let source_resolved = cqs::resolve_target(&ctx.store(), source)?;
