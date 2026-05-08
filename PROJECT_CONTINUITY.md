@@ -2,19 +2,38 @@
 
 ## Right Now
 
-**v1.39.0 shipped** — 2026-05-07. Minor release on crates.io (cqs 1.39.0 + cqs-macros 0.1.0 — first publish of the proc-macro crate after #1495's split). 88 commits since v1.38.0 across three threads:
+**v1.39.1 shipped** — 2026-05-07 (same day as v1.39.0). Patch release on crates.io. One PR (#1584) plus a docs-only follow-up (#1582) for reranker closeout.
+
+**The fix**: CAGRA enforces `itopk_size >= k` and `itopk_size <= itopk_max(n_vectors)`, where `itopk_max = (log2(n_vectors) * 32).clamp(128, 4096)` — 441 at 14k chunks, 532 at 100k. A search request with `k > itopk_max` returned an empty `Vec` from `cagra::search_impl` with a comment claiming the caller would fall back to HNSW. `search_filtered_with_index` did fall back via the brute-force escape hatch, but `search_hybrid` (the SPLADE-fusion path used by every production query) did not — empty dense leg + α-weighted sum collapsed every fused score to `1.0·0 + 0.0·s = 0` at α=1.0.
+
+**How it surfaced**: User asked "is the k*2 floor too high? Probe lower ef_search values." Sweeps across `CQS_HNSW_EF_SEARCH` produced byte-identical R@K because hnsw_rs internally floors ef to k (line 1450 `let ef = ef_arg.max(knbn)`). Pivoted to `CQS_SEARCH_CANDIDATE_FLOOR` sweep, found a sharp cliff at floor=442 in dense-only (R@5 0.66 → 0.17). Traced back to CAGRA's itopk_max for our 14k-chunk corpus = `floor(log2(14181) * 32) = 441`.
+
+**Fix shape**: `VectorIndex::max_k() -> Option<usize>` declares per-call backend capacity. `cap_k_to_backend(idx, k)` trims `k` to the cap with a debug log tagging the trimmed backend. Both dispatch sites (`search_hybrid`, `search_filtered_with_index`) call it before `search_with_filter` / `search`. CAGRA returns `Some(itopk_max)` honouring `CQS_CAGRA_ITOPK_MAX`. CAGRA's existing `return Vec::new()` branch retained as defense-in-depth.
+
+**Empirical impact** on 14k-chunk corpora at default floor=500 (from #1583):
+- Hybrid (router α): R@5 0.5963 → 0.7156 (+12pp restored on v3.v2 test 109q)
+- Dense-only (α=1.0): R@5 0.1651 → 0.6606 (+49pp; capped at max_k=441, no cliff)
+- Dev set (109q): flat across floor=500..1000 in hybrid mode — confirms floor=500 still the right default
+
+**Pacing lesson**: The cliff was technically present from the moment #1583 bumped the floor 100→500, because the new floor=500 immediately exceeded itopk_max=441 on our own corpus. v1.39.0 shipped with this regression. The fix went out as a patch on the same day, but lesson generalizes: **a recall-floor bump is a load-bearing change that needs a paired-eval sanity check on the actual production stack** (not just the formula's contract). The formula was correct; the interaction with CAGRA's per-backend k limit wasn't on the radar.
+
+**Other v1.39.1 mini-cleanup**: Closed #1582 (reranker V2 closeout docs — README + ROADMAP confirm rerankers stay net-negative on v3.v2 post-v1.39.0; future revisit gated on v4-scale fixture or a 5× bigger base). Closed #1583 as superseded — its `candidate_count_for` floor=500 helper was already on main via #1584's squash (the cliff fix branched from #1583's branch).
+
+---
+
+**v1.39.0 shipped** — 2026-05-07. Minor release. 88 commits since v1.38.0 across three threads:
 - v1.38.0-cohort audit follow-ups (#1487–#1511)
 - post-v1.38 audit cycle of 154 findings catalogued in PR #1515 — ~64 closed across ~33 cluster PRs (#1514–#1570)
 - post-cycle hardening of the watch/reindex path (#1572, #1575, #1577)
 
-**Headline operator-visible changes**:
+**Headline operator-visible changes** (v1.39.0):
 - Daemon stops SIGFPE'ing on EmbeddingGemma reindex (#1577 TRT-incompatibility blocklist; root cause #1576 upstream). Pre-fix observed 4 daemon crashes/day.
 - Cross-project commands (`trace`, `callers`, `deps`, `impact`, `test_map`) work again on slot-migrated projects since #1105 (#1564 fix).
 - Atomic per-file reindex (#1575) — mid-batch crash leaves no asymmetric state between `function_calls` and chunks/FTS.
 - `cqs dead` noise rate cut from ~80% to ~30% (#1572 — Property + doc-extension filters).
 - Graph commands now reject `--limit 0` at parse time (#1569 LimitArg fan-out).
 
-**Operational lesson from this release**: #1495's `cqs-macros` workspace split (which landed AFTER v1.38.0 was tagged) had `publish = false`, blocking `cargo publish -p cqs` for v1.39.0. Fixed in #1579: dropped publish=false, filled in standard Cargo.toml metadata, then published cqs-macros 0.1.0 first followed by cqs 1.39.0. **Going forward both crates need version bumps coordinated whenever cqs-macros's surface changes.**
+**Operational lesson from v1.39.0 release**: #1495's `cqs-macros` workspace split (which landed AFTER v1.38.0 was tagged) had `publish = false`, blocking `cargo publish -p cqs`. Fixed in #1579: dropped publish=false, filled in standard Cargo.toml metadata, then published cqs-macros 0.1.0 first followed by cqs 1.39.0. **Going forward both crates need version bumps coordinated whenever cqs-macros's surface changes.**
 
 ## Audit umbrellas — current state
 
