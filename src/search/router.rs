@@ -129,7 +129,13 @@ define_query_categories! {
     /// Looking for a specific function/type by name ("search_filtered", "HashMap::new").
     /// Routes to `SearchStrategy::NameOnly` which bypasses SPLADE entirely, so
     /// alpha is moot — kept at 1.0 as a "if SPLADE ran, default to dense" hint.
-    IdentifierLookup => "identifier_lookup", default_alpha = 1.00;
+    // 2026-05-08: 1.00 → 0.85 after the post-EmbeddingGemma summary refresh.
+    // v3.v2 218q paired sweep (test+dev) showed both halves agreeing more
+    // SPLADE helps: dev R@5 0.8889 → 1.0000 (+11.1pp, 2 queries), test R@1
+    // 0.7222 → 0.7778 (+5.6pp), no regressions. Plateau is flat from
+    // α=0.80..0.90, so 0.85 sits in the middle and tolerates classifier
+    // drift without falling off either side.
+    IdentifierLookup => "identifier_lookup", default_alpha = 0.85;
     /// Searching for code by structure ("functions that return Result", "structs with Display").
     /// Tuned 0.90 → 0.60 from EmbeddingGemma v3.v2 sweep (2026-05-03): the
     /// curve is bimodal — pure dense (1.0) collapses to test R@5 12.5%, but
