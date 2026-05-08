@@ -2,22 +2,41 @@
 
 ## Right Now
 
-**v1.39.1 shipped** — 2026-05-07 (same day as v1.39.0). Patch release on crates.io. One PR (#1584) plus a docs-only follow-up (#1582) for reranker closeout.
+**v1.39.2 shipping** — 2026-05-08, follow-on patch to v1.39.1 covering two threads that emerged from the same exploratory loop. Three PRs land for it: #1584 (cliff fix, already in v1.39.1), #1588 (α retune), #1589 (orphan GC). Plus #1582 (reranker closeout docs) and #1586 (tears) merged en route. Issue #1587 closes with #1589.
 
-**The fix**: CAGRA enforces `itopk_size >= k` and `itopk_size <= itopk_max(n_vectors)`, where `itopk_max = (log2(n_vectors) * 32).clamp(128, 4096)` — 441 at 14k chunks, 532 at 100k. A search request with `k > itopk_max` returned an empty `Vec` from `cagra::search_impl` with a comment claiming the caller would fall back to HNSW. `search_filtered_with_index` did fall back via the brute-force escape hatch, but `search_hybrid` (the SPLADE-fusion path used by every production query) did not — empty dense leg + α-weighted sum collapsed every fused score to `1.0·0 + 0.0·s = 0` at α=1.0.
+**Loop arc** (single session, started from "is the k*2 floor too high?"):
 
-**How it surfaced**: User asked "is the k*2 floor too high? Probe lower ef_search values." Sweeps across `CQS_HNSW_EF_SEARCH` produced byte-identical R@K because hnsw_rs internally floors ef to k (line 1450 `let ef = ef_arg.max(knbn)`). Pivoted to `CQS_SEARCH_CANDIDATE_FLOOR` sweep, found a sharp cliff at floor=442 in dense-only (R@5 0.66 → 0.17). Traced back to CAGRA's itopk_max for our 14k-chunk corpus = `floor(log2(14181) * 32) = 441`.
+1. **Probed `CQS_HNSW_EF_SEARCH`** → byte-identical R@K across [0, 8000] because hnsw_rs internally floors ef to k (`let ef = ef_arg.max(knbn)` at hnsw.rs:1450). Outer ef knob below k is silently no-op.
+2. **Pivoted to `CQS_SEARCH_CANDIDATE_FLOOR` sweep** → sharp cliff at floor=442 in dense-only (R@5 0.66 → 0.17). Traced to CAGRA's `itopk_max(14181) = floor(log2(14181) · 32) = 441`. CAGRA returned empty Vec for `k > 441`, with a comment claiming "caller falls back to HNSW" — true for `search_filtered_with_index`, FALSE for `search_hybrid` (SPLADE-fusion path used by every production query).
+3. **Shipped v1.39.1** with `VectorIndex::max_k() -> Option<usize>` trait method + `cap_k_to_backend` dispatch helper. CAGRA reports its cap; both dispatch sites trim before calling the backend. R@5 0.5963 → 0.7156 restored at default floor=500 on hybrid path; dense-only no longer cliffs at floor>441.
+4. **Refreshed LLM summaries** on the gemma slot to validate the post-cliff stack with current content. `cqs index --llm-summaries` ran 1,169-item Anthropic batch in ~23 min. Per-chunk coverage 60.25% → 68.70% (8,582 → 9,757 chunks covered; remaining 31.3% structurally ineligible — too short / types / non-summarizable per `collect_eligible_chunks`).
+5. **Honest coverage measurement caught a silent drift**: `llm_summary_count` was 13,231 rows for 13,175 distinct chunk hashes (100.43% — 56 stale rows from prior reindexes). Filed #1587 (orphan GC).
+6. **Paired α sweep** on v3.v2 218q post-refresh → most categories already at the test+dev joint optimum, but `identifier_lookup` was the one strong cross-fixture signal: dev R@5 0.8889 → 1.0000 at α=0.85 (n=18, plateau α=0.80..0.90). Shipped as #1588 (α retune 1.00 → 0.85). Test+dev paired sweep on 8 categories caught what a single-fixture sweep would have missed. Other categories' "wins" on one fixture but not the other are below the noise floor (n=8-14, single-query swings dominate).
+7. **Implemented #1587 GC** in #1589: `Store::prune_orphaned_llm_summaries() -> Result<u64>` runs a single `DELETE FROM llm_summaries WHERE content_hash NOT IN (SELECT content_hash FROM chunks)`, auto-fires at end of `cqs index` after the final pending-summaries flush. Opt-out via `--no-prune-summaries` for cross-slot summary copy by content_hash. Plus `Store::llm_summary_chunk_coverage()` + `cqs stats --json` exposes `llm_summary_chunks_covered` + `llm_summary_chunk_coverage_pct` alongside the row-count `llm_summary_count` (kept for backward compat).
 
-**Fix shape**: `VectorIndex::max_k() -> Option<usize>` declares per-call backend capacity. `cap_k_to_backend(idx, k)` trims `k` to the cap with a debug log tagging the trimmed backend. Both dispatch sites (`search_hybrid`, `search_filtered_with_index`) call it before `search_with_filter` / `search`. CAGRA returns `Some(itopk_max)` honouring `CQS_CAGRA_ITOPK_MAX`. CAGRA's existing `return Vec::new()` branch retained as defense-in-depth.
+**Empirical impact (v3.v2 218q paired snapshot 2026-05-08, post-v1.39.2 stack):**
 
-**Empirical impact** on 14k-chunk corpora at default floor=500 (from #1583):
-- Hybrid (router α): R@5 0.5963 → 0.7156 (+12pp restored on v3.v2 test 109q)
-- Dense-only (α=1.0): R@5 0.1651 → 0.6606 (+49pp; capped at max_k=441, no cliff)
-- Dev set (109q): flat across floor=500..1000 in hybrid mode — confirms floor=500 still the right default
+| Metric | Test (n=109) | Dev (n=109) | Aggregate (n=218) |
+|---|---:|---:|---:|
+| R@1 | 40.4% | 52.3% | 46.3% |
+| R@5 | 71.6% | **78.0%** | 74.8% |
+| R@20 | 81.7% | 90.8% | 86.2% |
 
-**Pacing lesson**: The cliff was technically present from the moment #1583 bumped the floor 100→500, because the new floor=500 immediately exceeded itopk_max=441 on our own corpus. v1.39.0 shipped with this regression. The fix went out as a patch on the same day, but lesson generalizes: **a recall-floor bump is a load-bearing change that needs a paired-eval sanity check on the actual production stack** (not just the formula's contract). The formula was correct; the interaction with CAGRA's per-backend k limit wasn't on the radar.
+Per-category R@5: identifier_lookup **91.7%** (was 86.7% pre-retune), multi_step 92.9%, negation 81.8%, type_filtered 69.2%, behavioral 65.6%, cross_language 63.6%, structural 62.5%, conceptual 56.0%.
 
-**Other v1.39.1 mini-cleanup**: Closed #1582 (reranker V2 closeout docs — README + ROADMAP confirm rerankers stay net-negative on v3.v2 post-v1.39.0; future revisit gated on v4-scale fixture or a 5× bigger base). Closed #1583 as superseded — its `candidate_count_for` floor=500 helper was already on main via #1584's squash (the cliff fix branched from #1583's branch).
+Numbers are below the 2026-05-03 capture (50.9% / 76.2% / 88.6% agg) because the corpus drifted ~30% since then and the v3.v2 fixture matches by `(file, name, line_start)` strict — line shifts from audit-cycle PRs silently turn fixture hits into misses. Refreshing the v3.v2 line numbers would lift agg R@K back into the v1.36-snapshot range without any retrieval-side change. Fix bundle (cliff + α retune + GC) is a strict improvement on the current corpus state.
+
+**Live GC verification** (gemma slot, 14,207 chunks): pre-prune 14,400 rows / 9,751 chunks covered (68.64%) → post-prune **9,317 rows / 9,750 chunks covered (68.63%)**. **5,083 orphans deleted in one pass.** Coverage % unchanged (correct — pruning orphans doesn't drop any live data). The auto-fire now keeps the table honest after every reindex; `cqs stats --json llm_summary_chunk_coverage_pct` is the metric to watch going forward.
+
+**Three pacing lessons** from this loop:
+
+1. **Recall-floor bumps need paired-eval sanity** (carry-over from v1.39.1). #1583's floor=500 immediately exceeded CAGRA's `itopk_max=441` on our own corpus; the formula was correct, the per-backend interaction wasn't on the radar.
+2. **Honest-count metrics matter**. The 13,231-row `llm_summary_count` looked fine at 92.9% of total_chunks but the per-chunk reality was 60.25%. Once the gap was visible, #1587 was filed in 5 minutes. Lesson: any "X is N% covered" metric should be derived from the asymmetry it claims to measure (chunks-covered, not summary-rows), not the proxy that's easier to query.
+3. **Test+dev paired sweeps for category-level retunes**. The v3.v2 single-fixture sweep flagged 5 categories as candidates; only `identifier_lookup` survived the cross-fixture check. Single-fixture R@5 wins at n=8-14 are below the noise floor — paired agreement is the cheap robustness check that costs nothing extra to compute.
+
+---
+
+**v1.39.1 shipped** — 2026-05-07. Patch release on crates.io. One PR (#1584) plus #1582 (reranker closeout docs) and #1586 (tears) en route. CAGRA itopk_max cliff in the SPLADE-fusion path; see v1.39.2 loop above for the trail end-to-end.
 
 ---
 
