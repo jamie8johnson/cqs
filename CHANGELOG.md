@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cqs::cli::json_envelope::Posture` enum + `_with_posture` emission helpers** (SNR restoration Phase 1). Caller-decided emission posture (`Friendly` | `Adversarial`), threaded from request entry points down to leaf serializers. Replaces the env-var-read-in-leaf style with a typed parameter so leaves stay process-state-independent. Phase 1 ships the type and the `_with_posture` variants of `wrap_value`, `wrap_error`, `EnvelopeMeta`, `Envelope::ok` / `Envelope::err`, `meta_json_fragment`, `emit_json`, `emit_json_error`, `emit_json_error_with_data`. No call site is migrated yet — legacy entry points continue to read `CQS_ULTRASECURITY` via `Posture::current()` so the wire shape is byte-identical. See `docs/json-snr-restoration.md` for the full 6-phase plan; this commit is "additive cleanup, no breaking change."
+
 ### Changed
 
 - **`_meta.handling_advice` is opt-in via `CQS_ULTRASECURITY=1`** (was always-on since #1181). cqs's actual deployment model is the operator owns both the indexed code and the indexing pipeline (no external users), and the always-on advisory text added a per-response cognitive tax that nudged consuming agents toward bare-bones text tools (grep) over cqs's structured surface — the opposite of what the indexer is built to enable. Adversarial-deployment scenarios where cqs is exposed to untrusted index content (e.g. as a remote MCP server reading user-uploaded code) restore the original always-on behaviour by setting `CQS_ULTRASECURITY=1`. `EnvelopeMeta.handling_advice` is now `Option<&'static str>` and skipped from JSON when `None`.
+
+### Removed
+
+- `cqs::cli::json_envelope::handling_advice_enabled() -> bool` shim. Replaced by `Posture::current().is_adversarial()` (same behavior, typed return). Three internal callers in `meta_value` / `meta_json_fragment` / `wrap_error` were the only users; all migrated to the `_for_posture` / `_with_posture` variants in the same commit. No external callers (memory rule).
 
 ## [1.39.2] - 2026-05-08
 
