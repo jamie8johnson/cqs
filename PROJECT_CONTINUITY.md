@@ -2,13 +2,13 @@
 
 ## Right Now
 
-**23-PR autopilot session — 2026-05-08.** Every user-priority queue item shipped. v1.40.0 on crates.io; SNR restoration Phases 1-4 complete (default JSON output flipped to bare); Polymorphic Routing Phase 1 complete on **both** CLI-direct (`cmd_*`) and daemon-path (`dispatch_*`) surfaces (60 dispatch points across 6 commands × 5 kinds × 2 surfaces); v3.v2 fixture refreshed; cqs-dead false positives reduced ~114 → 35 (Tier 1 + Tier 2a + Tier 2b partial — closes `src/language/languages.rs` from 66 → 0).
+**24-PR autopilot session — 2026-05-08** (23 substantive + #1624 meta-tears). Every user-priority queue item shipped. v1.40.0 on crates.io; SNR restoration Phases 1-4 complete (default JSON output flipped to bare); Polymorphic Routing Phase 1 complete on **both** CLI-direct (`cmd_*`) and daemon-path (`dispatch_*`) surfaces (60 dispatch points across 6 commands × 5 kinds × 2 surfaces); v3.v2 fixture refreshed; cqs-dead false positives reduced ~114 → 35 (Tier 1 + Tier 2a + Tier 2b partial — closes `src/language/languages.rs` from 66 → 0).
 
 **Phase 1 polymorphic routing — 60/60 dispatch points complete.** Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) consults `cqs::kind::classify_hits` against an exact-name lookup before its happy-path query, on both CLI-direct (#1612, #1616, #1617, #1618) and daemon-path (#1620). Const/Type/Module/Ambiguous kinds get a kind-labeled fallback shape (`{kind, fallback_from, name, definitions, note}`) instead of misrouted-to-empty results. Verified live: `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
 
 **cqs dead false-positive reduction.** Three tier closes in this session: Tier 1 (PR #1612 et al — Function with `kind` label) trimmed `~114 → 80 → 52`. Tier 2a (PR #1621 + #1622) added `field_initializer` + `type_cast_expression` patterns to `rust.calls.scm` — closed all 66 false positives in `src/language/languages.rs` plus the 14 `post_process_*` casts (`52 → 38`). Tier 2b partial (PR #1623) added a content-scan filter in `dead_code.rs` for macro invocations — closed 3 of 5 macro false positives (`38 → 35`). Remaining 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) require a chunker change to include doc comments / file-level statements, deferred as architectural.
 
-**Telemetry post-release** (early signal, ~80 invocations since reset, mostly autopilot testing): search rate 5/50 ≈ 10% — marginally up from 6% baseline but within sample-size noise. Real signal needs 1-2 weeks of agent-driven usage. Now that v1.40.0 SNR + Phase 1 polymorphic are on main and the binary is refreshed, real-world telemetry can start accumulating.
+**Telemetry reset twice today.** First reset at 08:27 UTC archived 4506 events for the post-SNR-Phase-1-3 baseline. Second reset at 21:46 UTC (`telemetry_20260508_214618.jsonl`, 441 events) gives a clean post-Phase-1-routing + post-Tier-2b counter starting now. The 13h between-reset window was dominated by autopilot smoke (search rate 4.6%, but `impact` 35-call spike was me exercising every kind cell, not agent behavior). Real signal needs 1-2 weeks of agent-driven coding sessions before the kind-fallback hypothesis can be tested against the 79% → 6% search-rate decline that motivated v1.40.
 
 **Headline shipped:**
 - SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613) — CLI direct defaults to bare JSON payload; `CQS_OUTPUT_FORMAT=v1` consumer-migration hedge; `CQS_ULTRASECURITY=1` adversarial override on every surface.
@@ -18,7 +18,7 @@
 - cqs dead false positives reduced ~114 → 35: #1621 (struct-field-assignment edges, -52), #1622 (type-cast edges, -14), #1623 (macro content-scan, -3 of 5).
 - env_var_docs hardening (#1606), gitignore housekeeping (#1603), telemetry reset.
 
-### Shipped this session — 23 PRs
+### Shipped this session — 24 PRs
 
 | PR | Title | Notes |
 |---|---|---|
@@ -45,8 +45,9 @@
 | #1621 | fix(parser): Rust struct-field-assignment edges (#1573 Tier 2a) | -52 cqs-dead false positives (66 → 14 in `src/language/languages.rs`) |
 | #1622 | fix(parser): Rust struct-field type-cast edges (#1573 Tier 2a follow-up) | -14 (closes the remaining `post_process_*` casts to 0) |
 | #1623 | fix(dead_code): macro content-scan filter (#1573 Tier 2b partial) | -3 of 5 macro false positives via `WHERE content LIKE '%<name>!%'` |
+| #1624 | docs(tears, roadmap): final 23-PR session summary | meta-PR closing the session |
 
-Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed multiple times during session (after #1604, after v1.40.0 tag, after Phase 1 CLI completion, after #1620 daemon-path sweep).
+Plus: `cqs telemetry --reset` ran twice — first at 08:27 UTC (archived 4506 events to `telemetry_20260508_082716.jsonl`), again at 21:46 UTC (archived 441 events to `telemetry_20260508_214618.jsonl`). Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed multiple times during session (after #1604, after v1.40.0 tag, after Phase 1 CLI completion, after #1620 daemon-path sweep, after #1623 Tier 2b filter).
 
 ### Eval-baseline snapshot post-session
 
