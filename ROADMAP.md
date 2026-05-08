@@ -177,6 +177,16 @@ N-project via `[[reference]]` entries → `CrossProjectContext { stores: Vec<Nam
 
 Historical split (2026-04-09, 16,731 invocations): **main conversation** uses `search` (60%) + `context` (28%) heavily, `impact`/`callers` almost never (0.2% each). **Subagents** drive nearly all `impact`/`callers`/`test-map`/`dead`/`gather` usage. Pre-edit hook bridges the gap by running `impact` automatically.
 
+#### Friction backlog (2026-05-08, observed in agent sessions)
+
+Agent adoption is the strategic frame: cqs runs on dedicated GPU hardware doing real semantic indexing, but agents drift back to `grep` when cqs's surface mismatches their mental model. Two structural fixes named in a v1.39.2 sidebar session:
+
+- [ ] **Polymorphic command routing.** `cqs <name>` (and `cqs impact` / `callers` / `test-map` / `scout`) should gracefully fall through to the right query shape regardless of whether `<name>` is a function, const, struct, type alias, module, file, or freeform query. Today, `cqs impact CONST_NAME` returns empty (the call-graph path can only handle functions), and the agent has to triage the failure → reach for a different cqs subcommand → lose the round-trip → fall back to grep. **The right contract:** "I want to know about X" → ONE call returns definition + references + tests + recent changes + notes, regardless of X's kind. Same answer through different doors is fine; misrouted-to-empty is the bug. ~1-2 days in the dispatch layer.
+
+- [ ] **JSON noise audit + `--trust-the-text` lean-output mode.** Every JSON envelope ships `{data, error, version, _meta}` plus per-result decorations (`trust_level`, `injection_flags`, `chunk_type`, `language`, `worktree_stale`) that are signal in the adversarial-deployment case but pure cognitive tax in the friendly case (operator owns indexed code AND indexer; "no external users"). The `_meta.handling_advice` slice was inverted to opt-in via `CQS_ULTRASECURITY=1` in #1593 (2026-05-08); the broader audit gathers per-result trust/injection fields under a CLI-level `--trust-the-text` flag and probably collapses the envelope to bare `data` (or keeps `{data, error}` for error-handling parity, drops `version`/`_meta` when not needed). ~3-5 days to do honestly: audit every per-result field, gate appropriately, add tests covering both modes, document. The win: agents see the data they asked for, nothing else.
+
+Both items are justified by the same observation — agents reach for `grep` when they shouldn't, and the cause is cqs's surface fragmentation (polymorphic routing) plus output bloat (noise audit). Either alone helps; together they shift the default-tool calculus.
+
 ---
 
 ## Open Issues
