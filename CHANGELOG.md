@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Post-v1.40.0 work on `main`. Polymorphic routing Phase 1 fully completed (60/60 dispatch points across CLI-direct + daemon-path), `cqs dead` false-positive reduction (~114 → 35 entries via Tier 2a + Tier 2b partial), audit-triage doc currency.
+
+### Added
+
+- **Polymorphic routing Phase 1 — daemon-path sweep** (#1620). Daemon `dispatch_*` handlers in `src/cli/batch/handlers/graph.rs` now consult `cqs::kind::classify_hits` against an exact-name lookup before their happy-path query, parallel to the CLI-direct `cmd_*_kind_fallback` wrappers. Closes the surface gap from #1618 ("CLI-direct only"). Shared `try_kind_fallback(ctx, name, fallback_from, KindNotes)` helper + `build_kind_fallback_value` JSON builder. Both CLI and daemon now ship the kind-fallback shape on every Const/Type/Module/Ambiguous lookup. 30 daemon-path cells × 6 commands × 5 kinds = 30 dispatch points; combined with #1612/#1616/#1617/#1618 that's 60 dispatch points across the per-(command × kind × surface) matrix.
+- **Polymorphic routing Phase 1 — kind-fallback matrix completion** (#1616, #1617, #1618). Three PRs landed the remaining 25 of 30 CLI-direct cells after the v1.40.0 first-cell prototype (#1612). Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) now ships kind-labeled fallback for Type / Const / Module / Ambiguous. Verified live via `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
+
+### Changed
+
+- **`cqs dead` false-positive reduction** (#1621, #1622, #1623). Tier 2a (#1621) added `field_initializer` + `(call_expression arguments (...))` patterns to `src/language/queries/rust.calls.scm`, capturing function references stored in struct fields like `LanguageDef`. Tier 2a follow-up (#1622) added `type_cast_expression` patterns for `Some(fn as Type)` casts used in dispatch tables. Tier 2b partial (#1623) added a content-scan filter (`WHERE content LIKE '%<name>!%' LIMIT 1`) in `src/store/calls/dead_code.rs::filter_invoked_macros` to drop macros whose invocation form appears anywhere in the indexed corpus. Cumulative: ~114 → 35 cqs-dead entries; closes `src/language/languages.rs` from 66 false positives → 0; closes 14 `post_process_*` cast false positives → 0; closes 3 of 5 macro false positives. Remaining 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) require a chunker change to include doc comments / file-level statements; deferred as architectural.
+
+### Documentation
+
+- **Tears + roadmap currency** (#1615, #1619, #1624, #1625). Four docs PRs captured session state at successive milestones: post-release v1.40.0 sync (#1615), Phase 1 CLI-direct completion (#1619), final 23-PR session summary (#1624), post-merge currency fixes (#1625). PROJECT_CONTINUITY.md "Right Now" + ROADMAP.md "Current" reflect 60/60 polymorphic dispatch points and the cumulative cqs-dead reduction table.
+
 ## [1.40.0] - 2026-05-08
 
 Minor release driven by **agent-adoption telemetry**: `cqs search` rate dropped from 79% of code-intel calls in mid-April to 6% in early May as the JSON response shape accumulated fields. v1.40.0 ships the response-side fix (SNR restoration phases 1-4) and the routing-side groundwork (polymorphic routing Phase 1 plumbing + first cell). Breaking change to default JSON output justifies the minor bump.
