@@ -48,7 +48,24 @@ impl<Mode> Store<Mode> {
                 .collect();
 
             // Phase 1 filtering: name/test/path/trait checks (don't need content)
-            let candidates = Self::filter_candidates(all_uncalled, &test_names);
+            let mut candidates = Self::filter_candidates(all_uncalled, &test_names);
+
+            // Phase 1.5 (#1573 Tier 2b): macros invoked at file-scope live
+            // outside any function chunk, so their `!()` invocation never
+            // produces a `function_calls` edge. Result: every macro_rules!
+            // shows up as "uncalled" even when it's used heavily. The
+            // call-graph extractor can't fix this without chunker changes
+            // (file-level macro_invocations aren't in any chunk's byte
+            // range), so we special-case Macro chunks at this layer:
+            // scan all chunks' content for `<name>!` substring; if any
+            // hit, drop from the candidates list.
+            //
+            // False-negative-friendly: a comment like "// foo! is broken"
+            // counts as a reference, keeping the macro live even when the
+            // implementation is actually unused. Dead-code analysis prefers
+            // under-reporting to over-reporting — comments referencing a
+            // name signal intentional retention.
+            candidates = self.filter_invoked_macros(candidates).await?;
 
             // Phase 2: Batch-fetch content and score confidence
             let active_files = self.fetch_active_files().await?;
@@ -134,6 +151,44 @@ impl<Mode> Store<Mode> {
                 line_end: clamp_line_number(row.get::<i64, _>(7)),
             })
             .collect())
+    }
+
+    /// Phase 1.5: drop macros from the dead-code candidates if they're
+    /// invoked anywhere in the corpus. Closes the file-level macro-
+    /// invocation gap (#1573 Tier 2b): the call-graph extractor only
+    /// runs over chunks, but `define_languages! { ... }` and similar
+    /// invocations live at file-scope outside any chunk's byte range.
+    ///
+    /// For each Macro candidate, runs:
+    ///   `SELECT 1 FROM chunks WHERE content LIKE '%<name>!%' LIMIT 1`
+    /// LIMIT 1 short-circuits at the first match — fast even on large
+    /// indexes. Non-Macro candidates pass through untouched.
+    async fn filter_invoked_macros(
+        &self,
+        candidates: Vec<LightChunk>,
+    ) -> Result<Vec<LightChunk>, StoreError> {
+        let mut filtered = Vec::with_capacity(candidates.len());
+        for chunk in candidates {
+            if chunk.chunk_type == ChunkType::Macro {
+                // Build the LIKE pattern: `%<name>!%`. The `!` suffix
+                // distinguishes invocations (`foo!`) from references in
+                // identifier-only contexts (`foo`) — though for macros
+                // even the bare name typically appears with `!`, so the
+                // suffix is the right discriminator.
+                let pattern = format!("%{}!%", chunk.name);
+                let row: Option<(i64,)> =
+                    sqlx::query_as("SELECT 1 FROM chunks WHERE content LIKE ?1 LIMIT 1")
+                        .bind(&pattern)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                if row.is_some() {
+                    // Invoked somewhere — drop from dead candidates.
+                    continue;
+                }
+            }
+            filtered.push(chunk);
+        }
+        Ok(filtered)
     }
 
     /// Phase 1 filter: exclude entry points, tests, trait methods from uncalled functions.
