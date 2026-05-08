@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.39.1] - 2026-05-07
+
+Patch release closing a silent CAGRA / SPLADE-fusion interaction discovered while probing `CQS_SEARCH_CANDIDATE_FLOOR` (the v1.39.0 #1583 floor). One PR (#1584).
+
+### Fixed
+
+- **CAGRA `itopk_max` cliff in the SPLADE-fusion path** (#1584). CAGRA enforces `itopk_size >= k` and `itopk_size <= itopk_max`, where `itopk_max = (log2(n_vectors) * 32).clamp(128, 4096)` — 441 at 14k chunks, 532 at 100k. A search request with `k > itopk_max` returned an empty `Vec` from `cagra::search_impl` with a comment claiming the caller would fall back to HNSW. `search_filtered_with_index` did fall back via the `index_results.is_empty()` brute-force escape hatch. `search_hybrid` (the SPLADE-fusion path used by every production query) did not — empty dense leg + α-weighted sum collapsed every fused score to `1.0·0 + 0.0·s = 0` at α=1.0. On a 14k-chunk corpus with #1583's default floor=500, R@5 dropped from 0.7156 to 0.5963 (-12pp) on v3.v2 test in hybrid mode, and from 0.6606 to 0.1651 (-49pp, basically random) in dense-only.
+
+### Added
+
+- **`VectorIndex::max_k() -> Option<usize>` trait method** (#1584). Backends declare their per-call upper bound. `None` (default) for backends with no cap (HNSW, brute force). `Some(itopk_max)` for `CagraIndex`, honouring `CQS_CAGRA_ITOPK_MAX` so the reported cap matches what `search_impl` enforces.
+- **`cap_k_to_backend(idx, k)` dispatch helper** in `src/search/query.rs`. Trims `k` to the backend's `max_k` with a debug log tagging the trimmed backend. Both dispatch sites (`search_hybrid` line ~540, `search_filtered_with_index` line ~752/754) call it before issuing the search.
+
+### Changed
+
+- **`CagraIndex::search_impl`** retains the `return Vec::new()` branch as defense-in-depth and warns that a caller bypassed `cap_k_to_backend` when the branch fires.
+
 ## [1.39.0] - 2026-05-07
 
 Minor release. Schema v27 (bumped from v26 in #1497). 88 commits since v1.38.0. Three threads: (a) v1.38.0-cohort audit follow-ups (#1487–#1511), (b) the post-v1.38 audit cycle of 154 findings catalogued in PR #1515 (#1514 et seq., shipped across ~33 cluster PRs from #1514 through #1570), (c) post-cycle hardening of the watch/reindex path against daemon crashes (#1572, #1575, #1577).
