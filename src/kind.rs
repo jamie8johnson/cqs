@@ -28,7 +28,7 @@
 //!   freeform-shaped today; future expansion happens here.
 
 use crate::language::{ChunkType, Language};
-use crate::store::ChunkSummary;
+use crate::store::{ChunkSummary, Store, StoreError};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -126,6 +126,29 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
         | ChunkType::Modifier
         | ChunkType::Extension => Kind::Other,
     }
+}
+
+/// One-shot kind detection: query the store for exact-name matches,
+/// build hits, and reduce to a [`Kind`]. Returns the classified kind
+/// alongside the underlying hits (the per-(command × kind) routing
+/// matrix uses both — the kind drives dispatch, the hits carry the
+/// location info the chosen handler needs).
+///
+/// Polymorphic-routing Phase 1 entry point. Future PRs will call
+/// this from each function-or-type-specialized command's dispatcher
+/// to decide whether to run the original handler (kind matches the
+/// command) or fall back to a kind-labeled response (kind mismatch).
+///
+/// Cost: one indexed SQL query (`WHERE name = ?`) — not measurable
+/// against the surrounding command latency for interactive use.
+pub fn detect_kind_for_store(
+    store: &Store,
+    name: &str,
+) -> Result<(Kind, Vec<KindHit>), StoreError> {
+    let chunks = store.lookup_by_name(name)?;
+    let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
+    let kind = classify_hits(&hits);
+    Ok((kind, hits))
 }
 
 /// Reduce a sequence of hits to a single `Kind` decision.
@@ -251,6 +274,67 @@ mod tests {
             hit(ChunkType::Method, "process", "src/b.rs", 20),
         ];
         assert_eq!(classify_hits(&hits), Kind::Multiple);
+    }
+
+    fn build_test_chunk(name: &str, file: &str) -> crate::parser::Chunk {
+        let content = format!("fn {}() {{ /* body */ }}", name);
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        crate::parser::Chunk {
+            id: format!("{}:1:{}", file, &hash[..8]),
+            file: PathBuf::from(file),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    #[test]
+    fn detect_kind_for_store_round_trip_function() {
+        // End-to-end: seed a single Function chunk into a fresh store,
+        // detect_kind should classify it as Kind::Function and return
+        // exactly one hit.
+        use crate::store::Store;
+        use crate::test_helpers::mock_embedding;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+        let store = Store::open(&db_path).unwrap();
+        store.init(&crate::store::ModelInfo::default()).unwrap();
+        let chunk = build_test_chunk("foo", "src/lib.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        let (kind, hits) = detect_kind_for_store(&store, "foo").unwrap();
+        assert_eq!(kind, Kind::Function);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "foo");
+    }
+
+    #[test]
+    fn detect_kind_for_store_returns_not_found_for_missing_name() {
+        // No seeding — the store is empty. A name lookup returns
+        // NotFound with an empty hits vector.
+        use crate::store::Store;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+        let store = Store::open(&db_path).unwrap();
+        store.init(&crate::store::ModelInfo::default()).unwrap();
+
+        let (kind, hits) = detect_kind_for_store(&store, "missing_name").unwrap();
+        assert_eq!(kind, Kind::NotFound);
+        assert!(hits.is_empty());
     }
 
     #[test]
