@@ -1,10 +1,22 @@
 //! Trace command — find shortest call path between two functions
+//!
+//! ## Polymorphic routing (Phase 1)
+//!
+//! `cqs trace <source> <target>` historically required both names to be
+//! function-or-method names. If either resolves to a non-Function chunk
+//! the call-graph BFS returns no path. Polymorphic-routing Phase 1
+//! detects the source name's kind up-front: a non-Function source
+//! short-circuits with a kind-labeled definition list + redirect note
+//! instead of "no path found". The target name is left to
+//! `resolve_target` (which produces its own typed error if missing).
 
 use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
+use cqs::kind::{classify_hits, Kind, KindHit};
+use cqs::store::ChunkSummary;
 use cqs::Store;
 
 use crate::cli::commands::resolve::resolve_target;
@@ -199,6 +211,54 @@ pub(crate) fn cmd_trace(
 
     let store = &ctx.store;
     let root = &ctx.root;
+
+    // Polymorphic-routing kind detection (Phase 1) on the source name.
+    // The trace BFS requires a callable starting node; if `source` is a
+    // const/type/module/ambiguous name, dispatch a kind-labeled fallback
+    // instead of running the BFS to "no path found" — `target`'s kind is
+    // left to `resolve_target` to surface its own error if missing.
+    let source_chunks = store.lookup_by_name(source)?;
+    let source_hits: Vec<KindHit> = source_chunks.iter().map(KindHit::from).collect();
+    let source_kind = classify_hits(&source_hits);
+    match source_kind {
+        Kind::Const => {
+            return trace_kind_fallback(
+                source, target, &source_chunks, format, "const",
+                "consts don't participate in the call-graph; no call path can originate from a const value. \
+                 Use `cqs <source>` to find references and trace from the calling functions.",
+                &format!("(trace) source `{source}` is a const, not a function — no call path applies."),
+                "Use `cqs <source>` to find references and trace from the calling functions.",
+            );
+        }
+        Kind::Type => {
+            return trace_kind_fallback(
+                source, target, &source_chunks, format, "type",
+                "types don't have call chains; here are the type's definition sites. \
+                 Use `cqs <source>` to find usage references or `cqs trace <method-on-type> <target>` for a specific method.",
+                &format!("(trace) source `{source}` is a type, not a function — no call path applies."),
+                "Use `cqs <source>` to find usage references or trace from a specific method.",
+            );
+        }
+        Kind::Module => {
+            return trace_kind_fallback(
+                source, target, &source_chunks, format, "module",
+                "modules don't participate in the call-graph as nodes. \
+                 Use `cqs <source>` to find files that reference this module, or `cqs trace <function-in-module> <target>`.",
+                &format!("(trace) source `{source}` is a module/namespace, not a function — no call path applies."),
+                "Use `cqs trace <function-in-module> <target>` for a specific function.",
+            );
+        }
+        Kind::Ambiguous => {
+            return trace_kind_fallback(
+                source, target, &source_chunks, format, "ambiguous",
+                "source name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
+                 Re-run `cqs trace <source> <target>` against a more specific name.",
+                &format!("(trace) source `{source}` is ambiguous — matches multiple chunk kinds."),
+                "Re-run with a more specific name (e.g. `Type::method`).",
+            );
+        }
+        _ => {}
+    }
 
     // Resolve source and target to chunk names
     let source_resolved = resolve_target(store, source)?;
@@ -446,6 +506,81 @@ pub(crate) fn bfs_shortest_path(
         }
     }
     None
+}
+
+/// Polymorphic-routing kind-mismatch fallback for `cqs trace <source> <target>`.
+/// Same shape pattern as the impact / callers / callees / test-map
+/// fallbacks. JSON path emits `{kind, fallback_from: "trace", source,
+/// target, definitions, note}`; text path prints the lead, definitions,
+/// and redirect.
+///
+/// 8 args is intentional: each per-kind dispatcher (Const/Type/Module/
+/// Ambiguous) passes its kind label, JSON note, text lead, and text
+/// redirect — collapsing into a struct would just be 4 fields no caller
+/// reuses, so the `allow` is the simpler tradeoff.
+#[allow(clippy::too_many_arguments)]
+fn trace_kind_fallback(
+    source: &str,
+    target: &str,
+    chunks: &[ChunkSummary],
+    format: &OutputFormat,
+    kind_label: &str,
+    note: &str,
+    text_lead: &str,
+    text_redirect: &str,
+) -> Result<()> {
+    debug_assert!(
+        !chunks.is_empty(),
+        "Kind fallback called with no source hits — caller must classify before dispatching"
+    );
+    match format {
+        OutputFormat::Json => {
+            let definitions: Vec<serde_json::Value> = chunks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "file": cqs::normalize_path(&c.file),
+                        "line_start": c.line_start,
+                        "line_end": c.line_end,
+                        "language": c.language.to_string(),
+                        "chunk_type": c.chunk_type.to_string(),
+                        "signature": c.signature,
+                        "content": c.content,
+                    })
+                })
+                .collect();
+            let payload = serde_json::json!({
+                "kind": kind_label,
+                "fallback_from": "trace",
+                "source": source,
+                "target": target,
+                "definitions": definitions,
+                "note": note,
+            });
+            crate::cli::json_envelope::emit_json(&payload)?;
+        }
+        OutputFormat::Text | OutputFormat::Mermaid => {
+            println!("{text_lead}");
+            println!();
+            println!("Source definitions:");
+            for c in chunks {
+                println!(
+                    "  {}:{}-{} ({} {})",
+                    cqs::normalize_path(&c.file),
+                    c.line_start,
+                    c.line_end,
+                    c.language,
+                    c.chunk_type
+                );
+                if !c.signature.is_empty() {
+                    println!("    {}", c.signature);
+                }
+            }
+            println!();
+            println!("{text_redirect}");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

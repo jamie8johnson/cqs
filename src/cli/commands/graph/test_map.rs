@@ -1,6 +1,14 @@
 //! Test map command — find tests that exercise a function
 //!
 //! Core BFS logic is in `build_test_map()` so batch mode can reuse it.
+//!
+//! ## Polymorphic routing (Phase 1)
+//!
+//! `cqs test-map <name>` historically required a function-or-method name
+//! and returned an empty match list for any other chunk kind. This module
+//! now consults `cqs::kind::classify_hits` against an exact-name lookup
+//! before the BFS query — kind-mismatch fallbacks emit a kind-labeled
+//! definition list with a redirect note.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -8,6 +16,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 
+use cqs::kind::{classify_hits, Kind, KindHit};
 use cqs::store::{CallGraph, ChunkSummary};
 
 use crate::cli::commands::resolve::resolve_target;
@@ -239,6 +248,52 @@ pub(crate) fn cmd_test_map(
 
     let store = &ctx.store;
     let root = &ctx.root;
+
+    // Polymorphic-routing kind detection (Phase 1). Same dispatch
+    // pattern as cmd_impact / cmd_callers / cmd_callees.
+    let chunks = store.lookup_by_name(name)?;
+    let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
+    let kind = classify_hits(&hits);
+    match kind {
+        Kind::Const => {
+            return test_map_kind_fallback(
+                name, &chunks, json, "const",
+                "consts don't have a call-graph; tests don't 'cover' a const value the way they cover a function. \
+                 Use `cqs <name>` to find tests that reference this const by name.",
+                &format!("(test-map) `{name}` is a const, not a function — call-graph test-map analysis doesn't apply."),
+                "Use `cqs <name>` to find tests that reference this const by name.",
+            );
+        }
+        Kind::Type => {
+            return test_map_kind_fallback(
+                name, &chunks, json, "type",
+                "types don't have a call-graph in the same sense; here are the type's definition sites. \
+                 Use `cqs <name>` to find tests that reference this type, or `cqs test-map <Type::method>` for a specific method's coverage.",
+                &format!("(test-map) `{name}` is a type, not a function — call-graph test-map analysis doesn't apply."),
+                "Use `cqs <name>` to find tests that reference this type or call against a specific method.",
+            );
+        }
+        Kind::Module => {
+            return test_map_kind_fallback(
+                name, &chunks, json, "module",
+                "modules don't have a call-graph; tests cover specific functions inside the module, not the module itself. \
+                 Use `cqs <name>` to find tests in this module's files.",
+                &format!("(test-map) `{name}` is a module/namespace, not a function — call-graph test-map analysis doesn't apply."),
+                "Use `cqs <name>` to find tests in the module's files.",
+            );
+        }
+        Kind::Ambiguous => {
+            return test_map_kind_fallback(
+                name, &chunks, json, "ambiguous",
+                "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
+                 Re-run `cqs test-map <name>` against a more specific name (e.g. `Type::method`).",
+                &format!("(test-map) `{name}` is ambiguous — matches multiple chunk kinds."),
+                "Re-run with a more specific name (e.g. `Type::method`).",
+            );
+        }
+        _ => {}
+    }
+
     let resolved = resolve_target(store, name)?;
     let target_name = resolved.chunk.name.clone();
 
@@ -274,6 +329,69 @@ pub(crate) fn cmd_test_map(
     Ok(())
 }
 
+/// Polymorphic-routing kind-mismatch fallback for `cqs test-map <name>`.
+/// Same shape as the impact / callers / callees fallbacks — emits a
+/// `{kind, fallback_from: "test-map", name, definitions, note}` object
+/// under JSON, plain-text definitions + redirect under text mode.
+fn test_map_kind_fallback(
+    name: &str,
+    chunks: &[ChunkSummary],
+    json: bool,
+    kind_label: &str,
+    note: &str,
+    text_lead: &str,
+    text_redirect: &str,
+) -> Result<()> {
+    debug_assert!(
+        !chunks.is_empty(),
+        "Kind fallback called with no hits — caller must classify before dispatching"
+    );
+    if json {
+        let definitions: Vec<serde_json::Value> = chunks
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "file": cqs::normalize_path(&c.file),
+                    "line_start": c.line_start,
+                    "line_end": c.line_end,
+                    "language": c.language.to_string(),
+                    "chunk_type": c.chunk_type.to_string(),
+                    "signature": c.signature,
+                    "content": c.content,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "kind": kind_label,
+            "fallback_from": "test-map",
+            "name": name,
+            "definitions": definitions,
+            "note": note,
+        });
+        crate::cli::json_envelope::emit_json(&payload)?;
+    } else {
+        println!("{text_lead}");
+        println!();
+        println!("Definitions:");
+        for c in chunks {
+            println!(
+                "  {}:{}-{} ({} {})",
+                cqs::normalize_path(&c.file),
+                c.line_start,
+                c.line_end,
+                c.language,
+                c.chunk_type
+            );
+            if !c.signature.is_empty() {
+                println!("    {}", c.signature);
+            }
+        }
+        println!();
+        println!("{text_redirect}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod output_tests {
     use super::*;
@@ -302,5 +420,62 @@ mod output_tests {
         let output = build_test_map_output("no_tests", &[]);
         assert_eq!(output.count, 0);
         assert!(output.tests.is_empty());
+    }
+
+    // Polymorphic-routing Phase 1: test-map kind-mismatch fallback shape.
+    fn make_chunk(
+        chunk_type: cqs::parser::ChunkType,
+        name: &str,
+        file: &str,
+        line: u32,
+    ) -> ChunkSummary {
+        ChunkSummary {
+            id: format!("{}:{}:{}", file, line, "abcd1234"),
+            file: std::path::PathBuf::from(file),
+            language: cqs::parser::Language::Rust,
+            chunk_type,
+            name: name.to_string(),
+            signature: format!("test sig for {}", name),
+            content: format!("test content for {}", name),
+            doc: None,
+            line_start: line,
+            line_end: line,
+            content_hash: "abcd1234".to_string(),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+            parser_version: 0,
+            vendored: false,
+        }
+    }
+
+    #[test]
+    fn test_map_fallback_payload_shape() {
+        // Pin the {kind, fallback_from: "test-map", name, definitions, note} shape.
+        let chunk = make_chunk(cqs::parser::ChunkType::Constant, "X", "src/a.rs", 5);
+        let definitions: Vec<serde_json::Value> = std::iter::once(&chunk)
+            .map(|c| {
+                serde_json::json!({
+                    "file": cqs::normalize_path(&c.file),
+                    "line_start": c.line_start,
+                    "line_end": c.line_end,
+                    "language": c.language.to_string(),
+                    "chunk_type": c.chunk_type.to_string(),
+                    "signature": c.signature,
+                    "content": c.content,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "kind": "const",
+            "fallback_from": "test-map",
+            "name": "X",
+            "definitions": definitions,
+            "note": "test note",
+        });
+        assert_eq!(payload["kind"], "const");
+        assert_eq!(payload["fallback_from"], "test-map");
+        assert_eq!(payload["name"], "X");
+        assert_eq!(payload["definitions"].as_array().unwrap().len(), 1);
     }
 }
