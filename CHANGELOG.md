@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`_meta.handling_advice` is opt-in via `CQS_ULTRASECURITY=1`** (was always-on since #1181). cqs's actual deployment model is the operator owns both the indexed code and the indexing pipeline (no external users), and the always-on advisory text added a per-response cognitive tax that nudged consuming agents toward bare-bones text tools (grep) over cqs's structured surface — the opposite of what the indexer is built to enable. Adversarial-deployment scenarios where cqs is exposed to untrusted index content (e.g. as a remote MCP server reading user-uploaded code) restore the original always-on behaviour by setting `CQS_ULTRASECURITY=1`. `EnvelopeMeta.handling_advice` is now `Option<&'static str>` and skipped from JSON when `None`.
 
+### Fixed
+
+- **`tests/env_var_docs.rs` substring-match bug.** The pre-fix check used `readme.contains(var)`, so a long related var in the README falsely satisfied a missing short-name doc requirement (e.g. mentioning `CQS_FOO_BAR` was treated as documenting `CQS_FOO`). Replaced with a token-aware check (`readme_documents`) that requires the var to be bordered by non-identifier characters. 8 sibling tests in a `token_match_tests` submodule pin the fix against regression. The pre-commit hook (`.githooks/pre-commit`) gained an env_var_docs step that fires when `src/**.rs` or `README.md` is staged, catching missing rows before they reach CI.
+
 ### Removed
 
 - `cqs::cli::json_envelope::handling_advice_enabled() -> bool` shim. Replaced by `Posture::current().is_adversarial()` (same behavior, typed return). Three internal callers in `meta_value` / `meta_json_fragment` / `wrap_error` were the only users; all migrated to the `_for_posture` / `_with_posture` variants in the same commit. No external callers (memory rule).

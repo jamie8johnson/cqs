@@ -34,6 +34,45 @@ fn extract_env_vars(text: &str) -> Vec<String> {
     out
 }
 
+/// Returns `true` when `var` appears in `readme` as a complete token —
+/// bordered by characters that are NOT part of an identifier. So a
+/// short var name matches itself (and matches when wrapped in
+/// backticks or followed by `=`), but is **NOT** satisfied by being a
+/// prefix of a longer var name.
+///
+/// **Pre-fix bug:** `readme.contains(var)` did a substring match, so
+/// a longer related var name in the README falsely satisfied a missing
+/// short-name doc requirement. The `token_match_tests` module below
+/// pins the fix.
+///
+/// Identifier characters here are ASCII letters, digits, and underscore
+/// — matching the Rust env-var convention. The check is byte-level
+/// (env var names are ASCII by spec) so we don't need regex compilation.
+fn readme_documents(readme: &str, var: &str) -> bool {
+    let bytes = readme.as_bytes();
+    let needle = var.as_bytes();
+    if needle.is_empty() {
+        return false;
+    }
+    let mut start = 0;
+    while let Some(rel) = readme[start..].find(var) {
+        let abs = start + rel;
+        let end = abs + var.len();
+        let left_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+        let right_ok = end >= bytes.len() || !is_ident_byte(bytes[end]);
+        if left_ok && right_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
+#[inline]
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 #[test]
 fn all_cqs_env_vars_are_documented_in_readme() {
     let workspace = env!("CARGO_MANIFEST_DIR");
@@ -77,7 +116,7 @@ fn all_cqs_env_vars_are_documented_in_readme() {
         if v.starts_with("CQS_TEST_") {
             continue;
         }
-        if !readme.contains(v) {
+        if !readme_documents(&readme, v) {
             missing.push(v.clone());
         }
     }
@@ -87,4 +126,72 @@ fn all_cqs_env_vars_are_documented_in_readme() {
         "Undocumented CQS_* env vars — add each to the env-var table in README.md:\n  {}",
         missing.join("\n  ")
     );
+}
+
+#[cfg(test)]
+mod token_match_tests {
+    //! Pin the substring-match bug fix: `readme_documents` must require
+    //! a complete token, not a substring. Test-fixture var names use
+    //! the `CQS_TEST_*` convention so they pass the allowlist in the
+    //! main test (otherwise the env-var regex would scan THIS file and
+    //! the literals would surface as "missing from README").
+    use super::readme_documents;
+
+    #[test]
+    fn matches_at_start_with_trailing_non_ident() {
+        assert!(readme_documents("CQS_TEST_X is documented", "CQS_TEST_X"));
+    }
+
+    #[test]
+    fn matches_in_middle_with_word_boundaries() {
+        assert!(readme_documents(
+            "see `CQS_TEST_X` in the table",
+            "CQS_TEST_X"
+        ));
+    }
+
+    #[test]
+    fn matches_at_end() {
+        assert!(readme_documents("the var is CQS_TEST_X", "CQS_TEST_X"));
+    }
+
+    #[test]
+    fn rejects_substring_of_longer_var_at_start() {
+        // The bug: looking up `CQS_TEST_X` should NOT be satisfied by a
+        // README that only mentions `CQS_TEST_X_BAR`.
+        assert!(!readme_documents(
+            "see CQS_TEST_X_BAR in the table",
+            "CQS_TEST_X"
+        ));
+    }
+
+    #[test]
+    fn rejects_substring_of_longer_var_at_end() {
+        // Same trap, with the boundary on the other side.
+        assert!(!readme_documents("MY_CQS_TEST_X env var", "CQS_TEST_X"));
+    }
+
+    #[test]
+    fn rejects_substring_with_digit_continuation() {
+        // Digits also continue identifiers in env-var convention.
+        assert!(!readme_documents(
+            "CQS_TEST_X2 is the new one",
+            "CQS_TEST_X"
+        ));
+    }
+
+    #[test]
+    fn matches_with_equals_sign_boundary() {
+        // `CQS_TEST_X=value` in code blocks.
+        assert!(readme_documents("set CQS_TEST_X=1 to enable", "CQS_TEST_X"));
+    }
+
+    #[test]
+    fn longer_var_still_matches_itself() {
+        // Pin that the fix doesn't reject the var-as-itself case.
+        assert!(readme_documents(
+            "`CQS_TEST_X_BAR` is documented",
+            "CQS_TEST_X_BAR"
+        ));
+    }
 }
