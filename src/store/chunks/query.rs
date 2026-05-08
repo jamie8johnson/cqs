@@ -247,6 +247,37 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Exact-match lookup: return all chunks whose `name` equals `name`,
+    /// ordered by `(chunk_type, origin, line_start)` for deterministic
+    /// ranking. Polymorphic-routing Phase 1 building block — the
+    /// `cqs::kind::classify_hits` reducer consumes the result to decide
+    /// which command to dispatch (or whether to fall through to a
+    /// freeform search). See `docs/polymorphic-routing.md`.
+    ///
+    /// Distinct from [`Store::search_by_name`] (FTS-driven, prefix +
+    /// fuzzy) and [`Self::get_chunks_by_names_batch`] (also exact, but
+    /// optimized for many names at once). For the single-name kind-
+    /// detection case, this method is the right primitive: one SQL
+    /// query, no FTS overhead, no batching ceremony.
+    pub fn lookup_by_name(&self, name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+        let _span = tracing::debug_span!("lookup_by_name", %name).entered();
+        if name.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.rt.block_on(async {
+            let sql = format!(
+                "SELECT {cols} FROM chunks WHERE name = ?1 \
+                 ORDER BY chunk_type, origin, line_start",
+                cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
+            );
+            let rows = sqlx::query(&sql).bind(name).fetch_all(&self.pool).await?;
+            Ok(rows
+                .into_iter()
+                .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
+                .collect())
+        })
+    }
+
     /// Batch-fetch chunks by multiple function names.
     /// Returns a map of name -> Vec<ChunkSummary> for all found names.
     /// Single-bind IN-list batched at the modern SQLite variable limit.
@@ -803,5 +834,84 @@ mod tests {
         let (page2, cursor2) = store.chunks_paged(cursor1, 4).unwrap();
         assert!(page2.is_empty());
         assert_eq!(cursor2, cursor1);
+    }
+
+    // ===== lookup_by_name (polymorphic-routing Phase 1 plumbing) =====
+
+    #[test]
+    fn test_lookup_by_name_returns_empty_for_missing() {
+        let (store, _dir) = setup_store();
+        let hits = store.lookup_by_name("nonexistent_name").unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_lookup_by_name_returns_empty_for_empty_string() {
+        let (store, _dir) = setup_store();
+        // Empty name short-circuits without an SQL roundtrip — pin the
+        // contract so the kind classifier doesn't have to special-case it.
+        let hits = store.lookup_by_name("").unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_lookup_by_name_returns_single_function_match() {
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk("foo", "src/lib.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        let hits = store.lookup_by_name("foo").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "foo");
+        assert_eq!(hits[0].chunk_type, crate::parser::ChunkType::Function);
+    }
+
+    #[test]
+    fn test_lookup_by_name_returns_multiple_same_name_different_files() {
+        let (store, _dir) = setup_store();
+        let mut c1 = make_chunk("foo", "src/a.rs");
+        c1.line_start = 10;
+        c1.id = format!("src/a.rs:10:{}", &c1.content_hash[..8]);
+        let mut c2 = make_chunk("foo", "src/b.rs");
+        c2.line_start = 20;
+        c2.id = format!("src/b.rs:20:{}", &c2.content_hash[..8]);
+
+        store
+            .upsert_chunks_batch(
+                &[(c1, mock_embedding(1.0)), (c2, mock_embedding(2.0))],
+                Some(100),
+            )
+            .unwrap();
+
+        let hits = store.lookup_by_name("foo").unwrap();
+        assert_eq!(hits.len(), 2, "two different chunks with same name");
+        // ORDER BY chunk_type, origin, line_start: same chunk_type
+        // (Function), so origin (file path) is the tiebreaker. a.rs
+        // sorts before b.rs.
+        assert_eq!(hits[0].file.to_string_lossy(), "src/a.rs");
+        assert_eq!(hits[1].file.to_string_lossy(), "src/b.rs");
+    }
+
+    #[test]
+    fn test_lookup_by_name_does_not_match_substring() {
+        // Pin exact-equality semantics — "foo" must NOT match "foo_bar".
+        // The kind classifier depends on this for Multiple vs Ambiguous
+        // disambiguation.
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk("foo_bar", "src/lib.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        let hits = store.lookup_by_name("foo").unwrap();
+        assert!(
+            hits.is_empty(),
+            "lookup_by_name should not return prefix-substring matches"
+        );
+
+        let exact_hits = store.lookup_by_name("foo_bar").unwrap();
+        assert_eq!(exact_hits.len(), 1);
     }
 }
