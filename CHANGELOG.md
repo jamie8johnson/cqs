@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`identifier_lookup` SPLADE α default 1.00 → 0.85** (`src/search/router.rs`). After the post-v1.39.1 LLM summaries refresh on the gemma slot (60.25% → 68.70% per-chunk coverage), a paired α sweep on v3.v2 218q dual-judge (test+dev) showed both halves agreed more SPLADE helps for identifier lookups. Dev `identifier_lookup` R@5 0.8889 → 1.0000 (+11.1pp, 2 queries; all 18 dev identifier_lookup queries now in top-5). Test `identifier_lookup` R@1 0.7222 → 0.7778 (+5.6pp). No regressions on any metric or fixture. The α=0.80..0.90 plateau is flat at this fixture size, so 0.85 sits in the middle and tolerates classifier drift.
+
 ## [1.39.1] - 2026-05-07
 
 Patch release closing a silent CAGRA / SPLADE-fusion interaction discovered while probing `CQS_SEARCH_CANDIDATE_FLOOR` (the v1.39.0 #1583 floor). One PR (#1584).
