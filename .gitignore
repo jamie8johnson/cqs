@@ -41,7 +41,13 @@ evals/__pycache__/
 .cqs.toml
 .cargo/
 samples/
-tools/
+# Ad-hoc scratch tools live under tools/ but are gitignored by default.
+# Subdirectories that ARE tracked must be exempted explicitly below so
+# git tracks them while the bulk of tools/ stays scratch-only.
+# Note: must be `tools/*` (contents) not `tools/` (the dir itself) so
+# negative-pattern exceptions can re-include specific subdirectories.
+tools/*
+!tools/screw-mcp/
 
 # ORT CUDA provider symlinks (created at runtime by ensure_ort_provider_libs)
 libonnxruntime_providers_*.so
