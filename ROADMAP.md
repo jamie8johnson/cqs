@@ -1,17 +1,32 @@
 # Roadmap
 
-## Current: v1.40.0 (cut 2026-05-08, crates.io published)
+## Current: v1.40.0 (cut 2026-05-08, crates.io published) + Phase 1 polymorphic routing complete
 
 Minor release. **Breaking change to default JSON output** on the CLI direct path — `cqs <cmd> --json` now emits the bare JSON payload (no envelope wrap). `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge.
 
-**v1.40.0 (2026-05-08):** 14-PR release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). Two threads bundled:
+**v1.40.0 (2026-05-08):** 14-PR release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). Bundled SNR restoration Phases 1-4 + polymorphic-routing Phase 1 plumbing + first cell. Three additional cell-completion PRs landed post-release (#1616, #1617, #1618), bringing **Phase 1 polymorphic routing to 30/30 cells** in the v1.40 cycle. Worth a future v1.41 minor (or v1.40.1 patch if no further breaks pile up) to capture the post-release work; for now main is ahead of crates.io v1.40.0 by the polymorphic-routing matrix completion.
+
+**v1.40.0 release contents:**
 
 - **SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613):** `Posture` enum + per-result skip-when-default + posture-gated force-emit + slim batch/daemon envelope + CLI direct → bare payload. Restores high-SNR baseline. ~30% smaller per result + ~70 KB saved per 1000-line fixture batch + bare CLI direct shape.
-- **Polymorphic routing Phase 1 plumbing + first cell (#1610, #1612):** `cqs::kind` module (Kind enum, classifier, `Store::lookup_by_name`, `detect_kind_for_store`) + `cqs impact <const>` returns kind-labeled definitions instead of empty. Eliminates the misrouted-to-empty failure for one (command × kind) cell; remaining 25 cells follow the same template.
+- **Polymorphic routing Phase 1 plumbing + first cell (#1610, #1612):** `cqs::kind` module (Kind enum, classifier, `Store::lookup_by_name`, `detect_kind_for_store`) + `cqs impact <const>` returns kind-labeled definitions instead of empty.
 
 Plus: env-var-docs hardening (#1606), v3.v2 fixture refresh (#1607, agg R@K +6.4/+2.7/+3.2pp), gitignore housekeeping (#1603), telemetry reset.
 
 Verified eval baseline post-release (v3.v2 218q dual-judge, default slot): test 49.5/72.5/84.4, dev 56.0/82.6/94.5, agg 52.7/77.5/89.4 R@1/R@5/R@20 — above v1.36-snapshot range.
+
+**Post-release polymorphic-routing matrix completion (on main, ahead of v1.40.0 tag):**
+
+| Command | Function | Type | Const | Module | Ambiguous |
+|---|---|---|---|---|---|
+| impact | ✓ #1612 | ✓ #1616 | ✓ #1612 | ✓ #1616 | ✓ #1616 |
+| callers | ✓ | ✓ | ✓ | ✓ | ✓ (#1617) |
+| callees | ✓ | ✓ | ✓ | ✓ | ✓ (#1617) |
+| test-map | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
+| trace | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
+| deps | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
+
+**30/30 Phase 1 cells.** CLI-direct dispatch only — daemon-path batch dispatch (`dispatch_*` in `src/cli/batch/handlers/`) is a parallel implementation that hasn't been swept yet; deferred follow-up.
 
 ## Previous: v1.39.0 (cut 2026-05-07)
 

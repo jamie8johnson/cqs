@@ -2,19 +2,22 @@
 
 ## Right Now
 
-**v1.40.0 shipped — 2026-05-08.** Tag pushed, crates.io published, GitHub Release auto-fires. 14-PR autopilot session culminating in a minor release driven by agent-adoption telemetry (search rate dropped from 79% → 6% mid-April → early May, per `.cqs/telemetry*.jsonl`).
+**v1.40.0 shipped + Polymorphic Routing Phase 1 fully complete — 2026-05-08.** 19-PR autopilot session: shipped SNR restoration (Phases 1-4, breaking JSON change), polymorphic-routing Phase 1 (all 30 cells of the per-(command × kind) matrix), v3.v2 fixture refresh, env-var-docs hardening, gitignore + telemetry reset, and v1.40.0 release to crates.io.
+
+**Phase 1 polymorphic routing — 30/30 cells implemented.** Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) consults `cqs::kind::classify_hits` against an exact-name lookup before its happy-path query. Const/Type/Module/Ambiguous kinds get a kind-labeled fallback shape (`{kind, fallback_from, name, definitions, note}`) instead of misrouted-to-empty results. Verified live: `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
+
+**Limitation (deferred):** Phase 1 fallbacks are wired into the **CLI-direct** dispatch (`cmd_*` functions). The daemon-path **batch dispatch** (`dispatch_*` functions in `src/cli/batch/handlers/`) is a parallel implementation that doesn't yet route through the kind classifier — daemon callers still see the empty array for non-Function names. CLI-direct is what telemetry primarily captures (agents shell out to `cqs`); the daemon-path sweep is a follow-up enhancement, not a Phase 1 blocker.
+
+**Telemetry post-release** (early signal, ~80 invocations since reset, mostly autopilot testing): search rate 5/50 ≈ 10% — marginally up from 6% baseline but within sample-size noise. Real signal needs 1-2 weeks of agent-driven usage. Now that v1.40.0 SNR + Phase 1 polymorphic are on main and the binary is refreshed, real-world telemetry can start accumulating.
 
 **Headline shipped:**
-- SNR restoration Phases 1-4 complete (#1601, #1602, #1604, #1609, #1613) — CLI direct success now defaults to bare JSON payload; per-result fields slimmed; batch/daemon envelope slimmed. `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge; `CQS_ULTRASECURITY=1` overrides on every surface.
-- Polymorphic routing Phase 1 plumbing (#1610) + first cell shipped (#1612 `cqs impact <const>` returns kind-labeled definitions instead of empty).
+- SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613) — CLI direct defaults to bare JSON payload; `CQS_OUTPUT_FORMAT=v1` consumer-migration hedge; `CQS_ULTRASECURITY=1` adversarial override on every surface.
+- Polymorphic routing Phase 1 lib plumbing + 30/30 cells (#1610 + #1612 + #1616 + #1617 + #1618). All 6 commands × 5 kinds.
 - v3.v2 eval fixture refresh (#1607) — agg R@K +6.4 / +2.7 / +3.2 pp, above v1.36-snapshot.
-- env_var_docs hardening (#1606), gitignore housekeeping (#1603), telemetry reset (clean post-SNR-Phase-1-3 baseline).
+- v1.40.0 release (#1614) — tag pushed, crates.io published, GitHub Release auto-fires.
+- env_var_docs hardening (#1606), gitignore housekeeping (#1603), telemetry reset.
 
-**Now in flight: complete polymorphic routing Phase 1.** Per user directive after the release: sweep the remaining ~25 cells of the per-(command × kind) matrix (`cqs impact` × Type/Module/Ambiguous, then 5 more commands × 5 kinds each). Pattern established by #1612 — each cell follows the Const-fallback factoring (build kind-labeled JSON in a pure helper, factor printing into a separate function, add 2-3 unit tests). One PR per command keeps reviews tight.
-
-**Telemetry post-release (early signal, ~80 invocations since reset, mostly testing):** search rate 5/50 ≈ 10% — marginally up from 6% baseline but within sample-size noise. Real signal needs 1-2 weeks of agent-driven usage.
-
-### Shipped this session — 14 PRs
+### Shipped this session — 19 PRs
 
 | PR | Title | Notes |
 |---|---|---|
@@ -32,8 +35,12 @@
 | #1612 | feat(impact): const fallback — kind-labeled definitions instead of empty | first cell of (command × kind) matrix |
 | #1613 | feat(json): flip default to bare payload on CLI direct (SNR Phase 4 proper) | **breaking change** — default cqs --json shape |
 | #1614 | chore: Release v1.40.0 | tag pushed, crates.io published, GitHub Release auto-fires |
+| #1615 | docs(tears, roadmap): v1.40.0 cut + Phase 1 polymorphic routing status | post-release sync |
+| #1616 | feat(impact): complete kind-mismatch matrix — Type, Module, Ambiguous cells | impact 5/5 cells |
+| #1617 | feat(callers, callees): kind-mismatch matrix | callers + callees 10/10 cells |
+| #1618 | feat(test-map, trace, deps): kind-mismatch matrix completes Phase 1 | last 15/15 cells, 30/30 total |
 
-Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed twice during session.
+Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed three times during session (after #1604, after v1.40.0 tag, after Phase 1 completion).
 
 ### Eval-baseline snapshot post-session
 
