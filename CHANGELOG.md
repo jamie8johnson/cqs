@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`_meta.handling_advice` is opt-in via `CQS_ULTRASECURITY=1`** (was always-on since #1181). cqs's actual deployment model is the operator owns both the indexed code and the indexing pipeline (no external users), and the always-on advisory text added a per-response cognitive tax that nudged consuming agents toward bare-bones text tools (grep) over cqs's structured surface — the opposite of what the indexer is built to enable. Adversarial-deployment scenarios where cqs is exposed to untrusted index content (e.g. as a remote MCP server reading user-uploaded code) restore the original always-on behaviour by setting `CQS_ULTRASECURITY=1`. `EnvelopeMeta.handling_advice` is now `Option<&'static str>` and skipped from JSON when `None`.
+
 ## [1.39.2] - 2026-05-08
 
 Patch release. Two follow-ons to v1.39.1's CAGRA cliff fix, both surfaced from the same exploratory loop: (1) `identifier_lookup` SPLADE α retune 1.00 → 0.85 from a paired test+dev sweep on v3.v2 218q (#1588 — closes dev category R@5 to 100%, no regressions); (2) auto-pruning of orphaned `llm_summaries` rows accumulated across reindexes (#1589, closes #1587 — the gemma slot had 5,083 orphans, now auto-pruned at end of every `cqs index --llm-summaries`).
