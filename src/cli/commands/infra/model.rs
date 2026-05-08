@@ -629,6 +629,9 @@ fn reindex_with_new_model(cli: &Cli, new_cfg: ModelConfig) -> Result<()> {
         hyde_queries: false,
         #[cfg(feature = "llm-summaries")]
         max_hyde: None,
+        // Model swap reindexes from scratch (--force) and won't run any LLM
+        // pass, so the prune is a no-op here. Default-on is fine.
+        no_prune_summaries: false,
         umap: false,
         // P2.12: model swap drives a programmatic reindex; we never want
         // the swap path to spit a JSON envelope to stdout (the caller is

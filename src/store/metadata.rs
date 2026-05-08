@@ -226,12 +226,37 @@ impl<Mode> Store<Mode> {
     /// Each row is a `(content_hash, purpose)` pair, so the count includes
     /// every cached summary regardless of purpose (`summary`, `doc-comment`,
     /// `hyde`, etc.). Returns 0 when no SQ-6/SQ-8/SQ-10b pass has run yet.
+    ///
+    /// **Includes orphans**: rows whose `content_hash` no longer matches any
+    /// chunk are counted here. For per-chunk coverage that ignores orphans,
+    /// use [`llm_summary_chunk_coverage`](Self::llm_summary_chunk_coverage).
     pub fn llm_summary_count(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("llm_summary_count").entered();
         self.rt.block_on(async {
             let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_summaries")
                 .fetch_one(&self.pool)
                 .await?;
+            Ok(row.0 as u64)
+        })
+    }
+
+    /// Count chunks that have at least one `llm_summaries` row matching their
+    /// `content_hash`, regardless of `purpose`.
+    ///
+    /// This is the honest "how much of the current corpus has a cached
+    /// summary" metric — orphan rows (content_hash no longer in `chunks`) do
+    /// not inflate this number, unlike [`llm_summary_count`](Self::llm_summary_count).
+    /// `cqs stats` exposes both so operators can see when orphan accumulation
+    /// is overstating the row-count metric (issue #1587).
+    pub fn llm_summary_chunk_coverage(&self) -> Result<u64, StoreError> {
+        let _span = tracing::debug_span!("llm_summary_chunk_coverage").entered();
+        self.rt.block_on(async {
+            let row: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM chunks \
+                 WHERE content_hash IN (SELECT content_hash FROM llm_summaries)",
+            )
+            .fetch_one(&self.pool)
+            .await?;
             Ok(row.0 as u64)
         })
     }
@@ -545,6 +570,43 @@ impl Store<ReadWrite> {
     /// Store a pending HyDE batch ID so interrupted processes can resume polling.
     pub fn set_pending_hyde_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
         self.set_metadata_opt("pending_hyde_batch", batch_id)
+    }
+
+    /// Delete `llm_summaries` rows whose `content_hash` no longer matches any
+    /// chunk in the index. Returns the number of rows deleted (#1587).
+    ///
+    /// Why it's needed: `llm_summaries` is keyed by `(content_hash, purpose)`,
+    /// so when a chunk's content changes (refactor, audit-cycle line shift,
+    /// formatter pass) the old summary stays cached under the old hash forever
+    /// even though no current chunk maps to it. Each `cqs index --llm-summaries`
+    /// pass adds new rows for the new content_hashes without ever deleting
+    /// the orphans, so the table can grow arbitrarily larger than the corpus.
+    ///
+    /// The fix is a single DELETE — no transaction needed because the
+    /// statement is its own atomic unit and orphans are by definition not
+    /// referenced by anything else. Wired into `cmd_index --llm-summaries`
+    /// at the end of the enrichment pass so refreshes leave the table
+    /// consistent without operator action.
+    ///
+    /// Cross-slot summary copy by content_hash (memory note `feedback_summary_cross_slot`)
+    /// is the only workflow that benefits from keeping orphans around — copy
+    /// before pruning. The pipeline auto-fire is opt-out via
+    /// `--no-prune-summaries` for that case.
+    pub fn prune_orphaned_llm_summaries(&self) -> Result<u64, StoreError> {
+        let _span = tracing::info_span!("prune_orphaned_llm_summaries").entered();
+        self.rt.block_on(async {
+            let result = sqlx::query(
+                "DELETE FROM llm_summaries \
+                 WHERE content_hash NOT IN (SELECT content_hash FROM chunks)",
+            )
+            .execute(&self.pool)
+            .await?;
+            let pruned = result.rows_affected();
+            if pruned > 0 {
+                tracing::info!(pruned, "Pruned orphaned llm_summaries rows");
+            }
+            Ok(pruned)
+        })
     }
 }
 
@@ -1094,5 +1156,120 @@ mod tests {
             }
         });
         assert_eq!(store.llm_summary_count().unwrap(), 3);
+    }
+
+    /// #1587: orphan summaries (content_hash not in chunks) must be deletable
+    /// without touching live rows. Each `cqs index --llm-summaries` pass
+    /// folds this into the enrichment phase.
+    #[test]
+    fn test_prune_orphaned_llm_summaries() {
+        let (store, _dir) = make_test_store_initialized();
+        let now = chrono::Utc::now().to_rfc3339();
+        let dim = ModelInfo::default().dimensions;
+        let embedding_bytes: Vec<u8> = bytemuck::cast_slice(&vec![0.1f32; dim]).to_vec();
+
+        // 2 chunks (live_a, live_b) with content_hashes hash_live_a / hash_live_b.
+        // 4 summary rows: 1 live (hash_live_a/summary), 1 live with second
+        // purpose (hash_live_a/doc-comment), 1 live (hash_live_b/summary),
+        // 1 orphan (hash_orphan/summary).
+        store.rt.block_on(async {
+            for (chunk_id, hash) in [("live_a", "hash_live_a"), ("live_b", "hash_live_b")] {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                         signature, content, content_hash, doc, line_start, line_end, embedding,
+                         source_mtime, created_at, updated_at)
+                         VALUES (?1, ?1, 'file', 'rust', 'function', ?1,
+                         '', '', ?2, NULL, 1, 10, ?3, 0, ?4, ?4)",
+                )
+                .bind(chunk_id)
+                .bind(hash)
+                .bind(&embedding_bytes)
+                .bind(&now)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            }
+            for (hash, purpose) in [
+                ("hash_live_a", "summary"),
+                ("hash_live_a", "doc-comment"),
+                ("hash_live_b", "summary"),
+                ("hash_orphan", "summary"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO llm_summaries (content_hash, purpose, summary, model, created_at)
+                     VALUES (?1, ?2, 'test', 'test-model', ?3)",
+                )
+                .bind(hash)
+                .bind(purpose)
+                .bind(&now)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            }
+        });
+
+        assert_eq!(store.llm_summary_count().unwrap(), 4);
+        // 2 chunks, both live in summaries — coverage 2/2.
+        assert_eq!(store.llm_summary_chunk_coverage().unwrap(), 2);
+
+        // Prune drops only the orphan.
+        let pruned = store.prune_orphaned_llm_summaries().unwrap();
+        assert_eq!(pruned, 1, "exactly one orphan should be deleted");
+
+        // Live rows survive.
+        assert_eq!(store.llm_summary_count().unwrap(), 3);
+        assert_eq!(store.llm_summary_chunk_coverage().unwrap(), 2);
+
+        // Idempotent: running again deletes nothing.
+        assert_eq!(store.prune_orphaned_llm_summaries().unwrap(), 0);
+    }
+
+    /// `llm_summary_chunk_coverage` must reflect how many CHUNKS have a
+    /// summary, not how many summary rows reference chunks.
+    #[test]
+    fn test_llm_summary_chunk_coverage_per_chunk() {
+        let (store, _dir) = make_test_store_initialized();
+        let now = chrono::Utc::now().to_rfc3339();
+        let dim = ModelInfo::default().dimensions;
+        let embedding_bytes: Vec<u8> = bytemuck::cast_slice(&vec![0.1f32; dim]).to_vec();
+
+        store.rt.block_on(async {
+            // 3 chunks: c1 + c2 share a content_hash (duplicate code), c3
+            // is unique. Total chunks = 3, distinct hashes = 2.
+            for (chunk_id, hash) in [
+                ("c1", "shared_hash"),
+                ("c2", "shared_hash"),
+                ("c3", "unique"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                         signature, content, content_hash, doc, line_start, line_end, embedding,
+                         source_mtime, created_at, updated_at)
+                         VALUES (?1, ?1, 'file', 'rust', 'function', ?1,
+                         '', '', ?2, NULL, 1, 10, ?3, 0, ?4, ?4)",
+                )
+                .bind(chunk_id)
+                .bind(hash)
+                .bind(&embedding_bytes)
+                .bind(&now)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            }
+            // Summary only for shared_hash. Both c1 AND c2 should count.
+            sqlx::query(
+                "INSERT INTO llm_summaries (content_hash, purpose, summary, model, created_at)
+                 VALUES ('shared_hash', 'summary', 'x', 'm', ?1)",
+            )
+            .bind(&now)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        });
+
+        // 2 of 3 chunks have a summary (c1 + c2 via shared_hash).
+        assert_eq!(store.llm_summary_chunk_coverage().unwrap(), 2);
+        // Row count is 1.
+        assert_eq!(store.llm_summary_count().unwrap(), 1);
     }
 }

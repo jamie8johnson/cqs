@@ -760,6 +760,17 @@ pub(crate) struct IndexArgs {
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]
     pub max_hyde: Option<usize>,
+    /// Skip the post-pipeline prune of orphaned `llm_summaries` rows (#1587).
+    ///
+    /// Default (when omitted): orphan rows whose `content_hash` no longer
+    /// matches any chunk are deleted at the end of the index pipeline so
+    /// `cqs stats` reports honest summary coverage. Pass `--no-prune-summaries`
+    /// when you plan to copy summaries to a sibling slot by content_hash —
+    /// orphaned rows there may match chunks in the destination slot, and
+    /// pruning before copy permanently loses those summaries (cross-slot
+    /// summary reuse is the only workflow this matters for).
+    #[arg(long)]
+    pub no_prune_summaries: bool,
     /// Project chunk embeddings into 2D via UMAP and write to `chunks.umap_x/umap_y`.
     ///
     /// Enables the `cqs serve` cluster view (`?view=cluster`). Requires
