@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-04-19T21:57:39",
+  "generated_at": "2026-05-08T03:50:34",
   "source": "v3_test.json",
   "k": 50,
   "counts": {
-    "strict": 41,
-    "basename": 1,
-    "name": 57,
-    "none": 10
+    "strict": 29,
+    "basename": 0,
+    "name": 69,
+    "none": 11
   },
   "records": [
     {
@@ -19,7 +19,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 116
+        "line_start": 147
       }
     },
     {
@@ -31,8 +31,8 @@
         "line_start": 105
       },
       "new": {
-        "origin": "src/reranker.rs",
-        "line_start": 125
+        "origin": "docs/audit-fix-prompts-v1.30.0.md",
+        "line_start": 246
       }
     },
     {
@@ -45,7 +45,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 142
+        "line_start": 175
       }
     },
     {
@@ -58,7 +58,7 @@
       },
       "new": {
         "origin": "src/hnsw/persist.rs",
-        "line_start": 533
+        "line_start": 686
       }
     },
     {
@@ -90,7 +90,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 142
+        "line_start": 175
       }
     },
     {
@@ -102,8 +102,8 @@
         "line_start": 458
       },
       "new": {
-        "origin": "src/cli/watch.rs",
-        "line_start": 601
+        "origin": "src/cli/watch/rebuild.rs",
+        "line_start": 136
       }
     },
     {
@@ -121,7 +121,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 142
+        "line_start": 175
       }
     },
     {
@@ -153,7 +153,7 @@
       },
       "new": {
         "origin": "src/store/helpers/types.rs",
-        "line_start": 254
+        "line_start": 394
       }
     },
     {
@@ -166,20 +166,21 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 74
+        "line_start": 105
       }
     },
     {
       "query": "structs that have a project String AND flatten CallerInfo",
-      "match_kind": "basename",
-      "action": "updated",
-      "old": {
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs:36:04384a2b",
+        "name": "CrossProjectCaller",
         "origin": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs",
-        "line_start": 36
-      },
-      "new": {
-        "origin": "src/store/calls/cross_project.rs",
-        "line_start": 36
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 36,
+        "line_end": 41
       }
     },
     {
@@ -192,13 +193,21 @@
       },
       "new": {
         "origin": "src/cli/batch/handlers/info.rs",
-        "line_start": 168
+        "line_start": 167
       }
     },
     {
       "query": "impl blocks for HnswIndex",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/hnsw/persist.rs",
+        "line_start": 172
+      },
+      "new": {
+        "origin": "src/hnsw/build.rs",
+        "line_start": 11
+      }
     },
     {
       "query": "how does the affected command trace from git diff to impacted functions and tests",
@@ -210,13 +219,21 @@
       },
       "new": {
         "origin": "src/cli/batch/handlers/graph.rs",
-        "line_start": 392
+        "line_start": 429
       }
     },
     {
       "query": "VectorIndex trait definition",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/index.rs",
+        "line_start": 20
+      },
+      "new": {
+        "origin": "src/index.rs",
+        "line_start": 32
+      }
     },
     {
       "query": "parse function signatures",
@@ -233,21 +250,28 @@
     },
     {
       "query": "trait definition for pluggable vector search index",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/index.rs",
+        "line_start": 20
+      },
+      "new": {
+        "origin": "src/index.rs",
+        "line_start": 32
+      }
     },
     {
       "query": "markdown table formatting for evaluation results",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": "evals/run_ablation.py:193:31486bfe",
-        "name": "format_category_table",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
         "origin": "evals/run_ablation.py",
-        "language": "python",
-        "chunk_type": "function",
-        "line_start": 193,
-        "line_end": 209
+        "line_start": 193
+      },
+      "new": {
+        "origin": "evals/run_ablation.py",
+        "line_start": 191
       }
     },
     {
@@ -260,7 +284,7 @@
       },
       "new": {
         "origin": "src/language/mod.rs",
-        "line_start": 277
+        "line_start": 287
       }
     },
     {
@@ -287,8 +311,8 @@
         "line_start": 22
       },
       "new": {
-        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
-        "line_start": 942
+        "origin": "src/schema.sql",
+        "line_start": 41
       }
     },
     {
@@ -314,7 +338,7 @@
       },
       "new": {
         "origin": "src/language/mod.rs",
-        "line_start": 875
+        "line_start": 923
       }
     },
     {
@@ -332,7 +356,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 142
+        "line_start": 175
       }
     },
     {
@@ -344,8 +368,8 @@
         "line_start": 17
       },
       "new": {
-        "origin": "src/schema.sql",
-        "line_start": 24
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 937
       }
     },
     {
@@ -372,7 +396,7 @@
       },
       "new": {
         "origin": "src/cache.rs",
-        "line_start": 980
+        "line_start": 2383
       }
     },
     {
@@ -382,15 +406,16 @@
     },
     {
       "query": "audit mode that forces direct code examination without cached notes",
-      "match_kind": "name",
-      "action": "updated",
-      "old": {
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "invalidate_mutable_caches",
         "origin": "src/cli/batch/mod.rs",
-        "line_start": 373
-      },
-      "new": {
-        "origin": "src/cli/batch/mod.rs",
-        "line_start": 475
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 373,
+        "line_end": 383
       }
     },
     {
@@ -407,8 +432,8 @@
         "line_start": 17
       },
       "new": {
-        "origin": "src/schema.sql",
-        "line_start": 24
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 937
       }
     },
     {
@@ -431,7 +456,7 @@
       },
       "new": {
         "origin": "src/store/migrations.rs",
-        "line_start": 439
+        "line_start": 620
       }
     },
     {
@@ -449,7 +474,7 @@
       },
       "new": {
         "origin": "src/embedder/models.rs",
-        "line_start": 320
+        "line_start": 594
       }
     },
     {
@@ -461,14 +486,22 @@
         "line_start": 17
       },
       "new": {
-        "origin": "src/schema.sql",
-        "line_start": 24
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 937
       }
     },
     {
       "query": "how to implement a delete_by_origin database operation in Rust vs Go",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/store/chunks/crud.rs",
+        "line_start": 427
+      },
+      "new": {
+        "origin": "src/store/chunks/crud.rs",
+        "line_start": 764
+      }
     },
     {
       "query": "LLMClient validate method that is not synchronous",
@@ -485,13 +518,21 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 131
+        "line_start": 164
       }
     },
     {
       "query": "HnswIoCell",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/hnsw/mod.rs",
+        "line_start": 146
+      },
+      "new": {
+        "origin": "src/hnsw/mod.rs",
+        "line_start": 261
+      }
     },
     {
       "query": "BoundedScoreHeap",
@@ -503,7 +544,7 @@
       },
       "new": {
         "origin": "src/search/scoring/candidate.rs",
-        "line_start": 175
+        "line_start": 199
       }
     },
     {
@@ -513,8 +554,17 @@
     },
     {
       "query": "error types in src",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "NoteError",
+        "origin": "src/note.rs",
+        "language": "rust",
+        "chunk_type": "enum",
+        "line_start": 24,
+        "line_end": 37
+      }
     },
     {
       "query": "implementation of TextJsonArgs",
@@ -523,22 +573,29 @@
     },
     {
       "query": "embedding dimension and model configuration management",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": null,
-        "name": "Embedder",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
         "origin": "src/embedder/mod.rs",
-        "language": "rust",
-        "chunk_type": "struct",
-        "line_start": 217,
-        "line_end": 249
+        "line_start": 217
+      },
+      "new": {
+        "origin": "src/embedder/mod.rs",
+        "line_start": 261
       }
     },
     {
       "query": "dead code detection and unused function analysis",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/batch/handlers/analysis.rs",
+        "line_start": 23
+      },
+      "new": {
+        "origin": "src/cli/batch/handlers/analysis.rs",
+        "line_start": 26
+      }
     },
     {
       "query": "create notes table without allowing null text",
@@ -550,7 +607,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 116
+        "line_start": 147
       }
     },
     {
@@ -563,25 +620,34 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 116
+        "line_start": 147
       }
     },
     {
       "query": "LlmClient constructor without automatic redirects",
-      "match_kind": "strict",
-      "action": "no_change"
-    },
-    {
-      "query": "test file suggestion based on language conventions",
       "match_kind": "name",
       "action": "updated",
       "old": {
-        "origin": "src/language/languages.rs",
-        "line_start": 5896
+        "origin": "src/llm/mod.rs",
+        "line_start": 375
       },
       "new": {
+        "origin": "src/llm/mod.rs",
+        "line_start": 621
+      }
+    },
+    {
+      "query": "test file suggestion based on language conventions",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "LANG_RUBY",
         "origin": "src/language/languages.rs",
-        "line_start": 6060
+        "language": "rust",
+        "chunk_type": "constant",
+        "line_start": 5896,
+        "line_end": 5973
       }
     },
     {
@@ -594,7 +660,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 103
+        "line_start": 134
       }
     },
     {
@@ -617,8 +683,16 @@
     },
     {
       "query": "filter configuration for search queries with language and path constraints",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/store/helpers/search_filter.rs",
+        "line_start": 16
+      },
+      "new": {
+        "origin": "src/store/helpers/search_filter.rs",
+        "line_start": 27
+      }
     },
     {
       "query": "ProjectSearchResult",
@@ -630,7 +704,7 @@
       },
       "new": {
         "origin": "src/cli/commands/infra/project.rs",
-        "line_start": 23
+        "line_start": 24
       }
     },
     {
@@ -643,7 +717,7 @@
       },
       "new": {
         "origin": "src/search/router.rs",
-        "line_start": 911
+        "line_start": 1437
       }
     },
     {
@@ -656,7 +730,7 @@
       },
       "new": {
         "origin": "src/language/mod.rs",
-        "line_start": 862
+        "line_start": 910
       }
     },
     {
@@ -669,7 +743,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 175
+        "line_start": 208
       }
     },
     {
@@ -682,7 +756,7 @@
       },
       "new": {
         "origin": "src/cache.rs",
-        "line_start": 1103
+        "line_start": 2533
       }
     },
     {
@@ -700,7 +774,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 103
+        "line_start": 134
       }
     },
     {
@@ -713,7 +787,7 @@
       },
       "new": {
         "origin": "src/cagra.rs",
-        "line_start": 241
+        "line_start": 749
       }
     },
     {
@@ -730,8 +804,8 @@
         "line_start": 281
       },
       "new": {
-        "origin": "src/cli/batch/commands.rs",
-        "line_start": 406
+        "origin": "src/cli/batch/handlers/dispatch_tests.rs",
+        "line_start": 211
       }
     },
     {
@@ -744,7 +818,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 131
+        "line_start": 164
       }
     },
     {
@@ -762,7 +836,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 86
+        "line_start": 117
       }
     },
     {
@@ -780,7 +854,7 @@
       },
       "new": {
         "origin": "src/store/search.rs",
-        "line_start": 182
+        "line_start": 324
       }
     },
     {
@@ -793,27 +867,34 @@
       },
       "new": {
         "origin": "src/nl/mod.rs",
-        "line_start": 655
+        "line_start": 664
       }
     },
     {
       "query": "method implementations on the Store struct",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": null,
-        "name": "Store",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
         "origin": "src/store/search.rs",
-        "language": "rust",
-        "chunk_type": "impl",
-        "line_start": 37,
-        "line_end": 218
+        "line_start": 37
+      },
+      "new": {
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 979
       }
     },
     {
       "query": "save HNSW index to disk with checksum verification",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/hnsw/persist.rs",
+        "line_start": 189
+      },
+      "new": {
+        "origin": "src/hnsw/persist.rs",
+        "line_start": 236
+      }
     },
     {
       "query": "SQL equivalent of a TypeScript interface for a code chunk table",
@@ -824,8 +905,8 @@
         "line_start": 22
       },
       "new": {
-        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
-        "line_start": 942
+        "origin": "src/schema.sql",
+        "line_start": 41
       }
     },
     {
@@ -845,8 +926,17 @@
     },
     {
       "query": "delegate and event handler type definitions",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "StructuralMatcherFn",
+        "origin": "src/language/mod.rs",
+        "language": "rust",
+        "chunk_type": "typealias",
+        "line_start": 191,
+        "line_end": 191
+      }
     },
     {
       "query": "SPLADE encoder encode_batch tensor shape validation",
@@ -857,14 +947,22 @@
         "line_start": 580
       },
       "new": {
-        "origin": "docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md",
-        "line_start": 220
+        "origin": "src/splade/mod.rs",
+        "line_start": 769
       }
     },
     {
       "query": "convert a document file to markdown format",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/convert/html.rs",
+        "line_start": 43
+      },
+      "new": {
+        "origin": "src/convert/html.rs",
+        "line_start": 45
+      }
     },
     {
       "query": "how to parse OCaml function return types in Rust vs OCaml",
@@ -876,33 +974,35 @@
       },
       "new": {
         "origin": "src/language/languages.rs",
-        "line_start": 4655
+        "line_start": 4692
       }
     },
     {
       "query": "constructor detection across language conventions",
-      "match_kind": "name",
-      "action": "updated",
-      "old": {
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "post_process_solidity_solidity",
         "origin": "src/language/languages.rs",
-        "line_start": 6471
-      },
-      "new": {
-        "origin": "src/language/languages.rs",
-        "line_start": 6662
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 6471,
+        "line_end": 6489
       }
     },
     {
       "query": "struct definitions in src/cli/commands/infra",
-      "match_kind": "name",
-      "action": "updated",
-      "old": {
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchInput",
         "origin": "src/cli/batch/commands.rs",
-        "line_start": 25
-      },
-      "new": {
-        "origin": "src/cli/batch/commands.rs",
-        "line_start": 26
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 25,
+        "line_end": 28
       }
     },
     {
@@ -914,8 +1014,8 @@
         "line_start": 22
       },
       "new": {
-        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
-        "line_start": 942
+        "origin": "src/schema.sql",
+        "line_start": 41
       }
     },
     {
@@ -933,7 +1033,7 @@
       },
       "new": {
         "origin": "src/search/scoring/candidate.rs",
-        "line_start": 260
+        "line_start": 344
       }
     },
     {
@@ -946,7 +1046,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 24
+        "line_start": 36
       }
     },
     {
@@ -956,16 +1056,15 @@
     },
     {
       "query": "tables with a BLOB column and a PRIMARY KEY",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": "src/schema.sql:108:744fc0db",
-        "name": "notes",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
         "origin": "src/schema.sql",
-        "language": "sql",
-        "chunk_type": "struct",
-        "line_start": 108,
-        "line_end": 118
+        "line_start": 108
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 147
       }
     },
     {
@@ -978,7 +1077,7 @@
       },
       "new": {
         "origin": "src/schema.sql",
-        "line_start": 74
+        "line_start": 105
       }
     },
     {
@@ -991,7 +1090,7 @@
       },
       "new": {
         "origin": "src/language/languages.rs",
-        "line_start": 6553
+        "line_start": 6602
       }
     },
     {
@@ -1004,7 +1103,7 @@
       },
       "new": {
         "origin": "src/cli/pipeline/embedding.rs",
-        "line_start": 197
+        "line_start": 234
       }
     },
     {
@@ -1036,27 +1135,26 @@
       },
       "new": {
         "origin": "src/store/helpers/types.rs",
-        "line_start": 424
+        "line_start": 616
       }
     },
     {
       "query": "abstract base class for large language model integration",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": "evals/llm_client.py:111:b21042fa:w2",
-        "name": "LLMClient",
-        "origin": "evals/llm_client.py",
-        "language": "python",
-        "chunk_type": "class",
-        "line_start": 111,
-        "line_end": 286
-      }
+      "match_kind": "strict",
+      "action": "no_change"
     },
     {
       "query": "call graph traversal for finding transitive dependencies",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/impact/analysis.rs",
+        "line_start": 221
+      },
+      "new": {
+        "origin": "src/impact/analysis.rs",
+        "line_start": 234
+      }
     },
     {
       "query": "simple metadata storage table",
@@ -1081,27 +1179,26 @@
       },
       "new": {
         "origin": "src/hnsw/persist.rs",
-        "line_start": 806
+        "line_start": 1068
       }
     },
     {
       "query": "Python equivalent of a close method in Rust's async traits",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": "evals/llm_client.py:284:4df39237",
-        "name": "aclose",
-        "origin": "evals/llm_client.py",
-        "language": "python",
-        "chunk_type": "method",
-        "line_start": 284,
-        "line_end": 286
-      }
+      "match_kind": "strict",
+      "action": "no_change"
     },
     {
       "query": "Store::open_readonly_small reference index mmap size",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/reference.rs",
+        "line_start": 189
+      },
+      "new": {
+        "origin": "src/reference.rs",
+        "line_start": 194
+      }
     },
     {
       "query": "TaskTemplate",
