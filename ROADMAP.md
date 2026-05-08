@@ -246,6 +246,22 @@ Re-audited 2026-05-02 post-v1.33.0-audit close. The v1.33.0 cycle and post-relea
 
 ---
 
+## Adjacent tools (designed, not started)
+
+Workspace siblings under `tools/` — not part of the published `cqs` crate, separate projects that share the toolchain.
+
+- [ ] **`screw-tape`** — Rust CLI binary for composing screw tapes (slowed-down, chopped hip-hop mixes) from a playlist. Design at [`tools/screw-mcp/DESIGN.md`](tools/screw-mcp/DESIGN.md). Build target: ~3-4 weeks for v1 (CLI-first, with the 10-rule MCP-discipline contract so the v1.5 wrapper is mechanical mapping, not a redesign). v2 layers a real-time playback engine; an LLM-driven `screw-tape-dj` harness lives one level up and is a separate v2-ish project.
+
+  **Design highlights:**
+  - CLI-first: ship `screw-tape` as a Rust binary, bolt MCP wrapper on at v1.5 (~3-5 days mechanical generation). Pattern learned from cqs's own MCP-first → CLI-only evolution at v0.10.0.
+  - Schema-first: per-subcommand JSON tool schemas (Rust types with `schemars` derive) drive both clap subcommands AND the v1.5 MCP wrapper. No parallel surfaces.
+  - Driver-model considerations: Gemma 4 E4B is the standout candidate for the future DJ harness because it accepts audio input alongside text — implicit DJ priors from audio pre-training fix the "model can't hear the audio" limit on aesthetic decisions.
+  - One v1 CLI requirement that unlocks the audio-multimodal driver: `render` supports `--format pcm | wav | mp3` (default mp3) so the harness can extract short clips for multimodal evaluation.
+
+  **Status:** designed, not started. Begins after the cqs v1.40.0 implementation lane (polymorphic routing + SNR restoration) lands.
+
+---
+
 ## Blocked
 
 - **Clojure** — tree-sitter-clojure requires tree-sitter ^0.25, incompatible with 0.26.
