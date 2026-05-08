@@ -2,17 +2,51 @@
 
 ## Right Now
 
-**Post-v1.39.2 work in design** — 2026-05-08. Two design docs landed (PRs #1595, #1596) addressing the agent-adoption friction observed in `.cqs/telemetry*.jsonl`. No implementation yet; both pending review.
+**Post-v1.39.2 autopilot session — 2026-05-08.** User invoked `/effort max` + autopilot through priority queue: `2 → 5 → 3/4 → 8 → 6 → 1 → 7(skip)`. Six PRs shipped + telemetry reset + open-issue triage; two big items deferred to a fresh session.
 
-The diagnostic: **`search` rate dropped from 79% of code-intel calls in mid-April to 6% in early May** as the response shape accumulated fields (envelope wrap, `_meta`, per-result `trust_level`/`injection_flags`, etc.). That's not voluntary tool refinement; it's agents avoiding a noisier surface. The fix splits across two friction surfaces:
+### Shipped this session
 
-- **JSON SNR restoration** ([`docs/json-snr-restoration.md`](docs/json-snr-restoration.md), PR #1595). CLI direct success → bare payload on stdout, no envelope. Failure → structured JSON to stderr + non-zero exit. Batch/daemon JSONL → slimmed envelope. `CQS_ULTRASECURITY=1` restores full envelope + force-emits per-result security signals (adversarial-deployment opt-in). Breaking change to default JSON shape; minor bump v1.40.0; in-tree migration only. Includes `CQS_OUTPUT_FORMAT=v1|v2` feature-flag hedge for one release. ~1 week solo.
+| PR | Title | Status |
+|---|---|---|
+| #1601 | feat(json): add Posture enum + _with_posture emission helpers (SNR Phase 1) | merged |
+| #1602 | feat(json): per-result skip-when-default + posture-gated force-emit (SNR Phase 2) | merged |
+| #1603 | chore(gitignore): re-ignore tools/screw-mcp/ + add .screw-tape/ runtime cache | merged |
+| #1604 | feat(json): slim batch/daemon envelope under Friendly posture (SNR Phase 3) | merged |
+| #1605 | docs(roadmap): SNR Phases 1-3 shipped; 4-6 deferred | merged |
+| #1606 | fix(tests): env-var-docs substring → token match + pre-commit step | merged |
+| #1607 | chore(eval): refresh v3.v2 fixture line numbers — agg R@K +6.4/+2.7/+3.2pp | in CI / auto-merge armed |
 
-- **Polymorphic command routing** ([`docs/polymorphic-routing.md`](docs/polymorphic-routing.md), PR #1596). `cqs impact CONST_NAME` returns empty today (call-graph is function-only); agent reaches for grep. Phase 1 (~1 week, ready): every function-or-type-specialized command grows a kind-mismatch fallback that returns useful, kind-labeled output instead of empty. Per-(command × kind) behavior matrix; ~36 tests; `kind` and `fallback_from` fields added to response shape. Phase 2 (~1 week, contingent): unified `cqs about <name>` entry point. Phase 2 trigger criteria explicit; do not preemptively ship.
+Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles.
 
-**Recommended ordering if shipping serially**: Phase 1 of polymorphic routing first (a failed query is worse than an expensive answer), then SNR restoration, then Phase 2 of polymorphic routing only if triggered. Both designs are independent; landing in the same release window amortizes consumer-migration concerns (eval harness, daemon batch protocol).
+### Eval-baseline snapshot post-session
 
-The earlier v1.39.2 cycle is closed; everything below this section captures it. Earlier today (#1593) inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1`; that addressed the alarm-shaped piece of the agent-friction equation. The two designs above address the residual.
+v3.v2 refreshed (PR #1607). Default slot (EmbeddingGemma-300m + per-cat α + Unknown=0.80):
+
+| Split | R@1 | R@5 | R@20 |
+|---|---:|---:|---:|
+| test (n=109) | 49.5% | 72.5% | 84.4% |
+| dev (n=109) | 56.0% | 82.6% | 94.5% |
+| **aggregate** | **~52.7%** | **~77.5%** | **~89.4%** |
+
+Δ vs pre-refresh aggregate (46.3 / 74.8 / 86.2): **+6.4 / +2.7 / +3.2 pp**. Brings agg R@K above the v1.36-snapshot range (50.9 / 76.2 / 88.6). Pure fixture re-anchoring — no retrieval-side change.
+
+### Deferred to fresh session
+
+Both items are ready (designs landed, scoping is clear) but the test sweeps are large enough that they warrant focused multi-day work, not autopilot.
+
+- **SNR restoration Phases 4-6.** Phase 4 = CLI direct success → bare payload on stdout (vs current envelope wrap). 21+ integration test files in `tests/` and 50+ eval harness Python scripts in `evals/` parse `parsed["data"][...]` from cqs subprocess output and would need coordinated migration to `parsed[...]`. The eval harness option of setting `CQS_ULTRASECURITY=1` to keep envelope assertions is also viable. Phase 5 (Adversarial restore) and Phase 6 (docs) follow Phase 4 mechanically. Pickup notes baked into `docs/json-snr-restoration.md` and ROADMAP entry.
+- **Polymorphic routing Phase 1.** Per-command kind-mismatch fallback. Six commands × five kinds behavior matrix + ~36 tests. Single-PR landing per the design doc, but truly multi-day. Pickup notes in `docs/polymorphic-routing.md`.
+
+### Pickup checklist for next session
+
+1. Run `/cqs-verify` first (CLAUDE.md mandate).
+2. Read `docs/json-snr-restoration.md` Phase 4 acceptance criteria.
+3. Branch off main, change `emit_json` Friendly path to bare payload to stdout, then sweep test files.
+4. OR start polymorphic routing Phase 1 in `src/cli/dispatch.rs` (kind-detection helper) + per-command fallback handlers.
+
+### Earlier this day (v1.39.2 cycle, before autopilot)
+
+The earlier v1.39.2 cycle is closed; section below captures it. PR #1593 inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1` — that addressed the alarm-shaped piece of the agent-friction equation. The two designs above (SNR + polymorphic) address the residual.
 
 ---
 
