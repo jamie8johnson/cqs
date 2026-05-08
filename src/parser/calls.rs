@@ -1139,4 +1139,69 @@ fn another() {
              no Language has a `type_query` defined"
         );
     }
+
+    /// #1573 Tier 2a: struct-field-assignment edges — Rust call query now
+    /// captures `field: function_path` patterns inside `struct_expression`
+    /// literals so functions used as Option<fn> / fn-pointer field values
+    /// no longer surface as `cqs dead` false positives.
+    ///
+    /// Pre-fix, 66 false positives on cqs main were all functions
+    /// assigned to LanguageDef fields (strip_go_receiver,
+    /// extract_return_c, etc.). This test pins the new query patterns
+    /// against representative inputs.
+    #[test]
+    fn test_struct_field_assignment_captures_function_value() {
+        let parser = Parser::new().unwrap();
+        let source = r#"
+fn helper_fn() {}
+
+struct Config {
+    callback: Option<fn()>,
+    direct: fn(),
+}
+
+fn build_config() -> Config {
+    Config {
+        callback: Some(helper_fn),
+        direct: helper_fn,
+    }
+}
+"#;
+        let calls = parser.extract_calls(source, Language::Rust, 0, source.len(), 0);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        // Must capture `helper_fn` (in both `Some(helper_fn)` and bare
+        // `helper_fn`) plus `Some` (the `call_expression` for `Some(...)`).
+        assert!(
+            names.contains(&"helper_fn"),
+            "expected `helper_fn` in captured calls, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_struct_field_assignment_captures_scoped_function_path() {
+        let parser = Parser::new().unwrap();
+        let source = r#"
+mod inner {
+    pub fn module_fn() {}
+}
+
+struct Config {
+    callback: fn(),
+}
+
+fn build() {
+    let _c = Config {
+        callback: inner::module_fn,
+    };
+}
+"#;
+        let calls = parser.extract_calls(source, Language::Rust, 0, source.len(), 0);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(
+            names.contains(&"module_fn"),
+            "expected `module_fn` (from `inner::module_fn` field value), got: {:?}",
+            names
+        );
+    }
 }
