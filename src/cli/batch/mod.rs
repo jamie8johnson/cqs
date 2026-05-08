@@ -2216,22 +2216,31 @@ fn write_json_line(
     // hits across many small literal writes.
     //
     // The envelope is opened by hand and the payload is streamed via
-    // `to_writer` — no intermediate `Value` allocation. The version
-    // literal is emitted as a constant so a future `JSON_OUTPUT_VERSION`
-    // bump still flows through.
+    // `to_writer` — no intermediate `Value` allocation.
+    //
+    // **SNR Phase 3:** under [`Posture::Friendly`], drop `error: null`
+    // and `version` (always-redundant on the success path) and skip
+    // `_meta` when empty — the hot-path `meta_json_fragment_for_posture`
+    // returns "" in that case so the splice is a no-op. Under
+    // [`Posture::Adversarial`], emit the verbose envelope unchanged.
+    use cqs::posture::Posture;
+    let posture = Posture::current();
     let mut buf: Vec<u8> = Vec::with_capacity(256);
     buf.extend_from_slice(b"{\"data\":");
     match serde_json::to_writer(&mut buf, value) {
         Ok(()) => {
-            buf.extend_from_slice(b",\"error\":null,\"version\":");
-            // Version is a small u32; emit as decimal text directly so we
-            // don't pay another to_writer call for an integer.
-            let version = crate::cli::json_envelope::JSON_OUTPUT_VERSION;
-            buf.extend_from_slice(version.to_string().as_bytes());
-            // #1181: every envelope carries `_meta.handling_advice`. The
-            // pre-serialized fragment starts with `,` so we splice it before
-            // the closing `}`.
-            buf.extend_from_slice(crate::cli::json_envelope::meta_json_fragment().as_bytes());
+            if posture.is_adversarial() {
+                buf.extend_from_slice(b",\"error\":null,\"version\":");
+                // Version is a small u32; emit as decimal text directly
+                // so we don't pay another to_writer call for an integer.
+                let version = crate::cli::json_envelope::JSON_OUTPUT_VERSION;
+                buf.extend_from_slice(version.to_string().as_bytes());
+            }
+            // The fragment is "" under Friendly when meta is empty;
+            // ",\"_meta\":{...}" otherwise. Splice verbatim.
+            buf.extend_from_slice(
+                crate::cli::json_envelope::meta_json_fragment_for_posture(posture).as_bytes(),
+            );
             buf.push(b'}');
             buf.push(b'\n');
             out.write_all(&buf)
@@ -3073,8 +3082,11 @@ mod tests {
         assert_eq!(val, expected);
     }
 
-    // TC-7: write_json_line outputs valid JSON for clean values
-    // Wraps payload in the standard `{data, error, version}` envelope.
+    // SNR Phase 3: write_json_line emits the slim envelope under
+    // Posture::Friendly (default deployment). The `data` payload is
+    // present; `error` and `version` keys are absent (always-redundant
+    // on the success path). Adversarial mode is covered by the
+    // adversarial wrapper tests in json_envelope.rs.
     #[test]
     fn test_write_json_line_clean() {
         let val = serde_json::json!({"name": "foo", "score": 0.95});
@@ -3084,10 +3096,13 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         assert_eq!(parsed["data"]["name"], "foo");
         assert_eq!(parsed["data"]["score"], 0.95);
-        assert!(parsed["error"].is_null());
-        assert_eq!(
-            parsed["version"],
-            crate::cli::json_envelope::JSON_OUTPUT_VERSION
+        assert!(
+            parsed.get("error").is_none(),
+            "Friendly slim shape drops error key on success; got: {parsed}"
+        );
+        assert!(
+            parsed.get("version").is_none(),
+            "Friendly slim shape drops version key; got: {parsed}"
         );
     }
 
@@ -3108,23 +3123,24 @@ mod tests {
         assert_eq!(parsed["data"]["name"], "bar");
     }
 
-    // P2 #28: write_json_line streams via to_writer instead of allocating
-    // an intermediate Value. The shape (data/error/version) and the version
-    // literal must still match the typed Envelope::ok path so consumers
-    // see one envelope across all surfaces.
+    // SNR Phase 3: write_json_line (Friendly slim) and the typed
+    // Envelope::ok path (always full) intentionally diverge. Pin the
+    // post-Phase-3 contract: streamed Friendly output is `{"data": ...}`
+    // (no error, version, or empty _meta), and the typed full envelope
+    // adds the verbose keys. Tests that need to cross-check a full
+    // envelope shape should set CQS_ULTRASECURITY=1.
     #[test]
-    fn test_write_json_line_matches_envelope_ok_shape() {
+    fn test_write_json_line_friendly_slim_shape() {
         let val = serde_json::json!({"big": (0..50).collect::<Vec<_>>(), "name": "stream-test"});
         let mut buf = Vec::new();
         write_json_line(&mut buf, &val).unwrap();
         let streamed = String::from_utf8(buf).unwrap();
-        let parsed_streamed: serde_json::Value = serde_json::from_str(streamed.trim()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(streamed.trim()).unwrap();
 
-        let typed = serde_json::to_value(crate::cli::json_envelope::Envelope::ok(&val)).unwrap();
-        assert_eq!(
-            parsed_streamed, typed,
-            "streamed envelope must match typed Envelope::ok shape"
-        );
+        // Friendly path: `data` always; no error / version / empty _meta.
+        assert_eq!(parsed["data"], val);
+        assert!(parsed.get("error").is_none(), "got: {parsed}");
+        assert!(parsed.get("version").is_none(), "got: {parsed}");
     }
 
     // D.2: reject_null_tokens helper unit test. Pure function, no fixture
@@ -3293,9 +3309,11 @@ mod tests {
         let output = String::from_utf8(sink).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(output.trim()).expect("must produce parseable envelope");
+        // SNR Phase 3: Friendly slim shape skips `version` on success;
+        // pin "envelope produced and parseable" via the `data` key instead.
         assert!(
-            parsed["version"].is_number(),
-            "envelope version field must be present, got {output}"
+            parsed.get("data").is_some() || parsed.get("error").is_some(),
+            "envelope must carry data or error, got {output}"
         );
         // (c) query_count bumped — ANSI-tainted input is a valid query
         //     from dispatch_line's perspective; the handler runs.
@@ -3322,8 +3340,8 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(output.trim()).expect("must produce parseable envelope");
         assert!(
-            parsed["version"].is_number(),
-            "envelope version must be present, got {output}"
+            parsed.get("data").is_some() || parsed.get("error").is_some(),
+            "envelope must carry data or error, got {output}"
         );
     }
 
@@ -3345,7 +3363,7 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(output.trim()).expect("must produce parseable envelope");
         assert!(
-            parsed["version"].is_number(),
+            parsed.get("data").is_some() || parsed.get("error").is_some(),
             "envelope must be present even with CR in arg, got {output}"
         );
         // Exactly one dispatch (not two from a CR-split).
@@ -3378,18 +3396,16 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(output.trim())
             .unwrap_or_else(|e| panic!("ping envelope must parse as JSON ({e}): {output}"));
 
-        // Envelope shape — `data` populated, `error` null, `version` set.
+        // SNR Phase 3 Friendly slim shape: `data` populated, no
+        // `error` / `version` keys (those only appear under
+        // CQS_ULTRASECURITY=1 or in the error envelope).
         assert!(
-            parsed["error"].is_null(),
-            "ping success envelope must have error=null, got {output}"
+            parsed.get("error").is_none(),
+            "ping success Friendly envelope drops error key, got {output}"
         );
         assert!(
             parsed["data"].is_object(),
             "ping data must be an object (PingResponse), got {output}"
-        );
-        assert_eq!(
-            parsed["version"],
-            crate::cli::json_envelope::JSON_OUTPUT_VERSION
         );
 
         // PingResponse has `total_queries` and `error_count` fields; both
@@ -3465,15 +3481,11 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("stats envelope must parse as JSON ({e}): {output}"));
 
-        // Strict success-envelope shape.
-        assert_eq!(
-            parsed["version"],
-            crate::cli::json_envelope::JSON_OUTPUT_VERSION,
-            "envelope must carry the published version, got {output}"
-        );
+        // SNR Phase 3 Friendly slim shape: `data` populated, no
+        // `error` / `version` keys on success.
         assert!(
-            parsed["error"].is_null(),
-            "stats success envelope must have error=null, got {output}"
+            parsed.get("error").is_none(),
+            "stats success Friendly envelope drops error key, got {output}"
         );
         assert!(
             parsed["data"].is_object(),
