@@ -78,6 +78,7 @@ pub mod embedder;
 pub mod fs;
 pub mod hnsw;
 pub mod index;
+pub mod kind;
 pub mod language;
 pub mod note;
 pub mod parser;
