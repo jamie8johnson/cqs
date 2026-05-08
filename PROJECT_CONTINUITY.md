@@ -2,22 +2,23 @@
 
 ## Right Now
 
-**v1.40.0 shipped + Polymorphic Routing Phase 1 fully complete — 2026-05-08.** 19-PR autopilot session: shipped SNR restoration (Phases 1-4, breaking JSON change), polymorphic-routing Phase 1 (all 30 cells of the per-(command × kind) matrix), v3.v2 fixture refresh, env-var-docs hardening, gitignore + telemetry reset, and v1.40.0 release to crates.io.
+**23-PR autopilot session — 2026-05-08.** Every user-priority queue item shipped. v1.40.0 on crates.io; SNR restoration Phases 1-4 complete (default JSON output flipped to bare); Polymorphic Routing Phase 1 complete on **both** CLI-direct (`cmd_*`) and daemon-path (`dispatch_*`) surfaces (60 dispatch points across 6 commands × 5 kinds × 2 surfaces); v3.v2 fixture refreshed; cqs-dead false positives reduced ~114 → 35 (Tier 1 + Tier 2a + Tier 2b partial — closes `src/language/languages.rs` from 66 → 0).
 
-**Phase 1 polymorphic routing — 30/30 cells implemented.** Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) consults `cqs::kind::classify_hits` against an exact-name lookup before its happy-path query. Const/Type/Module/Ambiguous kinds get a kind-labeled fallback shape (`{kind, fallback_from, name, definitions, note}`) instead of misrouted-to-empty results. Verified live: `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
+**Phase 1 polymorphic routing — 60/60 dispatch points complete.** Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) consults `cqs::kind::classify_hits` against an exact-name lookup before its happy-path query, on both CLI-direct (#1612, #1616, #1617, #1618) and daemon-path (#1620). Const/Type/Module/Ambiguous kinds get a kind-labeled fallback shape (`{kind, fallback_from, name, definitions, note}`) instead of misrouted-to-empty results. Verified live: `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
 
-**Limitation (deferred):** Phase 1 fallbacks are wired into the **CLI-direct** dispatch (`cmd_*` functions). The daemon-path **batch dispatch** (`dispatch_*` functions in `src/cli/batch/handlers/`) is a parallel implementation that doesn't yet route through the kind classifier — daemon callers still see the empty array for non-Function names. CLI-direct is what telemetry primarily captures (agents shell out to `cqs`); the daemon-path sweep is a follow-up enhancement, not a Phase 1 blocker.
+**cqs dead false-positive reduction.** Three tier closes in this session: Tier 1 (PR #1612 et al — Function with `kind` label) trimmed `~114 → 80 → 52`. Tier 2a (PR #1621 + #1622) added `field_initializer` + `type_cast_expression` patterns to `rust.calls.scm` — closed all 66 false positives in `src/language/languages.rs` plus the 14 `post_process_*` casts (`52 → 38`). Tier 2b partial (PR #1623) added a content-scan filter in `dead_code.rs` for macro invocations — closed 3 of 5 macro false positives (`38 → 35`). Remaining 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) require a chunker change to include doc comments / file-level statements, deferred as architectural.
 
 **Telemetry post-release** (early signal, ~80 invocations since reset, mostly autopilot testing): search rate 5/50 ≈ 10% — marginally up from 6% baseline but within sample-size noise. Real signal needs 1-2 weeks of agent-driven usage. Now that v1.40.0 SNR + Phase 1 polymorphic are on main and the binary is refreshed, real-world telemetry can start accumulating.
 
 **Headline shipped:**
 - SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613) — CLI direct defaults to bare JSON payload; `CQS_OUTPUT_FORMAT=v1` consumer-migration hedge; `CQS_ULTRASECURITY=1` adversarial override on every surface.
-- Polymorphic routing Phase 1 lib plumbing + 30/30 cells (#1610 + #1612 + #1616 + #1617 + #1618). All 6 commands × 5 kinds.
+- Polymorphic routing Phase 1 — lib plumbing (#1610) + 30 CLI-direct cells (#1612, #1616, #1617, #1618) + 30 daemon-path cells (#1620). 6 commands × 5 kinds × 2 surfaces = 60 dispatch points.
 - v3.v2 eval fixture refresh (#1607) — agg R@K +6.4 / +2.7 / +3.2 pp, above v1.36-snapshot.
 - v1.40.0 release (#1614) — tag pushed, crates.io published, GitHub Release auto-fires.
+- cqs dead false positives reduced ~114 → 35: #1621 (struct-field-assignment edges, -52), #1622 (type-cast edges, -14), #1623 (macro content-scan, -3 of 5).
 - env_var_docs hardening (#1606), gitignore housekeeping (#1603), telemetry reset.
 
-### Shipped this session — 19 PRs
+### Shipped this session — 23 PRs
 
 | PR | Title | Notes |
 |---|---|---|
@@ -38,9 +39,14 @@
 | #1615 | docs(tears, roadmap): v1.40.0 cut + Phase 1 polymorphic routing status | post-release sync |
 | #1616 | feat(impact): complete kind-mismatch matrix — Type, Module, Ambiguous cells | impact 5/5 cells |
 | #1617 | feat(callers, callees): kind-mismatch matrix | callers + callees 10/10 cells |
-| #1618 | feat(test-map, trace, deps): kind-mismatch matrix completes Phase 1 | last 15/15 cells, 30/30 total |
+| #1618 | feat(test-map, trace, deps): kind-mismatch matrix completes Phase 1 (CLI-direct) | last 15/15 cells, 30/30 CLI-direct |
+| #1619 | docs(tears, roadmap): Phase 1 polymorphic routing complete (30/30 cells) | mid-session tears |
+| #1620 | feat(batch dispatch): polymorphic-routing kind-fallback for daemon path | 30/30 daemon-path cells; closes the deferred surface from #1618 |
+| #1621 | fix(parser): Rust struct-field-assignment edges (#1573 Tier 2a) | -52 cqs-dead false positives (66 → 14 in `src/language/languages.rs`) |
+| #1622 | fix(parser): Rust struct-field type-cast edges (#1573 Tier 2a follow-up) | -14 (closes the remaining `post_process_*` casts to 0) |
+| #1623 | fix(dead_code): macro content-scan filter (#1573 Tier 2b partial) | -3 of 5 macro false positives via `WHERE content LIKE '%<name>!%'` |
 
-Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed three times during session (after #1604, after v1.40.0 tag, after Phase 1 completion).
+Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed multiple times during session (after #1604, after v1.40.0 tag, after Phase 1 CLI completion, after #1620 daemon-path sweep).
 
 ### Eval-baseline snapshot post-session
 
@@ -54,20 +60,21 @@ v3.v2 refreshed (PR #1607). Default slot (EmbeddingGemma-300m + per-cat α + Unk
 
 Δ vs pre-refresh aggregate (46.3 / 74.8 / 86.2): **+6.4 / +2.7 / +3.2 pp**. Brings agg R@K above the v1.36-snapshot range (50.9 / 76.2 / 88.6). Pure fixture re-anchoring — no retrieval-side change.
 
+### Cumulative cqs-dead reduction (today's session)
+
+```
+                              Pre-Tier-1   Pre-Tier-2a   Post-base (#1621)   Post-cast (#1622)   Post-2b (#1623)
+total cqs-dead entries:       ~114         ~80           52                  38                  35
+src/language/languages.rs:    ~66          66            14                  0                   0
+post_process_* (casts):       14           14            14                  0                   0
+macro chunks flagged:          5            5             5                  5                   2
+```
+
+The remaining 35 includes 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) flagged because their only invocation `for_each_logged_batch_cmd!(gen_log_query_dispatch);` lives at file scope (line 606 of `src/cli/batch/commands.rs`) — outside any chunk's byte range, so the LIKE-content scan in #1623 can't see it. Closing fully requires one of: (a) chunker change to include doc comments / file-level statements in chunk content, (b) file-system scan during macro-invocation check, (c) "module preamble" file-level chunk type. All three are architectural changes — deferred.
+
 ### What's left for Phase 1 polymorphic routing
 
-Per design's per-(command × kind) matrix: 6 commands × 5 kinds = 30 cells. Shipped: lib plumbing (#1610) + 2 cells (impact × Function with `kind` label, impact × Const fallback) (#1612). **~25 cells + ~36 tests remaining.** Each cell follows the Const-fallback factoring template — build kind-labeled JSON in a pure helper, factor printing into a separate function, add 2-3 unit tests. ~30-40 min per cell.
-
-| Command | Function | Type | Const | Module | Ambiguous | Status |
-|---|---|---|---|---|---|---|
-| impact | ✓ #1612 | TODO | ✓ #1612 | TODO | TODO | 2/5 |
-| callers | TODO | TODO | TODO | TODO | TODO | 0/5 |
-| callees | TODO | TODO | TODO | TODO | TODO | 0/5 |
-| test-map | TODO | TODO | TODO | TODO | TODO | 0/5 |
-| trace | TODO | TODO | TODO | TODO | TODO | 0/5 |
-| deps | TODO | TODO | TODO | TODO | TODO | 0/5 |
-
-Per-command PRs are the right granularity (each PR adds 5 cells + ~5-6 tests + the `kind`/`fallback_from` field on the response shape). Phase 2 (`cqs about` unified entry) is contingent — only ship if Phase 1 telemetry shows agents still bouncing.
+**Phase 1 is complete.** All 60 dispatch points (6 commands × 5 kinds × 2 surfaces) ship the kind-fallback shape. Phase 2 (`cqs about` unified entry) is contingent — only ship if Phase 1 telemetry shows agents still bouncing between commands. Real-world telemetry needs 1-2 weeks of agent-driven usage post-v1.40.0 before that decision can be made.
 
 ### Earlier this day (v1.39.2 cycle, before autopilot)
 

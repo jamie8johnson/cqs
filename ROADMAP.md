@@ -4,7 +4,7 @@
 
 Minor release. **Breaking change to default JSON output** on the CLI direct path — `cqs <cmd> --json` now emits the bare JSON payload (no envelope wrap). `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge.
 
-**v1.40.0 (2026-05-08):** 14-PR release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). Bundled SNR restoration Phases 1-4 + polymorphic-routing Phase 1 plumbing + first cell. Three additional cell-completion PRs landed post-release (#1616, #1617, #1618), bringing **Phase 1 polymorphic routing to 30/30 cells** in the v1.40 cycle. Worth a future v1.41 minor (or v1.40.1 patch if no further breaks pile up) to capture the post-release work; for now main is ahead of crates.io v1.40.0 by the polymorphic-routing matrix completion.
+**v1.40.0 (2026-05-08):** 14-PR release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). Bundled SNR restoration Phases 1-4 + polymorphic-routing Phase 1 plumbing + first cell. Nine additional PRs landed post-release on main: cell-completion (#1616, #1617, #1618), Phase 1 daemon-path sweep (#1620), and `cqs dead` Tier 2a + 2b false-positive reduction (#1621, #1622, #1623). Phase 1 polymorphic routing now complete on **both** CLI-direct and daemon-path surfaces (60 dispatch points). Worth a future v1.41 minor (or v1.40.1 patch if no further breaks pile up) to capture the post-release work; for now main is ahead of crates.io v1.40.0 by the polymorphic-routing matrix completion + dead-code filter improvements.
 
 **v1.40.0 release contents:**
 
@@ -26,7 +26,18 @@ Verified eval baseline post-release (v3.v2 218q dual-judge, default slot): test 
 | trace | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
 | deps | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
 
-**30/30 Phase 1 cells.** CLI-direct dispatch only — daemon-path batch dispatch (`dispatch_*` in `src/cli/batch/handlers/`) is a parallel implementation that hasn't been swept yet; deferred follow-up.
+**60/60 Phase 1 dispatch points.** CLI-direct (`cmd_*`, 30 cells) shipped #1612, #1616, #1617, #1618. Daemon-path (`dispatch_*` in `src/cli/batch/handlers/`, 30 cells) shipped #1620 with shared `try_kind_fallback` + `build_kind_fallback_value` helpers. Both surfaces now consult `cqs::kind::classify_hits` against an exact-name lookup before their happy-path query.
+
+**`cqs dead` false-positive reduction (issue #1573):**
+
+| Tier | PR | What it added | Effect |
+|---|---|---|---|
+| 1 (closed pre-session) | #1572 | `cqs dead` noise filter base | ~50% of v1.39 false positives |
+| 2a base | #1621 | `field_initializer` + `(call_expression arguments)` patterns in `rust.calls.scm` | -52 (66 → 14 in `src/language/languages.rs`) |
+| 2a follow-up | #1622 | `type_cast_expression` patterns for `Some(fn as T)` casts | -14 (closes `post_process_*` to 0) |
+| 2b partial | #1623 | `WHERE content LIKE '%<name>!%'` filter in `dead_code.rs` | -3 of 5 macro false positives |
+
+Cumulative: ~114 → 35 cqs-dead entries today. Remaining 35 includes 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) flagged because their only invocation is at file scope (line 606 of `src/cli/batch/commands.rs`) — outside any chunk's byte range. Closing fully requires a chunker change to include doc comments / file-level statements; deferred as architectural.
 
 ## Previous: v1.39.0 (cut 2026-05-07)
 
