@@ -2,21 +2,24 @@
 
 ## Right Now
 
-**Post-v1.39.2 autopilot session — 2026-05-08.** User invoked `/effort max` + autopilot through priority queue: `2 → 5 → 3/4 → 8 → 6 → 1 → 7(skip)`. Six PRs shipped + telemetry reset + open-issue triage; two big items deferred to a fresh session.
+**Post-v1.39.2 autopilot session — 2026-05-08.** User invoked `/effort max` + autopilot through priority queue: `2 → 5 → 3/4 → 8 → 6 → 1 → 7(skip)`. **10 PRs shipped end-to-end** + telemetry reset + open-issue triage. The two originally-deferred big items now have substantial plumbing landing (SNR Phase 4 opt-in via `CQS_OUTPUT_FORMAT=v2`; polymorphic-routing Phase 1 plumbing including `Kind` enum + classifier + `Store::lookup_by_name` + `detect_kind_for_store` one-shot helper).
 
 ### Shipped this session
 
-| PR | Title | Status |
+| PR | Title | Notes |
 |---|---|---|
-| #1601 | feat(json): add Posture enum + _with_posture emission helpers (SNR Phase 1) | merged |
-| #1602 | feat(json): per-result skip-when-default + posture-gated force-emit (SNR Phase 2) | merged |
-| #1603 | chore(gitignore): re-ignore tools/screw-mcp/ + add .screw-tape/ runtime cache | merged |
-| #1604 | feat(json): slim batch/daemon envelope under Friendly posture (SNR Phase 3) | merged |
-| #1605 | docs(roadmap): SNR Phases 1-3 shipped; 4-6 deferred | merged |
-| #1606 | fix(tests): env-var-docs substring → token match + pre-commit step | merged |
-| #1607 | chore(eval): refresh v3.v2 fixture line numbers — agg R@K +6.4/+2.7/+3.2pp | in CI / auto-merge armed |
+| #1601 | feat(json): Posture enum + _with_posture emission helpers (SNR Phase 1) | additive plumbing |
+| #1602 | feat(json): per-result skip-when-default + posture-gated force-emit (SNR Phase 2) | ~30% smaller per result in friendly mode |
+| #1603 | chore(gitignore): re-ignore tools/screw-mcp/ + add .screw-tape/ cache | screwtape folder un-tracked |
+| #1604 | feat(json): slim batch/daemon envelope under Friendly (SNR Phase 3) | ~70 KB saved per 1000-line fixture batch |
+| #1605 | docs(roadmap): SNR Phases 1-3 shipped; 4-6 deferred | mid-session status |
+| #1606 | fix(tests): env-var-docs substring → token match + pre-commit step | items 3+4 |
+| #1607 | chore(eval): refresh v3.v2 fixture line numbers — agg R@K +6.4/+2.7/+3.2pp | item 6 |
+| #1608 | docs(tears): autopilot session 2026-05-08 — 7 PRs + telemetry reset | early session capture |
+| #1609 | feat(json): CQS_OUTPUT_FORMAT=v2 opt-in for bare-payload (SNR Phase 4 plumbing) | opt-in shipped; flip-default deferred |
+| #1610 | feat(kind): Kind detection lib module + Store::lookup_by_name (Polymorphic routing Phase 1 plumbing) | enums/helpers/SQL building blocks ready |
 
-Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles.
+Plus: `cqs telemetry --reset` archived 4506 events (`telemetry_20260508_082716.jsonl`) for a clean post-SNR-Phase-1-3 baseline. Triage comment posted on #1459 marking sub-items 4, 7, 8 already done in v1.36→v1.38 cycles. Installed binary refreshed at session end (Phase 4 + Kind detection are live in the `~/.cargo/bin/cqs` everyone uses).
 
 ### Eval-baseline snapshot post-session
 
@@ -30,23 +33,23 @@ v3.v2 refreshed (PR #1607). Default slot (EmbeddingGemma-300m + per-cat α + Unk
 
 Δ vs pre-refresh aggregate (46.3 / 74.8 / 86.2): **+6.4 / +2.7 / +3.2 pp**. Brings agg R@K above the v1.36-snapshot range (50.9 / 76.2 / 88.6). Pure fixture re-anchoring — no retrieval-side change.
 
-### Deferred to fresh session
+### Plumbing-shipped, migration-deferred
 
-Both items are ready (designs landed, scoping is clear) but the test sweeps are large enough that they warrant focused multi-day work, not autopilot.
+Both items shipped their lib-level building blocks this session — fresh-session migrations are now mechanical:
 
-- **SNR restoration Phases 4-6.** Phase 4 = CLI direct success → bare payload on stdout (vs current envelope wrap). 21+ integration test files in `tests/` and 50+ eval harness Python scripts in `evals/` parse `parsed["data"][...]` from cqs subprocess output and would need coordinated migration to `parsed[...]`. The eval harness option of setting `CQS_ULTRASECURITY=1` to keep envelope assertions is also viable. Phase 5 (Adversarial restore) and Phase 6 (docs) follow Phase 4 mechanically. Pickup notes baked into `docs/json-snr-restoration.md` and ROADMAP entry.
-- **Polymorphic routing Phase 1.** Per-command kind-mismatch fallback. Six commands × five kinds behavior matrix + ~36 tests. Single-PR landing per the design doc, but truly multi-day. Pickup notes in `docs/polymorphic-routing.md`.
+- **SNR Phases 4-6.** Phase 4 plumbing is on main (#1609) — `OutputFormat::V2Bare` + `CQS_OUTPUT_FORMAT=v2` env flag + `emit_json` posture-aware dispatch. Manual verification confirmed: `CQS_OUTPUT_FORMAT=v2 cqs stats --json` emits bare payload, default emits envelope. Migration PR work: sweep `tests/cli_*.rs` (21 files, ~150 assertions) + `evals/*.py` (~50 files), flip default to `V2Bare`, ship as v1.40.0. Pickup notes in `docs/json-snr-restoration.md`.
+- **Polymorphic routing Phase 1.** Plumbing on main (#1610) — `cqs::kind::{Kind, KindHit, classify_chunk_type, classify_hits, detect_kind_for_store}` + `Store::lookup_by_name`. Migration PR work: wire `detect_kind_for_store` into each function-or-type-specialized command's dispatcher (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`); implement the per-(command × kind) behavior matrix; add `kind` and `fallback_from` fields to response shapes; ~36 tests. Pickup notes in `docs/polymorphic-routing.md`.
 
 ### Pickup checklist for next session
 
 1. Run `/cqs-verify` first (CLAUDE.md mandate).
-2. Read `docs/json-snr-restoration.md` Phase 4 acceptance criteria.
-3. Branch off main, change `emit_json` Friendly path to bare payload to stdout, then sweep test files.
-4. OR start polymorphic routing Phase 1 in `src/cli/dispatch.rs` (kind-detection helper) + per-command fallback handlers.
+2. Pick one of:
+   - **SNR Phase 4 flip-default** — change default `OutputFormat::V1Envelope` → `OutputFormat::V2Bare` in `src/posture.rs`, then sweep `parsed["data"][...]` → `parsed[...]` across `tests/cli_*.rs` and `evals/*.py`. Verify eval harness unchanged or set `CQS_OUTPUT_FORMAT=v1` in those scripts.
+   - **Polymorphic routing migration** — wire `detect_kind_for_store` into each command's dispatcher per the per-(command × kind) matrix in `docs/polymorphic-routing.md`. Add `kind` + `fallback_from` to response JSON.
 
 ### Earlier this day (v1.39.2 cycle, before autopilot)
 
-The earlier v1.39.2 cycle is closed; section below captures it. PR #1593 inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1` — that addressed the alarm-shaped piece of the agent-friction equation. The two designs above (SNR + polymorphic) address the residual.
+The earlier v1.39.2 cycle is closed; section below captures it. PR #1593 inverted `_meta.handling_advice` to opt-in via `CQS_ULTRASECURITY=1` — that addressed the alarm-shaped piece of the agent-friction equation. The autopilot session above made substantial progress on the remaining two friction surfaces (response-size + routing).
 
 ---
 
