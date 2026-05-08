@@ -141,6 +141,13 @@ impl EnvelopeMeta {
     pub fn current() -> Self {
         Self::for_posture(Posture::current())
     }
+
+    /// `true` when every field is at its default (no advisory, not a
+    /// stale worktree, no worktree name). Drives "skip `_meta` when
+    /// empty" emission in the slim envelope shape (SNR Phase 3).
+    pub fn is_empty(&self) -> bool {
+        self.handling_advice.is_none() && !self.worktree_stale && self.worktree_name.is_none()
+    }
 }
 
 impl Default for EnvelopeMeta {
@@ -311,44 +318,63 @@ pub fn wrap_value(payload: &serde_json::Value) -> serde_json::Value {
 
 /// Posture-aware variant of [`wrap_value`]. Use at call sites that
 /// have already resolved a [`Posture`] from the dispatcher entry point.
+///
+/// **SNR Phase 3 wire shape:**
+/// - Friendly: `{"data": <payload>}`, plus `"_meta": {...}` only when
+///   non-empty (worktree-stale or other non-default fields). Drops
+///   `error: null` and `version` — both were always-redundant on the
+///   success path.
+/// - Adversarial: full envelope `{"data": ..., "error": null,
+///   "version": 1, "_meta": {handling_advice: ..., ...}}`. Preserves
+///   the verbose contract for adversarial-deployment consumers.
 pub fn wrap_value_with_posture(payload: &serde_json::Value, posture: Posture) -> serde_json::Value {
-    // P2.69: build the envelope as a Map directly. Previously we ran the
-    // payload through `serde_json::to_value(Envelope::ok(&payload))`, which
-    // walks the inner tree and rebuilds every Map/Vec — a deep clone in
-    // disguise. The hot-path daemon dispatch wraps tens of KB per query at
-    // hundreds of QPS, so the deep clone is real allocator pressure. Building
-    // the outer Map by hand makes the shallow `payload.clone()` the only
-    // allocation. Schema is identical and Envelope<T>::serialize stays as the
-    // canonical typed shape (see [`Envelope::ok`]).
-    let mut env = serde_json::Map::with_capacity(4);
+    // P2.69: build the envelope as a Map directly to avoid the deep
+    // clone that `to_value(Envelope::ok(...))` would do.
+    let meta = EnvelopeMeta::for_posture(posture);
+    let capacity = if posture.is_adversarial() { 4 } else { 2 };
+    let mut env = serde_json::Map::with_capacity(capacity);
     env.insert("data".to_string(), payload.clone());
-    env.insert("error".to_string(), serde_json::Value::Null);
-    env.insert(
-        "version".to_string(),
-        serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
-    );
-    env.insert("_meta".to_string(), meta_value_for_posture(posture));
+    if posture.is_adversarial() {
+        env.insert("error".to_string(), serde_json::Value::Null);
+        env.insert(
+            "version".to_string(),
+            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+        );
+        env.insert("_meta".to_string(), meta_value_for_envelope(&meta));
+    } else if !meta.is_empty() {
+        env.insert("_meta".to_string(), meta_value_for_envelope(&meta));
+    }
     serde_json::Value::Object(env)
 }
 
-/// Build the canonical `_meta` JSON object. Used by both the typed
-/// [`Envelope`] path (via `EnvelopeMeta`'s `Serialize` derive) and the
-/// hot-path [`wrap_value`] / [`wrap_error`] map builders. (#1181)
-fn meta_value_for_posture(posture: Posture) -> serde_json::Value {
-    serde_json::to_value(EnvelopeMeta::for_posture(posture)).unwrap_or_else(|_| {
-        // Fallback: hand-construct a meta envelope honoring the same
-        // posture gate. EnvelopeMeta::for_posture can't actually fail
-        // to serialize (it's a struct of Option<static-str> + bool +
-        // Option<String>), but serde_json's API forces us to handle
-        // the Result.
-        let mut meta = serde_json::Map::with_capacity(1);
-        if posture.is_adversarial() {
-            meta.insert(
+/// Build the canonical `_meta` JSON object from a pre-built
+/// [`EnvelopeMeta`]. Avoids re-reading the worktree state when the
+/// caller has already constructed the meta block (e.g. for an
+/// `is_empty` check). #1181 + SNR Phase 3.
+fn meta_value_for_envelope(meta: &EnvelopeMeta) -> serde_json::Value {
+    serde_json::to_value(meta).unwrap_or_else(|_| {
+        // Fallback: hand-construct a meta envelope mirroring the
+        // EnvelopeMeta serde-skip rules. EnvelopeMeta can't actually
+        // fail to serialize (it's a struct of Option<&'static str>
+        // + bool + Option<String>), but serde_json's API forces us
+        // to handle the Result.
+        let mut m = serde_json::Map::with_capacity(2);
+        if let Some(advice) = meta.handling_advice {
+            m.insert(
                 "handling_advice".to_string(),
-                serde_json::Value::String(HANDLING_ADVICE.to_string()),
+                serde_json::Value::String(advice.to_string()),
             );
         }
-        serde_json::Value::Object(meta)
+        if meta.worktree_stale {
+            m.insert("worktree_stale".to_string(), serde_json::Value::Bool(true));
+        }
+        if let Some(name) = &meta.worktree_name {
+            m.insert(
+                "worktree_name".to_string(),
+                serde_json::Value::String(name.clone()),
+            );
+        }
+        serde_json::Value::Object(m)
     })
 }
 
@@ -359,21 +385,38 @@ fn meta_value_for_posture(posture: Posture) -> serde_json::Value {
 /// callers that already wrote `{"data": ..., "error": ..., "version": N`.
 /// (#1181 baseline; #1254 added dynamic `worktree_stale` /
 /// `worktree_name`.)
-pub fn meta_json_fragment() -> String {
-    meta_json_fragment_for_posture(Posture::current())
-}
-
-/// Posture-aware variant of [`meta_json_fragment`]. The hot-path
-/// streamed envelope writer should call this with the dispatcher's
-/// posture so leaf serializers stay process-state-independent.
+///
+/// **SNR Phase 3:** under [`Posture::Friendly`], returns an empty
+/// string when the meta block has no non-default fields (skip-empty
+/// rule). The hot-path writer can splice the result verbatim before
+/// the closing `}` either way: empty fragment ⇒ no `_meta` key emitted.
+/// Under [`Posture::Adversarial`], always emits `,"_meta":{...}`
+/// (handling_advice fills the meta even on the happy path).
 pub fn meta_json_fragment_for_posture(posture: Posture) -> String {
-    let value = serde_json::to_value(EnvelopeMeta::for_posture(posture)).unwrap_or_else(|_| {
-        // Same fallback as `meta_value_for_posture`: honour the posture gate.
-        if posture.is_adversarial() {
-            serde_json::json!({"handling_advice": HANDLING_ADVICE})
-        } else {
-            serde_json::json!({})
+    let meta = EnvelopeMeta::for_posture(posture);
+    if !posture.is_adversarial() && meta.is_empty() {
+        // Friendly + no non-default meta fields → skip the key entirely.
+        return String::new();
+    }
+    let value = serde_json::to_value(&meta).unwrap_or_else(|_| {
+        // Mirrors meta_value_for_envelope's fallback shape.
+        let mut m = serde_json::Map::with_capacity(2);
+        if let Some(advice) = meta.handling_advice {
+            m.insert(
+                "handling_advice".to_string(),
+                serde_json::Value::String(advice.to_string()),
+            );
         }
+        if meta.worktree_stale {
+            m.insert("worktree_stale".to_string(), serde_json::Value::Bool(true));
+        }
+        if let Some(name) = &meta.worktree_name {
+            m.insert(
+                "worktree_name".to_string(),
+                serde_json::Value::String(name.clone()),
+            );
+        }
+        serde_json::Value::Object(m)
     });
     let payload = serde_json::to_string(&value).expect("Envelope meta serializes");
     format!(",\"_meta\":{payload}")
@@ -392,24 +435,30 @@ pub fn wrap_error(code: &str, message: &str) -> serde_json::Value {
 }
 
 /// Posture-aware variant of [`wrap_error`].
+///
+/// **SNR Phase 3 wire shape:**
+/// - Friendly: `{"error": {...}}`, plus `"_meta": {...}` only when
+///   non-empty. Drops `data: null` and `version`.
+/// - Adversarial: full envelope `{"data": null, "error": {...},
+///   "version": 1, "_meta": {...}}`.
 pub fn wrap_error_with_posture(code: &str, message: &str, posture: Posture) -> serde_json::Value {
-    serde_json::to_value(Envelope::<serde_json::Value>::err_with_posture(
-        code, message, posture,
-    ))
-    .unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "wrap_error: envelope serialization failed; emitting fallback shape");
-        let meta = if posture.is_adversarial() {
-            serde_json::json!({ "handling_advice": HANDLING_ADVICE })
-        } else {
-            serde_json::json!({})
-        };
-        serde_json::json!({
-            "data": null,
-            "error": { "code": code, "message": message },
-            "version": JSON_OUTPUT_VERSION,
-            "_meta": meta,
-        })
-    })
+    let meta = EnvelopeMeta::for_posture(posture);
+    let mut env = serde_json::Map::with_capacity(if posture.is_adversarial() { 4 } else { 2 });
+    env.insert(
+        "error".to_string(),
+        serde_json::json!({"code": code, "message": message}),
+    );
+    if posture.is_adversarial() {
+        env.insert("data".to_string(), serde_json::Value::Null);
+        env.insert(
+            "version".to_string(),
+            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+        );
+        env.insert("_meta".to_string(), meta_value_for_envelope(&meta));
+    } else if !meta.is_empty() {
+        env.insert("_meta".to_string(), meta_value_for_envelope(&meta));
+    }
+    serde_json::Value::Object(env)
 }
 
 /// Recursively replace NaN / +Inf / -Inf f64 values inside a [`serde_json::Value`]
@@ -692,19 +741,58 @@ mod tests {
     }
 
     #[test]
-    fn wrap_value_shape() {
-        let v = wrap_value(&serde_json::json!([1, 2, 3]));
+    fn wrap_value_shape_friendly_is_slim() {
+        // SNR Phase 3: Friendly drops error: null and version (always-redundant
+        // on the success path). _meta skipped when meta is empty. Hot-path
+        // contract: `{"data": <payload>}` minimum line.
+        let v = wrap_value_with_posture(&serde_json::json!([1, 2, 3]), Posture::Friendly);
         assert_eq!(v["data"], serde_json::json!([1, 2, 3]));
-        assert!(v["error"].is_null());
-        assert_eq!(v["version"], JSON_OUTPUT_VERSION);
+        assert!(
+            v.get("error").is_none(),
+            "Friendly drops error key entirely; got: {v}"
+        );
+        assert!(
+            v.get("version").is_none(),
+            "Friendly drops version key entirely; got: {v}"
+        );
     }
 
     #[test]
-    fn wrap_error_shape() {
-        let v = wrap_error(error_codes::PARSE_ERROR, "bad token");
+    fn wrap_value_shape_adversarial_keeps_full_envelope() {
+        // SNR Phase 3: Adversarial preserves the verbose envelope contract.
+        let v = wrap_value_with_posture(&serde_json::json!([1, 2, 3]), Posture::Adversarial);
+        assert_eq!(v["data"], serde_json::json!([1, 2, 3]));
+        assert!(v["error"].is_null());
+        assert_eq!(v["version"], JSON_OUTPUT_VERSION);
+        assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
+    }
+
+    #[test]
+    fn wrap_error_shape_friendly_is_slim() {
+        // SNR Phase 3: Friendly drops data: null and version. Error stays.
+        let v = wrap_error_with_posture(error_codes::PARSE_ERROR, "bad token", Posture::Friendly);
+        assert!(
+            v.get("data").is_none(),
+            "Friendly drops data key entirely; got: {v}"
+        );
+        assert_eq!(v["error"]["code"], "parse_error");
+        assert_eq!(v["error"]["message"], "bad token");
+        assert!(
+            v.get("version").is_none(),
+            "Friendly drops version key entirely; got: {v}"
+        );
+    }
+
+    #[test]
+    fn wrap_error_shape_adversarial_keeps_full_envelope() {
+        // SNR Phase 3: Adversarial preserves the verbose envelope contract.
+        let v =
+            wrap_error_with_posture(error_codes::PARSE_ERROR, "bad token", Posture::Adversarial);
         assert!(v["data"].is_null());
         assert_eq!(v["error"]["code"], "parse_error");
         assert_eq!(v["error"]["message"], "bad token");
+        assert_eq!(v["version"], JSON_OUTPUT_VERSION);
+        assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
     }
 
     // 2026-05-08 inversion: handling_advice is opt-in via `CQS_ULTRASECURITY=1`.
@@ -892,16 +980,15 @@ mod tests {
     }
 
     #[test]
-    fn meta_json_fragment_friendly_omits_handling_advice() {
+    fn meta_json_fragment_friendly_returns_empty_when_meta_is_empty() {
+        // SNR Phase 3: Friendly + no non-default meta fields → empty
+        // fragment, so the hot-path writer skips the `_meta` key entirely.
+        // Worktree state defaults to non-stale in tests, so meta is empty
+        // here; adversarial-mode tests below show non-empty fragments.
         let s = meta_json_fragment_for_posture(Posture::Friendly);
-        // The fragment is `,"_meta":{...}`; parse the inner object.
-        let prefix = ",\"_meta\":";
-        assert!(s.starts_with(prefix), "unexpected fragment shape: {s}");
-        let inner: serde_json::Value =
-            serde_json::from_str(&s[prefix.len()..]).expect("valid JSON inside fragment");
-        assert!(
-            inner.get("handling_advice").is_none(),
-            "Friendly fragment should omit handling_advice. got: {inner}"
+        assert_eq!(
+            s, "",
+            "Friendly + empty meta should return empty fragment; got: {s:?}"
         );
     }
 
@@ -1013,23 +1100,31 @@ mod tests {
         assert_eq!(v["error"]["code"], "timeout");
     }
 
-    // P2 #40: wrap_value / wrap_error are now thin wrappers over the typed
-    // Envelope::ok / Envelope::err paths. Same shape on both surfaces means
-    // adding a field (e.g. `meta`) touches one place.
+    // SNR Phase 3 intentionally diverges wrap_value (slim under Friendly)
+    // from the typed Envelope::ok path (always full). Under Adversarial,
+    // the two shapes must still match — the typed path is the canonical
+    // verbose envelope.
     #[test]
-    fn wrap_value_matches_envelope_ok_shape() {
+    fn wrap_value_matches_envelope_ok_shape_under_adversarial() {
         let payload = serde_json::json!({"x": 1, "y": [2, 3]});
-        let via_wrap = wrap_value(&payload);
-        let via_typed = serde_json::to_value(Envelope::ok(&payload)).unwrap();
+        let via_wrap = wrap_value_with_posture(&payload, Posture::Adversarial);
+        let via_typed =
+            serde_json::to_value(Envelope::ok_with_posture(&payload, Posture::Adversarial))
+                .unwrap();
         assert_eq!(via_wrap, via_typed);
     }
 
     #[test]
-    fn wrap_error_matches_envelope_err_shape() {
-        let via_wrap = wrap_error(error_codes::INVALID_INPUT, "bad query");
-        let via_typed = serde_json::to_value(Envelope::<serde_json::Value>::err(
+    fn wrap_error_matches_envelope_err_shape_under_adversarial() {
+        let via_wrap = wrap_error_with_posture(
+            error_codes::INVALID_INPUT,
+            "bad query",
+            Posture::Adversarial,
+        );
+        let via_typed = serde_json::to_value(Envelope::<serde_json::Value>::err_with_posture(
             "invalid_input",
             "bad query",
+            Posture::Adversarial,
         ))
         .unwrap();
         assert_eq!(via_wrap, via_typed);
@@ -1185,14 +1280,19 @@ mod tests {
     // an actual `write_json_line` here without renaming.
     #[test]
     fn test_write_json_line_infinity_retry() {
+        // SNR Phase 3: pin the retry path under Adversarial so the
+        // version field assertion survives the slim/full split.
         let payload = serde_json::json!({
             "score": f64::INFINITY,
             "neg_score": f64::NEG_INFINITY,
             "name": "x",
         });
-        // wrap_value matches what write_json_line's retry arm calls
-        // (`crate::cli::json_envelope::wrap_value(value)`).
-        let wrapped = wrap_value(&payload);
+        // wrap_value_with_posture matches what write_json_line's retry
+        // arm calls (`crate::cli::json_envelope::wrap_value(value)`).
+        // Use Adversarial here so we cover the full envelope path that
+        // includes `version` — the slim-shape path is exercised by the
+        // wrap_value_shape_friendly_is_slim test above.
+        let wrapped = wrap_value_with_posture(&payload, Posture::Adversarial);
         let mut sanitized = wrapped;
         sanitize_json_floats(&mut sanitized);
         // The sanitized envelope must serialize to valid JSON (no NaN /
@@ -1241,18 +1341,22 @@ mod tests {
     // documents what happens when someone does.
     #[test]
     fn wrap_value_does_not_double_wrap_existing_envelope() {
-        // Build an envelope by going through wrap_value once.
+        // SNR Phase 3: Adversarial preserves the verbose envelope so the
+        // double-wrap contract assertions (version, error: null) stay
+        // testable in their original form. The Friendly slim shape would
+        // skip those keys and the assertions would have to be rewritten
+        // — but the no-detection contract is the same in both modes.
         let inner_payload = serde_json::json!({"name": "foo", "count": 3});
-        let first_wrap = wrap_value(&inner_payload);
+        let first_wrap = wrap_value_with_posture(&inner_payload, Posture::Adversarial);
 
-        // Sanity: first wrap is the standard envelope.
+        // Sanity: first wrap is the standard verbose envelope.
         assert_eq!(first_wrap["data"], inner_payload);
         assert!(first_wrap["error"].is_null());
         assert_eq!(first_wrap["version"], JSON_OUTPUT_VERSION);
 
-        // Now wrap it AGAIN. Today wrap_value has no envelope detection,
-        // so this produces `{data: {data:{...}, error:null, version:1}, error:null, version:1}`.
-        let second_wrap = wrap_value(&first_wrap);
+        // Now wrap it AGAIN. wrap_value has no envelope detection, so
+        // this produces `{data: {data:{...}, error:null, version:1, _meta:{}}, error:null, version:1, _meta:{}}`.
+        let second_wrap = wrap_value_with_posture(&first_wrap, Posture::Adversarial);
 
         // Outer envelope shape is intact.
         assert!(
@@ -1263,8 +1367,6 @@ mod tests {
         assert_eq!(second_wrap["version"], JSON_OUTPUT_VERSION);
 
         // Inner envelope is nested under outer `data` — the contract pin.
-        // If a future change adds envelope detection, this assertion flips
-        // and the comment above documents the behaviour change.
         let inner = &second_wrap["data"];
         assert_eq!(
             inner["data"], inner_payload,
