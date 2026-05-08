@@ -263,6 +263,52 @@ Adds a real-time playback engine on top of the offline core. Justified separatel
 | **7. Bar-clock** | Audio-thread bar/beat clock for quantized event triggers. | 2-3 days |
 | **8. Live MCP tools** | `play(region)`, `stop()`, `set_loop(region)`, `chop_now(pattern)`, `swap_fx(region, new_fx)`. | 3-4 days |
 
+## Driver-model layer (out of v1 scope; informs CLI design)
+
+The screw-tape CLI is the executor. An LLM-based agent harness (`screw-tape-dj`) sits above it, picks tracks and ops, and orchestrates the CLI subcommands. The harness itself is a separate project planned after v1 ships and the CLI surface settles in real use. Notes here exist because the choice of driver model imposes one v1 design implication.
+
+### Driver-model trade space (as of 2026-05-08)
+
+| Driver | VRAM | Active params | Hears audio? | Tool-calling | Context |
+|---|---|---|---|---|---|
+| Gemma 3 31B (current vLLM stock) | ~22GB Q5 | 31B | ❌ | strong | 128K |
+| Gemma 4 26B-A4B (MoE, 8-of-128) | ~50GB int8 | 3.8B | ❌ | TBD; should be strong | 256K |
+| **Gemma 4 E4B** | **~9GB bf16** | **4.5B effective** | **✅ (text + image + audio)** | **TBD** | **128K** |
+| Gemma 4 E2B | ~5GB bf16 | 2.3B effective | ✅ | TBD | 128K |
+| Mixtral 8x7B | ~26GB Q4 | 12.9B | ❌ | strong | 32K |
+
+The most interesting candidate is **Gemma 4 E4B** because it accepts audio input alongside text. Two structural reasons this matters more than the parameter-count math suggests:
+
+1. **Implicit DJ priors from audio pre-training.** A multimodal model trained on substantial audio data has heard millions of musical transitions, beat-matches, EQ moves, mixing patterns. Its "what makes a good transition feel right" knowledge lives in audio space, not just text space. A text-only model can read about screw tapes; an audio-multimodal model has *heard* them. For a primarily-aesthetic task like chop placement, that's a categorical shift, not a marginal one.
+
+2. **E2B/E4B are not shrunken siblings — the "E" stands for "effective" parameters.** Per the official Gemma 4 model card: the model has a higher raw-parameter count (5.1B for E2B, 8B for E4B) but uses Per-Layer Embeddings (PLE) to reduce the inference-time footprint to the "effective" 2.3B / 4.5B figures. The trick: keep capacity for training, shed memory for deployment. Separately, these variants are marketed for edge / on-device use (phones, laptops, embedded), but the letter doesn't stand for "edge" — the letter refers to the parameter-counting mechanism. The implication is the same direction either way: per-effective-parameter capability is engineered above the generic-small-model curve, so the 4.5B-effective figure should not be interpreted as "much weaker than 26-31B" for the multimodal tasks the family was optimized for.
+
+Together: an audio-multimodal driver that has implicit DJ priors AND fits comfortably in 9GB VRAM is a substantially better fit for the screw-tape DJ task than a larger text-only model. The audio-blindness limit dissolves; the cultural-priors lane closes most of its gap because of device-class engineering.
+
+### v1 implication for the CLI
+
+For an audio-multimodal driver to operate, the harness must be able to extract short PCM clips of regions from screw-tape's workspace. **One v1 CLI requirement:** `render` must support raw-PCM or short-WAV output, not just MP3. Two paths:
+
+1. **Extend `render`** with `--format pcm | wav | mp3` (default mp3 for `compose-tape`-style end output; pcm/wav for clip extraction).
+2. **Add a dedicated `clip` subcommand** that writes raw-PCM directly without the encode-to-file overhead. Faster for an audio-feeding-loop where the harness extracts dozens of candidate clips per decision.
+
+**Default for v1: extend `render`.** The encode overhead for a 1-bar PCM dump is ~10ms via FFmpeg subprocess — invisible against the harness's per-decision LLM forward pass (~hundreds of ms even on E4B). Add `clip` later only if profiling shows the inner loop matters.
+
+### Phasing (when the build begins, after v1 CLI ships)
+
+1. **Phase 1: Gemma 3 31B as baseline.** Already in vLLM inventory. Build a working `screw-tape-dj` harness on top, observe what the bottleneck actually is. Empirical baseline.
+2. **Phase 2: Side-by-side E4B vs 26B-A4B vs 31B-baseline.** Three drivers, same harness, same playlist. Listen to outputs. The audio-aware variant should win on chop selection; the larger text variants should win on track-pairing breadth. Likely outcome: E4B wins overall by enough margin that it becomes default.
+3. **Phase 3 (maybe never): ensemble.** E4B for audio-conditioned section selection, 26B-A4B for cross-track pairing decisions, screw-tape CLI as executor. Two models on one A6000 at int8; coordinate via the harness.
+
+### What's deliberately not solved here
+
+- Building `screw-tape-dj` itself (separate v2-ish project)
+- Selecting a default driver model in v1 (the CLI is driver-agnostic)
+- Wiring vLLM (or any inference server) into the v1 build
+- Audio-similarity embedding (vs audio-input-to-multimodal-model — different mechanism; not relevant here)
+
+The driver-model layer is documented here only to lock in the v1 CLI design implication: **`render` exposes PCM/WAV output so audio-multimodal drivers are eventually feasible.** Everything else is post-v1.
+
 ## Decision log
 
 ### Settled by this document (do not re-litigate)
