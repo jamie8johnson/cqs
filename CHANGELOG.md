@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Store::prune_orphaned_llm_summaries() -> Result<u64>`** + auto-fire at end of `cqs index` (#1587). Deletes `llm_summaries` rows whose `content_hash` no longer matches any chunk. Each reindex that changes any code accumulates orphans; unpruned, the table grows arbitrarily larger than the corpus and `cqs stats llm_summary_count` (a row count) overstates real coverage. On the gemma slot before this fix: 14,400 rows / 13,175 distinct chunk hashes = 109% (vivid drift). Opt-out via `cqs index --no-prune-summaries` for cross-slot summary copy by content_hash.
+- **`Store::llm_summary_chunk_coverage()`** — counts chunks whose content_hash maps to at least one summary row, regardless of `purpose`. Honest per-chunk coverage that excludes orphans.
+- **`cqs stats --json`** exposes `llm_summary_chunks_covered` + `llm_summary_chunk_coverage_pct` alongside the existing `llm_summary_count` (which still counts rows including orphans for backward compatibility).
+
 ### Changed
 
 - **`identifier_lookup` SPLADE α default 1.00 → 0.85** (`src/search/router.rs`). After the post-v1.39.1 LLM summaries refresh on the gemma slot (60.25% → 68.70% per-chunk coverage), a paired α sweep on v3.v2 218q dual-judge (test+dev) showed both halves agreed more SPLADE helps for identifier lookups. Dev `identifier_lookup` R@5 0.8889 → 1.0000 (+11.1pp, 2 queries; all 18 dev identifier_lookup queries now in top-5). Test `identifier_lookup` R@1 0.7222 → 0.7778 (+5.6pp). No regressions on any metric or fixture. The α=0.80..0.90 plateau is flat at this fixture size, so 0.85 sits in the middle and tolerates classifier drift.

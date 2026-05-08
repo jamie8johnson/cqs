@@ -687,6 +687,31 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         tracing::warn!(error = %e, "cmd_index: final flush of summary queue failed; rows retained for next run");
     }
 
+    // #1587: prune orphaned llm_summaries rows whose content_hash no longer
+    // maps to any chunk. Each reindex that changes any code accumulates
+    // orphans (chunk content changed → new hash, old hash sticks around);
+    // unpruned, the table grows arbitrarily larger than the corpus and
+    // `cqs stats llm_summary_count` overstates real coverage. Runs after the
+    // final flush so any rows just written by the LLM passes are anchored
+    // to current chunks before we sweep.
+    //
+    // Opt-out via `--no-prune-summaries` (preserves orphans for cross-slot
+    // summary copy by content_hash — the only workflow that benefits from
+    // keeping them around).
+    if !args.no_prune_summaries {
+        match store.prune_orphaned_llm_summaries() {
+            Ok(0) => {}
+            Ok(pruned) => {
+                if !cli.quiet {
+                    println!("  Pruned {pruned} orphaned LLM summary rows");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cmd_index: failed to prune orphaned llm_summaries; non-fatal");
+            }
+        }
+    }
+
     // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee
     // context. #1452: also fires whenever any chunk is at `needs_embedding=1`
     // — the parser stage marks chunks unembedded when a `--llm-summaries`

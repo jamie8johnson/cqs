@@ -62,7 +62,21 @@ pub(crate) struct StatsOutput {
     /// (no GPU available, sub-threshold corpus, or persistence disabled).
     pub cagra_size_bytes: Option<u64>,
     /// Total rows in the `llm_summaries` table across all `purpose` values.
+    ///
+    /// Includes orphan rows (content_hash no longer matches any chunk) which
+    /// inflate this count over real coverage; see `llm_summary_chunks_covered`
+    /// and `llm_summary_chunk_coverage_pct` for the per-chunk number that
+    /// excludes orphans (#1587).
     pub llm_summary_count: usize,
+    /// Number of chunks that have at least one cached summary row matching
+    /// their `content_hash`, regardless of `purpose`. The numerator for the
+    /// honest "what fraction of the corpus has a summary" metric — orphans
+    /// don't contribute (#1587).
+    pub llm_summary_chunks_covered: usize,
+    /// `llm_summary_chunks_covered` as a percentage of `total_chunks`. `None`
+    /// when there are no chunks at all (avoids spurious 0/0 reporting on a
+    /// fresh DB).
+    pub llm_summary_chunk_coverage_pct: Option<f64>,
     pub schema_version: u32,
     // CLI-specific (batch omits these via Option)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,6 +151,18 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
             0
         }
     };
+    let llm_summary_chunks_covered = match store.llm_summary_chunk_coverage() {
+        Ok(n) => n as usize,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to count llm_summary chunk coverage");
+            0
+        }
+    };
+    let llm_summary_chunk_coverage_pct = if total_chunks > 0 {
+        Some((llm_summary_chunks_covered as f64 / total_chunks as f64) * 100.0)
+    } else {
+        None
+    };
 
     Ok(StatsOutput {
         total_chunks: total_chunks as usize,
@@ -170,6 +196,8 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
         hnsw_graph_bytes: file_size_bytes(&cqs_dir.join("index.hnsw.graph")),
         cagra_size_bytes: file_size_bytes(&cqs_dir.join("index.cagra")),
         llm_summary_count,
+        llm_summary_chunks_covered,
+        llm_summary_chunk_coverage_pct,
         // P3 #87: schema_version is read as i64 from SQLite; an explicit cast
         // would silently wrap a (logically impossible but observed-during-
         // migration-bugs) negative value. Surface the breach instead.
@@ -351,6 +379,8 @@ mod tests {
             hnsw_graph_bytes: None,
             cagra_size_bytes: None,
             llm_summary_count: 0,
+            llm_summary_chunks_covered: 0,
+            llm_summary_chunk_coverage_pct: None,
             schema_version: 17,
             stale_files: None,
             missing_files: None,
@@ -403,6 +433,8 @@ mod tests {
             hnsw_graph_bytes: Some(8_084_767),
             cagra_size_bytes: Some(67_527_348),
             llm_summary_count: 12_345,
+            llm_summary_chunks_covered: 11_500,
+            llm_summary_chunk_coverage_pct: Some(95.83),
             schema_version: 17,
             stale_files: Some(3),
             missing_files: Some(1),
