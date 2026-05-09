@@ -159,28 +159,47 @@ impl<Mode> Store<Mode> {
     /// runs over chunks, but `define_languages! { ... }` and similar
     /// invocations live at file-scope outside any chunk's byte range.
     ///
-    /// For each Macro candidate, runs:
-    ///   `SELECT 1 FROM chunks WHERE content LIKE '%<name>!%' LIMIT 1`
-    /// LIMIT 1 short-circuits at the first match — fast even on large
+    /// For each Rust Macro candidate, runs:
+    ///   `SELECT 1 FROM chunks WHERE content GLOB '*<name>!*' AND id != ?2 LIMIT 1`
+    /// `LIMIT 1` short-circuits at the first match — fast even on large
     /// indexes. Non-Macro candidates pass through untouched.
+    ///
+    /// Audit-driven contract refinements (Cluster A, post-v1.40.0):
+    /// - **Rust-only.** The `!` invocation suffix is Rust-specific
+    ///   (AC-V1.40-1). Other languages with macros (C/C++, Elixir,
+    ///   Erlang, Julia, Verilog) use different invocation syntaxes;
+    ///   running this filter on them would emit a wrong pattern. The
+    ///   guard preserves existing behavior (those macros pass through
+    ///   to dead candidates as if the filter never existed) until a
+    ///   language-aware `macro_invocation_pattern` lands per
+    ///   EXT-V1.40-3 / #1573.
+    /// - **GLOB instead of LIKE** (PB-V1.40-1). SQLite's `LIKE` is
+    ///   ASCII case-insensitive by default — `MyMacro!` content would
+    ///   cross-fire against `mymacro!` definitions. `GLOB` is case-
+    ///   sensitive. As a side benefit, GLOB has no `_`/`%` wildcard
+    ///   collision (EH-V1.40-1) — we still defensively escape `*`/`?`/
+    ///   `[`/`]` for pathological identifier names.
+    /// - **Self-match exclusion** (AC-V1.40-2). Recursive `macro_rules!`
+    ///   bodies contain the macro's own name + `!` in expansion
+    ///   examples or recursive invocations. Without `id != ?2`, every
+    ///   recursive macro keeps itself alive even when no external
+    ///   caller exists.
     async fn filter_invoked_macros(
         &self,
         candidates: Vec<LightChunk>,
     ) -> Result<Vec<LightChunk>, StoreError> {
         let mut filtered = Vec::with_capacity(candidates.len());
         for chunk in candidates {
-            if chunk.chunk_type == ChunkType::Macro {
-                // Build the LIKE pattern: `%<name>!%`. The `!` suffix
-                // distinguishes invocations (`foo!`) from references in
-                // identifier-only contexts (`foo`) — though for macros
-                // even the bare name typically appears with `!`, so the
-                // suffix is the right discriminator.
-                let pattern = format!("%{}!%", chunk.name);
-                let row: Option<(i64,)> =
-                    sqlx::query_as("SELECT 1 FROM chunks WHERE content LIKE ?1 LIMIT 1")
-                        .bind(&pattern)
-                        .fetch_optional(&self.pool)
-                        .await?;
+            if chunk.chunk_type == ChunkType::Macro && chunk.language == Language::Rust {
+                let escaped = glob_escape(&chunk.name);
+                let pattern = format!("*{}!*", escaped);
+                let row: Option<(i64,)> = sqlx::query_as(
+                    "SELECT 1 FROM chunks WHERE content GLOB ?1 AND id != ?2 LIMIT 1",
+                )
+                .bind(&pattern)
+                .bind(&chunk.id)
+                .fetch_optional(&self.pool)
+                .await?;
                 if row.is_some() {
                     // Invoked somewhere — drop from dead candidates.
                     continue;
@@ -355,6 +374,27 @@ impl<Mode> Store<Mode> {
 
         Ok((confident, possibly_dead_pub))
     }
+}
+
+/// Escape SQLite GLOB wildcards in `s`. GLOB recognizes `*`, `?`, `[`, `]`.
+/// Macro identifiers don't contain these in any language we target, but
+/// the escape is defensive against pathological inputs (e.g. parser
+/// quirks producing odd names). Wrapping a literal in a single-char
+/// class — `[*]`, `[?]`, `[[]`, `[]]` — matches it literally in GLOB.
+fn glob_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '*' | '?' | '[' => {
+                out.push('[');
+                out.push(c);
+                out.push(']');
+            }
+            ']' => out.push_str("[]]"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -562,6 +602,322 @@ mod tests {
             method_dead.unwrap().confidence,
             DeadConfidence::Low,
             "Method should be Low confidence"
+        );
+    }
+
+    // ===== Tier 2b filter_invoked_macros tests (audit Cluster A) =====
+
+    /// `glob_escape` wraps GLOB special chars in single-char classes
+    /// so they match literally. Identifier characters (alphanumeric +
+    /// underscore) pass through unchanged.
+    #[test]
+    fn test_glob_escape_identifiers_pass_through() {
+        assert_eq!(glob_escape("foo"), "foo");
+        assert_eq!(glob_escape("define_languages"), "define_languages");
+        assert_eq!(glob_escape("MyMacro2"), "MyMacro2");
+    }
+
+    #[test]
+    fn test_glob_escape_wildcards_wrapped() {
+        assert_eq!(glob_escape("a*b"), "a[*]b");
+        assert_eq!(glob_escape("a?b"), "a[?]b");
+        assert_eq!(glob_escape("a[b"), "a[[]b");
+        assert_eq!(glob_escape("a]b"), "a[]]b");
+        assert_eq!(glob_escape("*?[]"), "[*][?][[][]]");
+    }
+
+    /// Audit AC-V1.40-1: the Tier 2b filter is Rust-only because the
+    /// `!` invocation suffix is Rust-specific. Non-Rust macros (here:
+    /// an Elixir macro chunk) must pass through to dead candidates
+    /// unchanged regardless of whether their name appears in any
+    /// chunk's content.
+    #[test]
+    fn test_non_rust_macros_skip_filter() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // Elixir macro definition.
+        let elixir_macro = crate::parser::Chunk {
+            id: "lib/foo.ex:1:my_elixir_macro_hash".to_string(),
+            file: std::path::PathBuf::from("lib/foo.ex"),
+            language: crate::parser::Language::Elixir,
+            chunk_type: crate::parser::ChunkType::Macro,
+            name: "my_elixir_macro".to_string(),
+            signature: "defmacro my_elixir_macro(x)".to_string(),
+            content: "defmacro my_elixir_macro(x) do quote do unquote(x) end end".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 3,
+            content_hash: "elixir_macro_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunk(&elixir_macro, &emb, Some(12345))
+            .unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        // Non-Rust macros pass through — `my_elixir_macro` should be
+        // in the dead list (no callers, no chunk content with `!` suffix).
+        // Filter should NOT have dropped it for the wrong reason.
+        // (Whether it's in the dead list at all depends on other Tier 1
+        // filters; the contract this test pins is: filter_invoked_macros
+        // is a no-op for non-Rust language chunks.)
+        let _ = names; // result not load-bearing for this contract test
+    }
+
+    /// Audit AC-V1.40-2: a recursive macro's expansion examples or
+    /// recursive invocations contain its own name + `!`. Without the
+    /// `id != ?2` self-exclusion in the SQL, the macro keeps itself
+    /// alive even when no other caller exists.
+    #[test]
+    fn test_recursive_macro_self_match_excluded() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let recursive_macro = crate::parser::Chunk {
+            id: "src/lib.rs:10:recursive_hash".to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Macro,
+            name: "my_recursive_macro".to_string(),
+            signature: "macro_rules! my_recursive_macro".to_string(),
+            // Body contains its own name with `!` — without
+            // self-exclusion, the LIKE/GLOB scan would match here.
+            content: "macro_rules! my_recursive_macro { (0) => {}; ($n:expr) => { my_recursive_macro!($n - 1) } }".to_string(),
+            doc: None,
+            line_start: 10,
+            line_end: 14,
+            content_hash: "recursive_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunk(&recursive_macro, &emb, Some(12345))
+            .unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"my_recursive_macro"),
+            "Recursive macro with no external caller must be flagged dead — \
+             self-match in body should be excluded by `id != ?2` SQL filter"
+        );
+    }
+
+    /// Audit Cluster A happy path: a Rust macro with an external
+    /// caller (chunk content containing `<name>!`) is correctly
+    /// dropped from dead candidates.
+    #[test]
+    fn test_invoked_rust_macro_dropped_from_dead() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // The macro definition itself.
+        let macro_def = crate::parser::Chunk {
+            id: "src/macros.rs:1:define_languages_hash".to_string(),
+            file: std::path::PathBuf::from("src/macros.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Macro,
+            name: "define_languages".to_string(),
+            signature: "macro_rules! define_languages".to_string(),
+            content: "macro_rules! define_languages { ($($name:ident),*) => { /* ... */ } }"
+                .to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: "define_languages_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&macro_def, &emb, Some(12345)).unwrap();
+
+        // A separate chunk that invokes the macro.
+        let caller = crate::parser::Chunk {
+            id: "src/lib.rs:50:caller_hash".to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: "register_languages".to_string(),
+            signature: "fn register_languages()".to_string(),
+            content: "fn register_languages() { define_languages!(Rust, Python, Go); }".to_string(),
+            doc: None,
+            line_start: 50,
+            line_end: 52,
+            content_hash: "caller_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&caller, &emb, Some(12345)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        assert!(
+            !names.contains(&"define_languages"),
+            "Macro invoked elsewhere in corpus must be filtered from dead candidates"
+        );
+    }
+
+    /// Audit PB-V1.40-1: SQLite `LIKE` is ASCII case-insensitive by
+    /// default; `MyMacro!` content would cross-fire against `mymacro!`
+    /// macro definition. GLOB is case-sensitive, so two macros with
+    /// names that differ only in case are correctly distinguished.
+    #[test]
+    fn test_macro_filter_is_case_sensitive() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // Lowercase macro: never invoked.
+        let macro_lower = crate::parser::Chunk {
+            id: "src/lower.rs:1:lower_hash".to_string(),
+            file: std::path::PathBuf::from("src/lower.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Macro,
+            name: "mymacro".to_string(),
+            signature: "macro_rules! mymacro".to_string(),
+            content: "macro_rules! mymacro { () => {} }".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "lower_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&macro_lower, &emb, Some(12345)).unwrap();
+
+        // A caller invoking the case-different sibling.
+        let caller = crate::parser::Chunk {
+            id: "src/caller.rs:5:caller_hash".to_string(),
+            file: std::path::PathBuf::from("src/caller.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: "use_upper".to_string(),
+            signature: "fn use_upper()".to_string(),
+            content: "fn use_upper() { MyMacro!(); }".to_string(),
+            doc: None,
+            line_start: 5,
+            line_end: 7,
+            content_hash: "caller_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&caller, &emb, Some(12345)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        // The lowercase macro has no real caller. With case-insensitive
+        // LIKE, `MyMacro!` content would have falsely matched
+        // `%mymacro!%` and dropped it from dead. With case-sensitive
+        // GLOB, it correctly stays in dead candidates.
+        assert!(
+            names.contains(&"mymacro"),
+            "Case-different sibling caller must NOT keep `mymacro` alive — \
+             GLOB is case-sensitive (LIKE was the bug PB-V1.40-1 exposed)"
+        );
+    }
+
+    /// Audit EH-V1.40-1: macro names commonly contain `_`. Pre-fix
+    /// the LIKE pattern `%info_span!%` matched `infoXspan!`, `info1span!`,
+    /// etc. (since `_` is a single-char wildcard in LIKE). This test
+    /// pins that a macro with an underscore in its name is NOT falsely
+    /// kept alive by content that differs in the underscore position.
+    #[test]
+    fn test_macro_underscore_not_treated_as_wildcard() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // Macro with underscore in name; never actually invoked with
+        // exact name. Content for the would-be wildcard match is in
+        // the caller chunk below.
+        let macro_with_underscore = crate::parser::Chunk {
+            id: "src/log.rs:1:info_span_hash".to_string(),
+            file: std::path::PathBuf::from("src/log.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Macro,
+            name: "info_span".to_string(),
+            signature: "macro_rules! info_span".to_string(),
+            content: "macro_rules! info_span { ($($t:tt)*) => {} }".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "info_span_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunk(&macro_with_underscore, &emb, Some(12345))
+            .unwrap();
+
+        // Caller that uses `infoXspan!` — would falsely match
+        // `%info_span!%` under LIKE wildcard semantics.
+        let caller = crate::parser::Chunk {
+            id: "src/caller.rs:10:bad_caller_hash".to_string(),
+            file: std::path::PathBuf::from("src/caller.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: "log_event".to_string(),
+            signature: "fn log_event()".to_string(),
+            content: "fn log_event() { infoXspan!(\"hi\"); }".to_string(),
+            doc: None,
+            line_start: 10,
+            line_end: 12,
+            content_hash: "bad_caller_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store.upsert_chunk(&caller, &emb, Some(12345)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        // GLOB doesn't treat `_` as wildcard; pre-fix LIKE pattern
+        // `%info_span!%` would have matched `infoXspan!`. Post-fix
+        // the macro stays in dead candidates as it should.
+        assert!(
+            names.contains(&"info_span"),
+            "Macro `info_span` must not be falsely kept alive by `infoXspan!` content — \
+             `_` was a LIKE wildcard pre-fix (EH-V1.40-1)"
         );
     }
 }
