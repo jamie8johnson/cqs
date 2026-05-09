@@ -209,4 +209,3 @@ fn test_telemetry_reset_no_file_is_noop() {
         "no-op reset must not create an archive. got: {archives:?}"
     );
 }
-
