@@ -296,15 +296,31 @@ impl std::fmt::Debug for LlmConfig {
 
 /// Strip `user[:pass]@` userinfo from a URL, leaving scheme + host + path.
 /// Returns `[redacted]` for inputs that don't look like a URL.
+///
+/// SEC-V1.40-2: per RFC 3986, userinfo precedes the FIRST `/` after the
+/// authority (`scheme://userinfo@host/path`). The boundary search must
+/// be confined to the authority component, otherwise a URL like
+/// `https://api.com/path/@anchor` (path-component `@`) silently
+/// rewrites the redacted form's host to the path fragment after `@`.
+/// Pre-fix output for that input was `https://anchor` (host swap);
+/// post-fix passes the URL through unchanged because no `@` appears
+/// inside the authority.
 fn redact_userinfo(url: &str) -> String {
     if let Some(scheme_end) = url.find("://") {
         let after_scheme = &url[scheme_end + 3..];
-        let host_part = if let Some(at_pos) = after_scheme.find('@') {
-            &after_scheme[at_pos + 1..]
+        // Authority component ends at the first `/` (start of path),
+        // `?` (start of query), or end of string.
+        let auth_end = after_scheme.find(['/', '?']).unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..auth_end];
+        let rest = &after_scheme[auth_end..];
+        if let Some(at_pos) = authority.find('@') {
+            // Strip userinfo from authority; preserve path/query unchanged.
+            let host = &authority[at_pos + 1..];
+            format!("{}://{}{}", &url[..scheme_end], host, rest)
         } else {
-            after_scheme
-        };
-        format!("{}://{}", &url[..scheme_end], host_part)
+            // No userinfo in authority — return URL unchanged.
+            url.to_string()
+        }
     } else {
         "[redacted]".to_string()
     }
@@ -789,6 +805,56 @@ mod tests {
     fn redact_userinfo_handles_non_url_inputs() {
         assert_eq!(redact_userinfo("not-a-url"), "[redacted]");
         assert_eq!(redact_userinfo(""), "[redacted]");
+    }
+
+    /// SEC-V1.40-2 happy-path: a URL with userinfo in the authority
+    /// has the userinfo stripped, but the path/query are preserved.
+    #[test]
+    fn redact_userinfo_strips_authority_userinfo() {
+        assert_eq!(
+            redact_userinfo("https://user:pass@host.com/path"),
+            "https://host.com/path"
+        );
+        assert_eq!(
+            redact_userinfo("https://user@host.com/foo?bar=1"),
+            "https://host.com/foo?bar=1"
+        );
+        assert_eq!(redact_userinfo("https://user@host.com"), "https://host.com");
+    }
+
+    /// SEC-V1.40-2 regression: a URL with `@` in the path component
+    /// (e.g. an HTTPS gateway routing pattern, or a URL pointing at a
+    /// fragment anchor) must NOT have its host silently rewritten to
+    /// the path fragment after `@`. Pre-fix the redactor used
+    /// `find('@')` over the entire after-scheme portion and produced
+    /// `https://anchor`. Post-fix the URL passes through unchanged
+    /// because the `@` is in the path, not the authority.
+    #[test]
+    fn redact_userinfo_preserves_at_in_path() {
+        assert_eq!(
+            redact_userinfo("https://api.com/path/@anchor"),
+            "https://api.com/path/@anchor"
+        );
+        assert_eq!(
+            redact_userinfo("https://host.com/foo@bar"),
+            "https://host.com/foo@bar"
+        );
+        // Mixed: userinfo in authority + `@` in path — only authority
+        // userinfo gets stripped, path `@` stays put.
+        assert_eq!(
+            redact_userinfo("https://user@host.com/foo@bar"),
+            "https://host.com/foo@bar"
+        );
+    }
+
+    /// SEC-V1.40-2 regression: a URL with `@` in the query string
+    /// likewise must not be misinterpreted as userinfo.
+    #[test]
+    fn redact_userinfo_preserves_at_in_query() {
+        assert_eq!(
+            redact_userinfo("https://host.com/path?email=user@example.com"),
+            "https://host.com/path?email=user@example.com"
+        );
     }
 
     // ENV_MUTEX hoisted to module-wide `LLM_ENV_LOCK` (#1312 / #1305) so

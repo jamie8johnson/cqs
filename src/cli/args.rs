@@ -57,7 +57,7 @@ pub const DEFAULT_DEPTH_WALK: usize = 3;
 /// that are 4+ hops from a deep production chunk. Five is the smallest
 /// value that catches typical project-level tests without dramatically
 /// blowing up the response.
-pub const DEFAULT_DEPTH_TEST_MAP: usize = 5;
+pub const DEFAULT_DEPTH_TEST_MAP: u16 = 5;
 
 /// `trace` is path-search, not BFS-traversal. The flag is
 /// `--max-depth` (with `--depth` alias as of #1373) and means "give
@@ -462,8 +462,16 @@ pub(crate) struct TestMapArgs {
     /// #1373: deeper than the WALK default because tests are leaves on
     /// the call graph; depth=3 frequently misses test files 4+ hops from
     /// a deep production chunk.
-    #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_TEST_MAP)]
-    pub depth: usize,
+    /// RB-V1.40-1: range-bounded so a pathological `--depth usize::MAX`
+    /// can't reach the BFS arithmetic and panic on the `+ 1`. Bound
+    /// matches `TraceArgs::max_depth` (1..=50).
+    #[arg(
+        short = 'd',
+        long,
+        default_value_t = DEFAULT_DEPTH_TEST_MAP,
+        value_parser = clap::value_parser!(u16).range(1..=50),
+    )]
+    pub depth: u16,
     /// Search for tests across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,

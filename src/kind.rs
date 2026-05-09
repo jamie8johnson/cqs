@@ -174,8 +174,12 @@ pub fn classify_hits(hits: &[KindHit]) -> Kind {
     if hits.len() > 1 {
         return Kind::Multiple;
     }
-    // Safe: kinds.len() == 1.
-    *kinds.iter().next().expect("non-empty single-kind set")
+    // Logically `kinds.len() == 1` here (the early-returns above
+    // ensure non-empty + non-mixed). `unwrap_or` keeps the function
+    // panic-free per the project's "no unwrap outside tests" rule —
+    // a future refactor that breaks the invariant will route to
+    // `Kind::Other` (the routing-level catch-all) rather than crash.
+    kinds.into_iter().next().unwrap_or(Kind::Other)
 }
 
 #[cfg(test)]

@@ -107,8 +107,8 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 | AC-V1.40-3 | `bfs_shortest_path` predecessor sentinel `String::new()` collides with anonymous-chunk callers — path reconstruction terminates early | medium | TODO |
 | AC-V1.40-4 | Rust Tier 2a `field_initializer` query captures every argument identifier — non-callable variables pollute `function_calls` | medium | TODO |
 | AC-V1.40-5 | `bfs_expand` depth update is score-gated — lower-score shorter paths leave depth at longer-path value | medium | TODO |
-| RB-V1.40-1 | `build_test_map` `chain_limit = max_depth + 1` panics on `usize::MAX` (no clap range bound) | easy | TODO |
-| RB-V1.40-3 | `classify_hits` uses `.expect()` — violates "no unwrap outside tests" rule (replace with `unwrap_or(Kind::Other)`) | easy | TODO |
+| RB-V1.40-1 | `build_test_map` `chain_limit = max_depth + 1` panics on `usize::MAX` (no clap range bound) | easy | ✅ misc P1 PR |
+| RB-V1.40-3 | `classify_hits` uses `.expect()` — violates "no unwrap outside tests" rule (replace with `unwrap_or(Kind::Other)`) | easy | ✅ misc P1 PR |
 
 ### Lying docs (Cluster E)
 
@@ -126,12 +126,12 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 |---|---|---|---|
 | EH-V1.40-2 + API-V1.40-8 + OB-V1.40-3 + PB-V1.40-3 + SEC-V1.40-6 + DS-V1.40-5 | `Posture::current` / `OutputFormat::current` silent swallow + per-emit re-read + no log + TOCTOU + cross-platform case sensitivity (Cluster B) | easy-medium | TODO (Cluster B) |
 | DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | TODO (Cluster D) |
-| DS-V1.40-2 | `cmd_telemetry_reset` non-atomic — kill between `fs::copy` and `fs::write` corrupts archive or current | easy | TODO |
+| DS-V1.40-2 | `cmd_telemetry_reset` non-atomic — kill between `fs::copy` and `fs::write` corrupts archive or current | easy | ✅ misc P1 PR |
 | DS-V1.40-3 | `restore_from_backup` `copy_triplet` non-atomic across (main, -wal, -shm) — kill mid-restore replays failed-migration WAL frames against pre-migrate main | medium | TODO |
-| DS-V1.40-4 | `evals/regenerate_v3_test.py` writes fixture via `Path.write_text` non-atomically — Ctrl+C corrupts eval ground truth | easy | TODO |
+| DS-V1.40-4 | `evals/regenerate_v3_test.py` writes fixture via `Path.write_text` non-atomically — Ctrl+C corrupts eval ground truth | easy | ✅ misc P1 PR |
 | DS-V1.40-7 | Sentiment column accepts arbitrary f32 — schema lets `cqs notes add --sentiment 0.7` corrupt ranking-boost contract; add `CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0))` | easy | TODO |
 | SEC-V1.40-1 | V2Bare default drops `_meta.worktree_stale` warning — silent operational degradation under default Friendly posture (#1254 leakage guard regression) | medium | TODO (Cluster F/H) |
-| SEC-V1.40-2 | `redact_userinfo` mishandles URLs with `@` in path — produces malformed redacted form (find authority boundary first via `/`) | easy | TODO |
+| SEC-V1.40-2 | `redact_userinfo` mishandles URLs with `@` in path — produces malformed redacted form (find authority boundary first via `/`) | easy | ✅ misc P1 PR |
 | EH-V1.40-9 + SEC-V1.40-4 | Kind-fallback `definitions[]` echoes full chunk content with no size cap — DoS amplifier via `Result`/`Error`/`new` hot names | medium | TODO (Cluster H) |
 
 ---
@@ -402,7 +402,7 @@ Cluster-driven, single PR per cluster. Numbers in `[N items]` indicate raw-findi
 3. **PR-C: Polymorphic-routing dedup + helper module** [11 items: CQ-V1.40-1, CQ-V1.40-2, CQ-V1.40-3, CQ-V1.40-4, CQ-V1.40-9, API-V1.40-1, API-V1.40-2, API-V1.40-3, EXT-V1.40-1, EXT-V1.40-2, EXT-V1.40-10, RM-V1.40-1, TC-HAP-V1.40-4, TC-HAP-V1.40-7, TC-HAP-V1.40-10] — `kind_fallback` module with `chunks_to_definitions`, per-command notes table, single dispatcher signature; rename `lookup_by_name` → `get_chunks_by_name`; split `Kind` + `KindResolution`; exhaustive matches.
 4. **PR-D: Polymorphic-routing data safety + perf (schema migration v28)** [7 items: RB-V1.40-2, PERF-V1.40-2, RM-V1.40-4, DS-V1.40-1, DS-V1.40-8, DS-V1.40-10, AC-V1.40-9, SHL-V1.40-1] — `CREATE INDEX idx_chunks_name`, single read tx in dispatchers, `PRAGMA data_version` for daemon cache invalidation, routing-priority ORDER BY, `lookup_by_name` LIMIT.
 5. **PR-E: Lying docs sweep** [8 items: DOC-V1.40-1, DOC-V1.40-2, DOC-V1.40-3, DOC-V1.40-4, DOC-V1.40-5, DOC-V1.40-6, DOC-V1.40-7, OB-V1.40-4, EH-V1.40-6] — mostly mechanical edits to ROADMAP/CONTRIBUTING/SECURITY/Cargo.toml/README/CHANGELOG. Adopt the pre-commit-hook proposal from DOC-V1.38-5 to prevent recurrence.
-6. **PR-F: Correctness P1 sweep (BFS sentinel + Tier 2a over-capture + bfs_expand depth + RB-V1.40-1 + RB-V1.40-3)** [5 items: AC-V1.40-3, AC-V1.40-4, AC-V1.40-5, RB-V1.40-1, RB-V1.40-3] — graph correctness, panic surface, `.expect()` removal, depth field accuracy in JSON output.
+6. **PR-F: Correctness P1 sweep (BFS sentinel + Tier 2a over-capture + bfs_expand depth + RB-V1.40-1 + RB-V1.40-3)** [5 items: AC-V1.40-3, AC-V1.40-4, AC-V1.40-5, RB-V1.40-1 , RB-V1.40-3] — graph correctness, panic surface, `.expect()` removal, depth field accuracy in JSON output.
 7. **PR-G: Resource caps + DoS hardening** [6 items: EH-V1.40-9, SEC-V1.40-4, SEC-V1.40-1, SEC-V1.40-7, SEC-V1.40-8, SHL-V1.40-10] — kind-fallback content cap; resurrect `_meta.worktree_stale` under V2Bare default; daemon `read_line` incremental growth; `enumerate_files` depth/file-count cap; `chunks_paged` ceiling.
 8. **PR-H: Atomic write + data safety bug sweep** [5 items: DS-V1.40-2, DS-V1.40-3, DS-V1.40-4, DS-V1.40-7, DS-V1.40-9, SEC-V1.40-2] — telemetry reset atomic, backup restore atomic across triplet, regen-fixture atomic, sentiment CHECK constraint, v27 migration zero-vec, `redact_userinfo` path-aware.
 9. **PR-I: V2Bare end-to-end test backfill** [5 items: TC-ADV-V1.40-1, TC-HAP-V1.40-1, TC-HAP-V1.40-8, TC-ADV-V1.40-4, TC-ADV-V1.40-9, TC-HAP-V1.40-3] — end-to-end binary tests for V2Bare default, daemon-path kind-fallback parity tests, CLI integration tests for Const/Type/Module/Ambiguous.

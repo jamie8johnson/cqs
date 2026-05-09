@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -573,25 +573,57 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
         BufReader::new(f).lines().count()
     };
 
-    // Archive with timestamp
+    // DS-V1.40-2: archive + reset must be atomic. Pre-fix this was
+    // `fs::copy(current, archive); fs::write(current, reset_event)` —
+    // a kill between the two calls left either a duplicate archive on
+    // the next reset (copy succeeded, write didn't run) or a truncated
+    // current with the reset event lost (write started after `O_TRUNC`
+    // but didn't finish). Both modes silently corrupt the autopilot
+    // measurement-window contract per [Reset Telemetry After Autopilot]
+    // memory.
+    //
+    // Fix: snapshot via atomic rename (current → archive_<ts>), then
+    // stage the reset event in a tempfile and atomic_replace to the
+    // current path. After step 1 a kill leaves no current file, which
+    // the `if !current.exists()` short-circuit at the top handles
+    // cleanly. After step 2's tempfile write but before the rename,
+    // the tempfile is cleaned up by the OS / next reset (atomic_replace
+    // keeps a uniquely-named .tmp).
     let now = format_utc_timestamp();
     let archive = cqs_dir.join(format!("telemetry_{now}.jsonl"));
-    fs::copy(&current, &archive)
-        .with_context(|| format!("Failed to archive to {}", archive.display()))?;
 
-    // Write reset event
+    // Step 1: atomic rename current → archive. POSIX rename(2) is
+    // atomic; Windows MoveFileExW with REPLACE_EXISTING is atomic
+    // too. If this fails, current is unchanged.
+    fs::rename(&current, &archive).with_context(|| {
+        format!(
+            "Failed to archive {} → {}",
+            current.display(),
+            archive.display()
+        )
+    })?;
+
+    // Step 2: stage the reset event in a tempfile, then atomic-rename
+    // it to the now-vacant current path.
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-
     let reason_str = reason.unwrap_or("manual reset");
     let entry = serde_json::json!({
         "event": "reset",
         "ts": timestamp,
         "reason": reason_str,
     });
-    fs::write(&current, format!("{}\n", entry)).context("Failed to write reset event")?;
+    let tmp = current.with_extension("jsonl.tmp");
+    {
+        let mut f = fs::File::create(&tmp)
+            .with_context(|| format!("Failed to create tempfile {}", tmp.display()))?;
+        writeln!(f, "{entry}").context("Failed to write reset event to tempfile")?;
+        f.sync_all().context("Failed to fsync tempfile")?;
+    }
+    cqs::fs::atomic_replace(&tmp, &current)
+        .with_context(|| format!("Failed to atomic-replace {}", current.display()))?;
 
     if json {
         // API-V1.29-3: `cqs telemetry --reset --json` used to silently drop
