@@ -125,11 +125,11 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 | ID(s) | Title | Effort | Status |
 |---|---|---|---|
 | EH-V1.40-2 + API-V1.40-8 + OB-V1.40-3 + PB-V1.40-3 + SEC-V1.40-6 + DS-V1.40-5 | `Posture::current` / `OutputFormat::current` silent swallow + per-emit re-read + no log + TOCTOU + cross-platform case sensitivity (Cluster B) | easy-medium | ✅ Cluster B PR |
-| DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | TODO (Cluster D) |
+| DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | DEFERRED — symptom rare; Cluster D bundling deferred to v1.41 cycle |
 | DS-V1.40-2 | `cmd_telemetry_reset` non-atomic — kill between `fs::copy` and `fs::write` corrupts archive or current | easy | ✅ misc P1 PR |
 | DS-V1.40-3 | `restore_from_backup` `copy_triplet` non-atomic across (main, -wal, -shm) — kill mid-restore replays failed-migration WAL frames against pre-migrate main | medium | ✅ DS-V1.40-3 PR |
 | DS-V1.40-4 | `evals/regenerate_v3_test.py` writes fixture via `Path.write_text` non-atomically — Ctrl+C corrupts eval ground truth | easy | ✅ misc P1 PR |
-| DS-V1.40-7 | Sentiment column accepts arbitrary f32 — schema lets `cqs notes add --sentiment 0.7` corrupt ranking-boost contract; add `CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0))` | easy | TODO |
+| DS-V1.40-7 | Sentiment column accepts arbitrary f32 — schema lets `cqs notes add --sentiment 0.7` corrupt ranking-boost contract; add `CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0))` | easy | DEFERRED — schema-migration cost > benefit for single-user discrete-value compliance |
 | SEC-V1.40-1 | V2Bare default drops `_meta.worktree_stale` warning — silent operational degradation under default Friendly posture (#1254 leakage guard regression) | medium | ✅ SEC-V1.40-1 PR |
 | SEC-V1.40-2 | `redact_userinfo` mishandles URLs with `@` in path — produces malformed redacted form (find authority boundary first via `/`) | easy | ✅ misc P1 PR |
 | EH-V1.40-9 + SEC-V1.40-4 | Kind-fallback `definitions[]` echoes full chunk content with no size cap — DoS amplifier via `Result`/`Error`/`new` hot names | medium | ✅ Cluster H PR |

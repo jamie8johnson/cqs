@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**24-PR autopilot session — 2026-05-08** (23 substantive + #1624 meta-tears). Every user-priority queue item shipped. v1.40.0 on crates.io; SNR restoration Phases 1-4 complete (default JSON output flipped to bare); Polymorphic Routing Phase 1 complete on **both** CLI-direct (`cmd_*`) and daemon-path (`dispatch_*`) surfaces (60 dispatch points across 6 commands × 5 kinds × 2 surfaces); v3.v2 fixture refreshed; cqs-dead false positives reduced ~114 → 35 (Tier 1 + Tier 2a + Tier 2b partial — closes `src/language/languages.rs` from 66 → 0).
+**v1.40.0 cycle wrap-up — 2026-05-08/09.** 24-PR session shipped v1.40.0 to crates.io (SNR Phases 1-4 + Polymorphic Routing Phase 1 + Tier 2a/2b cqs-dead reductions). Then ran the **post-v1.40.0 16-category audit**: 150 raw findings → 78 triaged → 9 closeout PRs (#1626–#1633) closing **21 of 23 P1 entries** (~91%). 2 P1s deferred with rationale (DS-V1.40-1 daemon cache invalidation — symptom rare; DS-V1.40-7 sentiment CHECK constraint — single-user discrete-value compliance reliable). Audit cycle's diminishing-returns curve confirms project maturity: 14th full audit, no architectural-correctness P1s remain. Net read: cqs is at the "polished and shipping value" stage; remaining work is steady-state plus telemetry-driven (Phase 2 polymorphic routing) and a potential MCP interface.
 
 **Phase 1 polymorphic routing — 60/60 dispatch points complete.** Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) consults `cqs::kind::classify_hits` against an exact-name lookup before its happy-path query, on both CLI-direct (#1612, #1616, #1617, #1618) and daemon-path (#1620). Const/Type/Module/Ambiguous kinds get a kind-labeled fallback shape (`{kind, fallback_from, name, definitions, note}`) instead of misrouted-to-empty results. Verified live: `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
 
@@ -17,6 +17,22 @@
 - v1.40.0 release (#1614) — tag pushed, crates.io published, GitHub Release auto-fires.
 - cqs dead false positives reduced ~114 → 35: #1621 (struct-field-assignment edges, -52), #1622 (type-cast edges, -14), #1623 (macro content-scan, -3 of 5).
 - env_var_docs hardening (#1606), gitignore housekeeping (#1603), telemetry reset.
+
+**Audit cycle (post-v1.40.0) — 9 PRs closing 21 of 23 P1s:**
+- #1626 — Cluster E lying-docs sweep (8 DOC + 1 OB doc-drift). ROADMAP / SNR doc / polymorphic-routing doc / SECURITY / CHANGELOG / Cargo.toml / README all flipped status from "ready" / "always-on" / "46.3" → "shipped" / "opt-in" / "52.7".
+- #1627 — Cluster A Tier 2b correctness + 6 tests. `filter_invoked_macros` switched LIKE → GLOB (case-sensitive, no `_` wildcard collision); Rust-only language guard; `id != ?2` self-exclusion for recursive macros.
+- #1628 — misc P1 batch (RB + DS + SEC, 5 findings). `TestMapArgs::depth` clap range bound; `classify_hits` `.expect` → `unwrap_or(Kind::Other)`; `cmd_telemetry_reset` atomic rename + `atomic_replace`; `regenerate_v3_test.py` atomic write; `redact_userinfo` RFC-3986 authority bounding.
+- #1629 — Cluster B Posture/OutputFormat env-var hygiene (11 findings). `OnceLock` cache + truthy aliases (`1`/`true`/`on`/`yes` case-insensitive) + `tracing::warn!` on unrecognized + `tracing::info!` first-read + 12 pure-parser unit tests replacing env-mutating ones.
+- #1630 — SEC-V1.40-1 V2Bare worktree_stale signal restored. Object payloads splice `_meta` in-place; array/scalar payloads emit stderr warning.
+- #1631 — DS-V1.40-3 `restore_from_backup` deletes live sidecars first. Closes the "Frankenstein WAL replays against pre-migrate main" silent-corruption window.
+- #1632 — Cluster H DoS amplifier closure. `chunk_to_definition_value` shared helper enforces `KIND_FALLBACK_MAX_DEFINITIONS=100` + `KIND_FALLBACK_MAX_CONTENT_BYTES=2048` with UTF-8-safe truncation. Both CLI-direct and daemon paths now share the cap.
+- #1633 — AC sweep (3 BFS/parser correctness P1s). `bfs_shortest_path` predecessor `String → Option<String>` (handles anonymous mid-chain nodes); Tier 2a `arguments` patterns anchored to first child via `.` predicate (no more phantom `→ count` edges keeping unrelated globals alive); `bfs_expand` depth-min lifted out of score-gated branch.
+
+**Deferred from this audit cycle (2 P1s, with rationale):**
+- DS-V1.40-1 (daemon Store cache invalidation) — symptom rare; caches reload on 100ms staleness check. Cluster D bundling deferred to v1.41 cycle.
+- DS-V1.40-7 (sentiment CHECK constraint) — schema-migration cost > benefit for single-user discrete-value compliance per CLAUDE.md memory.
+
+**Audit mode disabled** at end of cycle (was on for ~12h). Notes are back in search/read for normal operation.
 
 ### Shipped this session — 24 PRs
 

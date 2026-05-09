@@ -21,6 +21,23 @@ Post-v1.40.0 work on `main`. Polymorphic routing Phase 1 fully completed (60/60 
 ### Documentation
 
 - **Tears + roadmap currency** (#1615, #1619, #1624, #1625). Four docs PRs captured session state at successive milestones: post-release v1.40.0 sync (#1615), Phase 1 CLI-direct completion (#1619), final 23-PR session summary (#1624), post-merge currency fixes (#1625). PROJECT_CONTINUITY.md "Right Now" + ROADMAP.md "Current" reflect 60/60 polymorphic dispatch points and the cumulative cqs-dead reduction table.
+- **Post-v1.40.0 audit cycle** (16-category, 150 raw findings → 78 triaged → 9 closeout PRs #1626–#1633). Closed 21 of 23 P1s (~91%). 2 P1s deferred with rationale.
+
+### Fixed (audit cycle)
+
+- **#1626 — Cluster E lying-docs sweep** (8 DOC + 1 OB doc-drift). ROADMAP / `docs/json-snr-restoration.md` / `docs/polymorphic-routing.md` status flipped from "ready to execute" → "shipped" with implementing PR refs. SECURITY.md `_meta.handling_advice` + `injection_flags` rewritten from "always-on" → "opt-in via `CQS_ULTRASECURITY=1`" (the v1.40.0 default flip). Cargo.toml + README headline metric updated `46.3 → 52.7` per #1607 fixture re-anchor. CONTRIBUTING.md Architecture Overview gained `kind.rs` + `posture.rs`. `classify_chunk_type` doc claim about "tracing::warn reminder" rewritten to describe actual exhaustive-match compile-error behavior.
+- **#1627 — Cluster A Tier 2b correctness + 7 tests** (EH-V1.40-1, AC-V1.40-1, AC-V1.40-2, AC-V1.40-8, PB-V1.40-1, TC-ADV-V1.40-5, TC-HAP-V1.40-2). `filter_invoked_macros` switched LIKE → GLOB (case-sensitive, no `_` wildcard collision); Rust-only language guard for non-Rust macro syntax; `id != ?2` self-exclusion for recursive `macro_rules!`; defensive GLOB escape for `*`/`?`/`[`/`]` in macro names.
+- **#1628 — misc P1 batch** (RB-V1.40-1, RB-V1.40-3, DS-V1.40-2, DS-V1.40-4, SEC-V1.40-2). `TestMapArgs::depth` clap range bound (1..=50); `classify_hits` `.expect` → `unwrap_or(Kind::Other)`; `cmd_telemetry_reset` atomic rename + `atomic_replace`; `regenerate_v3_test.py` atomic write via `os.replace`; `redact_userinfo` confines `@` search to RFC-3986 authority component (`https://api.com/path/@anchor` no longer rewrites to `https://anchor`).
+- **#1629 — Cluster B Posture/OutputFormat env-var hygiene** (11 raw findings consolidated). `Posture::current()` + `OutputFormat::current()` cached via `OnceLock`; truthy/falsy alias recognition (`1`/`true`/`on`/`yes` and `0`/`false`/`off`/`no`, case-insensitive, whitespace-trimmed); `tracing::warn!` on unrecognized values; `tracing::info!` first-read log. 12 pure-parser unit tests replace env-mutating ones.
+- **#1630 — SEC-V1.40-1 V2Bare worktree_stale signal restored**. Object payloads splice `_meta` in-place when `EnvelopeMeta::for_posture(posture)` is non-default; array/scalar payloads emit `tracing::warn!` on stderr (with `CQS_OUTPUT_FORMAT=v1` hint).
+- **#1631 — DS-V1.40-3 atomic backup restore order**. `restore_from_backup` deletes live `-wal`/`-shm` sidecars BEFORE `copy_triplet`. Closes the "Frankenstein WAL replays against pre-migrate main" silent-corruption window.
+- **#1632 — Cluster H DoS amplifier closure** (EH-V1.40-9 + SEC-V1.40-4). Shared `chunk_to_definition_value` helper enforces `KIND_FALLBACK_MAX_DEFINITIONS=100` + `KIND_FALLBACK_MAX_CONTENT_BYTES=2048` with UTF-8-safe truncation (`"... (truncated)"` suffix + `truncated: true` field). Both CLI-direct and daemon paths now share the cap.
+- **#1633 — AC sweep** (AC-V1.40-3 + AC-V1.40-4 + AC-V1.40-5). `bfs_shortest_path` predecessor `String → Option<String>` (handles anonymous mid-chain nodes — pre-fix truncated paths through closures); Tier 2a `arguments` patterns in `rust.calls.scm` anchored to first child via `.` predicate (no more phantom `→ count` edges keeping unrelated globals alive); `bfs_expand` depth-min lifted out of score-gated branch (depth field accuracy in JSON output).
+
+### Deferred (with rationale)
+
+- **DS-V1.40-1** (daemon Store cache invalidation via `PRAGMA data_version`) — symptom rare; caches reload on the 100ms staleness check. Cluster D bundling deferred to v1.41 cycle.
+- **DS-V1.40-7** (sentiment column CHECK constraint via schema migration v28) — single-user discrete-value compliance is reliable per CLAUDE.md memory; schema-migration cost > benefit. Deferred unless telemetry shows misuse.
 
 ## [1.40.0] - 2026-05-08
 
