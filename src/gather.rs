@@ -377,9 +377,19 @@ pub(crate) fn bfs_expand(
                 //
                 // AC-V1.30.1-3: this branch must run even when the cap
                 // has been hit — the bump doesn't grow `name_scores`.
+                //
+                // AC-V1.40-5: depth-min update lifted out of the score-gated
+                // branch. Pre-fix, a low-score-shorter-path (e.g. seed B
+                // score 0.01 reaching D in depth 1) couldn't update D's
+                // depth when D was already recorded at depth 2 from a
+                // high-score-deeper-path (seed A score 1.0 → A→C→D). The
+                // depth field surfaces in `GatheredChunk.depth` and on the
+                // JSON output, so wrong values reached agents directly.
+                // Depth-min is idempotent and cheap; running it always
+                // ensures the reported depth is the shortest path's.
+                existing.1 = existing.1.min(depth + 1);
                 if new_score > existing.0 {
                     existing.0 = new_score;
-                    existing.1 = existing.1.min(depth + 1);
                 }
             }
         }

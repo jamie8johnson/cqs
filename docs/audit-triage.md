@@ -104,9 +104,9 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 | AC-V1.40-1 | `filter_invoked_macros` `!` suffix is Rust-only — every C/C++/Elixir/Julia macro misclassified as dead | medium | ✅ Cluster A PR |
 | AC-V1.40-2 | `filter_invoked_macros` self-match — recursive `macro_rules!` keeps itself alive (no `id != ?2` filter) | easy | ✅ Cluster A PR |
 | PB-V1.40-1 | `filter_invoked_macros` LIKE is case-insensitive (no `PRAGMA case_sensitive_like` or GLOB) | easy | ✅ Cluster A PR |
-| AC-V1.40-3 | `bfs_shortest_path` predecessor sentinel `String::new()` collides with anonymous-chunk callers — path reconstruction terminates early | medium | TODO |
-| AC-V1.40-4 | Rust Tier 2a `field_initializer` query captures every argument identifier — non-callable variables pollute `function_calls` | medium | TODO |
-| AC-V1.40-5 | `bfs_expand` depth update is score-gated — lower-score shorter paths leave depth at longer-path value | medium | TODO |
+| AC-V1.40-3 | `bfs_shortest_path` predecessor sentinel `String::new()` collides with anonymous-chunk callers — path reconstruction terminates early | medium | ✅ AC sweep PR |
+| AC-V1.40-4 | Rust Tier 2a `field_initializer` query captures every argument identifier — non-callable variables pollute `function_calls` | medium | ✅ AC sweep PR |
+| AC-V1.40-5 | `bfs_expand` depth update is score-gated — lower-score shorter paths leave depth at longer-path value | medium | ✅ AC sweep PR |
 | RB-V1.40-1 | `build_test_map` `chain_limit = max_depth + 1` panics on `usize::MAX` (no clap range bound) | easy | ✅ misc P1 PR |
 | RB-V1.40-3 | `classify_hits` uses `.expect()` — violates "no unwrap outside tests" rule (replace with `unwrap_or(Kind::Other)`) | easy | ✅ misc P1 PR |
 
