@@ -881,37 +881,37 @@ mod tests {
     // The original always-on behaviour (#1181) is preserved by setting
     // CQS_ULTRASECURITY=1.
 
+    // Cluster B: the `_omits_handling_advice_by_default` triplet pre-fix
+    // used `remove_var(CQS_ULTRASECURITY)` + `wrap_value()` to assert
+    // Friendly behavior. Post-fix `Posture::current()` is OnceLock-cached
+    // so an earlier test's call wins. Migrated to `_with_posture(Friendly)`
+    // variants to pin the same contract independent of process env.
+
     #[test]
-    #[serial_test::serial]
-    fn wrap_value_omits_handling_advice_by_default() {
-        std::env::remove_var("CQS_ULTRASECURITY");
-        let v = wrap_value(&serde_json::json!({"x": 1}));
+    fn wrap_value_with_posture_friendly_omits_handling_advice_default() {
+        let v = wrap_value_with_posture(&serde_json::json!({"x": 1}), Posture::Friendly);
         // Envelope still carries _meta (worktree fields may populate it),
         // but handling_advice is absent.
         assert!(
             v["_meta"].get("handling_advice").is_none(),
-            "default-off: handling_advice should be absent. got: {}",
+            "Friendly posture: handling_advice should be absent. got: {}",
             v["_meta"]
         );
     }
 
     #[test]
-    #[serial_test::serial]
-    fn wrap_error_omits_handling_advice_by_default() {
-        std::env::remove_var("CQS_ULTRASECURITY");
-        let v = wrap_error(error_codes::INVALID_INPUT, "bad query");
+    fn wrap_error_with_posture_friendly_omits_handling_advice_default() {
+        let v = wrap_error_with_posture(error_codes::INVALID_INPUT, "bad query", Posture::Friendly);
         assert!(
             v["_meta"].get("handling_advice").is_none(),
-            "default-off: handling_advice should be absent. got: {}",
+            "Friendly posture: handling_advice should be absent. got: {}",
             v["_meta"]
         );
     }
 
     #[test]
-    #[serial_test::serial]
-    fn typed_envelope_ok_omits_handling_advice_by_default() {
-        std::env::remove_var("CQS_ULTRASECURITY");
-        let env = Envelope::ok(serde_json::json!({"x": 1}));
+    fn typed_envelope_ok_with_posture_friendly_omits_handling_advice() {
+        let env = Envelope::ok_with_posture(serde_json::json!({"x": 1}), Posture::Friendly);
         let v = serde_json::to_value(&env).unwrap();
         assert!(
             v["_meta"].get("handling_advice").is_none(),
@@ -920,32 +920,28 @@ mod tests {
         );
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn wrap_value_emits_handling_advice_under_ultrasecurity() {
-        std::env::set_var("CQS_ULTRASECURITY", "1");
-        let v = wrap_value(&serde_json::json!({"x": 1}));
-        assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
-        std::env::remove_var("CQS_ULTRASECURITY");
-    }
+    // Audit Cluster B (Posture/OutputFormat env-var caching, post-v1.40.0):
+    // legacy `wrap_value` / `wrap_error` / `Envelope::ok` read posture via
+    // `Posture::current()` which is now `OnceLock`-cached for the process
+    // lifetime. Env-mutation tests on those entry points are racy: any
+    // earlier test in the binary that calls `current()` wins the cache.
+    // The pre-Cluster-B tests pin Adversarial-emit behavior; the post-fix
+    // shape pins the same contract via the typed `_with_posture` variants
+    // (already covered by the `wrap_value_with_posture_adversarial_*` and
+    // `wrap_error_with_posture_adversarial_*` tests below). The legacy
+    // shims are now thin delegates: they read the cached posture and
+    // forward to `_with_posture`. Their byte-equality contract with the
+    // typed variants is pinned by the parser tests in `posture::tests`.
 
     #[test]
-    #[serial_test::serial]
-    fn wrap_error_emits_handling_advice_under_ultrasecurity() {
-        std::env::set_var("CQS_ULTRASECURITY", "1");
-        let v = wrap_error(error_codes::INVALID_INPUT, "bad query");
-        assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
-        std::env::remove_var("CQS_ULTRASECURITY");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn typed_envelope_ok_emits_handling_advice_under_ultrasecurity() {
-        std::env::set_var("CQS_ULTRASECURITY", "1");
-        let env = Envelope::ok(serde_json::json!({"x": 1}));
+    fn typed_envelope_ok_emits_handling_advice_under_adversarial() {
+        // Replaces the pre-Cluster-B env-mutating test. Same contract
+        // (Adversarial → handling_advice present), pinned via the typed
+        // entry point `Envelope::ok_with_posture` so it survives the
+        // posture-cache change.
+        let env = Envelope::ok_with_posture(serde_json::json!({"x": 1}), Posture::Adversarial);
         let v = serde_json::to_value(&env).unwrap();
         assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
-        std::env::remove_var("CQS_ULTRASECURITY");
     }
 
     // SNR Phase 1: `Posture` is the typed replacement for the env-var
@@ -958,27 +954,11 @@ mod tests {
         assert!(!Posture::Friendly.is_adversarial());
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn posture_current_reads_env_var() {
-        std::env::remove_var("CQS_ULTRASECURITY");
-        assert_eq!(Posture::current(), Posture::Friendly);
-        std::env::set_var("CQS_ULTRASECURITY", "1");
-        assert_eq!(Posture::current(), Posture::Adversarial);
-        std::env::set_var("CQS_ULTRASECURITY", "0");
-        assert_eq!(
-            Posture::current(),
-            Posture::Friendly,
-            "any value other than '1' is Friendly"
-        );
-        std::env::set_var("CQS_ULTRASECURITY", "true");
-        assert_eq!(
-            Posture::current(),
-            Posture::Friendly,
-            "string 'true' is not the magic value"
-        );
-        std::env::remove_var("CQS_ULTRASECURITY");
-    }
+    // `posture_current_reads_env_var` (pre-Cluster-B) deleted: replaced by
+    // the pure-parser tests in `crate::posture::tests` which exercise
+    // `Posture::resolve_from_str` deterministically without depending on
+    // process env. The env-mutation pattern doesn't compose with the
+    // OnceLock cache that lands in this same PR.
 
     #[test]
     fn envelope_meta_for_posture_friendly_omits_handling_advice() {
@@ -1030,29 +1010,27 @@ mod tests {
 
     /// Phase 1 contract: legacy entry points must produce byte-identical
     /// output to the `_with_posture` variants when given the matching
-    /// posture from `Posture::current()`. Pins that the legacy shims add
-    /// no implicit behavior beyond the env-var read.
+    /// posture from `Posture::current()`. Post-Cluster-B `current()` is
+    /// `OnceLock`-cached for the process lifetime, so `wrap_value()` and
+    /// `wrap_value_with_posture(_, Posture::current())` are the same call
+    /// path under the hood — the byte-identity check still holds, but
+    /// without the env-mutation that the pre-Cluster-B test relied on
+    /// (the cached value would prevent the post-set_var read from
+    /// switching postures, racing with any other test that touched
+    /// `current()` first).
     #[test]
-    #[serial_test::serial]
-    fn legacy_wrap_value_matches_posture_current() {
-        std::env::remove_var("CQS_ULTRASECURITY");
+    fn legacy_wrap_value_matches_with_posture_for_cached_value() {
         let payload = serde_json::json!({"x": 1, "y": "z"});
         let via_legacy = wrap_value(&payload);
         let via_posture = wrap_value_with_posture(&payload, Posture::current());
-        assert_eq!(via_legacy, via_posture);
-
-        std::env::set_var("CQS_ULTRASECURITY", "1");
-        let via_legacy_adv = wrap_value(&payload);
-        let via_posture_adv = wrap_value_with_posture(&payload, Posture::current());
-        assert_eq!(via_legacy_adv, via_posture_adv);
-        assert_eq!(via_posture_adv["_meta"]["handling_advice"], HANDLING_ADVICE);
-        std::env::remove_var("CQS_ULTRASECURITY");
+        assert_eq!(
+            via_legacy, via_posture,
+            "legacy shim must forward to _with_posture using the cached current()"
+        );
     }
 
     #[test]
-    #[serial_test::serial]
-    fn legacy_wrap_error_matches_posture_current() {
-        std::env::remove_var("CQS_ULTRASECURITY");
+    fn legacy_wrap_error_matches_with_posture_for_cached_value() {
         let via_legacy = wrap_error(error_codes::PARSE_ERROR, "bad token");
         let via_posture =
             wrap_error_with_posture(error_codes::PARSE_ERROR, "bad token", Posture::current());
@@ -1114,18 +1092,19 @@ mod tests {
     // logic (since println!-emitting functions are hard to assert
     // against in a test harness without redirecting stdout).
     #[test]
-    #[serial_test::serial]
     fn emit_json_error_with_data_envelope_shape() {
-        // Pin the advisory-on path so this test asserts the handling_advice
-        // emission contract under CQS_ULTRASECURITY=1 (the original API-V1.30.1-1
-        // expectation). Default-off behaviour is covered by the
-        // *_omits_handling_advice_by_default tests above.
-        std::env::set_var("CQS_ULTRASECURITY", "1");
+        // Cluster B: pre-fix this test set CQS_ULTRASECURITY=1 to drive
+        // `EnvelopeMeta::current()` into Adversarial. Post-fix `current()`
+        // is `OnceLock`-cached, so the env mutation is racy across the
+        // test binary. Use the typed `for_posture(Adversarial)` directly
+        // — same contract (handling_advice present under Adversarial),
+        // independent of process state.
         let payload = serde_json::json!({
             "snapshot": {"state": "stale", "modified_files": 3},
             "wait_secs": 5,
         });
-        // Reconstruct what emit_json_error_with_data builds.
+        // Reconstruct what emit_json_error_with_data builds, using the
+        // posture-typed meta builder.
         let mut env = serde_json::Map::with_capacity(4);
         env.insert("data".to_string(), payload.clone());
         env.insert(
@@ -1138,7 +1117,7 @@ mod tests {
         );
         env.insert(
             "_meta".to_string(),
-            serde_json::to_value(EnvelopeMeta::current()).unwrap(),
+            serde_json::to_value(EnvelopeMeta::for_posture(Posture::Adversarial)).unwrap(),
         );
         let v = serde_json::Value::Object(env);
         // Diagnostic data carried alongside the error.
@@ -1150,7 +1129,6 @@ mod tests {
         assert_eq!(v["error"]["message"], "timed out");
         assert_eq!(v["version"], JSON_OUTPUT_VERSION);
         assert_eq!(v["_meta"]["handling_advice"], HANDLING_ADVICE);
-        std::env::remove_var("CQS_ULTRASECURITY");
     }
 
     // API-V1.30.1-1: `emit_json_error_with_data` accepts `None` data and
