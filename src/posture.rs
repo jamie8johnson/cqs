@@ -7,6 +7,26 @@
 //! re-exports this same type for convenience.
 //!
 //! See `docs/json-snr-restoration.md` for the migration plan.
+//!
+//! Audit Cluster B (post-v1.40.0):
+//!
+//! - **Process-lifetime caching** (CQ-V1.40-7, RM-V1.40-8, PERF-V1.40-3,
+//!   PERF-V1.40-4, DS-V1.40-5, SEC-V1.40-6). [`Posture::current`] and
+//!   [`OutputFormat::current`] read the env once via `OnceLock` and
+//!   memoize. A daemon serving thousands of emissions per minute does
+//!   one syscall per env var per process lifetime, not per emit. Side
+//!   benefit: no TOCTOU race — a daemon thread that calls `set_var`
+//!   mid-stream can't flip the envelope shape because the cached value
+//!   is already pinned.
+//!
+//! - **Truthy/falsy alias recognition + warn on unrecognized values**
+//!   (EH-V1.40-2, API-V1.40-8, OB-V1.40-3, PB-V1.40-3). Pre-fix,
+//!   `CQS_ULTRASECURITY=true` silently fell through to `Friendly`,
+//!   disabling the security advisory the operator believed they had
+//!   enabled. Post-fix, the parser recognizes the conventional truthy
+//!   set (`1`, `true`, `on`, `yes` case-insensitive, with whitespace
+//!   trimmed) and logs `tracing::warn!` for any value set but
+//!   unrecognized so the operator sees their typo.
 
 /// Caller-decided emission posture, threaded from request entry points
 /// down to leaf serializers. Replaces ad-hoc `std::env::var` reads in
@@ -33,16 +53,65 @@ pub enum Posture {
     Adversarial,
 }
 
+/// Process-lifetime cache of the resolved posture. First call to
+/// [`Posture::current`] reads the env via [`Posture::resolve_from_env`]
+/// (with the warn-on-unrecognized-value parser) and stores the result;
+/// subsequent calls are an `Atomic` load. Avoids the per-emit
+/// `std::env::var` syscall + the TOCTOU race where a daemon thread can
+/// `set_var` mid-stream and flip the envelope shape on the next emit.
+static POSTURE: std::sync::OnceLock<Posture> = std::sync::OnceLock::new();
+
 impl Posture {
-    /// Read the env var once and return the corresponding posture.
-    /// Cheap (one syscall); intended to be called at request entry
-    /// points (CLI dispatcher, batch dispatcher, daemon handler) so the
+    /// Resolve the posture once (first call reads env, subsequent calls
+    /// hit the cache). Intended to be called at request entry points
+    /// (CLI dispatcher, batch dispatcher, daemon handler) so the
     /// posture flows through the request as a typed value.
+    ///
+    /// Audit Cluster B (DS-V1.40-5 + SEC-V1.40-6 + perf): the cache
+    /// pins the resolved posture for the process lifetime, so a daemon
+    /// thread can't flip the envelope shape mid-request via `set_var`,
+    /// and a hot emit path doesn't pay for `env::var` per call.
     pub fn current() -> Self {
-        if std::env::var("CQS_ULTRASECURITY").as_deref() == Ok("1") {
-            Self::Adversarial
-        } else {
-            Self::Friendly
+        *POSTURE.get_or_init(Self::resolve_from_env)
+    }
+
+    /// Read the env var, parse via [`Self::resolve_from_str`], and log
+    /// the resolved value. Pure side-effect of "first call" — subsequent
+    /// `current()` calls hit the cache and don't log again.
+    fn resolve_from_env() -> Self {
+        let raw = std::env::var("CQS_ULTRASECURITY").ok();
+        let posture = Self::resolve_from_str(raw.as_deref());
+        tracing::info!(
+            posture = ?posture,
+            raw = ?raw.as_deref().unwrap_or("<unset>"),
+            "Posture resolved from CQS_ULTRASECURITY"
+        );
+        posture
+    }
+
+    /// Pure parsing helper: map an env-value to a [`Posture`].
+    ///
+    /// `None` → `Friendly` (default, env unset).
+    /// `Some(v)` recognized as truthy (`1`, `true`, `on`, `yes`,
+    /// case-insensitive, whitespace trimmed) → `Adversarial`.
+    /// `Some(v)` recognized as falsy (`0`, `false`, `off`, `no`,
+    /// empty after trim) → `Friendly`.
+    /// `Some(v)` unrecognized → `Friendly` + `tracing::warn!` so the
+    /// operator sees their typo.
+    fn resolve_from_str(raw: Option<&str>) -> Self {
+        let trimmed = raw.unwrap_or("").trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => Self::Adversarial,
+            "" | "0" | "false" | "off" | "no" => Self::Friendly,
+            other => {
+                tracing::warn!(
+                    raw = %other,
+                    "CQS_ULTRASECURITY value not recognized as truthy or falsy; \
+                     defaulting to Friendly. Recognized truthy: 1, true, on, yes \
+                     (case-insensitive). Recognized falsy: 0, false, off, no."
+                );
+                Self::Friendly
+            }
         }
     }
 
@@ -90,22 +159,54 @@ pub enum OutputFormat {
     V2Bare,
 }
 
+/// Process-lifetime cache for the resolved output format. Same shape
+/// as [`POSTURE`] — first `current()` call reads env, subsequent calls
+/// hit the cache. See [`POSTURE`] doc for the rationale.
+static OUTPUT_FORMAT: std::sync::OnceLock<OutputFormat> = std::sync::OnceLock::new();
+
 impl OutputFormat {
-    /// Read the env var once and return the corresponding format.
-    /// Same one-syscall cost as [`Posture::current`]; intended to be
-    /// called at the same dispatcher entry points.
+    /// Resolve once and cache for the process lifetime. Same caching
+    /// shape as [`Posture::current`]; intended to be called at the
+    /// same dispatcher entry points.
     ///
     /// **SNR Phase 4 default flip (2026-05-08):** unset env or any value
-    /// other than the literal `"v1"` ⇒ [`Self::V2Bare`] (bare payload).
-    /// `CQS_OUTPUT_FORMAT=v1` ⇒ [`Self::V1Envelope`] (legacy envelope).
-    /// Inverted polarity from the original opt-in landing — opt-out
-    /// is now the legacy hedge for consumer scripts that haven't
-    /// migrated.
+    /// other than `"v1"` (case-insensitive after trim) ⇒ [`Self::V2Bare`]
+    /// (bare payload). `CQS_OUTPUT_FORMAT=v1` ⇒ [`Self::V1Envelope`]
+    /// (legacy envelope). Inverted polarity from the original opt-in
+    /// landing — opt-out is now the legacy hedge for consumer scripts
+    /// that haven't migrated.
     pub fn current() -> Self {
-        if std::env::var("CQS_OUTPUT_FORMAT").as_deref() == Ok("v1") {
-            Self::V1Envelope
-        } else {
-            Self::V2Bare
+        *OUTPUT_FORMAT.get_or_init(Self::resolve_from_env)
+    }
+
+    /// Read the env var, parse, and log on first call.
+    fn resolve_from_env() -> Self {
+        let raw = std::env::var("CQS_OUTPUT_FORMAT").ok();
+        let format = Self::resolve_from_str(raw.as_deref());
+        tracing::info!(
+            format = ?format,
+            raw = ?raw.as_deref().unwrap_or("<unset>"),
+            "OutputFormat resolved from CQS_OUTPUT_FORMAT"
+        );
+        format
+    }
+
+    /// Pure parsing helper. `v1` (case-insensitive, whitespace trimmed)
+    /// ⇒ V1Envelope; `v2` or empty/unset ⇒ V2Bare; unrecognized ⇒
+    /// V2Bare + `tracing::warn!`.
+    fn resolve_from_str(raw: Option<&str>) -> Self {
+        let trimmed = raw.unwrap_or("").trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "v1" => Self::V1Envelope,
+            "" | "v2" => Self::V2Bare,
+            other => {
+                tracing::warn!(
+                    raw = %other,
+                    "CQS_OUTPUT_FORMAT value not recognized; defaulting to V2Bare. \
+                     Recognized values: v1 (legacy envelope), v2 (bare payload)."
+                );
+                Self::V2Bare
+            }
         }
     }
 
@@ -128,62 +229,135 @@ mod tests {
         assert!(!Posture::Friendly.is_adversarial());
     }
 
+    // ───────────────────────────────────────────────────────────────────
+    // Posture::resolve_from_str — pure parser tests (audit Cluster B)
+    //
+    // Replaces the pre-Cluster-B `current_reads_env_var` test. After
+    // `current()` adopted process-lifetime `OnceLock` caching (DS-V1.40-5
+    // / SEC-V1.40-6 / perf cluster), env-mutating tests against
+    // `current()` are racy: the first test that runs in the binary wins
+    // the cache for the entire process. Pure-function tests on the
+    // parser side-step the cache and are deterministic.
+    // ───────────────────────────────────────────────────────────────────
+
     #[test]
-    #[serial_test::serial]
-    fn current_reads_env_var() {
-        std::env::remove_var("CQS_ULTRASECURITY");
-        assert_eq!(Posture::current(), Posture::Friendly);
-        std::env::set_var("CQS_ULTRASECURITY", "1");
-        assert_eq!(Posture::current(), Posture::Adversarial);
-        std::env::set_var("CQS_ULTRASECURITY", "0");
+    fn posture_resolve_unset_is_friendly() {
+        assert_eq!(Posture::resolve_from_str(None), Posture::Friendly);
+        assert_eq!(Posture::resolve_from_str(Some("")), Posture::Friendly);
+    }
+
+    #[test]
+    fn posture_resolve_truthy_aliases_are_adversarial() {
+        for v in &[
+            "1", "true", "on", "yes", "TRUE", "True", "On", "ON", "Yes", "YES",
+            // whitespace-trimmed
+            " 1 ", "  true\t", "\non\n",
+        ] {
+            assert_eq!(
+                Posture::resolve_from_str(Some(v)),
+                Posture::Adversarial,
+                "expected truthy alias {v:?} → Adversarial"
+            );
+        }
+    }
+
+    #[test]
+    fn posture_resolve_falsy_aliases_are_friendly() {
+        for v in &[
+            "0", "false", "off", "no", "FALSE", "False", " 0 ", "\toff\n",
+        ] {
+            assert_eq!(
+                Posture::resolve_from_str(Some(v)),
+                Posture::Friendly,
+                "expected falsy alias {v:?} → Friendly"
+            );
+        }
+    }
+
+    #[test]
+    fn posture_resolve_unknown_value_is_friendly() {
+        // Audit EH-V1.40-2: pre-Cluster-B `current()` silently dropped
+        // `Friendly` on any non-`"1"` value, including likely typos.
+        // Post-Cluster-B `resolve_from_str` still resolves to Friendly
+        // (the safe default), but emits `tracing::warn!` so the operator
+        // sees their typo. The test pins the resolution side; the warn
+        // side is observable via `tracing-test` if needed but isn't a
+        // load-bearing pin.
         assert_eq!(
-            Posture::current(),
+            Posture::resolve_from_str(Some("enable")),
             Posture::Friendly,
-            "any value other than '1' is Friendly"
+            "unknown value falls through to Friendly (safe default)"
         );
-        std::env::remove_var("CQS_ULTRASECURITY");
+        assert_eq!(
+            Posture::resolve_from_str(Some("adversarial")),
+            Posture::Friendly
+        );
     }
 
-    // SNR Phase 4 default flip (2026-05-08): default is V2Bare.
-    // CQS_OUTPUT_FORMAT=v1 opts back into the legacy envelope shape
-    // (consumer-migration hedge). Tests + eval harness pin themselves
-    // to v1 via env so the flip doesn't break existing assertion shapes.
+    // ───────────────────────────────────────────────────────────────────
+    // OutputFormat::resolve_from_str — pure parser tests
+    // ───────────────────────────────────────────────────────────────────
 
     #[test]
-    #[serial_test::serial]
-    fn output_format_current_reads_env_var() {
-        std::env::remove_var("CQS_OUTPUT_FORMAT");
+    fn output_format_resolve_unset_is_v2_bare() {
+        assert_eq!(OutputFormat::resolve_from_str(None), OutputFormat::V2Bare);
         assert_eq!(
-            OutputFormat::current(),
-            OutputFormat::V2Bare,
-            "default flip: unset env is V2Bare"
+            OutputFormat::resolve_from_str(Some("")),
+            OutputFormat::V2Bare
         );
-        std::env::set_var("CQS_OUTPUT_FORMAT", "v1");
-        assert_eq!(
-            OutputFormat::current(),
-            OutputFormat::V1Envelope,
-            "explicit v1 opts into legacy envelope"
-        );
-        std::env::set_var("CQS_OUTPUT_FORMAT", "v2");
-        assert_eq!(
-            OutputFormat::current(),
-            OutputFormat::V2Bare,
-            "explicit v2 also yields V2Bare (idempotent with default)"
-        );
-        std::env::set_var("CQS_OUTPUT_FORMAT", "V1");
-        assert_eq!(
-            OutputFormat::current(),
-            OutputFormat::V2Bare,
-            "case-sensitive: only lowercase 'v1' opts back to envelope"
-        );
-        std::env::set_var("CQS_OUTPUT_FORMAT", "junk");
-        assert_eq!(
-            OutputFormat::current(),
-            OutputFormat::V2Bare,
-            "unrecognized value falls through to default V2Bare"
-        );
-        std::env::remove_var("CQS_OUTPUT_FORMAT");
     }
+
+    #[test]
+    fn output_format_resolve_v1_recognized_case_insensitive() {
+        // Pre-Cluster-B: `"V1"`, `"V1 "`, `"v1\n"` all silently fell
+        // through to V2Bare because the parser used strict `==`.
+        // Post-Cluster-B: case-insensitive + trimmed.
+        for v in &["v1", "V1", "  v1  ", "\tv1\n", "V1"] {
+            assert_eq!(
+                OutputFormat::resolve_from_str(Some(v)),
+                OutputFormat::V1Envelope,
+                "expected v1 alias {v:?} → V1Envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn output_format_resolve_v2_yields_bare() {
+        for v in &["v2", "V2", " v2 "] {
+            assert_eq!(
+                OutputFormat::resolve_from_str(Some(v)),
+                OutputFormat::V2Bare,
+                "expected v2 alias {v:?} → V2Bare"
+            );
+        }
+    }
+
+    #[test]
+    fn output_format_resolve_unknown_falls_through_to_v2() {
+        // SNR Phase 4 default = V2Bare. Anything we don't recognize
+        // falls through to V2Bare + tracing::warn (so a typo doesn't
+        // silently re-enable the legacy envelope shape).
+        assert_eq!(
+            OutputFormat::resolve_from_str(Some("v3")),
+            OutputFormat::V2Bare
+        );
+        assert_eq!(
+            OutputFormat::resolve_from_str(Some("envelope")),
+            OutputFormat::V2Bare
+        );
+        assert_eq!(
+            OutputFormat::resolve_from_str(Some("junk")),
+            OutputFormat::V2Bare
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Compose-contract tests (TC-HAP-V1.40-9: CQS_ULTRASECURITY ×
+    // CQS_OUTPUT_FORMAT). These pin the matrix at the typed level —
+    // since `current()` is cached, any compose-contract test against
+    // `current()` itself is racy across the test binary. Test the
+    // composition operator directly.
+    // ───────────────────────────────────────────────────────────────────
 
     #[test]
     fn output_format_emits_bare_payload_under_v2_friendly() {
