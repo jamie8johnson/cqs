@@ -435,7 +435,7 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     args: &TestMapArgs,
 ) -> Result<serde_json::Value> {
     let name = args.name.as_str();
-    let max_depth = args.depth;
+    let max_depth = args.depth as usize;
     let cross_project = args.cross_project;
     let _span = tracing::info_span!(
         "batch_test_map",

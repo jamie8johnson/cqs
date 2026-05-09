@@ -148,7 +148,12 @@ pub(crate) fn build_test_map(
                 // bump only); the rendered chain entries are `String` for
                 // the public TestMatch API.
                 let mut cursor: Arc<str> = Arc::from(test.name.as_str());
-                let chain_limit = max_depth + 1;
+                // RB-V1.40-1: `saturating_add` keeps `chain_limit`
+                // bounded under any future caller-supplied `max_depth`.
+                // The clap range bound on `TestMapArgs::depth` already
+                // caps this in practice (1..=50); the saturating arithmetic
+                // is defensive against direct lib callers bypassing clap.
+                let chain_limit = max_depth.saturating_add(1);
                 while chain.len() < chain_limit {
                     chain.push(cursor.as_ref().to_string());
                     if cursor.as_ref() == target_name {

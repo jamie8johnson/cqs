@@ -730,7 +730,7 @@ pub fn cmd_test_map_dispatch(
         commands::cmd_test_map(
             ctx,
             &args.name,
-            args.depth,
+            args.depth as usize,
             args.limit_arg.limit,
             args.cross_project,
             cli.json || output.json,

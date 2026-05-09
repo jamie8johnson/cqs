@@ -60,6 +60,19 @@ os.environ.setdefault("CQS_OUTPUT_FORMAT", "v1")
 QUERIES_DIR = Path(__file__).parent / "queries"
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """DS-V1.40-4: atomic file write via tempfile + os.replace.
+
+    `os.replace` is atomic on POSIX (rename(2)) and Windows (per
+    Python docs). Ctrl+C / OOM between `tmp.write` and `os.replace`
+    leaves a leftover `.tmp` rather than a truncated target file —
+    visible to the operator instead of silent corruption.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content)
+    os.replace(tmp, path)
+
+
 def load_split(split: str) -> dict:
     path = QUERIES_DIR / f"v3_{split}.json"
     return json.loads(path.read_text())
@@ -287,8 +300,15 @@ def main():
     out_path = QUERIES_DIR / f"v3_{args.split}.v2.json"
     diff_path = QUERIES_DIR / f"v3_{args.split}.diff.json"
 
-    out_path.write_text(json.dumps(out, indent=2))
-    diff_path.write_text(json.dumps({
+    # DS-V1.40-4: write fixture + diff atomically. `Path.write_text`
+    # is `open('w') + write + close` — Ctrl+C / OOM mid-write leaves
+    # a truncated or zero-length file, silently corrupting eval ground
+    # truth. Stage in `.tmp` + `os.replace` is atomic on POSIX (rename(2))
+    # and on Windows per Python docs. If the script crashes after the
+    # tempfile but before the replace, the operator sees a leftover
+    # `.tmp` they can inspect or delete.
+    _atomic_write_text(out_path, json.dumps(out, indent=2))
+    _atomic_write_text(diff_path, json.dumps({
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "source": f"v3_{args.split}.json",
         "k": args.k,
