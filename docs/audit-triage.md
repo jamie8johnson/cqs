@@ -100,10 +100,10 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 
 | ID(s) | Title | Effort | Status |
 |---|---|---|---|
-| EH-V1.40-1 + AC-V1.40-8 | `filter_invoked_macros` LIKE pattern doesn't escape `_`/`%`/`\\` (Tier 2b correctness — macros with underscore cross-fire) | easy | TODO (Cluster A) |
-| AC-V1.40-1 | `filter_invoked_macros` `!` suffix is Rust-only — every C/C++/Elixir/Julia macro misclassified as dead | medium | TODO (Cluster A) |
-| AC-V1.40-2 | `filter_invoked_macros` self-match — recursive `macro_rules!` keeps itself alive (no `id != ?2` filter) | easy | TODO (Cluster A) |
-| PB-V1.40-1 | `filter_invoked_macros` LIKE is case-insensitive (no `PRAGMA case_sensitive_like` or GLOB) | easy | TODO (Cluster A) |
+| EH-V1.40-1 + AC-V1.40-8 | `filter_invoked_macros` LIKE pattern doesn't escape `_`/`%`/`\\` (Tier 2b correctness — macros with underscore cross-fire) | easy | ✅ Cluster A PR |
+| AC-V1.40-1 | `filter_invoked_macros` `!` suffix is Rust-only — every C/C++/Elixir/Julia macro misclassified as dead | medium | ✅ Cluster A PR |
+| AC-V1.40-2 | `filter_invoked_macros` self-match — recursive `macro_rules!` keeps itself alive (no `id != ?2` filter) | easy | ✅ Cluster A PR |
+| PB-V1.40-1 | `filter_invoked_macros` LIKE is case-insensitive (no `PRAGMA case_sensitive_like` or GLOB) | easy | ✅ Cluster A PR |
 | AC-V1.40-3 | `bfs_shortest_path` predecessor sentinel `String::new()` collides with anonymous-chunk callers — path reconstruction terminates early | medium | TODO |
 | AC-V1.40-4 | Rust Tier 2a `field_initializer` query captures every argument identifier — non-callable variables pollute `function_calls` | medium | TODO |
 | AC-V1.40-5 | `bfs_expand` depth update is score-gated — lower-score shorter paths leave depth at longer-path value | medium | TODO |
@@ -166,7 +166,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 |---|---|---|---|
 | TC-ADV-V1.40-1 + TC-HAP-V1.40-1 + TC-HAP-V1.40-8 + TC-HAP-V1.40-9 | V2Bare default emission untested at binary boundary; `emit_json` untested; compose contract `CQS_ULTRASECURITY × CQS_OUTPUT_FORMAT` unverified (Cluster F) | easy-medium | TODO |
 | TC-ADV-V1.40-4 + TC-HAP-V1.40-3 | Daemon-path `try_kind_fallback` zero tests for any kind; daemon `dispatch_test_map/trace/deps/impact` zero kind-fallback tests | medium | TODO |
-| TC-ADV-V1.40-5 + TC-HAP-V1.40-2 | `filter_invoked_macros` zero tests (happy path + adversarial — pin EH-V1.40-1 fix) | easy | TODO (lands with Cluster A) |
+| TC-ADV-V1.40-5 + TC-HAP-V1.40-2 | `filter_invoked_macros` zero tests (happy path + adversarial — pin EH-V1.40-1 fix) | easy | ✅ Cluster A PR (tests added) |
 | TC-ADV-V1.40-9 | CLI graph commands' Const/Type/Module/Ambiguous have unit-shape tests but zero CLI integration tests | medium | TODO |
 
 ### Hot-path perf (Cluster B sibling)
