@@ -179,8 +179,14 @@ pub(crate) async fn backup_before_migrate(
 
 /// Restore a DB file (+ WAL/SHM sidecars) from a backup. Called on migration
 /// failure to leave the DB in its pre-migrate state. Uses `atomic_replace` so
-/// the restore itself is crash-safe — the caller sees pre-migrate or
-/// post-migrate state, never a partially-restored file.
+/// each individual file write is per-file atomic. The restore SEQUENCE is
+/// kill-safe in the following ordering: live sidecars are unlinked first
+/// (DS-V1.40-3), then the main DB is restored, then the backup's sidecars
+/// (if any). A kill at any point leaves either pre-migrate state (caller
+/// re-runs the failed migration) or pre-migrate state (SQLite recreates
+/// fresh sidecars from the restored main on next open). The pre-fix
+/// "post-migrate WAL contaminates restored pre-migrate main" failure mode
+/// is closed.
 ///
 /// # P2.59 — caller contract (must close pool first)
 ///
@@ -206,6 +212,37 @@ pub(crate) async fn backup_before_migrate(
 /// on the inode the path resolves to, not an orphaned descriptor.
 pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<(), StoreError> {
     let _span = tracing::info_span!("restore_from_backup").entered();
+
+    // DS-V1.40-3: delete any live `-wal` / `-shm` sidecars BEFORE
+    // restoring the main DB. The live sidecars belong to the
+    // post-failure / failed-migration state — if they survive the
+    // restore, SQLite's next open will replay their frames against
+    // the restored main (which belongs to a different "lineage"),
+    // producing silent corruption that the integrity check can't
+    // detect. Pre-fix, `copy_triplet`'s in-order copy left the live
+    // WAL extant for the window between main restore and sidecar
+    // copy; a kill in that window (or after main, if the source had
+    // no sidecars to overwrite the live ones) produced the inverse
+    // problem of `copy_triplet`'s safe order.
+    //
+    // Removing first makes the failure ordering safe: a kill any
+    // time after this point and before the sidecar copy leaves
+    // (restored main + missing sidecars) — SQLite creates fresh
+    // sidecars on next open and the state is canonical pre-migrate.
+    for ext in ["-wal", "-shm"] {
+        let live_side = sidecar_path(db_path, ext);
+        if live_side.exists() {
+            if let Err(e) = std::fs::remove_file(&live_side) {
+                tracing::warn!(
+                    error = %e,
+                    path = %live_side.display(),
+                    "Failed to remove live sidecar before restore — \
+                     restore continues but sidecar may be stale"
+                );
+            }
+        }
+    }
+
     copy_triplet(backup_db, db_path)?;
     tracing::info!(
         db = %db_path.display(),
@@ -461,6 +498,84 @@ mod tests {
         assert!(
             !sidecar_path(&dst, "-wal").exists(),
             "stale -wal must be removed"
+        );
+    }
+
+    /// DS-V1.40-3 regression: `restore_from_backup` must delete the
+    /// live `-wal` and `-shm` BEFORE restoring the main DB. The live
+    /// sidecars belong to the failed-migration state; if they survive
+    /// the restore, SQLite's next open replays their frames against
+    /// the restored main and silently corrupts the database.
+    ///
+    /// Pre-fix, `restore_from_backup` called `copy_triplet` directly,
+    /// which copied main first then sidecars — leaving the live WAL
+    /// extant during the window between main restore and sidecar
+    /// copy. Post-fix, the live sidecars are unlinked first, so any
+    /// kill in that window leaves (restored main + missing sidecars)
+    /// → SQLite creates fresh sidecars on next open. State is
+    /// canonical pre-migrate.
+    ///
+    /// This test arranges a backup with no sidecars (the cleanly-
+    /// closed case) + a live state with a stale -wal/-shm. After
+    /// `restore_from_backup` runs, both live sidecars must be gone
+    /// (deleted before restore) and the main must match the backup.
+    #[test]
+    fn restore_from_backup_deletes_live_sidecars_before_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("snapshot.bak.db");
+        std::fs::write(&backup, b"pre-migrate-main").unwrap();
+        // Backup has no -wal/-shm (cleanly checkpointed before backup).
+
+        let live = dir.path().join("index.db");
+        std::fs::write(&live, b"failed-migration-main").unwrap();
+        // Live state has stale sidecars from the failed migration's tx.
+        std::fs::write(sidecar_path(&live, "-wal"), b"failed-migration-wal").unwrap();
+        std::fs::write(sidecar_path(&live, "-shm"), b"failed-migration-shm").unwrap();
+
+        restore_from_backup(&live, &backup).unwrap();
+
+        assert_eq!(
+            std::fs::read(&live).unwrap(),
+            b"pre-migrate-main",
+            "main must reflect backup contents"
+        );
+        assert!(
+            !sidecar_path(&live, "-wal").exists(),
+            "live -wal from failed migration must be removed (would corrupt restored main on next open)"
+        );
+        assert!(
+            !sidecar_path(&live, "-shm").exists(),
+            "live -shm from failed migration must be removed"
+        );
+    }
+
+    /// Sibling case: backup has its own sidecars (not cleanly closed at
+    /// snapshot time). The live sidecars must still be removed first;
+    /// the backup's sidecars then land via `copy_triplet`.
+    #[test]
+    fn restore_from_backup_replaces_live_sidecars_with_backup_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("snapshot.bak.db");
+        std::fs::write(&backup, b"pre-migrate-main").unwrap();
+        std::fs::write(sidecar_path(&backup, "-wal"), b"pre-migrate-wal").unwrap();
+        std::fs::write(sidecar_path(&backup, "-shm"), b"pre-migrate-shm").unwrap();
+
+        let live = dir.path().join("index.db");
+        std::fs::write(&live, b"failed-migration-main").unwrap();
+        std::fs::write(sidecar_path(&live, "-wal"), b"failed-migration-wal").unwrap();
+        std::fs::write(sidecar_path(&live, "-shm"), b"failed-migration-shm").unwrap();
+
+        restore_from_backup(&live, &backup).unwrap();
+
+        assert_eq!(std::fs::read(&live).unwrap(), b"pre-migrate-main");
+        assert_eq!(
+            std::fs::read(sidecar_path(&live, "-wal")).unwrap(),
+            b"pre-migrate-wal",
+            "backup -wal should land at live path"
+        );
+        assert_eq!(
+            std::fs::read(sidecar_path(&live, "-shm")).unwrap(),
+            b"pre-migrate-shm"
         );
     }
 
