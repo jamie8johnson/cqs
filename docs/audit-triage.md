@@ -124,7 +124,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 
 | ID(s) | Title | Effort | Status |
 |---|---|---|---|
-| EH-V1.40-2 + API-V1.40-8 + OB-V1.40-3 + PB-V1.40-3 + SEC-V1.40-6 + DS-V1.40-5 | `Posture::current` / `OutputFormat::current` silent swallow + per-emit re-read + no log + TOCTOU + cross-platform case sensitivity (Cluster B) | easy-medium | TODO (Cluster B) |
+| EH-V1.40-2 + API-V1.40-8 + OB-V1.40-3 + PB-V1.40-3 + SEC-V1.40-6 + DS-V1.40-5 | `Posture::current` / `OutputFormat::current` silent swallow + per-emit re-read + no log + TOCTOU + cross-platform case sensitivity (Cluster B) | easy-medium | ✅ Cluster B PR |
 | DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | TODO (Cluster D) |
 | DS-V1.40-2 | `cmd_telemetry_reset` non-atomic — kill between `fs::copy` and `fs::write` corrupts archive or current | easy | TODO |
 | DS-V1.40-3 | `restore_from_backup` `copy_triplet` non-atomic across (main, -wal, -shm) — kill mid-restore replays failed-migration WAL frames against pre-migrate main | medium | TODO |
@@ -173,7 +173,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 
 | ID(s) | Title | Effort | Status |
 |---|---|---|---|
-| CQ-V1.40-7 + RM-V1.40-8 + PERF-V1.40-3 + PERF-V1.40-4 | Posture/OutputFormat/SPLADE-α/CAGRA-cap env reads per emit/encode/search — `OnceLock`/`LazyLock` cache (Cluster B sibling) | easy | TODO (Cluster B) |
+| CQ-V1.40-7 + RM-V1.40-8 + PERF-V1.40-3 + PERF-V1.40-4 | Posture/OutputFormat/SPLADE-α/CAGRA-cap env reads per emit/encode/search — `OnceLock`/`LazyLock` cache (Cluster B sibling) | easy | ✅ Cluster B PR |
 | CQ-V1.40-5 + CQ-V1.40-6 | SNR Phase 1 `_with_posture` plumbing dead — every CLI caller still hits env-reading shim; `emit_json_with_posture` `#[allow(dead_code)]` | easy-medium | TODO (Cluster B follow-up) |
 | RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation (Vec → Value → String); `emit_json` double serialization (`to_value` then `to_string_pretty`) — land `dispatch_value` refactor; refactor `format_envelope_to_string` to `&impl Serialize` | medium | TODO |
 | PERF-V1.40-1 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + CQ-V1.40-10 | `filter_invoked_macros` N+1 SQL with leading-`%` LIKE (full table scan × N macros) + no transaction — batch into single scan inside read tx (lands with Cluster A correctness fix) | medium | TODO (Cluster A2) |
@@ -245,7 +245,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 |---|---|---|---|
 | TC-ADV-V1.40-2 + EXT-V1.40-5 | `classify_chunk_type` test pin incomplete for 11/24 ChunkType variants — iterate `ChunkType::ALL` | easy | TODO |
 | TC-ADV-V1.40-3 | `lookup_by_name` SQL wildcard / SQL injection / very-long-name inputs untested | easy | TODO |
-| TC-ADV-V1.40-7 | `Posture::current` / `OutputFormat::current` whitespace + control-char untested (lands with Cluster B) | easy | TODO |
+| TC-ADV-V1.40-7 | `Posture::current` / `OutputFormat::current` whitespace + control-char untested (lands with Cluster B) | easy | ✅ Cluster B PR (lib unit tests) |
 | TC-ADV-V1.40-8 | `emit_json_error` adversarial input (NUL/long/special chars) untested | easy | TODO |
 | TC-ADV-V1.40-10 | `current_worktree_name` Unicode / shell-special / very-long inputs untested | easy | TODO |
 | TC-HAP-V1.40-5 | `_meta.worktree_name` and `_meta.worktree_stale` envelope fields zero emission tests | easy | TODO |
