@@ -558,7 +558,7 @@ pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
         // SNR Phase 4 path: bare payload to stdout, no envelope wrap.
         // Pretty-print for human readability of opt-in CLI use; JSONL
         // batch/daemon path is separate and unaffected.
-        emit_bare_payload_stdout(value)
+        emit_bare_payload_stdout(value, posture)
     } else {
         let env = Envelope::ok(value);
         let buf = serde_json::to_value(&env)?;
@@ -573,8 +573,43 @@ pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
 /// `OutputFormat::V2Bare`) and the future Phase 4 default. Sanitizes
 /// NaN / Infinity via the same retry pattern as the envelope path so
 /// non-finite floats become `null` instead of failing to serialize.
-fn emit_bare_payload_stdout<T: Serialize>(value: &T) -> Result<()> {
+///
+/// Audit SEC-V1.40-1: when `EnvelopeMeta::for_posture(posture)` carries
+/// non-default state (currently `worktree_stale=true` per #1254 — the
+/// stale-worktree leakage guard fires), splice a `_meta` field onto the
+/// bare payload so the operational warning isn't silently dropped under
+/// the V2Bare default. JSON-object payloads accept the splice in-place;
+/// array / scalar payloads can't carry `_meta`, so we fall back to a
+/// `tracing::warn!` on stderr — the operator still sees the signal even
+/// though the bare wire shape can't carry it.
+fn emit_bare_payload_stdout<T: Serialize>(value: &T, posture: Posture) -> Result<()> {
     let mut buf = serde_json::to_value(value)?;
+
+    let meta = EnvelopeMeta::for_posture(posture);
+    if !meta.is_empty() {
+        if let Some(obj) = buf.as_object_mut() {
+            // Object payload (e.g. `{"count": N, "dead": [...]}`) — splice
+            // _meta in-place. Skip if the payload already has a `_meta` key
+            // (defensive — should not happen under V2Bare callers).
+            obj.entry("_meta")
+                .or_insert_with(|| meta_value_for_envelope(&meta));
+        } else if meta.worktree_stale {
+            // Array or scalar payload — `_meta` doesn't fit the shape.
+            // Emit the operational warning to stderr so the operator
+            // sees the worktree-stale signal even though the bare JSON
+            // can't carry it. CQS_OUTPUT_FORMAT=v1 restores the envelope
+            // shape with `_meta.worktree_stale: true` if the consumer
+            // needs to read the flag programmatically.
+            tracing::warn!(
+                worktree_name = ?meta.worktree_name,
+                "Worktree is stale: query results reflect main's branch state, \
+                 not the worktree's. The bare-payload (V2Bare) wire shape can't \
+                 carry _meta on array-shaped responses; set CQS_OUTPUT_FORMAT=v1 \
+                 to receive the operational metadata in the JSON payload."
+            );
+        }
+    }
+
     let s = match serde_json::to_string_pretty(&buf) {
         Ok(s) => s,
         Err(first) => {
