@@ -202,6 +202,8 @@ src/
   fs.rs        - atomic_replace and other FS helpers
   limits.rs    - Tunable env-var-backed limits and defaults
   aux_model.rs - Auxiliary (small) model paths used by the LLM-summary pipeline
+  kind.rs      - Polymorphic-routing Kind enum (Function | Type | Const | Module | Other | Ambiguous | Multiple | NotFound) + classify_chunk_type + classify_hits + detect_kind_for_store (#1610). Every function-or-type-specialized command consults this before its happy-path query.
+  posture.rs   - Wire-format selectors: Posture (Friendly | Adversarial; gated by CQS_ULTRASECURITY) and OutputFormat (V1Wrapped | V2Bare; gated by CQS_OUTPUT_FORMAT). Threaded through emission helpers in src/cli/json_envelope.rs (#1601, #1609, #1613).
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
     languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions

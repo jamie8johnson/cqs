@@ -1,7 +1,7 @@
 # Polymorphic Command Routing — Design
 
-**Status:** ready to execute (Phase 1; Phase 2 contingent)
-**Date:** 2026-05-08
+**Status:** Phase 1 complete (60/60 dispatch points shipped 2026-05-08; PRs #1610/#1612/#1616/#1617/#1618/#1620). Phase 2 contingent — telemetry-gated.
+**Date:** 2026-05-08 (design); shipped same day
 **Location:** `docs/polymorphic-routing.md`
 **Tracking:** ROADMAP.md "Agent Adoption — Telemetry > Friction backlog"
 **Cross-reference:** `docs/json-snr-restoration.md` (sibling agent-adoption work). The two designs are complementary: SNR restoration makes responses cheap; this design makes routing forgiving. Together they reduce the friction that pushes agents toward grep.

@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **46.3% R@1 / 74.8% R@5 / 86.2% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (2026-05-08 snapshot post-v1.39.1 cliff fix + LLM summaries refresh + identifier_lookup α retune to 0.85; gemma dense + SPLADE sparse with per-category α fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **52.7% R@1 / 77.5% R@5 / 89.4% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (2026-05-08 snapshot post v3.v2 fixture re-anchor #1607; gemma dense + SPLADE sparse with per-category α fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -716,14 +716,14 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 | Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@1 | Agg R@5 | Agg R@20 |
 |--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|--------:|---------:|
-| **embeddinggemma-300m** (default, v1.39.x α) | 308M | 40.4% | 71.6% | 81.7% | 52.3% | 78.0% | 90.8% | **46.3%** | **74.8%** | **86.2%** |
+| **embeddinggemma-300m** (default, v1.39.x α + v3.v2 re-anchor) | 308M | 49.5% | 72.5% | 84.4% | 56.0% | 82.6% | 94.5% | **52.7%** | **77.5%** | **89.4%** |
 
-2026-05-08 snapshot on the gemma slot at 14,203 chunks (post-v1.39.1 cliff fix + LLM summaries refresh, 68.7% per-chunk summary coverage). Per-category SPLADE alphas, including the v1.39.x identifier_lookup retune that closed dev `identifier_lookup` R@5 to 100%:
+2026-05-08 snapshot on the gemma slot at 14,203 chunks (post-v1.39.1 cliff fix + LLM summaries refresh, 68.7% per-chunk summary coverage; **post-v1.40.0 v3.v2 fixture re-anchor #1607**). Per-category SPLADE alphas, including the v1.39.x identifier_lookup retune that closed dev `identifier_lookup` R@5 to 100%:
 
 - `IdentifierLookup` 1.00 → 0.85 (v1.39.x retune; +11.1pp dev R@5 within category)
 - `Structural` 0.60, `Behavioral` 1.00, `Conceptual` 0.80, `TypeFiltered` 0.00, `CrossLanguage` 0.70, `MultiStep` 0.10, `Negation` 0.80, `Unknown` 0.80 (catch-all hedge for misroutes).
 
-Numbers below the 2026-05-03 capture (50.9% / 76.2% / 88.6% agg) — corpus drift since: 13,359 → 14,203 chunks across the v1.36 → v1.39.x audit cycles silently turns fixture line-anchored hits into misses (see "Eval Line-Start Drift" — the fixture matches by `(file, name, line_start)` strict). The fix bundle (cliff close + α retune + summaries refresh) is a strict improvement on this corpus state; refreshing the v3.v2 fixture line numbers would lift agg R@K back into the v1.36-snapshot range without changing retrieval quality.
+Above the 2026-05-03 v1.36-snapshot capture (50.9% / 76.2% / 88.6% agg). The pre-refresh 2026-05-08 capture was 46.3 / 74.8 / 86.2 — the fixture re-anchor (#1607) lifted agg R@K **+6.4 / +2.7 / +3.2 pp** by re-anchoring 69 test + 71 dev fixture line numbers to current corpus state (see "Eval Line-Start Drift" — the fixture matches by `(file, name, line_start)` strict; audit-driven line shifts since the original v3 generation silently turned hits into misses). Pure fixture re-anchoring — no retrieval-side change.
 
 <details>
 <summary><b>Other presets</b> (pre-retune — kept for reference, will shift up under v1.36+ alphas)</summary>

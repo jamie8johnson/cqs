@@ -1,7 +1,7 @@
 # JSON SNR Restoration — Design
 
-**Status:** ready to execute. Breaking wire-format change; in-tree migration only ("no external users" memory).
-**Date:** 2026-05-08 (supersedes `docs/json-noise-audit.md` from earlier same day; the audit framing was incremental, the actual problem turned out to need a wire-format simplification)
+**Status:** Phases 1-4 shipped in v1.40.0 (2026-05-08; PRs #1601/#1602/#1604/#1609/#1613). Phases 5-6 (per-source rate limit, tracing-noise-suppress) scoped out — telemetry-contingent. Breaking wire-format change on the CLI direct path; `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge.
+**Date:** 2026-05-08 (design + implementation in one cycle; supersedes `docs/json-noise-audit.md` from earlier same day; the audit framing was incremental, the actual problem turned out to need a wire-format simplification)
 **Location:** `docs/json-snr-restoration.md`
 **Tracking:** ROADMAP.md "Agent Adoption — Telemetry > Friction backlog"
 **Cross-reference:** PR #1593 (always-on advisory inversion), telemetry analysis 2026-05-08.

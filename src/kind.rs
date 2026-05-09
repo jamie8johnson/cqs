@@ -90,10 +90,11 @@ impl From<&ChunkSummary> for KindHit {
 
 /// Classify a single `ChunkType` into its routing-level `Kind`.
 ///
-/// Adding a new `ChunkType` variant defaults to `Kind::Other` until
-/// it's explicitly classified here. Test below pins coverage so a new
-/// variant produces a `tracing::warn` reminder rather than silently
-/// being treated as freeform.
+/// The match is exhaustive: adding a new `ChunkType` variant produces
+/// a **compile error** here, forcing the author to either add it to an
+/// existing `Kind` arm or to the `Kind::Other` catch-all. There is no
+/// runtime fallback (and no `tracing::warn` — the type system handles
+/// the reminder more strictly than logging would).
 pub fn classify_chunk_type(ct: ChunkType) -> Kind {
     match ct {
         ChunkType::Function
