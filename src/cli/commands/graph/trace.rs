@@ -461,6 +461,16 @@ fn trace_max_nodes() -> usize {
 /// BFS shortest path through forward adjacency list.
 /// Capped at `CQS_TRACE_MAX_NODES` (default 10,000) visited nodes to prevent
 /// OOM on dense graphs.
+///
+/// Audit AC-V1.40-3: predecessor encoding is `Option<String>` instead of
+/// `String` — pre-fix used `String::new()` as the source-sentinel and
+/// `pred.is_empty()` as the chain-walk terminator, but the call graph
+/// can legitimately contain empty `caller_name` values (anonymous
+/// closures, expression chunks where the parent chunk has `name = ""`).
+/// A mid-graph anonymous predecessor matched the source-sentinel pattern,
+/// terminating chain reconstruction early and silently truncating paths.
+/// `None` is the unambiguous source marker; `Some("")` is a real-but-
+/// nameless predecessor and the chain walks through it correctly.
 pub(crate) fn bfs_shortest_path(
     forward: &HashMap<std::sync::Arc<str>, Vec<std::sync::Arc<str>>>,
     source: &str,
@@ -468,20 +478,17 @@ pub(crate) fn bfs_shortest_path(
     max_depth: usize,
 ) -> Option<Vec<String>> {
     let max_nodes = trace_max_nodes();
-    let mut visited: HashMap<String, String> = HashMap::new();
+    let mut visited: HashMap<String, Option<String>> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
-    visited.insert(source.to_string(), String::new());
+    visited.insert(source.to_string(), None);
     queue.push_back((source.to_string(), 0));
 
     while let Some((current, depth)) = queue.pop_front() {
         if current == target {
             let mut path = vec![current.clone()];
-            let mut node = &current;
-            while let Some(pred) = visited.get(node) {
-                if pred.is_empty() {
-                    break;
-                }
+            let mut node = current.clone();
+            while let Some(Some(pred)) = visited.get(&node).cloned() {
                 path.push(pred.clone());
                 node = pred;
             }
@@ -499,7 +506,7 @@ pub(crate) fn bfs_shortest_path(
         if let Some(callees) = forward.get(current.as_str()) {
             for callee in callees {
                 if !visited.contains_key(callee.as_ref()) {
-                    visited.insert(callee.to_string(), current.clone());
+                    visited.insert(callee.to_string(), Some(current.clone()));
                     queue.push_back((callee.to_string(), depth + 1));
                 }
             }
@@ -678,6 +685,37 @@ mod tests {
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path, vec!["A", "B", "C"]);
+    }
+
+    /// AC-V1.40-3 regression: anonymous nodes (`name = ""`, common for
+    /// closure / expression chunks) along the BFS path must not be
+    /// confused with the source-sentinel during path reconstruction.
+    /// Pre-fix used `String::new()` as the source marker and
+    /// `pred.is_empty()` as the chain-walk terminator — a mid-chain
+    /// empty-named node short-circuited reconstruction with the
+    /// real source missing from the front. Post-fix encodes the
+    /// predecessor as `Option<String>` so `None` is unambiguously the
+    /// source and `Some("")` is a real-but-nameless predecessor that
+    /// the chain walks through.
+    #[test]
+    fn test_bfs_path_walks_through_empty_named_node() {
+        let mut forward = HashMap::new();
+        // Source A → anonymous "" → target Z.
+        forward.insert("A".to_string(), vec!["".to_string()]);
+        forward.insert("".to_string(), vec!["Z".to_string()]);
+        let forward = arc_map(forward);
+        let result = bfs_shortest_path(&forward, "A", "Z", 10);
+        assert!(
+            result.is_some(),
+            "BFS through anonymous mid-chain node must find Z"
+        );
+        let path = result.unwrap();
+        assert_eq!(
+            path,
+            vec!["A", "", "Z"],
+            "path reconstruction must include the empty-named node, \
+             not stop at it as if it were the source"
+        );
     }
 
     // ===== TraceOutput serialization tests =====
