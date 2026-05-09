@@ -175,21 +175,70 @@ fn impact_to_json_with_kind(result: &cqs::ImpactResult, kind: &str) -> Result<se
 /// fallback below. Each entry carries file/line/language/chunk_type/
 /// signature/content — the same shape the Const fallback shipped in
 /// #1612 (consumers learned this shape first; the other kinds match).
+///
+/// Audit Cluster H (EH-V1.40-9 + SEC-V1.40-4): cap at
+/// [`KIND_FALLBACK_MAX_DEFINITIONS`] entries and truncate per-chunk
+/// content at [`KIND_FALLBACK_MAX_CONTENT_BYTES`]. Hot names like
+/// `Result` / `Error` match hundreds of chunks across a corpus; without
+/// the cap, `cqs callers Result --json` could return multi-MB JSON
+/// (and on the daemon path, write a multi-MB JSONL line that pegs the
+/// receiver's parse buffer). The cap mirrors the `clamp(1, 100)` discipline
+/// the rest of the graph commands ship with; the per-entry truncation
+/// keeps pathological monster-chunk content from ballooning the response.
 fn chunks_to_definitions(chunks: &[cqs::store::ChunkSummary]) -> Vec<serde_json::Value> {
     chunks
         .iter()
-        .map(|c| {
-            serde_json::json!({
-                "file": cqs::normalize_path(&c.file),
-                "line_start": c.line_start,
-                "line_end": c.line_end,
-                "language": c.language.to_string(),
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "content": c.content,
-            })
-        })
+        .take(KIND_FALLBACK_MAX_DEFINITIONS)
+        .map(chunk_to_definition_value)
         .collect()
+}
+
+/// Maximum number of `definitions[]` entries returned in a kind-mismatch
+/// fallback response. Mirrors the standard graph-command result cap.
+pub(crate) const KIND_FALLBACK_MAX_DEFINITIONS: usize = 100;
+
+/// Per-entry `content` byte cap inside a kind-mismatch fallback
+/// `definitions[]` entry. Truncated content is suffixed with
+/// `"... (truncated)"` and the entry gains a `truncated: true` field
+/// so consumers can distinguish capped chunks from full ones.
+pub(crate) const KIND_FALLBACK_MAX_CONTENT_BYTES: usize = 2048;
+
+/// Shared chunk-to-definition transformation for both CLI-direct and
+/// daemon-path kind fallbacks. Truncates content per
+/// [`KIND_FALLBACK_MAX_CONTENT_BYTES`].
+pub(crate) fn chunk_to_definition_value(c: &cqs::store::ChunkSummary) -> serde_json::Value {
+    let (content, truncated) = if c.content.len() > KIND_FALLBACK_MAX_CONTENT_BYTES {
+        // Truncate at a UTF-8 char boundary at or below the byte cap.
+        // `floor_char_boundary` would be cleaner but isn't stable yet.
+        let mut end = KIND_FALLBACK_MAX_CONTENT_BYTES;
+        while !c.content.is_char_boundary(end) {
+            end -= 1;
+        }
+        (format!("{}... (truncated)", &c.content[..end]), true)
+    } else {
+        (c.content.clone(), false)
+    };
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        "file".to_string(),
+        serde_json::json!(cqs::normalize_path(&c.file)),
+    );
+    entry.insert("line_start".to_string(), serde_json::json!(c.line_start));
+    entry.insert("line_end".to_string(), serde_json::json!(c.line_end));
+    entry.insert(
+        "language".to_string(),
+        serde_json::json!(c.language.to_string()),
+    );
+    entry.insert(
+        "chunk_type".to_string(),
+        serde_json::json!(c.chunk_type.to_string()),
+    );
+    entry.insert("signature".to_string(), serde_json::json!(c.signature));
+    entry.insert("content".to_string(), serde_json::json!(content));
+    if truncated {
+        entry.insert("truncated".to_string(), serde_json::json!(true));
+    }
+    serde_json::Value::Object(entry)
 }
 
 /// Generic kind-mismatch fallback JSON builder. Polymorphic-routing
@@ -580,6 +629,95 @@ mod tests {
                 .copied()
                 .collect();
         assert_eq!(keys, expected);
+    }
+
+    // Audit Cluster H (EH-V1.40-9 + SEC-V1.40-4): kind-fallback paths
+    // must cap definitions count and per-chunk content size to prevent
+    // pathological "hot name" responses (e.g. `cqs callers Result`
+    // matching hundreds of chunks, each emitting full content) from
+    // saturating the daemon socket / agent's parse buffer.
+
+    #[test]
+    fn chunks_to_definitions_caps_count_at_max() {
+        // Build many chunks; expect the helper to truncate to
+        // KIND_FALLBACK_MAX_DEFINITIONS.
+        let chunks: Vec<ChunkSummary> = (0..(KIND_FALLBACK_MAX_DEFINITIONS + 50))
+            .map(|i| make_const_chunk(&format!("X{i}"), "src/lib.rs", i as u32))
+            .collect();
+        let defs = chunks_to_definitions(&chunks);
+        assert_eq!(
+            defs.len(),
+            KIND_FALLBACK_MAX_DEFINITIONS,
+            "definitions count must cap at KIND_FALLBACK_MAX_DEFINITIONS"
+        );
+    }
+
+    #[test]
+    fn chunks_to_definitions_truncates_oversized_content() {
+        // Single chunk with content much larger than the per-entry cap.
+        let mut big = make_const_chunk("BIG", "src/lib.rs", 1);
+        big.content = "x".repeat(KIND_FALLBACK_MAX_CONTENT_BYTES * 2);
+        let defs = chunks_to_definitions(&[big]);
+
+        let entry = &defs[0];
+        let content = entry["content"].as_str().unwrap();
+        assert!(
+            content.len() <= KIND_FALLBACK_MAX_CONTENT_BYTES + 32,
+            "truncated content must be ≤ cap + suffix; got {}",
+            content.len()
+        );
+        assert!(
+            content.ends_with("... (truncated)"),
+            "truncated entry must carry the truncation suffix; got: {}",
+            &content[content.len().saturating_sub(40)..]
+        );
+        assert_eq!(
+            entry["truncated"], true,
+            "truncated entries must carry truncated=true field"
+        );
+    }
+
+    #[test]
+    fn chunks_to_definitions_passes_small_content_unchanged() {
+        // Small content should NOT be truncated and should NOT carry
+        // a truncated:true field (skip-when-default).
+        let chunk = make_const_chunk("X", "src/lib.rs", 1);
+        let defs = chunks_to_definitions(&[chunk]);
+
+        let entry = &defs[0];
+        assert!(
+            entry.get("truncated").is_none(),
+            "non-truncated entries must omit truncated field; got: {:?}",
+            entry
+        );
+        assert!(
+            !entry["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("... (truncated)"),
+            "non-truncated content must not have suffix"
+        );
+    }
+
+    #[test]
+    fn chunks_to_definitions_truncation_respects_utf8_boundary() {
+        // Pathological: content with a multi-byte UTF-8 char at the
+        // truncation boundary. Naive byte-slicing would split the
+        // codepoint and produce invalid UTF-8 (panic in `&str` slice).
+        let mut chunk = make_const_chunk("X", "src/lib.rs", 1);
+        // Build content that reaches the cap with `é` (2 bytes) at the
+        // boundary so a naive cut would split the codepoint.
+        let pad_len = KIND_FALLBACK_MAX_CONTENT_BYTES - 1;
+        chunk.content = format!("{}é{}", "x".repeat(pad_len), "y".repeat(100));
+
+        // Should not panic and should produce valid UTF-8 output.
+        let defs = chunks_to_definitions(&[chunk]);
+        let content = defs[0]["content"].as_str().unwrap();
+        assert!(
+            content.ends_with("... (truncated)"),
+            "must still emit truncation suffix on UTF-8 boundary case"
+        );
+        // Implicit: as_str() succeeded → valid UTF-8.
     }
 }
 

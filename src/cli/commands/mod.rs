@@ -69,6 +69,7 @@ pub(crate) use graph::cmd_impact;
 pub(crate) use graph::cmd_impact_diff;
 pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
+pub(crate) use graph::{chunk_to_definition_value, KIND_FALLBACK_MAX_DEFINITIONS};
 
 // -- review --
 pub(crate) use review::build_dead_output;

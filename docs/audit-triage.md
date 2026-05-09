@@ -132,7 +132,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 | DS-V1.40-7 | Sentiment column accepts arbitrary f32 — schema lets `cqs notes add --sentiment 0.7` corrupt ranking-boost contract; add `CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0))` | easy | TODO |
 | SEC-V1.40-1 | V2Bare default drops `_meta.worktree_stale` warning — silent operational degradation under default Friendly posture (#1254 leakage guard regression) | medium | ✅ SEC-V1.40-1 PR |
 | SEC-V1.40-2 | `redact_userinfo` mishandles URLs with `@` in path — produces malformed redacted form (find authority boundary first via `/`) | easy | ✅ misc P1 PR |
-| EH-V1.40-9 + SEC-V1.40-4 | Kind-fallback `definitions[]` echoes full chunk content with no size cap — DoS amplifier via `Result`/`Error`/`new` hot names | medium | TODO (Cluster H) |
+| EH-V1.40-9 + SEC-V1.40-4 | Kind-fallback `definitions[]` echoes full chunk content with no size cap — DoS amplifier via `Result`/`Error`/`new` hot names | medium | ✅ Cluster H PR |
 
 ---
 
