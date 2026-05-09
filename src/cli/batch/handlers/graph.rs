@@ -36,19 +36,17 @@ fn build_kind_fallback_value(
     fallback_from: &str,
     note: &str,
 ) -> serde_json::Value {
+    // Audit Cluster H (EH-V1.40-9 + SEC-V1.40-4): cap definitions at
+    // KIND_FALLBACK_MAX_DEFINITIONS and truncate per-chunk content via
+    // the shared helper. Hot names like `Result` / `Error` match
+    // hundreds of chunks; without the cap, the daemon writes multi-MB
+    // JSONL lines that peg both the wire and the receiver's parse
+    // buffer. The cap mirrors the `clamp(1, 100)` discipline the
+    // happy-path graph dispatchers already use.
     let definitions: Vec<serde_json::Value> = chunks
         .iter()
-        .map(|c| {
-            serde_json::json!({
-                "file": cqs::normalize_path(&c.file),
-                "line_start": c.line_start,
-                "line_end": c.line_end,
-                "language": c.language.to_string(),
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "content": c.content,
-            })
-        })
+        .take(crate::cli::commands::KIND_FALLBACK_MAX_DEFINITIONS)
+        .map(crate::cli::commands::chunk_to_definition_value)
         .collect();
     serde_json::json!({
         "kind": kind_label,
