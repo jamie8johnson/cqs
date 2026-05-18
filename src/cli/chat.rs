@@ -273,22 +273,12 @@ pub(crate) fn cmd_chat() -> Result<()> {
                     }
                 };
 
-                // Pretty-print result wrapped in standard envelope so the chat
-                // surface matches batch / CLI shape. Routes through the shared
-                // `format_envelope_to_string` helper so chat inherits the
-                // sanitize-on-NaN retry that batch's `write_json_line` and
-                // CLI's `emit_json` already perform — D.1 parity fix.
-                //
-                // P2 #28: `wrap_value` takes `&Value` so the chat output stays
-                // reference-only at the call site; the envelope itself still
-                // allocates the outer object.
-                let wrapped = crate::cli::json_envelope::wrap_value(&result);
-                match crate::cli::json_envelope::format_envelope_to_string(&wrapped) {
-                    Ok(s) => println!("{}", s),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to format result");
-                        eprintln!("Error formatting output: {}", e);
-                    }
+                // Emit through the shared JSON surface so chat respects
+                // CQS_OUTPUT_FORMAT and inherits the same sanitize-on-NaN retry
+                // as direct CLI output.
+                if let Err(e) = crate::cli::json_envelope::emit_json(&result) {
+                    tracing::warn!(error = %e, "Failed to format result");
+                    eprintln!("Error formatting output: {}", e);
                 }
             }
             Err(ReadlineError::Interrupted) => {
