@@ -129,14 +129,26 @@ fn test_chat_emits_parseable_envelope_for_search_query() {
         })
     });
 
-    // Envelope shape from format_envelope_to_string
-    assert_eq!(parsed["version"], 1);
-    assert!(parsed["error"].is_null(), "no error on success path");
+    // SNR Phase 3 slim envelope shape (v1.40.0+, `Posture::Friendly`
+    // default): `{"data": <payload>}` — `error: null` and `version` are
+    // dropped from the success path because they were always-redundant.
+    // The original always-on shape (`{"data": ..., "error": null,
+    // "version": 1, "_meta": {...}}`) is preserved under
+    // `CQS_ULTRASECURITY=1` (Adversarial posture) and pinned by the
+    // unit tests in `src/cli/json_envelope.rs::tests::*_with_posture_*`.
     assert!(
         parsed["data"].is_array() || parsed["data"].is_object(),
         "data must be the search result array/object, got: {}",
         parsed["data"]
     );
+    // Defensive: if `error` IS present (e.g. consumer ran with
+    // CQS_ULTRASECURITY=1), it must be null on the success path.
+    if !parsed["error"].is_null() && !parsed.get("error").map_or(true, |v| v.is_null()) {
+        panic!(
+            "envelope `error` field present but non-null on success path: {}",
+            parsed["error"]
+        );
+    }
 }
 
 /// Empty input lines and meta-commands (`help`, `clear`) should NOT produce
