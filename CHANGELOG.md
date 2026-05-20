@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Post-v1.40.0 work on `main`. Polymorphic routing Phase 1 fully completed (60/60 dispatch points across CLI-direct + daemon-path), `cqs dead` false-positive reduction (~114 → 35 entries via Tier 2a + Tier 2b partial), audit-triage doc currency.
+## [1.41.0] - 2026-05-20
+
+Minor release. 30 commits since v1.40.0. Three threads:
+
+- **Polymorphic routing Phase 1 completed** — at v1.40.0 only the CLI-direct first cell shipped; v1.41.0 delivers all 60 dispatch points (6 commands × 5 kinds × 2 surfaces) including the daemon-path sweep.
+- **Post-v1.40.0 audit cycle closure** — 16-category audit, 150 raw findings, 21 of 23 P1s closed across 9 closeout PRs (#1626–#1634). Two P1s deferred with rationale (see [1.40.0] section's "Deferred" notes).
+- **`cqs dead` false-positive reduction** — ~114 → 35 entries via Tier 2a (`field_initializer` + `type_cast_expression` patterns) + Tier 2b partial (macro content-scan filter). 70% reduction.
+
+No breaking changes since v1.40.0 (which shipped the SNR Phase 4 wire-format flip). All v1.41.0 work is feature-completion + bug fixes + dependency updates.
 
 ### Added
 
@@ -36,8 +44,27 @@ Post-v1.40.0 work on `main`. Polymorphic routing Phase 1 fully completed (60/60 
 
 ### Deferred (with rationale)
 
-- **DS-V1.40-1** (daemon Store cache invalidation via `PRAGMA data_version`) — symptom rare; caches reload on the 100ms staleness check. Cluster D bundling deferred to v1.41 cycle.
+- **DS-V1.40-1** (daemon Store cache invalidation via `PRAGMA data_version`) — symptom rare; caches reload on the 100ms staleness check. Cluster D bundling deferred to v1.42 cycle.
 - **DS-V1.40-7** (sentiment column CHECK constraint via schema migration v28) — single-user discrete-value compliance is reliable per CLAUDE.md memory; schema-migration cost > benefit. Deferred unless telemetry shows misuse.
+
+### Fixed (post-audit, slow-tests CI)
+
+- **#1650** (external contributor `patchrail`) — `cqs chat` now routes through `emit_json` so `CQS_OUTPUT_FORMAT=v1` actually applies. Pre-fix the env var was a no-op for the chat surface; post-fix it correctly flips chat back to the V1Envelope shape for consumer-migration. Closes #1649 (nightly CI failure).
+- **#1655** — `tests/cli_chat_format_test.rs` updated to match the SNR Phase 3 slim envelope contract (the slow-tests-gated test was still asserting `parsed["version"] == 1` from the pre-v1.40.0 shape). Net result: 8 consecutive nightly CI failures (May 13–20) closed.
+
+### Changed
+
+- **#1656** — Removed `tools/screw-mcp/DESIGN.md` (358 lines) and the `.gitignore` / `ROADMAP.md` references. The `screw-tape` design moved to its own repo; the cqs `tools/` directory now contains only unrelated artifacts.
+
+### Dependencies
+
+- `openssl` 0.10.79 → 0.10.80 (#1657)
+- `tower-http` 0.6.8 → 0.6.11 (#1652)
+- `tree-sitter-ocaml` 0.24.2 → 0.25.0 (#1638)
+- `tree-sitter-erlang` 0.16.0 → 0.17.0 (#1651)
+- `tokio` 1.52.2 → 1.52.3 (#1639)
+- `clap_complete` 4.6.3 → 4.6.5 (#1641)
+- `assert_cmd` 2.2.1 → 2.2.2 (#1642)
 
 ## [1.40.0] - 2026-05-08
 
