@@ -48,14 +48,6 @@ samples/
 # negative-pattern exceptions can re-include specific subdirectories.
 tools/*
 
-# screw-tape (designed-not-built; lives outside main repo when implemented):
-# - tools/screw-mcp/ is fully gitignored — DESIGN.md was committed earlier
-#   and stays in history, but no further files in that folder track.
-# - .screw-tape/ is the per-project runtime cache the design proposes
-#   (downloaded audio, intermediate stems, derived stretches). Defensive
-#   ignore so it can't pollute cqs commits before the tool is even built.
-.screw-tape/
-
 # ORT CUDA provider symlinks (created at runtime by ensure_ort_provider_libs)
 libonnxruntime_providers_*.so
 cuvs-fork-push
