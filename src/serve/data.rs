@@ -295,7 +295,7 @@ pub(crate) fn build_graph(
         node_query.push_str(" ORDER BY n_callers_global DESC, c.id ASC LIMIT ?");
         binds.push(effective_cap.to_string());
 
-        let mut q = sqlx::query(&node_query);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(node_query.as_str()));
         for b in &binds {
             q = q.bind(b);
         }
@@ -391,7 +391,7 @@ pub(crate) fn build_graph(
                          LIMIT ?"
                     );
                     let remaining = (max_graph_edges - accum.len()) as i64;
-                    let mut eq = sqlx::query(&edge_sql);
+                    let mut eq = sqlx::query(sqlx::AssertSqlSafe(edge_sql.as_str()));
                     for n in chunk {
                         eq = eq.bind(*n);
                     }
@@ -779,7 +779,7 @@ pub(crate) fn build_hierarchy(
                 "SELECT id, name, chunk_type, language, origin, line_start, line_end \
                  FROM chunks WHERE name IN ({placeholders}) ORDER BY id"
             );
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for n in batch {
                 q = q.bind(n);
             }
@@ -874,7 +874,7 @@ pub(crate) fn build_hierarchy(
                     "SELECT DISTINCT caller_name, callee_name FROM function_calls \
                      WHERE caller_name IN ({caller_ph}) AND callee_name IN ({callee_ph})"
                 );
-                let mut eq = sqlx::query(&edge_sql);
+                let mut eq = sqlx::query(sqlx::AssertSqlSafe(edge_sql.as_str()));
                 for n in caller_batch.iter() {
                     eq = eq.bind(n);
                 }

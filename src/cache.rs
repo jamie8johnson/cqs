@@ -314,7 +314,9 @@ impl EmbeddingCache {
                 .after_connect(move |conn, _meta| {
                     let wal = wal_pragma.clone();
                     Box::pin(async move {
-                        sqlx::query(&wal).execute(&mut *conn).await?;
+                        sqlx::query(sqlx::AssertSqlSafe(wal.as_str()))
+                            .execute(&mut *conn)
+                            .await?;
                         Ok(())
                     })
                 })
@@ -490,7 +492,7 @@ impl EmbeddingCache {
                      AND content_hash IN ({placeholders})"
                 );
 
-                let mut query = sqlx::query(&sql)
+                let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                     .bind(model_fingerprint)
                     .bind(purpose.as_str());
                 for hash in batch {
@@ -2465,7 +2467,9 @@ impl QueryCache {
                 .after_connect(move |conn, _meta| {
                     let wal = wal_pragma.clone();
                     Box::pin(async move {
-                        sqlx::query(&wal).execute(&mut *conn).await?;
+                        sqlx::query(sqlx::AssertSqlSafe(wal.as_str()))
+                            .execute(&mut *conn)
+                            .await?;
                         Ok(())
                     })
                 })

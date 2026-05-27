@@ -125,7 +125,7 @@ async fn upsert_type_edges_one_file(
             "DELETE FROM type_edges WHERE source_chunk_id IN ({})",
             placeholders
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for id in batch {
             q = q.bind(id);
         }
@@ -325,7 +325,7 @@ impl<Mode> Store<Mode> {
                  LIMIT ?2",
                 cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS_PREFIXED,
             );
-            let rows: Vec<ChunkRow> = sqlx::query(&sql)
+            let rows: Vec<ChunkRow> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(type_name)
                 .bind(limit_to_sql(limit))
                 .fetch_all(&self.pool)
@@ -410,7 +410,7 @@ impl<Mode> Store<Mode> {
                      ORDER BY te.target_type_name, c.origin, c.line_start",
                     cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS_PREFIXED,
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
                     q = q.bind(name);
                 }
@@ -457,7 +457,7 @@ impl<Mode> Store<Mode> {
                      ORDER BY c.name, te.edge_kind, te.target_type_name",
                     placeholders
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
                     q = q.bind(name);
                 }

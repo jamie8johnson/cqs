@@ -37,7 +37,7 @@ impl<Mode> Store<Mode> {
             );
 
             let rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for id in batch {
                     q = q.bind(*id);
                 }
@@ -96,7 +96,7 @@ impl<Mode> Store<Mode> {
             );
 
             let rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for id in batch {
                     q = q.bind(*id);
                 }
@@ -138,7 +138,7 @@ impl<Mode> Store<Mode> {
         );
 
         let rows: Vec<_> = {
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for id in ids {
                 q = q.bind(*id);
             }
@@ -273,7 +273,7 @@ pub(super) async fn snapshot_content_hashes(
             "SELECT id, content_hash, parser_version FROM chunks WHERE id IN ({})",
             placeholders
         );
-        let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
+        let mut q = sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql.as_str()));
         for id in id_batch {
             q = q.bind(*id);
         }
@@ -487,7 +487,7 @@ pub(super) async fn upsert_fts_conditional(
     for batch in changed.chunks(max_rows_per_statement(1)) {
         let placeholders = crate::store::helpers::make_placeholders(batch.len());
         let sql = format!("DELETE FROM chunks_fts WHERE id IN ({})", placeholders);
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for chunk in batch {
             query = query.bind(&chunk.id);
         }
@@ -575,7 +575,7 @@ impl<'a, Mode> Iterator for EmbeddingBatchIterator<'a, Mode> {
                      WHERE rowid > ?1 AND {col} IS NOT NULL AND needs_embedding = 0 \
                      ORDER BY rowid ASC LIMIT ?2"
                 );
-                let rows: Vec<_> = sqlx::query(&sql)
+                let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                     .bind(self.last_rowid)
                     .bind(self.batch_size as i64)
                     .fetch_all(&self.store.pool)

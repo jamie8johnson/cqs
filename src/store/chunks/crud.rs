@@ -51,7 +51,7 @@ impl<Mode> Store<Mode> {
                     "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
                     placeholders
                 );
-                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+                let mut query = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql.as_str()));
                 for id in batch {
                     query = query.bind(*id);
                 }
@@ -111,7 +111,7 @@ impl<Mode> Store<Mode> {
                     placeholders,
                     batch.len() + 1
                 );
-                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+                let mut query = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql.as_str()));
                 for hash in batch {
                     query = query.bind(*hash);
                 }
@@ -447,7 +447,7 @@ impl Store<ReadWrite> {
                     "INSERT INTO _update_embeddings (id, embedding, enrichment_hash) VALUES {}",
                     placeholders.join(", ")
                 );
-                let mut query = sqlx::query(&sql);
+                let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for (i, (id, _, hash)) in batch.iter().enumerate() {
                     query = query.bind(id);
                     query = query.bind(&batch_bytes[i]);
@@ -561,7 +561,7 @@ impl Store<ReadWrite> {
                     "INSERT INTO _update_umap (id, umap_x, umap_y) VALUES {}",
                     placeholders.join(", ")
                 );
-                let mut query = sqlx::query(&sql);
+                let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for (id, x, y) in batch {
                     query = query.bind(id).bind(*x).bind(*y);
                 }
@@ -1060,7 +1060,7 @@ impl Store<ReadWrite> {
                         .collect::<Vec<_>>()
                         .join(",");
                     let sql = format!("DELETE FROM calls WHERE caller_id IN ({})", placeholders);
-                    let mut query = sqlx::query(&sql);
+                    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for id in batch {
                         query = query.bind(*id);
                     }
@@ -1132,7 +1132,7 @@ impl Store<ReadWrite> {
                             "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
                             placeholders.join(",")
                         );
-                        let mut stmt = sqlx::query(&insert_sql);
+                        let mut stmt = sqlx::query(sqlx::AssertSqlSafe(insert_sql.as_str()));
                         for id in batch {
                             stmt = stmt.bind(id);
                         }
@@ -1228,7 +1228,7 @@ impl Store<ReadWrite> {
                     "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
                     placeholders.join(",")
                 );
-                let mut stmt = sqlx::query(&insert_sql);
+                let mut stmt = sqlx::query(sqlx::AssertSqlSafe(insert_sql.as_str()));
                 for id in batch {
                     stmt = stmt.bind(id);
                 }

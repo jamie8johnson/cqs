@@ -1005,11 +1005,15 @@ fn open_with_config_impl<Mode>(
                 let pragma = cache_pragma.clone();
                 let wal = wal_pragma.clone();
                 Box::pin(async move {
-                    sqlx::query(&pragma).execute(&mut *conn).await?;
+                    sqlx::query(sqlx::AssertSqlSafe(pragma.as_str()))
+                        .execute(&mut *conn)
+                        .await?;
                     sqlx::query("PRAGMA temp_store = MEMORY")
                         .execute(&mut *conn)
                         .await?;
-                    sqlx::query(&wal).execute(&mut *conn).await?;
+                    sqlx::query(sqlx::AssertSqlSafe(wal.as_str()))
+                        .execute(&mut *conn)
+                        .await?;
                     Ok(())
                 })
             })
@@ -1236,7 +1240,9 @@ impl Store<ReadWrite> {
                 if stmt.is_empty() {
                     continue;
                 }
-                sqlx::query(&stmt).execute(&mut *tx).await?;
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&mut *tx)
+                    .await?;
             }
 
             // Store metadata (OR REPLACE handles re-init after incomplete cleanup)

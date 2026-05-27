@@ -79,7 +79,7 @@ async fn insert_notes_with_fts_batched(
     for batch in notes.chunks(max_rows_per_statement(1)) {
         let placeholders = crate::store::helpers::make_placeholders(batch.len());
         let sql = format!("DELETE FROM notes_fts WHERE id IN ({})", placeholders);
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for n in batch {
             q = q.bind(&n.id);
         }

@@ -211,7 +211,7 @@ impl<Mode> Store<Mode> {
                      ORDER BY callee_name, file, call_line",
                     placeholders
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
                     q = q.bind(name);
                 }
@@ -264,7 +264,7 @@ impl<Mode> Store<Mode> {
                      ORDER BY callee_name, file, caller_line",
                     placeholders
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
                     q = q.bind(name);
                 }
@@ -319,7 +319,7 @@ impl<Mode> Store<Mode> {
                      ORDER BY caller_name, call_line",
                     placeholders
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
                     q = q.bind(name);
                 }

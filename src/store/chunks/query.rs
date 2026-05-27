@@ -194,7 +194,10 @@ impl<Mode> Store<Mode> {
                 "SELECT {cols} FROM chunks WHERE origin = ?1 ORDER BY line_start",
                 cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
             );
-            let rows: Vec<_> = sqlx::query(&sql).bind(origin).fetch_all(&self.pool).await?;
+            let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(origin)
+                .fetch_all(&self.pool)
+                .await?;
 
             Ok(rows
                 .iter()
@@ -229,7 +232,7 @@ impl<Mode> Store<Mode> {
                     cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
                 );
 
-                let mut query = sqlx::query(&sql);
+                let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for origin in batch {
                     query = query.bind(*origin);
                 }
@@ -270,7 +273,10 @@ impl<Mode> Store<Mode> {
                  ORDER BY chunk_type, origin, line_start",
                 cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
             );
-            let rows = sqlx::query(&sql).bind(name).fetch_all(&self.pool).await?;
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(name)
+                .fetch_all(&self.pool)
+                .await?;
             Ok(rows
                 .into_iter()
                 .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
@@ -305,7 +311,7 @@ impl<Mode> Store<Mode> {
                 );
 
                 let rows: Vec<_> = {
-                    let mut q = sqlx::query(&sql);
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for name in batch {
                         q = q.bind(*name);
                     }
@@ -392,7 +398,7 @@ impl<Mode> Store<Mode> {
                 );
 
                 let rows: Vec<_> = {
-                    let mut q = sqlx::query(&sql);
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for id in batch {
                         q = q.bind(*id);
                     }
@@ -484,7 +490,7 @@ impl<Mode> Store<Mode> {
                      LIMIT ?2",
                     crate::store::helpers::bm25_ordering_expr()
                 );
-                let light_rows: Vec<_> = sqlx::query(&sql)
+                let light_rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                     .bind(&combined_fts)
                     .bind(total_limit as i64)
                     .fetch_all(&self.pool)
@@ -605,7 +611,7 @@ impl<Mode> Store<Mode> {
                  ORDER BY rowid ASC LIMIT ?2",
                 cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
             );
-            let rows: Vec<_> = sqlx::query(&sql)
+            let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(after_rowid)
                 .bind(limit as i64)
                 .fetch_all(&self.pool)
