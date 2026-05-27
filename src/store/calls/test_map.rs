@@ -16,7 +16,9 @@ impl<Mode> Store<Mode> {
         // SQL is built once and cached in TEST_CHUNKS_SQL (LazyLock).
         // Select only lightweight columns; content/doc filtering happens in WHERE
         // but we don't need them in the result set.
-        let rows: Vec<_> = sqlx::query(&TEST_CHUNKS_SQL).fetch_all(&self.pool).await?;
+        let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(TEST_CHUNKS_SQL.as_str()))
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -29,9 +31,10 @@ impl<Mode> Store<Mode> {
     /// the name set (e.g., `find_dead_code` exclusion filtering).
     pub(super) async fn find_test_chunk_names_async(&self) -> Result<Vec<String>, StoreError> {
         // SQL is built once and cached in TEST_CHUNK_NAMES_SQL (LazyLock).
-        let rows: Vec<(String,)> = sqlx::query_as(&TEST_CHUNK_NAMES_SQL)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(TEST_CHUNK_NAMES_SQL.as_str()))
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 

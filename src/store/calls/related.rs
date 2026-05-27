@@ -28,7 +28,7 @@ impl<Mode> Store<Mode> {
             let sql = format!(
                 "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}) GROUP BY {group_column}",
             );
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for name in batch {
                 q = q.bind(name);
             }

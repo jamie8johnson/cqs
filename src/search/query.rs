@@ -258,7 +258,7 @@ impl<Mode> Store<Mode> {
 
             loop {
                 let batch: Vec<_> = {
-                    let mut q = sqlx::query(&sql);
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for val in &fsql.bind_values {
                         q = q.bind(val);
                     }

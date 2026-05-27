@@ -333,7 +333,7 @@ impl Store<ReadWrite> {
                     "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
                     placeholder_str
                 );
-                let mut fts_stmt = sqlx::query(&fts_query);
+                let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
                 for origin in batch {
                     fts_stmt = fts_stmt.bind(origin);
                 }
@@ -342,7 +342,7 @@ impl Store<ReadWrite> {
                 // Delete from chunks
                 let chunks_query =
                     format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
-                let mut chunks_stmt = sqlx::query(&chunks_query);
+                let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
                 for origin in batch {
                     chunks_stmt = chunks_stmt.bind(origin);
                 }
@@ -360,7 +360,7 @@ impl Store<ReadWrite> {
                     "DELETE FROM function_calls WHERE file IN ({})",
                     placeholder_str
                 );
-                let mut calls_stmt = sqlx::query(&calls_query);
+                let mut calls_stmt = sqlx::query(sqlx::AssertSqlSafe(calls_query.as_str()));
                 for origin in batch {
                     calls_stmt = calls_stmt.bind(origin);
                 }
@@ -453,7 +453,7 @@ impl Store<ReadWrite> {
                     "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
                     placeholder_str
                 );
-                let mut fts_stmt = sqlx::query(&fts_query);
+                let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
                 for origin in batch {
                     fts_stmt = fts_stmt.bind(origin);
                 }
@@ -462,7 +462,7 @@ impl Store<ReadWrite> {
                 // Delete from chunks
                 let chunks_query =
                     format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
-                let mut chunks_stmt = sqlx::query(&chunks_query);
+                let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
                 for origin in batch {
                     chunks_stmt = chunks_stmt.bind(origin);
                 }
@@ -619,7 +619,7 @@ impl Store<ReadWrite> {
                     "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
                     placeholder_str
                 );
-                let mut fts_stmt = sqlx::query(&fts_query);
+                let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
                 for origin in batch {
                     fts_stmt = fts_stmt.bind(origin);
                 }
@@ -628,7 +628,7 @@ impl Store<ReadWrite> {
                 // Delete from chunks
                 let chunks_query =
                     format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
-                let mut chunks_stmt = sqlx::query(&chunks_query);
+                let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
                 for origin in batch {
                     chunks_stmt = chunks_stmt.bind(origin);
                 }
@@ -893,7 +893,7 @@ impl<Mode> Store<Mode> {
                      GROUP BY origin",
                     placeholders
                 );
-                let mut query = sqlx::query_as::<_, FpRow>(&sql);
+                let mut query = sqlx::query_as::<_, FpRow>(sqlx::AssertSqlSafe(sql.as_str()));
                 for origin in batch {
                     query = query.bind(*origin);
                 }
@@ -941,7 +941,8 @@ impl<Mode> Store<Mode> {
                     placeholders
                 );
 
-                let mut query = sqlx::query_as::<_, (String, Option<i64>)>(&sql);
+                let mut query =
+                    sqlx::query_as::<_, (String, Option<i64>)>(sqlx::AssertSqlSafe(sql.as_str()));
                 for origin in batch {
                     query = query.bind(*origin);
                 }

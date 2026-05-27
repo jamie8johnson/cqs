@@ -124,7 +124,9 @@ impl<Mode> Store<Mode> {
                AND c.parent_id IS NULL
              ORDER BY c.origin, c.line_start"
         );
-        let rows: Vec<_> = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -299,7 +301,7 @@ impl<Mode> Store<Mode> {
                 "SELECT id, content, doc FROM chunks WHERE id IN ({})",
                 placeholders
             );
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for id in batch {
                 q = q.bind(id);
             }

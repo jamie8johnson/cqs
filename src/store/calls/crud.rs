@@ -175,7 +175,7 @@ impl<Mode> Store<Mode> {
                 // P3 #130: cached helper — `Cow::Borrowed(&'static str)` on hit.
                 let placeholders = make_placeholders(batch.len());
                 let sql = format!("SELECT id FROM chunks WHERE id IN ({placeholders})");
-                let mut query = sqlx::query_scalar::<_, String>(&sql);
+                let mut query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()));
                 for id in batch {
                     query = query.bind(*id);
                 }
@@ -303,7 +303,7 @@ impl Store<ReadWrite> {
                 let placeholders = crate::store::helpers::make_placeholders(chunk.len());
                 let sql =
                     format!("DELETE FROM function_calls WHERE file IN ({})", placeholders);
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for fs in chunk {
                     q = q.bind(fs);
                 }

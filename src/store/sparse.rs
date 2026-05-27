@@ -448,7 +448,10 @@ impl<Mode> Store<Mode> {
         )
     }
 
-    fn chunk_splade_texts_query(&self, sql: &str) -> Result<Vec<(String, String)>, StoreError> {
+    fn chunk_splade_texts_query(
+        &self,
+        sql: &'static str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
         let _span = tracing::info_span!("chunk_splade_texts").entered();
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(sql).fetch_all(&self.pool).await?;

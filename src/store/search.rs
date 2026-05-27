@@ -222,7 +222,7 @@ impl<Mode> Store<Mode> {
         );
 
         self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(&sql)
+            let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(&fts_query)
                 .bind(limit as i64)
                 .fetch_all(&self.pool)

@@ -36,7 +36,7 @@ impl<Mode> Store<Mode> {
                 );
 
                 let rows: Vec<_> = {
-                    let mut q = sqlx::query(&sql);
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for hash in batch {
                         q = q.bind(*hash);
                     }
@@ -115,7 +115,7 @@ impl<Mode> Store<Mode> {
                 );
 
                 let rows: Vec<_> = {
-                    let mut q = sqlx::query(&sql);
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for hash in batch {
                         q = q.bind(*hash);
                     }
