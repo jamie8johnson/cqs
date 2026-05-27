@@ -125,7 +125,7 @@ subtle = { version = "2", optional = true }
 base64 = { version = "0.22", optional = true }
 
 # Storage (sqlx async SQLite)
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
