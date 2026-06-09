@@ -350,9 +350,7 @@ fn search_for_rank(
         None
     };
     let splade_index = if use_splade { ctx.splade_index() } else { None };
-    let splade_arg = splade_query
-        .as_ref()
-        .and_then(|sq| splade_index.map(|si| (si, sq)));
+    let splade_arg = splade_index.zip(splade_query.as_ref());
 
     let threshold = 0.0_f32; // Don't drop low-similarity results — we want full top-K for R@K.
 

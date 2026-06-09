@@ -385,10 +385,7 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
         effective_limit
     };
     // Build SPLADE argument for search_hybrid
-    let splade_arg = ctx
-        .splade_query
-        .as_ref()
-        .and_then(|sq| ctx.splade_index.map(|si| (si, sq)));
+    let splade_arg = ctx.splade_index.zip(ctx.splade_query.as_ref());
 
     let results = if audit_mode.is_active() {
         let code_results = store.search_hybrid(
