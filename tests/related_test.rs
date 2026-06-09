@@ -23,6 +23,7 @@ fn chunk_at(name: &str, file: &str, line_start: u32, line_end: u32, sig: &str) -
         line_start,
         line_end,
         content_hash: hash,
+        canonical_hash: String::new(),
         parent_id: None,
         window_idx: None,
         parent_type_name: None,

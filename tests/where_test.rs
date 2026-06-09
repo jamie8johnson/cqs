@@ -44,6 +44,7 @@ fn placement_chunk_with_lang(
         line_start,
         line_end: line_start + 5,
         content_hash: hash,
+        canonical_hash: String::new(),
         parent_id: None,
         window_idx: None,
         parent_type_name: None,

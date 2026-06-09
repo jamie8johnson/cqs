@@ -1,4 +1,9 @@
--- cq index schema v27 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27 columns annotated inline below)
+-- cq index schema v28 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28 columns annotated inline below)
+-- v28: chunks.canonical_hash TEXT (nullable) + idx_chunks_canonical_hash. blake3
+--      of a comment-/whitespace-normalized form of the chunk content; keys the
+--      embedding-reuse cache so comment-only / formatting-only edits reuse the
+--      prior embedding instead of re-embedding. NULL on pre-v28 rows = clean
+--      cache miss until the next reindex writes it.
 -- v27: chunks.needs_embedding INTEGER NOT NULL DEFAULT 0 + partial index on
 --      needs_embedding=1. Set on chunks written by the parser stage during a
 --      `--llm-summaries` reindex without a first-pass embed (#1452); cleared
@@ -67,11 +72,16 @@ CREATE TABLE IF NOT EXISTS chunks (
     source_size INTEGER,                      -- v23: file size in bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
     source_content_hash BLOB,                 -- v23: BLAKE3 hash of file bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
     vendored INTEGER NOT NULL DEFAULT 0,      -- v24: 1 if origin matches a vendored-path prefix at index time (#1221); search emits trust_level="vendored-code" for these
-    needs_embedding INTEGER NOT NULL DEFAULT 0 -- v27: 1 when chunk was written without a real embedding (#1452 first-pass-skip); cleared by enrichment_pass
+    needs_embedding INTEGER NOT NULL DEFAULT 0, -- v27: 1 when chunk was written without a real embedding (#1452 first-pass-skip); cleared by enrichment_pass
+    canonical_hash TEXT                       -- v28: blake3 of comment-/whitespace-normalized content; embedding-reuse cache key so comment-only edits reuse the prior embedding. Nullable: NULL = not computed (clean cache miss)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_needs_embedding
     ON chunks(needs_embedding) WHERE needs_embedding = 1;
+
+-- v28: powers the canonical-hash embedding-reuse lookup in
+-- get_embeddings_by_canonical_hashes (WHERE canonical_hash IN (...)).
+CREATE INDEX IF NOT EXISTS idx_chunks_canonical_hash ON chunks(canonical_hash);
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_type ON chunks(source_type);

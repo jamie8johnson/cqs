@@ -16,6 +16,7 @@ pub mod l5x;
 pub mod markdown;
 pub mod types;
 
+pub use chunk::{canonical_hash_fallback, collapse_whitespace};
 pub use types::{
     CallSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle, FunctionCalls, Language, ParserError,
     SignatureStyle, TypeEdgeKind, TypeRef,

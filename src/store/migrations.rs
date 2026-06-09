@@ -395,6 +395,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (24, 25, |c| Box::pin(migrate_v24_to_v25(c))),
     (25, 26, |c| Box::pin(migrate_v25_to_v26(c))),
     (26, 27, |c| Box::pin(migrate_v26_to_v27(c))),
+    (27, 28, |c| Box::pin(migrate_v27_to_v28(c))),
 ];
 
 /// Run a single migration step
@@ -1014,6 +1015,45 @@ async fn migrate_v26_to_v27(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v27 → v28: add `chunks.canonical_hash` column + index.
+///
+/// `canonical_hash` is the blake3 of a comment- and whitespace-normalized
+/// form of the chunk content (see `parser::chunk::canonical_hash`). It keys
+/// the embedding-reuse cache so a comment-only or formatting-only edit (which
+/// changes `content_hash`, the store identity) can still reuse the prior
+/// embedding instead of re-embedding the whole corpus.
+///
+/// Nullable: NULL means "unknown" for pre-v28 rows. Old rows simply miss the
+/// canonical-keyed reuse until the next reindex writes the column — no
+/// backfill is attempted (it would require re-parsing every chunk to recover
+/// the tree-precise comment ranges). The reuse query skips
+/// `WHERE canonical_hash IS NULL` rows, so a NULL is a clean cache miss, never
+/// a wrong hit.
+///
+/// Note the upsert only rewrites a row when content/parser_version/vendored
+/// changed, so a plain `cqs index` does not backfill untouched files; the
+/// column fills in as files are edited, or all at once via `cqs index --force`.
+async fn migrate_v27_to_v28(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v27_to_v28").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN canonical_hash TEXT")
+        .execute(&mut *conn)
+        .await?;
+
+    // Index powers the `WHERE canonical_hash IN (...)` embedding-reuse lookup
+    // in `get_embeddings_by_canonical_hashes`. Mirrors `idx_chunks_content_hash`.
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_chunks_canonical_hash ON chunks(canonical_hash)")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v28: chunks.canonical_hash column + idx_chunks_canonical_hash. \
+         Comment/whitespace-only edits now reuse embeddings instead of re-embedding. \
+         Pre-v28 rows stay NULL (clean cache miss) until the next reindex."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1046,7 +1086,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 27);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 28);
     }
 
     #[test]
@@ -3723,6 +3763,134 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(round_flag, 1);
+        });
+    }
+
+    /// v27 → v28 adds `chunks.canonical_hash` (nullable) + the
+    /// `idx_chunks_canonical_hash` index. Pre-v28 rows keep `canonical_hash`
+    /// NULL (clean cache miss); fresh rows can write it. Verifies the column,
+    /// the index, NULL on the pre-migration row, and a round-trip write.
+    #[test]
+    fn test_migrate_v27_to_v28_adds_canonical_hash_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v27 schema — chunks WITHOUT canonical_hash.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0,
+                    parser_version INTEGER NOT NULL DEFAULT 0,
+                    vendored INTEGER NOT NULL DEFAULT 0,
+                    needs_embedding INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '27')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Seed a pre-migration v27 chunk.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('pre_v28', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v28', \
+                 '', '', 'h', 1, 10, X'00', '2026-06-09', '2026-06-09')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run v27 → v28 migration.
+            let pool = migrate(pool, &db_path, 27, 28).await.unwrap();
+
+            // Schema version bumped.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "28");
+
+            // The column exists and the pre-migration row is NULL.
+            let (canon,): (Option<String>,) =
+                sqlx::query_as("SELECT canonical_hash FROM chunks WHERE id = 'pre_v28'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(
+                canon.is_none(),
+                "pre-v28 row must have NULL canonical_hash (clean cache miss)"
+            );
+
+            // The index exists.
+            let (idx_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'index' AND name = 'idx_chunks_canonical_hash'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                idx_count, 1,
+                "v28 must create idx_chunks_canonical_hash index"
+            );
+
+            // A fresh row can carry a non-NULL canonical_hash and round-trip.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at, canonical_hash) \
+                 VALUES ('post_v28', 'file:lib.rs', 'file', 'rust', 'function', 'post_v28', \
+                 '', '', 'h2', 1, 10, X'00', '2026-06-09', '2026-06-09', 'canon123')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (round,): (Option<String>,) =
+                sqlx::query_as("SELECT canonical_hash FROM chunks WHERE id = 'post_v28'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(round.as_deref(), Some("canon123"));
         });
     }
 }

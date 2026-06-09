@@ -53,6 +53,14 @@ pub struct Chunk {
     pub line_end: u32,
     /// BLAKE3 hash of content for change detection
     pub content_hash: String,
+    /// BLAKE3 hash of a *comment- and whitespace-normalized* form of the
+    /// content, used as the embedding-reuse cache key (see
+    /// `parser::chunk::canonical_hash`). Comment-only or formatting-only edits
+    /// leave this stable so the embedding can be reused even though
+    /// `content_hash` (the store identity) changed. Empty string means
+    /// "not computed" (e.g. a Chunk hydrated from a DB row, where this field
+    /// is never consulted — only freshly-parsed chunks at index time use it).
+    pub canonical_hash: String,
     /// Parent chunk ID if this is a windowed portion of a larger chunk
     pub parent_id: Option<String>,
     /// Window index (0, 1, 2...) if this is a windowed portion

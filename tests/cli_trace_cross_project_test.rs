@@ -63,6 +63,7 @@ fn make_chunk(id: &str, name: &str, content: &str) -> Chunk {
         line_start: 1,
         line_end: 5,
         content_hash,
+        canonical_hash: String::new(),
         parent_id: None,
         window_idx: None,
         parent_type_name: None,

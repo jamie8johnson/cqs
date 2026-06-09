@@ -315,8 +315,8 @@ pub(super) async fn batch_insert_chunks(
     needs_embedding: bool,
 ) -> Result<(), StoreError> {
     use crate::store::helpers::sql::max_rows_per_statement;
-    // 23 binds per row (needs_embedding comes after vendored).
-    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(23);
+    // 24 binds per row (canonical_hash comes after needs_embedding).
+    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(24);
     debug_assert_eq!(
         chunks.len(),
         vendored_per_chunk.len(),
@@ -326,7 +326,7 @@ pub(super) async fn batch_insert_chunks(
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored, needs_embedding)",
+            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored, needs_embedding, canonical_hash)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -381,7 +381,17 @@ pub(super) async fn batch_insert_chunks(
                 // (skip-first-pass for `--llm-summaries`); 0 when the
                 // embedding bytes are real. Cleared by `enrichment_pass` via
                 // `update_embeddings_with_hashes_batch`.
-                .push_bind(needs_embedding_i64);
+                .push_bind(needs_embedding_i64)
+                // v28: comment-/whitespace-canonical hash for embedding reuse.
+                // Freshly-parsed chunks always set this; a hydrated chunk
+                // (round-tripped through ChunkSummary) carries an empty string
+                // — bind that as NULL so the `IS NOT NULL` reuse filter never
+                // collides on the empty key.
+                .push_bind(if chunk.canonical_hash.is_empty() {
+                    None::<&str>
+                } else {
+                    Some(chunk.canonical_hash.as_str())
+                });
         });
         // ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
         //
@@ -421,6 +431,7 @@ pub(super) async fn batch_insert_chunks(
              parser_version=excluded.parser_version, \
              vendored=excluded.vendored, \
              needs_embedding=excluded.needs_embedding, \
+             canonical_hash=excluded.canonical_hash, \
              umap_x=CASE WHEN chunks.content_hash != excluded.content_hash \
                          THEN NULL ELSE chunks.umap_x END, \
              umap_y=CASE WHEN chunks.content_hash != excluded.content_hash \

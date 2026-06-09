@@ -272,6 +272,7 @@ mod tests {
             line_start: 1,
             line_end: 10,
             content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+            canonical_hash: String::new(),
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
