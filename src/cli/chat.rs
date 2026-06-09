@@ -102,7 +102,7 @@ fn handle_meta(line: &str) -> Option<MetaAction> {
             print!("\x1b[2J\x1b[H");
             Some(MetaAction::Continue)
         }
-        // P3 #137: wipe persisted history on demand without leaving the REPL.
+        // Wipe persisted history on demand without leaving the REPL.
         "clear-history" => Some(MetaAction::ClearHistory),
         _ => None,
     }
@@ -150,7 +150,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
     let ctx = batch::create_context()?;
     ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
 
-    // P3 #137: `CQS_CHAT_HISTORY=0` opts out of disk-persisted history.
+    // `CQS_CHAT_HISTORY=0` opts out of disk-persisted history.
     // The `chat_history` file otherwise captures every command (including
     // sensitive search queries) in plain text under the project `.cqs/`
     // directory. Default is enabled for ergonomic up-arrow recall.
@@ -160,7 +160,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
         .map(|v| v != "0")
         .unwrap_or(true);
     let history_path = ctx.cqs_dir.join("chat_history");
-    // #1127: wrap in Arc<Mutex> so the chat path uses the same view-based
+    // Wrap in Arc<Mutex> so the chat path uses the same view-based
     // dispatch as the daemon and `cmd_batch`. Single-threaded loop, so
     // contention is zero — wrapper is two pointer indirections per command.
     let ctx = std::sync::Arc::new(std::sync::Mutex::new(ctx));
@@ -205,7 +205,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
                         MetaAction::Exit => break,
                         MetaAction::Continue => {}
                         MetaAction::ClearHistory => {
-                            // P3 #137: wipe both in-memory and on-disk history.
+                            // Wipe both in-memory and on-disk history.
                             editor.clear_history()?;
                             if history_path.exists() {
                                 if let Err(e) = std::fs::remove_file(&history_path) {
@@ -240,7 +240,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
                     continue;
                 }
 
-                // #1127: snapshot a BatchView. Idle-timeout sweep runs inside
+                // Snapshot a BatchView. Idle-timeout sweep runs inside
                 // `checkout_view_from_arc`. Refresh re-locks the BatchContext
                 // briefly via the view's outer_lock; everything else runs
                 // outside the lock.
@@ -297,7 +297,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
         }
     }
 
-    // P3 #137: only save history when not opted out, and chmod to 0o600
+    // Only save history when not opted out, and chmod to 0o600
     // immediately after rustyline writes (mirrors QueryCache::open behaviour).
     if history_enabled {
         if let Err(e) = editor.save_history(&history_path) {
@@ -372,8 +372,8 @@ mod tests {
         assert_eq!(handle_meta(""), None);
     }
 
-    /// P3 #137: `clear-history` returns the dedicated MetaAction so the
-    /// REPL knows to wipe both editor history and the on-disk file.
+    /// `clear-history` returns the dedicated MetaAction so the REPL knows to
+    /// wipe both editor history and the on-disk file.
     #[test]
     fn test_handle_meta_clear_history() {
         assert_eq!(handle_meta("clear-history"), Some(MetaAction::ClearHistory));
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(handle_meta("clear "), None);
     }
 
-    // ===== ChatHelper::complete tests (TC-4) =====
+    // ===== ChatHelper::complete tests =====
 
     #[test]
     fn test_complete_empty_prefix() {

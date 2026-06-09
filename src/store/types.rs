@@ -1,16 +1,16 @@
-// DS-5: WRITE_LOCK guard is held across .await inside block_on().
-// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+// WRITE_LOCK guard is held across .await inside block_on().
+// Safe — block_on runs single-threaded, no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! Type edge storage and queries
 //!
-//! Stores type-level dependency edges extracted by the parser (Phase 2b).
-//! Each edge records which chunk references which type, with an edge_kind
-//! classification (Param, Return, Field, Impl, Bound, Alias) or empty string
-//! for catch-all types found only inside generics.
+//! Stores type-level dependency edges extracted by the parser. Each edge
+//! records which chunk references which type, with an edge_kind classification
+//! (Param, Return, Field, Impl, Bound, Alias) or empty string for catch-all
+//! types found only inside generics.
 //!
 //! Follows the same patterns as `calls.rs`: sync wrappers over async sqlx,
-//! batch-safe SQL (modern SQLite 32766-variable limit, see `helpers::sql`),
-//! tracing at appropriate levels.
+//! batch-safe SQL (SQLite 32766-variable limit, see `helpers::sql`), tracing
+//! at appropriate levels.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,10 +22,10 @@ use crate::store::helpers::ChunkSummary;
 
 /// Convert a Rust `usize` limit into a SQLite-bindable `i64`.
 ///
-/// P2 #65: callers that genuinely want all rows pass `usize::MAX`. SQLite
-/// caps `LIMIT ?` at i64::MAX (`LIMIT -1` is "unlimited" but doesn't
-/// round-trip through bind), so saturate to that. On 32-bit `usize` is
-/// already u32 → i64 round-trips losslessly.
+/// Callers that want all rows pass `usize::MAX`. SQLite caps `LIMIT ?` at
+/// i64::MAX (`LIMIT -1` is "unlimited" but doesn't round-trip through bind),
+/// so saturate to that. On 32-bit `usize` is already u32 → i64 round-trips
+/// losslessly.
 #[inline]
 fn limit_to_sql(limit: usize) -> i64 {
     if limit > i64::MAX as usize {
@@ -71,7 +71,7 @@ async fn upsert_type_edges_one_file(
     file_str: &str,
     chunk_type_refs: &[crate::parser::ChunkTypeRefs],
 ) -> Result<usize, StoreError> {
-    // DS-18: ORDER BY window_idx ASC NULLS LAST for deterministic window priority
+    // ORDER BY window_idx ASC NULLS LAST for deterministic window priority
     let rows: Vec<(String, String, i64, Option<i64>)> = sqlx::query_as(
         "SELECT id, name, line_start, window_idx FROM chunks WHERE origin = ?1 ORDER BY window_idx ASC NULLS LAST",
     )
@@ -115,9 +115,8 @@ async fn upsert_type_edges_one_file(
     }
 
     // Delete existing type edges for all resolved chunk IDs.
-    // SHL-V1.25-5: 1 bind per row; helper resolves to the modern SQLite
-    // variable limit (32466 with safety margin) so 100k chunks rebuilds in
-    // ~3 statements instead of 200.
+    // 1 bind per row; helper resolves to the SQLite variable limit (32466
+    // with safety margin) so 100k chunks rebuilds in ~3 statements.
     let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();
     for batch in chunk_ids.chunks(max_rows_per_statement(1)) {
         let placeholders = super::helpers::make_placeholders(batch.len());
@@ -134,7 +133,7 @@ async fn upsert_type_edges_one_file(
 
     // Batch insert new edges. 4 binds per row (source_chunk_id,
     // target_type_name, edge_kind, line_number); helper yields ~8116 rows
-    // per statement at the modern SQLite variable limit.
+    // per statement at the SQLite variable limit.
     const INSERT_BATCH: usize = max_rows_per_statement(4);
     for batch in edges.chunks(INSERT_BATCH) {
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
@@ -158,8 +157,8 @@ impl Store<ReadWrite> {
 
     /// Upsert type edges for a single chunk.
     /// Deletes existing type edges for the chunk, then batch-inserts new ones.
-    /// 4 binds per row → `max_rows_per_statement(4)` rows per batch (modern
-    /// SQLite variable limit of 32766, minus safety margin).
+    /// 4 binds per row → `max_rows_per_statement(4)` rows per batch (SQLite
+    /// variable limit of 32766, minus safety margin).
     pub fn upsert_type_edges(
         &self,
         chunk_id: &str,
@@ -219,8 +218,8 @@ impl Store<ReadWrite> {
         file: &Path,
         chunk_type_refs: &[crate::parser::ChunkTypeRefs],
     ) -> Result<(), StoreError> {
-        // P3.33: forward-slash normalization so the tracing span and any JSON
-        // emitted downstream don't surface Windows backslashes / verbatim prefixes.
+        // Forward-slash normalization so the tracing span and any JSON emitted
+        // downstream don't surface Windows backslashes / verbatim prefixes.
         let file_display = crate::normalize_path(file);
         let _span = tracing::info_span!("upsert_type_edges_for_file", file = %file_display, chunks = chunk_type_refs.len()).entered();
         if chunk_type_refs.is_empty() {
@@ -237,7 +236,7 @@ impl Store<ReadWrite> {
         );
 
         self.rt.block_on(async {
-            // DS-14: Begin transaction before reading chunk IDs to prevent TOCTOU
+            // Begin transaction before reading chunk IDs to prevent TOCTOU
             let (_guard, mut tx) = self.begin_write().await?;
             let inserted = upsert_type_edges_one_file(&mut tx, &file_str, chunk_type_refs).await?;
 
@@ -301,10 +300,8 @@ impl<Mode> Store<Mode> {
     /// Forward query: "who uses Config?" Returns chunks that have type edges
     /// pointing to the given type name.
     ///
-    /// P2 #65 (recovery wave): `limit` is now bound at SQL time so we don't
-    /// fetch every row of a popular type just to drop the tail in Rust. CLI
-    /// callers that previously called `users.truncate(limit)` after the fact
-    /// pass the same value here; loaders that genuinely want all rows pass
+    /// `limit` is bound at SQL time so we don't fetch every row of a popular
+    /// type just to drop the tail in Rust. Loaders that want all rows pass
     /// `usize::MAX` (SQLite caps `LIMIT ?` at i64::MAX, so usize::MAX -> i64
     /// saturates to no-op).
     pub fn get_type_users(
@@ -342,9 +339,8 @@ impl<Mode> Store<Mode> {
     /// Reverse query: "what types does parse_config use?" Returns [`TypeUsage`] structs
     /// where edge_kind is "" for catch-all types.
     ///
-    /// P2 #65: `limit` mirrors `get_type_users`. Pass `usize::MAX` to disable
-    /// the cap (the SQL `LIMIT ?` will receive i64::MAX, which is effectively
-    /// no limit).
+    /// `limit` mirrors `get_type_users`. Pass `usize::MAX` to disable the cap
+    /// (the SQL `LIMIT ?` receives i64::MAX, effectively no limit).
     pub fn get_types_used_by(
         &self,
         chunk_name: &str,
@@ -378,9 +374,8 @@ impl<Mode> Store<Mode> {
     }
 
     /// Batch-fetch type users for multiple type names.
-    /// Returns type_name -> Vec<ChunkSummary>. PF-V1.29-3: batch size derives
-    /// from `max_rows_per_statement(1)` — the prior `200` was sized for the
-    /// pre-3.32 999-variable ceiling.
+    /// Returns type_name -> Vec<ChunkSummary>. Batch size derives from
+    /// `max_rows_per_statement(1)`.
     pub fn get_type_users_batch(
         &self,
         type_names: &[&str],
@@ -428,9 +423,8 @@ impl<Mode> Store<Mode> {
     }
 
     /// Batch-fetch types used by multiple chunk names.
-    /// Returns chunk_name -> Vec<(type_name, edge_kind)>. PF-V1.29-3: batch
-    /// size derives from `max_rows_per_statement(1)` — the prior `200` was
-    /// sized for the pre-3.32 999-variable ceiling.
+    /// Returns chunk_name -> Vec<(type_name, edge_kind)>. Batch size derives
+    /// from `max_rows_per_statement(1)`.
     pub fn get_types_used_by_batch(
         &self,
         chunk_names: &[&str],
@@ -511,7 +505,7 @@ impl<Mode> Store<Mode> {
         let _span = tracing::info_span!("get_type_graph").entered();
 
         self.rt.block_on(async {
-            // P3 #103: env-overridable via CQS_TYPE_GRAPH_MAX_EDGES.
+            // Env-overridable via CQS_TYPE_GRAPH_MAX_EDGES.
             let max_edges = crate::limits::type_graph_max_edges();
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT c.name, te.target_type_name

@@ -29,10 +29,8 @@ use std::path::{Path, PathBuf};
 /// Resolve a HuggingFace-adjacent cache subdirectory with cross-platform
 /// fallbacks.
 ///
-/// PB-V1.29-8: The six historical sites that hardcoded
-/// `~/.cache/huggingface/...` (doctor, splade preset registry, splade tests)
-/// now route through this helper so a Windows user with an older
-/// `huggingface_hub` install gets `%LOCALAPPDATA%\huggingface\<subdir>`
+/// All HF-cache lookups route through this helper so a Windows user with an
+/// older `huggingface_hub` install gets `%LOCALAPPDATA%\huggingface\<subdir>`
 /// instead of a non-existent `%USERPROFILE%\.cache\huggingface\<subdir>`.
 ///
 /// Precedence (highest wins):
@@ -87,19 +85,18 @@ pub fn hf_cache_dir(subdir: &str) -> PathBuf {
             }
         }
     }
-    // PB-V1.33-6: split `.cache/huggingface` into separate path
-    // components. `PathBuf::join` does NOT auto-split forward slashes
-    // on Windows, so a literal `".cache/huggingface"` becomes one
-    // mangled component (mixed separators in display, broken
-    // `Path::starts_with` round-trips).
+    // Split `.cache/huggingface` into separate path components.
+    // `PathBuf::join` does NOT auto-split forward slashes on Windows, so a
+    // literal `".cache/huggingface"` becomes one mangled component (mixed
+    // separators in display, broken `Path::starts_with` round-trips).
     dirs::cache_dir()
         .map(|c| c.join("huggingface").join(subdir))
         .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join(subdir)))
         .unwrap_or_else(|| PathBuf::from(".cache").join("huggingface").join(subdir))
 }
 
-/// SEC-V1.33-8 / #1339 — flag env-supplied HF cache paths that are obvious
-/// supply-chain attack surfaces.
+/// Flag env-supplied HF cache paths that are obvious supply-chain attack
+/// surfaces.
 ///
 /// Threat: an attacker who can set `HF_HOME` / `HUGGINGFACE_HUB_CACHE` in
 /// the user's shell (via `.bashrc`, hostile devcontainer image, shared
@@ -136,13 +133,10 @@ fn is_suspicious_cache_path(path: &Path) -> Option<&'static str> {
     let s = path.to_string_lossy();
 
     // World-writable / shared-tmp surfaces. Linux + macOS use the literal
-    // path list below; PL-V1.38-3 (#1463) extends the check to honor
-    // `std::env::temp_dir()` (handles `$TMPDIR=/var/run/...` setups,
-    // macOS's per-user `/var/folders/...`, and Windows's
-    // `%TEMP%`/`%TMP%`). On Windows the doc-comment originally promised
-    // %TEMP%/%TMP% coverage but only the Linux literals fired; this
-    // closes the gap so a hostile `HF_HOME=C:\Users\Public\hf` is
-    // flagged.
+    // path list below; the `std::env::temp_dir()` check also honors
+    // `$TMPDIR=/var/run/...` setups, macOS's per-user `/var/folders/...`, and
+    // Windows's `%TEMP%`/`%TMP%`, so a hostile `HF_HOME=C:\Users\Public\hf`
+    // is flagged.
     for prefix in [
         "/tmp/",
         "/tmp",
@@ -326,13 +320,11 @@ pub enum AuxModelError {
 /// Expand a leading `~/`, `~\`, or bare `~` against `$HOME`.
 ///
 /// Returns the path unchanged when the input is absolute (without a tilde
-/// prefix), relative, or `$HOME` can't be resolved. Mirrors the existing
-/// expansion in `splade::resolve_splade_model_dir` so env-var semantics
-/// stay identical.
+/// prefix), relative, or `$HOME` can't be resolved. Mirrors the expansion in
+/// `splade::resolve_splade_model_dir` so env-var semantics stay identical.
 ///
-/// PB-V1.29-9: Also accept bare `~` (which should resolve to `$HOME`)
-/// and the Windows separator `~\` so a TOML config authored on Windows
-/// survives the trip through `home_dir`.
+/// Also accepts bare `~` (resolves to `$HOME`) and the Windows separator `~\`
+/// so a TOML config authored on Windows survives the trip through `home_dir`.
 fn expand_tilde(raw: &str) -> PathBuf {
     if raw == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
@@ -357,8 +349,8 @@ fn expand_tilde(raw: &str) -> PathBuf {
 /// `./relative/path` as a repo id, but we also don't want to guess about
 /// bare `foo/bar` which is a valid repo id.
 fn is_path_like(raw: &str) -> bool {
-    // PB-V1.29-9: also catch bare `~` and the Windows-separator form `~\`
-    // so detection matches `expand_tilde`'s acceptance set.
+    // Also catch bare `~` and the Windows-separator form `~\` so detection
+    // matches `expand_tilde`'s acceptance set.
     raw == "~"
         || raw.starts_with('/')
         || raw.starts_with("~/")
@@ -367,14 +359,12 @@ fn is_path_like(raw: &str) -> bool {
         || std::path::Path::new(raw).is_absolute()
 }
 
-/// EX-V1.29-9: On-disk layout template for an auxiliary model bundle.
+/// On-disk layout template for an auxiliary model bundle.
 ///
-/// The prior `config_from_dir(kind, ...)` hardcoded a layout per
-/// `AuxModelKind`, which meant every new preset had to match one of the
-/// two baked-in shapes (`model.onnx` at root for SPLADE, `onnx/model.onnx`
-/// for reranker). Newer HF repos and custom exports don't always fit; a
-/// preset now carries its own layout via [`AuxModelKind::default_layout`]
-/// with room for per-preset overrides.
+/// A preset carries its own layout via [`AuxModelKind::default_layout`] with
+/// room for per-preset overrides, so HF repos and custom exports that deviate
+/// from the two default shapes (`model.onnx` at root for SPLADE,
+/// `onnx/model.onnx` for reranker) can still be described.
 ///
 /// Paths are joined directly without separator canonicalization — callers
 /// supply already-correct filenames for the target platform. Forward
@@ -406,21 +396,21 @@ fn config_from_dir(dir: &Path, layout: &DirLayout, preset: Option<String>) -> Au
 }
 
 // ---------------------------------------------------------------------------
-// EX-V1.29-4: table-driven kind + preset registry.
+// Table-driven kind + preset registry.
 //
-// `define_aux_presets!` consolidates what used to be five parallel
-// `AuxModelKind` matches (`default_layout`, `preset()` dispatcher,
-// `*_preset()` inner matches, `default_preset_name`, `section_name`)
-// into one declarative table. Adding a third aux kind (e.g. a
-// `Summarizer` ONNX preset pool) means one new `kind { ... }` block;
-// adding a preset inside an existing kind means one new `preset` row.
+// `define_aux_presets!` consolidates the five parallel `AuxModelKind` matches
+// (`default_layout`, `preset()` dispatcher, `*_preset()` inner matches,
+// `default_preset_name`, `section_name`) into one declarative table. Adding a
+// third aux kind (e.g. a `Summarizer` ONNX preset pool) means one new
+// `kind { ... }` block; adding a preset inside an existing kind means one new
+// `preset` row.
 //
 // Pattern mirrors `define_embedder_presets!` in `src/embedder/models.rs`
 // where a single preset-per-row table generates all the dispatch code
 // surrounding `ModelConfig`.
 // ---------------------------------------------------------------------------
 
-/// EX-V1.29-4: declarative table for auxiliary-model kinds and presets.
+/// Declarative table for auxiliary-model kinds and presets.
 ///
 /// Grammar (one `kind` block per kind, one `preset` row per shipped preset):
 ///
@@ -479,7 +469,7 @@ macro_rules! define_aux_presets {
     ) => {
         impl AuxModelKind {
             /// Default [`DirLayout`] for this kind, matching the HuggingFace
-            /// convention historically baked into `config_from_dir`.
+            /// convention.
             ///
             /// Generated by [`define_aux_presets!`] from each kind's `layout`.
             fn default_layout(self) -> DirLayout {
@@ -558,9 +548,7 @@ macro_rules! define_aux_presets {
     // --- Source dispatch: HF repo ---
     // Build an `AuxModelConfig` with `repo = Some(...)` and synthetic paths
     // that the HF fetcher replaces with the real downloaded locations.
-    // Path shape mirrors the reranker's historical output (onnx/model.onnx
-    // + tokenizer.json) so existing callers still receive the same layout
-    // they've always observed.
+    // Path shape is the reranker layout (onnx/model.onnx + tokenizer.json).
     (@build_config $kind:path, $canonical:literal, repo, $repo:literal) => {{
         AuxModelConfig {
             preset: Some($canonical.into()),
@@ -580,13 +568,12 @@ define_aux_presets! {
             tokenizer_rel_path: "tokenizer.json",
         },
         presets: [
-            // PB-V1.29-8: `local` rows route through `hf_cache_dir` so
-            // Windows users with HF installed under `%LOCALAPPDATA%`
-            // resolve correctly.
+            // `local` rows route through `hf_cache_dir` so Windows users with
+            // HF installed under `%LOCALAPPDATA%` resolve correctly.
             //
             // Shipped SPLADE presets:
             // * `"ensembledistil"` → `naver/splade-cocondenser-ensembledistil`
-            //   (current default, expected at `hf_cache_dir("splade-onnx")`).
+            //   (default, expected at `hf_cache_dir("splade-onnx")`).
             // * `"splade-code-0.6b"` → `naver/splade-code-0.6B`
             //   (expected at `hf_cache_dir("splade-code-0.6B")`).
             preset "ensembledistil" aliases ["splade-ensembledistil"]
@@ -605,7 +592,7 @@ define_aux_presets! {
         presets: [
             // Shipped reranker presets:
             // * `"ms-marco-minilm"` → `cross-encoder/ms-marco-MiniLM-L-6-v2`
-            //   (current default; fetched from HF Hub at load time).
+            //   (default; fetched from HF Hub at load time).
             preset "ms-marco-minilm" aliases ["ms-marco-minilm-l-6", "minilm"]
                 => repo "cross-encoder/ms-marco-MiniLM-L-6-v2";
         ],
@@ -754,10 +741,10 @@ fn resolve_raw(kind: AuxModelKind, raw: &str) -> Result<AuxModelConfig, AuxModel
                 expanded.display()
             )));
         }
-        // EX-V1.29-9: explicit-path override uses the kind's default
-        // layout. An operator supplying a custom repo path is expected to
-        // lay it out in the canonical shape; if a future preset ships a
-        // deviating layout it owns the call to `config_from_dir` itself.
+        // Explicit-path override uses the kind's default layout. An operator
+        // supplying a custom repo path is expected to lay it out in the
+        // canonical shape; a preset that ships a deviating layout owns the
+        // call to `config_from_dir` itself.
         return Ok(config_from_dir(&expanded, &kind.default_layout(), None));
     }
     // Non-path-like input.
@@ -823,7 +810,7 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.preset.as_deref(), Some("splade-code-0.6b"));
         // Paths point at the cache dir for the configured preset.
-        // PB-V1.29-8: helper returns the platform-specific HF parent.
+        // helper returns the platform-specific HF parent.
         assert_eq!(
             resolved.model_path,
             hf_cache_dir("splade-code-0.6B").join("model.onnx")
@@ -905,7 +892,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.preset.as_deref(), Some("ensembledistil"));
-        // PB-V1.29-8: helper returns the platform-specific HF parent.
+        // helper returns the platform-specific HF parent.
         assert_eq!(
             resolved.model_path,
             hf_cache_dir("splade-onnx").join("model.onnx")
@@ -1099,10 +1086,10 @@ mod tests {
         assert!(preset(AuxModelKind::Reranker, "nope").is_none());
     }
 
-    /// EX-V1.29-4: every alias declared in the `define_aux_presets!` table
-    /// must resolve through `preset()` to the same canonical preset. Pins
-    /// the table-driven registry so adding a new alias to a row can't
-    /// silently drop existing aliases.
+    /// Every alias declared in the `define_aux_presets!` table must resolve
+    /// through `preset()` to the same canonical preset. Pins the table-driven
+    /// registry so adding a new alias to a row can't silently drop existing
+    /// aliases.
     #[test]
     fn test_preset_aliases_resolve() {
         // SPLADE aliases
@@ -1117,10 +1104,10 @@ mod tests {
         assert_eq!(cfg.preset.as_deref(), Some("ms-marco-minilm"));
     }
 
-    /// EX-V1.29-4: kind-level metadata (section name, default preset,
-    /// default layout) must match the `define_aux_presets!` table. Guards
-    /// against future edits that forget to keep the table and the Rust
-    /// arms in sync — adding a kind must populate all four.
+    /// Kind-level metadata (section name, default preset, default layout)
+    /// must match the `define_aux_presets!` table. Guards against edits that
+    /// forget to keep the table and the Rust arms in sync — adding a kind must
+    /// populate all four.
     #[test]
     fn test_kind_metadata_consistent() {
         assert_eq!(section_name(AuxModelKind::Splade), "splade");
@@ -1156,9 +1143,9 @@ mod tests {
         assert!(!is_path_like("ms-marco-minilm"));
     }
 
-    /// BUG-D.7: Windows users couldn't pass `--reranker-model C:\Models\splade`
-    /// — the string was treated as an HF repo id and shipped to Hub fetcher.
-    /// `Path::is_absolute()` recognizes drive-letter paths on Windows builds.
+    /// On Windows, `--reranker-model C:\Models\splade` must route through the
+    /// local-path branch, not the HF Hub fetcher. `Path::is_absolute()`
+    /// recognizes drive-letter paths on Windows builds.
     #[test]
     #[cfg(windows)]
     fn is_path_like_accepts_windows_drive_letter() {
@@ -1166,17 +1153,16 @@ mod tests {
         assert!(is_path_like("D:/foo/bar"));
     }
 
-    /// BUG-D.7: UNC paths (`\\server\share\splade`) must also route through
-    /// the local-path branch, not the HF Hub fetch path. The leading `\\\\`
-    /// check works on every platform — `Path::is_absolute()` agrees on
-    /// Windows; on Unix the explicit prefix check covers it.
+    /// UNC paths (`\\server\share\splade`) must also route through the
+    /// local-path branch, not the HF Hub fetch path. The leading `\\\\` check
+    /// works on every platform — `Path::is_absolute()` agrees on Windows; on
+    /// Unix the explicit prefix check covers it.
     #[test]
     fn is_path_like_accepts_unc_paths() {
         assert!(is_path_like("\\\\server\\share\\splade"));
     }
 
-    /// Regression: the existing unix-absolute and tilde behavior must not
-    /// regress when the new Windows branches were added.
+    /// Unix-absolute and tilde inputs route through the local-path branch.
     #[test]
     fn is_path_like_still_accepts_unix_absolute_and_tilde() {
         assert!(is_path_like("/usr/local/models/splade"));

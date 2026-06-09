@@ -1874,3 +1874,8 @@ mentions = [
     "cargo",
     ".cargo/config.toml",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "tc31_save_and_load_with_dim_1024 (hnsw/persist.rs) is flaky in CI — nearest-neighbor assertion failed on an unrelated dep-bump PR (#1671, 2026-06-09), passed on rerun. HNSW approximate recall on random vectors; consider seeding or relaxing to top-k containment."
+mentions = ["src/hnsw/persist.rs"]

@@ -1,8 +1,6 @@
-//! `cqs eval` — first-class A/B harness for measuring search quality.
+//! `cqs eval` — A/B harness for measuring search quality.
 //!
-//! Replaces the friction of the Python eval harness (subprocess env
-//! inheritance, batch-flag drift, gold-matching reinvented per script) with
-//! a Rust subcommand that runs the production search path against a JSON
+//! A Rust subcommand that runs the production search path against a JSON
 //! query set and prints R@K aggregates.
 //!
 //! Workflow:
@@ -10,10 +8,6 @@
 //!   `cqs eval evals/queries/v3_test.json --json` — machine-readable
 //!   `cqs eval evals/queries/v3_test.json --save baseline.json` — capture
 //!   `cqs eval evals/queries/v3_test.json --baseline baseline.json` — diff
-//!     (Task C2 will implement the diff body; today it errors)
-//!
-//! Future Task C1 (`--with-model X`) will build a temp side-index and
-//! reuse this module's runner — see `runner::run_eval` for the seam.
 
 mod baseline;
 mod runner;
@@ -47,10 +41,9 @@ pub(crate) struct EvalCmdArgs {
 
     /// Max results retrieved per query (used for R@K denominator cap)
     ///
-    /// API-V1.29-7: `-n` short flag added for parity with every other CLI
-    /// command that accepts a result cap (search, gather, related, etc.).
-    /// API-V1.36-8 (#1459): eval is the R@K cap; intentionally larger
-    /// than the harmonised default of 5 used elsewhere.
+    /// `-n` short flag for parity with other CLI commands that accept a
+    /// result cap (search, gather, related, etc.). The default 20 is the R@K
+    /// cap, intentionally larger than the default of 5 used elsewhere.
     #[arg(short = 'n', long, default_value = "20")]
     pub limit: usize,
 
@@ -62,7 +55,7 @@ pub(crate) struct EvalCmdArgs {
     #[arg(long)]
     pub save: Option<PathBuf>,
 
-    /// Compare current run against a saved baseline (Task C2 — stub today)
+    /// Compare current run against a saved baseline
     #[arg(long)]
     pub baseline: Option<PathBuf>,
 
@@ -75,7 +68,7 @@ pub(crate) struct EvalCmdArgs {
     ///
     /// Skips the watch-mode freshness gate that otherwise blocks the run
     /// until the running `cqs watch --serve` daemon reports
-    /// `state == fresh`. (#1182 — Layer 4)
+    /// `state == fresh`.
     ///
     /// The gate is on by default because eval against a stale index is
     /// indistinguishable from a regression — a 5-25pp R@K shift from
@@ -92,8 +85,8 @@ pub(crate) struct EvalCmdArgs {
     /// Note: `cqs status --wait-secs` has the same semantics; default
     /// differs by use case (eval default = 600, status = 30).
     ///
-    /// API-V1.38-8 (#1463): `--wait-secs` is a visible alias so an
-    /// agent learning the status-side spelling transfers cleanly.
+    /// `--wait-secs` is a visible alias so an agent learning the status-side
+    /// spelling transfers cleanly.
     #[arg(
         long = "require-fresh-secs",
         visible_alias = "wait-secs",
@@ -101,13 +94,9 @@ pub(crate) struct EvalCmdArgs {
     )]
     pub require_fresh_secs: u64,
 
-    /// Apply a reranker stage after retrieval. Default `none` (skip
-    /// reranking) preserves the historical eval pipeline. `onnx` runs
-    /// the cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
-    /// `llm` is reserved for the LLM-judge reranker landing in #1220 and
-    /// currently bails with a "not yet implemented" error; the variant is
-    /// kept on the flag so the production wiring can land without a
-    /// breaking CLI change.
+    /// Apply a reranker stage after retrieval. Default `none` skips
+    /// reranking. `onnx` runs the cross-encoder configured by `[reranker]` /
+    /// `CQS_RERANKER_MODEL`.
     ///
     /// When `onnx` or `llm` is selected, stage 1 over-retrieves to the
     /// `rerank_pool_size(limit)` cap (mirrors `cqs <q> --rerank`); stage 2
@@ -129,11 +118,10 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     )
     .entered();
 
-    // Top-level `--json` always wins (mirrors `cmd_model` at
-    // `src/cli/commands/infra/model.rs:113`). `cqs --json eval foo.json`
-    // must emit envelope JSON even if the user didn't repeat `--json` after
-    // the subcommand — otherwise agents calling the CLI with the global
-    // flag get text and a parse error.
+    // Top-level `--json` always wins (mirrors `cmd_model`). `cqs --json eval
+    // foo.json` must emit envelope JSON even if the user didn't repeat
+    // `--json` after the subcommand — otherwise agents calling the CLI with
+    // the global flag get text and a parse error.
     let json = ctx.cli.json || args.json;
 
     if args.limit == 0 {
@@ -170,9 +158,8 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
         }
     };
 
-    // PR 4 of #1182 (Layer 4): gate the run on watch-mode freshness.
-    // Eval is the canonical ceremony command — its R@K numbers shift
-    // 5-25pp on a stale index from fixture-line drift alone, which is
+    // Gate the run on watch-mode freshness. Eval's R@K numbers shift 5-25pp
+    // on a stale index from fixture-line drift alone, which is
     // indistinguishable from a real regression. Block until the daemon
     // reports `state == fresh`, surface a clear error if it can't.
     require_fresh_gate(&args.no_require_fresh, args.require_fresh_secs)?;
@@ -181,8 +168,6 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     // the entire stage-2 path; `Onnx` builds via the same lazy factory the
     // CLI search path uses (`CommandContext::reranker`), so eval doesn't
     // accidentally diverge from production reranker config.
-    // API-V1.36-2: `Llm` was previously a placeholder for #1220 but errored
-    // at runtime; the variant has been dropped from the CLI surface (v1.36.2).
     let reranker = match args.reranker {
         RerankerMode::None => None,
         RerankerMode::Onnx => Some(ctx.reranker()?),
@@ -221,8 +206,8 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
         let diff = baseline::compare_against_baseline(&report, baseline_path, args.tolerance)?;
         if !diff.regressions.is_empty() {
             // Per-category regression past tolerance → CI-friendly exit 1.
-            // In JSON mode, emit a single error envelope (per PR #1038 contract:
-            // failure paths advertise `{data:null, error:{code,message}, version:1}`).
+            // In JSON mode, emit a single error envelope — failure paths
+            // advertise `{data:null, error:{code,message}, version:1}`.
             // Skip print_diff_report — emitting both a success diff envelope and an
             // error envelope on the same stdout would produce two JSON documents
             // back-to-back, breaking single-doc consumers. Users who want the
@@ -253,8 +238,8 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     Ok(())
 }
 
-/// PR 4 of #1182 (Layer 4): consult the watch daemon and block until the
-/// index is fresh, or bail with an actionable error.
+/// Consult the watch daemon and block until the index is fresh, or bail with
+/// an actionable error.
 ///
 /// Resolution order, lowest precedence first:
 /// 1. Default: gate is **on**.
@@ -293,13 +278,13 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
         use cqs::daemon_translate::FreshnessWait;
         let root = crate::cli::find_project_root();
         let cqs_dir = cqs::resolve_index_dir(&root);
-        // SHL-V1.30-3 + SHL-V1.38-2 (#1463): the cap is now env-overridable
-        // via `CQS_EVAL_FRESH_BUDGET_CEILING` (default 600 s). On a slow
-        // indexer doing a fresh full-reindex of a 100k-chunk repo, embedder
-        // warmup + index build can exceed 10 min; an operator can lift
-        // the ceiling without source edits. The `wait_for_fresh`
-        // defense-in-depth at 86_400 s still bounds the absolute upper
-        // limit. Garbage / zero / unparseable env values fall back to 600.
+        // The cap is env-overridable via `CQS_EVAL_FRESH_BUDGET_CEILING`
+        // (default 600 s). On a slow indexer doing a fresh full-reindex of a
+        // 100k-chunk repo, embedder warmup + index build can exceed 10 min;
+        // an operator can lift the ceiling without source edits. The
+        // `wait_for_fresh` defense-in-depth at 86_400 s still bounds the
+        // absolute upper limit. Garbage / zero / unparseable env values fall
+        // back to 600.
         let ceiling = std::env::var("CQS_EVAL_FRESH_BUDGET_CEILING")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -377,8 +362,8 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                     restart = daemon_control_hint(DaemonHint::Restart),
                 )
             }
-            // EH-V1.30.1-2: Transport — socket exists but daemon isn't
-            // responding (hung, crashed mid-call, or set_*_timeout failed).
+            // Transport — socket exists but daemon isn't responding (hung,
+            // crashed mid-call, or set_*_timeout failed).
             FreshnessWait::Transport(msg) => {
                 tracing::info!(
                     outcome = "transport",
@@ -396,8 +381,8 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                     restart = daemon_control_hint(DaemonHint::Restart),
                 )
             }
-            // EH-V1.30.1-2: BadResponse — daemon replied but the envelope
-            // was unparseable. Most often a CLI/daemon version skew.
+            // BadResponse — daemon replied but the envelope was unparseable.
+            // Most often a CLI/daemon version skew.
             FreshnessWait::BadResponse(msg) => {
                 tracing::info!(
                     outcome = "bad_response",
@@ -439,9 +424,8 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
 /// (`CQS_NO_DAEMON`, etc.) so an operator who knows one knob's spelling
 /// gets the other for free.
 ///
-/// EX-V1.30.1-7 (P3-EX-2): falsy-string parsing now lives in
-/// [`cqs::env_falsy`] so the next migration pass can move the other
-/// ~30 hand-rolled call sites without re-debating the spelling list.
+/// Falsy-string parsing lives in [`cqs::env_falsy`] so the spelling list is
+/// shared across all such knobs.
 fn env_disables_freshness_gate() -> bool {
     std::env::var("CQS_EVAL_REQUIRE_FRESH")
         .map(|v| cqs::env_falsy(&v))
@@ -450,14 +434,11 @@ fn env_disables_freshness_gate() -> bool {
 
 /// Print the eval report in human-readable text.
 ///
-/// Format mirrors the spec exactly so a user comparing old python output
-/// against `cqs eval` output can eyeball the same shape.
-///
-/// RB-8: refuse to emit the report when the fixture has zero queries with
-/// `gold_chunk`. Without this guard, `pct(0.0)` (which is what runner emits
-/// for the empty case) prints `"  0.0%"` for every metric — looks like a
-/// real result, but it's a structural zero, not a signal. Exits 2 so a
-/// downstream `cqs eval | grep R@5` chain notices.
+/// Refuses to emit the report when the fixture has zero queries with
+/// `gold_chunk`. Without this guard, `pct(0.0)` (what runner emits for the
+/// empty case) prints `"  0.0%"` for every metric — looks like a real result,
+/// but it's a structural zero, not a signal. Exits 2 so a downstream
+/// `cqs eval | grep R@5` chain notices.
 fn print_text_report(report: &EvalReport) {
     if report.overall.n == 0 {
         eprintln!(
@@ -476,10 +457,10 @@ fn print_text_report(report: &EvalReport) {
         .expect("write_text_report must not fail on stdout — broken pipe / disk full?");
 }
 
-/// TC-HAP-1.30.1-9: writable-sink variant of `print_text_report` so a unit
-/// test can pin the exact format without capturing process stdout. Caller
-/// is responsible for the empty-fixture guard — this writer assumes the
-/// report is publishable (`overall.n > 0`).
+/// Writable-sink variant of `print_text_report` so a unit test can pin the
+/// exact format without capturing process stdout. Caller is responsible for
+/// the empty-fixture guard — this writer assumes the report is publishable
+/// (`overall.n > 0`).
 fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalReport) -> std::io::Result<()> {
     writeln!(
         w,
@@ -527,7 +508,7 @@ fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalReport) -> std::
 }
 
 /// Format a fraction in [0.0, 1.0] as a percentage with one decimal place,
-/// e.g. 0.4220 → "42.2%". Same formatting the python eval used.
+/// e.g. 0.4220 → "42.2%".
 fn pct(x: f64) -> String {
     format!("{:>5.1}%", x * 100.0)
 }
@@ -566,12 +547,12 @@ mod tests {
         assert!(w.args.save.is_none());
         assert!(w.args.baseline.is_none());
         assert!((w.args.tolerance - 1.0).abs() < 1e-9);
-        // PR 4 of #1182: gate is on by default — no_require_fresh stays false.
+        // Gate is on by default — no_require_fresh stays false.
         assert!(!w.args.no_require_fresh);
         assert_eq!(w.args.require_fresh_secs, 600);
     }
 
-    /// PR 4 of #1182: parser accepts `--no-require-fresh` and a custom budget.
+    /// Parser accepts `--no-require-fresh` and a custom budget.
     #[test]
     fn test_no_require_fresh_flag_parses() {
         use clap::Parser;
@@ -592,12 +573,10 @@ mod tests {
         assert_eq!(w.args.require_fresh_secs, 30);
     }
 
-    /// PR 4 of #1182 / TC-HAP-1.30.1-4 / TC-ADV-1.30.1-7: env-var falsy
-    /// values disable the gate. Drives the actual
+    /// Env-var falsy values disable the gate. Drives the actual
     /// `env_disables_freshness_gate` helper so the helper's `matches!`
-    /// pattern is what gets covered — earlier versions of this test
-    /// re-implemented the logic inline, which left the function itself
-    /// untested and bypass drift invisible.
+    /// pattern is what gets covered (re-implementing the logic inline would
+    /// leave the function itself untested and bypass drift invisible).
     ///
     /// Coverage extends to whitespace-trimming, unset (= gate stays on),
     /// and unknown / garbage values (= gate stays on by default — only
@@ -664,9 +643,9 @@ mod tests {
         }
     }
 
-    /// TC-HAP-1.30.1-4: drive `require_fresh_gate` via the
-    /// `--no-require-fresh` flag short-circuit. No daemon needed because
-    /// the flag bypass returns `Ok(())` before any socket I/O.
+    /// Drive `require_fresh_gate` via the `--no-require-fresh` flag
+    /// short-circuit. No daemon needed because the flag bypass returns
+    /// `Ok(())` before any socket I/O.
     #[test]
     fn require_fresh_gate_no_require_fresh_flag_returns_ok_without_daemon() {
         let result = require_fresh_gate(&true, 5);
@@ -676,10 +655,9 @@ mod tests {
         );
     }
 
-    /// TC-HAP-1.30.1-4: drive `require_fresh_gate` via the
-    /// `CQS_EVAL_REQUIRE_FRESH=0` env-var bypass. Pins the documented
-    /// resolution order — env var disables the gate even when the CLI
-    /// flag is absent.
+    /// Drive `require_fresh_gate` via the `CQS_EVAL_REQUIRE_FRESH=0` env-var
+    /// bypass. Pins the resolution order — env var disables the gate even
+    /// when the CLI flag is absent.
     #[test]
     #[serial_test::serial(cqs_eval_require_fresh_env)]
     fn require_fresh_gate_env_disable_returns_ok_without_daemon() {
@@ -732,12 +710,11 @@ mod tests {
         assert_eq!(w.args.save.unwrap().to_str().unwrap(), "out.json");
         assert_eq!(w.args.baseline.unwrap().to_str().unwrap(), "base.json");
         assert!((w.args.tolerance - 2.5).abs() < 1e-9);
-        // PR 4: when not passed, the gate stays on by default even alongside
-        // every other flag.
+        // When not passed, the gate stays on by default even alongside every
+        // other flag.
         assert!(!w.args.no_require_fresh);
         assert_eq!(w.args.require_fresh_secs, 600);
-        // Default reranker mode is None — preserves the historical
-        // retrieval-only pipeline so existing baselines stay comparable.
+        // Default reranker mode is None — retrieval-only pipeline.
         assert_eq!(w.args.reranker, RerankerMode::None);
     }
 
@@ -765,11 +742,10 @@ mod tests {
         assert!(err.is_err(), "--reranker fancy should be a clap error");
     }
 
-    /// TC-HAP-1.30.1-9: pin the canonical row-by-row format so a
-    /// downstream regex-based parser doesn't break silently when someone
-    /// reorders columns or drops a label. Builds a deterministic report
-    /// with two queries (1 hit at R@1, both at R@5) and asserts every
-    /// expected substring on the output.
+    /// Pin the canonical row-by-row format so a downstream regex-based parser
+    /// doesn't break silently when someone reorders columns or drops a label.
+    /// Builds a deterministic report with two queries (1 hit at R@1, both at
+    /// R@5) and asserts every expected substring on the output.
     #[test]
     fn print_text_report_renders_canonical_header_and_metrics() {
         use super::runner::{CategoryStats, EvalReport, Overall};

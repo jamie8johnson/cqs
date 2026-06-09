@@ -6,12 +6,7 @@
 //! (`cqs::cli::json_envelope`) layer. The bin's `cli::json_envelope`
 //! re-exports this same type for convenience.
 //!
-//! See `docs/json-snr-restoration.md` for the migration plan.
-//!
-//! Audit Cluster B (post-v1.40.0):
-//!
-//! - **Process-lifetime caching** (CQ-V1.40-7, RM-V1.40-8, PERF-V1.40-3,
-//!   PERF-V1.40-4, DS-V1.40-5, SEC-V1.40-6). [`Posture::current`] and
+//! - **Process-lifetime caching.** [`Posture::current`] and
 //!   [`OutputFormat::current`] read the env once via `OnceLock` and
 //!   memoize. A daemon serving thousands of emissions per minute does
 //!   one syscall per env var per process lifetime, not per emit. Side
@@ -19,14 +14,12 @@
 //!   mid-stream can't flip the envelope shape because the cached value
 //!   is already pinned.
 //!
-//! - **Truthy/falsy alias recognition + warn on unrecognized values**
-//!   (EH-V1.40-2, API-V1.40-8, OB-V1.40-3, PB-V1.40-3). Pre-fix,
-//!   `CQS_ULTRASECURITY=true` silently fell through to `Friendly`,
-//!   disabling the security advisory the operator believed they had
-//!   enabled. Post-fix, the parser recognizes the conventional truthy
-//!   set (`1`, `true`, `on`, `yes` case-insensitive, with whitespace
-//!   trimmed) and logs `tracing::warn!` for any value set but
-//!   unrecognized so the operator sees their typo.
+//! - **Truthy/falsy alias recognition + warn on unrecognized values.**
+//!   The parser recognizes the conventional truthy set (`1`, `true`,
+//!   `on`, `yes` case-insensitive, with whitespace trimmed) and logs
+//!   `tracing::warn!` for any value set but unrecognized so the operator
+//!   sees their typo. A bare `CQS_ULTRASECURITY=true` would otherwise
+//!   fall through to `Friendly`, disabling the security advisory.
 
 /// Caller-decided emission posture, threaded from request entry points
 /// down to leaf serializers. Replaces ad-hoc `std::env::var` reads in
@@ -40,9 +33,9 @@
 ///
 /// `Friendly` (default) emits the lean wire shape: `_meta.handling_advice`
 /// is omitted, per-result advisory fields skip-when-default. `Adversarial`
-/// (set via `CQS_ULTRASECURITY=1` at process start) restores the full
+/// (set via `CQS_ULTRASECURITY=1` at process start) emits the full
 /// verbose envelope expected by adversarial-deployment consumers (cqs as
-/// a remote MCP server reading user-uploaded code).
+/// a remote server reading user-uploaded code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Posture {
     /// Lean wire shape — `handling_advice` omitted, security signals
@@ -67,10 +60,9 @@ impl Posture {
     /// (CLI dispatcher, batch dispatcher, daemon handler) so the
     /// posture flows through the request as a typed value.
     ///
-    /// Audit Cluster B (DS-V1.40-5 + SEC-V1.40-6 + perf): the cache
-    /// pins the resolved posture for the process lifetime, so a daemon
-    /// thread can't flip the envelope shape mid-request via `set_var`,
-    /// and a hot emit path doesn't pay for `env::var` per call.
+    /// The cache pins the resolved posture for the process lifetime, so a
+    /// daemon thread can't flip the envelope shape mid-request via
+    /// `set_var`, and a hot emit path doesn't pay for `env::var` per call.
     pub fn current() -> Self {
         *POSTURE.get_or_init(Self::resolve_from_env)
     }
@@ -124,38 +116,32 @@ impl Posture {
 
 /// Wire-format selector for CLI direct (`emit_json`) success path.
 ///
-/// **As of SNR Phase 4 (2026-05-08, this commit), the default is
-/// [`Self::V2Bare`].** CLI direct success on a friendly-deployment
-/// process now emits the bare JSON payload on stdout — no envelope
-/// wrap. The legacy envelope shape is opt-in via `CQS_OUTPUT_FORMAT=v1`.
-/// Integration tests and the eval harness pin themselves to `v1` via
-/// env (see `tests/cli_*.rs` helpers and `evals/*.py` os.environ
-/// overrides) so the flip-default doesn't break existing assertion
-/// shapes; a follow-up PR migrates those consumers to expect the bare
-/// shape natively.
+/// The default is [`Self::V2Bare`]: CLI direct success on a
+/// friendly-deployment process emits the bare JSON payload on stdout —
+/// no envelope wrap. The v1 envelope shape is opt-in via
+/// `CQS_OUTPUT_FORMAT=v1`; integration tests and the eval harness pin
+/// themselves to `v1` via env (see `tests/cli_*.rs` helpers and
+/// `evals/*.py` os.environ overrides).
 ///
 /// **Posture interaction:** [`Posture::Adversarial`] overrides this —
 /// the verbose envelope wins regardless of `OutputFormat`. The two
 /// env vars compose: `CQS_ULTRASECURITY=1` ⇒ full envelope on every
-/// surface; `CQS_OUTPUT_FORMAT=v1` AND not adversarial ⇒ legacy envelope
-/// on the CLI direct success path (consumer-migration hedge); otherwise
-/// (the new default) bare payload.
+/// surface; `CQS_OUTPUT_FORMAT=v1` AND not adversarial ⇒ v1 envelope
+/// on the CLI direct success path; otherwise (the default) bare payload.
 ///
-/// Batch / daemon JSONL is **not** affected by this — Phase 3 already
-/// shipped the slim `{"data": ...}` / `{"error": {...}}` shape there
-/// and the JSONL contract requires self-describing lines either way.
+/// Batch / daemon JSONL is **not** affected by this — it uses the slim
+/// `{"data": ...}` / `{"error": {...}}` shape, and the JSONL contract
+/// requires self-describing lines either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
-    /// Legacy envelope shape: CLI direct success emits the full envelope
+    /// v1 envelope shape: CLI direct success emits the full envelope
     /// `{data, error: null, version: 1, _meta: {...}}` to stdout. Selected
-    /// by setting `CQS_OUTPUT_FORMAT=v1`. Hedge for consumer scripts that
-    /// haven't migrated to the bare shape yet.
+    /// by setting `CQS_OUTPUT_FORMAT=v1`. For consumer scripts that want the
+    /// wrapped shape.
     V1Envelope,
-    /// **Default as of SNR Phase 4 (2026-05-08):** CLI direct success
-    /// emits the bare JSON payload to stdout (no envelope). Selected
-    /// when `CQS_OUTPUT_FORMAT` is unset or set to anything other than
-    /// `v1`. Restores the high-SNR baseline that the 79% → 6% search-
-    /// rate decline measured.
+    /// Default: CLI direct success emits the bare JSON payload to stdout
+    /// (no envelope). Selected when `CQS_OUTPUT_FORMAT` is unset or set to
+    /// anything other than `v1`.
     V2Bare,
 }
 
@@ -169,12 +155,9 @@ impl OutputFormat {
     /// shape as [`Posture::current`]; intended to be called at the
     /// same dispatcher entry points.
     ///
-    /// **SNR Phase 4 default flip (2026-05-08):** unset env or any value
-    /// other than `"v1"` (case-insensitive after trim) ⇒ [`Self::V2Bare`]
-    /// (bare payload). `CQS_OUTPUT_FORMAT=v1` ⇒ [`Self::V1Envelope`]
-    /// (legacy envelope). Inverted polarity from the original opt-in
-    /// landing — opt-out is now the legacy hedge for consumer scripts
-    /// that haven't migrated.
+    /// Unset env or any value other than `"v1"` (case-insensitive after
+    /// trim) ⇒ [`Self::V2Bare`] (bare payload). `CQS_OUTPUT_FORMAT=v1` ⇒
+    /// [`Self::V1Envelope`] (v1 envelope).
     pub fn current() -> Self {
         *OUTPUT_FORMAT.get_or_init(Self::resolve_from_env)
     }
@@ -230,13 +213,11 @@ mod tests {
     }
 
     // ───────────────────────────────────────────────────────────────────
-    // Posture::resolve_from_str — pure parser tests (audit Cluster B)
+    // Posture::resolve_from_str — pure parser tests
     //
-    // Replaces the pre-Cluster-B `current_reads_env_var` test. After
-    // `current()` adopted process-lifetime `OnceLock` caching (DS-V1.40-5
-    // / SEC-V1.40-6 / perf cluster), env-mutating tests against
-    // `current()` are racy: the first test that runs in the binary wins
-    // the cache for the entire process. Pure-function tests on the
+    // `current()` uses process-lifetime `OnceLock` caching, so env-mutating
+    // tests against it are racy: the first test that runs in the binary
+    // wins the cache for the entire process. Pure-function tests on the
     // parser side-step the cache and are deterministic.
     // ───────────────────────────────────────────────────────────────────
 
@@ -276,13 +257,11 @@ mod tests {
 
     #[test]
     fn posture_resolve_unknown_value_is_friendly() {
-        // Audit EH-V1.40-2: pre-Cluster-B `current()` silently dropped
-        // `Friendly` on any non-`"1"` value, including likely typos.
-        // Post-Cluster-B `resolve_from_str` still resolves to Friendly
-        // (the safe default), but emits `tracing::warn!` so the operator
-        // sees their typo. The test pins the resolution side; the warn
-        // side is observable via `tracing-test` if needed but isn't a
-        // load-bearing pin.
+        // `resolve_from_str` resolves an unrecognized value to Friendly
+        // (the safe default) and emits `tracing::warn!` so the operator
+        // sees their typo. This test pins the resolution side; the warn
+        // side is observable via `tracing-test` but isn't a load-bearing
+        // pin.
         assert_eq!(
             Posture::resolve_from_str(Some("enable")),
             Posture::Friendly,
@@ -309,9 +288,7 @@ mod tests {
 
     #[test]
     fn output_format_resolve_v1_recognized_case_insensitive() {
-        // Pre-Cluster-B: `"V1"`, `"V1 "`, `"v1\n"` all silently fell
-        // through to V2Bare because the parser used strict `==`.
-        // Post-Cluster-B: case-insensitive + trimmed.
+        // `v1` recognition is case-insensitive and whitespace-trimmed.
         for v in &["v1", "V1", "  v1  ", "\tv1\n", "V1"] {
             assert_eq!(
                 OutputFormat::resolve_from_str(Some(v)),
@@ -334,9 +311,9 @@ mod tests {
 
     #[test]
     fn output_format_resolve_unknown_falls_through_to_v2() {
-        // SNR Phase 4 default = V2Bare. Anything we don't recognize
-        // falls through to V2Bare + tracing::warn (so a typo doesn't
-        // silently re-enable the legacy envelope shape).
+        // Default is V2Bare. Anything we don't recognize falls through to
+        // V2Bare + tracing::warn (so a typo doesn't silently select the
+        // v1 envelope shape).
         assert_eq!(
             OutputFormat::resolve_from_str(Some("v3")),
             OutputFormat::V2Bare
@@ -352,11 +329,10 @@ mod tests {
     }
 
     // ───────────────────────────────────────────────────────────────────
-    // Compose-contract tests (TC-HAP-V1.40-9: CQS_ULTRASECURITY ×
-    // CQS_OUTPUT_FORMAT). These pin the matrix at the typed level —
-    // since `current()` is cached, any compose-contract test against
-    // `current()` itself is racy across the test binary. Test the
-    // composition operator directly.
+    // Compose-contract tests (CQS_ULTRASECURITY × CQS_OUTPUT_FORMAT).
+    // These pin the matrix at the typed level — since `current()` is
+    // cached, any compose-contract test against `current()` itself is
+    // racy across the test binary. Test the composition operator directly.
     // ───────────────────────────────────────────────────────────────────
 
     #[test]

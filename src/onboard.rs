@@ -27,16 +27,14 @@ pub const DEFAULT_ONBOARD_DEPTH: usize = 3;
 
 /// Maximum callees to fetch content for. BFS may discover more, but we only
 /// load content for the top entries by depth/score to cap memory usage.
-///
-/// SHL-V1.30-5: env override `CQS_ONBOARD_CALLEE_FETCH`. Documented in README.
+/// Env override: `CQS_ONBOARD_CALLEE_FETCH`.
 const MAX_CALLEE_FETCH_DEFAULT: usize = 30;
 
-/// Maximum callers to fetch content for.
-///
-/// SHL-V1.30-5: env override `CQS_ONBOARD_CALLER_FETCH`. Documented in README.
+/// Maximum callers to fetch content for. Env override:
+/// `CQS_ONBOARD_CALLER_FETCH`.
 const MAX_CALLER_FETCH_DEFAULT: usize = 15;
 
-/// SHL-V1.30-5: resolve `CQS_ONBOARD_CALLEE_FETCH`, default 30.
+/// Resolve `CQS_ONBOARD_CALLEE_FETCH`, default 30.
 fn max_callee_fetch() -> usize {
     std::env::var("CQS_ONBOARD_CALLEE_FETCH")
         .ok()
@@ -45,7 +43,7 @@ fn max_callee_fetch() -> usize {
         .unwrap_or(MAX_CALLEE_FETCH_DEFAULT)
 }
 
-/// SHL-V1.30-5: resolve `CQS_ONBOARD_CALLER_FETCH`, default 15.
+/// Resolve `CQS_ONBOARD_CALLER_FETCH`, default 15.
 fn max_caller_fetch() -> usize {
     std::env::var("CQS_ONBOARD_CALLER_FETCH")
         .ok()
@@ -107,13 +105,13 @@ pub struct OnboardSummary {
     pub files_covered: usize,
     pub callee_depth: usize,
     pub tests_found: usize,
-    /// SHL-V1.30-5: callees discovered by BFS but dropped because they exceeded
+    /// Callees discovered by BFS but dropped because they exceeded
     /// `CQS_ONBOARD_CALLEE_FETCH`. Zero when no truncation happened. Surfaces
     /// the cap to consumers so a user can lift it intentionally rather than
     /// silently wonder where their callees went.
     #[serde(default, skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
     pub callees_truncated: usize,
-    /// SHL-V1.30-5: callers truncated to `CQS_ONBOARD_CALLER_FETCH`. See
+    /// Callers truncated to `CQS_ONBOARD_CALLER_FETCH`. See
     /// `callees_truncated`.
     #[serde(default, skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
     pub callers_truncated: usize,
@@ -138,7 +136,7 @@ pub fn onboard<Mode>(
     let _span = tracing::info_span!("onboard", concept).entered();
     let depth = depth.min(10);
     // Per-side depths derived from the requested direction.
-    // - Callees: full depth on callees, depth=1 on callers (status-quo behavior).
+    // - Callees: full depth on callees, depth=1 on callers.
     // - Callers: depth=1 on callees, full depth on callers.
     // - Both: full depth on both sides.
     let (callee_depth, caller_depth) = match direction {
@@ -198,7 +196,7 @@ pub fn onboard<Mode>(
     tracing::debug!(callee_count = callee_scores.len(), "Callee BFS complete");
 
     // 5. Caller BFS — who calls the entry point.
-    // Depth is `caller_depth` (= 1 for direction=Callees back-compat,
+    // Depth is `caller_depth` (= 1 for direction=Callees,
     // = `depth` for Callers / Both).
     let mut caller_scores: HashMap<String, (f32, usize)> = HashMap::new();
     caller_scores.insert(entry_name.clone(), (1.0, 0));
@@ -213,10 +211,10 @@ pub fn onboard<Mode>(
     caller_scores.remove(&entry_name);
     tracing::debug!(caller_count = caller_scores.len(), "Caller BFS complete");
 
-    // 6. Cap score maps to avoid fetching content we'll discard (RM-24).
+    // 6. Cap score maps to avoid fetching content we'll discard.
     //    BFS may discover 100 callees, but we only load content for the top N.
-    //    SHL-V1.30-5: env-overridable via CQS_ONBOARD_CALLEE_FETCH /
-    //    CQS_ONBOARD_CALLER_FETCH.  Track pre-cap counts so the caller can see
+    //    Env-overridable via CQS_ONBOARD_CALLEE_FETCH /
+    //    CQS_ONBOARD_CALLER_FETCH. Track pre-cap counts so the caller can see
     //    truncation in `OnboardSummary`.
     let callee_fetch_cap = max_callee_fetch();
     let caller_fetch_cap = max_caller_fetch();
@@ -276,11 +274,9 @@ pub fn onboard<Mode>(
     });
     let callers: Vec<OnboardEntry> = caller_chunks.into_iter().map(gathered_to_onboard).collect();
 
-    // 7. Type dependencies — filter common types
-    // P2 #65: pass usize::MAX to preserve existing "all rows" behaviour. The
-    // post-filter `filter_common_types` discards most of these anyway; if a
-    // future tightening wants to limit the entry-point's edges the value
-    // should land here.
+    // 7. Type dependencies — filter common types.
+    // Pass usize::MAX for "all rows"; the post-filter `filter_common_types`
+    // discards most of these anyway.
     // TODO: consider a sane cap (e.g. 100) once we've measured the typical
     // edge count for entry-point chunks.
     let key_types = match store.get_types_used_by(&entry_name, usize::MAX) {
@@ -498,9 +494,8 @@ mod tests {
     #[test]
     fn test_common_types_canonical_set_filters_more() {
         use crate::store::TypeUsage;
-        // Verify that filter_common_types now uses the canonical 44-entry HashSet
-        // from focused_read.rs, which includes types like Error, Mutex, etc.
-        // that the old 22-entry local array missed.
+        // filter_common_types uses the canonical HashSet from
+        // focused_read.rs, which includes types like Error, Mutex, etc.
         let types = vec![
             TypeUsage {
                 type_name: "Error".to_string(),

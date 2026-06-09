@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 /// MiB is several orders of magnitude above realistic content.
 const MAX_CONFIG_SIZE: u64 = 1024 * 1024;
 
-/// Typed error for config file operations (EH-15).
+/// Typed error for config file operations.
 /// Used by `add_reference_to_config` and `remove_reference_from_config`.
 /// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
 #[derive(Debug, thiserror::Error)]
@@ -37,11 +37,11 @@ pub enum ConfigError {
 
 /// Detect if running under Windows Subsystem for Linux (cached).
 ///
-/// PB-V1.29-10: `/proc/version` alone is not conclusive — Mariner Linux,
-/// some Azure images, and custom kernels contain the substring
-/// "microsoft" or "wsl" without being a WSL guest. Requiring a second
-/// positive signal prevents those hosts from silently taking WSL-only
-/// code paths (DrvFS permission-check skips, debounce bumps, etc.).
+/// `/proc/version` alone is not conclusive — Mariner Linux, some Azure
+/// images, and custom kernels contain the substring "microsoft" or "wsl"
+/// without being a WSL guest. Requiring a second positive signal prevents
+/// those hosts from silently taking WSL-only code paths (DrvFS
+/// permission-check skips, debounce bumps, etc.).
 ///
 /// Returns true iff **any** of:
 /// 1. `WSL_DISTRO_NAME` env var is set (WSL always sets this)
@@ -89,17 +89,14 @@ pub fn is_wsl() -> bool {
 /// (`//wsl.localhost/...`, `//wsl$/...`), where advisory file locking is
 /// unreliable and NTFS reports permission bits as `0o777`.
 ///
-/// PB-V1.29-6: Consolidates the three inline `"/mnt/"` prefix checks
-/// (`hnsw/persist.rs`, `project.rs`, and the per-path permission gate in
-/// this file) into a single helper. The `/mnt/<letter>/` pattern avoids
-/// false-positives on plain Linux hosts that legitimately mount
-/// filesystems below `/mnt/` (e.g. `/mnt/data/` on a native Linux server
-/// was being treated as WSL DrvFS by the naive prefix check).
+/// The `/mnt/<letter>/` pattern avoids false-positives on plain Linux
+/// hosts that legitimately mount filesystems below `/mnt/` (e.g.
+/// `/mnt/data/` on a native Linux server is not WSL DrvFS).
 ///
-/// P3.36: accept uppercase drive letters too — WSL with
-/// `automount.options=case=force` exposes paths as `/mnt/C/...` — and
-/// recognise the Windows-side UNC entry points `//wsl.localhost/<distro>/`
-/// and the legacy `//wsl$/<distro>/`.
+/// Uppercase drive letters are accepted too — WSL with
+/// `automount.options=case=force` exposes paths as `/mnt/C/...` — along
+/// with the Windows-side UNC entry points `//wsl.localhost/<distro>/`
+/// and `//wsl$/<distro>/`.
 ///
 /// Returns `false` for non-UTF8 paths (WSL DrvFS paths are always UTF-8
 /// under the Linux view) and for anything that doesn't match one of those
@@ -109,13 +106,11 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
         Some(s) => s,
         None => return false,
     };
-    // PL-V1.38-4 (#1463): consult the configured `automount.root` from
-    // `/etc/wsl.conf` (cached via OnceLock) before falling back to the
-    // hardcoded `/mnt/`. Pre-fix, an operator with `automount.root=/win/`
-    // would have the watch loop's poll-mode detector recognise `/win/c/...`
-    // (via `is_under_wsl_automount`) but `is_wsl_drvfs_path` only checked
-    // `/mnt/<letter>/` — `coarse_fs_resolution` then returned 0 instead
-    // of 2s, making mtime-equality skip silently drop rapid re-saves.
+    // Consult the configured `automount.root` from `/etc/wsl.conf` (cached
+    // via OnceLock) before falling back to the hardcoded `/mnt/`. With
+    // `automount.root=/win/`, paths look like `/win/c/...`; without this
+    // check `coarse_fs_resolution` would return 0 instead of 2s, making
+    // mtime-equality skip silently drop rapid re-saves.
     let configured_root = wsl_automount_root_or_default();
     if let Some(rest) = s.strip_prefix(configured_root) {
         let bytes = rest.as_bytes();
@@ -140,11 +135,11 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
     false
 }
 
-/// PL-V1.38-4 (#1463): cached resolution of `automount.root` from
-/// `/etc/wsl.conf`. Single source of truth shared by `is_wsl_drvfs_path`
-/// (this module) and `is_under_wsl_automount` (`cli/watch/mod.rs`).
-/// Defaults to `"/mnt/"` when the file is missing, unreadable, or
-/// doesn't carry an `[automount] root=` setting.
+/// Cached resolution of `automount.root` from `/etc/wsl.conf`. Single
+/// source of truth shared by `is_wsl_drvfs_path` (this module) and
+/// `is_under_wsl_automount` (`cli/watch/mod.rs`). Defaults to `"/mnt/"`
+/// when the file is missing, unreadable, or doesn't carry an
+/// `[automount] root=` setting.
 pub fn wsl_automount_root_or_default() -> &'static str {
     static AUTOMOUNT_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     AUTOMOUNT_ROOT
@@ -155,13 +150,12 @@ pub fn wsl_automount_root_or_default() -> &'static str {
 /// Parse the `automount.root` value from `/etc/wsl.conf`.
 /// Returns `None` if the file doesn't exist or doesn't contain the setting.
 ///
-/// PL-V1.38-4 (#1463): promoted from `cli/watch/mod.rs` so a single
-/// source of truth backs both watch-mode poll detection and the
+/// Single source of truth backing both watch-mode poll detection and the
 /// generic `is_wsl_drvfs_path` filesystem-resolution path.
 fn parse_wsl_automount_root() -> Option<String> {
-    // RM-V1.33-7: bound the read at 64 KiB. `/etc/wsl.conf` is normally
-    // a few hundred bytes; a hostile symlink or bind mount pointing at a
-    // multi-GB file would otherwise OOM the watch loop on first event.
+    // Bound the read at 64 KiB. `/etc/wsl.conf` is normally a few hundred
+    // bytes; a hostile symlink or bind mount pointing at a multi-GB file
+    // would otherwise OOM the watch loop on first event.
     use std::io::Read;
     const MAX_WSL_CONF_BYTES: u64 = 64 * 1024;
     let mut content = String::new();
@@ -203,11 +197,9 @@ fn parse_wsl_automount_root() -> Option<String> {
 /// window as ambiguous and let the reindex through, otherwise the second
 /// rapid save silently doesn't make it into the index.
 ///
-/// PB-V1.30.1-5 / #1225: prior shape only handled WSL drvfs by toggling
-/// `<` vs `<=` against the cached mtime. That misses HFS+, SMB, NFS, and
-/// FAT32 mounts on plain Linux/macOS, all of which round mtime to ≥1 s.
-/// The new function returns a `Duration` so the caller can compare
-/// `now - cached <= resolution` uniformly across platforms.
+/// Returns a `Duration` so the caller can compare
+/// `now - cached <= resolution` uniformly across platforms (WSL drvfs,
+/// HFS+, SMB, NFS, and FAT32 mounts all round mtime to ≥1 s).
 ///
 /// Resolution by FS:
 /// - WSL drvfs (`/mnt/<letter>/`, `//wsl$/...`): **2 s**
@@ -225,8 +217,7 @@ fn parse_wsl_automount_root() -> Option<String> {
 /// which is the bug class this issue closes.
 ///
 /// Returns `Duration::ZERO` on stat failure (treat as fine-grained — the
-/// caller's `<=` comparison degenerates to strict-equality skip, which is
-/// the historical behavior on unknown mounts).
+/// caller's `<=` comparison degenerates to strict-equality skip).
 pub fn coarse_fs_resolution(path: &Path) -> std::time::Duration {
     use std::time::Duration;
 
@@ -348,9 +339,7 @@ pub struct ReferenceConfig {
     pub weight: f32,
 }
 
-/// Returns the default reference weight used for normalization calculations.
-/// # Returns
-/// A floating-point value of 0.8 representing the standard reference weight.
+/// Default reference weight (0.8).
 fn default_ref_weight() -> f32 {
     0.8
 }
@@ -377,29 +366,28 @@ pub struct AuxModelSection {
     /// Explicit path to `tokenizer.json`. Inferred from `model_path`'s
     /// parent when omitted; rejected when set without `model_path`.
     pub tokenizer_path: Option<PathBuf>,
-    /// EX-V1.38-3 (#1463): batch size for the cross-encoder reranker.
-    /// Reranker-only; SPLADE ignores this field. `None` falls through
-    /// to `CQS_RERANKER_BATCH` (env), then the dim-aware computed
-    /// default in [`crate::reranker::reranker_batch_size`]. Set via
+    /// Batch size for the cross-encoder reranker. Reranker-only; SPLADE
+    /// ignores this field. `None` falls through to `CQS_RERANKER_BATCH`
+    /// (env), then the dim-aware computed default in
+    /// [`crate::reranker::reranker_batch_size`]. Set via
     /// `[reranker] batch = N` in `.cqs.toml`.
     pub batch: Option<usize>,
-    /// EX-V1.38-3 (#1463): max input token length for the cross-encoder.
-    /// Reranker-only. `None` falls through to `CQS_RERANKER_MAX_LENGTH`
-    /// (env), then the compiled-in default 512. Set via
-    /// `[reranker] max_length = N` in `.cqs.toml`.
+    /// Max input token length for the cross-encoder. Reranker-only.
+    /// `None` falls through to `CQS_RERANKER_MAX_LENGTH` (env), then the
+    /// compiled-in default 512. Set via `[reranker] max_length = N` in
+    /// `.cqs.toml`.
     pub max_length: Option<usize>,
-    /// EX-V1.38-3 (#1463): hard cap on the cross-encoder over-retrieval
-    /// pool. Reranker-only. `None` falls through to `CQS_RERANK_POOL_MAX`
-    /// (env), then the compiled-in default 20. Set via
-    /// `[reranker] pool_max = N` in `.cqs.toml`. Resolved at dispatch
-    /// entry into a process-global OnceLock consulted by
-    /// [`crate::cli::limits::rerank_pool_max`].
+    /// Hard cap on the cross-encoder over-retrieval pool. Reranker-only.
+    /// `None` falls through to `CQS_RERANK_POOL_MAX` (env), then the
+    /// compiled-in default 20. Set via `[reranker] pool_max = N` in
+    /// `.cqs.toml`. Resolved at dispatch entry into a process-global
+    /// OnceLock consulted by [`crate::cli::limits::rerank_pool_max`].
     pub pool_max: Option<usize>,
-    /// EX-V1.38-3 (#1463): over-retrieval multiplier — at
-    /// `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates
-    /// for the cross-encoder. Reranker-only. `None` falls through to
-    /// `CQS_RERANK_OVER_RETRIEVAL` (env), then the compiled-in default 4.
-    /// Set via `[reranker] over_retrieval = N` in `.cqs.toml`.
+    /// Over-retrieval multiplier — at `--rerank --limit N`, stage-1
+    /// returns `N * MULTIPLIER` candidates for the cross-encoder.
+    /// Reranker-only. `None` falls through to `CQS_RERANK_OVER_RETRIEVAL`
+    /// (env), then the compiled-in default 4. Set via
+    /// `[reranker] over_retrieval = N` in `.cqs.toml`.
     pub over_retrieval: Option<usize>,
 }
 
@@ -498,17 +486,15 @@ pub struct Config {
     #[serde(default)]
     pub splade: Option<AuxModelSection>,
     /// Cross-encoder reranker configuration (optional `[reranker]` section).
-    /// Unset → hardcoded `ms-marco-minilm` default. The legacy top-level
-    /// `reranker_model` / `reranker_max_length` fields remain for backward
-    /// TOML compatibility but are not consumed by the resolver.
+    /// Unset → hardcoded `ms-marco-minilm` default. The top-level
+    /// `reranker_model` / `reranker_max_length` fields are accepted in TOML
+    /// but not consumed by the resolver.
     #[serde(default)]
     pub reranker: Option<AuxModelSection>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
     /// Index-pipeline configuration (`[index]` section).
-    /// Currently exposes only `vendored_paths` (#1221) — extend here if
-    /// future index-time knobs land.
     #[serde(default)]
     pub index: Option<IndexConfig>,
 }
@@ -516,11 +502,8 @@ pub struct Config {
 /// `[index]` section of `.cqs.toml`. Drives index-pipeline behaviour
 /// that doesn't fit cleanly under the existing top-level fields.
 ///
-/// Two nested sub-tables today:
-///
-///   - `vendored_paths` (#1221): override the vendored-path prefix list
-///   - `[index.policy]` (P4-6 / #1463): backend selection knobs
-///     previously surfaced only as env vars
+///   - `vendored_paths`: override the vendored-path prefix list
+///   - `[index.policy]`: backend selection knobs
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Override list of bare directory-segment names that flag a chunk
@@ -532,20 +515,19 @@ pub struct IndexConfig {
     pub vendored_paths: Option<Vec<String>>,
     /// Backend selection policy (`[index.policy]` sub-table).
     ///
-    /// P4-6 (#1463): exposes the knobs that backends previously read
-    /// only from env vars (`CQS_CAGRA_THRESHOLD`, `CQS_CAGRA_PERSIST`)
-    /// so projects can pin them per-repo without shell setup. Env vars
-    /// still win — the resolution order in each backend's `try_open`
-    /// is `env > [index.policy] > built-in default`.
+    /// Exposes the backend knobs (`CQS_CAGRA_THRESHOLD`,
+    /// `CQS_CAGRA_PERSIST`) so projects can pin them per-repo without
+    /// shell setup. Env vars still win — the resolution order in each
+    /// backend's `try_open` is `env > [index.policy] > built-in default`.
     #[serde(default)]
     pub policy: Option<IndexPolicy>,
 }
 
 /// `[index.policy]` — backend selection knobs.
 ///
-/// P4-6 (#1463). Each field is `Option<T>`: `None` means "fall through
-/// to env / built-in default", `Some(v)` means "use this value unless
-/// the corresponding env var overrides it".
+/// Each field is `Option<T>`: `None` means "fall through to env /
+/// built-in default", `Some(v)` means "use this value unless the
+/// corresponding env var overrides it".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexPolicy {
     /// Minimum chunk count below which the CAGRA backend declines to
@@ -560,7 +542,7 @@ pub struct IndexPolicy {
     pub cagra_persist: Option<bool>,
 }
 
-/// SEC-3: Redact a URL for logging — masks credentials (user:pass@host) and
+/// Redact a URL for logging — masks credentials (user:pass@host) and
 /// returns only the scheme + host. Returns "[redacted]" for unparseable URLs.
 fn redact_url(url: &str) -> String {
     // Strip credentials if present (scheme://user:pass@host/path -> scheme://host/path)
@@ -608,10 +590,7 @@ impl std::fmt::Debug for Config {
     }
 }
 
-/// Clamp f32 config value to valid range and warn if out of bounds.
-/// TC-48: Also catches NaN (which silently passes all comparisons as false)
-/// and clamps it to `min`, preventing silent data loss in downstream filters.
-/// SHL-V1.30-6: Resolve `CQS_MAX_REFERENCES` (default 20).
+/// Resolve `CQS_MAX_REFERENCES` (default 20).
 ///
 /// Memoized via `OnceLock` so the env-var read happens once at first
 /// `validate()` call rather than on every load. The value is documented in
@@ -630,6 +609,9 @@ fn max_references() -> usize {
     })
 }
 
+/// Clamp f32 config value to valid range and warn if out of bounds.
+/// Also catches NaN (which silently passes all comparisons as false) and
+/// clamps it to `min`, preventing silent data loss in downstream filters.
 fn clamp_config_f32(value: &mut f32, name: &str, min: f32, max: f32) {
     if value.is_nan() {
         tracing::warn!(field = name, "Config value is NaN, clamping to min");
@@ -688,11 +670,10 @@ impl Config {
         let mut merged = user_config.override_with(project_config);
         merged.validate();
 
-        // SEC-V1.38-8 (#1463): drop `?merged` for the same reason as the
-        // per-file `Loaded config` event above — the merged Config
-        // carries `llm_api_base` userinfo and shouldn't land in journald
-        // verbatim. A future log line re-adding contents must redact
-        // userinfo at the field level (see `redact_userinfo` in `llm/mod.rs`).
+        // Don't log `?merged` — the merged Config carries `llm_api_base`
+        // userinfo and shouldn't land in journald verbatim. A future log
+        // line re-adding contents must redact userinfo at the field level
+        // (see `redact_userinfo` in `llm/mod.rs`).
         tracing::debug!("Effective config built");
         merged
     }
@@ -702,16 +683,16 @@ impl Config {
     /// Adding a new field? Add its clamping here — this is the single
     /// validation choke point.
     fn validate(&mut self) {
-        // SHL-28 / SHL-V1.30-6: Cap reference count. Each reference opens a separate
-        // SQLite DB + HNSW index, consuming ~50-100MB RAM. 20 references = ~1-2GB
-        // baseline memory. If you need more, consider consolidating related libraries
-        // into fewer indexes — or override via `CQS_MAX_REFERENCES`.
+        // Cap reference count. Each reference opens a separate SQLite DB +
+        // HNSW index, consuming ~50-100MB RAM. 20 references = ~1-2GB
+        // baseline memory. To raise it, consolidate related libraries into
+        // fewer indexes — or override via `CQS_MAX_REFERENCES`.
         let max_references = max_references();
         if self.references.len() > max_references {
-            // OB-V1.36-2: tracing::warn! only — daemons (cqs watch / serve)
-            // have no TTY, eprintln! either lands as unstructured stderr in
-            // journald or vanishes. Matches the OB-V1.30.1-9 contract used
-            // elsewhere; CLI runs still surface this via the default subscriber.
+            // tracing::warn! only — daemons (cqs watch / serve) have no TTY,
+            // and eprintln! either lands as unstructured stderr in journald
+            // or vanishes. CLI runs still surface this via the default
+            // subscriber.
             tracing::warn!(
                 count = self.references.len(),
                 max = max_references,
@@ -726,15 +707,13 @@ impl Config {
             clamp_config_f32(&mut r.weight, "reference.weight", 0.0, 1.0);
         }
 
-        // SEC-4 + SEC-NEW-1: Warn if reference `path` OR `source` is outside
-        // project and home directories. SEC-4 covered `r.path` only; SEC-NEW-1
-        // (v1.22.0 audit) found that `r.source` was never validated, so a
-        // malicious checked-in `.cqs.toml` with `source = "/home/user/.ssh"`
-        // would cause `cqs ref update` to index arbitrary files into the
-        // reference DB (data exfiltration).
-        // PB-V1.33-1: use `dunce::canonicalize` and canonicalize both
-        // sides of the comparison so Windows verbatim (`\\?\C:\...`) vs
-        // non-verbatim differences don't trip the SEC-4/SEC-NEW-1 warn.
+        // Warn if reference `path` OR `source` is outside project and home
+        // directories. A malicious checked-in `.cqs.toml` with
+        // `source = "/home/user/.ssh"` would otherwise cause `cqs ref
+        // update` to index arbitrary files into the reference DB (data
+        // exfiltration). Canonicalize both sides of the comparison via
+        // `dunce::canonicalize` so Windows verbatim (`\\?\C:\...`) vs
+        // non-verbatim differences don't trip the warn.
         let home = dirs::home_dir().and_then(|h| dunce::canonicalize(h).ok());
         let cwd = std::env::current_dir()
             .ok()
@@ -749,12 +728,11 @@ impl Config {
                 v
             };
             for (field, p) in paths_to_check {
-                // EH-V1.33-9: silent `if let Ok(...) = canonicalize(p)` swallowed
-                // canonicalize failures (typo'd path, ENOENT, EACCES) and skipped the
-                // SEC-4 / SEC-NEW-1 audit entirely — the protection meant to flag a
-                // malicious `.cqs.toml` was effectively opt-out by error. Fail-loud:
-                // a canonicalize error means we can't audit, so warn explicitly and
-                // treat as untrusted.
+                // A silent `if let Ok(...) = canonicalize(p)` would swallow
+                // canonicalize failures (typo'd path, ENOENT, EACCES) and
+                // skip the audit entirely, making the protection opt-out by
+                // error. Fail loud: a canonicalize error means we can't
+                // audit, so warn explicitly and treat as untrusted.
                 match dunce::canonicalize(p) {
                     Ok(canonical) => {
                         let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
@@ -798,7 +776,7 @@ impl Config {
         if let Some(ref mut ef) = self.ef_search {
             clamp_config_usize(ef, "ef_search", 10, 1000);
         }
-        // SHL-26: Models like Claude support up to 64k output tokens; 4096 was too restrictive.
+        // Models like Claude support up to 64k output tokens.
         if let Some(ref mut mt) = self.llm_max_tokens {
             if *mt == 0 || *mt > 32768 {
                 tracing::warn!(
@@ -863,9 +841,8 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Skip permission check on WSL (NTFS always reports 777) or Windows drive mounts.
-            // PB-V1.29-6: Shared `is_wsl_drvfs_path` keeps the `/mnt/[a-z]/`
-            // logic in one spot rather than duplicating it in every call site.
+            // Skip permission check on WSL (NTFS always reports 777) or
+            // Windows drive mounts.
             let is_wsl_mount = is_wsl() || is_wsl_drvfs_path(path);
             if !is_wsl_mount {
                 if let Ok(meta) = std::fs::metadata(path) {
@@ -884,13 +861,13 @@ impl Config {
 
         match toml::from_str::<Self>(&content) {
             Ok(config) => {
-                // SEC-V1.38-8 (#1463): drop `?config` to avoid spilling
-                // `llm_api_base` (which can carry `https://user:pass@host`
-                // userinfo) to journald at debug. The path field is enough
-                // to confirm "we loaded a config from here"; structural
-                // contents of interest land via the relevant subsystem
-                // (LLM resolve, model resolve, etc.) at their own log
-                // sites with field-level redaction.
+                // Don't log `?config` — `llm_api_base` can carry
+                // `https://user:pass@host` userinfo that shouldn't reach
+                // journald at debug. The path field is enough to confirm
+                // "we loaded a config from here"; structural contents of
+                // interest land via the relevant subsystem (LLM resolve,
+                // model resolve, etc.) at their own log sites with
+                // field-level redaction.
                 tracing::debug!(path = %path.display(), "Loaded config");
                 Ok(Some(config))
             }
@@ -960,9 +937,9 @@ pub fn add_reference_to_config(
     lock_file.lock()?;
 
     // Bounded read via `Read::take` so a hostile `<MAX_CONFIG_SIZE>+1`-byte
-    // config can't OOM us before the size check fires (RM-V1.33-1). The
-    // cap is enforced at the I/O layer, eliminating the stat→read TOCTOU
-    // window that a plain `metadata()`-then-`read_to_string` would have.
+    // config can't OOM us before the size check fires. The cap is enforced
+    // at the I/O layer, eliminating the stat→read TOCTOU window that a
+    // plain `metadata()`-then-`read_to_string` would have.
     let mut content = String::new();
     use std::io::Read;
     (&lock_file)
@@ -1015,18 +992,15 @@ pub fn add_reference_to_config(
 
     // Atomic write: temp file + rename (while holding lock).
     //
-    // RM-V1.33-8: the write block is wrapped in a closure so the tmp
-    // file is always cleaned up on any intermediate write/permission
-    // failure. The previous code propagated `?` directly out of the
-    // OpenOptions::open / write_all / std::fs::write calls, leaving
-    // `<config>.toml.<hex>.tmp` files behind on disk-full / EIO. Names
-    // include 16 hex chars of randomness so failures accumulated
+    // The write block is wrapped in a closure so the tmp file is always
+    // cleaned up on any intermediate write/permission failure (disk-full /
+    // EIO). Names include 16 hex chars of randomness so failures accumulate
     // distinct tmp files rather than overwriting a single one.
     let suffix = crate::temp_suffix();
     let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
     let serialized = toml::to_string_pretty(&table)?;
     let write_result: Result<(), ConfigError> = (|| {
-        // SEC-1: Write with mode 0o600 from creation so file is never world-readable
+        // Write with mode 0o600 from creation so file is never world-readable
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -1051,8 +1025,8 @@ pub fn add_reference_to_config(
     }
 
     // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
-    // SEC-1: the tmp file was opened with mode(0o600), which fs::copy
-    // preserves into the xdev fallback destination.
+    // The tmp file was opened with mode(0o600), which fs::copy preserves
+    // into the xdev fallback destination.
     crate::fs::atomic_replace(&tmp_path, config_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
         ConfigError::Io(e)
@@ -1081,8 +1055,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
     };
     lock_file.lock()?;
 
-    // Bounded read via `Read::take` — see add_reference_to_config above
-    // (RM-V1.33-1).
+    // Bounded read via `Read::take` — see add_reference_to_config above.
     let mut content = String::new();
     use std::io::Read;
     (&lock_file)
@@ -1117,14 +1090,14 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
     };
 
     if removed {
-        // Atomic write: temp file + rename (while holding lock).
-        // RM-V1.33-8: same closure-wrapped cleanup as
-        // `add_reference_to_config` — see that site for rationale.
+        // Atomic write: temp file + rename (while holding lock). Same
+        // closure-wrapped cleanup as `add_reference_to_config` — see that
+        // site for rationale.
         let suffix = crate::temp_suffix();
         let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
         let serialized = toml::to_string_pretty(&table)?;
         let write_result: Result<(), ConfigError> = (|| {
-            // SEC-1: Write with mode 0o600 from creation so file is never world-readable
+            // Write with mode 0o600 from creation so file is never world-readable
             #[cfg(unix)]
             {
                 use std::io::Write;
@@ -1670,19 +1643,18 @@ llm_max_tokens = 200
         assert!(config.embedding.is_none());
     }
 
-    // ===== TC-36/TC-48: NaN threshold clamped to min =====
+    // ===== NaN threshold clamped to min =====
 
     #[test]
     fn tc36_nan_threshold_clamped_to_min() {
-        // TC-48: NaN is now caught by clamp_config_f32 and clamped to min (0.0
-        // for threshold). Previously NaN silently passed through because all NaN
-        // comparisons return false.
+        // NaN is caught by clamp_config_f32 and clamped to min (0.0 for
+        // threshold) rather than silently passing through (all NaN
+        // comparisons return false).
         let mut config = Config {
             threshold: Some(f32::NAN),
             ..Default::default()
         };
         config.validate();
-        // NaN is now caught and clamped to min (0.0 for threshold)
         assert_eq!(config.threshold, Some(0.0));
     }
 
@@ -1700,7 +1672,7 @@ llm_max_tokens = 200
         );
     }
 
-    // ===== TC-37: Edge case dimension metadata =====
+    // ===== Edge case dimension metadata =====
 
     #[test]
     fn tc37_embedding_config_empty_string_model() {
@@ -1718,7 +1690,7 @@ llm_max_tokens = 200
         );
     }
 
-    // ===== TC-39: embedding section tokenizer_path parsing =====
+    // ===== embedding section tokenizer_path parsing =====
 
     #[test]
     fn tc39_embedding_tokenizer_path_parsed() {
@@ -1753,7 +1725,7 @@ llm_max_tokens = 200
         );
     }
 
-    // ===== P4-6 (#1463): [index.policy] parsing =====
+    // ===== [index.policy] parsing =====
 
     /// `[index.policy]` round-trips through the config loader and
     /// surfaces both `cagra_threshold` and `cagra_persist`.
@@ -1813,7 +1785,7 @@ llm_max_tokens = 200
         );
     }
 
-    // ===== RX-2: ScoringOverrides config parsing =====
+    // ===== ScoringOverrides config parsing =====
 
     #[test]
     fn test_scoring_overrides_parsed() {
@@ -1985,10 +1957,9 @@ llm_max_tokens = 200
         assert!(s.get("name_exact").is_none());
     }
 
-    /// PB-V1.30.1-5 / #1225: WSL drvfs paths report a 2 s coarse-mtime
-    /// resolution regardless of the underlying NTFS/FAT32 — the 9P
-    /// bridge's worst-case rounding is what matters at the watch-loop
-    /// layer.
+    /// WSL drvfs paths report a 2 s coarse-mtime resolution regardless of
+    /// the underlying NTFS/FAT32 — the 9P bridge's worst-case rounding is
+    /// what matters at the watch-loop layer.
     #[test]
     fn coarse_fs_resolution_returns_two_seconds_for_wsl_drvfs() {
         use std::time::Duration;
@@ -2009,12 +1980,11 @@ llm_max_tokens = 200
         );
     }
 
-    /// PB-V1.30.1-5 / #1225: paths under `/tmp` (tmpfs on Linux) and
-    /// other native fine-grained filesystems must report
-    /// `Duration::ZERO` so the `events.rs` mtime-equality skip stays in
-    /// the historical fast path on the steady-state common case. Pinned
-    /// using a TempDir which lands on the runner's tmpfs (Linux CI) or
-    /// APFS (macOS CI), both fine-grained.
+    /// Paths under `/tmp` (tmpfs on Linux) and other native fine-grained
+    /// filesystems report `Duration::ZERO` so the `events.rs`
+    /// mtime-equality skip stays in the fast path on the steady-state
+    /// common case. Pinned using a TempDir which lands on the runner's
+    /// tmpfs (Linux CI) or APFS (macOS CI), both fine-grained.
     #[test]
     fn coarse_fs_resolution_returns_zero_for_native_fine_grained_fs() {
         use std::time::Duration;
@@ -2029,10 +1999,9 @@ llm_max_tokens = 200
         assert_eq!(coarse_fs_resolution(dir.path()), Duration::ZERO);
     }
 
-    /// PB-V1.30.1-5 / #1225: stat failure returns `Duration::ZERO`
-    /// (treat as fine-grained) — the caller's `<=` mtime check
-    /// degenerates to the historical strict-equality skip. A
-    /// nonexistent path is the cleanest stat-failure reproduction.
+    /// Stat failure returns `Duration::ZERO` (treat as fine-grained) — the
+    /// caller's `<=` mtime check degenerates to the strict-equality skip.
+    /// A nonexistent path is the cleanest stat-failure reproduction.
     #[test]
     fn coarse_fs_resolution_returns_zero_on_stat_failure() {
         use std::time::Duration;
@@ -2040,11 +2009,11 @@ llm_max_tokens = 200
         assert_eq!(coarse_fs_resolution(nonexistent), Duration::ZERO);
     }
 
-    /// PB-V1.30.1-5 / #1225: the `is_wsl_drvfs_path` shortcut takes
-    /// precedence over the platform-specific statfs check — even when
-    /// the underlying mount is reported as some unrelated FS magic,
-    /// WSL drvfs always returns 2 s. Pinned with a synthetic path that
-    /// matches the prefix without needing a real mount.
+    /// The `is_wsl_drvfs_path` shortcut takes precedence over the
+    /// platform-specific statfs check — even when the underlying mount is
+    /// reported as some unrelated FS magic, WSL drvfs always returns 2 s.
+    /// Pinned with a synthetic path that matches the prefix without needing
+    /// a real mount.
     #[test]
     fn coarse_fs_resolution_wsl_shortcut_does_not_call_statfs() {
         use std::time::Duration;

@@ -50,13 +50,13 @@ use super::{local_concurrency, local_timeout, LlmClient, LlmConfig, LlmError};
 /// schedule, which honors `CQS_LLM_RETRY_BACKOFFS_MS` if set.
 const DEFAULT_RETRY_BACKOFFS_MS: &[u64] = &[500, 1000, 2000, 4000];
 
-/// SHL-V1.38-10 (#1463): the static schedule above can't ride out
-/// transient 5xx bursts on a saturated local vLLM serving GPU. Operators
-/// can pass a longer schedule (e.g. `"500,1000,2000,4000,8000,16000"`)
+/// The static schedule above can't ride out transient 5xx bursts on a
+/// saturated local vLLM serving GPU. Operators can pass a longer schedule
+/// (e.g. `"500,1000,2000,4000,8000,16000"`) via `CQS_LLM_RETRY_BACKOFFS_MS`
 /// to extend the window without source edits. Empty / unparseable / any
 /// non-positive entry → fall back to the default. Returns owned `Vec<u64>`
 /// because the env-derived path can't return a `&'static`; callers iterate
-/// or index identically. `MAX_ATTEMPTS` follows the resolved length so
+/// or index identically. The attempt count follows the resolved length so
 /// the two stay in sync without further env knobs.
 fn retry_backoffs_ms() -> Vec<u64> {
     let raw = match std::env::var("CQS_LLM_RETRY_BACKOFFS_MS") {
@@ -110,7 +110,7 @@ impl LocalProvider {
     /// Build a `LocalProvider` from a resolved [`LlmConfig`].
     ///
     /// Reads `CQS_LLM_API_KEY` (optional), `CQS_LOCAL_LLM_CONCURRENCY`
-    /// (default 4, clamped [1,16] post-P3.47), `CQS_LOCAL_LLM_TIMEOUT_SECS`
+    /// (default 4, clamped [1,16]), `CQS_LOCAL_LLM_TIMEOUT_SECS`
     /// (default 120).
     ///
     /// # Errors
@@ -121,7 +121,7 @@ impl LocalProvider {
     pub fn new(llm_config: LlmConfig) -> Result<Self, LlmError> {
         let _span = tracing::info_span!("local_provider_new").entered();
 
-        // P2.32: bail if `api_base` isn't HTTP/HTTPS. `reqwest` will fail
+        // Bail if `api_base` isn't HTTP/HTTPS. Otherwise `reqwest` fails
         // *every* request individually, burning the full retry budget per
         // item before surfacing the error — a 7.5s stall per call instead
         // of a fail-fast at construction. Lightweight scheme check avoids
@@ -143,23 +143,22 @@ impl LocalProvider {
             .ok()
             .filter(|s| !s.is_empty());
 
-        // SEC-V1.33-10 / #1340: refuse to attach `Authorization: Bearer <key>`
-        // when an `http://` (plaintext) base targets a non-loopback /
-        // non-RFC1918 host. The default reqwest cross-origin redirect policy
-        // and SEC-V1.30.1-7 same-origin redirect both assume the operator at
-        // least started with HTTPS or a loopback bind — neither defense
-        // triggers when the operator's intentional initial bind is plaintext
-        // to a public host. Pre-fix, every prompt + the bearer token shipped
-        // over the wire in cleartext to whoever was on-path.
+        // Refuse to attach `Authorization: Bearer <key>` when an `http://`
+        // (plaintext) base targets a non-loopback / non-RFC1918 host. The
+        // cross-origin redirect policy and same-origin redirect both assume
+        // the operator at least started with HTTPS or a loopback bind —
+        // neither defense triggers when the intentional initial bind is
+        // plaintext to a public host, so without this refusal every prompt
+        // + the bearer token would ship in cleartext to whoever is on-path.
         //
-        // Symmetric to `cqs serve`'s loud-warn for `--no-auth` on non-loopback
-        // (PB-V1.30.1-1, #1206) — operator gets a clear refusal instead of a
-        // silent leak.
+        // Symmetric to `cqs serve`'s loud-warn for `--no-auth` on
+        // non-loopback — operator gets a clear refusal instead of a silent
+        // leak.
         if api_base_lc.starts_with("http://") && api_key.is_some() {
             let host = http_host(&llm_config.api_base);
             if !is_local_or_private_host(host) {
                 tracing::warn!(
-                    // SEC-V1.38-1 (#1463): redacted form so user:pass@host doesn't land in journald.
+                    // Redacted form so user:pass@host doesn't land in journald.
                     api_base = %llm_config.redacted_api_base(),
                     host = host,
                     "Refusing to attach Authorization: Bearer over plaintext HTTP to a \
@@ -171,23 +170,19 @@ impl LocalProvider {
             }
         }
 
-        // SEC-V1.30.1-7 (#1223): same-origin redirect policy. Submit
-        // requests carry `Authorization: Bearer <key>` when
-        // CQS_LLM_API_KEY is set. The historical `Policy::limited(2)`
-        // followed redirects to *any* origin — a misconfigured load
-        // balancer that 302s `internal-llm/` → `attacker-host/v1/...`
-        // would surface as a silent 401 loop on the redirect target
-        // (because reqwest 0.12 strips Authorization cross-origin) but
-        // the strip is silent and depends on a default that could
-        // shift across versions. `same_origin_redirect_policy(2)`
-        // refuses cross-origin hops outright with a `tracing::warn!`,
-        // so the failure is loud and the bearer never travels.
+        // Same-origin redirect policy. Submit requests carry
+        // `Authorization: Bearer <key>` when CQS_LLM_API_KEY is set.
+        // `same_origin_redirect_policy(2)` refuses cross-origin hops
+        // outright with a `tracing::warn!`, so a misconfigured load balancer
+        // that 302s `internal-llm/` → `attacker-host/v1/...` fails loudly and
+        // the bearer never travels (rather than relying on reqwest's silent
+        // cross-origin Authorization strip).
         //
-        // P3.48: cap idle pool to `concurrency` per-host with a 30s idle
-        // timeout. The default reqwest pool is unbounded with a 90s idle
-        // timeout — long-running indexing sessions accumulated stale
-        // sockets against vLLM/llama.cpp servers, leaking FDs without a
-        // matching outbound traffic spike.
+        // Cap idle pool to `concurrency` per-host with a 30s idle timeout.
+        // The default reqwest pool is unbounded with a 90s idle timeout —
+        // long-running indexing sessions accumulate stale sockets against
+        // vLLM/llama.cpp servers, leaking FDs without a matching outbound
+        // traffic spike.
         let http = Client::builder()
             .timeout(timeout)
             .redirect(crate::llm::redirect::same_origin_redirect_policy(2))
@@ -196,7 +191,7 @@ impl LocalProvider {
             .build()?;
 
         tracing::info!(
-            // SEC-V1.38-1 (#1463): redact userinfo from journald.
+            // Redact userinfo from journald.
             api_base = %llm_config.redacted_api_base(),
             model = %llm_config.model,
             concurrency,
@@ -235,10 +230,10 @@ impl LocalProvider {
 
         let batch_id = uuid::Uuid::new_v4().to_string();
 
-        // P2.32: clamp worker count to item count. Submitting 1 item to 64
-        // workers spawned 63 idle threads that immediately exited via channel
-        // disconnect, but each one still tripped the OS thread create/destroy
-        // path. Cap at items.len() with a floor of 1.
+        // Clamp worker count to item count. Submitting 1 item to many workers
+        // would spawn idle threads that immediately exit via channel
+        // disconnect, each still tripping the OS thread create/destroy path.
+        // Cap at items.len() with a floor of 1.
         let workers = self.concurrency.min(items.len()).max(1);
 
         let _span = tracing::info_span!(
@@ -278,13 +273,13 @@ impl LocalProvider {
                 let self_ref = self;
                 s.spawn(move || {
                     let _worker_span = tracing::debug_span!("local_worker", worker_id).entered();
-                    // P3-8 (audit v1.33.0): per-worker counters + wall-clock
-                    // so the post-loop completion line breaks down the batch
-                    // by worker. Without these the journal has N
-                    // indistinguishable "worker complete" lines and operators
-                    // tuning `CQS_LOCAL_LLM_CONCURRENCY` can't see tail-worker
-                    // skew. `retried` would require lifting state out of
-                    // `process_one_item`; out of scope for this audit pass.
+                    // Per-worker counters + wall-clock so the post-loop
+                    // completion line breaks down the batch by worker.
+                    // Without these the journal has N indistinguishable
+                    // "worker complete" lines and operators tuning
+                    // `CQS_LOCAL_LLM_CONCURRENCY` can't see tail-worker skew.
+                    // A `retried` counter would require lifting state out of
+                    // `process_one_item`.
                     let worker_start = std::time::Instant::now();
                     let mut completed: usize = 0;
                     let mut failed: usize = 0;
@@ -369,10 +364,10 @@ impl LocalProvider {
                             }
                         }
                     }
-                    // P3-8: per-worker completion with explicit fields.
-                    // Span context isn't always carried by JSON formatters,
-                    // so emit `worker_id` directly rather than relying on
-                    // the entered span.
+                    // Per-worker completion with explicit fields. Span context
+                    // isn't always carried by JSON formatters, so emit
+                    // `worker_id` directly rather than relying on the entered
+                    // span.
                     tracing::info!(
                         worker_id,
                         completed,
@@ -459,9 +454,9 @@ impl LocalProvider {
             )));
         }
 
-        // P2.73 + RM-V1.38-2 (#1463): cap the stash so a long-running
-        // daemon submitting batches without ever calling
-        // `fetch_batch_results` doesn't grow memory unbounded. Two caps:
+        // Cap the stash so a long-running daemon submitting batches without
+        // ever calling `fetch_batch_results` doesn't grow memory unbounded.
+        // Two caps:
         // (1) batch count (production callers drain in submit order, so
         // this firing is a leak signal), (2) total bytes — a single
         // un-fetched batch holding 5-10 KB responses × tens of thousands
@@ -528,9 +523,9 @@ impl LocalProvider {
         });
 
         let mut last_err: Option<String> = None;
-        // SHL-V1.38-10 (#1463): resolve schedule once per item; the
-        // env var is read at top of the retry loop, not per-attempt,
-        // so an in-flight `setenv` doesn't shift the schedule mid-flight.
+        // Resolve schedule once per item; the env var is read at the top of
+        // the retry loop, not per-attempt, so an in-flight `setenv` doesn't
+        // shift the schedule mid-flight.
         let backoffs = retry_backoffs_ms();
         let max_attempts = backoffs.len();
         for attempt in 0..max_attempts {
@@ -584,9 +579,9 @@ impl LocalProvider {
 
                     // Track auth-failure statistics on the FIRST request only
                     // so we can abort the batch if every worker hit 401/403.
-                    // P2.35: recover poisoned mutexes via `into_inner` so an
-                    // earlier worker panic doesn't cascade into the rest of
-                    // the pool. Counters are advisory.
+                    // Recover poisoned mutexes via `into_inner` so an earlier
+                    // worker panic doesn't cascade into the rest of the pool.
+                    // Counters are advisory.
                     if is_first_attempt
                         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
                     {
@@ -664,7 +659,7 @@ impl LocalProvider {
     }
 }
 
-/// Hard cap on response body size (RB-V1.30-1 / P1.10).
+/// Hard cap on response body size.
 ///
 /// Summary outputs are typically a few hundred bytes; 4 MiB is ~1000× headroom.
 /// Larger bodies are a sign of a misbehaving or hostile endpoint and we'd
@@ -684,8 +679,6 @@ impl LocalProvider {
 /// (`http://10.0.0.1:8080/v1` → `10.0.0.1`). Returns the input unchanged
 /// when the URL doesn't match the expected shape — `is_local_or_private_host`
 /// will then reject it as not-loopback.
-///
-/// SEC-V1.33-10 / #1340 helper.
 fn http_host(api_base: &str) -> &str {
     let rest = match api_base
         .strip_prefix("http://")
@@ -827,7 +820,7 @@ fn local_max_body_bytes() -> usize {
 /// - `Err(_)` — malformed JSON or body exceeds [`local_max_body_bytes`]
 ///
 /// The body is read with a length cap to defend against hostile / misbehaving
-/// servers that return multi-GB responses (P1.10 / RB-V1.30-1).
+/// servers that return multi-GB responses.
 fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<String>, LlmError> {
     use std::io::Read;
     let cap = local_max_body_bytes();
@@ -864,8 +857,8 @@ fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<Str
 /// Returns the empty string if the body can't be read or is non-UTF-8.
 ///
 /// Hard-capped at 2 KiB to bound log spam and prevent OOM on hostile error
-/// bodies (P1.10 / RB-V1.30-1). The caller further trims to the first 256
-/// chars so logs don't blow up either.
+/// bodies. The caller further trims to the first 256 chars so logs don't
+/// blow up either.
 fn body_preview(resp: reqwest::blocking::Response) -> String {
     use std::io::Read;
     const PREVIEW_CAP: u64 = 2 * 1024;
@@ -889,21 +882,20 @@ impl BatchProvider for LocalProvider {
         items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        // API-V1.38-4 (#1463): mirror `LlmClient::submit_batch`'s
-        // contract — validate the configured model up front so a wrong
-        // provider/model combo (`--provider local --model claude-haiku-4-5`)
-        // fails fast with the offending name in the error instead of
-        // surfacing as an opaque vLLM/Ollama API error after the batch
-        // has been built. The default `validate_model` impl on the
-        // trait accepts any non-empty name, so the local provider
-        // currently rejects empty strings only — but the call site is
-        // now in place so a future provider-level tightening flows
-        // through both providers symmetrically.
+        // Mirror `LlmClient::submit_batch`'s contract — validate the
+        // configured model up front so a wrong provider/model combo
+        // (`--provider local --model claude-haiku-4-5`) fails fast with the
+        // offending name in the error instead of surfacing as an opaque
+        // vLLM/Ollama API error after the batch has been built. The default
+        // `validate_model` impl on the trait accepts any non-empty name, so
+        // the local provider rejects empty strings only — but the call site
+        // is in place so a future provider-level tightening flows through
+        // both providers symmetrically.
         self.validate_model(&self.model)?;
 
-        // #1347: dispatch on `BatchKind` once. Adding a new kind is one
-        // arm. The historical purpose-label strings ("prebuilt" / "doc" /
-        // "hyde") are kept stable so existing log greps still match.
+        // Dispatch on `BatchKind` once. Adding a new kind is one arm. The
+        // purpose-label strings ("prebuilt" / "doc" / "hyde") are kept stable
+        // so existing log greps still match.
         use super::provider::BatchKind;
         match kind {
             BatchKind::Prebuilt => {
@@ -940,11 +932,11 @@ impl BatchProvider for LocalProvider {
     }
 
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
-        // P2.18: distinguish "already fetched / never submitted / silently
-        // evicted" from "no completed items in this batch" — the former is
-        // a hard error callers must surface; collapsing to an empty map hid
-        // data drift behind a successful return. P1.9: recover poisoned
-        // mutex via `into_inner` instead of cascading the panic.
+        // Distinguish "already fetched / never submitted / silently evicted"
+        // from "no completed items in this batch" — the former is a hard
+        // error callers must surface; collapsing to an empty map would hide
+        // data drift behind a successful return. Recover a poisoned mutex via
+        // `into_inner` instead of cascading the panic.
         let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
         match stash.remove(batch_id) {
             Some(m) => Ok(m),
@@ -966,13 +958,11 @@ impl BatchProvider for LocalProvider {
 impl LocalProvider {
     /// Register a per-item streaming-persist callback at construction.
     ///
-    /// API-V1.36-7 / #1459 sub-7: replaces the prior `&mut self`
-    /// `set_on_item_complete` trait method. Consuming-builder shape
-    /// keeps the trait `&self`-only and avoids the Mutex-everywhere
-    /// caller cost. Internally still uses interior mutability so the
-    /// callback can be invoked concurrently from worker threads.
+    /// Consuming-builder shape keeps the trait `&self`-only and avoids the
+    /// Mutex-everywhere caller cost. Internally uses interior mutability so
+    /// the callback can be invoked concurrently from worker threads.
     pub fn with_on_item_complete(self, cb: super::provider::OnItemCallback) -> Self {
-        // EH-V1.33-2 / RB-V1.33-10: tolerate a poisoned mutex.
+        // Tolerate a poisoned mutex.
         *self.on_item.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);
         self
     }
@@ -984,10 +974,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    // ENV_MUTEX hoisted to module-wide `crate::llm::LLM_ENV_LOCK`
-    // (#1312 / #1305). The local lock served `CQS_LLM_API_KEY` here; siblings
-    // mutated `CQS_LLM_*` under their own per-file mutexes and raced.
-    // Single shared lock serializes all callers.
+    // Env mutation is serialized through the module-wide
+    // `crate::llm::LLM_ENV_LOCK`. A single shared lock serializes all callers
+    // that mutate `CQS_LLM_*` env vars across sibling test files.
 
     fn make_config(api_base: &str, model: &str) -> LlmConfig {
         LlmConfig {
@@ -1353,9 +1342,9 @@ mod tests {
         let first = provider.fetch_batch_results(&batch_id).unwrap();
         assert_eq!(first.len(), 1);
 
-        // P2.18: second fetch returns BatchNotFound — distinguishes
-        // "already fetched" from "no items completed". Callers can no
-        // longer mistake a drained id for an empty batch.
+        // Second fetch returns BatchNotFound — distinguishes
+        // "already fetched" from "no items completed", so a drained id
+        // is never mistaken for an empty batch.
         let second = provider.fetch_batch_results(&batch_id);
         assert!(matches!(second, Err(LlmError::BatchNotFound(_))));
 
@@ -1608,8 +1597,8 @@ mod tests {
     }
 
     // ===== Sad-path test 22: concurrency=9999 clamps to 16 =====
-    // P3.47: ceiling reduced 64 → 16 — local endpoints saturate well
-    // before 16 workers and the unbounded shape was just stack churn.
+    // Ceiling is 16 — local endpoints saturate well before 16 workers and a
+    // higher count is just stack churn.
     #[test]
     fn concurrency_too_high_clamps_to_16() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1698,7 +1687,7 @@ mod tests {
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }
 
-    // ===== P1.10 / RB-V1.30-1: oversized body capped =====
+    // ===== oversized body capped =====
     //
     // A 200 OK response whose JSON body exceeds CQS_LOCAL_LLM_MAX_BODY_BYTES
     // must be rejected (item recorded as failed, no panic, no OOM). We force
@@ -1747,7 +1736,7 @@ mod tests {
         std::env::remove_var("CQS_LOCAL_LLM_MAX_BODY_BYTES");
     }
 
-    // ===== P1.10 / RB-V1.30-1: 4xx with large body — body_preview is capped =====
+    // ===== 4xx with large body — body_preview is capped =====
     //
     // body_preview() reads at most 2 KiB regardless of the response size. A
     // misbehaving server returning a 1 MiB error body must not OOM the worker

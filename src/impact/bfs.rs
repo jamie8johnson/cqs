@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use crate::store::CallGraph;
 
-/// Maximum nodes in any reverse BFS traversal (RT-RES-1).
+/// Maximum nodes in any reverse BFS traversal.
 /// Prevents unbounded expansion on hub functions with thousands of transitive callers.
 const DEFAULT_BFS_MAX_NODES: usize = 10_000;
 
@@ -40,13 +40,12 @@ pub(super) fn bfs_max_nodes() -> usize {
 ///
 /// When `max_depth == 0`, returns only the target node at depth 0 (no traversal).
 ///
-/// PERF-V1.33-1 / #1377 / P3-55: keys are `Arc<str>` so the BFS reuses the
-/// already-interned names from `graph.reverse` instead of allocating a
-/// fresh `String` per visit. On a hub function with thousands of
-/// transitive callers (default cap = 10k), pre-fix this was ~10k
-/// `caller.to_string()` heap allocations per call; post-fix it's
-/// `Arc::clone` (RC bump only). Lookup callers can still index by `&str`
-/// because `Arc<str>: Borrow<str>`.
+/// Keys are `Arc<str>` so the BFS reuses the already-interned names from
+/// `graph.reverse` instead of allocating a fresh `String` per visit. On a hub
+/// function with thousands of transitive callers (default cap = 10k), this is
+/// an `Arc::clone` (RC bump only) per visit rather than a `caller.to_string()`
+/// heap allocation. Lookup callers can still index by `&str` because
+/// `Arc<str>: Borrow<str>`.
 pub(super) fn reverse_bfs(
     graph: &CallGraph,
     target: &str,
@@ -59,11 +58,11 @@ pub(super) fn reverse_bfs(
     queue.push_back((target_arc, 0));
 
     while let Some((current, d)) = queue.pop_front() {
-        // AC-V1.36-9 / P3: defensive stale-queue skip mirrored from
-        // reverse_bfs_multi. Today reverse_bfs is correct because BFS
-        // visits depths in non-decreasing order, but a future change that
-        // pushes back already-seen nodes at a shorter depth would silently
-        // regress without this guard.
+        // Defensive stale-queue skip mirrored from reverse_bfs_multi.
+        // reverse_bfs is correct today because BFS visits depths in
+        // non-decreasing order, but a future change that pushes back
+        // already-seen nodes at a shorter depth would silently regress
+        // without this guard.
         if let Some(&stored) = ancestors.get(current.as_ref()) {
             if d > stored {
                 continue;
@@ -106,7 +105,7 @@ pub(super) fn reverse_bfs(
 /// test in the ancestor map?", we BFS forward from every test once and ask
 /// "is the caller in the reachable set?". Total work drops from
 /// `O(callers × graph)` to `O(tests + edges)` — single graph traversal
-/// instead of N. (Issue #1115 / audit PF-V1.29-9.)
+/// instead of N.
 ///
 /// Depth-bounded by `max_depth` (each source's BFS independently) and
 /// node-count-bounded by `bfs_max_nodes()`.
@@ -165,8 +164,7 @@ pub(super) fn forward_bfs_multi(
 /// Production code uses `reverse_bfs_multi_attributed` instead (same traversal
 /// but also tracks which source produced each path). Kept for tests.
 ///
-/// PERF-V1.33-1 / #1377 / P3-55: same `Arc<str>` rationale as
-/// [`reverse_bfs`].
+/// Same `Arc<str>` rationale as [`reverse_bfs`].
 #[cfg(test)]
 pub(super) fn reverse_bfs_multi(
     graph: &CallGraph,
@@ -233,9 +231,8 @@ pub(super) fn reverse_bfs_multi(
 /// Returns `HashMap<node_name, (min_depth, source_index)>` where `source_index` is
 /// the index into `targets` that first reached the node at minimum depth.
 ///
-/// PERF-V1.33-1 / #1377 / P3-55: keys are `Arc<str>` so the BFS reuses
-/// the already-interned names from `graph.reverse`. See [`reverse_bfs`]
-/// for the full rationale.
+/// Keys are `Arc<str>` so the BFS reuses the already-interned names from
+/// `graph.reverse`. See [`reverse_bfs`] for the full rationale.
 pub(super) fn reverse_bfs_multi_attributed(
     graph: &CallGraph,
     targets: &[&str],
@@ -307,7 +304,7 @@ pub(super) fn reverse_bfs_multi_attributed(
 /// all functions reachable within `max_depth` hops. Returns a map of
 /// `function_name -> count of tests that reach it`.
 ///
-/// **Optimization (PERF-23):** Tests with identical first-hop callee sets
+/// **Optimization:** Tests with identical first-hop callee sets
 /// produce identical reachable sets (beyond the test node itself). We group
 /// tests into equivalence classes by their direct callees and BFS once per
 /// unique class, multiplying counts by the class size.
@@ -557,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_reverse_bfs_multi_stale_queue_entry() {
-        // Regression test for #407: stale queue entries propagate wrong depths.
+        // Regression: stale queue entries must not propagate wrong depths.
         //
         // Graph (reverse edges, i.e., "who calls"):
         //   target1 <- mid <- deep   (chain: deep calls mid calls target1)
@@ -765,7 +762,7 @@ mod tests {
         assert!(!result.contains_key("D"), "D beyond depth limit");
     }
 
-    // ===== forward_bfs_multi tests (#1115) =====
+    // ===== forward_bfs_multi tests =====
 
     /// Helper: build a graph from forward edges; reverse is auto-derived so
     /// we can compare `reverse_bfs` and `forward_bfs_multi` on the same shape.
@@ -858,7 +855,7 @@ mod tests {
     }
 
     /// Parity check: for the suggest_tests use case (one caller, one test),
-    /// forward_bfs_multi must agree with the prior reverse_bfs predicate
+    /// forward_bfs_multi must agree with the reverse_bfs predicate
     ///   `reverse_bfs(caller).get(test).is_some_and(|d| d > 0)`.
     #[test]
     fn forward_bfs_multi_parity_with_reverse_bfs_predicate() {

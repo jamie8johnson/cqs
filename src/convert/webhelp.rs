@@ -51,8 +51,9 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     let _span = tracing::info_span!("webhelp_to_markdown", dir = %dir.display()).entered();
 
     let content_dir = dir.join(WEBHELP_CONTENT_DIR);
-    // SEC-29: Reject symlinked content_dir to prevent traversal outside trusted directories.
-    // is_webhelp_dir already checks `dir` itself, but content_dir could be a symlink too.
+    // Reject symlinked content_dir to prevent traversal outside trusted
+    // directories. is_webhelp_dir checks `dir` itself, but content_dir could
+    // be a symlink too.
     if content_dir.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
         anyhow::bail!(
             "Web help content/ directory is a symlink (rejected for security): {}",
@@ -66,11 +67,11 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
         );
     }
 
-    // P3 #106: shared cap honoring CQS_CONVERT_MAX_PAGES.
+    // Shared cap honoring CQS_CONVERT_MAX_PAGES.
     let max_pages = crate::limits::doc_max_pages();
 
     // Collect all HTML pages under content/, sorted for consistent ordering.
-    // Skip symlinks (SEC-11) to prevent symlink traversal attacks.
+    // Skip symlinks to prevent symlink traversal attacks.
     let mut pages: Vec<_> = walkdir::WalkDir::new(&content_dir)
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
@@ -116,9 +117,9 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     let mut page_count = 0usize;
     const MAX_WEBHELP_BYTES: usize = 50 * 1024 * 1024; // 50MB
 
-    // RM-V1.29-5: cap per-page reads so a pathological site with a single
-    // huge HTML page can't OOM the process. The outer MAX_WEBHELP_BYTES
-    // caps the merged output but doesn't bound each file read.
+    // Cap per-page reads so a pathological site with a single huge HTML page
+    // can't OOM the process. The outer MAX_WEBHELP_BYTES caps the merged
+    // output but doesn't bound each file read.
     let max_page_bytes = crate::limits::convert_page_bytes();
 
     for entry in &pages {
@@ -163,7 +164,7 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
                 }
                 merged.push_str(&md);
                 page_count += 1;
-                // RM-3: Guard against unbounded concatenation
+                // Guard against unbounded concatenation
                 if merged.len() > MAX_WEBHELP_BYTES {
                     tracing::warn!(
                         bytes = merged.len(),

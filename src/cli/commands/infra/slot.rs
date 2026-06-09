@@ -1,9 +1,8 @@
 //! `cqs slot` subcommand — list / create / promote / remove / active.
 //!
-//! Spec §Slot commands: project-level named slots living under
-//! `.cqs/slots/<name>/`. See `docs/plans/2026-04-24-embeddings-cache-and-slots.md`
-//! for the design. Migration from a legacy `.cqs/index.db` runs at the top of
-//! `dispatch::run_with` (see `src/cli/dispatch.rs`).
+//! Project-level named slots living under `.cqs/slots/<name>/`. Migration
+//! from a top-level `.cqs/index.db` runs at the top of `dispatch::run_with`
+//! (see `src/cli/dispatch.rs`).
 
 use std::fs;
 use std::path::Path;
@@ -87,11 +86,11 @@ pub(crate) enum SlotCommand {
 pub(crate) fn cmd_slot(cli: &Cli, subcmd: &SlotCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_slot").entered();
 
-    // P2.13: surface a hard error when `--slot` is passed at the global level.
-    // The global flag is a path-resolution input for *project-scoped* commands
+    // Surface a hard error when `--slot` is passed at the global level. The
+    // global flag is a path-resolution input for *project-scoped* commands
     // (search, index, …), but `cqs slot <subcmd>` already takes its target
-    // slot positionally. Silently ignoring the global meant `cqs slot create
-    // foo --slot bar` "succeeded" while ignoring `bar`. Fail loudly instead.
+    // slot positionally. Silently ignoring it would let `cqs slot create foo
+    // --slot bar` "succeed" while dropping `bar`. Fail loudly instead.
     if cli.slot.is_some() {
         anyhow::bail!(
             "--slot has no effect on `cqs slot` subcommands (this command is project-scoped, slot targets are taken positionally)"
@@ -203,10 +202,9 @@ fn collect_slot_entry(project_cqs_dir: &Path, name: &str, active: &str) -> SlotL
     let (chunks, model, dim) = match cqs::Store::open_readonly_small(&index_path) {
         Ok(store) => {
             let count = store.chunk_count().ok();
-            // EH-V1.38-4 (#1463): mirror the open-store warn ladder for
-            // metadata-read failures so a corrupt-but-openable slot
-            // surfaces in journald instead of showing a blank model
-            // column identical to a fresh slot.
+            // Mirror the open-store warn ladder for metadata-read failures
+            // so a corrupt-but-openable slot surfaces in journald instead of
+            // showing a blank model column identical to a fresh slot.
             let model = match store.try_stored_model_name() {
                 Ok(opt) => opt,
                 Err(e) => {
@@ -247,9 +245,9 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
     let _span = tracing::info_span!("slot_create", name, model).entered();
     validate_slot_name(name)?;
 
-    // P2.61 / P2.28: serialize lifecycle ops cross-process so two concurrent
-    // `slot create foo` calls (or create+promote+remove against the same name)
-    // can't interleave their read-validate-mutate steps and corrupt the active
+    // Serialize lifecycle ops cross-process so two concurrent `slot create
+    // foo` calls (or create+promote+remove against the same name) can't
+    // interleave their read-validate-mutate steps and corrupt the active
     // pointer. Lock is released when this function returns.
     let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
 
@@ -267,11 +265,11 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
 
     // Validate the model now (preset or HF) so the user gets a fast error
     // before the next `cqs index` runs. The actual download happens later.
-    // #1107: persist the user's intent in `slot.toml` so `cqs index --slot <name>`
-    // picks it up automatically. We store the *user's input* (preset name like
-    // `nomic-coderank`, or full HF repo like `BAAI/bge-large-en-v1.5`) — not the
-    // resolved canonical repo — so future preset table additions don't shift
-    // semantics out from under the user.
+    // Persist the user's intent in `slot.toml` so `cqs index --slot <name>`
+    // picks it up automatically. Store the *user's input* (preset name like
+    // `nomic-coderank`, or full HF repo like `BAAI/bge-large-en-v1.5`) — not
+    // the resolved canonical repo — so future preset table additions don't
+    // shift semantics out from under the user.
     let resolved_model: Option<String> = match model {
         Some(m) => {
             let cfg = cqs::embedder::ModelConfig::resolve(Some(m), None);
@@ -302,17 +300,16 @@ fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("slot_promote", name).entered();
     validate_slot_name(name)?;
 
-    // P2.61 / P2.28: see slot_create — exclusive lock prevents promote racing
-    // a concurrent remove of the same slot.
+    // See slot_create — exclusive lock prevents promote racing a concurrent
+    // remove of the same slot.
     let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
 
     let dir = slot_dir(project_cqs_dir, name);
     if !dir.exists() {
-        // EH-V1.33-10: surface listing failure with path context instead of
-        // masking it as "Available: []", which would tell the user to
-        // create a slot when in reality there might already be several but
-        // we can't read them (perm denied on .cqs/slots/, FS hiccup, slot
-        // dir corrupted). Mirrors P2.21's slot_remove fix.
+        // Surface listing failure with path context instead of masking it
+        // as "Available: []", which would tell the user to create a slot
+        // when in reality there might already be several but we can't read
+        // them (perm denied on .cqs/slots/, FS hiccup, slot dir corrupted).
         let available = list_slots(project_cqs_dir)
             .with_context(|| {
                 format!(
@@ -350,8 +347,8 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
     let _span = tracing::info_span!("slot_remove", name, force).entered();
     validate_slot_name(name)?;
 
-    // P2.61 / P2.28: hold exclusive lock across read_active_slot → list_slots
-    // → remove_dir_all so a concurrent promote can't change `active_slot`
+    // Hold exclusive lock across read_active_slot → list_slots →
+    // remove_dir_all so a concurrent promote can't change `active_slot`
     // between steps and leave the system pointing at a deleted directory.
     let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
 
@@ -365,10 +362,10 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
         );
     }
 
-    // DS-V1.30.1-D4 (#1232): refuse if a daemon is currently serving
-    // this slot. The slots lock above pins out concurrent CLI promote /
-    // remove calls but doesn't bind a long-lived `cqs watch --serve`
-    // process — its `Store::open` against `slots/<name>/index.db`
+    // Refuse if a daemon is currently serving this slot. The slots lock
+    // above pins out concurrent CLI promote / remove calls but doesn't bind
+    // a long-lived `cqs watch --serve` process — its `Store::open` against
+    // `slots/<name>/index.db`
     // holds open file descriptors that survive `fs::remove_dir_all`
     // on Linux, leaving WAL checkpoints persisting into a detached
     // directory tree that's reaped on daemon exit. Operators see no
@@ -380,8 +377,8 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
     guard_against_active_daemon(project_cqs_dir, name, force)?;
 
     let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
-    // P2.21: don't mask `list_slots` failure as "only slot remaining" — that
-    // would falsely error on a transient FS hiccup. Surface the real cause so
+    // Don't mask `list_slots` failure as "only slot remaining" — that would
+    // falsely error on a transient FS hiccup. Surface the real cause so
     // operators can fix it (permission denied, dir gone, etc.) instead of
     // staring at a misleading "create another slot first" message.
     let mut all =
@@ -424,19 +421,18 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
     Ok(())
 }
 
-/// DS-V1.30.1-D4 (#1232): probe the daemon and refuse if it's serving
-/// the slot the user is about to remove. Mirrors the existing
-/// "this is the active slot" `--force` semantics: refusal becomes a
-/// `tracing::warn!` when `force` is true.
+/// Probe the daemon and refuse if it's serving the slot the user is about
+/// to remove. Mirrors the "this is the active slot" `--force` semantics:
+/// refusal becomes a `tracing::warn!` when `force` is true.
 ///
 /// Probe failure (no daemon, transport error, missing slot field) is
-/// treated as "no daemon serving this slot" — the worst case is the
-/// historical behavior, never a false positive. Probe takes ~5 ms when
+/// treated as "no daemon serving this slot" — the worst case is an
+/// unguarded remove, never a false positive. Probe takes ~5 ms when
 /// the daemon is up and ~1 ms when the socket is missing, so the
 /// extra round trip is invisible relative to the index-rebuild path.
 ///
-/// Windows has no daemon today (`daemon_status` is unix-gated), so the
-/// guard is a no-op there.
+/// Windows has no daemon (`daemon_status` is unix-gated), so the guard is a
+/// no-op there.
 fn guard_against_active_daemon(project_cqs_dir: &Path, name: &str, force: bool) -> Result<()> {
     #[cfg(unix)]
     {
@@ -546,7 +542,7 @@ mod tests {
 
     #[test]
     fn slot_create_with_model_persists_slot_toml() {
-        // #1107: --model X must write `[embedding] model = "X"` so a later
+        // --model X must write `[embedding] model = "X"` so a later
         // `cqs index --slot <name>` (without --model) honors the user's intent.
         let _g = ENV_LOCK.lock().unwrap();
         let tmp = with_slots(&[]);
@@ -639,8 +635,8 @@ mod tests {
         assert!(!slot_dir(&cqs, "b").exists());
     }
 
-    // DS-V1.30.1-D4 (#1232) — refuse to unlink a slot dir while a daemon
-    // is actively serving it. These tests stand up a `UnixListener` on
+    // Refuse to unlink a slot dir while a daemon is actively serving it.
+    // These tests stand up a `UnixListener` on
     // the same socket path `daemon_status` probes and respond with a
     // `WatchSnapshot` whose `active_slot` field decides the outcome.
     //
@@ -853,13 +849,13 @@ mod tests {
         assert_eq!(p, Path::new("/proj/.cqs/slots"));
     }
 
-    // ── P2.28: TOCTOU pin on concurrent slot lifecycle ───────────────────
+    // ── TOCTOU pin on concurrent slot lifecycle ──────────────────────────
     //
     // Two threads racing to create the same slot must produce a
     // deterministic outcome: exactly one Ok, the other rejected with the
-    // "already exists" error. `acquire_slots_lock` (P2.61 fix) serializes
-    // the read-validate-mutate window so neither thread can observe the
-    // other's half-written state. Without the lock, both threads pass the
+    // "already exists" error. `acquire_slots_lock` serializes the
+    // read-validate-mutate window so neither thread can observe the other's
+    // half-written state. Without the lock, both threads pass the
     // `dir.exists()` check, both `create_dir_all`, and one's
     // `write_slot_model` clobbers the other.
     #[test]
@@ -875,10 +871,8 @@ mod tests {
         let r1 = h1.join().unwrap();
         let r2 = h2.join().unwrap();
 
-        // Exactly one must succeed. With the slots.lock fix the failing
-        // arm hits the `dir.exists()` bail; without the fix, both could
-        // succeed and the slot.toml would be racy. Either way the OK-XOR
-        // contract must hold.
+        // Exactly one must succeed: the failing arm hits the `dir.exists()`
+        // bail. The OK-XOR contract must hold.
         assert!(
             r1.is_ok() ^ r2.is_ok(),
             "exactly one of the racing slot_create calls must succeed (got {:?} / {:?})",

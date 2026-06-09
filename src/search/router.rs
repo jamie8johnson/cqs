@@ -19,10 +19,9 @@ use std::sync::{LazyLock, OnceLock};
 //   - `QueryCategory::all_variants() -> &'static [QueryCategory]`
 //   - `QueryCategory::default_alpha(&self) -> f32` — exhaustive, no catch-all
 //
-// Adding a category = one new line here. The match in `resolve_splade_alpha`
-// no longer contains a `_ => 1.0` catch-all: a missing `default_alpha = ...`
-// is a compile error, surfacing the SPLADE-tuning gap that previously could
-// ship invisibly.
+// Adding a category = one new line here. The `default_alpha` match is
+// exhaustive: a missing `default_alpha = ...` is a compile error, so a
+// SPLADE-tuning gap can't ship invisibly under a `_ => 1.0` catch-all.
 // ---------------------------------------------------------------------------
 /// Generates a `QueryCategory` enum with associated trait implementations and SPLADE alpha defaults.
 ///
@@ -56,8 +55,8 @@ macro_rules! define_query_categories {
         /// `Serialize` emits the canonical snake_case `Display` name.
         /// `Deserialize` is implemented out-of-macro (immediately below) so
         /// it routes through `from_snake_case` and honors the alias table —
-        /// required because the on-disk eval JSON carries both `"behavioral"`
-        /// and the historical `"behavioral_search"` for the same variant.
+        /// the on-disk eval JSON carries both `"behavioral"` and
+        /// `"behavioral_search"` for the same variant.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum QueryCategory {
             $(
@@ -113,8 +112,7 @@ macro_rules! define_query_categories {
 
             /// Default SPLADE fusion alpha for this category.
             ///
-            /// Sourced from per-category sweeps (see `resolve_splade_alpha`
-            /// for the methodology and history). Exhaustive — adding a new
+            /// Sourced from per-category sweeps. Exhaustive — adding a new
             /// variant without `default_alpha = ...` is a compile error.
             pub fn default_alpha(&self) -> f32 {
                 match self {
@@ -128,84 +126,51 @@ macro_rules! define_query_categories {
 define_query_categories! {
     /// Looking for a specific function/type by name ("search_filtered", "HashMap::new").
     /// Routes to `SearchStrategy::NameOnly` which bypasses SPLADE entirely, so
-    /// alpha is moot — kept at 1.0 as a "if SPLADE ran, default to dense" hint.
-    // 2026-05-08: 1.00 → 0.85 after the post-EmbeddingGemma summary refresh.
-    // v3.v2 218q paired sweep (test+dev) showed both halves agreeing more
-    // SPLADE helps: dev R@5 0.8889 → 1.0000 (+11.1pp, 2 queries), test R@1
-    // 0.7222 → 0.7778 (+5.6pp), no regressions. Plateau is flat from
-    // α=0.80..0.90, so 0.85 sits in the middle and tolerates classifier
-    // drift without falling off either side.
+    /// alpha only applies on the rare fall-through. 0.85 sits in the middle of
+    /// the flat α=0.80..0.90 plateau and tolerates classifier drift without
+    /// falling off either edge.
     IdentifierLookup => "identifier_lookup", default_alpha = 0.85;
     /// Searching for code by structure ("functions that return Result", "structs with Display").
-    /// Tuned 0.90 → 0.60 from EmbeddingGemma v3.v2 sweep (2026-05-03): the
-    /// curve is bimodal — pure dense (1.0) collapses to test R@5 12.5%, but
-    /// dev R@5 is 100% across α=0.4-0.7. 0.6 sits in the middle of the dev
-    /// plateau and keeps test R@5 at 37.5% (vs 25% at 0.9). N=8 per split, so
-    /// the choice within the plateau is noise; 0.6 favors the SPLADE-leaning
-    /// edge because structural signals ("returns Result", "Display impl")
-    /// surface in the sparse encoder's lexical features.
+    /// 0.6 leans SPLADE because structural signals ("returns Result", "Display
+    /// impl") surface in the sparse encoder's lexical features; pure dense
+    /// collapses recall on these queries.
     Structural => "structural", default_alpha = 0.60, aliases = ["structural_search"];
     /// Searching for code by behavior ("validates user input", "retries with backoff").
-    /// Tuned 0.80 → 1.00 from EmbeddingGemma v3.v2 sweep (2026-05-03): joint
-    /// optimum is pure dense (test R@5 75.0, dev R@5 75.0). The v1.28.3
-    /// rationale ("R@5 wants heavy dense for broader recall") points the same
-    /// direction here, just further — EmbeddingGemma's behavioral query
-    /// embeddings are strong enough that adding any SPLADE weight hurts.
-    /// Production lift is still bottlenecked by `behavioral` classifier
-    /// accuracy (~19% fire rate per the v3 audit).
+    /// Pure dense: behavioral query embeddings are strong enough that adding any
+    /// SPLADE weight hurts. Production lift is bottlenecked by `behavioral`
+    /// classifier accuracy (~19% fire rate).
     Behavioral => "behavioral", default_alpha = 1.00, aliases = ["behavioral_search"];
     /// Searching for abstract concepts ("dependency injection", "observer pattern").
-    /// Tuned 0.70 → 0.80 from EmbeddingGemma v3.v2 sweep (2026-05-03):
-    /// dev R@5 lifts +16.7pp (50.0 → 66.7), test R@5 +7.7pp (61.5 → 69.2).
-    /// EmbeddingGemma handles abstract concept queries well; small SPLADE
+    /// Mostly dense — abstract concept queries embed well; the small SPLADE
     /// weight catches the few queries with token overlap to specific impls.
     Conceptual => "conceptual", default_alpha = 0.80, aliases = ["conceptual_search"];
     /// Queries requiring multiple signals ("find where errors are logged and retried").
-    /// Dropped 1.00 → 0.10 in v1.28.3 — multi-clause queries have heavy keyword
-    /// overlap that SPLADE catches well at depth; pure dense was optimizing R@1
-    /// at the cost of R@5. v3.v2 sweep direction consistent across train/test/dev
-    /// (best ∈ [0.05, 0.10]). Same classifier-accuracy caveat as `behavioral`:
-    /// the rule-based classifier rarely fires `multi_step` correctly because
-    /// "X AND Y" patterns trip the structural rule first.
-    /// EmbeddingGemma sweep (2026-05-03) confirms: α=0.10 is still the joint
-    /// optimum (test R@5 92.9, dev R@5 92.9) — flat across α=0.1..0.8.
+    /// Heavily SPLADE: multi-clause queries have heavy keyword overlap that
+    /// SPLADE catches well at depth. The rule-based classifier rarely fires
+    /// `multi_step` correctly because "X AND Y" patterns trip the structural
+    /// rule first.
     MultiStep => "multi_step", default_alpha = 0.10;
     /// Queries with negation ("sort without allocating", "parse but not validate").
-    /// Kept at 0.80 after EmbeddingGemma v3.v2 sweep (2026-05-03): the curve
-    /// is essentially flat across α=0.0-0.9 (test R@5 81.2 throughout, dev
-    /// R@5 oscillates between 76.5 and 82.4). Only α=1.0 fails (test R@5
-    /// drops to 62.5%). 0.8 stays inside the flat region with a comfortable
-    /// margin from the dense-only edge.
+    /// 0.8 sits inside the flat region of the α curve with a comfortable margin
+    /// from the dense-only edge, which fails on these queries.
     Negation => "negation", default_alpha = 0.80;
     /// Queries constrained by chunk type ("all test functions", "every enum").
-    /// Tuned 1.00 → 0.00 from EmbeddingGemma v3.v2 sweep (2026-05-03): pure
-    /// SPLADE wins (test R@5 69.2, dev R@5 76.9) over pure dense (test R@5
-    /// 69.2 — tied — but dev R@5 only 69.2, -7.7pp). Type-filter queries are
-    /// dominated by lexical signals ("test function", "enum variant"); dense
-    /// embeddings add noise that SPLADE's term weights filter out cleanly.
+    /// Pure SPLADE: type-filter queries are dominated by lexical signals
+    /// ("test function", "enum variant"); dense embeddings add noise that
+    /// SPLADE's term weights filter out cleanly.
     TypeFiltered => "type_filtered", default_alpha = 0.00;
     /// Queries mentioning multiple languages ("Python equivalent of map in Rust").
-    /// Tuned 0.10 → 0.70 from EmbeddingGemma v3.v2 sweep (2026-05-03): test
-    /// R@5 jumps +18.2pp (54.5 → 72.7), dev R@5 holds at 63.6. The v1.28.3
-    /// 0.10 was tuned for BGE-large where SPLADE's tokenized language-name
-    /// matching dominated; EmbeddingGemma's bilingual embeddings shift the
-    /// optimum to a dense-leaning fusion (0.7) that keeps SPLADE's exact
-    /// language-name signal as a tiebreaker.
+    /// Dense-leaning fusion: bilingual embeddings bridge the syntax boundary,
+    /// while the SPLADE weight keeps exact language-name matching as a tiebreaker.
     CrossLanguage => "cross_language", default_alpha = 0.70;
-    /// No clear category — and the catch-all bucket where the rule-based
-    /// classifier deposits queries it doesn't recognise.
+    /// No clear category — the catch-all bucket where the rule-based classifier
+    /// deposits queries it doesn't recognise, including many MISCLASSIFIED
+    /// queries (structural-style queries the rule chain doesn't fire on) whose
+    /// true category's α never reaches them.
     ///
-    /// Tuned 1.00 → 0.80 from the EmbeddingGemma v3.v2 sweep (2026-05-03).
-    /// Empirically `Unknown` is also where many MISCLASSIFIED queries land
-    /// (e.g. structural-style queries the rule chain doesn't fire on), so
-    /// the per-category α for their *true* category never reaches them.
-    /// Pure dense (1.00) is the worst single point in the global sweep on
-    /// both splits (test R@5 67.0, dev R@5 75.2); flat α=0.80 is the joint
-    /// optimum on mean R@5 (test 72.5, dev 80.7). Setting `Unknown=0.80`
-    /// turns the catch-all into a hedge: misroutes still get most of the
-    /// SPLADE+dense fusion benefit, while genuine "no signal" queries — the
-    /// case the variant was originally for — also pick up a 5pp R@5 lift
-    /// over the old 1.00 default.
+    /// 0.80 is the joint optimum on mean R@5 and hedges both cases: misroutes
+    /// still get most of the SPLADE+dense fusion benefit, and genuine
+    /// "no signal" queries also benefit over pure dense.
     Unknown => "unknown", default_alpha = 0.80;
 }
 
@@ -235,14 +200,14 @@ impl std::fmt::Display for Confidence {
 pub enum SearchStrategy {
     /// FTS5 name search — skip embedding entirely (~1ms)
     NameOnly,
-    /// Standard dense embedding search (current default path, enriched HNSW)
+    /// Standard dense embedding search (default path, enriched HNSW)
     DenseDefault,
     /// Dense search with type boost for matching chunk types (enriched HNSW)
     DenseWithTypeHints,
-    /// Phase 5: dense search against the base (non-enriched) HNSW — LLM
-    /// summaries tend to hurt conceptual/behavioral/negation signal because
-    /// they inject canonical vocabulary that drowns out query semantics.
-    /// Falls back to [`Self::DenseDefault`] when the base index is missing.
+    /// Dense search against the base (non-enriched) HNSW — LLM summaries hurt
+    /// conceptual/behavioral/negation signal because they inject canonical
+    /// vocabulary that drowns out query semantics. Falls back to
+    /// [`Self::DenseDefault`] when the base index is missing.
     DenseBase,
 }
 
@@ -368,17 +333,12 @@ static CONCEPTUAL_NOUNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
     AhoCorasick::new(CONCEPTUAL_NOUNS).expect("CONCEPTUAL_NOUNS is a valid pattern set (static)")
 });
 
-/// Negation tokens matched against word-split query tokens (not substrings).
+/// Negation tokens matched against word-split query tokens (not substrings),
+/// so words like `cannot`, `piano`, `nano` don't false-fire.
 ///
-/// v1.22.0 audit AC-2: the previous pattern used trailing-space substring
-/// matching (`query.contains("not ")`) which false-fired on words like
-/// `cannot`, `piano`, `nano`, `volcano`, `casino`. Switched to exact
-/// word-token matching against the `words` vec already computed upstream.
-///
-/// EXT-V1.36-8 sub-2 (#1460): the compile-time floor below is the default;
-/// operators add domain phrases (`ignoring`, `without using`, etc.) via
-/// [`install_classifier_vocab_overlay`] from
-/// `~/.config/cqs/classifier.toml` and `<project>/.cqs/classifier.toml`.
+/// The compile-time floor below is the default; operators add domain phrases
+/// (`ignoring`, `without using`, etc.) via [`install_classifier_vocab_overlay`]
+/// from `~/.config/cqs/classifier.toml` and `<project>/.cqs/classifier.toml`.
 fn builtin_negation_tokens() -> std::collections::HashSet<String> {
     [
         "not",
@@ -431,8 +391,7 @@ const LANGUAGE_ALIASES: &[&str] = &["c++", "c#"];
 ///
 /// Materialized once at first use — the registry is immutable and the
 /// alias list is a compile-time constant, so every subsequent call
-/// returns a borrow of the same `Vec`. Previously this allocated a new
-/// `Vec<&'static str>` on every `classify_query` call.
+/// returns a borrow of the same `Vec`.
 static LANGUAGE_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut names: Vec<&'static str> = REGISTRY.all().map(|def| def.name).collect();
     for alias in LANGUAGE_ALIASES {
@@ -463,9 +422,9 @@ const STRUCTURAL_PATTERNS: &[&str] = &[
     "deriving",
 ];
 
-/// Aho-Corasick automaton over [`STRUCTURAL_PATTERNS`]. These are matched as
-/// raw substrings in the query (same as the previous `query.contains(pat)`),
-/// so any match — word-bounded or not — triggers structural classification.
+/// Aho-Corasick automaton over [`STRUCTURAL_PATTERNS`]. Matched as raw
+/// substrings, so any match — word-bounded or not — triggers structural
+/// classification.
 static STRUCTURAL_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
     AhoCorasick::new(STRUCTURAL_PATTERNS)
         .expect("STRUCTURAL_PATTERNS is a valid pattern set (static)")
@@ -473,15 +432,14 @@ static STRUCTURAL_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
 
 /// Multi-step conjunction patterns.
 ///
-/// AC-V1.25-10: bare " and " / " or " were removed because they fired on
-/// any conjunction in a query ("find foo and bar"), sweeping near-every
-/// multi-word NL query into `QueryCategory::MultiStep`. The remaining
-/// patterns require explicit sequencing / enumeration phrasing
-/// ("first do X then do Y") so the category actually captures multi-step
-/// intent, not any coordinated phrase.
+/// Bare " and " / " or " are excluded — they fire on any conjunction
+/// ("find foo and bar") and would sweep near-every multi-word NL query into
+/// `QueryCategory::MultiStep`. These patterns require explicit sequencing /
+/// enumeration phrasing ("first do X then do Y") so the category captures
+/// multi-step intent, not any coordinated phrase.
 ///
-/// EXT-V1.36-8 sub-2 (#1460): operators extend via TOML overlay
-/// (e.g. ordering verbs in non-English domain queries) without a rebuild.
+/// Operators extend via TOML overlay (e.g. ordering verbs in non-English
+/// domain queries) without a rebuild.
 fn builtin_multistep_patterns() -> Vec<String> {
     [
         "and then",
@@ -511,9 +469,9 @@ static MULTISTEP_PATTERNS_AC: LazyLock<std::sync::RwLock<std::sync::Arc<AhoCoras
         std::sync::RwLock::new(std::sync::Arc::new(ac))
     });
 
-/// EXT-V1.36-8 sub-2 (#1460): merge a classifier-vocab overlay into the
-/// runtime NEGATION + MULTISTEP sets. Called once at CLI/daemon startup
-/// after parsing `~/.config/cqs/classifier.toml` (user-global) and
+/// Merge a classifier-vocab overlay into the runtime NEGATION + MULTISTEP
+/// sets. Called once at CLI/daemon startup after parsing
+/// `~/.config/cqs/classifier.toml` (user-global) and
 /// `<project>/.cqs/classifier.toml` (project-local; layered on top).
 ///
 /// `extra_negation` entries are lowercased and merged into the negation
@@ -526,9 +484,9 @@ pub fn install_classifier_vocab_overlay(extra_negation: Vec<String>, extra_multi
     if extra_negation.is_empty() && extra_multistep.is_empty() {
         return;
     }
-    // OB-V1.38-3 (#1463): info-level so operators editing
-    // `~/.config/cqs/classifier.toml` see their config land in journald
-    // without RUST_LOG=debug. Fires only when at least one set is non-empty.
+    // Info-level so operators editing `~/.config/cqs/classifier.toml` see
+    // their config land in journald without RUST_LOG=debug. Fires only when
+    // at least one set is non-empty.
     let neg_count = extra_negation.len();
     let multi_count = extra_multistep.len();
     if !extra_negation.is_empty() {
@@ -586,7 +544,7 @@ pub(crate) fn reset_classifier_vocab_for_test() {
     }
 }
 
-/// EXT-V1.36-8 sub-2 (#1460): parse a `classifier.toml` overlay from disk.
+/// Parse a `classifier.toml` overlay from disk.
 ///
 /// Schema:
 /// ```toml
@@ -678,10 +636,8 @@ pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> (Vec<String>, Ve
 
 // ── Classification ───────────────────────────────────────────────────
 
-/// Classify a query into a category with confidence level and recommended strategy.
-///
-/// Per-slot SPLADE α overrides (#1453). Loaded once at CLI/daemon startup
-/// from `.cqs/slots/<active>/slot.toml` `[splade.alpha]` and consulted by
+/// Per-slot SPLADE α overrides. Loaded once at CLI/daemon startup from
+/// `.cqs/slots/<active>/slot.toml` `[splade.alpha]` and consulted by
 /// [`resolve_splade_alpha`] between the env precedence and the hardcoded
 /// per-category default.
 ///
@@ -703,11 +659,10 @@ static SLOT_SPLADE_ALPHA: std::sync::RwLock<Option<std::collections::HashMap<Str
 /// `to_string()`); values are pre-validated to `[0.0, 1.0]` finite by
 /// [`crate::slot::read_slot_splade_alpha_table`].
 pub fn install_slot_splade_alpha_overrides(table: std::collections::HashMap<String, f32>) {
-    // OB-V1.38-3 (#1463): info-level when an operator's slot α overrides
-    // actually take, so the journald audit trail records whether the
-    // `slot.toml [splade.alpha]` table was applied. Empty tables stay
-    // silent — every dispatch installs an empty table when no overlay
-    // exists, and we don't want a per-command log line for that case.
+    // Info-level when slot α overrides actually take, so the journald audit
+    // trail records whether the `slot.toml [splade.alpha]` table was applied.
+    // Empty tables stay silent — every dispatch installs an empty table when
+    // no overlay exists, and we don't want a per-command log line for that.
     let entries = table.len();
     match SLOT_SPLADE_ALPHA.write() {
         Ok(mut g) => {
@@ -739,42 +694,34 @@ pub(crate) fn clear_slot_splade_alpha_overrides() {
 /// Precedence:
 /// 1. Per-category env (`CQS_SPLADE_ALPHA_{CATEGORY}`)
 /// 2. Global env (`CQS_SPLADE_ALPHA`)
-/// 3. Per-slot `slot.toml [splade.alpha].<category>` (#1453, installed via
+/// 3. Per-slot `slot.toml [splade.alpha].<category>` (installed via
 ///    [`install_slot_splade_alpha_overrides`])
 /// 4. Hardcoded per-category default (`category.default_alpha()`)
 ///
 /// Returns a value in [0.0, 1.0] where 1.0 means pure dense and < 1.0 activates
 /// SPLADE with that fusion weight.
 ///
-/// OB-NEW-1: emits a single structured `tracing::debug!` recording the
-/// resolved alpha, its source (`per_cat_env` / `global_env` / `slot_toml` /
-/// `default`), and the category. Callers no longer need to log the decision
-/// themselves; rooting the log inside this function makes the precedence
-/// visible and eliminates the drift that existed between the CLI and
-/// batch-handler logs.
+/// Emits a single structured `tracing::debug!` recording the resolved alpha,
+/// its source (`per_cat_env` / `global_env` / `slot_toml` / `default`), and
+/// the category, so callers don't log the decision themselves and the
+/// precedence stays visible.
 pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     let _span = tracing::debug_span!("resolve_splade_alpha", category = %category).entered();
 
     // Per-category env override: CQS_SPLADE_ALPHA_CONCEPTUAL_SEARCH etc.
     //
-    // Rust 1.95 if-let guards collapse the previous nested
-    // `if let Ok(val) { if let Ok(alpha) { ... } else { warn } }` into a
-    // single match: each Ok-arm carries the env value straight into its
-    // tracing call without an extra `else` block. The happy-path arm keeps
-    // the inner `if alpha.is_finite()` so the non-finite warning can re-use
-    // the already-parsed `alpha` without a second `parse::<f32>()` round
-    // (clippy::collapsible_match would inline the predicate at the cost of
-    // re-parsing in the second arm — not worth it for a hot path).
+    // The happy-path arm keeps the inner `if alpha.is_finite()` so the
+    // non-finite warning can re-use the already-parsed `alpha` without a
+    // second `parse::<f32>()` round.
     let cat_key = format!("CQS_SPLADE_ALPHA_{}", category.to_string().to_uppercase());
     #[allow(clippy::collapsible_match)]
     match std::env::var(&cat_key) {
         Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
             if alpha.is_finite() {
                 let alpha = alpha.clamp(0.0, 1.0);
-                // OB-V1.30.1-1 / P3-OB-1: per-search routing fires on every
-                // query — keep the entry `info_span!` for traceability and
-                // demote the inner event to debug so the operator default
-                // log level isn't flooded.
+                // Per-search routing fires on every query — the entry
+                // `info_span!` carries traceability; the inner event is debug
+                // so the operator default log level isn't flooded.
                 tracing::debug!(
                     category = %category,
                     alpha,
@@ -788,9 +735,8 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         Ok(val) => {
             tracing::warn!(var = %cat_key, value = %val, "Invalid alpha, using default");
         }
-        // EH-V1.36-9 / P3: surface NotUnicode separately. NotPresent is
-        // the silent default; NotUnicode is operator misconfiguration
-        // that previously vanished into the same arm.
+        // Surface NotUnicode separately. NotPresent is the silent default;
+        // NotUnicode is operator misconfiguration.
         Err(std::env::VarError::NotPresent) => {}
         Err(e) => {
             tracing::warn!(
@@ -803,20 +749,15 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
 
     // Global env override: CQS_SPLADE_ALPHA
     //
-    // AC-V1.38-5 (#1463): mirror the per-cat arm's structure so a
-    // malformed `CQS_SPLADE_ALPHA=NaN` / `CQS_SPLADE_ALPHA=foo` /
-    // non-unicode value warns instead of silently falling through. Pre-
-    // fix the catch-all `_ => {}` collapsed parse errors, non-finite
-    // values, and `NotUnicode` together — operator who typoed
-    // `CQS_SPLADE_ALPHA=O.7` (capital O) got the per-cat default
-    // silently and chased an A/B that didn't reflect the env they
-    // thought was active.
+    // Mirrors the per-cat arm's structure so a malformed `CQS_SPLADE_ALPHA=NaN`
+    // / `CQS_SPLADE_ALPHA=foo` / non-unicode value warns instead of silently
+    // falling through (e.g. a typoed `CQS_SPLADE_ALPHA=O.7` with capital O).
     #[allow(clippy::collapsible_match)]
     match std::env::var("CQS_SPLADE_ALPHA") {
         Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
             if alpha.is_finite() {
                 let alpha = alpha.clamp(0.0, 1.0);
-                // OB-V1.30.1-1 / P3-OB-1: see comment above on per-cat env.
+                // See the per-cat env arm above for why this is debug.
                 tracing::debug!(
                     category = %category,
                     alpha,
@@ -848,7 +789,7 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         }
     }
 
-    // #1453: per-slot SPLADE α overrides from `slot.toml [splade.alpha]`.
+    // Per-slot SPLADE α overrides from `slot.toml [splade.alpha]`.
     // Sits between env vars (operator override) and hardcoded defaults
     // (model-category guess) so a slot that's been α-tuned for its
     // embedder doesn't silently inherit values tuned for a different
@@ -871,54 +812,17 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         }
     }
 
-    // Per-category defaults from the 21-point alpha sweep on the genuinely
-    // clean index (2026-04-15). 265 queries × 8 categories, 14,882 chunks
-    // post-GC + worktree-duplicate purge.
-    //
-    // History: the 2026-04-14 "clean" sweep was actually run on a 96k-chunk
-    // index polluted by auto-indexed `.claude/worktrees/` copies (daemon
-    // watch ignored .gitignore, fixed in #1003). The dirty-tuned alphas
-    // drove SPLADE-enabled R@1 to 26.8% (vs 35.8% dense-only) until
-    // re-measured. The values here reflect the real clean-index optima —
-    // overall R@1 41% projected (vs 37.7% for global α=0.90).
-    //
-    // Run artifacts: /home/user001/.cache/cqs/evals/run_20260415_1[4-5]*/
-    // v1.26.0 per-category alphas + cross_language change from v3 sweep.
-    //
-    // The full v3 sweep (2026-04-16) measured best-per-category α on the
-    // v3 train split, but when the new alphas were tested through the
-    // PRODUCTION FULL ROUTER on v3 test, only cross_language produced a
-    // real R@1 change. The others were masked by strategy routing
-    // (NameOnly, DenseBase, DenseWithTypeHints) which already captures
-    // most category-specific behavior.
-    //
-    // v3 test R@1 measurements (109 queries):
-    //   v1.26.0 alphas:               44.0%
-    //   full v3-swept alphas:         44.0% (0.0pp)
-    //   v1.26.0 + xlang=0.10 only:    45.0% (+1.0pp)  ← shipped
-    //
-    // cross_language change rationale: semantic bridging across languages
-    // (e.g. "Python equivalent of map in Rust") doesn't benefit from SPLADE
-    // lexical matching — you need dense embeddings to cross the syntax
-    // boundary. α=0.10 puts almost all weight on dense. +9pp on the
-    // category's R@1 on v3 test (18.2% → 27.3%).
-    //
-    // Other categories' v3 sweep deltas lived mostly in Unknown queries
-    // that the rule-based classifier never routes to them anyway, so the
-    // optima were unreachable in production. Full data in
-    // ~/training-data/research/models.md.
-    //
-    // Run artifacts: /mnt/c/Projects/cqs/evals/queries/v3_alpha_sweep.json
-    //
-    // Sourced from `QueryCategory::default_alpha`, which is generated by
-    // `define_query_categories!` (see top of this file). The match in that
-    // generator is exhaustive — adding a new variant without
-    // `default_alpha = ...` is a compile error, so a SPLADE-tuning gap can
-    // no longer slip through under a `_ => 1.0` catch-all.
+    // Per-category defaults, sourced from `QueryCategory::default_alpha`
+    // (generated by `define_query_categories!` at the top of this file).
+    // That match is exhaustive — adding a variant without `default_alpha = ...`
+    // is a compile error, so a SPLADE-tuning gap can't slip through under a
+    // `_ => 1.0` catch-all. Strategy routing (NameOnly, DenseBase,
+    // DenseWithTypeHints) already captures most category-specific behavior,
+    // so per-category α mostly matters for queries the router can't strategy-
+    // route and for the cross-language fusion tiebreaker.
     let alpha = category.default_alpha();
 
-    // OB-V1.30.1-1 / P3-OB-1: demote per-search routing to debug — see
-    // top of `resolve_splade_alpha` for the rationale.
+    // Per-search routing is debug — see the top of `resolve_splade_alpha`.
     tracing::debug!(
         category = %category,
         alpha,
@@ -932,11 +836,10 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
 /// Priority order: Negation > Identifier > CrossLanguage > TypeFiltered >
 /// Structural > Behavioral > Conceptual > MultiStep > Unknown.
 pub fn classify_query(query: &str) -> Classification {
-    // OB-V1.29-6: entry span so trace captures show the classifier running
-    // on every search query, plus a debug log at exit that records which
-    // category / strategy was picked. `classify_query` is pure but sits on
-    // the hot path for every search, so callers often want to confirm the
-    // category assignment after the fact without recomputing it.
+    // Entry span so trace captures show the classifier running on every
+    // search query, plus a debug log at exit recording the chosen category /
+    // strategy. `classify_query` is pure but on the hot path, so callers
+    // often want to confirm the category assignment without recomputing it.
     let _span = tracing::info_span!("classify_query", query_len = query.len()).entered();
     let classification = classify_query_inner(query);
     tracing::debug!(
@@ -958,13 +861,9 @@ struct QueryContext<'a> {
 /// Inner body of [`classify_query`] — split so the outer function can log the
 /// chosen category once regardless of which branch fires.
 ///
-/// P4-4 (#1463): refactored from a stack of `if X { return Classification {...} }`
-/// blocks into a chain of `try_classify_*(&ctx)` helpers returning
-/// `Option<Classification>`. The priority order still reads top-to-bottom in the
-/// `or_else` chain, but each classifier is now independently unit-testable —
-/// the previous shape forced every test to construct the full lower/words
-/// context and run the entire 9-step priority chain just to verify a single
-/// classifier's behavior.
+/// A chain of `try_classify_*(&ctx)` helpers returning `Option<Classification>`.
+/// The priority order reads top-to-bottom in the `or_else` chain, and each
+/// classifier is independently unit-testable.
 fn classify_query_inner(query: &str) -> Classification {
     let query_lower = query.to_lowercase();
     let words: Vec<&str> = query_lower.split_whitespace().collect();
@@ -1008,20 +907,15 @@ fn try_classify_empty(ctx: &QueryContext) -> Option<Classification> {
 }
 
 /// Priority 1: Negation trumps everything — "sort without allocating".
-/// Phase 5: enriched summaries inject positive vocabulary ("allocates",
-/// "uses heap") that fights the negation, so route to the base index.
+/// Routes to the base index because enriched summaries inject positive
+/// vocabulary ("allocates", "uses heap") that fights the negation.
 ///
-/// AC-V1.38-4 (#1463): two-arm context gate. Pre-fix the classifier
-/// fired on any single negation token, including bare common nouns
-/// ("exclude", "avoid", "no") that often appear inside non-negation
-/// queries. `cqs "exclude tests"` → "find code that excludes tests"
-/// (intent: identifier-shaped) was misrouted to Negation. The gate
-/// requires the negation token to function as a CONNECTIVE — either
-/// (a) followed by ≥1 non-negation token, OR (b) preceded by a
-/// non-negation token. A single-token query that IS a negation word
-/// no longer qualifies as Negation. This catches "no", "exclude",
-/// "avoid" used as identifiers/placeholders without breaking
-/// "sort without allocating" or "behavior except race".
+/// Two-arm context gate: the negation token must function as a CONNECTIVE —
+/// either (a) followed by ≥1 non-negation token, OR (b) preceded by a
+/// non-negation token. A single-token query that IS a negation word does not
+/// qualify, so "no", "exclude", "avoid" used as identifiers/placeholders
+/// don't misroute while "sort without allocating" and "behavior except race"
+/// still classify as Negation.
 fn try_classify_negation(ctx: &QueryContext) -> Option<Classification> {
     if ctx.words.is_empty() {
         return None;
@@ -1085,11 +979,9 @@ fn try_classify_cross_language(ctx: &QueryContext) -> Option<Classification> {
     }
 }
 
-/// Priority 4: Type-filtered — "all structs", "every enum",
-/// "test functions". 2026-04-13: route to base. Enrichment ablation at 78%
-/// summary coverage showed +8.4pp R@1 on base vs enriched (41.7% vs 33.3%,
-/// N=24). Summaries add generic vocabulary that dilutes the specific type
-/// signal.
+/// Priority 4: Type-filtered — "all structs", "every enum", "test functions".
+/// Routes to base: summaries add generic vocabulary that dilutes the specific
+/// type signal.
 fn try_classify_type_filtered(ctx: &QueryContext) -> Option<Classification> {
     let type_hints = extract_type_hints(ctx.lower);
     if type_hints.is_some() {
@@ -1119,17 +1011,9 @@ fn try_classify_structural(ctx: &QueryContext) -> Option<Classification> {
 }
 
 /// Priority 6: Behavioral — action verbs, "code that does X".
-/// Phase 5: behavioral queries use verbs the query author chose; enriched
-/// summaries standardize those verbs ("handles" → "processes"), which
-/// washes out the specific verb the user asked about. Route to base.
-///
-/// 2026-04-10 update: same-corpus A/B at 50% summary coverage shows
-/// behavioral routing produces 0pp delta — the routing fires but the
-/// affected queries' gold answers are mostly callable types where
-/// base ≈ enriched after enrichment_hash dedupe. Keeping the route on
-/// base because the historical research data still says behavioral
-/// is hurt by summaries; we just can't measure the effect on this
-/// corpus shape. See research/enrichment.md for the data.
+/// Routes to base: behavioral queries use the verbs the query author chose,
+/// and enriched summaries standardize those verbs ("handles" → "processes"),
+/// washing out the specific verb the user asked about.
 fn try_classify_behavioral(ctx: &QueryContext) -> Option<Classification> {
     if is_behavioral_query(ctx.lower, ctx.words) {
         Some(Classification {
@@ -1145,25 +1029,14 @@ fn try_classify_behavioral(ctx: &QueryContext) -> Option<Classification> {
 
 /// Priority 7: Conceptual — abstract nouns, short non-identifier queries.
 ///
-/// 2026-04-10 update: ROUTING REVERSED. Phase 5 originally routed
-/// conceptual to DenseBase based on the historical research finding
-/// "summaries hurt conceptual −15pp". That finding was measured on a
-/// corpus where only callable types were summarized.
+/// Routes to the enriched index. Conceptual queries' gold answers are mostly
+/// type definitions where the summary helps bridge code → concept ("a service
+/// container that resolves dependencies" → "dependency injection"); routing
+/// them to the base index strips that signal.
 ///
-/// After the eligibility expansion in PR #878 (summaries now cover
-/// structs / enums / impls / traits / classes / etc.), conceptual
-/// queries' gold answers are mostly type definitions where the
-/// summary actively helps bridge code → concept ("a service container
-/// that resolves dependencies" → "dependency injection"). Routing
-/// those queries to the base index strips the helpful signal.
-///
-/// Same-corpus A/B at 50% coverage measured −3.7pp R@1 on conceptual
-/// when routing was on. Keeping conceptual on the enriched index
-/// until / unless the summary coverage shape changes again.
-///
-/// The lesson: routing rules are coupled to corpus shape, not to
-/// a category-intrinsic property. They need to be re-validated any
-/// time summary coverage changes meaningfully.
+/// Note: routing rules are coupled to corpus shape (summary coverage), not to
+/// a category-intrinsic property, so re-validate them when summary coverage
+/// changes meaningfully.
 fn try_classify_conceptual(ctx: &QueryContext) -> Option<Classification> {
     if is_conceptual_query(ctx.lower, ctx.words) {
         Some(Classification {
@@ -1178,9 +1051,8 @@ fn try_classify_conceptual(ctx: &QueryContext) -> Option<Classification> {
 }
 
 /// Priority 8: Multi-step — conjunctions.
-/// 2026-04-13: route to base. Enrichment ablation at 78% summary coverage
-/// showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
-/// Summaries inject vocabulary that displaces the conjunction terms.
+/// Routes to base: summaries inject vocabulary that displaces the conjunction
+/// terms.
 fn try_classify_multistep(ctx: &QueryContext) -> Option<Classification> {
     let multistep_hit = {
         let ac = MULTISTEP_PATTERNS_AC
@@ -1251,11 +1123,9 @@ fn is_identifier_query(query: &str, words: &[&str]) -> bool {
 
 /// Check if query mentions multiple programming languages or translation.
 ///
-/// AC-V1.25-9: the translation-verb check uses word-token matching for
-/// "port" / "ports" / "convert" / "translate" / "equivalent". Previously
-/// the "port " substring probe false-fired on "report", "reports",
-/// "airport" etc. — any word with "port " inside it at a word boundary
-/// inside a longer compound would look like a translation verb.
+/// The translation-verb check uses word-token matching for "port" / "ports" /
+/// "convert" / "translate" / "equivalent" so it doesn't false-fire on
+/// "report", "airport", etc.
 fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
     let names = language_names();
     let lang_count = names
@@ -1277,18 +1147,12 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
 
 /// Check if query is structural (about code structure, not behavior).
 ///
-/// AC-V1.29-2: keyword matching uses whitespace-split word tokens so the
-/// keyword fires regardless of position (`"find all trait"`, `"all class"`,
-/// `"find enum"`). The previous impl required a trailing space, so any
-/// keyword at end-of-query silently misrouted to Conceptual α=0.70 instead
-/// of Structural α=0.90.
+/// Keyword matching uses whitespace-split word tokens so the keyword fires
+/// regardless of position (`"find all trait"`, `"all class"`, `"find enum"`).
 fn is_structural_query(query: &str) -> bool {
-    // AC-V1.30.1-2 (P3-AC-1): line 643 already passes `&query_lower`, but
-    // the other call sites (lines 900, 1265, 1275-1276) pass raw query
-    // strings, so a query like `"Class Foo"` would miss the `class`
-    // keyword match. Lowercase here once so every caller is correct
-    // without per-site discipline; the AC pattern set is keyed on
-    // lowercase forms anyway.
+    // Lowercase here once so callers that pass raw (non-lowercased) query
+    // strings still match — a query like `"Class Foo"` would otherwise miss
+    // the `class` keyword. The AC pattern set is keyed on lowercase forms.
     let query_lower = query.to_ascii_lowercase();
     let query = query_lower.as_str();
     // Structural patterns like "functions that return"
@@ -1305,20 +1169,18 @@ fn is_structural_query(query: &str) -> bool {
 
 /// Check if query describes behavior.
 ///
-/// AC-V1.25-15: the "code that" / "function that" probes use word-boundary
-/// checks instead of raw substring contains so hyphenated identifiers like
-/// `code-that-was-deleted-yesterday` don't false-fire. The word-boundary
-/// phrase must be surrounded by whitespace or sit at a string boundary.
+/// The "code that" / "function that" probes use word-boundary checks (not raw
+/// substring contains) so hyphenated identifiers like
+/// `code-that-was-deleted-yesterday` don't false-fire.
 fn is_behavioral_query(query: &str, _words: &[&str]) -> bool {
     if ac_has_word_bounded_match(&BEHAVIORAL_VERBS_AC, query) {
         return true;
     }
-    // "how does" / "what does" removed 2026-04-14 — they caught 100% of
-    // multi_step eval queries ("how does X trace callers to find tests")
-    // and sent them down α=0.05 (Behavioral) instead of α=1.0 (MultiStep /
-    // Unknown). Net loss: ~3 queries / 265. "code that" / "function that"
-    // are kept — they're more specific phrasings used by genuine behavioral
-    // queries ("function that embeds a batch of text documents").
+    // "code that" / "function that" are specific phrasings used by genuine
+    // behavioral queries ("function that embeds a batch of text documents").
+    // Broader probes like "how does" / "what does" are deliberately excluded:
+    // they catch multi_step queries ("how does X trace callers to find tests")
+    // and would misroute them to Behavioral.
     contains_phrase(query, "code that") || contains_phrase(query, "function that")
 }
 
@@ -1349,13 +1211,8 @@ fn contains_phrase(query: &str, phrase: &str) -> bool {
 
 /// Check whether any pattern in `ac` has at least one whole-word match in
 /// `query`. A match is whole-word iff both sides of the match are either
-/// a string boundary or ASCII whitespace.
-///
-/// Used in place of the previous `words.iter().any(|w| SET.contains(w))`
-/// check: tokens split by whitespace are exactly the strings whose first
-/// and last bytes sit at ASCII whitespace (or the string boundary), so an
-/// AC match with whitespace on both sides represents a token that equals
-/// one of the patterns. No regex, no allocation, single pass over `query`.
+/// a string boundary or ASCII whitespace. No regex, no allocation, single
+/// pass over `query`.
 ///
 /// Uses [`AhoCorasick::find_overlapping_iter`] so shared-prefix patterns
 /// (e.g. `"a"` / `"all"` / `"an"` in [`NL_INDICATORS`]) all get a chance
@@ -1409,10 +1266,8 @@ static TYPE_HINT_TABLE: LazyLock<Vec<(&'static str, ChunkType)>> = LazyLock::new
 /// `query` finds every matching pattern id.
 ///
 /// Uses [`MatchKind::Standard`] because [`AhoCorasick::find_overlapping_iter`]
-/// (which we need: sibling patterns like `"constructor"` / `"all constructors"`
-/// overlap in the haystack, and both must fire to match the previous
-/// `for (pat, _) in patterns { if query.contains(pat) {..} }` semantics)
-/// is only valid under the Standard match kind.
+/// — needed so sibling patterns like `"constructor"` / `"all constructors"`
+/// can both fire — is only valid under the Standard match kind.
 static TYPE_HINT_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
     AhoCorasickBuilder::new()
         .match_kind(MatchKind::Standard)
@@ -1425,15 +1280,14 @@ static TYPE_HINT_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
 /// Returns the types to boost (not filter) in search results.
 /// Only extracts when confidence is reasonable — avoids false positives.
 ///
-/// Previously this scanned ~72 patterns with individual `query.contains(p)`
-/// probes. Now uses a single Aho-Corasick pass via [`TYPE_HINT_AC`], with the
+/// A single Aho-Corasick pass via [`TYPE_HINT_AC`], with the
 /// `(phrase, ChunkType)` table built from `ChunkType::hint_phrases()` declared
 /// in `define_chunk_types!` — a single source of truth for hint registration.
 ///
-/// Output order is preserved: a hint is pushed the first time its pattern
-/// id appears in declaration order, and duplicate `ChunkType`s across
-/// different matched patterns are kept (e.g. two Test-mapped patterns both
-/// matching still yields `[Test, Test]`, matching the previous loop).
+/// Output order follows declaration order: a hint is pushed the first time its
+/// pattern id appears, and duplicate `ChunkType`s across different matched
+/// patterns are kept (e.g. two Test-mapped patterns both matching yields
+/// `[Test, Test]`).
 pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
     let table = &*TYPE_HINT_TABLE;
     // Collect the set of pattern ids that match at least once.
@@ -1458,11 +1312,9 @@ pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
 
 // ── Centroid classifier ─────────────────────────────────────────────
 //
-// Embedding-space centroid matching: 8 pre-computed category centroids
-// from the v3 eval train split (326 queries, BGE-large 1024-dim).
+// Embedding-space centroid matching: pre-computed category centroids.
 // At query time, cosine-sim to each centroid; if top-1 margin over
-// top-2 exceeds θ, override the rule-based category. θ=0.01 gives
-// 87.7% accuracy at 67% coverage on the dev split; below θ the
+// top-2 exceeds θ, override the rule-based category. Below θ the
 // rule-based classifier handles it.
 //
 // Centroid file: ~/.local/share/cqs/classifier_centroids.v1.json
@@ -1488,10 +1340,9 @@ impl CentroidClassifier {
         }
 
         let path = dirs::data_dir()?.join("cqs/classifier_centroids.v1.json");
-        // RM-V1.33-9: cap centroid file reads at 16 MiB. Real centroid
-        // registries are 50-200 KiB even with 100 categories × 1024-dim
-        // floats; 16 MiB rejects hostile or corrupted multi-GB files
-        // before the daemon OOMs at first search.
+        // Cap centroid file reads at 16 MiB. Real centroid registries are
+        // 50-200 KiB even with 100 categories × 1024-dim floats; 16 MiB
+        // rejects hostile or corrupted multi-GB files before the daemon OOMs.
         use std::io::Read;
         const MAX_CENTROID_BYTES: u64 = 16 * 1024 * 1024;
         let mut text = String::new();
@@ -1532,9 +1383,9 @@ impl CentroidClassifier {
         }
 
         if centroids.is_empty() {
-            // P3 #94: include the path and expected dim so an operator can
-            // tell whether the file is at the wrong location, was generated
-            // for a different embedding model, or is genuinely empty.
+            // Include the path and expected dim so an operator can tell
+            // whether the file is at the wrong location, was generated for a
+            // different embedding model, or is genuinely empty.
             tracing::warn!(
                 path = %path.display(),
                 expected_dim = dim,
@@ -1595,32 +1446,20 @@ impl CentroidClassifier {
 
 /// Upgrade a rule-based classification using embedding-space centroids.
 ///
-/// **Enabled by default as of v1.28.2** — A/B on v3.v2 (109 queries each
-/// split, 2026-04-20) showed test R@5 +3.7pp, dev R@5 ±0, with category
-/// breakdown:
-///
-///   - structural_search:  +12.5pp (n=16)
-///   - cross_language:     +9.1pp  (n=22)
-///   - behavioral_search:  +3.1pp  (n=32)
-///   - identifier_lookup, multi_step, negation, type_filtered: ±0
-///   - conceptual_search:  −4.0pp  (n=25, single-query noise on low base)
-///
-/// The earlier v3-2026-04-15 −4.6pp R@1 regression was eliminated by the
-/// alpha floor (CENTROID_ALPHA_FLOOR=0.7) added before this measurement.
-/// Set `CQS_CENTROID_CLASSIFIER=0` to opt out.
+/// Enabled by default; set `CQS_CENTROID_CLASSIFIER=0` to opt out. Only fills
+/// `Unknown` gaps — a non-Unknown rule-based category is left as-is.
 ///
 /// Call AFTER the query embedding is available.
 pub fn reclassify_with_centroid(
     mut classification: Classification,
     embedding: &[f32],
 ) -> Classification {
-    // OB-V1.29-6: entry span so the centroid-upgrade step is visible in
-    // traces separately from the outer rule-based classify.
+    // Entry span so the centroid-upgrade step is visible in traces separately
+    // from the outer rule-based classify.
     let _span = tracing::info_span!("reclassify_with_centroid").entered();
-    // Centroid classifier: fills Unknown gaps with embedding-space classification.
-    // Alpha-clipped: centroid-assigned α is clamped to ≥ CENTROID_ALPHA_FLOOR
-    // so misclassifications can't catastrophically zero out SPLADE (the −4.6pp
-    // regression from v3 eval was entirely from Behavioral α=0.0 assignments).
+    // Fills Unknown gaps with embedding-space classification. Centroid-assigned
+    // α is clamped to ≥ CENTROID_ALPHA_FLOOR so a misclassification can't
+    // catastrophically zero out SPLADE.
     //
     // Env: CQS_CENTROID_CLASSIFIER=0 to disable entirely.
     //      CQS_CENTROID_ALPHA_FLOOR (default 0.7) — minimum α for centroid-assigned categories.
@@ -1636,9 +1475,8 @@ pub fn reclassify_with_centroid(
     let classifier = CENTROID_CLASSIFIER.get_or_init(CentroidClassifier::load);
     if let Some(cls) = classifier {
         if let Some((cat, margin)) = cls.classify(embedding) {
-            // OB-V1.30.1-2 / P3-OB-1: per-search event — demote to debug
-            // so the operator default log level isn't flooded; the
-            // surrounding `info_span!`s still carry the trace context.
+            // Per-search event — debug so the operator default log level isn't
+            // flooded; the surrounding `info_span!`s carry the trace context.
             tracing::debug!(
                 centroid_category = %cat,
                 margin = format!("{margin:.4}"),
@@ -1684,8 +1522,8 @@ mod tests {
         let c = classify_query("validates user input");
         assert_eq!(c.category, QueryCategory::Behavioral);
         assert_eq!(c.confidence, Confidence::Medium);
-        // Phase 5: behavioral routes to the base (non-enriched) index because
-        // LLM summaries flatten the specific verbs users ask about.
+        // Behavioral routes to the base (non-enriched) index because LLM
+        // summaries flatten the specific verbs users ask about.
         assert_eq!(c.strategy, SearchStrategy::DenseBase);
     }
 
@@ -1694,16 +1532,15 @@ mod tests {
         let c = classify_query("sort without allocating");
         assert_eq!(c.category, QueryCategory::Negation);
         assert_eq!(c.confidence, Confidence::High);
-        // Phase 5: negation routes to base — summaries inject positive
-        // vocabulary that fights the "without" clause.
+        // Negation routes to base — summaries inject positive vocabulary that
+        // fights the "without" clause.
         assert_eq!(c.strategy, SearchStrategy::DenseBase);
     }
 
-    /// P4-4 (#1463): each `try_classify_*` is independently testable now —
-    /// run it with a hand-built `QueryContext` instead of going through the
-    /// full priority chain. This pins the classifier's intrinsic behavior
-    /// (was identifier? yes/no) without coupling to whether some earlier
-    /// arm fires first.
+    /// Each `try_classify_*` is independently testable — run it with a
+    /// hand-built `QueryContext` instead of going through the full priority
+    /// chain. Pins the classifier's intrinsic behavior (was identifier?
+    /// yes/no) without coupling to whether some earlier arm fires first.
     #[test]
     fn try_classify_helpers_short_circuit_on_match() {
         // Empty context → empty classifier matches, returns Unknown.
@@ -1738,7 +1575,7 @@ mod tests {
         assert_eq!(c.strategy, SearchStrategy::NameOnly);
     }
 
-    // ─── EXT-V1.36-8 sub-2: classifier vocab overlay ────────────────────
+    // ─── classifier vocab overlay ───────────────────────────────────────
 
     /// An overlay-installed negation token routes a query into the
     /// `Negation` category, just like a builtin would.
@@ -1886,17 +1723,9 @@ mod tests {
 
     #[test]
     fn test_classify_conceptual_routes_to_enriched() {
-        // 2026-04-10: ROUTING REVERSED. Originally Phase 5 routed conceptual
-        // to DenseBase based on the historical research finding "summaries
-        // hurt conceptual −15pp". Same-corpus A/B at 50% summary coverage
-        // measured −3.7pp R@1 from that routing — the historical finding
-        // was for a different corpus shape (only callables summarized).
-        // After PR #878 expanded summaries to type definitions, conceptual
-        // queries' gold answers benefit from the enrichment (the summary
-        // bridges code → concept on struct/enum chunks).
-        //
-        // See research/enrichment.md "Same-corpus A/B/C/D matrix (50% coverage)"
-        // for the data that drove this revision.
+        // Conceptual routes to the enriched index: the summary bridges
+        // code → concept on struct/enum chunks, which is where conceptual
+        // queries' gold answers live.
         let c = classify_query("dependency injection pattern");
         assert_eq!(c.category, QueryCategory::Conceptual);
         assert_eq!(c.strategy, SearchStrategy::DenseDefault);
@@ -1904,8 +1733,8 @@ mod tests {
 
     #[test]
     fn test_classify_structural_stays_on_enriched() {
-        // Phase 5 regression: structural queries benefit from enrichment,
-        // so they keep the DenseWithTypeHints (enriched HNSW) strategy.
+        // Structural queries benefit from enrichment, so they use the
+        // DenseWithTypeHints (enriched HNSW) strategy.
         let c = classify_query("functions that return Result");
         assert_eq!(c.category, QueryCategory::Structural);
         assert_eq!(c.strategy, SearchStrategy::DenseWithTypeHints);
@@ -1913,8 +1742,8 @@ mod tests {
 
     #[test]
     fn test_classify_cross_language_stays_on_enriched() {
-        // Phase 5 regression: cross-language queries rely on canonical
-        // vocabulary that summaries provide, so they stay on enriched.
+        // Cross-language queries rely on canonical vocabulary that summaries
+        // provide, so they stay on enriched.
         let c = classify_query("Python equivalent of map in Rust");
         assert_eq!(c.category, QueryCategory::CrossLanguage);
         assert_eq!(c.strategy, SearchStrategy::DenseDefault);
@@ -1927,11 +1756,7 @@ mod tests {
         assert_eq!(c.confidence, Confidence::Medium);
     }
 
-    /// P2.44 regression-pin: structural keywords at end-of-query must
-    /// classify as Structural. The previous impl wrapped the keyword in
-    /// `format!(" {} ", kw)` and looked for that as a substring — any
-    /// keyword sitting at the end of the string failed the substring
-    /// search and silently misrouted to Conceptual α=0.70.
+    /// Structural keywords at end-of-query must classify as Structural.
     #[test]
     fn test_p2_44_structural_keywords_at_end_of_query() {
         for q in &[
@@ -1949,22 +1774,19 @@ mod tests {
         }
     }
 
-    /// P2.44 regression-pin: structural keywords as substrings of normal
-    /// words ("training" contains "trait") must NOT false-fire structural.
+    /// Structural keywords as substrings of normal words ("training" contains
+    /// "trait") must NOT false-fire structural.
     #[test]
     fn test_p2_44_structural_keyword_as_substring_does_not_match() {
         assert!(!is_structural_query("training pipeline"));
         assert!(!is_structural_query("classifier"));
     }
 
-    /// AC-V1.30.1-2 (P3-AC-1) regression-pin: case-folding inside
-    /// `is_structural_query` so callers that pass raw queries (line 900
-    /// in `is_conceptual_query`, the centroid path, and external test
-    /// callers) classify uppercase or mixed-case structural keywords
-    /// correctly. The pre-fix path only worked when callers had already
-    /// lowercased — `"Class Foo"` and `"FIND ALL STRUCT"` would miss.
-    /// Note: `STRUCTURAL_KEYWORDS` is singular-only (`struct`, not
-    /// `structs`); the case-fold pin tracks the uppercase axis only.
+    /// `is_structural_query` case-folds, so callers that pass raw queries
+    /// (`is_conceptual_query`, the centroid path, external test callers)
+    /// classify uppercase or mixed-case structural keywords correctly.
+    /// Note: `STRUCTURAL_KEYWORDS` is singular-only (`struct`, not `structs`);
+    /// this pins the uppercase axis only.
     #[test]
     fn test_ac_v1_30_1_2_is_structural_query_case_folds() {
         assert!(is_structural_query("Class Foo"));
@@ -1979,7 +1801,7 @@ mod tests {
     fn test_classify_type_filtered() {
         let c = classify_query("all test functions");
         assert_eq!(c.category, QueryCategory::TypeFiltered);
-        // 2026-04-13: type_filtered routes to base — summaries dilute type signal (+8.4pp).
+        // type_filtered routes to base — summaries dilute the type signal.
         assert_eq!(c.strategy, SearchStrategy::DenseBase);
         assert!(c.type_hints.is_some());
         assert!(c.type_hints.unwrap().contains(&ChunkType::Test));
@@ -2004,7 +1826,7 @@ mod tests {
         let c = classify_query("find errors and then retry them");
         assert_eq!(c.category, QueryCategory::MultiStep);
         assert_eq!(c.confidence, Confidence::Low);
-        // 2026-04-13: multi_step routes to base — summaries displace conjunction terms (+2.9pp).
+        // multi_step routes to base — summaries displace conjunction terms.
         assert_eq!(c.strategy, SearchStrategy::DenseBase);
     }
 
@@ -2108,7 +1930,7 @@ mod tests {
         assert_eq!(c.category, QueryCategory::Negation);
     }
 
-    /// AC-V1.38-4 (#1463): the connective-context gate must let real
+    /// The connective-context gate must let real
     /// multi-token negations through ("sort without allocating",
     /// "behavior except race", "fn that doesn't panic").
     #[test]
@@ -2129,7 +1951,7 @@ mod tests {
         }
     }
 
-    /// AC-V1.38-4 (#1463): bare common nouns that happen to be negation
+    /// Bare common nouns that happen to be negation
     /// tokens must NOT classify as Negation. `cqs "exclude"`, `cqs "no"`,
     /// `cqs "avoid"` as single-token queries are placeholder/identifier
     /// queries, not negations.
@@ -2176,12 +1998,11 @@ mod tests {
         assert_eq!(c.category, QueryCategory::IdentifierLookup);
     }
 
-    // ── AC-V1.25-10 MultiStep pattern tightening ─────────────────────
+    // ── MultiStep pattern tightening ─────────────────────────────────
 
     #[test]
     fn test_classify_plain_and_is_not_multistep() {
-        // "find foo and bar" is a single search intent, not a multi-step
-        // query. Previously " and " alone pushed this into MultiStep.
+        // "find foo and bar" is a single search intent, not a multi-step query.
         let c = classify_query("find foo and bar");
         assert_ne!(
             c.category,
@@ -2216,12 +2037,11 @@ mod tests {
         assert_eq!(c.category, QueryCategory::MultiStep);
     }
 
-    // ── AC-V1.25-9 cross-language classifier word-boundary ──────────
+    // ── cross-language classifier word-boundary ─────────────────────
 
     #[test]
     fn test_classify_report_is_not_cross_language() {
-        // Previously "port " substring probe matched "report" and
-        // classified any language + "report" query as CrossLanguage.
+        // "report" must not trigger cross-language via a "port" substring match.
         let c = classify_query("show the error report in python");
         assert_ne!(
             c.category,
@@ -2237,14 +2057,13 @@ mod tests {
         assert_eq!(c.category, QueryCategory::CrossLanguage);
     }
 
-    // ── AC-V1.25-15 behavioral classifier word-boundary ─────────────
+    // ── behavioral classifier word-boundary ─────────────────────────
 
     #[test]
     fn test_classify_word_bounded_code_that_not_behavioral() {
         // A token-attached "code that" like `barcode that1` contains the
         // literal "code that" substring but is not the phrase "code that"
-        // as a word. Previously the substring probe classified this as
-        // Behavioral; the word-boundary check should not.
+        // as a word, so the word-boundary check must not fire Behavioral.
         let c = classify_query("barcode that1 lives forever");
         assert_ne!(
             c.category,
@@ -2273,13 +2092,11 @@ mod tests {
         assert_eq!(c.category, QueryCategory::Behavioral);
     }
 
-    // ── AC-V1.29-2 structural keyword end-of-query ──────────────────
+    // ── structural keyword end-of-query ─────────────────────────────
 
     #[test]
     fn test_structural_keyword_at_end_of_query() {
-        // The previous probe required a trailing space, so keywords at
-        // end-of-query silently misrouted to Conceptual. After the
-        // whitespace-split rewrite, every position matches.
+        // Keywords at any position — including end-of-query — match.
         assert!(
             is_structural_query("find all trait"),
             "trailing 'trait' should classify as structural"
@@ -2296,23 +2113,20 @@ mod tests {
 
     #[test]
     fn test_structural_keyword_single_word_query() {
-        // A single-keyword query (just "trait") is structural — previously
-        // required surrounding spaces that a one-word query doesn't have.
+        // A single-keyword query (just "trait") is structural.
         assert!(is_structural_query("trait"));
         assert!(is_structural_query("struct"));
     }
 
     #[test]
     fn test_structural_keyword_middle_still_works() {
-        // Keyword in the middle of a query was already matched by the
-        // " {kw} " probe. Regression-cover it so the rewrite doesn't
-        // silently drop this case.
+        // Keyword in the middle of a query matches.
         assert!(is_structural_query("find all trait implementations"));
         assert!(is_structural_query("every class definition"));
     }
 
     #[test]
-    // ── #1453: per-slot SPLADE α overrides ────────────────────────────────
+    // ── per-slot SPLADE α overrides ───────────────────────────────────────
 
     /// Slot table installed → that override beats the hardcoded default for
     /// the matching category.
@@ -2329,7 +2143,7 @@ mod tests {
         ));
 
         let mut table = std::collections::HashMap::new();
-        // Default for Behavioral is 1.0 (from the gemma sweep). Override to 0.3.
+        // Default for Behavioral is 1.0. Override to 0.3.
         table.insert("behavioral".to_string(), 0.3);
         install_slot_splade_alpha_overrides(table);
 
@@ -2404,10 +2218,9 @@ mod tests {
         assert!(!is_structural_query("MyTraitImpl"));
     }
 
-    // ── Micro-benchmark (#964) ───────────────────────────────────────
+    // ── Micro-benchmark ──────────────────────────────────────────────
     //
-    // Sanity check for the Aho-Corasick + LazyLock rewrite. Runs
-    // classify_query on a mix of query shapes and prints per-call
+    // Runs classify_query on a mix of query shapes and prints per-call
     // timing. Does not assert on timing — CI machines have wildly
     // different performance envelopes.
     //
@@ -2420,8 +2233,7 @@ mod tests {
     #[ignore]
     fn bench_classify_query_throughput() {
         // Four query shapes that exercise different branches of classify_query:
-        //   1. Type-filtered — runs the full 72-pattern extract_type_hints
-        //      table, which was the heaviest contributor before the AC rewrite.
+        //   1. Type-filtered — runs the full extract_type_hints table.
         //   2. Behavioral — fires on a BEHAVIORAL_VERBS word.
         //   3. Cross-language — two language names, full language_names scan.
         //   4. Unknown — walks every branch (no early return) so the whole

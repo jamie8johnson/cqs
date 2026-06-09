@@ -21,10 +21,10 @@ pub(super) fn max_pending_files() -> usize {
 }
 /// Collect file system events into pending sets, filtering by extension and deduplicating.
 pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchState) {
-    // P3-5 (audit v1.33.0): per-event entry span so an inotify event that
-    // makes it through filtering can be correlated to its later reindex.
-    // `trace_span` keeps the per-event noise behind RUST_LOG=trace; the
-    // accept-path debug below is the level operators actually reach for.
+    // Per-event entry span so an inotify event that makes it through
+    // filtering can be correlated to its later reindex. `trace_span` keeps
+    // the per-event noise behind RUST_LOG=trace; the accept-path debug
+    // below is the level operators actually reach for.
     let _span = tracing::trace_span!(
         "collect_events",
         event_kind = ?event.kind,
@@ -32,16 +32,16 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
     )
     .entered();
     for path in &event.paths {
-        // PB-26: Skip canonicalize for deleted files — dunce::canonicalize
+        // Skip canonicalize for deleted files — dunce::canonicalize
         // requires the file to exist (calls std::fs::canonicalize internally).
         let path = if path.exists() {
             dunce::canonicalize(path).unwrap_or_else(|_| path.clone())
         } else {
             path.clone()
         };
-        // Skip .cqs directory
-        // PB-2: Deleted files can't be canonicalized (they don't exist), so
-        // compare normalized string forms to handle slash differences on WSL.
+        // Skip .cqs directory. Deleted files can't be canonicalized (they
+        // don't exist), so compare normalized string forms to handle slash
+        // differences on WSL.
         let norm_path = cqs::normalize_path(&path);
         let norm_cqs = cqs::normalize_path(cfg.cqs_dir);
         if norm_path.starts_with(&norm_cqs) {
@@ -49,8 +49,8 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
             continue;
         }
 
-        // #1002: .gitignore-matched paths are skipped. The matcher was
-        // built once at cmd_watch startup; when it's None the user either
+        // .gitignore-matched paths are skipped. The matcher was built once
+        // at cmd_watch startup; when it's None the user either
         // set CQS_WATCH_RESPECT_GITIGNORE=0, passed --no-ignore, or has no
         // .gitignore. The hardcoded `.cqs/` skip above still runs
         // regardless so the system's own files are always excluded.
@@ -92,13 +92,13 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
 
         // Convert to relative path
         if let Ok(rel) = path.strip_prefix(cfg.root) {
-            // PB-V1.30.1-5 / #1225: mtime-equality skip is gated on the
-            // filesystem's actual mtime resolution, not just WSL drvfs.
+            // mtime-equality skip is gated on the filesystem's actual mtime
+            // resolution, not just WSL drvfs.
             //
             // - `mtime < last`: rewind (e.g. `git checkout` restoring a
-            //   commit-time mtime). Historical behavior: skip — the
-            //   inotify path is for real save events; a rewound mtime
-            //   without a matching save is treated as already-indexed.
+            //   commit-time mtime). Skip — the inotify path is for real save
+            //   events; a rewound mtime without a matching save is treated
+            //   as already-indexed.
             // - `mtime == last`: ambiguous on coarse FS (two saves
             //   inside the same resolution window collide on identical
             //   mtimes), unambiguous on fine FS (nanosecond equality
@@ -106,10 +106,8 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
             // - `mtime > last`: a real save advanced the mtime → not
             //   stale, regardless of FS resolution.
             //
-            // P2.56: this was previously WSL-drvfs-only via the
-            // `is_wsl_drvfs_path` check. Superseded by
-            // `coarse_fs_resolution` so HFS+ / NFS / SMB / FAT32 on
-            // plain Linux + macOS also stop silently dropping rapid
+            // `coarse_fs_resolution` covers HFS+ / NFS / SMB / FAT32 on
+            // plain Linux + macOS too, so they don't silently drop rapid
             // re-saves.
             if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
                 let resolution = cqs::config::coarse_fs_resolution(&path);
@@ -128,16 +126,15 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
                 }
             }
             if state.pending_files.len() < max_pending_files() {
-                // PF-V1.30.1-9 / #1245: keep the queue keyed on
-                // slash-normalized paths so a Windows-side edit and a
-                // reconcile-side walk can't double-queue the same file
-                // under two separators.
+                // Keep the queue keyed on slash-normalized paths so a
+                // Windows-side edit and a reconcile-side walk can't
+                // double-queue the same file under two separators.
                 state
                     .pending_files
                     .insert(super::reconcile::normalize_pending_path(rel));
-                // P3-5 (audit v1.33.0): debug the accept-and-queue branch.
-                // Operators investigating "why didn't my save get reindexed?"
-                // can `RUST_LOG=cqs::cli::watch=debug` and see the full
+                // Debug the accept-and-queue branch. Operators investigating
+                // "why didn't my save get reindexed?" can
+                // `RUST_LOG=cqs::cli::watch=debug` and see the full
                 // event → queue chain.
                 tracing::debug!(
                     path = %rel.display(),
@@ -145,10 +142,10 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
                     "Queued for reindex"
                 );
             } else {
-                // RM-V1.25-23: log per-event at debug (spammy on bulk
-                // drops) and accumulate a counter; the once-per-cycle
-                // summary fires in process_file_changes so operators
-                // see the total truncation even if the level is info.
+                // Log per-event at debug (spammy on bulk drops) and
+                // accumulate a counter; the once-per-cycle summary fires in
+                // process_file_changes so operators see the total
+                // truncation even if the level is info.
                 state.dropped_this_cycle = state.dropped_this_cycle.saturating_add(1);
                 tracing::debug!(
                     max = max_pending_files(),
@@ -170,16 +167,15 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     state.pending_files.shrink_to(64);
 
-    // CQ-V1.30.1-1 / AC-V1.30.1-4 / DS-V1.30.1-D8: warn at the top so
-    // operators see the count, but DO NOT reset the counter here — the
-    // outer loop's `publish_watch_snapshot` runs after this function
-    // returns, and `WatchSnapshot::compute` uses `dropped_this_cycle > 0`
-    // as a Stale signal. If we zero it before the embedder check below
-    // (which may early-return on init failure), the snapshot reports
-    // `Fresh` even though events were dropped and never reindexed —
-    // defeating `cqs eval --require-fresh`. Reset only after a
-    // successful drain so the next cycle's snapshot reflects the
-    // truthful state.
+    // Warn at the top so operators see the count, but DO NOT reset the
+    // counter here — the outer loop's `publish_watch_snapshot` runs after
+    // this function returns, and `WatchSnapshot::compute` uses
+    // `dropped_this_cycle > 0` as a Stale signal. If we zero it before the
+    // embedder check below (which may early-return on init failure), the
+    // snapshot reports `Fresh` even though events were dropped and never
+    // reindexed — defeating `cqs eval --require-fresh`. Reset only after a
+    // successful drain so the next cycle's snapshot reflects the truthful
+    // state.
     if state.dropped_this_cycle > 0 {
         tracing::warn!(
             dropped = state.dropped_this_cycle,
@@ -187,11 +183,10 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
             "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
         );
     }
-    // OB-V1.30.1-9: replace stdout println with structured tracing.
-    // The daemon has no terminal — stdout goes to journald via the
-    // systemd unit which writes unstructured. Tracing routes through
-    // the configured subscriber (journald JSON or stderr text) and
-    // honours filter levels.
+    // Structured tracing instead of stdout println. The daemon has no
+    // terminal — stdout goes to journald via the systemd unit which writes
+    // unstructured. Tracing routes through the configured subscriber
+    // (journald JSON or stderr text) and honours filter levels.
     tracing::info!(
         file_count = files.len(),
         files = ?files,
@@ -215,13 +210,13 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         .collect();
 
     // Note: concurrent searches during this window may see partial
-    // results (RT-DATA-3). Per-file transactions are atomic but the
-    // batch is not — files indexed so far are visible, remaining are
-    // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
+    // results. Per-file transactions are atomic but the batch is not —
+    // files indexed so far are visible, remaining are stale. Self-heals
+    // after HNSW rebuild. Acceptable for a dev tool.
     //
-    // Mark both HNSW kinds dirty before writing chunks (RT-DATA-6). The base
-    // index derives from the same chunks as enriched, so a crash mid-write
-    // can leave either graph stale.
+    // Mark both HNSW kinds dirty before writing chunks. The base index
+    // derives from the same chunks as enriched, so a crash mid-write can
+    // leave either graph stale.
     if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, true) {
         tracing::warn!(error = %e, "Cannot set enriched HNSW dirty flag — skipping reindex to prevent stale index on crash");
         return;
@@ -244,17 +239,17 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
             for (file, mtime) in pre_mtimes {
                 state.last_indexed_mtime.insert(file, mtime);
             }
-            // CQ-V1.30.1-1 / AC-V1.30.1-4: reset only after a successful
-            // drain. The dropped events surfaced in the warn above are
-            // also queued for reconcile (Layer 2) on the next idle pass,
-            // so the count stays meaningful exactly until the reconcile
-            // refills `pending_files` with the same paths.
+            // Reset only after a successful drain. The dropped events
+            // surfaced in the warn above are also queued for reconcile
+            // (Layer 2) on the next idle pass, so the count stays meaningful
+            // exactly until the reconcile refills `pending_files` with the
+            // same paths.
             state.dropped_this_cycle = 0;
-            // #969: recency prune for the mtime map. Previously this called
+            // Recency prune for the mtime map, using the map's `SystemTime`
+            // values to age out stale entries in-memory. Avoids a
             // `Path::exists()` per entry, which on WSL 9P mounts issued up to
-            // 5000 serial `stat()` syscalls on the watch thread. The map's
-            // `SystemTime` values let us age out stale entries in-memory.
-            // Re-adding a surviving file on its next event is a trivial insert.
+            // 5000 serial `stat()` syscalls on the watch thread. Re-adding a
+            // surviving file on its next event is a trivial insert.
             let pruned = prune_last_indexed_mtime(&mut state.last_indexed_mtime);
             if pruned > 0 {
                 tracing::debug!(
@@ -267,12 +262,11 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
                 println!("Indexed {} chunk(s)", count);
             }
 
-            // #1004: incremental SPLADE encoding. Encoder is held in
-            // WatchConfig and stays resident for the daemon's lifetime.
-            // We encode every chunk in the files that were reindexed —
-            // upsert_sparse_vectors is idempotent, so re-encoding an
-            // unchanged chunk is correct just slightly wasteful. The
-            // cheaper content-hash-dedup optimization is a follow-up.
+            // Incremental SPLADE encoding. Encoder is held in WatchConfig
+            // and stays resident for the daemon's lifetime. We encode every
+            // chunk in the files that were reindexed — upsert_sparse_vectors
+            // is idempotent, so re-encoding an unchanged chunk is correct
+            // just slightly wasteful.
             if count > 0 {
                 match cfg.splade_encoder {
                     Some(encoder_mu) => {
@@ -299,7 +293,7 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
 
             // === HNSW maintenance ===
             //
-            // #1090: rebuilds run in a background thread (`spawn_hnsw_rebuild`).
+            // Rebuilds run in a background thread (`spawn_hnsw_rebuild`).
             // The watch loop's responsibilities each cycle are:
             //
             //   1. Drain a completed rebuild — replay any (id, embedding) the
@@ -359,17 +353,17 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
                             // capture them so `drain_pending_rebuild` can
                             // replay them after the swap.
                             //
-                            // P2.72 + SHL-V1.38-1 (#1463): cap the delta. The
-                            // cap is dim-aware via `pending_rebuild_delta_max`
-                            // — 5,000 baseline at 1024-dim, scaled inversely
-                            // by dim so a 4096-dim model gets ~1,250 (still
-                            // ~20 MB worst case) instead of 80 MB. If the
-                            // rebuild stalls long enough to accumulate above
-                            // the cap, latch `delta_saturated` and stop
-                            // appending. The drain path will discard the
-                            // rebuilt index instead of swapping a stale
-                            // snapshot; the next threshold rebuild reads
-                            // SQLite fresh and recovers everything.
+                            // Cap the delta. The cap is dim-aware via
+                            // `pending_rebuild_delta_max` — 5,000 baseline at
+                            // 1024-dim, scaled inversely by dim so a 4096-dim
+                            // model gets ~1,250 (still ~20 MB worst case)
+                            // instead of 80 MB. If the rebuild stalls long
+                            // enough to accumulate above the cap, latch
+                            // `delta_saturated` and stop appending. The drain
+                            // path will discard the rebuilt index instead of
+                            // swapping a stale snapshot; the next threshold
+                            // rebuild reads SQLite fresh and recovers
+                            // everything.
                             let delta_cap = super::rebuild::pending_rebuild_delta_max(store.dim());
                             if pending.delta.len() + pairs.len() > delta_cap {
                                 if !pending.delta_saturated {
@@ -407,8 +401,8 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
                             // harmless: search post-filters against live SQLite chunk
                             // IDs. They're cleaned on the next threshold rebuild.
                             //
-                            // P1.17 / #1124: `pairs` carries content_hash as the
-                            // third tuple slot for the rebuild-window path; the
+                            // `pairs` carries content_hash as the third tuple
+                            // slot for the rebuild-window path; the
                             // incremental insert only needs (id, embedding).
                             let items: Vec<(String, &[f32])> = pairs
                                 .iter()
@@ -441,10 +435,10 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
                                     }
                                 }
                                 Err(e) => {
-                                    // Insert failed. Rather than blocking on a
-                                    // synchronous rebuild (the old behavior),
-                                    // queue a background one — search keeps
-                                    // serving from the current index meanwhile.
+                                    // Insert failed. Queue a background rebuild
+                                    // rather than blocking on a synchronous one
+                                    // — search keeps serving from the current
+                                    // index meanwhile.
                                     warn!(
                                         error = %e,
                                         "HNSW incremental insert failed; spawning background rebuild"
@@ -477,13 +471,12 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         }
         Err(e) => {
             warn!(error = %e, "Reindex error");
-            // EH-V1.30.1-8: the dirty flag was set above (lines 184/189)
-            // before the reindex attempt and the success path's
-            // `clear_hnsw_dirty_with_retry` is unreachable from this arm.
-            // Surface that the HNSW will be marked dirty on disk until a
-            // successful reindex cycle clears it — operators correlate
-            // this with the prior `Reindex error` to diagnose persistent
-            // dirty state (SQLite busy / OOM / etc.) and search may
+            // The dirty flag was set before the reindex attempt and the
+            // success path's `clear_hnsw_dirty_with_retry` is unreachable
+            // from this arm. Surface that the HNSW stays marked dirty on
+            // disk until a successful reindex cycle clears it — operators
+            // correlate this with the prior `Reindex error` to diagnose
+            // persistent dirty state (SQLite busy / OOM / etc.); search may
             // serve stale results in the meantime.
             tracing::warn!(
                 hnsw_kinds = "enriched,base",
@@ -495,7 +488,7 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
     }
 }
 
-/// Process notes.toml changes: parse and store notes (no embedding needed, SQ-9).
+/// Process notes.toml changes: parse and store notes (no embedding needed).
 pub(super) fn process_note_changes(root: &Path, store: &Store, quiet: bool) {
     if !quiet {
         println!("\nNotes changed, reindexing...");

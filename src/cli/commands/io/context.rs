@@ -24,7 +24,7 @@ pub(crate) struct CompactData {
 /// Build compact-mode data: chunks with caller/callee counts.
 pub(crate) fn build_compact_data<Mode>(store: &Store<Mode>, path: &str) -> Result<CompactData> {
     let _span = tracing::info_span!("build_compact_data", path).entered();
-    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // Normalize backslash input from Windows / agent pipelines.
     // `get_chunks_by_origin` matches on the stored `origin` column which is
     // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
     let normalized = cqs::normalize_path(Path::new(path));
@@ -65,18 +65,18 @@ pub(crate) struct CompactChunkEntry {
     pub line_end: u32,
     pub caller_count: u64,
     pub callee_count: u64,
-    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
-    /// trust_level. `cqs context --compact` reads from the project store
-    /// only; always "user-code".
+    /// Every chunk-returning JSON output must carry a trust_level.
+    /// `cqs context --compact` reads from the project store only; always
+    /// "user-code".
     pub trust_level: &'static str,
-    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags. Empty for now;
-    /// schema-stability contract requires the field be present.
+    /// Per-chunk injection-heuristic flags. The schema-stability contract
+    /// requires the field be present.
     pub injection_flags: Vec<String>,
 }
 
 /// Serialize compact data to JSON.
 ///
-/// P2.19: returns a `Result` so a `Serialize` impl bug surfaces as an error
+/// Returns a `Result` so a `Serialize` impl bug surfaces as an error
 /// rather than coercing to `{}` and a tracing warn the caller can't see.
 pub(crate) fn compact_to_json(
     data: &CompactData,
@@ -117,7 +117,7 @@ pub(crate) struct FullData {
     /// (callee_name, called_from)
     pub external_callees: Vec<(String, String)>,
     pub dependent_files: HashSet<String>,
-    /// EH-V1.29-9: human-readable warnings from store batch failures during
+    /// Human-readable warnings from store batch failures during
     /// assembly. Populated when `get_callers_full_batch` or
     /// `get_callees_full_batch` fall back to empty maps; surfaces via
     /// `FullOutput`/`SummaryOutput` so JSON consumers can distinguish
@@ -133,7 +133,7 @@ pub(crate) fn build_full_data<Mode>(
     root: &Path,
 ) -> Result<FullData> {
     let _span = tracing::info_span!("build_full_data", path).entered();
-    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // Normalize backslash input from Windows / agent pipelines.
     // `get_chunks_by_origin` matches on the stored `origin` column which is
     // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
     let normalized = cqs::normalize_path(Path::new(path));
@@ -151,7 +151,7 @@ pub(crate) fn build_full_data<Mode>(
     let names_vec: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
 
     // Batch-fetch callers and callees for all chunks.
-    // EH-V1.29-9: collect warnings on fallback so the JSON consumer can
+    // Collect warnings on fallback so the JSON consumer can
     // distinguish "no external callers" from "the batch query failed".
     let mut warnings: Vec<String> = Vec::new();
     let callers_by_callee = store
@@ -182,7 +182,7 @@ pub(crate) fn build_full_data<Mode>(
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
         for caller in callers {
-            // PB-V1.29-1: normalize caller_origin and compare against the
+            // Normalize caller_origin and compare against the
             // slash-normalized user path; otherwise Windows backslash input
             // mis-classifies in-file callers as external.
             let caller_origin = cqs::normalize_path(&caller.file);
@@ -237,7 +237,7 @@ pub(crate) struct FullOutput<'a> {
     pub token_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
-    /// EH-V1.29-9: partial-data warnings from batch store failures.
+    /// Partial-data warnings from batch store failures.
     /// Omitted when empty so the normal happy-path output is unchanged.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -254,12 +254,11 @@ pub(crate) struct FullChunkEntry {
     pub doc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
+    /// Every chunk-returning JSON output must carry a
     /// trust_level. `cqs context` reads from the project store only;
     /// always "user-code". SECURITY.md mitigation contract.
     pub trust_level: &'static str,
-    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags. The full
-    /// per-content-scan integration is #1181 follow-up; for now the
+    /// Per-chunk injection-heuristic flags. The
     /// schema-stability contract requires the field be present and an
     /// empty `Vec<String>` reflects "no heuristics fired".
     pub injection_flags: Vec<String>,
@@ -340,7 +339,7 @@ pub(crate) fn full_to_json(
         token_budget: token_info.map(|(_, budget)| budget),
         warnings: data.warnings.clone(),
     };
-    // P2.19: surface Serialize bugs as Err rather than coerce to `{}`.
+    // Surface Serialize bugs as Err rather than coerce to `{}`.
     serde_json::to_value(&output)
 }
 
@@ -456,7 +455,7 @@ fn build_token_pack<Mode>(
     };
     let embedder = cqs::Embedder::new(model_config.clone())?;
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-    // P2.22: propagate the batch failure rather than silently degrading
+    // Propagate the batch failure rather than silently degrading
     // ranking to file-order. Token-packing without the caller-count
     // signal produces a worse result than failing the command.
     let caller_counts = store
@@ -481,7 +480,7 @@ pub(crate) struct SummaryOutput<'a> {
     pub external_caller_count: usize,
     pub external_callee_count: usize,
     pub dependent_files: Vec<String>,
-    /// EH-V1.29-9: partial-data warnings from batch store failures in
+    /// Partial-data warnings from batch store failures in
     /// `build_full_data`. Omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -494,11 +493,11 @@ pub(crate) struct SummaryChunkEntry {
     pub chunk_type: String,
     pub line_start: u32,
     pub line_end: u32,
-    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
-    /// trust_level. `cqs context --summary` reads from the project store
-    /// only; always "user-code".
+    /// Every chunk-returning JSON output must carry a trust_level.
+    /// `cqs context --summary` reads from the project store only; always
+    /// "user-code".
     pub trust_level: &'static str,
-    /// SEC-V1.30.1-1: per-chunk injection-heuristic flags.
+    /// Per-chunk injection-heuristic flags.
     pub injection_flags: Vec<String>,
 }
 
@@ -529,7 +528,7 @@ pub(crate) fn summary_to_json(
         dependent_files: dep_files,
         warnings: data.warnings.clone(),
     };
-    // P2.19: surface Serialize bugs as Err rather than coerce to `{}`.
+    // Surface Serialize bugs as Err rather than coerce to `{}`.
     serde_json::to_value(&output)
 }
 
@@ -577,7 +576,7 @@ fn print_summary_terminal(data: &FullData, path: &str) {
             println!("    {}", f);
         }
     }
-    // EH-V1.29-9: surface partial-data warnings at the bottom.
+    // Surface partial-data warnings at the bottom.
     for w in &data.warnings {
         println!("{} {}", "Warning:".yellow(), w);
     }
@@ -646,7 +645,7 @@ fn print_full_terminal(
         }
     }
 
-    // EH-V1.29-9: surface partial-data warnings at the bottom.
+    // Surface partial-data warnings at the bottom.
     for w in &data.warnings {
         println!("{} {}", "Warning:".yellow(), w);
     }
@@ -682,7 +681,7 @@ mod tests {
         }
     }
 
-    // ===== TC-HAP-V1.36-4: build_compact_data + build_full_data =====
+    // ===== build_compact_data + build_full_data =====
     //
     // These exercise the Store-backed builders (not just the JSON serializers
     // tested above). Inlines a chunk + call-graph fixture because
@@ -829,8 +828,8 @@ mod tests {
 
     #[test]
     fn build_compact_data_normalizes_backslash_paths() {
-        // PB-V1.29-1 regression: `src\target.rs` (Windows / agent shell input)
-        // must match the slash-normalized `src/target.rs` stored in `origin`.
+        // `src\target.rs` (Windows / agent shell input) must match the
+        // slash-normalized `src/target.rs` stored in `origin`.
         let (store, _dir) = seed_context_fixture();
         let data = build_compact_data(&store, "src\\target.rs").expect("backslash input");
         assert_eq!(data.chunks.len(), 2);
@@ -882,11 +881,11 @@ mod tests {
         assert!(data.warnings.is_empty());
     }
 
-    // ===== TC-HAP-V1.36-7: pack_by_relevance =====
+    // ===== pack_by_relevance =====
     //
     // Requires a real `cqs::Embedder` (the function takes one to call
-    // `count_tokens_batch`). Gate behind `#[ignore]` to match the
-    // pipeline tests' "Requires model" pattern (#1305).
+    // `count_tokens_batch`). Gated behind `#[ignore]` to match the
+    // pipeline tests' "Requires model" pattern.
 
     #[test]
     #[ignore = "Requires ONNX embedder model on disk"]
@@ -1163,7 +1162,7 @@ mod tests {
 
     #[test]
     fn hp1_compact_chunk_count_matches_array_length() {
-        // HP-5 gap: chunk_count should match chunks array length
+        // chunk_count should match chunks array length
         let chunks = vec![
             make_chunk("a", 1, 5),
             make_chunk("b", 6, 10),
@@ -1184,12 +1183,11 @@ mod tests {
         );
     }
 
-    /// SEC-V1.30.1-1: SECURITY.md:57 lists `cqs context` (all three shapes)
-    /// as JSON outputs that carry `trust_level` and `injection_flags` per
-    /// chunk. Before this fix, none of `CompactChunkEntry` /
-    /// `FullChunkEntry` / `SummaryChunkEntry` had the fields — the doc was
-    /// lying. This regression-pin keeps SECURITY.md honest across all three
-    /// shapes; future field removal would re-break the contract silently.
+    /// SECURITY.md lists `cqs context` (all three shapes) as JSON outputs that
+    /// carry `trust_level` and `injection_flags` per chunk. This regression-pin
+    /// keeps SECURITY.md honest across `CompactChunkEntry` / `FullChunkEntry` /
+    /// `SummaryChunkEntry`; removing the fields would break the contract
+    /// silently.
     #[test]
     fn context_chunks_emit_sec_trust_level_and_injection_flags() {
         // Compact shape.

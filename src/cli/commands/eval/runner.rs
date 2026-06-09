@@ -27,8 +27,8 @@ use cqs::{SearchFilter, Store};
 use crate::cli::CommandContext;
 
 // Wire-format types (`QuerySet`, `EvalQuery`, `GoldChunk`) live in the lib
-// crate at `cqs::eval::schema` so the integration tests and any future
-// Rust-side eval tooling share one definition. Audit P2 #61.
+// crate at `cqs::eval::schema` so the integration tests and Rust-side eval
+// tooling share one definition.
 
 /// Per-category aggregate. R@1/5/20 are fractions in [0.0, 1.0].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,10 +50,9 @@ pub(crate) struct Overall {
 
 /// Full eval output. Same shape for `--json` stdout and `--save` file.
 ///
-/// `Deserialize` is derived so `--baseline` can load a previously saved
-/// report and diff against the current run (Task C2). Optional fields at
-/// the tail preserve forward-compat with baselines from older `cqs eval`
-/// runs that pre-date them.
+/// `Deserialize` is derived so `--baseline` can load a saved report and diff
+/// against the current run. Optional fields at the tail preserve forward-compat
+/// with baselines from older `cqs eval` runs that omit them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EvalReport {
     pub query_count: usize,
@@ -316,7 +315,7 @@ fn search_for_rank(
     }
     let use_splade = true; // Always on when classification produced a category — same as production.
 
-    // #1349: SearchFilter is `#[non_exhaustive]`; external-crate construction
+    // SearchFilter is `#[non_exhaustive]`; external-crate construction
     // goes through `Default` + field assignment. Only fields that differ from
     // the struct default are set here (defaults preserved: languages,
     // exclude_types, path_pattern, enable_rrf, enable_demotion, mmr_lambda).
@@ -402,10 +401,10 @@ fn search_for_rank(
     // wave shifts function definitions up or down by a few lines as code
     // moves around. Including `line_start` in the match key means a 1-line
     // shift in the source turns a correct retrieval into a counted miss —
-    // an artifact of fixture staleness, not a real search regression. PR
-    // #1109 (2026-04-25) re-pinned the fixture to absorb the v1.29.x
-    // drift; weeks later the same drift had re-accumulated and reproduced
-    // a 24pp R@5 phantom-regression. Matching on `(file, name)` is loose
+    // an artifact of fixture staleness, not a real search regression.
+    // Re-pinning the fixture only postpones the problem: the drift
+    // re-accumulates and reproduces a phantom regression (~24pp R@5 in one
+    // observed case). Matching on `(file, name)` is loose
     // enough to be drift-resilient, strict enough that retrieval has to
     // surface the right function in the right file. Where a file has
     // multiple chunks with the same name (overloads, windowed sub-chunks
@@ -428,9 +427,9 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    // Schema deserialization is exercised in `cqs::eval::schema::tests` —
-    // the types live there now (audit P2 #61), and `tests/eval_test.rs`
-    // runs `deny_unknown_fields` against the on-disk v3 fixture. The
+    // Schema deserialization is exercised in `cqs::eval::schema::tests`
+    // where those types live, and `tests/eval_test.rs` runs
+    // `deny_unknown_fields` against the on-disk v3 fixture. The
     // remaining test below pins the runner's file-I/O contract.
 
     /// Writing a tiny query file and reading it back through `read_to_string`

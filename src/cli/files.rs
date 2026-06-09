@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 /// Cap on PID-file reads. A PID file holds an ASCII integer (max 7
 /// digits + newline = 8 bytes); 64 bytes is several orders of
 /// magnitude above realistic content while bounding hostile DoS
-/// allocations (RB-V1.33-4).
+/// allocations.
 const MAX_PID_FILE_BYTES: u64 = 64;
 
 /// Read a PID file with a 64-byte cap, returning the parsed PID if any.
@@ -32,15 +32,15 @@ fn read_pid_capped(path: &Path) -> Option<u32> {
 /// is placed on the native Linux filesystem ($XDG_RUNTIME_DIR or /tmp).
 /// The filename is derived from a hash of cqs_dir to support multiple projects.
 ///
-/// SEC-V1.25-3: The `DefaultHasher` used below is NOT a security property.
-/// It is collision-avoidance only (per-project socket naming). Access control
-/// for the socket relies entirely on filesystem permissions — the socket is
+/// The `DefaultHasher` used below is NOT a security property. It is
+/// collision-avoidance only (per-project socket naming). Access control for
+/// the socket relies entirely on filesystem permissions — the socket is
 /// created with mode 0o600 so only the owning user can connect. Do not treat
 /// the hash as a secret or unguessable token.
 ///
-/// #972: the implementation lives in `cqs::daemon_translate::daemon_socket_path`
-/// so integration tests can compute the same path. This wrapper keeps the
-/// existing `super::daemon_socket_path(...)` call sites inside `cli/`.
+/// The implementation lives in `cqs::daemon_translate::daemon_socket_path` so
+/// integration tests can compute the same path. This wrapper keeps the
+/// `super::daemon_socket_path(...)` call sites inside `cli/`.
 pub(crate) fn daemon_socket_path(cqs_dir: &Path) -> PathBuf {
     cqs::daemon_translate::daemon_socket_path(cqs_dir)
 }
@@ -55,9 +55,9 @@ pub(crate) fn enumerate_files(
     cqs::enumerate_files(root, &exts, no_ignore)
 }
 
-/// P4-10 (#1463): decode tasklist stdout, handling both UTF-8 (the common case)
-/// and UTF-16 LE/BE with a BOM (some locales / configurations). Falls back to
-/// UTF-8 lossy when no BOM is detected.
+/// Decode tasklist stdout, handling both UTF-8 (the common case) and UTF-16
+/// LE/BE with a BOM (some locales / configurations). Falls back to UTF-8
+/// lossy when no BOM is detected.
 ///
 /// Gated `cfg(any(windows, test))` so the unit tests run on every platform —
 /// the function itself is byte-level and platform-agnostic — without producing
@@ -97,40 +97,27 @@ fn process_exists(pid: u32) -> bool {
     // sending any signal.
     i32::try_from(pid).is_ok_and(|p| unsafe { libc::kill(p, 0) == 0 })
 }
-/// Checks whether a process with the given PID exists on Windows.
-///
-/// Uses the `tasklist` command with PID filtering to determine if a process is currently running.
-///
-/// # Arguments
-///
-/// * `pid` - The process ID to check for existence
-///
-/// # Returns
-///
-/// `true` if a process with the given PID exists, `false` otherwise. Returns `false` if the `tasklist` command fails to execute.
-
+/// Check whether a process with the given PID exists on Windows via
+/// `tasklist`. Returns `false` if `tasklist` fails to execute.
 #[cfg(windows)]
 fn process_exists(pid: u32) -> bool {
     use std::path::PathBuf;
     use std::process::Command;
-    // PB-V1.30.1-3: previous impl matched the localized "INFO:" prefix
-    // emitted only on English Windows. German `INFORMATION:`, French
-    // `INFORMATIONS:`, Japanese `情報:`, etc. silently bypassed the
-    // stale-PID detection, producing persistent stale-lock errors for
-    // every non-English Windows user. CSV format is locale-independent:
-    // tasklist /FO CSV /NH emits exactly one row per match and an empty
-    // (or whitespace-only) stdout when no process is found. The PID
-    // column substring `,"<pid>",` defends against substring collisions
-    // (e.g., PID `12` matching PID `1234`).
+    // Match on the locale-independent CSV format rather than the localized
+    // "INFO:" prefix: German `INFORMATION:`, French `INFORMATIONS:`,
+    // Japanese `情報:` etc. would otherwise bypass stale-PID detection.
+    // `tasklist /FO CSV /NH` emits exactly one row per match and an empty
+    // (or whitespace-only) stdout when no process is found. The PID column
+    // substring `,"<pid>",` defends against substring collisions (e.g., PID
+    // `12` matching PID `1234`).
     //
-    // PB-V1.33-10: resolve `tasklist.exe` from `%SystemRoot%\System32`
-    // rather than relying on a `PATH` lookup. Stripped-PATH containers
-    // (Docker, GHA Windows runners with custom PATH overrides) can hit
-    // `tasklist not found` if `System32` isn't on PATH, in which case
-    // `Command::new("tasklist")` fails with `ErrorKind::NotFound`. The
-    // original `unwrap_or(false)` then treats the running PID as stale
-    // and `acquire_index_lock` races the live holder for the index
-    // lock. Using the absolute path skips the PATH lookup entirely.
+    // Resolve `tasklist.exe` from `%SystemRoot%\System32` rather than a
+    // `PATH` lookup. Stripped-PATH containers (Docker, GHA Windows runners
+    // with custom PATH overrides) can hit `tasklist not found` if `System32`
+    // isn't on PATH, in which case `Command::new("tasklist")` fails with
+    // `ErrorKind::NotFound` and `unwrap_or(false)` would treat the running
+    // PID as stale, racing the live holder for the index lock. The absolute
+    // path skips the PATH lookup entirely.
     let tasklist_path: PathBuf = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
@@ -140,13 +127,13 @@ fn process_exists(pid: u32) -> bool {
         .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
         .output()
         .map(|o| {
-            // P4-10 (#1463): tasklist on some locales / Windows configurations
-            // emits stdout with a UTF-16 LE BOM (`\xff\xfe`) and 16-bit encoded
-            // text. `String::from_utf8_lossy` then yields a string of
-            // replacement characters and the substring match below silently
-            // misses every PID, classifying live holders as stale. Detect the
-            // BOM and decode via `String::from_utf16_lossy` so the CSV-parse
-            // path works regardless of which encoding tasklist picked.
+            // tasklist on some locales / Windows configurations emits stdout
+            // with a UTF-16 LE BOM (`\xff\xfe`) and 16-bit encoded text.
+            // `String::from_utf8_lossy` then yields replacement characters and
+            // the substring match below misses every PID, classifying live
+            // holders as stale. Detect the BOM and decode via
+            // `String::from_utf16_lossy` so the CSV-parse path works
+            // regardless of which encoding tasklist picked.
             let output = decode_tasklist_stdout(&o.stdout);
             output.trim().contains(&format!(",\"{}\",", pid))
         })
@@ -220,10 +207,10 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 /// Acquire file lock to prevent concurrent indexing
 /// Writes PID to lock file for stale lock detection.
 ///
-/// # Concurrency contract by platform (P3.35)
+/// # Concurrency contract by platform
 ///
-/// `index.lock` uses Rust 1.89's `File::try_lock` (the std wrapper around
-/// `flock` on Unix and `LockFileEx` on Windows). The two platforms enforce
+/// `index.lock` uses `File::try_lock` (the std wrapper around `flock` on Unix
+/// and `LockFileEx` on Windows). The two platforms enforce
 /// fundamentally different contracts under the same API:
 ///
 /// - **Linux / macOS — advisory.** `flock` only blocks other callers that
@@ -243,8 +230,8 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 /// On Windows we emit a one-shot `tracing::warn!` at first acquisition so
 /// operators can correlate third-party "sharing violation" errors with cqs.
 ///
-/// P2 #31 (post-v1.27.0 audit): does NOT remove the lock file inode on
-/// stale-PID detection. Removing the inode races with peers in three windows:
+/// Does NOT remove the lock file inode on stale-PID detection. Removing the
+/// inode races with peers in three windows:
 ///   1. PID lookup is approximate on Linux (zombies / PID namespaces /
 ///      pid recycling). `process_exists(stale_pid)` can return false even
 ///      though a freshly-spawned cqs process just claimed that PID. If we
@@ -265,7 +252,7 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 /// also fails we return a clearer error mentioning the PID and the manual
 /// remediation path.
 pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
-    // P3.35: emit a one-shot warning on Windows so operators can correlate
+    // Emit a one-shot warning on Windows so operators can correlate
     // third-party "sharing violation" errors with cqs holding index.lock.
     #[cfg(windows)]
     {
@@ -365,11 +352,10 @@ mod tests {
         );
     }
 
-    /// PB-V1.30.1-3: pure parser-shape test for the CSV PID-column
-    /// substring check. Mirrors the post-fix logic in `process_exists`
-    /// (Windows-only) so we can verify the column-bounded match on Linux
-    /// CI without spawning `tasklist`. Avoids substring collisions like
-    /// PID `12` matching PID `1234`.
+    /// Pure parser-shape test for the CSV PID-column substring check.
+    /// Mirrors the logic in `process_exists` (Windows-only) so we can verify
+    /// the column-bounded match on Linux CI without spawning `tasklist`.
+    /// Avoids substring collisions like PID `12` matching PID `1234`.
     fn csv_contains_pid(output: &str, pid: u32) -> bool {
         output.trim().contains(&format!(",\"{}\",", pid))
     }
@@ -407,10 +393,9 @@ mod tests {
 
     #[test]
     fn csv_parser_locale_independence() {
-        // The whole point of PB-V1.30.1-3: a German "INFORMATION:" or
-        // French "INFORMATIONS:" line must NOT be confused with a match
-        // because the parser only checks the CSV PID column. Empty
-        // stdout (no match) regardless of localized informational text.
+        // A German "INFORMATION:" or French "INFORMATIONS:" line must NOT be
+        // confused with a match because the parser only checks the CSV PID
+        // column — no match regardless of localized informational text.
         let german =
             "INFORMATION: Es laufen keine Tasks, die den angegebenen Kriterien entsprechen.\n";
         assert!(!csv_contains_pid(german, 1234));
@@ -418,9 +403,9 @@ mod tests {
         assert!(!csv_contains_pid(french, 1234));
     }
 
-    // ====== P4-10 (#1463) — `tasklist` UTF-16 BOM handling ======
+    // ====== `tasklist` UTF-16 BOM handling ======
 
-    /// UTF-8 stdout (the historic common case) decodes unchanged.
+    /// UTF-8 stdout (the common case) decodes unchanged.
     #[test]
     fn decode_tasklist_stdout_utf8_passthrough() {
         let utf8 = b"\"cqs.exe\",\"1234\",\"Console\",\"1\",\"12,345 K\"\n";
@@ -428,9 +413,9 @@ mod tests {
         assert!(decoded.contains(",\"1234\","));
     }
 
-    /// UTF-16 LE BOM-prefixed stdout — pre-fix, `from_utf8_lossy` returned
-    /// replacement chars and the PID match silently missed. Post-fix, the
-    /// CSV is decoded correctly and the PID column appears intact.
+    /// UTF-16 LE BOM-prefixed stdout decodes correctly so the PID column
+    /// appears intact (a plain `from_utf8_lossy` would yield replacement
+    /// chars and miss the PID match).
     #[test]
     fn decode_tasklist_stdout_utf16_le_bom() {
         // Build "1234" UTF-16 LE with BOM so we can match the PID column

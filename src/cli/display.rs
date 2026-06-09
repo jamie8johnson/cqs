@@ -12,7 +12,7 @@ use cqs::store::{ParentContext, UnifiedResult};
 /// Strip terminal control sequences from chunk-derived strings before
 /// printing them to a TTY.
 ///
-/// SEC-V1.33-5 (#1341): every CLI text-mode path that surfaces a chunk
+/// Every CLI text-mode path that surfaces a chunk
 /// feeds content directly to `println!`. A malicious file in the indexed
 /// corpus (or a poisoned reference index — explicitly listed as a
 /// "semi-trusted" surface in `SECURITY.md`) can embed:
@@ -149,14 +149,14 @@ pub fn read_context_lines(
     context: usize,
 ) -> Result<(Vec<String>, Vec<String>)> {
     // Path traversal guard: reject absolute paths and `..` traversal that could
-    // escape the project root via tampered DB paths. (RT-FS-1/RT-FS-2/SEC-12)
+    // escape the project root via tampered DB paths.
     //
-    // DB stores relative paths; absolute paths indicate injection. The byte-
-    // index check missed Windows UNC (`\\server\share`) and extended-length
-    // (`\\?\C:\...`) paths — a tampered DB could trigger an SMB connection
-    // and leak NTLM hashes via SMB relay. `Path::is_absolute` correctly
-    // recognizes drive-letter (and some UNC) on Windows; the explicit
-    // starts_with checks catch UNC consistently across platforms.
+    // DB stores relative paths; absolute paths indicate injection. Windows UNC
+    // (`\\server\share`) and extended-length (`\\?\C:\...`) paths must also be
+    // rejected — a tampered DB could trigger an SMB connection and leak NTLM
+    // hashes via SMB relay. `Path::is_absolute` recognizes drive-letter (and
+    // some UNC) on Windows; the explicit starts_with checks catch UNC
+    // consistently across platforms.
     let path_str = file.to_string_lossy();
     if file.is_absolute() || path_str.starts_with("\\\\") || path_str.starts_with("//") {
         anyhow::bail!("Absolute path blocked: {}", file.display());
@@ -173,8 +173,8 @@ pub fn read_context_lines(
     }
 
     // Size guard: don't read files larger than the configured cap for
-    // context display. P3 #107: env-overridable via
-    // `CQS_MAX_DISPLAY_FILE_SIZE` (default 10 MiB).
+    // context display. Env-overridable via `CQS_MAX_DISPLAY_FILE_SIZE`
+    // (default 10 MiB).
     let max_display_size = crate::cli::limits::max_display_file_size();
     if let Ok(meta) = std::fs::metadata(file) {
         if meta.len() > max_display_size {
@@ -186,15 +186,14 @@ pub fn read_context_lines(
         }
     }
     // Normalize: treat 0 as 1, ensure end >= start. Done up front so the
-    // RM-3 bounded read knows how many lines to actually pull off disk.
+    // bounded read knows how many lines to actually pull off disk.
     let line_start = line_start.max(1);
     let line_end = line_end.max(line_start);
 
-    // RM-3: bounded read. Previously `read_to_string` slurped the whole file
-    // into RAM even when only ~5 lines around the chunk were needed. Compute
-    // the upper bound from `line_end + context + 1` so we only walk the
-    // BufReader that far. The downstream indexing logic still handles short
-    // files gracefully because `lines.len()` reflects what was actually read.
+    // Bounded read: compute the upper bound from `line_end + context + 1` so
+    // we only walk the BufReader that far rather than slurping the whole file.
+    // The downstream indexing logic handles short files gracefully because
+    // `lines.len()` reflects what was actually read.
     use std::io::{BufRead, BufReader};
     let f =
         std::fs::File::open(file).with_context(|| format!("Failed to read {}", file.display()))?;
@@ -369,7 +368,7 @@ pub fn display_unified_results_json(
         .iter()
         .map(|r| {
             // Delegate to UnifiedResult::to_json() for the canonical base keys,
-            // then layer on parent context fields (CQ-NEW-3).
+            // then layer on parent context fields.
             let mut obj = r.to_json();
             let UnifiedResult::Code(sr) = r;
             if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
@@ -534,8 +533,8 @@ pub fn display_similar_results_json(
     results: &[cqs::store::SearchResult],
     target: &str,
 ) -> Result<()> {
-    // Delegate to SearchResult::to_json() for canonical base keys.
-    // Previously missing `type` and `has_parent` (CQ-NEW-5).
+    // Delegate to SearchResult::to_json() for canonical base keys
+    // (includes `type` and `has_parent`).
     let json_results: Vec<_> = results.iter().map(|r| r.to_json()).collect();
 
     let output = serde_json::json!({
@@ -559,11 +558,10 @@ pub fn display_tagged_results_json(
         .iter()
         .map(|t| {
             // Delegate to UnifiedResult::to_json_with_origin() for the
-            // canonical base keys + the trust_level/reference_name pair
-            // (#1167, #1169), then layer on parent context and the legacy
-            // `source` field for back-compat (CQ-NEW-7). Existing consumers
-            // can keep reading `source`; new ones should prefer the typed
-            // `trust_level` + `reference_name`.
+            // canonical base keys + the trust_level/reference_name pair,
+            // then layer on parent context and the `source` field. Consumers
+            // can read `source`, or prefer the typed `trust_level` +
+            // `reference_name`.
             let mut json = t.result.to_json_with_origin(t.source.as_deref());
             let UnifiedResult::Code(sr) = &t.result;
             if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
@@ -597,10 +595,10 @@ pub fn display_tagged_results_json(
 mod tests {
     use super::*;
 
-    // ===== read_context_lines tests (P3-14, P3-18) =====
+    // ===== read_context_lines tests =====
 
     /// Creates a temp test file and returns (TempDir, relative_path).
-    /// Returns a relative path (just the filename) suitable for the SEC-12
+    /// Returns a relative path (just the filename) suitable for the
     /// absolute-path guard. The returned TempDir must stay alive for the
     /// duration of the test (drop deletes the dir). The CWD is changed to
     /// the temp dir so the relative path resolves.
@@ -609,14 +607,14 @@ mod tests {
         let file_path = dir.path().join("test.rs");
         let content = lines.join("\n");
         std::fs::write(&file_path, &content).unwrap();
-        // SEC-12: return absolute path but guard won't fire during tests
-        // because we set CWD. Use file_path directly for tests that need
-        // to read outside the guard.
+        // Return absolute path; the guard won't fire during tests because we
+        // set CWD. Use file_path directly for tests that need to read outside
+        // the guard.
         (dir, file_path)
     }
 
     /// Read context lines bypassing the path guard (for unit tests with temp files).
-    /// RM-3: mirror the production `read_context_lines` BufReader-based bounded read
+    /// Mirrors the production `read_context_lines` BufReader-based bounded read
     /// so the test's edge-case coverage stays representative.
     fn read_context_lines_test(
         file: &Path,
@@ -747,7 +745,7 @@ mod tests {
         );
     }
 
-    /// C.3 / SEC: tampered DB row could carry a Windows UNC path
+    /// A tampered DB row could carry a Windows UNC path
     /// (`\\server\share\loot`). On Windows that triggers an SMB mount and
     /// can leak NTLM hashes via SMB relay. The byte-2 drive-letter check
     /// missed UNC entirely; the new guard rejects via either
@@ -764,7 +762,7 @@ mod tests {
         );
     }
 
-    /// C.3 / SEC: extended-length / device-namespace paths
+    /// Extended-length / device-namespace paths
     /// (`\\?\C:\loot`, `\\.\PIPE\foo`) bypass MAX_PATH and reach Win32
     /// directly. Same guard family — must also be blocked.
     #[test]
@@ -792,7 +790,7 @@ mod tests {
         assert_eq!(after[0], "g");
     }
 
-    // ===== HP-7: display_similar_results_json tests =====
+    // ===== display_similar_results_json tests =====
 
     fn make_search_result(
         name: &str,

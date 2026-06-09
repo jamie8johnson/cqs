@@ -43,10 +43,8 @@ use crate::index::{IndexResult, VectorIndex};
 
 // HNSW tuning parameters
 //
-// #1370 / SHL-V1.33-12: defaults are corpus-size-aware. The tier table
-// below mirrors the recommendation in the v1.33 audit (and the inline
-// comment that pre-dated the audit) — small projects pay less build cost,
-// large monorepos get the recall headroom they need at search time.
+// Defaults are corpus-size-aware: small projects pay less build cost, large
+// monorepos get the recall headroom they need at search time.
 //
 // | corpus       | M  | ef_construction | ef_search |
 // |--------------|----|-----------------|-----------|
@@ -55,10 +53,10 @@ use crate::index::{IndexResult, VectorIndex};
 // | ≥ 100k       | 32 |             400 |       200 |
 //
 // Env vars (`CQS_HNSW_M`, `CQS_HNSW_EF_CONSTRUCTION`, `CQS_HNSW_EF_SEARCH`)
-// still win — set explicitly, the override is taken verbatim. The
+// win — set explicitly, the override is taken verbatim. The
 // `chunk_count`-aware path is used by the build (`hnsw/build.rs`) where
-// the corpus size is in scope; the legacy zero-arg `max_nb_connection`
-// / `ef_construction` / `ef_search` helpers stay for callers that don't
+// the corpus size is in scope; the zero-arg `max_nb_connection`
+// / `ef_construction` / `ef_search` helpers serve callers that don't
 // know the corpus size yet (CLI knob parsing, ref-only paths) and use
 // the middle tier (`MID_*`) as their default.
 //
@@ -67,25 +65,23 @@ use crate::index::{IndexResult, VectorIndex};
 
 pub(crate) const MAX_LAYER: usize = 16; // Maximum layers in the graph
 
-/// Mid-tier default M. Used when the legacy (no-corpus-size) path is
-/// the only available context; matches the pre-#1370 default of 24.
+/// Mid-tier default M. Used when the no-corpus-size path is the only
+/// available context.
 const MID_M: usize = 24;
 /// Mid-tier default ef_construction.
 const MID_EF_CONSTRUCTION: usize = 200;
 /// Mid-tier default ef_search.
 const MID_EF_SEARCH: usize = 100;
 
-/// Legacy alias retained for tests + any caller that still pins exact
-/// values. New code should consult [`hnsw_tier_defaults`] with a corpus
-/// size when one is available.
+/// Alias for tests + any caller that pins exact values. Prefer
+/// [`hnsw_tier_defaults`] with a corpus size when one is available.
 const DEFAULT_M: usize = MID_M;
 const DEFAULT_EF_CONSTRUCTION: usize = MID_EF_CONSTRUCTION;
 const DEFAULT_EF_SEARCH: usize = MID_EF_SEARCH;
 
-/// #1370 / SHL-V1.33-12: pick `(M, ef_construction, ef_search)` for the
-/// given corpus size. Pure function — no env reads, no I/O. Callers
-/// layer env overrides on top via [`max_nb_connection_for`] /
-/// [`ef_construction_for`] / [`ef_search_for`].
+/// Pick `(M, ef_construction, ef_search)` for the given corpus size. Pure
+/// function — no env reads, no I/O. Callers layer env overrides on top via
+/// [`max_nb_connection_for`] / [`ef_construction_for`] / [`ef_search_for`].
 pub(crate) fn hnsw_tier_defaults(chunk_count: usize) -> (usize, usize, usize) {
     if chunk_count < 5_000 {
         (16, 100, 50)
@@ -142,8 +138,8 @@ pub(crate) fn ef_search_for(chunk_count: usize) -> usize {
 }
 
 /// Parse an env-var-overridable HNSW knob, validating that the value is `>= 1`.
-/// AC-V1.33-7: a value of `0` (or unparseable garbage) produces a degenerate
-/// graph; warn and fall back to the default.
+/// A value of `0` (or unparseable garbage) produces a degenerate graph; warn
+/// and fall back to the default.
 fn parse_hnsw_env_knob(env_name: &str, default: usize) -> usize {
     match std::env::var(env_name) {
         Ok(raw) => match raw.parse::<usize>() {
@@ -173,15 +169,12 @@ fn parse_hnsw_env_knob(env_name: &str, default: usize) -> usize {
     }
 }
 
-// Legacy zero-arg HNSW knob helpers. Pre-#1370 these were called from
-// build sites; production code now calls the corpus-size-aware
-// `*_for(chunk_count)` variants above. The legacy entry points stay
-// because the existing test cohort exercises env-override + default
-// behaviour against the mid-tier static defaults — useful coverage
-// that belongs in `mod tests` (and would be lost if the helpers were
-// deleted outright). `#[cfg(test)]` would also work but `pub(crate)`
-// keeps the cohort grep-discoverable for a future test that reaches
-// into them.
+// Zero-arg HNSW knob helpers. Production build sites call the
+// corpus-size-aware `*_for(chunk_count)` variants above; these zero-arg
+// entry points back the test cohort that exercises env-override + default
+// behaviour against the mid-tier static defaults. `pub(crate)` (rather than
+// `#[cfg(test)]`) keeps the cohort grep-discoverable for a future test that
+// reaches into them.
 
 /// M parameter — connections per node. Override with `CQS_HNSW_M`.
 /// Defaults to the mid-tier static `DEFAULT_M`; production code uses
@@ -292,16 +285,12 @@ pub struct HnswIndex {
     pub(crate) inner: HnswInner,
     /// Mapping from internal index to chunk ID.
     ///
-    /// P4-11 (#1463 follow-up): `Box<str>` instead of `String` saves the
-    /// 8-byte `cap` field per entry without changing heap layout. At 1M
-    /// chunks, ~8 MB reduction in resident size. The audit's original
-    /// "halves overhead" claim assumed `Vec<Arc<str>>` deduplication,
-    /// but every chunk_id in the id_map is unique by construction —
-    /// `Arc<str>` would have ADDED 16 bytes (ArcInner header) per entry.
-    /// `Box<str>` is the smaller-fix that delivers actual reduction
-    /// without an architectural change. The real fix (mmap'd id_map
-    /// alongside the HNSW graph file) remains a separate item; that's
-    /// the only path to constant-RAM regardless of corpus size.
+    /// `Box<str>` saves the 8-byte `cap` field per entry vs `String` without
+    /// changing heap layout — ~8 MB at 1M chunks. `Arc<str>` would ADD 16
+    /// bytes (ArcInner header) per entry and buy no dedup, since every
+    /// chunk_id is unique by construction. An mmap'd id_map alongside the
+    /// HNSW graph file is the only path to constant-RAM regardless of corpus
+    /// size; that remains a separate item.
     pub(crate) id_map: Vec<Box<str>>,
     /// Configurable search width (defaults to ef_search())
     pub(crate) ef_search: usize,
@@ -361,17 +350,14 @@ impl HnswIndex {
         self.id_map.is_empty()
     }
 
-    /// View of the chunk IDs currently indexed, in the order they were
-    /// inserted. Used by callers (e.g. the `cqs watch` background-rebuild
-    /// swap path in #1090) to dedup an external delta against what the
-    /// rebuild thread already snapshot-ingested before replaying.
+    /// View of the chunk IDs currently indexed, in insertion order. Used by
+    /// the `cqs watch` background-rebuild swap path to dedup an external delta
+    /// against what the rebuild thread already snapshot-ingested before
+    /// replaying.
     ///
-    /// P4-11 follow-up: returns `&[Box<str>]` after the storage shrunk
-    /// from `Vec<String>` to `Vec<Box<str>>`. Callers that compared
-    /// against `&str` literals via `String == &str` (`id == "delta_a"`)
-    /// must now deref both sides (`&**id == "delta_a"`); `Box<str>`
-    /// doesn't implement `PartialEq<str>` directly. The existing
-    /// watch-rebuild test sites have been updated accordingly.
+    /// Returns the id_map as `&[Box<str>]`. Callers comparing against `&str`
+    /// literals must deref both sides (`&**id == "delta_a"`); `Box<str>`
+    /// doesn't implement `PartialEq<str>` directly.
     pub fn ids(&self) -> &[Box<str>] {
         &self.id_map
     }
@@ -414,9 +400,9 @@ impl HnswIndex {
         // Convert &[f32] → Vec<f32> so we can pass &Vec<f32> to hnsw_rs
         // (which expects T: Sized + Send + Sync for parallel insert).
         //
-        // DS-V1.25-4: claim the id_map slots BEFORE calling into the
-        // hnsw_rs graph. `parallel_insert_data` returns `()` but can panic
-        // from the worker pool; if it does, we want the next insert to
+        // Claim the id_map slots BEFORE calling into the hnsw_rs graph.
+        // `parallel_insert_data` returns `()` but can panic from the worker
+        // pool; if it does, we want the next insert to
         // advance `base_idx` past the potentially-corrupted positions
         // rather than reuse them (hnsw_rs has no dedup — reusing the same
         // `(vec, id)` position is undefined behaviour). Claiming the
@@ -426,8 +412,8 @@ impl HnswIndex {
         // positions, which the SQLite post-filter already tolerates.
         let base_idx = self.id_map.len();
         for (id, _) in items {
-            // P4-11 follow-up: `Box::from(id.as_str())` clones the
-            // bytes once into a tight `Box<str>` (no `cap` field).
+            // `Box::from(id.as_str())` clones the bytes once into a tight
+            // `Box<str>` (no `cap` field).
             self.id_map.push(Box::from(id.as_str()));
         }
 
@@ -486,9 +472,8 @@ pub(crate) fn prepare_index_data(
         .ok_or_else(|| HnswError::Build("embedding count * dimension would overflow".into()))?;
     let mut data = Vec::with_capacity(cap);
     for (chunk_id, embedding) in embeddings {
-        // P4-11 follow-up: `String::into_boxed_str()` is zero-copy —
-        // shrinks the existing heap allocation in place and drops the
-        // `cap` field. ~8 bytes saved per entry.
+        // `String::into_boxed_str()` is zero-copy — shrinks the existing heap
+        // allocation in place and drops the `cap` field. ~8 bytes per entry.
         id_map.push(chunk_id.into_boxed_str());
         data.extend(embedding.into_inner());
     }
@@ -672,7 +657,7 @@ mod send_sync_tests {
         assert_sync::<LoadedHnsw>();
     }
 
-    /// #1370 / SHL-V1.33-12: tier table — pure function, no env reads.
+    /// Tier table — pure function, no env reads.
     #[test]
     fn test_hnsw_tier_defaults_small_corpus() {
         // Pre-5k tier — tighter graph, faster build.
@@ -684,7 +669,7 @@ mod send_sync_tests {
 
     #[test]
     fn test_hnsw_tier_defaults_medium_corpus() {
-        // 5k–100k mid-tier — pre-#1370 production default.
+        // 5k–100k mid-tier.
         let (m, ef_c, ef_s) = super::hnsw_tier_defaults(5_000);
         assert_eq!((m, ef_c, ef_s), (24, 200, 100));
         let (m, ef_c, ef_s) = super::hnsw_tier_defaults(50_000);
@@ -823,8 +808,8 @@ mod insert_batch_tests {
         }
     }
 
-    /// DS-V1.25-4: a failed insert (early-return before the graph is
-    /// touched) must not leave id_map partially populated.
+    /// A failed insert (early-return before the graph is touched) must not
+    /// leave id_map partially populated.
     #[test]
     fn test_insert_batch_dim_mismatch_leaves_id_map_untouched() {
         let embeddings: Vec<(String, Embedding)> = (0..3)
@@ -845,9 +830,9 @@ mod insert_batch_tests {
         );
     }
 
-    /// DS-V1.25-4: id_map slots are claimed before calling into the graph
-    /// so successful inserts monotonically advance `base_idx`. Two
-    /// consecutive inserts must land at disjoint positions.
+    /// id_map slots are claimed before calling into the graph so successful
+    /// inserts monotonically advance `base_idx`. Two consecutive inserts must
+    /// land at disjoint positions.
     #[test]
     fn test_insert_batch_monotonic_base_idx() {
         let embeddings: Vec<(String, Embedding)> = (0..3)

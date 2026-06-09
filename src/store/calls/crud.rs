@@ -1,5 +1,5 @@
-// DS-5: WRITE_LOCK guard is held across .await inside block_on().
-// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+// WRITE_LOCK guard is held across .await inside block_on(). Safe because
+// block_on runs single-threaded — no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! Call graph upsert, delete, batch operations, and basic stats.
 
@@ -13,8 +13,8 @@ use crate::store::{ReadWrite, Store};
 ///
 /// Used by both [`Store::upsert_function_calls`] (which opens its own tx) and
 /// [`Store::upsert_chunks_calls_and_prune`] (which folds the function_calls
-/// write into the same per-file tx as the chunks/FTS/calls write — see
-/// #1574 for the asymmetric-state bug this folding closes).
+/// write into the same per-file tx as the chunks/FTS/calls write, so the
+/// tables can't end up in an asymmetric committed state).
 ///
 /// `file_str` MUST be the normalized origin path (call
 /// `crate::normalize_path` at the call site, once).
@@ -172,7 +172,7 @@ impl<Mode> Store<Mode> {
             use crate::store::helpers::make_placeholders;
             use crate::store::helpers::sql::max_rows_per_statement;
             for batch in id_vec.chunks(max_rows_per_statement(1)) {
-                // P3 #130: cached helper — `Cow::Borrowed(&'static str)` on hit.
+                // Cached helper — `Cow::Borrowed(&'static str)` on hit.
                 let placeholders = make_placeholders(batch.len());
                 let sql = format!("SELECT id FROM chunks WHERE id IN ({placeholders})");
                 let mut query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()));
@@ -206,16 +206,7 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Retrieves aggregated statistics about function calls from the database.
-    /// Queries the calls table to obtain the total number of calls and the count of distinct callees, returning this information as a CallStats structure.
-    /// # Arguments
-    /// * `&self` - A reference to the store instance containing the database connection pool and async runtime.
-    /// # Returns
-    /// Returns a `Result` containing:
-    /// * `Ok(CallStats)` - A struct with `total_calls` (total number of recorded calls) and `unique_callees` (number of distinct functions called).
-    /// * `Err(StoreError)` - If the database query fails.
-    /// # Errors
-    /// Returns `StoreError` if the SQL query execution fails or if database connectivity issues occur.
+    /// Total call count and distinct-callee count from the `calls` table.
     pub fn call_stats(&self) -> Result<CallStats, StoreError> {
         let _span = tracing::debug_span!("call_stats").entered();
         self.rt.block_on(async {
@@ -233,7 +224,7 @@ impl<Mode> Store<Mode> {
 }
 
 impl Store<ReadWrite> {
-    // ============ Full Call Graph Methods (v5) ============
+    // ============ Full Call Graph Methods ============
 
     /// Insert function calls for a file (full call graph, no size limits)
     pub fn upsert_function_calls(
@@ -262,12 +253,11 @@ impl Store<ReadWrite> {
 
     /// Insert function calls for multiple files in a single transaction.
     ///
-    /// P2 #64 (recovery wave): mirrors the existing `upsert_type_edges_for_files`
-    /// pattern. The previous CLI hot path (`pipeline/upsert.rs:152-163`) called
-    /// `upsert_function_calls(file, calls)` once per file, opening one
-    /// transaction per file. On a 2,500-file project this was 2,500 separate
-    /// `BEGIN ... COMMIT` round-trips; batching to one transaction is the same
-    /// shape we already use for type edges.
+    /// Mirrors the `upsert_type_edges_for_files` pattern. Calling
+    /// `upsert_function_calls(file, calls)` once per file would open one
+    /// transaction per file — 2,500 separate `BEGIN ... COMMIT` round-trips
+    /// on a 2,500-file project. Batching to one transaction matches the shape
+    /// used for type edges.
     ///
     /// Inside the single transaction:
     /// - Batched DELETE WHERE file IN (?, ?, ?) for all files in the batch

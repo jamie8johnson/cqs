@@ -8,15 +8,13 @@ use super::definitions::BatchSupport;
 use super::definitions::Cli;
 use super::telemetry;
 
-// #1366: Group A and Group B dispatch live in
+// Group A and Group B dispatch live in
 // `crate::cli::definitions::dispatch_group_{a,b}` (emitted by
 // `cqs_macros::CqsCommands` derive on the `Commands` enum). Per-variant
 // shims live in `commands::dispatch_shims` and forward to existing
 // handlers — see the docstring on that module for the standardized
-// dispatch-shim signature. The previous `for_each_command!` central
-// registry + `gen_dispatch_group_a` / `gen_dispatch_group_b` emitter
-// macros are gone; per-variant `#[cqs_cmd(group, batch)]` attributes
-// drive everything now.
+// dispatch-shim signature. Per-variant `#[cqs_cmd(group, batch)]`
+// attributes drive the routing.
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(cli: Cli) -> Result<()> {
@@ -53,7 +51,7 @@ fn run_with_dispatch(
     project_cqs_dir: &std::path::Path,
     telem_cmd: &str,
 ) -> Result<()> {
-    // v1.22.0 audit OB-14: root span so all per-command logs have a parent.
+    // Root span so all per-command logs have a parent.
     let _root = tracing::info_span!("cqs", cmd = %telem_cmd).entered();
 
     // Slot migration: one-shot move of legacy `.cqs/index.db` (+ HNSW + SPLADE)
@@ -79,15 +77,13 @@ fn run_with_dispatch(
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
 
-    // v1.22.0 audit CQ-1: wire the [scoring] config section to the
-    // RRF K override. Previously `set_rrf_k_from_config` existed but
-    // nothing called it — a user writing `[scoring] rrf_k = 40` in
-    // `.cqs.toml` had their value silently ignored.
+    // Wire the [scoring] config section to the RRF K override so a user
+    // writing `[scoring] rrf_k = 40` in `.cqs.toml` is honored.
     if let Some(ref scoring) = config.scoring {
         cqs::store::set_rrf_k_from_config(scoring);
     }
 
-    // Resolve embedding model config once. Priority (#1107):
+    // Resolve embedding model config once. Priority:
     //   1. `--model` CLI flag           (explicit override)
     //   2. `.cqs/slots/<name>/slot.toml` (slot intent — set at `slot create --model`)
     //   3. `CQS_EMBEDDING_MODEL` env
@@ -99,11 +95,10 @@ fn run_with_dispatch(
     // slot 1 inside `resolve` (still beating env/config) without needing a new
     // resolve signature.
     let slot_model_intent = if cli.model.is_none() {
-        // EH-V1.30.1-3: surface slot-resolution failures via tracing instead
-        // of `.ok()` swallowing them. A bad slot pointer or read error here
-        // means the persisted model intent gets silently ignored — the
-        // operator sees the wrong model resolve and has zero observability
-        // on why.
+        // Surface slot-resolution failures via tracing instead of `.ok()`
+        // swallowing them. A bad slot pointer or read error here means the
+        // persisted model intent gets silently ignored — the operator sees the
+        // wrong model resolve and has zero observability on why.
         let resolved_slot = match cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir)
         {
             Ok(r) => Some(r),
@@ -127,21 +122,18 @@ fn run_with_dispatch(
             .apply_env_overrides(),
     );
 
-    // #1453: load per-slot SPLADE α overrides from `slot.toml [splade.alpha]`
-    // and install them on the search router. Done once at dispatch entry so
-    // every search/eval/batch path benefits without per-call I/O.
+    // Load per-slot SPLADE α overrides from `slot.toml [splade.alpha]` and
+    // install them on the search router. Done once at dispatch entry so every
+    // search/eval/batch path benefits without per-call I/O.
     //
     // Resolution mirrors the slot-model lookup above: pick the active slot
     // (`--slot` > CQS_SLOT > active_slot file > "default"), read the alpha
     // table, install. Slot-resolution failure (missing project, malformed
     // slot.toml) → empty table → router falls through to env / preset /
-    // default precedence as before.
-    // EH-V1.38-5 (#1463): mirror the EH-V1.30.1-3 fix shape applied 30
-    // lines above. Pre-fix `.ok().map(...).unwrap_or_default()` silently
-    // collapsed slot-resolution errors (typo, missing slot file) into
-    // an empty α table — operator who passed `--slot foo` saw default-
-    // slot α overrides with the only signal being different search
-    // results from what they asked for.
+    // default precedence. A slot-resolution error is surfaced via tracing
+    // rather than silently collapsed into an empty α table — otherwise an
+    // operator who passed `--slot foo` would see default-slot α overrides with
+    // the only signal being different search results from what they asked for.
     let slot_alpha_table = match cqs::slot::resolve_slot_name(cli.slot.as_deref(), project_cqs_dir)
     {
         Ok(resolved) => cqs::slot::read_slot_splade_alpha_table(project_cqs_dir, &resolved.name),
@@ -157,12 +149,11 @@ fn run_with_dispatch(
     };
     cqs::search::router::install_slot_splade_alpha_overrides(slot_alpha_table);
 
-    // EXT-V1.36-1 (#1460): load synonym overlay from
-    // `~/.config/cqs/synonyms.toml` (user-global) and
-    // `<project>/.cqs/synonyms.toml` (project-local), with project-local
-    // taking precedence on conflict. Empty / missing / malformed files
-    // fall through to the compile-time builtins. Done once at dispatch
-    // entry so every FTS-expanded search benefits without per-call I/O.
+    // Load synonym overlay from `~/.config/cqs/synonyms.toml` (user-global)
+    // and `<project>/.cqs/synonyms.toml` (project-local), with project-local
+    // taking precedence on conflict. Empty / missing / malformed files fall
+    // through to the compile-time builtins. Done once at dispatch entry so
+    // every FTS-expanded search benefits without per-call I/O.
     {
         let mut overlay: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -180,11 +171,10 @@ fn run_with_dispatch(
         cqs::search::synonyms::install_synonym_overlay(overlay);
     }
 
-    // EXT-V1.36-8 sub-2 (#1460): load classifier vocab overlay from
-    // `~/.config/cqs/classifier.toml` (user-global) and
-    // `<project>/.cqs/classifier.toml` (project-local). Same precedence
-    // shape as the synonym overlay above — user-global plus project-local
-    // appended; AhoCorasick rebuilt once with the merged set.
+    // Load classifier vocab overlay from `~/.config/cqs/classifier.toml`
+    // (user-global) and `<project>/.cqs/classifier.toml` (project-local). Same
+    // precedence shape as the synonym overlay above — user-global plus
+    // project-local appended; AhoCorasick rebuilt once with the merged set.
     {
         let mut neg: Vec<String> = Vec::new();
         let mut multi: Vec<String> = Vec::new();
@@ -200,10 +190,10 @@ fn run_with_dispatch(
         cqs::search::router::install_classifier_vocab_overlay(neg, multi);
     }
 
-    // EX-V1.38-3 (#1463): install reranker pool-sizing overrides from
-    // `[reranker]` TOML so cli/limits.rs::rerank_pool_max +
-    // rerank_over_retrieval_multiplier honor the durable config.
-    // Env vars still win — see those helpers for the precedence chain.
+    // Install reranker pool-sizing overrides from `[reranker]` TOML so
+    // cli/limits.rs::rerank_pool_max + rerank_over_retrieval_multiplier honor
+    // the durable config. Env vars still win — see those helpers for the
+    // precedence chain.
     {
         let (pool_max, over_retrieval) = config
             .reranker
@@ -222,9 +212,8 @@ fn run_with_dispatch(
     // requested slot wins instead of silently getting the daemon's slot.
     #[cfg(unix)]
     if cli.slot.is_none() && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
-        // P2.17: daemon protocol errors now surface as `Err` instead of being
-        // logged-and-fall-through. Transport-level failures still return
-        // `Ok(None)` so CLI fallback works for those.
+        // Daemon protocol errors surface as `Err`. Transport-level failures
+        // return `Ok(None)` so CLI fallback works for those.
         if let Some(output) = try_daemon_query(project_cqs_dir, &cli)? {
             print!("{}", output);
             return Ok(());
@@ -233,19 +222,18 @@ fn run_with_dispatch(
 
     // ── Group A + Group B dispatch ──────────────────────────────────────────
     //
-    // #1366: per-variant `#[cqs_cmd(group, batch)]` attributes drive
+    // Per-variant `#[cqs_cmd(group, batch)]` attributes drive
     // `cqs_macros::CqsCommands` derive on `Commands` (definitions.rs:337),
     // which emits `dispatch_group_a` and `dispatch_group_b` free functions.
     // Each shim (in `commands/dispatch_shims.rs`) destructures the variant
-    // and forwards to the existing handler with the same args the
-    // for_each_command! body used to bind.
+    // and forwards to the existing handler.
     //
     // Group A returns `ControlFlow::Break(result)` when handled (lifecycle /
     // mutation commands run before the read-only store opens) and
     // `Continue(())` for Group B variants + the bare-query path (handled
     // after the store open).
     //
-    // Task #8 — `--json` precedence: every Group B subcommand reads
+    // `--json` precedence: every Group B subcommand reads
     // `cli.json || output.json` (OR semantics). Top-level `--json` wins
     // when set; the subcommand's `--json` is the fallback. For the
     // impact/trace pair (`OutputArgs` with `--format`), `cli.json`
@@ -273,11 +261,11 @@ pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
 /// - `Ok(None)` — daemon not present, transport failed, or command isn't
 ///   daemon-dispatchable (index/watch/gc/init/etc.); CLI should run inline.
 /// - `Err(_)` — daemon understood the request but returned a protocol-level
-///   error. P2.17: surface this as a real error rather than warn-and-retry,
-///   since CLI fallback can produce different results from the daemon path.
+///   error. Surfaced as a real error rather than warn-and-retry, since CLI
+///   fallback can produce different results from the daemon path.
 #[cfg(unix)]
 fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<String>, anyhow::Error> {
-    // OB-NEW-5: root span so every failed-transport fallback is traceable.
+    // Root span so every failed-transport fallback is traceable.
     // Commands doesn't derive Debug so we log the discriminant name instead.
     let cmd_label = cli
         .command
@@ -286,12 +274,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         .unwrap_or("search");
     let _span = tracing::debug_span!("try_daemon_query", cmd = cmd_label).entered();
 
-    // #947: the hand-maintained allowlist is gone. Every `Commands` variant
-    // classifies itself via `batch_support()`; the match there is exhaustive,
-    // so adding a new CLI command forces an explicit daemon-forwarding
-    // decision at compile time. API-V1.25-1 and the later notes-mutation
-    // regression (PR #945) are now structurally impossible — no surface
-    // change can silently flip a command's daemon behavior.
+    // Every `Commands` variant classifies itself via `batch_support()`; the
+    // match there is exhaustive, so adding a new CLI command forces an explicit
+    // daemon-forwarding decision at compile time. No surface change can
+    // silently flip a command's daemon behavior.
     //
     // None (= default search `cqs "query"`) is always daemon-dispatchable.
     if let Some(cmd) = &cli.command {
@@ -321,13 +307,11 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         }
     };
 
-    // P2 #41 (post-v1.27.0 audit): single knob across client and daemon.
-    // The previous TODO(cross-coordination) noted that `handle_socket_client`
-    // hardcoded 5s/30s timeouts; both sides now resolve through the shared
-    // `cqs::daemon_translate::resolve_daemon_timeout_ms` helper.
+    // Single timeout knob across client and daemon: both sides resolve through
+    // the shared `cqs::daemon_translate::resolve_daemon_timeout_ms` helper.
     let timeout = cqs::daemon_translate::resolve_daemon_timeout_ms();
-    // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
-    // without a timeout the CLI could hang forever on a wedged daemon read.
+    // Explicit warn on timeout failures rather than silent `.ok()` — without a
+    // timeout the CLI could hang forever on a wedged daemon read.
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
         tracing::warn!(
             error = %e,
@@ -341,15 +325,14 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         );
     }
 
-    // #972: arg-stripping and `-n`→`--limit` remap live in
+    // Arg-stripping and `-n`→`--limit` remap live in
     // `cqs::daemon_translate::translate_cli_args_to_batch`, a pure helper in
     // the library crate. Integration tests pin its behaviour separately
-    // (tests/daemon_forward_test.rs). The caller still owns side effects:
-    // emitting the `--model ignored` warning and framing the JSON request.
+    // (tests/daemon_forward_test.rs). The caller owns side effects: emitting
+    // the `--model ignored` warning and framing the JSON request.
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    // API-V1.25-8: `--model` is stripped because the daemon runs a single
-    // loaded model. Surface the mismatch to the user rather than silently
-    // ignoring their flag.
+    // `--model` is stripped because the daemon runs a single loaded model.
+    // Surface the mismatch to the user rather than silently ignoring the flag.
     if let Some(m) = cqs::daemon_translate::stripped_model_value(&raw_args) {
         tracing::warn!(
             requested_model = %m,
@@ -374,11 +357,11 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         return Ok(None);
     }
 
-    // RB-NEW-4: bound the response so a rogue/buggy daemon can't force us to
-    // allocate unbounded memory on `read_line`. 16 MiB matches the practical
-    // ceiling for gather/task JSON outputs. P3 #109: env-overridable via
-    // CQS_DAEMON_MAX_RESPONSE_BYTES so large gather/task outputs on big
-    // corpora can lift the cap.
+    // Bound the response so a rogue/buggy daemon can't force us to allocate
+    // unbounded memory on `read_line`. 16 MiB matches the practical ceiling for
+    // gather/task JSON outputs. Env-overridable via
+    // CQS_DAEMON_MAX_RESPONSE_BYTES so large gather/task outputs on big corpora
+    // can lift the cap.
     let max_daemon_response = crate::cli::limits::max_daemon_response_bytes();
     use std::io::Read as _;
     let mut reader = std::io::BufReader::new(&stream).take(max_daemon_response);
@@ -395,8 +378,8 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         }
     };
     if bytes_read as u64 == max_daemon_response {
-        // P3 #109: surface the silent perf regression on stderr, not
-        // just tracing — agents tuning latency won't see tracing.
+        // Surface this on stderr, not just tracing — agents tuning latency
+        // won't see tracing.
         let cap_mib = max_daemon_response / 1024 / 1024;
         eprintln!(
             "warning: cqs daemon response exceeded {cap_mib} MiB cap — falling back to direct CLI execution. \
@@ -432,16 +415,14 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         }
     };
     if status == "ok" {
-        // P2 #62 (post-v1.27.0 audit, partial): the daemon now embeds the
-        // dispatch output as a real JSON value when the bytes parse as JSON
-        // (the common case), and falls back to the legacy string form for
+        // The daemon embeds the dispatch output as a real JSON value when the
+        // bytes parse as JSON (the common case), and uses the string form for
         // plaintext handlers. Accept both shapes:
         //   - `Value::String(s)` — print verbatim (preserves original
         //     whitespace from the dispatch handler).
-        //   - any other `Value` — re-serialize for the terminal print. Cost
-        //     is one re-encode but no escape inflation, replacing the prior
-        //     parse-of-escaped-string cost the client used to pay.
-        // `daemon_ping` already handled both shapes for the same reason.
+        //   - any other `Value` — re-serialize for the terminal print. One
+        //     re-encode, no escape inflation.
+        // `daemon_ping` handles both shapes for the same reason.
         let output = match resp.get("output") {
             Some(v) => v,
             None => {
@@ -454,10 +435,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         };
         let text = match output {
             serde_json::Value::String(s) => s.clone(),
-            // API-V1.29-8: pretty-print to match CLI `emit_json` so agents
-            // diffing `cqs --json …` output between CLI and daemon modes
-            // don't hit spurious whitespace drift. One re-encode cost; worth
-            // the parity with the in-process path.
+            // Pretty-print to match CLI `emit_json` so agents diffing
+            // `cqs --json …` output between CLI and daemon modes don't hit
+            // spurious whitespace drift. One re-encode cost; worth the parity
+            // with the in-process path.
             other => match serde_json::to_string_pretty(other) {
                 Ok(s) => s,
                 Err(e) => {
@@ -473,12 +454,12 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         return Ok(Some(text));
     }
 
-    // P2.17 / EH-13: daemon understood the request but surfaced an error.
-    // Transport-level failures (connect/read/write) already returned
-    // `Ok(None)` above, so reaching here means this is a daemon protocol
-    // error the user needs to see. Falling back to CLI here would mask
-    // daemon bugs and silently change results — return Err so the caller
-    // exits non-zero with the daemon's message.
+    // Daemon understood the request but surfaced an error. Transport-level
+    // failures (connect/read/write) already returned `Ok(None)` above, so
+    // reaching here means this is a daemon protocol error the user needs to
+    // see. Falling back to CLI here would mask daemon bugs and silently change
+    // results — return Err so the caller exits non-zero with the daemon's
+    // message.
     let msg = resp
         .get("message")
         .and_then(|v| v.as_str())

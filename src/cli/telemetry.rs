@@ -24,11 +24,10 @@ use std::path::Path;
 /// Maximum telemetry file size before auto-archiving (10 MB).
 const MAX_TELEMETRY_BYTES: u64 = 10 * 1024 * 1024;
 
-/// P3 #136: redact telemetry `query` strings by default. Search queries can
-/// carry secrets and source snippets; logging them in plaintext at every
-/// invocation is a privileged-journal harvest. Set
-/// `CQS_TELEMETRY_REDACT_QUERY=0` to log the raw text (useful for offline
-/// analysis on a single-user machine).
+/// Redact telemetry `query` strings by default. Search queries can carry
+/// secrets and source snippets; logging them in plaintext at every invocation
+/// is a privileged-journal harvest. Set `CQS_TELEMETRY_REDACT_QUERY=0` to log
+/// the raw text (useful for offline analysis on a single-user machine).
 fn redact_query_str(query: &str) -> String {
     let redact = std::env::var("CQS_TELEMETRY_REDACT_QUERY")
         .ok()
@@ -37,8 +36,8 @@ fn redact_query_str(query: &str) -> String {
         .unwrap_or(true);
     if redact {
         // 8-char blake3 prefix is collision-resistant for telemetry buckets,
-        // not reversible. Mirrors the SEC-V1.25-16 redaction shape used for
-        // notes args in the daemon journal.
+        // not reversible. Mirrors the redaction shape used for notes args in
+        // the daemon journal.
         let h = blake3::hash(query.as_bytes());
         h.to_hex().as_str()[..8].to_string()
     } else {
@@ -54,12 +53,9 @@ fn redact_query_opt(query: Option<&str>) -> Option<String> {
 /// Append a telemetry entry to `.cqs/telemetry.jsonl`.
 ///
 /// Centralizes the activation check, advisory-flock, 10-MB auto-archive,
-/// and 0o600 file-mode contract that every `log_*` function shared inline
-/// before #1352 / EX-V1.33-9. New event flavors should construct a
-/// `serde_json::Value` and call this — they MUST NOT re-implement the
-/// flock/archive/write dance, since that's the cluster the audit flagged
-/// as the maintenance hazard ("three reimplementations, one bug fix
-/// would have to land in three places").
+/// and 0o600 file-mode contract shared by every `log_*` function. New event
+/// flavors should construct a `serde_json::Value` and call this — they MUST
+/// NOT re-implement the flock/archive/write dance.
 ///
 /// Activation rules (mirror the module docstring):
 ///   - `CQS_TELEMETRY=1`                          → active
@@ -69,16 +65,16 @@ fn redact_query_opt(query: Option<&str>) -> Option<String> {
 /// `timestamp` is the value already produced by `cqs::unix_secs_i64()` at
 /// the call site (callers that include the timestamp in `entry` reuse the
 /// same value here so the archive filename matches the event's `ts` field).
-/// `None` triggers the EH-V1.33-1 fallback path: archive filename uses
+/// `None` triggers the bad-clock fallback path: archive filename uses
 /// `0` as the suffix, matching the entry's `ts: null`.
 ///
 /// Failures are logged at `debug` and dropped — telemetry must never
 /// break the tool.
 fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option<i64>) {
     // Active if env var is explicitly "1" OR (env unset AND telemetry file
-    // already exists). RM-V1.25-25: when CQS_TELEMETRY is set to any
-    // non-"1" value (including "0"), treat that as a hard opt-out so the
-    // env var actually disables collection even when the file exists.
+    // already exists). When CQS_TELEMETRY is set to any non-"1" value
+    // (including "0"), that's a hard opt-out so the env var disables
+    // collection even when the file exists.
     let path = cqs_dir.join("telemetry.jsonl");
     match std::env::var("CQS_TELEMETRY") {
         Ok(v) if v == "1" => {}
@@ -91,9 +87,9 @@ fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option
     }
 
     let result: std::io::Result<()> = (|| -> std::io::Result<()> {
-        // DS-V1.25-8 / DS-NEW-2: single-writer assumption — telemetry is
-        // per-process, but multiple cqs invocations (CLI + agents +
-        // `cqs watch`) write to the same `.cqs/telemetry.jsonl` concurrently.
+        // Single-writer assumption — telemetry is per-process, but multiple
+        // cqs invocations (CLI + agents + `cqs watch`) write to the same
+        // `.cqs/telemetry.jsonl` concurrently.
         // The advisory `flock` on `telemetry.lock` enforces ordering *only
         // if every writer takes the lock* (classic advisory-lock caveat). Do
         // not bypass it: skipping the `try_lock` call will race with
@@ -113,11 +109,11 @@ fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option
             return Ok(());
         }
 
-        // SHL-20: auto-archive if file exceeds 10 MB to prevent unbounded growth
+        // Auto-archive if file exceeds 10 MB to prevent unbounded growth
         if let Ok(meta) = fs::metadata(&path) {
             if meta.len() > MAX_TELEMETRY_BYTES {
-                // EH-V1.33-1: archive filename falls back to `0` when the
-                // clock is pre-epoch — uniqueness here is best-effort and
+                // Archive filename falls back to `0` when the clock is
+                // pre-epoch — uniqueness here is best-effort and
                 // the JSON row above already records `ts: null` so the
                 // bad-clock condition is preserved in the data, not just
                 // a swept-under filename.
@@ -138,10 +134,9 @@ fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option
             }
         }
 
-        // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
-        // close the umask race. The post-open set_permissions approach
-        // left a window where the file was visible with default perms
-        // (often 0o644).
+        // Set 0o600 at creation via OpenOptionsExt::mode to close the umask
+        // race. A post-open set_permissions would leave a window where the
+        // file is visible with default perms (often 0o644).
         let mut opts = OpenOptions::new();
         opts.create(true).append(true);
         #[cfg(unix)]
@@ -170,13 +165,13 @@ pub fn log_command(
     query: Option<&str>,
     result_count: Option<usize>,
 ) {
-    // EH-V1.33-1: use `cqs::unix_secs_i64()` so a pre-epoch clock surfaces as
-    // `ts: null` (serializing `Option<i64>::None`) and emits a one-shot
-    // tracing::warn from the helper, instead of silently coercing to `ts: 0`.
+    // Use `cqs::unix_secs_i64()` so a pre-epoch clock surfaces as `ts: null`
+    // (serializing `Option<i64>::None`) and emits a one-shot tracing::warn
+    // from the helper, instead of silently coercing to `ts: 0`.
     let timestamp = cqs::unix_secs_i64();
 
-    // P3 #136: redact `query` by default to keep search strings out of the
-    // telemetry log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
+    // Redact `query` by default to keep search strings out of the telemetry
+    // log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
     let query_field = redact_query_opt(query);
     let entry = serde_json::json!({
         "ts": timestamp,
@@ -209,7 +204,7 @@ pub fn log_command_complete(
     ok: bool,
     error: Option<&str>,
 ) {
-    // EH-V1.33-1: see `log_command` above for the rationale.
+    // See `log_command` above for the timestamp rationale.
     let timestamp = cqs::unix_secs_i64();
 
     let error_field = error.map(|s| {
@@ -247,10 +242,10 @@ pub fn log_routed(
     fallback: bool,
     result_count: Option<usize>,
 ) {
-    // EH-V1.33-1: see `log_command` above for the rationale.
+    // See `log_command` above for the timestamp rationale.
     let timestamp = cqs::unix_secs_i64();
 
-    // P3 #136: redact `query` by default — see `redact_query_str` doc.
+    // Redact `query` by default — see `redact_query_str` doc.
     let query_field = redact_query_str(query);
     let entry = serde_json::json!({
         "ts": timestamp,
@@ -275,11 +270,10 @@ pub fn log_routed(
 /// we treat it as a bare query (`cqs <query>` short form) and record
 /// `cmd = "search"`.
 ///
-/// Pre-fix behavior: `cqs --json search "foo"` was logged as `cmd =
-/// "--json"`. The archived 44k-record telemetry file shows this
-/// happened to ~80% of all invocations. Post-fix it's recorded as
-/// `cmd = "search"` with `query = "foo"` (or its blake3 prefix when
-/// `CQS_TELEMETRY_REDACT_QUERY` is on).
+/// `cqs --json search "foo"` is recorded as `cmd = "search"` with
+/// `query = "foo"` (or its blake3 prefix when `CQS_TELEMETRY_REDACT_QUERY`
+/// is on) — the leading `--json` flag is walked past, not treated as the
+/// command.
 ///
 /// Derives known subcommands from `Cli`'s clap definition at runtime
 /// so new commands are recognized automatically without maintaining
@@ -360,10 +354,8 @@ mod tests {
 
     #[test]
     fn describe_command_skips_leading_global_flag_for_subcommand() {
-        // The pre-fix bug: `cqs --json impact my_fn` was logged as
-        // cmd="--json" because args[1] was returned verbatim. 80% of the
-        // archived telemetry file hit this path. Fix walks past the flag
-        // to the real subcommand.
+        // `cqs --json impact my_fn` must walk past the leading flag to the
+        // real subcommand rather than returning args[1] (`--json`) verbatim.
         let (cmd, query) = describe_command(&args(&["--json", "impact", "my_fn"]));
         assert_eq!(cmd, "impact");
         assert_eq!(query.as_deref(), Some("my_fn"));

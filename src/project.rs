@@ -59,7 +59,7 @@ impl ProjectRegistry {
         if !path.exists() {
             return Ok(Self::default());
         }
-        // RM-V1.33-2: bound the allocation at the I/O layer with
+        // Bound the allocation at the I/O layer with
         // `Read::take(MAX+1)` so a hostile multi-GiB registry file can
         // never be fully read into memory before the cap fires. Reading
         // through an opened file descriptor keeps the TOCTOU window
@@ -96,7 +96,7 @@ impl ProjectRegistry {
             .open(&path)?;
         lock_file.lock()?;
 
-        // PB-V1.29-6: Delegate the `/mnt/<letter>/` detection to the shared helper.
+        // Delegate the `/mnt/<letter>/` detection to the shared helper.
         if crate::config::is_wsl()
             && crate::config::is_wsl_drvfs_path(&path)
             && !WSL_REGISTRY_LOCK_WARNED.swap(true, Ordering::Relaxed)
@@ -110,10 +110,10 @@ impl ProjectRegistry {
         // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
         let suffix = crate::temp_suffix();
         let tmp = path.with_extension(format!("toml.{:016x}.tmp", suffix));
-        // SEC-V1.33-3: open the tmp file with mode(0o600) BEFORE writing so the
-        // file is born private. The previous shape (`fs::write` + post-rename
-        // chmod) left a window where the registry was world-readable on default
-        // umask. Mirrors the audit.rs / note.rs pattern.
+        // Open the tmp file with mode(0o600) BEFORE writing so the file is born
+        // private. An `fs::write` + post-rename chmod would leave a window where
+        // the registry is world-readable on default umask. Mirrors the
+        // audit.rs / note.rs pattern.
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -131,8 +131,8 @@ impl ProjectRegistry {
             std::fs::write(&tmp, &content)?;
         }
         // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
-        // SEC-V1.33-3: tmp was opened mode(0o600), so the renamed-into-place file
-        // inherits 0o600 — the post-rename chmod is no longer needed.
+        // tmp is opened mode(0o600), so the renamed-into-place file inherits
+        // 0o600 and needs no post-rename chmod.
         crate::fs::atomic_replace(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             ProjectError::Io(e)
@@ -144,9 +144,9 @@ impl ProjectRegistry {
 
     /// Register a project (replaces existing entry with same name)
     pub fn register(&mut self, name: String, path: PathBuf) -> Result<(), ProjectError> {
-        // Validate the path has a .cqs (or legacy .cq) directory.
-        // Post-slots layout: `.cqs/slots/<active>/index.db`. Pre-slots layout:
-        // `.cqs/index.db`. Pre-v0.9.7 layout: `.cq/index.db`.
+        // Validate the path has a .cqs (or older .cq) directory. Accepted
+        // layouts: `.cqs/slots/<active>/index.db`, `.cqs/index.db`, and
+        // `.cq/index.db`.
         let cqs_dir = path.join(".cqs");
         let has_cqs = cqs_dir.exists() && crate::resolve_index_db(&cqs_dir).exists();
         if !has_cqs && !path.join(".cq/index.db").exists() {
@@ -223,12 +223,9 @@ pub struct CrossProjectResult {
 
 /// Search across all registered projects.
 ///
-/// #1459 item 1a: takes a full `SearchFilter` so the cross-project path
-/// honors the same `--lang` / `--include-type` / `--exclude-type` /
-/// `--path` / `--name-boost` / `--rrf` / `--include-docs` flag surface
-/// the top-level `cqs <q>` exposes. Pre-fix, the function accepted only
-/// `(query_text, limit, threshold)` and hardcoded an "RRF off, no
-/// filters" call shape inside `search_single_project`.
+/// Takes a full `SearchFilter` so the cross-project path honors the same
+/// `--lang` / `--include-type` / `--exclude-type` / `--path` / `--name-boost`
+/// / `--rrf` / `--include-docs` flag surface the top-level `cqs <q>` exposes.
 pub fn search_across_projects(
     query_embedding: &crate::Embedding,
     filter: &crate::SearchFilter,
@@ -245,16 +242,16 @@ pub fn search_across_projects(
         return Err(ProjectError::NoProjects);
     }
 
-    // RM-25: Cap concurrency to bound memory — each project opens its own
+    // Cap concurrency to bound memory — each project opens its own
     // Store + HNSW (~200 MB resident per project on cqs-sized corpora). With
     // N projects loaded in parallel, peak RSS scales as N × 200 MB, so the
     // thread count is the dominant lever on memory pressure for cross-project
-    // search. SHL-V1.33-10: when `CQS_RAYON_THREADS` is unset, fall back to
+    // search. When `CQS_RAYON_THREADS` is unset, fall back to
     // `available_parallelism()` clamped at 8 — matches the daemon worker
-    // pool pattern in `watch/runtime.rs:62-66` and avoids the previous
-    // `unwrap_or(4)` that under-utilized 32-core hosts and over-committed
-    // 2-core ones. RB-16: fall back to sequential execution if thread pool
-    // creation fails, rather than panicking on a double-unwrap.
+    // pool pattern in `watch/runtime.rs` and avoids a fixed thread count that
+    // under-utilizes 32-core hosts and over-commits 2-core ones. Falls back to
+    // sequential execution if thread pool creation fails, rather than
+    // panicking.
     let threads = std::env::var("CQS_RAYON_THREADS")
         .ok()
         .and_then(|v| {
@@ -490,20 +487,16 @@ mod tests {
         );
     }
 
-    /// TC-HAP-V1.38-10 (#1463): the production `save()` writes the
-    /// registry with `mode(0o600)` under `#[cfg(unix)]` — the test was
-    /// previously gated `#[cfg(all(unix, target_os = "linux"))]`, which
-    /// arbitrarily excluded macOS even though the same Unix
-    /// `OpenOptionsExt::mode()` path runs there. Dropping the
-    /// `target_os = "linux"` constraint aligns the test gate with the
-    /// production gate so a developer running `cargo test` on macOS
-    /// catches a regression in the SEC-V1.33-3 atomic-write path the
-    /// same way Linux CI does.
+    /// The production `save()` writes the registry with `mode(0o600)` under
+    /// `#[cfg(unix)]`. This test is gated `#[cfg(unix)]` to match — the same
+    /// Unix `OpenOptionsExt::mode()` path runs on macOS as on Linux, so a
+    /// developer running `cargo test` on macOS catches a regression in the
+    /// atomic-write path the same way Linux CI does.
     #[cfg(unix)]
     #[test]
     fn test_save_writes_file_with_0o600_perms() {
-        // SEC-V1.33-3 regression coverage: the saved registry file must be
-        // 0o600 immediately after the rename, not after a follow-up chmod.
+        // The saved registry file must be 0o600 immediately after the rename,
+        // not after a follow-up chmod.
         // We override `XDG_CONFIG_HOME` so `dirs::config_dir()` points into a
         // tempdir for this test.
         use std::os::unix::fs::PermissionsExt;
@@ -543,7 +536,7 @@ mod tests {
     }
 
     // ===== search_across_projects tests =====
-    // TC-36: Full end-to-end search_across_projects test with a temp registry
+    // Full end-to-end search_across_projects test with a temp registry
     // is not feasible here because it requires controlling HOME/XDG env vars
     // (which would break parallel test execution) and setting up multiple
     // stores with valid embeddings. The constituent pieces are tested below.

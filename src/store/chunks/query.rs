@@ -44,13 +44,13 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// #1452: count of chunks awaiting a real embedding.
+    /// Count of chunks awaiting a real embedding.
     ///
     /// Triggers `enrichment_pass` from `cmd_index` whenever `> 0` so the
     /// first-pass-skip (`--llm-summaries` flow) doesn't leave chunks at
     /// `needs_embedding=1` indefinitely. Backed by the partial index
-    /// `idx_chunks_needs_embedding` (v27 migration), so the lookup is
-    /// O(needs) regardless of total chunk count.
+    /// `idx_chunks_needs_embedding`, so the lookup is O(needs) regardless of
+    /// total chunk count.
     pub fn needs_embedding_count(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("needs_embedding_count").entered();
         self.rt.block_on(async {
@@ -62,7 +62,7 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// #1452: chunk IDs awaiting a real embedding.
+    /// Chunk IDs awaiting a real embedding.
     ///
     /// Used by `enrichment_pass` to bypass the
     /// "skip-chunks-with-no-enrichment-context" early-out for any chunk

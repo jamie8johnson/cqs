@@ -9,12 +9,12 @@ use super::{
 };
 use crate::Store;
 
-/// P2 #33 (LLM half): build the user-visible message for `LlmError::Api` so
-/// that the daemon error envelope (which propagates the full anyhow chain)
-/// never carries the raw HTTP response body, the parsed Anthropic
-/// `error.message` (which sometimes echoes prompt fragments), or any other
-/// remote-controlled string. Operators with journal access can still see the
-/// full body via `tracing::debug!` at the call site.
+/// Build the user-visible message for `LlmError::Api` so that the daemon
+/// error envelope (which propagates the full anyhow chain) never carries the
+/// raw HTTP response body, the parsed Anthropic `error.message` (which
+/// sometimes echoes prompt fragments), or any other remote-controlled string.
+/// Operators with journal access can still see the full body via
+/// `tracing::debug!` at the call site.
 ///
 /// Returned shape: `"Anthropic API error during {context} (status: {status})"`.
 /// `context` is a short fixed-string label like "batch submission", picked by
@@ -79,17 +79,16 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
-            // P2 #33 (LLM half): keep body length for operator-visible debug
-            // logs, but the user-visible LlmError::Api message must NOT carry
-            // remote-controlled text (raw HTTP body or parsed `error.message`,
-            // both of which can echo prompt fragments).
+            // Keep body length for operator-visible debug logs, but the
+            // user-visible LlmError::Api message must NOT carry remote-
+            // controlled text (raw HTTP body or parsed `error.message`, both
+            // of which can echo prompt fragments).
             //
-            // SEC-V1.38-2 (#1463): also drop `parsed_anthropic_message` from
-            // the debug record. Anthropic's 400-class responses populate
-            // `error.message` with input fragments — schema validation
-            // includes failing JSON path values, content-policy
-            // `invalid_request_error` includes the rejected snippet. With
-            // `RUST_LOG=cqs=debug` the echo lands in journald. Keep the
+            // Also drop `error.message` from the debug record. Anthropic's
+            // 400-class responses populate it with input fragments — schema
+            // validation includes failing JSON path values, content-policy
+            // `invalid_request_error` includes the rejected snippet, and with
+            // `RUST_LOG=cqs=debug` the echo would land in journald. Keep the
             // structural `parsed.error.type` (e.g. `"invalid_request_error"`)
             // because that doesn't echo input.
             let parsed = serde_json::from_str::<ApiError>(&body).ok();
@@ -135,7 +134,7 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
-            // P2 #33 (LLM half): redact body from user-visible error.
+            // Redact body from user-visible error.
             tracing::debug!(
                 batch_id,
                 status,
@@ -154,13 +153,13 @@ impl LlmClient {
 
     /// Poll until a batch completes. Returns when status is "ended".
     ///
-    /// OB-V1.38-4 (#1463): Anthropic batches typically take 10-30 minutes;
-    /// this is the leaf span where the wall-clock waiting actually happens.
-    /// Entry span + closing `elapsed_ms` make "why did the LLM summary pass
-    /// take 47 minutes?" attributable to API slowness vs local processing.
-    /// The non-success terminal arms (canceling/canceled/expired) also fire
-    /// a structured `tracing::warn!` with the same field shape so an
-    /// operator sees them in journald instead of just `Err(...)`.
+    /// Anthropic batches typically take 10-30 minutes; this is the leaf span
+    /// where the wall-clock waiting actually happens. Entry span + closing
+    /// `elapsed_ms` make "why did the LLM summary pass take 47 minutes?"
+    /// attributable to API slowness vs local processing. The non-success
+    /// terminal arms (canceling/canceled/expired) also fire a structured
+    /// `tracing::warn!` with the same field shape so an operator sees them in
+    /// journald instead of just `Err(...)`.
     pub(super) fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<(), LlmError> {
         let _span = tracing::info_span!("wait_for_batch", batch_id).entered();
         let started = std::time::Instant::now();
@@ -182,7 +181,7 @@ impl LlmClient {
                     tracing::warn!(error = %e, "Failed to read HTTP error response body");
                     String::new()
                 });
-                // P2 #33 (LLM half): redact body from user-visible error.
+                // Redact body from user-visible error.
                 tracing::debug!(
                     batch_id,
                     status,
@@ -256,7 +255,7 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
-            // P2 #33 (LLM half): redact body from user-visible error.
+            // Redact body from user-visible error.
             tracing::debug!(
                 batch_id,
                 status,
@@ -269,8 +268,8 @@ impl LlmClient {
             });
         }
 
-        // RM-32: Check response size before buffering to prevent OOM.
-        // Check Content-Length header first (fast path), then enforce limit
+        // Check response size before buffering to prevent OOM. Check the
+        // Content-Length header first (fast path), then enforce the limit
         // while reading the body (handles chunked transfer encoding where
         // content_length() returns None).
         const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024; // 100MB
@@ -294,8 +293,8 @@ impl LlmClient {
             .take(MAX_RESPONSE_BYTES + 1)
             .read_to_end(&mut body_bytes)
             .map_err(|e| {
-                // P2 #33 (LLM half): keep the io::Error in debug logs only;
-                // its Display can include filesystem paths in some chains.
+                // Keep the io::Error in debug logs only; its Display can
+                // include filesystem paths in some chains.
                 tracing::debug!(batch_id, error = %e, "Failed to read batch response body");
                 LlmError::Api {
                     status: 200,
@@ -312,9 +311,9 @@ impl LlmClient {
             });
         }
         let body = String::from_utf8(body_bytes).map_err(|e| {
-            // P2 #33 (LLM half): the FromUtf8Error Display includes the byte
-            // offset and a slice of bytes — that's remote-controlled. Keep
-            // detail in debug, redact the user-visible error.
+            // The FromUtf8Error Display includes the byte offset and a slice
+            // of bytes — that's remote-controlled. Keep detail in debug,
+            // redact the user-visible error.
             tracing::debug!(batch_id, error = %e, "Batch response body not valid UTF-8");
             LlmError::Api {
                 status: 200,
@@ -365,9 +364,9 @@ impl LlmClient {
 
 impl BatchProvider for LlmClient {
     fn validate_model(&self, model: &str) -> Result<(), LlmError> {
-        // EXT-V1.36-1 / P3: Anthropic models all start with `claude-`.
-        // A wrong-provider/model combo (`--provider anthropic --model gpt-4o`)
-        // used to fail at the API roundtrip with an opaque error.
+        // Anthropic models all start with `claude-`. Reject a wrong-provider/
+        // model combo (`--provider anthropic --model gpt-4o`) here, before the
+        // API roundtrip returns an opaque error.
         if model.is_empty() {
             return Err(LlmError::Configuration {
                 message: "Anthropic model name must not be empty".into(),
@@ -388,11 +387,11 @@ impl BatchProvider for LlmClient {
         items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        // EXT-V1.36-1 / P3: client-side validation before API roundtrip.
+        // Client-side validation before API roundtrip.
         self.validate_model(&self.llm_config.model)?;
-        // #1347: dispatch on `BatchKind` once; the inner submit_batch_inner
-        // takes the chosen prompt builder + log purpose verbatim. Adding a
-        // fourth kind is one new variant + one new arm.
+        // Dispatch on `BatchKind` once; the inner submit_batch_inner takes the
+        // chosen prompt builder + log purpose verbatim. Adding a fourth kind
+        // is one new variant + one new arm.
         use super::provider::BatchKind;
         let purpose = kind.purpose_label();
         match kind {
@@ -431,7 +430,6 @@ impl BatchProvider for LlmClient {
     }
 }
 
-/// Configuration for the Phase 2 batch orchestration pattern.
 /// Type alias for pending metadata get/set closures (clippy::type_complexity).
 type PendingFn = dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>;
 /// Type alias for batch submit closures (clippy::type_complexity).
@@ -442,7 +440,7 @@ type SubmitFn = dyn Fn(
 ) -> Result<String, LlmError>;
 
 /// Captures the per-purpose differences (pending metadata key, submit function, purpose string)
-/// so the orchestration logic (`submit_or_resume`) can be shared across summary, doc, and HyDE passes.
+/// so the orchestration logic (`submit_or_resume`) is shared across summary, doc, and HyDE passes.
 pub(super) struct BatchPhase2<'a> {
     /// Purpose label for log messages and storage (e.g. "summary", "hyde", "doc-comment").
     pub purpose: &'static str,
@@ -450,7 +448,7 @@ pub(super) struct BatchPhase2<'a> {
     pub max_tokens: u32,
     /// Whether to suppress progress output.
     pub quiet: bool,
-    /// DS-25: Directory for `batch.lock` file to prevent concurrent batch submission.
+    /// Directory for the `batch.lock` file that prevents concurrent batch submission.
     /// When set, a file lock is acquired before the check-then-set on pending batch ID.
     /// Typically the `.cqs` directory. `None` disables locking (e.g. in tests).
     pub lock_dir: Option<&'a std::path::Path>,
@@ -458,7 +456,7 @@ pub(super) struct BatchPhase2<'a> {
 
 impl BatchPhase2<'_> {
     /// Acquire the batch lock file if `lock_dir` is set, preventing concurrent
-    /// batch submission races (DS-25). Returns the held file (lock released on drop).
+    /// batch submission races. Returns the held file (lock released on drop).
     fn acquire_batch_lock(&self) -> Result<Option<std::fs::File>, LlmError> {
         let Some(dir) = self.lock_dir else {
             return Ok(None);
@@ -520,7 +518,7 @@ impl BatchPhase2<'_> {
         )
         .entered();
 
-        // DS-25: Acquire file lock before the check-then-set on pending batch ID.
+        // Acquire file lock before the check-then-set on pending batch ID.
         // This prevents two concurrent `cqs index --llm-summaries` from both seeing
         // "no pending batch" and both submitting fresh batches.
         // Lock is held through get_pending -> submit -> set_pending, released on drop.
@@ -540,7 +538,7 @@ impl BatchPhase2<'_> {
                     Ok(results)
                 }
                 Err(e) => {
-                    // EH-24: don't swallow store errors — they could mean lost batch results
+                    // Don't swallow store errors — they could mean lost batch results
                     tracing::error!(
                         error = %e,
                         purpose = self.purpose,
@@ -573,7 +571,7 @@ impl BatchPhase2<'_> {
                         pending
                     }
                     Ok(status) => {
-                        // EH-25: log the actual status so we can diagnose
+                        // Log the actual status so we can diagnose
                         tracing::warn!(
                             old_batch = %pending,
                             status = %status,
@@ -610,13 +608,13 @@ impl BatchPhase2<'_> {
         };
 
         let result = self.resume(client, store, &batch_id, set_pending);
-        // RM-34: Clean up lock file after batch operation completes
+        // Clean up lock file after batch operation completes
         drop(_batch_lock);
         self.cleanup_batch_lock();
         result
     }
 
-    /// Remove the batch lock file if it exists (RM-34).
+    /// Remove the batch lock file if it exists.
     /// Called after the lock handle is dropped to avoid leaving stale lock files on disk.
     fn cleanup_batch_lock(&self) {
         if let Some(dir) = self.lock_dir {
@@ -642,7 +640,7 @@ impl BatchPhase2<'_> {
 
         let results = client.fetch_batch_results(batch_id)?;
 
-        // DS-20: Validate results against current index — skip stale content_hashes
+        // Validate results against current index — skip stale content_hashes
         // (e.g., after --force rebuild, the batch results reference chunks that no longer exist)
         let hash_result = store.get_all_content_hashes();
         let valid_hashes: std::collections::HashSet<String> = match &hash_result {
@@ -654,7 +652,7 @@ impl BatchPhase2<'_> {
         };
 
         let (valid_results, stale_count) = if valid_hashes.is_empty() && hash_result.is_err() {
-            // Hash fetch failed — skip storage entirely to avoid committing stale data (DS-29).
+            // Hash fetch failed — skip storage entirely to avoid committing stale data.
             // Next run will retry the batch.
             tracing::error!(purpose = self.purpose, "Cannot validate batch results — skipping storage to prevent stale data. Will retry on next run.");
             if let Err(e) = clear_pending(store, None) {
@@ -662,7 +660,7 @@ impl BatchPhase2<'_> {
             }
             return Ok(results);
         } else if valid_hashes.is_empty() {
-            // No hashes in DB (fresh/pre-v13 index) — store everything (PERF-34: move, not clone)
+            // No hashes in DB (fresh index) — store everything (move, not clone)
             (results, 0usize)
         } else {
             let mut valid = HashMap::new();
@@ -687,8 +685,8 @@ impl BatchPhase2<'_> {
             );
         }
 
-        // Store results with the given purpose
-        // PERF-38: model/purpose are cloned per item because upsert_summaries_batch takes
+        // Store results with the given purpose.
+        // model/purpose are cloned per item because upsert_summaries_batch takes
         // &[(String, String, String, String)]. Refactoring to separate params would change
         // the Store API signature and all callers — not worth it for batch sizes < 10k.
         let model = client.model_name().to_string();
@@ -748,7 +746,7 @@ mod tests {
     use crate::test_helpers::setup_store;
     use std::collections::HashMap;
 
-    // ===== P2 #33 (LLM half): redacted_api_message =====
+    // ===== redacted_api_message =====
 
     /// The user-visible API error message must NOT echo any remote-controlled
     /// text (raw HTTP body, parsed Anthropic `error.message`, etc.). It must
@@ -855,8 +853,8 @@ mod tests {
         });
     }
 
-    /// DS-28 regression: resume should only return results whose content_hashes
-    /// exist in the current index, filtering out stale hashes from prior builds.
+    /// Resume should only return results whose content_hashes exist in the
+    /// current index, filtering out stale hashes from prior builds.
     #[test]
     fn test_resume_returns_valid_results_only() {
         let (store, _dir) = setup_store();
@@ -917,7 +915,7 @@ mod tests {
         assert_eq!(map.len(), 2);
     }
 
-    /// RB-22: empty batch_items with no pending batch should return Ok(empty).
+    /// Empty batch_items with no pending batch should return Ok(empty).
     #[test]
     fn test_empty_batch_items() {
         let (store, _dir) = setup_store();
@@ -982,9 +980,9 @@ mod tests {
         );
     }
 
-    /// TC-46: Batch with results for nonexistent chunks returns empty map
-    /// (all results filtered as stale). Requires at least one real chunk
-    /// in the DB so the valid_hashes set is non-empty (empty DB = store-all).
+    /// Batch with results for nonexistent chunks returns empty map (all
+    /// results filtered as stale). Requires at least one real chunk in the
+    /// DB so the valid_hashes set is non-empty (empty DB = store-all).
     #[test]
     fn test_all_results_filtered_returns_empty() {
         let (store, _dir) = setup_store();
@@ -1026,7 +1024,7 @@ mod tests {
         assert!(map.is_empty(), "All stale results should be filtered out");
     }
 
-    /// TC-46: submit_or_resume with a stored pending batch ID resumes correctly.
+    /// submit_or_resume with a stored pending batch ID resumes correctly.
     #[test]
     fn test_resume_with_pending_batch() {
         let (store, _dir) = setup_store();

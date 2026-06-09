@@ -39,8 +39,8 @@ fn display_plan_text(
     root: &std::path::Path,
     tokens: Option<usize>,
 ) {
-    // v1.22.0 audit API-11: --tokens was accepted and silently ignored in
-    // text mode. Warn so the user knows their budget isn't being applied.
+    // --tokens is accepted but only applied in JSON mode. Warn so the user
+    // knows their budget isn't being applied in text mode.
     if tokens.is_some() {
         tracing::warn!(
             tokens,

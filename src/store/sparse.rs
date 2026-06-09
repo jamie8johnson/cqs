@@ -1,4 +1,4 @@
-// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// WRITE_LOCK guard is held across .await inside block_on().
 // This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! Sparse vector storage for SPLADE hybrid search.
@@ -10,14 +10,12 @@
 //! any mismatch forces a rebuild from SQLite. The counter is maintained by
 //! [`Store::bump_splade_generation_tx`], the single source of truth for this
 //! bump. **Every write site that mutates `sparse_vectors` must call it before
-//! committing.** As of v19 the `sparse_vectors` table has a foreign key with
+//! committing.** The `sparse_vectors` table has a foreign key with
 //! `ON DELETE CASCADE` on `chunk_id → chunks(id)`, so deletes through the
 //! `chunks` table automatically cascade — those paths bump the generation via
 //! their own `bump_splade_generation_tx` call after the `chunks` delete.
 //!
-//! v1.22.0 audit rules ([docs/audit-triage.md] cluster: CQ-3, DS-W1, DS-W3,
-//! DS-W4, EH-1/2/3/4, API-14) apply here. Do not add a fourth write site
-//! without wiring the bump.
+//! Do not add a fourth write site without wiring the bump.
 
 use super::{ReadWrite, Store};
 use crate::splade::SparseVector;
@@ -27,11 +25,11 @@ use sqlx::Row;
 
 /// Number of distinct chunk_ids fetched per page by [`Store::load_all_sparse_vectors`].
 ///
-/// PF-V1.25-19: sized so the per-batch row Vec fits comfortably in a few MB
-/// even at the upper bound of tokens-per-chunk (~100-500). With 1000 chunks
-/// × 200 avg tokens/row × ~80B/row ≈ 16 MB per batch. The single-query
-/// `fetch_all` path that preceded this could hit multiple GB on a large
-/// index. Larger values reduce round-trip count but cap the memory win.
+/// Sized so the per-batch row Vec fits comfortably in a few MB even at the
+/// upper bound of tokens-per-chunk (~100-500). With 1000 chunks × 200 avg
+/// tokens/row × ~80B/row ≈ 16 MB per batch. An unpaginated single-query
+/// `fetch_all` could hit multiple GB on a large index. Larger values reduce
+/// round-trip count but cap the memory win.
 const LOAD_SPARSE_CHUNK_ID_BATCH: i64 = 1000;
 
 /// Bump the SPLADE generation counter inside an existing write transaction.
@@ -115,9 +113,9 @@ impl Store<ReadWrite> {
     /// updates, and the read-time SPLADE search path is unaffected because
     /// the index is back in place by the time the function returns.
     ///
-    /// **Lock-hold contract (#1212):** the bulk DELETE+INSERT loop runs in
+    /// **Lock-hold contract:** the bulk DELETE+INSERT loop runs in
     /// chunked sub-transactions of `CHUNKS_PER_TX` chunks each, releasing
-    /// `WRITE_LOCK` (and SQLite's WAL writer lock) between batches. Before
+    /// `WRITE_LOCK` (and SQLite's WAL writer lock) between batches. Without
     /// the chunking pass, a single 5614-chunk reindex held the in-process
     /// write lock for ~16 s (8 s DELETE + 8 s CREATE INDEX rebuild),
     /// stalling concurrent daemon RPCs (notes add, audit-mode toggle,
@@ -156,7 +154,7 @@ impl Store<ReadWrite> {
             // lock-hold time (latency for concurrent writers). Operators
             // can tune via `CQS_SPARSE_CHUNKS_PER_TX` if their workload
             // (e.g. very dense sparse vectors, slower disks) wants
-            // smaller batches. See #1212.
+            // smaller batches.
             let chunks_per_tx: usize = std::env::var("CQS_SPARSE_CHUNKS_PER_TX")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -311,17 +309,13 @@ impl<Mode> Store<Mode> {
     /// Load all sparse vectors for building the in-memory SpladeIndex.
     /// Returns Vec of (chunk_id, sparse_vector).
     ///
-    /// PF-V1.25-19: previously ran a single `SELECT ... FROM sparse_vectors
-    /// ORDER BY chunk_id` + `fetch_all`, which materialized the entire
-    /// `sparse_vectors` table as a `Vec<SqliteRow>` in memory before
-    /// grouping. On a 60k-chunk index with ~100 tokens/chunk that's 6M
-    /// rows × ~80B/row ≈ 500MB peak, on top of the final grouped Vec.
-    ///
-    /// Now paginates by chunk_id in batches of up to
+    /// Paginates by chunk_id in batches of up to
     /// [`LOAD_SPARSE_CHUNK_ID_BATCH`] distinct chunk_ids, using a cursor on
     /// `chunk_id`. Each batch's rows are fully grouped before discarding
     /// the row Vec, so peak memory is bounded to one batch (~5-20 MB) plus
-    /// the growing result.
+    /// the growing result. A single unpaginated `SELECT ... ORDER BY chunk_id`
+    /// + `fetch_all` would instead materialize the entire table — ~500 MB peak
+    /// on a 60k-chunk index with ~100 tokens/chunk.
     pub fn load_all_sparse_vectors(&self) -> Result<Vec<(String, SparseVector)>, StoreError> {
         let _span = tracing::info_span!("load_all_sparse_vectors").entered();
         self.rt.block_on(async {
@@ -361,13 +355,12 @@ impl<Mode> Store<Mode> {
                 // entirely to this batch — the subquery guarantees complete
                 // groups, never splitting a chunk across pages.
                 //
-                // PERF-V1.33-6 / #1377: borrow `chunk_id` as `&str` from the
-                // sqlx row buffer instead of allocating a fresh `String` for
-                // every row. Pre-fix, a 60k-chunk index averaging ~100 sparse
-                // tokens per chunk allocated ~6M Strings per call (called on
-                // every watch reload + daemon startup); only the
-                // chunk-boundary transition needs an owned id (~60k Strings,
-                // 100× reduction). `last_id_in_batch` keeps an owned String
+                // Borrow `chunk_id` as `&str` from the sqlx row buffer instead
+                // of allocating a fresh `String` for every row. Only the
+                // chunk-boundary transition needs an owned id; a 60k-chunk
+                // index averaging ~100 sparse tokens per chunk would otherwise
+                // allocate ~6M Strings per call (called on every watch reload +
+                // daemon startup). `last_id_in_batch` keeps an owned String
                 // because it crosses the loop body for the post-loop
                 // dump-counting log.
                 let mut current_id: Option<&str> = None;
@@ -478,18 +471,15 @@ impl<Mode> Store<Mode> {
 impl Store<ReadWrite> {
     /// Delete sparse vectors for chunks that no longer exist.
     ///
-    /// **As of v19 this is a no-op on clean data** — the `sparse_vectors` →
-    /// `chunks` FK cascade removes orphans automatically on every chunks
-    /// delete. The function is kept for one-shot repair scenarios (manual
-    /// SQL manipulation, restore from older backup, migration from pre-v19
-    /// data that had orphans). The v18→v19 migration already drops orphans
-    /// during the table rebuild, so on a correctly-migrated DB this will
-    /// delete zero rows.
+    /// **A no-op on clean data** — the `sparse_vectors` → `chunks` FK cascade
+    /// removes orphans automatically on every chunks delete. The function is
+    /// kept for one-shot repair scenarios (manual SQL manipulation, restore
+    /// from an older backup, data that predates the FK cascade). On a healthy
+    /// DB this deletes zero rows.
     ///
-    /// Wraps DELETE + generation bump in a single `begin_write` transaction
-    /// (audit CQ-3: previously the three statements ran on `&self.pool`
-    /// independently, opening a lost-update race and a crash window between
-    /// DELETE and the metadata UPDATE).
+    /// Wraps DELETE + generation bump in a single `begin_write` transaction so
+    /// they can't run independently (which would open a lost-update race and a
+    /// crash window between DELETE and the metadata UPDATE).
     pub fn prune_orphan_sparse_vectors(&self) -> Result<usize, StoreError> {
         let _span = tracing::debug_span!("prune_orphan_sparse_vectors").entered();
         self.rt.block_on(async {
@@ -530,11 +520,9 @@ impl<Mode> Store<Mode> {
     ///
     /// This is read on every SpladeIndex load so persisted files can be
     /// cheaply checked for staleness without walking `sparse_vectors`.
-    /// Audit EH-1/OB-17: previously `.parse::<u64>().ok().unwrap_or(0)`
-    /// silently collapsed corruption to 0, pairing with the `load_or_build`
-    /// caller to form a self-perpetuating cache-poison loop (EH-3). The
-    /// explicit warn makes corruption visible; the caller still returns `0`
-    /// so the loader rebuilds defensively.
+    /// A non-parseable value is warned about rather than silently collapsed to
+    /// 0, so corruption stays visible; the caller still returns `0` so the
+    /// loader rebuilds defensively instead of trusting a poisoned cache.
     pub fn splade_generation(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("splade_generation").entered();
         self.rt.block_on(async {
@@ -662,9 +650,9 @@ mod tests {
 
     #[test]
     fn test_sparse_load_filters_non_finite_weights() {
-        // P1-21 / TC-V1.36-1: load path was casting `weight: f64 -> f32`
-        // without is_finite. An Inf/-Inf weight (corrupt row, hand-edit,
-        // future encoder switch) used to flow into hybrid fusion as
+        // The load path filters non-finite weights when casting
+        // `weight: f64 -> f32`. Without is_finite, an Inf/-Inf weight (corrupt
+        // row, hand-edit, encoder switch) would flow into hybrid fusion as
         // f32::INFINITY and silently corrupt min-max normalization.
         // SQLite coerces NaN to NULL on bind paths so we plant Inf via
         // overflow arithmetic at insert time (NaN insertion is blocked by
@@ -785,7 +773,7 @@ mod tests {
 
     #[test]
     fn test_prune_orphan_on_clean_db_is_noop() {
-        // TC-ADV-13: the zero-rows branch must be a true no-op on a clean
+        // The zero-rows branch must be a true no-op on a clean
         // DB that has never held any sparse vectors. A regression flipping
         // the `if affected > 0` guard to `>= 0` would bump the generation
         // on every `cqs index` even when no work was done.
@@ -990,7 +978,7 @@ mod tests {
         });
     }
 
-    /// #1212: `CQS_SPARSE_CHUNKS_PER_TX` invalid values fall back to the
+    /// `CQS_SPARSE_CHUNKS_PER_TX` invalid values fall back to the
     /// default. Guards against a typo in the env var silently producing
     /// either zero-sized batches (panic in `chunks(0)`) or non-numeric
     /// strings (parse error swallowed and ignored).
@@ -1009,7 +997,7 @@ mod tests {
         }
     }
 
-    /// #1212: the chunked path correctly handles batches that straddle
+    /// The chunked path correctly handles batches that straddle
     /// CHUNKS_PER_TX boundaries — the second batch's DELETE must not
     /// affect the first batch's freshly-committed rows. Pin via:
     /// pre-seed v1 vectors for c1+c2; upsert v2 for c1+c2 with
@@ -1055,9 +1043,8 @@ mod tests {
         });
     }
 
-    /// TC-ADV-V1.38-3 (#1463): pin write-path behavior for non-finite
-    /// weights. The read path (P1-21/31/37) filters NaN/Inf at load
-    /// time; the write path at line 218/231 binds the f32 directly via
+    /// Pin write-path behavior for non-finite weights. The read path filters
+    /// NaN/Inf at load time; the write path binds the f32 directly via
     /// `push_bind`. Document the current contract so a future write-side
     /// scrubber is a deliberate change.
     ///

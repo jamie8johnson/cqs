@@ -1,24 +1,20 @@
 //! Shared argument structs for CLI and batch commands.
-//! Eliminates duplication between Commands and BatchCmd enums.
 //!
-//! #947: each variant in the user-facing command surface should embed one of
-//! these structs via `#[command(flatten)]`. Both the CLI path and the daemon
-//! batch path read from the same arg struct, so adding a flag or changing a
-//! default happens once and both paths pick it up automatically.
+//! Each variant in the user-facing command surface embeds one of these structs
+//! via `#[command(flatten)]`. Both the CLI path and the daemon batch path read
+//! from the same arg struct, so adding a flag or changing a default happens
+//! once and both paths pick it up.
 
 use clap::Args;
 
 use super::{parse_finite_f32, parse_nonzero_usize, parse_unit_f32};
 use cqs::store::DeadConfidence;
 
-// ============ #1373 / API-V1.33: depth-flag default rule ============
+// ============ depth-flag default rule ============
 //
-// Five graph commands take a "depth" knob. Pre-#1373, the spread
-// (gather=1, impact=1, test-map=5, trace=10, onboard=3) read like
-// accidents. The named constants below document the per-command
-// rationale so the spread is auditable and intentional, even though
-// the values themselves stay where they were (changing them is a
-// behavior change for operators who depend on the current radii).
+// Five graph commands take a "depth" knob. The spread
+// (gather=1, impact=1, test-map=5, trace=10, onboard=3) is intentional;
+// the named constants below document the per-command rationale.
 //
 // Two rule classes:
 //
@@ -40,7 +36,7 @@ use cqs::store::DeadConfidence;
 // `trace` keeps `--max-depth` semantics: it's a path-search (find
 // route from A to B), not BFS-traversal, so its 10-step ceiling
 // expresses "give up after 10 hops" rather than "expand 10 deep."
-// `--depth` alias added so the spelling matches the others.
+// `--depth` is accepted as an alias so the spelling matches the others.
 
 /// Default for "blast radius" depth flags (gather, impact). One step
 /// of direct callers / callees.
@@ -60,21 +56,16 @@ pub const DEFAULT_DEPTH_WALK: usize = 3;
 pub const DEFAULT_DEPTH_TEST_MAP: u16 = 5;
 
 /// `trace` is path-search, not BFS-traversal. The flag is
-/// `--max-depth` (with `--depth` alias as of #1373) and means "give
-/// up looking for a route between source and target after N hops."
-/// 10 is the historical default, large enough to find paths through
-/// long indirection chains but small enough that an unreachable pair
-/// surfaces in <1s.
+/// `--max-depth` (with `--depth` alias) and means "give up looking for
+/// a route between source and target after N hops." 10 is large enough
+/// to find paths through long indirection chains but small enough that
+/// an unreachable pair surfaces in <1s.
 pub const DEFAULT_DEPTH_TRACE: u16 = 10;
 
-/// Cross-encoder / LLM reranker mode for retrieval surfaces.
+/// Cross-encoder reranker mode for retrieval surfaces.
 ///
-/// Lifted out of `src/cli/commands/eval/mod.rs` (P2-14, #1372) so search and
-/// eval share the same flag shape. `cqs <q> --rerank` is preserved as a
-/// boolean shorthand for `--reranker onnx`; `--reranker none|onnx` is the
-/// canonical form. `Llm` was previously exposed as a placeholder for #1220
-/// but errored at runtime — API-V1.36-2 dropped it from the surface so
-/// `--help` lists only modes the binary actually supports.
+/// Search and eval share this flag shape. `--reranker none|onnx` is the
+/// canonical form; `--help` lists only modes the binary supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum RerankerMode {
     /// No reranking — stage-1 retrieval is the final answer (default).
@@ -83,27 +74,13 @@ pub(crate) enum RerankerMode {
     Onnx,
 }
 
-// API-V1.36-9 (#1459): `resolve_rerank_mode` removed along with the
-// legacy `--rerank` bool. Callers now use
-// `self.reranker.unwrap_or(RerankerMode::None)` directly.
-
-/// Shared `--limit / -n` argument for graph commands that previously had no
-/// per-subcommand limit (callers, callees, deps, impact, test-map, trace,
-/// onboard, explain). Default mirrors the top-level `Cli::limit` (= 5) so a
-/// bare `cqs <query>` and `cqs callers <name> -n N` agree on the cap.
+/// Shared `--limit / -n` argument for graph commands (callers, callees, deps,
+/// impact, test-map, trace, onboard, explain). Default mirrors the top-level
+/// `Cli::limit` (= 5) so a bare `cqs <query>` and `cqs callers <name> -n N`
+/// agree on the cap. Embedding this struct via `#[command(flatten)]` gives
+/// every subcommand its own `--limit` while keeping the default in one place.
 ///
-/// Task A3: standardises `--limit` across every graph subcommand. Previously
-/// only the top-level `Cli` accepted `--limit`, so batch users had no way to
-/// cap graph output (`echo 'callers Foo --limit 5' | cqs batch` errored with
-/// "unexpected argument"). Embedding this struct via `#[command(flatten)]`
-/// gives every subcommand its own `--limit` while keeping the default in one
-/// place.
-///
-/// API-V1.38-10 (#1463): now also rejects `--limit 0` at parse time so
-/// every flattened consumer (impact / trace / onboard / explain / test_map /
-/// deps / callers + the 7 search-shaped commands once they migrate)
-/// inherits the same parse-time validation that `cqs <q>`'s top-level Cli
-/// got in #1544. limit=0 is meaningless everywhere.
+/// Rejects `--limit 0` at parse time — limit=0 is meaningless everywhere.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct LimitArg {
     /// Max results to return (per category for impact/explain)
@@ -114,20 +91,14 @@ pub(crate) struct LimitArg {
 /// Arguments for semantic search: the flagship command. Shared between CLI
 /// `search` (top-level + `cqs search …`) and batch `search`.
 ///
-/// CQ-V1.25-1/4: this struct is the single source of truth for every search
-/// knob. Previously `BatchCmd::Search` inline-duplicated 21 fields and
-/// individual fields drifted (missing `--threshold`, missing `--pattern`,
-/// etc.). If a flag is valid for search, it lives here.
+/// Single source of truth for every search knob. If a flag is valid for
+/// search, it lives here.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct SearchArgs {
     /// Search query (quote multi-word queries)
     pub query: String,
 
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
-    /// Pre-fix, every `*Args` struct inline-defined its own `pub limit: usize`
-    /// — 8 copies that drifted on validation rules (only some had
-    /// `parse_nonzero_usize`). Centralised here so future limit-shape
-    /// changes (default, cap, parser) are one-line edits.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
 
@@ -141,10 +112,9 @@ pub(crate) struct SearchArgs {
 
     /// Weight for name matching in hybrid search (0.0-1.0)
     ///
-    /// AC-V1.29-5: value_parser is `parse_unit_f32` (bounded [0.0, 1.0]) to
-    /// reject out-of-range values at parse time. Previously accepted e.g.
-    /// `--name-boost 1.5`, which silently subtracted > 1.0 from embedding
-    /// weight and degraded search with no warning.
+    /// `value_parser` is `parse_unit_f32` (bounded [0.0, 1.0]) so out-of-range
+    /// values are rejected at parse time — a value > 1.0 would otherwise
+    /// subtract from embedding weight and silently degrade search.
     #[arg(long, default_value = "0.2", value_parser = parse_unit_f32)]
     pub name_boost: f32,
 
@@ -180,15 +150,10 @@ pub(crate) struct SearchArgs {
     #[arg(long)]
     pub include_docs: bool,
 
-    /// Reranker mode: `none|onnx` (#1372).
+    /// Reranker mode: `none|onnx`.
     ///
     /// Mirrors `cqs eval --reranker`. `none` is the default; `onnx` runs the
     /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
-    ///
-    /// API-V1.36-9 (#1459): the legacy `--rerank` bool was a "two flags for
-    /// one knob" shorthand for `--reranker onnx`. Per "no external users"
-    /// project policy, dropped without an alias — `--reranker onnx` is the
-    /// canonical form.
     #[arg(long = "reranker", value_enum)]
     pub reranker: Option<RerankerMode>,
 
@@ -204,9 +169,8 @@ pub(crate) struct SearchArgs {
     /// SPLADE fusion weight (None = use per-category router).
     ///
     /// When set, overrides the per-category router with a constant α for all
-    /// queries: 1.0 = pure cosine, 0.0 = pure sparse, 0.7 was the legacy
-    /// one-size default. Leaving this unset lets `classify_query` pick per
-    /// category (the production path).
+    /// queries: 1.0 = pure cosine, 0.0 = pure sparse. Leaving this unset lets
+    /// `classify_query` pick per category (the production path).
     #[arg(long, value_parser = parse_finite_f32)]
     pub splade_alpha: Option<f32>,
 
@@ -220,10 +184,8 @@ pub(crate) struct SearchArgs {
 
     /// Expand results with parent context (small-to-big retrieval)
     ///
-    /// API-V1.29-9: renamed from `--expand` to `--expand-parent` so it aligns
-    /// with the top-level `Cli::expand_parent` flag (`src/cli/definitions.rs`).
-    /// The old `--expand` spelling is kept as a visible alias for now so batch
-    /// scripts that still pass it don't break.
+    /// `--expand-parent` aligns with the top-level `Cli::expand_parent` flag
+    /// (`src/cli/definitions.rs`). `--expand` is accepted as a visible alias.
     #[arg(long = "expand-parent", visible_alias = "expand")]
     pub expand_parent: bool,
 
@@ -250,7 +212,6 @@ pub(crate) struct SearchArgs {
 
 impl SearchArgs {
     /// Effective reranker mode. Returns `RerankerMode::None` when no flag is set.
-    /// API-V1.36-9 (#1459): legacy `--rerank` bool gone; `--reranker` is canonical.
     pub(crate) fn rerank_mode(&self) -> RerankerMode {
         self.reranker.unwrap_or(RerankerMode::None)
     }
@@ -267,17 +228,15 @@ pub(crate) struct GatherArgs {
     /// Search query / question
     pub query: String,
     /// Call-graph BFS depth for gather expansion (0=seeds only, max 5).
-    /// Aligned with `onboard`/`impact`/`test-map` which already use `--depth`;
-    /// the legacy `--expand` form is kept as a visible alias.
-    /// #1373: BLAST default — direct callers / callees only.
-    /// API-V1.36-1: -d short flag for parity with impact/onboard/test-map.
+    /// Shares `--depth`/`-d` with `onboard`/`impact`/`test-map`; `--expand`
+    /// is accepted as a visible alias. BLAST default — direct callers /
+    /// callees only.
     #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_BLAST, visible_alias = "expand")]
     pub depth: usize,
     /// Expansion direction: both, callers, callees
     #[arg(long, default_value = "both")]
     pub direction: cqs::GatherDirection,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
-    /// Default 5 across all sister args.
+    /// Shared `--limit` arg via `LimitArg` flatten. Default 5.
     #[command(flatten)]
     pub limit_arg: LimitArg,
     /// Maximum token budget (overrides --limit with token-based packing)
@@ -293,11 +252,8 @@ pub(crate) struct GatherArgs {
 pub(crate) struct ImpactArgs {
     /// Function name or file:function
     pub name: String,
-    /// Caller depth (1=direct, 2+=transitive)
-    ///
-    /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
-    /// which already accepts it.
-    /// #1373: BLAST default — direct callers only.
+    /// Caller depth (1=direct, 2+=transitive). `-d` short flag matches
+    /// `OnboardArgs::depth`. BLAST default — direct callers only.
     #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_BLAST)]
     pub depth: usize,
     /// Suggest tests for untested callers
@@ -309,8 +265,8 @@ pub(crate) struct ImpactArgs {
     /// Query callers/impact across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
-    /// Task A3: per-section truncation cap (callers, transitive_callers,
-    /// tests, type_impacted). Defaults to 5 to match the top-level `Cli`.
+    /// Per-section truncation cap (callers, transitive_callers, tests,
+    /// type_impacted). Defaults to 5 to match the top-level `Cli`.
     #[command(flatten)]
     pub limit_arg: LimitArg,
 }
@@ -320,7 +276,7 @@ pub(crate) struct ImpactArgs {
 pub(crate) struct ScoutArgs {
     /// Search query to investigate
     pub query: String,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
     /// Maximum token budget (includes chunk content within budget)
@@ -360,7 +316,7 @@ pub(crate) struct DeadArgs {
 pub(crate) struct SimilarArgs {
     /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
     pub name: String,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
     /// Min similarity threshold
@@ -375,11 +331,9 @@ pub(crate) struct BlameArgs {
     pub name: String,
     /// Max commits to show.
     ///
-    /// API-V1.22-4: renamed from `--depth`/`-d` to `--commits`/`-n` so blame
-    /// stops sharing the `--depth` spelling with `onboard` (callee expansion
-    /// depth) and `test-map` (call-chain BFS depth) — three commands had three
-    /// different semantics under the same flag name. Hard rename, no alias —
-    /// internal-only tool, see CLAUDE.md "No External Users".
+    /// Spelled `--commits`/`-n` rather than `--depth` so blame doesn't share
+    /// the `--depth` spelling with `onboard` (callee expansion depth) and
+    /// `test-map` (call-chain BFS depth), which carry different semantics.
     #[arg(short = 'n', long, default_value = "10")]
     pub commits: usize,
     /// Also show callers of the function
@@ -396,9 +350,9 @@ pub(crate) struct TraceArgs {
     pub target: String,
     /// Max search depth (1-50). `trace` is path-search (find route
     /// A → B), not BFS-traversal — `--max-depth` means "give up looking
-    /// for a path after N hops." `--depth` is accepted as an alias
-    /// (#1373) so the spelling matches the rest of the depth-knob
-    /// family even though the semantic differs.
+    /// for a path after N hops." `--depth` is accepted as an alias so the
+    /// spelling matches the rest of the depth-knob family even though the
+    /// semantic differs.
     #[arg(
         short = 'd',
         long,
@@ -410,10 +364,10 @@ pub(crate) struct TraceArgs {
     /// Trace across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
-    /// Task A3: cap on intermediate hops in the rendered path. Trace
-    /// returns a single shortest path today; the cap applies to future
-    /// k-shortest variants and to defensive truncation when path length
-    /// exceeds expectation. Accepted for parity with other graph commands.
+    /// Cap on intermediate hops in the rendered path. Trace returns a
+    /// single shortest path today; the cap applies to future k-shortest
+    /// variants and to defensive truncation when path length exceeds
+    /// expectation. Accepted for parity with other graph commands.
     #[command(flatten)]
     pub limit_arg: LimitArg,
 }
@@ -426,7 +380,7 @@ pub(crate) struct CallersArgs {
     /// Query callers across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
-    /// Task A3: cap on callers/callees returned. Defaults to 5 to match the
+    /// Cap on callers/callees returned. Defaults to 5 to match the
     /// top-level `Cli`. The handler truncates the post-resolution list before
     /// rendering — both text and JSON paths respect the cap.
     #[command(flatten)]
@@ -444,7 +398,7 @@ pub(crate) struct DepsArgs {
     /// Query across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
-    /// Task A3: cap on type users (forward) or used types (reverse). Defaults
+    /// Cap on type users (forward) or used types (reverse). Defaults
     /// to 5 to match the top-level `Cli`. Truncated after fetch.
     #[command(flatten)]
     pub limit_arg: LimitArg,
@@ -455,16 +409,12 @@ pub(crate) struct DepsArgs {
 pub(crate) struct TestMapArgs {
     /// Function name or file:function
     pub name: String,
-    /// Max call chain depth to search
-    ///
-    /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
-    /// which already accepts it.
-    /// #1373: deeper than the WALK default because tests are leaves on
-    /// the call graph; depth=3 frequently misses test files 4+ hops from
-    /// a deep production chunk.
-    /// RB-V1.40-1: range-bounded so a pathological `--depth usize::MAX`
-    /// can't reach the BFS arithmetic and panic on the `+ 1`. Bound
-    /// matches `TraceArgs::max_depth` (1..=50).
+    /// Max call chain depth to search. `-d` short flag matches
+    /// `OnboardArgs::depth`. Deeper than the WALK default because tests are
+    /// leaves on the call graph; depth=3 frequently misses test files 4+ hops
+    /// from a deep production chunk. Range-bounded (1..=50, matching
+    /// `TraceArgs::max_depth`) so a pathological `--depth usize::MAX` can't
+    /// reach the BFS `+ 1` arithmetic and panic.
     #[arg(
         short = 'd',
         long,
@@ -475,7 +425,7 @@ pub(crate) struct TestMapArgs {
     /// Search for tests across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
-    /// Task A3: cap on test matches returned. Defaults to 5 to match the
+    /// Cap on test matches returned. Defaults to 5 to match the
     /// top-level `Cli`. Applied after BFS, before rendering.
     #[command(flatten)]
     pub limit_arg: LimitArg,
@@ -486,7 +436,7 @@ pub(crate) struct TestMapArgs {
 pub(crate) struct RelatedArgs {
     /// Function name or file:function
     pub name: String,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
 }
@@ -496,20 +446,19 @@ pub(crate) struct RelatedArgs {
 pub(crate) struct OnboardArgs {
     /// Concept or query to explore
     pub query: String,
-    /// Call-chain expansion depth — #1373: WALK default.
+    /// Call-chain expansion depth — WALK default.
     #[arg(short = 'd', long, default_value_t = DEFAULT_DEPTH_WALK)]
     pub depth: usize,
-    /// Expansion direction: both, callers, callees.
-    /// API-V1.36-4 (#1459): default `callees` preserves prior behavior;
-    /// gather/test-map cross-command muscle memory now transfers.
+    /// Expansion direction: both, callers, callees. Defaults to `callees`,
+    /// matching gather/test-map cross-command muscle memory.
     #[arg(long, default_value = "callees")]
     pub direction: cqs::GatherDirection,
     /// Maximum token budget
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
-    /// Task A3: cap on call_chain + callers entries (entry_point always
-    /// kept). Defaults to 5 to match the top-level `Cli`. Applies after
-    /// `--depth` traversal and before `--tokens` packing.
+    /// Cap on call_chain + callers entries (entry_point always kept).
+    /// Defaults to 5 to match the top-level `Cli`. Applies after `--depth`
+    /// traversal and before `--tokens` packing.
     #[command(flatten)]
     pub limit_arg: LimitArg,
 }
@@ -522,7 +471,7 @@ pub(crate) struct ExplainArgs {
     /// Maximum token budget (includes source content within budget)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
-    /// Task A3: cap on callers/callees/similar lists in the function card.
+    /// Cap on callers/callees/similar lists in the function card.
     /// Defaults to 5 to match the top-level `Cli`. Applied per-section.
     #[command(flatten)]
     pub limit_arg: LimitArg,
@@ -533,7 +482,7 @@ pub(crate) struct ExplainArgs {
 pub(crate) struct WhereArgs {
     /// Description of the code to add
     pub description: String,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
 }
@@ -543,7 +492,7 @@ pub(crate) struct WhereArgs {
 pub(crate) struct PlanArgs {
     /// Task description to plan
     pub description: String,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
     /// Maximum token budget
@@ -559,7 +508,7 @@ pub(crate) struct PlanArgs {
 pub(crate) struct TaskArgs {
     /// Task description
     pub description: String,
-    /// API-V1.38-10 (#1463): shared `--limit` arg via `LimitArg` flatten.
+    /// Shared `--limit` arg via `LimitArg` flatten.
     #[command(flatten)]
     pub limit_arg: LimitArg,
     /// Maximum token budget (waterfall across sections)
@@ -685,11 +634,10 @@ pub(crate) struct ImpactDiffArgs {
 /// `NotesCommand` subcommand enum and are not batch-dispatchable — see the
 /// `BatchSupport` classifier for the policy.
 ///
-/// EX-V1.29-5 / API-V1.29-4: `NotesCommand::List` flattens this struct
-/// (same pattern as `Commands::Search { args: SearchArgs }`). The flattened
-/// fields include `check`, which the daemon batch path picks up via
-/// `BatchCmd::Notes { args, .. }` — previously `NotesCommand::List` had
-/// `check: bool` inline and the daemon dropped it silently.
+/// `NotesCommand::List` flattens this struct (same pattern as
+/// `Commands::Search { args: SearchArgs }`). The flattened fields include
+/// `check`, which the daemon batch path picks up via
+/// `BatchCmd::Notes { args, .. }`.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct NotesListArgs {
     /// Show only warnings (negative sentiment)
@@ -716,10 +664,10 @@ pub(crate) struct IndexArgs {
     pub force: bool,
     /// Show what would be indexed (default writes the index).
     ///
-    /// Audit P2 #38: per the CONTRIBUTING "Dry-Run vs Apply" rule, side-effect
-    /// commands (`index`, `convert`) default to mutating; analyser commands
-    /// (`doctor`, `suggest`) default to read-only and require `--fix`/`--apply`
-    /// to mutate. TODO(docs-agent): document this rule in CONTRIBUTING.md.
+    /// Per the CONTRIBUTING "Dry-Run vs Apply" rule, side-effect commands
+    /// (`index`, `convert`) default to mutating; analyser commands (`doctor`,
+    /// `suggest`) default to read-only and require `--fix`/`--apply` to mutate.
+    /// TODO(docs-agent): document this rule in CONTRIBUTING.md.
     #[arg(long)]
     pub dry_run: bool,
     /// Index files ignored by .gitignore
@@ -731,7 +679,7 @@ pub(crate) struct IndexArgs {
     /// prompts to confirm — committed notes affect search rankings and surface
     /// in agent context. Pass `--accept-shared-notes` to bypass the prompt for
     /// non-interactive use (CI, scripts). Acceptance is persisted to
-    /// `.cqs/.accepted-shared-notes` so the prompt doesn't repeat. (#1168)
+    /// `.cqs/.accepted-shared-notes` so the prompt doesn't repeat.
     #[arg(long)]
     pub accept_shared_notes: bool,
     /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
@@ -768,7 +716,7 @@ pub(crate) struct IndexArgs {
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]
     pub max_hyde: Option<usize>,
-    /// Skip the post-pipeline prune of orphaned `llm_summaries` rows (#1587).
+    /// Skip the post-pipeline prune of orphaned `llm_summaries` rows.
     ///
     /// Default (when omitted): orphan rows whose `content_hash` no longer
     /// matches any chunk are deleted at the end of the index pipeline so
@@ -787,7 +735,7 @@ pub(crate) struct IndexArgs {
     /// invocation; on large corpora (50k+ chunks) can take ~2 minutes CPU.
     #[arg(long)]
     pub umap: bool,
-    /// P2.12: emit a structured JSON envelope summarizing the index run on
+    /// Emit a structured JSON envelope summarizing the index run on
     /// completion. Suppresses progress prints in favor of a single
     /// `{indexed_files, indexed_chunks, took_ms, model, …}` summary so
     /// JSON-driven agents can chain `cqs init && cqs index --json`.
@@ -795,11 +743,11 @@ pub(crate) struct IndexArgs {
     pub json: bool,
 }
 
-/// #1216: args for `BatchCmd::Reconcile`. Wrapped in a struct so the
-/// dispatch table can hand the variant straight to its handler the same
-/// way every other variant does (`dispatch_x(ctx, &args)`). Fields are
-/// advisory — they ride along for tracing/logging and don't change the
-/// reconcile algorithm itself.
+/// Args for `BatchCmd::Reconcile`. Wrapped in a struct so the dispatch
+/// table can hand the variant straight to its handler the same way every
+/// other variant does (`dispatch_x(ctx, &args)`). Fields are advisory —
+/// they ride along for tracing/logging and don't change the reconcile
+/// algorithm itself.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct ReconcileArgs {
     /// Name of the hook that fired this reconcile (e.g. `post-checkout`).
@@ -812,9 +760,9 @@ pub(crate) struct ReconcileArgs {
     pub args: Vec<String>,
 }
 
-/// #1216 + #1228: args for `BatchCmd::WaitFresh`. Wrapped in a struct
-/// (originally inline `wait_secs: u64`) so the dispatch table can hand
-/// the variant straight to its handler under the uniform `&args` shape.
+/// Args for `BatchCmd::WaitFresh`. Wrapped in a struct so the dispatch
+/// table can hand the variant straight to its handler under the uniform
+/// `&args` shape.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct WaitFreshArgs {
     /// Maximum seconds to block before returning the current

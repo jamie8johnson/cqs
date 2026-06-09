@@ -1,6 +1,6 @@
 //! Database row types for SQLite result mapping.
 
-/// Pinned SELECT column order for `ChunkRow::from_row` (#1457 / P2-14).
+/// Pinned SELECT column order for `ChunkRow::from_row`.
 ///
 /// `from_row` reads each column by ordinal, so all SELECT statements that
 /// hydrate `ChunkRow` MUST use this exact column list (or the prefixed
@@ -84,12 +84,12 @@ pub(crate) struct ChunkRow {
     pub window_idx: Option<i32>,
     pub parent_id: Option<String>,
     pub parent_type_name: Option<String>,
-    /// Parser logic stamp (P2 #29). 0 means either pre-v21 or never written;
-    /// `try_get` keeps existing SELECTs that omit the column working.
+    /// Parser logic stamp. 0 means never written; `try_get` keeps SELECTs
+    /// that omit the column working.
     pub parser_version: u32,
-    /// v24: true if origin matched a vendored-path prefix at index time
-    /// (#1221). `try_get` so pre-v24 SELECTs that omit the column still
-    /// construct a valid row (defaults to false).
+    /// True if origin matched a vendored-path prefix at index time.
+    /// `try_get` so SELECTs that omit the column still construct a valid row
+    /// (defaults to false).
     pub vendored: bool,
 }
 

@@ -9,9 +9,9 @@ use super::types::{DiffImpactResult, ImpactResult, TestSuggestion};
 /// `test_count`, `type_impacted_count`) are computed by the custom `Serialize`
 /// impl on `ImpactResult`.
 pub fn impact_to_json(result: &ImpactResult) -> Result<serde_json::Value, serde_json::Error> {
-    // P2.19: `serde_json::to_value` only fails on `Serialize` impl bugs —
-    // these are programmer errors, must fail loud rather than coerce to
-    // `{}` and a tracing warn that agents won't see.
+    // `serde_json::to_value` only fails on `Serialize` impl bugs — these are
+    // programmer errors, so fail loud rather than coerce to `{}` and a tracing
+    // warn that agents won't see.
     serde_json::to_value(result)
 }
 
@@ -101,18 +101,18 @@ pub fn impact_to_mermaid(result: &ImpactResult) -> String {
 pub fn diff_impact_to_json(
     result: &DiffImpactResult,
 ) -> Result<serde_json::Value, serde_json::Error> {
-    // P2.19: same rationale as `impact_to_json` — surface the bug.
+    // Same rationale as `impact_to_json` — surface the bug.
     serde_json::to_value(result)
 }
 
-/// CQ-V1.29-5: shared empty-diff JSON envelope.
+/// Shared empty-diff JSON envelope.
 ///
 /// Returned by `impact_diff` / `affected` / batch graph handlers when the
 /// unified-diff input contains no hunks or no hunks map to indexed
-/// functions. Centralizing the shape prevents the four previous copies from
-/// drifting (e.g. one handler adding a `summary.truncated` field the others
-/// miss). Callers that need an extra field (e.g. `overall_risk: "none"` on
-/// the affected command) layer it on top of the returned object.
+/// functions. Centralizing the shape keeps the handlers from drifting (e.g.
+/// one adding a `summary.truncated` field the others miss). Callers that need
+/// an extra field (e.g. `overall_risk: "none"` on the affected command) layer
+/// it on top of the returned object.
 pub fn diff_impact_empty_json() -> serde_json::Value {
     serde_json::json!({
         "changed_functions": [],
@@ -124,8 +124,8 @@ pub fn diff_impact_empty_json() -> serde_json::Value {
 
 /// Convert index to spreadsheet-style column label: A..Z, AA..AZ, BA..BZ, ...
 ///
-/// Unlike the previous `A1`, `B1` scheme, this produces valid mermaid node IDs
-/// that are unambiguous for any number of nodes.
+/// Produces valid mermaid node IDs that are unambiguous for any number of
+/// nodes.
 fn node_letter(mut i: usize) -> String {
     let mut result = String::new();
     loop {

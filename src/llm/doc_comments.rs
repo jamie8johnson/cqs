@@ -34,7 +34,7 @@ const SIGNAL_WORDS: &[&str] = &[
 /// Skips test functions (by name or file path) and non-source files
 /// (docs, config, markdown) that may contain code-like chunks but
 /// shouldn't have doc comments injected.
-/// Delegates to the canonical `crate::is_test_chunk` plus content-based markers (EX-14).
+/// Delegates to the canonical `crate::is_test_chunk` plus content-based markers.
 /// The canonical function checks name patterns and file paths. We add content-based
 /// checks for test attributes/annotations since doc comments are never useful on tests.
 fn is_test_chunk(chunk: &ChunkSummary) -> bool {
@@ -47,7 +47,7 @@ fn is_test_chunk(chunk: &ChunkSummary) -> bool {
 }
 
 /// Check if a chunk is in a writable source file (not docs, config, etc.).
-/// Uses the language registry's supported extensions instead of a hardcoded list (EX-13).
+/// Uses the language registry's supported extensions instead of a hardcoded list.
 /// Excludes `docs/` directories and data-format languages (JSON, XML, YAML, TOML, INI,
 /// Markdown, HTML, CSS, Nix, Make, LaTeX, ASP.NET) that shouldn't have doc comments injected.
 fn is_source_file(chunk: &ChunkSummary) -> bool {
@@ -143,7 +143,7 @@ pub fn doc_comment_pass(
 
     let llm_config = LlmConfig::resolve(config)?;
     tracing::debug!(
-        // SEC-V1.38-1 (#1463): redacted form so user:pass@host doesn't land in journald.
+        // Redacted form so user:pass@host doesn't land in journald.
         api_base = %llm_config.redacted_api_base(),
         "LLM API base"
     );
@@ -162,10 +162,8 @@ pub fn doc_comment_pass(
     // Phase 1: Collect candidates
     let mut candidates: Vec<ChunkSummary> = Vec::new();
     let mut cursor = 0i64;
-    // SHL-V1.38-7 (#1463): same `CQS_LLM_PASS_PAGE_SIZE` knob as
-    // `collect_eligible_chunks` in `llm/mod.rs`. Two paginators were
-    // hand-coded with the literal 500 — operators can now tune both
-    // via one env var.
+    // Same `CQS_LLM_PASS_PAGE_SIZE` knob as `collect_eligible_chunks` in
+    // `llm/mod.rs`, so operators tune both paginators via one env var.
     let page_size = std::env::var("CQS_LLM_PASS_PAGE_SIZE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -233,7 +231,7 @@ pub fn doc_comment_pass(
     );
 
     // Sort: no doc first, then thin doc, by content length descending (meatier functions first).
-    // AC-V1.29-7: tail-tiebreak on chunk id (unique per chunk) so two candidates
+    // Tail-tiebreak on chunk id (unique per chunk) so two candidates
     // with identical doc-presence and content-length can't swap places across
     // runs — the subsequent `uncached.truncate(uncached_cap)` would otherwise
     // produce non-deterministic selection under the cap.
@@ -279,7 +277,7 @@ pub fn doc_comment_pass(
                     language: cs.language.to_string(),
                 });
                 if items.len() >= max_batch_size {
-                    // P2.39: surface the truncation hint on stderr so agents can re-run.
+                    // Surface the truncation hint on stderr so agents can re-run.
                     eprintln!(
                         "note: doc-comment batch reached cap CQS_LLM_MAX_BATCH_SIZE={max_batch_size}; remaining chunks will be picked up on next run."
                     );
@@ -307,8 +305,8 @@ pub fn doc_comment_pass(
         },
     );
 
-    // #1126 / P2.60: drain the per-Store summary queue regardless of
-    // success/failure. Streamed rows from `stream_summary_writer` are
+    // Drain the per-Store summary queue regardless of success/failure.
+    // Streamed rows from `stream_summary_writer` are
     // buffered in-memory; the final flush narrows the re-fetch window
     // and is idempotent.
     if let Err(e) = store.flush_pending_summaries() {
@@ -597,7 +595,7 @@ mod tests {
         );
     }
 
-    // TC-5 (needs_doc_comment): non-source file should return false
+    // needs_doc_comment: non-source file should return false
     #[test]
     fn test_needs_doc_comment_non_source_file() {
         let chunk = make_chunk_for_test("docs/example.md", Language::Markdown);
@@ -617,22 +615,18 @@ mod tests {
         );
     }
 
-    // P2.87: TC-HAP — empty-store happy-path pin for `doc_comment_pass`.
+    // Empty-store happy-path pin for `doc_comment_pass`.
     //
     // The doc_comment pass is the heavyweight cousin of llm_summary_pass —
     // it scans every callable chunk, filters via `needs_doc_comment`, and
-    // submits via the same Batches API client. The full happy path needs an
-    // httpmock fixture (covered in `tests/local_provider_integration.rs`
-    // for summaries; the doc_comment cousin is missing). The minimal pin
-    // we add here is the "no candidates" path: with an empty store,
-    // `chunks_paged` returns no rows, `candidates` stays empty, and the
-    // function returns `Ok(Vec::new())` *before* any HTTP traffic. A
-    // regression that, e.g., started making an API call before the empty-
-    // candidates check would surface here as a connect error.
+    // submits via the same Batches API client. This pins the "no candidates"
+    // path: with an empty store, `chunks_paged` returns no rows, `candidates`
+    // stays empty, and the function returns `Ok(Vec::new())` *before* any
+    // HTTP traffic. A regression that started making an API call before the
+    // empty-candidates check would surface here as a connect error.
     //
-    // #1312 / #1305: DOC_ENV_LOCK was a file-local Mutex; replaced by the
-    // module-wide `crate::llm::LLM_ENV_LOCK` so this test serializes
-    // against `hyde::tests` and any other future caller that mutates the
+    // Uses the module-wide `crate::llm::LLM_ENV_LOCK` so this test
+    // serializes against `hyde::tests` and any other caller that mutates the
     // shared `CQS_LLM_*` env vars.
 
     #[test]

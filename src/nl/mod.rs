@@ -36,10 +36,10 @@ pub struct CallContext {
     pub callees: Vec<String>,
 }
 
-/// Generate NL with call context and optional LLM summary (SQ-6).
+/// Generate NL with call context and optional LLM summary.
 ///
 /// If a summary is provided, it's prepended to the NL for maximum embedding weight.
-/// If hyde predictions are provided, they're appended as query terms (SQ-12).
+/// If hyde predictions are provided, they're appended as query terms.
 #[allow(clippy::too_many_arguments)]
 pub fn generate_nl_with_call_context_and_summary(
     chunk: &Chunk,
@@ -59,11 +59,8 @@ pub fn generate_nl_with_call_context_and_summary(
         model_max_seq_len,
         "generate_nl_with_call_context_and_summary"
     );
-    // CQ-V1.36-1: thread the model's seq-length into the section-chunk preview
-    // budget. Previously this called the legacy 1-arg `generate_nl_description`
-    // which routed through `CQS_MAX_SEQ_LENGTH` env (default 512), capping
-    // nomic-coderank (2048) and qwen3 (4096) section previews at ~25% of the
-    // model's actual capacity on every enrichment pass.
+    // Thread the model's seq-length into the section-chunk preview budget so
+    // larger models (nomic-coderank 2048, qwen3 4096) use their full capacity.
     let base = generate_nl_description_with_seq_len(chunk, model_max_seq_len);
 
     let mut extras = Vec::new();
@@ -83,7 +80,7 @@ pub fn generate_nl_with_call_context_and_summary(
 
     // Callees: filter high-frequency utilities (IDF threshold).
     // A callee appearing in >10% of chunks is likely a utility (log, unwrap, etc.).
-    // DS-22: Cast to f64 for boundary comparison to avoid f32 non-determinism.
+    // Cast to f64 for boundary comparison to avoid f32 non-determinism.
     if !ctx.callees.is_empty() && !is_enrichment_skipped("callgraph") {
         let callee_words: Vec<String> = ctx
             .callees
@@ -107,7 +104,7 @@ pub fn generate_nl_with_call_context_and_summary(
         format!("{}. {}", base, extras.join(". "))
     };
 
-    // Prepend LLM summary if available (SQ-6)
+    // Prepend LLM summary if available
     let nl = if !is_enrichment_skipped("summary") {
         match summary {
             Some(s) if !s.is_empty() => format!("{} {}", s, nl),
@@ -117,7 +114,7 @@ pub fn generate_nl_with_call_context_and_summary(
         nl
     };
 
-    // Append hyde query predictions (SQ-12)
+    // Append hyde query predictions
     if is_enrichment_skipped("hyde") {
         return nl;
     }
@@ -175,12 +172,8 @@ pub fn generate_nl_with_call_context_and_summary(
 /// assert!(nl.contains("Parse configuration"));
 /// ```
 ///
-/// CQ-V1.36-3/5 (#1462): the legacy 1-arg `generate_nl_description` and
-/// `generate_nl_with_template` that read `CQS_MAX_SEQ_LENGTH` env at the
-/// call site are gone — they were a configurable-models trap that masked
-/// the bug CQ-V1.36-1 closed at the embedding sites. Callers must pass
-/// the active model's `max_seq_length` explicitly so a future caller
-/// can't accidentally re-introduce the drift.
+/// Callers pass the active model's `max_seq_length` explicitly so the
+/// section-preview budget can't drift from the model's real capacity.
 pub fn generate_nl_description_with_seq_len(chunk: &Chunk, model_max_seq_len: usize) -> String {
     generate_nl_with_template_and_seq_len(chunk, NlTemplate::Compact, model_max_seq_len)
 }
@@ -201,18 +194,16 @@ fn is_enrichment_skipped(layer: &str) -> bool {
     skipped.iter().any(|s| s == layer)
 }
 
-/// P2.38: new entry point that takes the active model's `max_seq_length`
-/// from `ModelConfig` instead of hardcoding 512. BGE-large/E5/v9-200k all
-/// use 512 (so behavior is unchanged), but nomic-coderank uses 2048; the
-/// env-only path capped that at 25% of model capacity.
+/// Generate NL using the active model's `max_seq_length` from `ModelConfig`.
+/// Models with a 512 sequence length behave the same; larger models
+/// (nomic-coderank 2048) get a proportionally larger preview budget.
 pub fn generate_nl_with_template_and_seq_len(
     chunk: &Chunk,
     template: NlTemplate,
     model_max_seq_len: usize,
 ) -> String {
-    // P3.9: a single debug-level span at this root site covers all four NL
-    // generators (`generate_nl_description`, `generate_nl_description_with_seq_len`,
-    // `generate_nl_with_template`, and `_with_template_and_seq_len`).
+    // A single debug-level span at this root site covers the NL generators
+    // that delegate here.
     let _span = tracing::debug_span!(
         "generate_nl",
         template = ?template,
@@ -230,9 +221,7 @@ pub fn generate_nl_with_template_and_seq_len(
             parts.push(chunk.signature.clone());
         }
         parts.push(chunk.name.clone());
-        // ~4 chars per token. Scale with caller-supplied `model_max_seq_len`
-        // (P2.38). Env override `CQS_MAX_SEQ_LENGTH` still wins via the
-        // legacy entry point above — kept for tests and ad-hoc tuning.
+        // ~4 chars per token. Scale with caller-supplied `model_max_seq_len`.
         // Default model 512 → 1800 chars; nomic-coderank 2048 → 8000 chars.
         let max_seq = model_max_seq_len.max(64);
         let char_budget = max_seq.saturating_mul(4).saturating_sub(200).max(400);
@@ -384,7 +373,7 @@ pub fn generate_nl_with_template_and_seq_len(
         }
     }
 
-    // Type-aware: append full signature for richer type discrimination (SQ-11).
+    // Type-aware: append full signature for richer type discrimination.
     if !chunk.signature.is_empty() && !is_enrichment_skipped("signatures") {
         parts.push(format!("Signature: {}", chunk.signature));
     }
@@ -444,13 +433,13 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
     (lang.def().extract_return_nl)(signature)
 }
 
-/// Extract module context from a file path, including filename stem (SQ-5).
+/// Extract module context from a file path, including filename stem.
 ///
 /// Strips common prefixes (src/, lib/) and file extension, tokenizes all
 /// remaining path components. Generic stems (mod, index, lib, utils, helpers)
 /// are filtered. E.g., `src/store/calls.rs` -> `"store calls"`.
 fn extract_file_context(path: &std::path::Path) -> String {
-    // PB-27: Use Path::components() for cross-platform path splitting
+    // Use Path::components() for cross-platform path splitting
     use std::path::Component;
     let skip = [
         "src",
@@ -483,7 +472,7 @@ fn extract_file_context(path: &std::path::Path) -> String {
         })
         .filter(|c| !c.is_empty() && !skip.contains(c))
         .collect();
-    // Include filename stem for module-level discrimination (SQ-5).
+    // Include filename stem for module-level discrimination.
     // Strip file extension from last component. Skip generic stems that add
     // noise rather than signal.
     let generic_stems = [
@@ -931,7 +920,6 @@ mod tests {
         assert_eq!(base, enriched);
     }
 
-    // TC-26: generate_nl_with_call_context_and_summary
     #[test]
     fn test_call_context_and_summary_prepends_summary_appends_hyde() {
         let chunk = test_chunk("process_data");
@@ -971,7 +959,7 @@ mod tests {
         assert!(nl.contains("Calls: validate"), "got: {}", nl);
     }
 
-    // TC-30: IDF callee filtering threshold
+    // IDF callee filtering threshold
     #[test]
     fn test_callee_idf_filtering_above_threshold() {
         let chunk = test_chunk("my_func");
@@ -1001,7 +989,7 @@ mod tests {
         );
     }
 
-    // ===== enrichment NL output with call context (#665) =====
+    // ===== enrichment NL output with call context =====
 
     #[test]
     fn enrichment_nl_includes_callers_and_callees() {

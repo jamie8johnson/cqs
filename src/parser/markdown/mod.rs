@@ -97,8 +97,8 @@ fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
 /// callers slice an arbitrary `[line_start..line_end)` range out of `source`
 /// in O(1) per slice without re-allocating a `String` from `lines.join("\n")`.
 ///
-/// Single forward pass through `source.bytes()`. Used to fix the O(N×M)
-/// per-section allocations flagged by P2 #66 in `docs/audit-findings.md`.
+/// Single forward pass through `source.bytes()`. Avoids O(N×M) per-section
+/// allocations from rebuilding a `String` via `lines.join("\n")`.
 fn compute_line_byte_offsets(source: &str) -> Vec<usize> {
     // +1 sentinel so callers can use `offsets[line_count]` as the file end.
     let mut offsets = Vec::with_capacity(source.len() / 32 + 2);
@@ -124,7 +124,7 @@ fn compute_line_byte_offsets(source: &str) -> Vec<usize> {
 /// through end-of-file. The returned `&str` matches what
 /// `source.lines().collect::<Vec<_>>()[line_start..line_end].join("\n")`
 /// would produce: a trailing single `\n` is stripped so the slice has no
-/// trailing newline, matching the previous `lines[..].join("\n")` semantics.
+/// trailing newline.
 fn slice_section_by_lines<'a>(
     source: &'a str,
     line_byte_offsets: &[usize],
@@ -139,9 +139,9 @@ fn slice_section_by_lines<'a>(
         .get(line_end)
         .copied()
         .unwrap_or(source.len());
-    // Strip a single trailing `\n` so the slice matches the previous
-    // `lines[..].join("\n")` semantics (which produces no trailing newline)
-    // for sections that don't terminate at end-of-file.
+    // Strip a single trailing `\n` so the slice has no trailing newline
+    // (matching `lines[..].join("\n")` semantics) for sections that don't
+    // terminate at end-of-file.
     let trimmed_end =
         if byte_end > byte_start && source.as_bytes().get(byte_end - 1) == Some(&b'\n') {
             byte_end - 1
@@ -255,7 +255,7 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
     let title_text = title_idx.map(|i| headings[i].text.as_str()).unwrap_or("");
 
     // Pre-compute line-start byte offsets once so per-section slicing is O(1)
-    // instead of O(N) per `lines[..].join("\n")` allocation. See P2 #66.
+    // instead of O(N) per `lines[..].join("\n")` allocation.
     let line_byte_offsets = compute_line_byte_offsets(source);
 
     let mut chunks = Vec::with_capacity(sections.len());
@@ -335,7 +335,7 @@ pub fn parse_markdown_references(
     }
 
     // Pre-compute line-start byte offsets once so per-section slicing is O(1)
-    // instead of O(N) per `lines[..].join("\n")` allocation. See P2 #66.
+    // instead of O(N) per `lines[..].join("\n")` allocation.
     let line_byte_offsets = compute_line_byte_offsets(source);
 
     // Split at headings and extract references per section
@@ -351,8 +351,8 @@ pub fn parse_markdown_references(
         let section_text = slice_section_by_lines(source, &line_byte_offsets, start, end);
         // Pass the section's 1-indexed start line so the per-link line
         // counter inside extract_references_from_text doesn't have to
-        // re-walk the whole prefix per match (replaces the old O(L)
-        // prefix scan with a single forward sweep).
+        // re-walk the whole prefix per match (single forward sweep
+        // instead of an O(L) prefix scan).
         let calls = extract_references_from_text_with_start_line(section_text, start as u32 + 1);
         if !calls.is_empty() {
             results.push(FunctionCalls {
@@ -639,8 +639,8 @@ fn extract_md_file_stem(url: &str) -> Option<String> {
     if !path_part.ends_with(".md") && !path_part.ends_with(".mdx") {
         return None;
     }
-    // Extract file stem (last path component without extension)
-    // PB-28: Split on both `/` and `\` for cross-platform paths
+    // Extract file stem (last path component without extension).
+    // Split on both `/` and `\` for cross-platform paths.
     let filename = path_part.rsplit(['/', '\\']).next().unwrap_or(path_part);
     let stem = filename
         .strip_suffix(".mdx")
@@ -675,8 +675,8 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
 /// running line-number counter across multiple regex-match positions
 /// without re-walking the whole prefix on every match.
 ///
-/// Replaces the per-match `text[..match_start].matches('\n').count()` call
-/// (which was O(L) per match → O(L²) overall) with a single forward sweep.
+/// Avoids a per-match `text[..match_start].matches('\n').count()` call
+/// (O(L) per match → O(L²) overall) by doing a single forward sweep.
 /// The caller maintains `(cursor_byte, line_number)` state across matches.
 #[inline]
 fn count_newlines_in_range(bytes: &[u8], cursor_byte: usize, target_byte: usize) -> u32 {
@@ -699,8 +699,7 @@ fn count_newlines_in_range(bytes: &[u8], cursor_byte: usize, target_byte: usize)
 /// `start_line` should be the 1-indexed line number where `text` begins in
 /// the containing source. Pass `1` if `text` IS the source. The per-link
 /// line counter advances forward through `text.as_bytes()` once total,
-/// instead of re-walking the prefix per match (P2 #66 in
-/// `docs/audit-findings.md`).
+/// instead of re-walking the prefix per match.
 fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> Vec<CallSite> {
     let mut calls = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -728,8 +727,8 @@ fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> 
         link_cursor = match_start;
         // Skip image links: preceded by '!'.
         //
-        // P3 #85: Safe to compare a single byte at `match_start - 1` even
-        // though `text` may contain multi-byte UTF-8: '!' is ASCII (0x21),
+        // Safe to compare a single byte at `match_start - 1` even though
+        // `text` may contain multi-byte UTF-8: '!' is ASCII (0x21),
         // and any byte that participates in a multi-byte codepoint has its
         // high bit set (>= 0x80), so a continuation byte cannot accidentally
         // equal `b'!'`. No `is_char_boundary` check needed.

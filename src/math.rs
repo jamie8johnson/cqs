@@ -214,7 +214,7 @@ mod tests {
         }
     }
 
-    // ===== full_cosine_similarity tests (TC-24, TC-29) =====
+    // ===== full_cosine_similarity tests =====
 
     #[test]
     fn full_cosine_normal_vectors() {
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn full_cosine_zero_norm_vector() {
-        // TC-29: zero-norm vector should return None
+        // zero-norm vector should return None
         let zero = vec![0.0, 0.0, 0.0];
         let normal = vec![1.0, 2.0, 3.0];
         assert_eq!(

@@ -233,8 +233,6 @@ fn parse_server_code(
 
     let mut ts_parser = tree_sitter::Parser::new();
     if let Err(e) = ts_parser.set_language(&grammar) {
-        // EH-V1.38-8 (#1463): Display matches the sibling `%e` pattern
-        // 5 lines below at the `set_included_ranges` warn.
         tracing::warn!(error = %e, %language, "Failed to set tree-sitter language for ASPX server code");
         return vec![];
     }
@@ -264,7 +262,7 @@ fn parse_server_code(
     let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
 
     let mut chunks = Vec::new();
-    // P3 #105: env-overridable per-chunk byte cap.
+    // Env-overridable per-chunk byte cap.
     let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
 
     while let Some(m) = matches.next() {
@@ -330,9 +328,9 @@ fn parse_server_code_calls(
         })
         .collect();
 
-    // v1.22.0 audit EH-5: mirror the sibling `parse_server_code`'s warn
-    // calls. The old code silently returned vec![] on every failure point,
-    // making missing call-graph data for ASPX server code invisible.
+    // Mirror the sibling `parse_server_code`'s warn calls so a failure point
+    // doesn't silently return vec![] and make missing call-graph data for
+    // ASPX server code invisible.
     let grammar = match language.try_def().and_then(|d| d.grammar) {
         Some(grammar_fn) => grammar_fn(),
         None => {
@@ -514,8 +512,7 @@ fn parse_server_code_types(
 /// Detects the server-side language from the `<%@ ... Language="..." %>` directive
 /// (defaulting to C#), then uses `set_included_ranges()` to parse server-side code
 /// with the appropriate tree-sitter grammar. Returns extracted chunks.
-/// HTML content outside server blocks is not currently chunked (tree-sitter HTML
-/// injection would go here if needed in the future).
+/// HTML content outside server blocks is not chunked.
 pub fn parse_aspx_chunks(
     source: &str,
     path: &Path,
@@ -1123,9 +1120,9 @@ End Class
         assert!(!chunks.is_empty());
     }
 
-    /// TC-V1.36-7 / P3: unterminated `<% ... %>` blocks must complete in
-    /// bounded time without panic. Mirror of L5K_ROUTINE_BLOCK_RE's
-    /// `unterminated_routine_no_panic` test in parser/l5x.rs.
+    /// Unterminated `<% ... %>` blocks must complete in bounded time without
+    /// panic. Mirror of L5K_ROUTINE_BLOCK_RE's `unterminated_routine_no_panic`
+    /// test in parser/l5x.rs.
     #[test]
     fn parse_aspx_unterminated_code_block_no_panic() {
         let source = "<html><% Response.Write(\"never closes\"";

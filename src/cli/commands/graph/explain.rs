@@ -311,7 +311,7 @@ pub(crate) fn cmd_explain(
     let store = &ctx.store;
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
-    // Task A3: cap on callers/callees/similar lists in the function card.
+    // Cap on callers/callees/similar lists in the function card.
     let limit = limit.clamp(1, 100);
 
     let embedder = if max_tokens.is_some() {
@@ -535,7 +535,7 @@ mod output_tests {
         assert!(json["similar"][0].get("content").is_none());
     }
 
-    // TC-14: special characters in name/signature/doc survive serde round-trip
+    // Special characters in name/signature/doc survive serde round-trip
     #[test]
     fn test_explain_output_special_characters() {
         let output = ExplainOutput {
@@ -582,7 +582,7 @@ mod output_tests {
         );
     }
 
-    // TC-14: unicode in name and doc fields
+    // Unicode in name and doc fields
     #[test]
     fn test_explain_output_unicode() {
         let output = ExplainOutput {

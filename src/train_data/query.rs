@@ -11,9 +11,8 @@ fn conventional_prefix_re() -> &'static Regex {
 fn leading_verb_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // RB-V1.38-7 (#1463): match siblings (`conventional_prefix_re`,
-        // `trailing_noise_re`) which use `.expect("valid regex")` — a typo
-        // in the 90+ alternation should give a useful breadcrumb on init.
+        // `.expect("valid regex")` like the sibling regexes — a typo in the
+        // 90+ alternation gives a useful breadcrumb on init.
         Regex::new(r"(?i)^(add|added|adds|implement|implemented|implements|fix|fixed|fixes|update|updated|updates|remove|removed|removes|refactor|refactored|refactors|move|moved|moves|rename|renamed|renames|change|changed|changes|improve|improved|improves|introduce|introduced|introduces|replace|replaced|replaces|convert|converted|converts|use|wip|bump|bumped|bumps|extract|extracted|extracts|simplify|simplified|simplifies|handle|handled|handles|make|delete|deleted|deletes|clean|cleaned|cleans|create|created|creates|merge|merged|merges|revert|reverted|reverts|enable|enabled|enables|disable|disabled|disables|drop|dropped|drops|migrate|migrated|migrates|switch|switched|switches|allow|allowed|allows|prevent|prevented|prevents|ensure|ensured|ensures|apply|applied|applies|adjust|adjusted|adjusts|correct|corrected|corrects|set|support|supported|supports)\s+").expect("valid leading-verb regex")
     })
 }

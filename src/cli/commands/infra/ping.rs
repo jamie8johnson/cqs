@@ -117,7 +117,7 @@ fn format_unix_utc(ts: i64) -> String {
 /// loaded: splade=yes reranker=no
 /// ```
 fn print_text(resp: &cqs::daemon_translate::PingResponse) {
-    // RB-3: defensive bad-clock handling via central helper. `unwrap_or(0)`
+    // Defensive bad-clock handling via central helper. `unwrap_or(0)`
     // here is intentional — text-mode `last indexed` formatting prefers a
     // benign sentinel over a None branch in the relative-time fallback.
     let now_secs = cqs::unix_secs_i64().unwrap_or(0);
@@ -180,7 +180,7 @@ pub(crate) fn cmd_ping(json: bool) -> Result<()> {
                 Ok(())
             }
             Err(err) => {
-                // Spec: "no daemon running" → exit 1. PR #1038 envelope contract
+                // "no daemon running" → exit 1. The envelope contract
                 // requires `{data:null, error:{code,message}, version:1}` on JSON
                 // failure paths so health-monitor scripts get a single uniform
                 // shape. IO_ERROR is the right code: socket connection failures

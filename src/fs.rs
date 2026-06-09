@@ -1,12 +1,10 @@
 //! Shared filesystem primitives for durable, atomic file writes.
 //!
 //! The write-to-temp-then-rename pattern is repeated throughout cqs for
-//! persisting indexes, configuration, and notes. Historically each site
-//! evolved its own copy, and several audits (DS-V1.25-1 and DS-V1.25-4 in
-//! particular) caught sites that were missing `sync_all` on the temp file
-//! or on the parent directory. `atomic_replace` concentrates that logic in
-//! one place so new persistence sites inherit the correct durability
-//! semantics by default.
+//! persisting indexes, configuration, and notes. `atomic_replace`
+//! concentrates that logic in one place — including `sync_all` on the temp
+//! file and the parent directory — so new persistence sites inherit the
+//! correct durability semantics by default.
 
 use std::io;
 use std::path::Path;
@@ -88,12 +86,11 @@ pub fn atomic_replace(tmp_path: &Path, final_path: &Path) -> io::Result<()> {
     // effort — some filesystems do not support opening a directory for
     // fsync; we log at debug and continue.
     //
-    // PB-V1.30.1-6: skip on Windows. NTFS journals the rename as part of
-    // its own metadata update, and `File::open(directory)` always fails
-    // on Windows (different file model — directories aren't opened the
-    // same way). The doc comment at the top of this fn already promises
-    // this is a no-op on Windows; this `cfg` makes that promise real
-    // instead of generating a debug log on every persisted file.
+    // Skip on Windows. NTFS journals the rename as part of its own metadata
+    // update, and `File::open(directory)` always fails on Windows (different
+    // file model — directories aren't opened the same way). The doc comment at
+    // the top of this fn promises this is a no-op on Windows; this `cfg` makes
+    // that real instead of generating a debug log on every persisted file.
     #[cfg(unix)]
     if let Some(parent) = final_path.parent() {
         match std::fs::File::open(parent) {
@@ -121,11 +118,10 @@ pub fn atomic_replace(tmp_path: &Path, final_path: &Path) -> io::Result<()> {
 
 /// Detect a cross-device rename error.
 ///
-/// On stable Rust 1.85+ the dedicated `ErrorKind::CrossesDevices` is the
-/// cleanest way to recognize `EXDEV` from Unix and `ERROR_NOT_SAME_DEVICE`
-/// from Windows. We also accept raw `EXDEV` as a belt-and-suspenders check
-/// in case the mapping ever regresses — historically some libc versions
-/// and Rust versions surfaced this as `Other`.
+/// The dedicated `ErrorKind::CrossesDevices` recognizes `EXDEV` from Unix and
+/// `ERROR_NOT_SAME_DEVICE` from Windows. Also accept raw `EXDEV` as a
+/// belt-and-suspenders check in case the mapping ever regresses — some libc /
+/// Rust versions surface this as `Other`.
 fn is_cross_device(e: &io::Error) -> bool {
     if matches!(e.kind(), io::ErrorKind::CrossesDevices) {
         return true;
@@ -202,9 +198,8 @@ mod tests {
 
     #[test]
     fn atomic_replace_preserves_written_bytes_over_flush() {
-        // Regression guard for the DS-V1.25-4 shape: data written via
-        // BufWriter but never synced should still end up in the final
-        // file because atomic_replace fsyncs the temp before rename.
+        // Data written via BufWriter but never synced must still end up in the
+        // final file because atomic_replace fsyncs the temp before rename.
         let dir = tempfile::TempDir::new().unwrap();
         let tmp = dir.path().join(".ids.tmp");
         let final_path = dir.path().join("ids");

@@ -1,13 +1,13 @@
 //! `cqs cache` subcommands — stats, prune, compact for the project-scoped
 //! embeddings cache.
 //!
-//! Spec §Cache: cache lives at `<project_cqs_dir>/embeddings_cache.db`,
-//! survives `cqs slot remove` / `cqs slot create` cycles, and is keyed by
+//! The cache lives at `<project_cqs_dir>/embeddings_cache.db`, survives
+//! `cqs slot remove` / `cqs slot create` cycles, and is keyed by
 //! `(content_hash, model_id)` so an embedder swap only re-embeds chunks
 //! whose hash hasn't been seen for that model_id before.
 //!
 //! Outside a project (no `.cqs/` dir found), commands fall back to the
-//! legacy global cache at `~/.cache/cqs/embeddings.db` so `cqs cache stats`
+//! global cache at `~/.cache/cqs/embeddings.db` so `cqs cache stats`
 //! invoked from a non-project shell keeps producing useful output.
 
 use anyhow::{Context, Result};
@@ -19,15 +19,15 @@ use crate::cli::config::find_project_root;
 use crate::cli::definitions::TextJsonArgs;
 use crate::cli::Cli;
 
-/// API-V1.22-2: subcommands flatten the shared `TextJsonArgs` instead of
-/// declaring inline `json: bool` fields, so every `--json`-bearing subcommand
-/// in the CLI uses one definition.
+/// Subcommands flatten the shared `TextJsonArgs` instead of declaring inline
+/// `json: bool` fields, so every `--json`-bearing subcommand in the CLI uses
+/// one definition.
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum CacheCommand {
     /// Show cache statistics (entries, size, models). Use `--per-model` for
     /// per-model_id rows so you know which model dominates the cache.
     Stats {
-        /// Surface per-model_id entry counts and bytes (spec §Cache).
+        /// Surface per-model_id entry counts and bytes.
         #[arg(long)]
         per_model: bool,
         #[command(flatten)]
@@ -41,8 +41,7 @@ pub(crate) enum CacheCommand {
         #[command(flatten)]
         output: TextJsonArgs,
     },
-    /// Remove entries older than N days, OR every entry for a given model_id
-    /// (per spec §Cache: prune supports `--model` AND `--older-than-days`).
+    /// Remove entries older than N days, OR every entry for a given model_id.
     Prune {
         /// Days to keep — entries older than this are removed. Mutually
         /// exclusive with `--model`.
@@ -78,10 +77,10 @@ fn resolve_cache_path() -> std::path::PathBuf {
 pub(crate) fn cmd_cache(cli: &Cli, subcmd: &CacheCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_cache").entered();
 
-    // P2.13: the embeddings cache is project-scoped (see PR #1105 design),
-    // *not* per-slot. A user passing `cqs --slot foo cache stats` was getting
-    // silent acceptance with the project-default path resolved anyway.
-    // Surface the misuse explicitly so we don't pretend to honor `--slot`.
+    // The embeddings cache is project-scoped, *not* per-slot. Passing
+    // `cqs --slot foo cache stats` would otherwise be silently accepted with
+    // the project-default path resolved anyway. Surface the misuse
+    // explicitly so we don't pretend to honor `--slot`.
     if cli.slot.is_some() {
         anyhow::bail!(
             "--slot has no effect on `cqs cache` subcommands (the embeddings cache is project-scoped, not per-slot)"
@@ -92,9 +91,8 @@ pub(crate) fn cmd_cache(cli: &Cli, subcmd: &CacheCommand) -> Result<()> {
     let cache = EmbeddingCache::open(&cache_path)
         .with_context(|| format!("Failed to open embedding cache at {}", cache_path.display()))?;
 
-    // Top-level `--json` always wins (mirrors `cmd_model` at
-    // `src/cli/commands/infra/model.rs:113`). `cqs --json cache stats` must
-    // emit envelope JSON even without `--json` after the subcommand.
+    // Top-level `--json` always wins (mirrors `cmd_model`). `cqs --json cache
+    // stats` must emit envelope JSON even without `--json` after the subcommand.
     match subcmd {
         CacheCommand::Stats { per_model, output } => {
             cache_stats(&cache, &cache_path, *per_model, cli.json || output.json)
@@ -127,11 +125,10 @@ fn cache_stats(
         Vec::new()
     };
 
-    // P3 #124: surface persistent QueryCache size alongside the embedding
-    // cache so `cqs cache stats --json` consumers can monitor both.
-    // P2.20: report a structured `query_cache_status` so consumers can
-    // distinguish "missing file" (legitimate 0) from "open failed" (which
-    // previously also coerced to 0 with only a tracing warn).
+    // Surface persistent QueryCache size alongside the embedding cache so
+    // `cqs cache stats --json` consumers can monitor both. Report a
+    // structured `query_cache_status` so consumers can distinguish "missing
+    // file" (legitimate 0) from "open failed" (also 0, but a different state).
     let (query_cache_size_bytes, query_cache_status): (u64, String) = {
         let q_path = QueryCache::default_path();
         if !q_path.exists() {
@@ -154,13 +151,11 @@ fn cache_stats(
     };
 
     if json {
-        // P2.16: `total_size_mb` was a derived MB float from the underlying
-        // `total_size_bytes`. Two competing units in one JSON envelope let
-        // callers diverge silently (one consumer sums bytes, another sums MB,
-        // they disagree by 1.048576x). Drop the derived MB field — bytes is
-        // canonical, the human-text path still renders MB. `cache compact`
-        // already emits bytes only, so all four cache subcommands now share
-        // the same unit contract.
+        // Bytes is the canonical unit on the JSON path; the human-text path
+        // renders MB. Emitting both a derived MB float and bytes would let
+        // callers diverge silently (one sums bytes, another sums MB,
+        // disagreeing by 1.048576x). All four cache subcommands share the
+        // bytes-only JSON contract.
         let obj = serde_json::json!({
             "cache_path": cache_path.display().to_string(),
             "total_entries": stats.total_entries,
@@ -168,10 +163,9 @@ fn cache_stats(
             "unique_models": stats.unique_models,
             "oldest_timestamp": stats.oldest_timestamp,
             "newest_timestamp": stats.newest_timestamp,
-            // P3 #124: parallel `query_cache_size_bytes` field. Always present;
-            // 0 when the QueryCache file doesn't exist yet.
+            // Always present; 0 when the QueryCache file doesn't exist yet.
             "query_cache_size_bytes": query_cache_size_bytes,
-            // P2.20: status disambiguates missing file vs open/size failure.
+            // Status disambiguates missing file vs open/size failure.
             "query_cache_status": query_cache_status,
             "per_model": per_model_rows,
         });
@@ -190,10 +184,9 @@ fn cache_stats(
         if let Some(newest) = stats.newest_timestamp {
             println!("  Newest:   {}", format_timestamp(newest));
         }
-        // P3 #124: query cache size (0 when file absent). Single line — full
-        // QueryCache stats live behind `cqs cache prune` and the daemon log.
-        // P2.20: append the status when it isn't `ok`/`missing` so operators
-        // see open/size failures instead of mistaking them for an empty cache.
+        // Query cache size (0 when file absent). Append the status when it
+        // isn't `ok`/`missing` so operators see open/size failures instead of
+        // mistaking them for an empty cache.
         match query_cache_status.as_str() {
             "ok" | "missing" => println!(
                 "Query cache size: {:.1} MB",
@@ -324,10 +317,10 @@ fn format_timestamp(ts: i64) -> String {
         return "unknown".to_string();
     }
     use std::time::{Duration, UNIX_EPOCH};
-    // RB-V1.33-8: a corrupt cache row with ts == i64::MAX overflows
-    // UNIX_EPOCH + Duration on most platforms (SystemTime is i64-seconds
-    // backed). checked_add returns None on overflow → we emit a sentinel
-    // string instead of panicking on dt.elapsed().
+    // A corrupt cache row with ts == i64::MAX overflows UNIX_EPOCH +
+    // Duration on most platforms (SystemTime is i64-seconds backed).
+    // checked_add returns None on overflow → emit a sentinel string instead
+    // of panicking on dt.elapsed().
     let Some(dt) = UNIX_EPOCH.checked_add(Duration::from_secs(ts as u64)) else {
         return "<unrepresentable>".to_string();
     };
@@ -349,16 +342,14 @@ fn format_timestamp(ts: i64) -> String {
 mod tests {
     use super::*;
 
-    // RB-V1.33-8: format_timestamp must not panic on a corrupt cache row
-    // with ts == i64::MAX. The pre-fix code did
-    //     UNIX_EPOCH + Duration::from_secs(ts as u64)
-    // which on platforms where SystemTime is backed by i64-seconds
-    // (notably some libc / older glibc on 32-bit) panics on the addition.
-    // The fix uses `checked_add`; on Linux x86_64 the addition succeeds
-    // and we land in the future-time branch — the post-condition we
-    // care about is "no panic, returns a non-empty string". The
-    // `<unrepresentable>` branch is still the correct fallback for
-    // platforms where checked_add returns None.
+    // format_timestamp must not panic on a corrupt cache row with
+    // ts == i64::MAX. A plain `UNIX_EPOCH + Duration::from_secs(ts as u64)`
+    // panics on platforms where SystemTime is backed by i64-seconds (some
+    // libc / older glibc on 32-bit); `checked_add` avoids that. On Linux
+    // x86_64 the addition succeeds and we land in the future-time branch —
+    // the post-condition is "no panic, returns a non-empty string". The
+    // `<unrepresentable>` branch is the fallback for platforms where
+    // checked_add returns None.
     #[test]
     fn format_timestamp_handles_i64_max() {
         let result = format_timestamp(i64::MAX);

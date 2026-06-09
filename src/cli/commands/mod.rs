@@ -21,10 +21,10 @@ mod search;
 pub(crate) mod serve;
 mod train;
 
-// #1366: dispatch shims for `#[derive(CqsCommands)]`. Each shim is a thin
-// wrapper around an existing `cmd_xxx` handler that pattern-matches the
-// variant out of `&Commands` and forwards destructured args. Lives at the
-// module surface so the proc-macro-emitted dispatch can call
+// Dispatch shims for `#[derive(CqsCommands)]`. Each shim is a thin wrapper
+// around an existing `cmd_xxx` handler that pattern-matches the variant out
+// of `&Commands` and forwards destructured args. Lives at the module surface
+// so the proc-macro-emitted dispatch can call
 // `crate::cli::commands::cmd_xxx_dispatch`.
 mod dispatch_shims;
 pub(crate) use dispatch_shims::*;
@@ -218,19 +218,16 @@ pub(crate) fn inject_content_into_scout_json(
     }
 }
 
-/// Tag every chunk-shaped object in a scout-style JSON tree as user-code. (#1167)
+/// Tag every chunk-shaped object in a scout-style JSON tree as user-code.
 ///
 /// Scout / onboard / where / plan only query the user's project store, so
 /// every chunk is `trust_level: "user-code"`. Reference-aware commands
 /// (search, gather) thread the origin through `to_json_with_origin` instead.
 ///
-/// SEC-V1.30.1-4: recursive visitor — any object with the chunk-shape
-/// signature (presence of `name` AND `file` AND a numeric `line_start`)
-/// is tagged. Future scout / onboard surfaces that grow new chunk-bearing
-/// keys (e.g. `dependents[]`, `examples[]`, top-level `chunks[]`) are
-/// tagged automatically; the previous shape-coupled walker silently
-/// no-oped on anything outside `entry_point` / `call_chain` / `callers`
-/// / `file_groups[].chunks[]`.
+/// Recursive visitor — any object with the chunk-shape signature (presence
+/// of `name` AND `file` AND a numeric `line_start`) is tagged. New
+/// chunk-bearing keys (e.g. `dependents[]`, `examples[]`, top-level
+/// `chunks[]`) are tagged automatically.
 pub(crate) fn tag_user_code_trust_level(json: &mut serde_json::Value) {
     let _span = tracing::info_span!("tag_user_code_trust_level").entered();
 
@@ -454,9 +451,9 @@ pub(crate) fn token_pack<T>(
 
     // Greedy pack in score order, tracking which indices to keep.
     //
-    // P1.18: when an oversized item appears mid-stream we `continue` rather
-    // than `break` so subsequent (smaller, lower-scored) items can still
-    // fit into the remaining budget. Score-ordered packing already prefers
+    // When an oversized item appears mid-stream we `continue` rather than
+    // `break` so subsequent (smaller, lower-scored) items can still fit into
+    // the remaining budget. Score-ordered packing already prefers
     // higher-relevance items; the greedy fall-through is the right rounding
     // when one mid-list item won't fit.
     let mut used: usize = 0;
@@ -529,10 +526,10 @@ pub(crate) fn index_pack(
     for idx in order {
         let cost = token_counts[idx] + overhead_per_item;
         if used + cost > budget && !kept.is_empty() {
-            // P1.18 parity (CQ-V1.33.0-4): skip oversized mid-stream items but
-            // keep probing — smaller, lower-scored items may still fit in the
-            // remaining budget. Mirrors `token_pack`'s behavior so waterfall
-            // budgeting in `task::pack_section` doesn't silently truncate.
+            // Skip oversized mid-stream items but keep probing — smaller,
+            // lower-scored items may still fit in the remaining budget.
+            // Mirrors `token_pack`'s behavior so waterfall budgeting in
+            // `task::pack_section` doesn't silently truncate.
             continue;
         }
         // Mirror token_pack's 10x guard: skip items that vastly exceed budget
@@ -549,7 +546,7 @@ pub(crate) fn index_pack(
 }
 
 /// Read diff text from stdin, capped at `CQS_MAX_DIFF_BYTES` (default 50 MiB).
-/// P3 #107: shares the same env knob with `git diff` subprocess output.
+/// Shares the same env knob with `git diff` subprocess output.
 pub(crate) fn read_stdin() -> anyhow::Result<String> {
     use std::io::Read;
     let max_stdin_size = crate::cli::limits::max_diff_bytes();
@@ -573,13 +570,12 @@ pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["--no-pager", "diff", "--no-color"]);
     if let Some(b) = base {
-        // SEC-V1.38-7 (#1463): stricter ref validation matching git's own
-        // `check-ref-format` rules. Reject leading `-` (option-injection),
-        // any of `\0\n\r\t` (newlines and tabs are control-char injections
-        // that git strips at parse time but the validation gate should
-        // assert), and cap length at 255 chars (git's own ref-name limit).
-        // The dash check is kept structural rather than relying on the
-        // arg-position not being reordered by future refactors.
+        // Strict ref validation matching git's own `check-ref-format` rules.
+        // Reject leading `-` (option-injection), any of `\0\n\r\t` (newlines
+        // and tabs are control-char injections that git strips at parse time
+        // but the validation gate should assert), and cap length at 255 chars
+        // (git's own ref-name limit). The dash check is structural rather than
+        // relying on the arg-position not being reordered by future refactors.
         if b.is_empty()
             || b.len() > 255
             || b.starts_with('-')
@@ -603,7 +599,7 @@ pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
         anyhow::bail!("git diff failed: {}", stderr.trim());
     }
 
-    // P3 #107: shared cap with stdin (CQS_MAX_DIFF_BYTES, default 50 MiB).
+    // Shared cap with stdin (CQS_MAX_DIFF_BYTES, default 50 MiB).
     let max_diff_size = crate::cli::limits::max_diff_bytes();
     if output.stdout.len() > max_diff_size {
         anyhow::bail!(
@@ -696,7 +692,7 @@ mod tests {
         assert_eq!(used, 90); // 2 * (10 + 35)
     }
 
-    // TC-6: token_pack zero budget includes first item unconditionally
+    // token_pack zero budget includes first item unconditionally
     #[test]
     fn test_token_pack_zero_budget_includes_first() {
         let items = vec!["a", "b"];
@@ -707,7 +703,7 @@ mod tests {
         assert_eq!(used, 10);
     }
 
-    // TC-6: token_pack 10x guard still works when budget > 0
+    // token_pack 10x guard still works when budget > 0
     #[test]
     fn test_token_pack_10x_guard_nonzero_budget() {
         let items = vec!["huge", "small"];
@@ -722,7 +718,7 @@ mod tests {
         assert_eq!(used, 10);
     }
 
-    // AC-11: index_pack 10x guard skips pathologically large first item
+    // index_pack 10x guard skips pathologically large first item
     #[test]
     fn test_index_pack_10x_guard() {
         let counts = vec![5000, 10];
@@ -732,7 +728,7 @@ mod tests {
         assert_eq!(used, 10);
     }
 
-    // AC-11: index_pack still includes moderately-over-budget first item (< 10x)
+    // index_pack still includes moderately-over-budget first item (< 10x)
     #[test]
     fn test_index_pack_includes_moderate_overbudget() {
         let counts = vec![100]; // 100 > budget 30, but 100 < 30*10=300
@@ -741,13 +737,13 @@ mod tests {
         assert_eq!(used, 100);
     }
 
-    // CQ-V1.33.0-4: index_pack must `continue` (not `break`) when an oversized
-    // mid-stream item won't fit, so smaller lower-scored items still pack.
-    // Mirrors the P1.18 fix in token_pack.
+    // index_pack must `continue` (not `break`) when an oversized mid-stream
+    // item won't fit, so smaller lower-scored items still pack. Mirrors
+    // token_pack's behavior.
     #[test]
     fn test_index_pack_continues_after_oversized_item() {
         // 3 items, budget 30. Score order: idx0 (10), idx1 (50, won't fit), idx2 (10).
-        // Pre-fix `break` after idx1 would drop idx2. Post-fix `continue` keeps it.
+        // A `break` after idx1 would drop idx2; `continue` keeps it.
         let counts = vec![10, 50, 10];
         let (indices, used) = index_pack(&counts, 30, 0, |i| match i {
             0 => 3.0, // highest -> always picked first
@@ -761,7 +757,7 @@ mod tests {
         assert_eq!(used, 20);
     }
 
-    // HP-2: inject_token_info adds fields when Some
+    // inject_token_info adds fields when Some
     #[test]
     fn test_inject_token_info_some() {
         let mut json = serde_json::json!({"results": []});
@@ -770,7 +766,7 @@ mod tests {
         assert_eq!(json["token_budget"], 300);
     }
 
-    // HP-2: inject_token_info is no-op when None
+    // inject_token_info is no-op when None
     #[test]
     fn test_inject_token_info_none() {
         let mut json = serde_json::json!({"results": []});
@@ -779,7 +775,7 @@ mod tests {
         assert!(json.get("token_budget").is_none());
     }
 
-    // HP-2: inject_content_into_scout_json injects content by chunk name
+    // inject_content_into_scout_json injects content by chunk name
     #[test]
     fn test_inject_content_into_scout_json() {
         let mut json = serde_json::json!({
@@ -802,7 +798,7 @@ mod tests {
         assert!(chunks[1].get("content").is_none());
     }
 
-    // HP-2: inject_content_into_scout_json no-op on missing file_groups
+    // inject_content_into_scout_json no-op on missing file_groups
     #[test]
     fn test_inject_content_into_scout_json_no_groups() {
         let mut json = serde_json::json!({"other": 1});
@@ -812,7 +808,7 @@ mod tests {
         assert_eq!(json, serde_json::json!({"other": 1}));
     }
 
-    // HP-2: inject_content_into_onboard_json injects into entry_point, call_chain, callers
+    // inject_content_into_onboard_json injects into entry_point, call_chain, callers
     #[test]
     fn test_inject_content_into_onboard_json() {
         use std::path::PathBuf;
@@ -880,7 +876,7 @@ mod tests {
         assert!(json["callers"][0].get("content").is_none());
     }
 
-    // HP-9: onboard_scored_names scoring logic
+    // onboard_scored_names scoring logic
     #[test]
     fn test_onboard_scored_names() {
         use std::path::PathBuf;
@@ -970,7 +966,7 @@ mod tests {
         assert_eq!(scored[4], ("caller".to_string(), 0.3));
     }
 
-    // HP-9: scout_scored_names scoring logic
+    // scout_scored_names scoring logic
     #[test]
     fn test_scout_scored_names() {
         let result = cqs::ScoutResult {
@@ -1041,7 +1037,7 @@ mod tests {
         assert!((scored[2].1 - 0.4 * 0.7).abs() < 1e-6); // 0.28
     }
 
-    // HP-9: scout_scored_names with empty result
+    // scout_scored_names with empty result
     #[test]
     fn test_scout_scored_names_empty() {
         let result = cqs::ScoutResult {
@@ -1058,9 +1054,9 @@ mod tests {
         assert!(scored.is_empty());
     }
 
-    // TC-12: token_pack with NaN scores — NaN sorts as highest via total_cmp,
+    // token_pack with NaN scores — NaN sorts as highest via total_cmp,
     // so NaN-scored items are treated as top priority (picked first).
-    // This documents the current behavior: NaN is NOT deprioritized.
+    // NaN is NOT deprioritized.
     #[test]
     fn test_token_pack_nan_scores_sorted_first() {
         let items = vec!["nan_item", "good_item"];
@@ -1077,7 +1073,7 @@ mod tests {
         assert_eq!(used, 10);
     }
 
-    // TC-12: token_pack with all NaN scores — at-least-one guarantee still holds
+    // token_pack with all NaN scores — at-least-one guarantee still holds
     #[test]
     fn test_token_pack_all_nan_includes_first() {
         let items = vec!["a", "b"];
@@ -1088,7 +1084,7 @@ mod tests {
         assert_eq!(used, 10);
     }
 
-    // TC-12: token_pack with NaN and valid items when budget fits all — NaN items included
+    // token_pack with NaN and valid items when budget fits all — NaN items included
     #[test]
     fn test_token_pack_nan_mixed_all_fit() {
         let items = vec!["a", "b", "c"];
@@ -1104,7 +1100,7 @@ mod tests {
         assert_eq!(used, 30);
     }
 
-    // HP-3 + SEC-V1.38-7: run_git_diff rejects base refs starting with '-' (flag injection)
+    // run_git_diff rejects base refs starting with '-' (flag injection)
     #[test]
     fn test_run_git_diff_rejects_dash_prefix() {
         let result = run_git_diff(Some("--exec=whoami"));
@@ -1117,7 +1113,7 @@ mod tests {
         );
     }
 
-    // HP-3 + SEC-V1.38-7: run_git_diff rejects base refs containing null bytes
+    // run_git_diff rejects base refs containing null bytes
     #[test]
     fn test_run_git_diff_rejects_null_bytes() {
         let result = run_git_diff(Some("main\0--exec=whoami"));
@@ -1130,7 +1126,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.38-7: run_git_diff rejects newlines + tabs (control-char injection)
+    // run_git_diff rejects newlines + tabs (control-char injection)
     #[test]
     fn test_run_git_diff_rejects_newlines_and_tabs() {
         for bad in ["main\nrm -rf /", "main\rfoo", "main\tfoo"] {
@@ -1144,7 +1140,7 @@ mod tests {
         }
     }
 
-    // SEC-V1.38-7: run_git_diff rejects refs > 255 chars (git's own ref-name limit)
+    // run_git_diff rejects refs > 255 chars (git's own ref-name limit)
     #[test]
     fn test_run_git_diff_rejects_oversize_ref() {
         let big = "a".repeat(256);
@@ -1157,7 +1153,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.38-7: run_git_diff rejects empty ref
+    // run_git_diff rejects empty ref
     #[test]
     fn test_run_git_diff_rejects_empty_ref() {
         let result = run_git_diff(Some(""));
@@ -1169,7 +1165,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.30.1-4: recursive visitor still tags the four legacy shapes
+    // Recursive visitor tags the four onboard/scout shapes
     // (entry_point, call_chain[], callers[], file_groups[].chunks[]).
     #[test]
     fn tag_user_code_visits_legacy_onboard_shapes() {
@@ -1188,7 +1184,7 @@ mod tests {
         assert_eq!(json["callers"][0]["trust_level"], "user-code");
     }
 
-    // SEC-V1.30.1-4: recursive visitor still tags scout-shape nesting.
+    // Recursive visitor tags scout-shape nesting.
     #[test]
     fn tag_user_code_visits_legacy_scout_shape() {
         let mut json = serde_json::json!({
@@ -1208,9 +1204,9 @@ mod tests {
         );
     }
 
-    // SEC-V1.30.1-4: chunks reachable through arbitrary new keys are
-    // tagged — the contract is "every chunk-shaped object", not "every
-    // chunk under one of these four keys."
+    // Chunks reachable through arbitrary new keys are tagged — the contract
+    // is "every chunk-shaped object", not "every chunk under one of these
+    // four keys."
     #[test]
     fn tag_user_code_visits_arbitrary_nested_chunks() {
         let mut json = serde_json::json!({
@@ -1229,7 +1225,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.30.1-4: deep object nesting — visitor descends arbitrarily.
+    // Deep object nesting — visitor descends arbitrarily.
     #[test]
     fn tag_user_code_visits_deeply_nested_chunks() {
         let mut json = serde_json::json!({
@@ -1250,8 +1246,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.30.1-4: nested array of chunk-shaped objects — every
-    // element gets tagged.
+    // Nested array of chunk-shaped objects — every element gets tagged.
     #[test]
     fn tag_user_code_visits_nested_array_of_chunks() {
         let mut json = serde_json::json!({
@@ -1271,8 +1266,8 @@ mod tests {
         }
     }
 
-    // SEC-V1.30.1-4: mixed shape — tag chunk-shaped objects, leave
-    // metadata objects untouched.
+    // Mixed shape — tag chunk-shaped objects, leave metadata objects
+    // untouched.
     #[test]
     fn tag_user_code_mixed_shape_only_tags_chunks() {
         let mut json = serde_json::json!({
@@ -1296,8 +1291,7 @@ mod tests {
         assert!(json["siblings"][3].get("trust_level").is_none()); // string line_start
     }
 
-    // SEC-V1.30.1-4: pure-scalar root JSON — visitor is a no-op
-    // (no panic, no tag).
+    // Pure-scalar root JSON — visitor is a no-op (no panic, no tag).
     #[test]
     fn tag_user_code_scalar_root_no_op() {
         let mut s = serde_json::Value::String("hello".into());
@@ -1317,7 +1311,7 @@ mod tests {
         assert_eq!(nul, serde_json::Value::Null);
     }
 
-    // SEC-V1.30.1-4: top-level array of chunks — visitor descends in.
+    // Top-level array of chunks — visitor descends in.
     #[test]
     fn tag_user_code_array_root() {
         let mut json = serde_json::json!([
@@ -1330,7 +1324,7 @@ mod tests {
         assert_eq!(arr[1]["trust_level"], "user-code");
     }
 
-    // SEC-V1.30.1-4: object that is NOT chunk-shaped — no tag added.
+    // Object that is NOT chunk-shaped — no tag added.
     #[test]
     fn tag_user_code_does_not_tag_non_chunk_objects() {
         let mut json = serde_json::json!({"meta": {"version": 1}});

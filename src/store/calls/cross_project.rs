@@ -12,9 +12,9 @@ use crate::Store;
 /// A named store for cross-project context.
 ///
 /// `CrossProjectContext` only issues read queries (callers, callees,
-/// test chunks), so the handle is `Store<ReadOnly>` — the typestate
-/// refactor (GitHub #946) makes it a compile-time error to accidentally
-/// call a write method on a cross-project reference store.
+/// test chunks), so the handle is `Store<ReadOnly>` — the typestate makes
+/// it a compile-time error to accidentally call a write method on a
+/// cross-project reference store.
 pub struct NamedStore {
     /// Human-readable project name (e.g. "cqs", "openclaw").
     pub name: String,
@@ -81,19 +81,16 @@ impl CrossProjectContext {
         let _span = tracing::info_span!("cross_project_from_config").entered();
         let config = crate::config::Config::load(root);
 
-        // TC-HAP-V1.38-8 (#1463): use the slot-aware resolver so post-#1105
-        // slot layouts (`.cqs/slots/<active>/index.db`) work for
-        // `cqs trace --cross-project` and friends. Pre-fix, this path
-        // hardcoded `.cqs/index.db`, which only existed in the legacy
-        // pre-slots layout — every cross-project command silently
-        // bailed with "unable to open database file" on slot-migrated
-        // projects. The `tests/cli_trace_cross_project_test.rs`
-        // integration test now exercises this path end-to-end.
+        // Use the slot-aware resolver so slot layouts
+        // (`.cqs/slots/<active>/index.db`) work for `cqs trace
+        // --cross-project` and friends. A hardcoded `.cqs/index.db` would only
+        // exist in the non-slot layout, making every cross-project command
+        // bail with "unable to open database file" on slot-migrated projects.
         let cqs_dir = crate::resolve_index_dir(root);
         let db_path = crate::resolve_index_db(&cqs_dir);
-        // #946 typestate: cross-project reads only — open read-only. If the DB
-        // doesn't exist yet, propagate the error; creating it here would
-        // corrupt the invariant that cross-project queries never mutate.
+        // Cross-project reads only — open read-only. If the DB doesn't exist
+        // yet, propagate the error; creating it here would corrupt the
+        // invariant that cross-project queries never mutate.
         let local_store = Store::open_readonly(&db_path)?;
         let mut stores = vec![NamedStore {
             name: "local".to_string(),

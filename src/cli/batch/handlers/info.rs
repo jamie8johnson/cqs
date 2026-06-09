@@ -1,6 +1,6 @@
 //! Info dispatch handlers: stats, context, explain, similar, read, blame, onboard.
 //!
-//! #1216: handlers take a single `&XArgs` argument so the macro-driven
+//! Handlers take a single `&XArgs` argument so the macro-driven
 //! `BatchCmd::dispatch` calls every row uniformly.
 
 use anyhow::Result;
@@ -56,8 +56,8 @@ pub(in crate::cli::batch) fn dispatch_explain(
     let tokens = args.tokens;
     let _span =
         tracing::info_span!("batch_explain", target, limit = args.limit_arg.limit).entered();
-    // Task A3: shared cap with `cmd_explain`. Truncates the per-section
-    // lists (callers / callees / similar) before serialization.
+    // Shared cap with `cmd_explain`. Truncates the per-section lists
+    // (callers / callees / similar) before serialization.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     let index = ctx.vector_index()?;
@@ -110,9 +110,8 @@ pub(in crate::cli::batch) fn dispatch_similar(
     let name = args.name.as_str();
     let _span = tracing::info_span!("batch_similar", name).entered();
     let threshold = validate_finite_f32(args.threshold, "threshold")?;
-    // CQ-V1.25-2: shared with CLI's cmd_similar (which currently does not
-    // clamp — adding clamp here + constant would regress; keep parity and
-    // let CLI gain its clamp in a separate fix).
+    // Shared with CLI's cmd_similar, which does not clamp — keep parity here
+    // rather than diverging.
     let limit = args.limit_arg.limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
@@ -141,9 +140,8 @@ pub(in crate::cli::batch) fn dispatch_similar(
         .take(limit)
         .collect();
 
-    // P2.1: emit canonical 9-field SearchResult shape so daemon/CLI parity holds.
-    // Previously the batch path emitted only {name, file, score}, drifting from
-    // the CLI's `r.to_json()` schema and breaking agents that expected uniform keys.
+    // Emit the canonical 9-field SearchResult shape so daemon/CLI parity
+    // holds — same schema as the CLI's `r.to_json()`.
     let json_results: Vec<serde_json::Value> = filtered.iter().map(|r| r.to_json()).collect();
 
     Ok(serde_json::json!({
@@ -174,7 +172,7 @@ pub(in crate::cli::batch) fn dispatch_context(
     let tokens = args.tokens;
     let _span = tracing::info_span!("batch_context", path).entered();
 
-    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // Normalize backslash input from Windows / agent pipelines.
     // `get_chunks_by_origin` matches on the stored `origin` column which is
     // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
     // `build_compact_data` / `build_full_data` also normalize internally, but
@@ -230,7 +228,7 @@ pub(in crate::cli::batch) fn dispatch_context(
     let entries: Vec<_> = chunks
         .iter()
         .map(|c| {
-            // #1167: chunks from `get_chunks_by_origin` come straight from the
+            // Chunks from `get_chunks_by_origin` come straight from the
             // user's project store, so they're always user-code.
             serde_json::json!({
                 "name": c.name,
@@ -267,10 +265,8 @@ pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchView) -> Result<serde_jso
     let mut output = crate::cli::commands::build_stats(&ctx.store(), &ctx.cqs_dir)?;
     output.errors = Some(errors as usize);
 
-    // BUG-D.10: mirror cmd_stats:283-298 — the daemon previously emitted
-    // `stale_files: null` / `missing_files: null` while the CLI populated
-    // both, so agents auto-routed through the daemon silently treated
-    // every project as fresh. Filesystem walk + `count_stale_files` is
+    // Mirror cmd_stats — populate `stale_files` / `missing_files` so daemon
+    // and CLI agree on freshness. Filesystem walk + `count_stale_files` is
     // cheap; the parser is constructed lazily and torn down.
     match cqs::Parser::new() {
         Ok(parser) => match crate::cli::enumerate_files(&ctx.root, &parser, false) {
@@ -334,7 +330,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     .entered();
     let embedder = ctx.embedder()?;
     let depth = args.depth.clamp(1, 5);
-    // Task A3: cap on call_chain + callers + tests. entry_point always kept.
+    // Cap on call_chain + callers + tests. entry_point always kept.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     let mut result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth, direction)?;
@@ -357,7 +353,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
         .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
     crate::cli::commands::inject_content_into_onboard_json(&mut json, &content_map, &result);
     crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
-    // #1167: onboard only queries the project store — every chunk is user-code.
+    // Onboard only queries the project store — every chunk is user-code.
     crate::cli::commands::tag_user_code_trust_level(&mut json);
     Ok(json)
 }
@@ -389,8 +385,8 @@ pub(in crate::cli::batch) fn dispatch_read(
 
     let (file_path, content) = crate::cli::commands::read::validate_and_read_file(&ctx.root, path)?;
 
-    // P2 #69: ctx.audit_state() now returns owned AuditMode (cached + TTL'd
-    // reload). build_file_note_header still expects `&AuditMode`, so borrow.
+    // ctx.audit_state() returns owned AuditMode (cached + TTL'd reload).
+    // build_file_note_header expects `&AuditMode`, so borrow.
     let audit_state = ctx.audit_state();
     let notes = ctx.notes();
     let (header, notes_injected) =
@@ -402,7 +398,7 @@ pub(in crate::cli::batch) fn dispatch_read(
         format!("{}{}", header, content)
     };
 
-    // SEC-V1.33-9: file-read path should also honor vendored detection so
+    // The file-read path honors vendored detection so
     // `cqs read node_modules/lodash.js` reports the correct trust level
     // matching the chunks-side labeling. Match the user-supplied relative
     // path against the configured `[index].vendored_paths` (or defaults).
@@ -442,8 +438,8 @@ pub(in crate::cli::batch) fn dispatch_read(
 fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_read_focused", focus).entered();
 
-    // P2 #69: ctx.audit_state() now returns owned AuditMode; borrow at the
-    // call site since build_focused_output takes `&AuditMode`.
+    // ctx.audit_state() returns owned AuditMode; borrow at the call site
+    // since build_focused_output takes `&AuditMode`.
     let audit_state = ctx.audit_state();
     let notes = ctx.notes();
     let result = crate::cli::commands::read::build_focused_output(
@@ -454,11 +450,10 @@ fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Val
         &notes,
     )?;
 
-    // SEC-V1.33-9: was hardcoded `"user-code"` even for chunks under
-    // `node_modules/`/`vendor/`/etc, defeating the #1221 vendored-code
-    // boundary. `build_focused_output` now surfaces the resolved chunk's
-    // `vendored` flag (schema v24) so the daemon RPC matches the index-time
-    // labeling shape used by search/scout JSON.
+    // `build_focused_output` surfaces the resolved chunk's `vendored` flag so
+    // the daemon RPC matches the index-time labeling shape used by
+    // search/scout JSON — chunks under `node_modules/`/`vendor/`/etc report
+    // `vendored-code`.
     let trust_level = if result.vendored {
         "vendored-code"
     } else {
@@ -477,8 +472,8 @@ fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Val
             "no_tests": h.test_count == 0,
         });
     }
-    // P2.23: surface warnings into the batch response as well so daemon
-    // consumers see why type-deps lookup may have come back empty.
+    // Surface warnings into the batch response so daemon consumers see why
+    // type-deps lookup may have come back empty.
     if !result.warnings.is_empty() {
         json["warnings"] = serde_json::json!(result.warnings);
     }
@@ -486,13 +481,11 @@ fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Val
     Ok(json)
 }
 
-// P2.79: TC-HAP — happy-path coverage for the embedder-free info dispatchers.
-// `dispatch_stats` was the only stats-shape test in the batch tree before this;
-// the integration suite (`tests/cli_batch_test.rs`) covers the dispatch line
-// parser but not the per-handler SQL → JSON contract. We pin
-// `dispatch_stats` here against a freshly-seeded store to catch any
-// regression in `build_stats` schema fields without paying the embedder
-// load cost.
+// Happy-path coverage for the embedder-free info dispatchers. The
+// integration suite (`tests/cli_batch_test.rs`) covers the dispatch line
+// parser but not the per-handler SQL → JSON contract. These pin
+// `dispatch_stats` against a freshly-seeded store to catch any regression in
+// `build_stats` schema fields without paying the embedder load cost.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,10 +559,9 @@ mod tests {
         );
     }
 
-    /// SEC-V1.33-9 regression: a vendored chunk surfaces `trust_level:
-    /// "vendored-code"` from `dispatch_read --focus`. Pre-fix the daemon
-    /// hardcoded `"user-code"` regardless of the chunk's actual origin,
-    /// defeating the #1221 vendored-code boundary.
+    /// A vendored chunk surfaces `trust_level: "vendored-code"` from
+    /// `dispatch_read --focus`, honoring the vendored-code boundary regardless
+    /// of the daemon path.
     fn make_chunk_at(id: &str, name: &str, file: &str) -> Chunk {
         let content = format!("fn {name}() {{ }}");
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();

@@ -47,12 +47,11 @@ impl<Mode> Store<Mode> {
                     let hash: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
                     match bytes_to_embedding(&bytes, dim) {
-                        // TC-ADV-1: route through `Embedding::try_new` so NaN/
-                        // Inf embeddings (corrupt blob, interrupted embedder
-                        // run, bit rot, downstream writer bug) are rejected
-                        // before they can poison HNSW build or query paths.
-                        // `try_new` enforces finiteness; previously the code
-                        // used the unchecked `Embedding::new` constructor.
+                        // Route through `Embedding::try_new` so NaN/Inf
+                        // embeddings (corrupt blob, interrupted embedder run,
+                        // bit rot, downstream writer bug) are rejected before
+                        // they can poison HNSW build or query paths.
+                        // `try_new` enforces finiteness.
                         Ok(embedding) => match Embedding::try_new(embedding) {
                             Ok(e) => {
                                 result.insert(hash, e);
@@ -83,9 +82,9 @@ impl<Mode> Store<Mode> {
     /// returns the chunk ID alongside the embedding — exactly what HNSW
     /// `insert_batch` needs. The `content_hash` is also returned so callers
     /// (e.g. the watch reindex path that pushes into `pending.delta`) can
-    /// pair each fresh embedding with the hash it was generated from
-    /// (#1124). The hash is read from the same row, so it's consistent
-    /// with the embedding bytes returned.
+    /// pair each fresh embedding with the hash it was generated from.
+    /// The hash is read from the same row, so it's consistent with the
+    /// embedding bytes returned.
     ///
     /// Batches queries in groups of 500 to stay within SQLite's parameter
     /// limit (~999).
@@ -127,7 +126,7 @@ impl<Mode> Store<Mode> {
                     let bytes: Vec<u8> = row.get(1);
                     let hash: String = row.get(2);
                     match bytes_to_embedding(&bytes, dim) {
-                        // TC-ADV-1: same finiteness guard as
+                        // Same finiteness guard as
                         // `get_embeddings_by_hashes`. NaN/Inf values would
                         // produce non-finite cosine distances inside HNSW
                         // build and corrupt the graph; skip the row with a
@@ -214,7 +213,7 @@ mod tests {
         bytemuck::cast_slice::<f32, u8>(&v).to_vec()
     }
 
-    /// TC-ADV-1: `get_embeddings_by_hashes` must not propagate NaN-containing
+    /// `get_embeddings_by_hashes` must not propagate NaN-containing
     /// embeddings into HNSW. The production write path never produces NaN,
     /// but a corrupt blob (interrupted embedder run, bit rot, downstream
     /// writer bug) could land in the `chunks` table. This test directly
@@ -273,7 +272,7 @@ mod tests {
         }
     }
 
-    /// TC-ADV-1 paired test: same guard on the sibling
+    /// Paired test: same guard on the sibling
     /// `get_chunk_ids_and_embeddings_by_hashes` path (the one HNSW build
     /// actually consumes). A NaN-containing chunk must not appear in the
     /// returned `(id, embedding)` pairs.

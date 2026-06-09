@@ -109,11 +109,6 @@ pub struct ScoutOptions {
 }
 
 impl Default for ScoutOptions {
-    /// Creates a new instance with default configuration values.
-    ///
-    /// # Returns
-    ///
-    /// A `Self` instance initialized with default search limit, search threshold, and minimum gap ratio constants.
     fn default() -> Self {
         Self {
             search_limit: DEFAULT_SCOUT_SEARCH_LIMIT,
@@ -266,7 +261,7 @@ pub(crate) fn scout_core<Mode>(
     let modify_threshold = compute_modify_threshold(&results, opts.min_gap_ratio);
     tracing::debug!(modify_threshold, "Gap-based threshold computed");
 
-    // 7. Batch-compute hints for all result chunks (PERF-20: single forward BFS)
+    // 7. Batch-compute hints for all result chunks (single forward BFS)
     let all_chunk_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
     let hints_batch =
         crate::impact::compute_hints_batch(graph, test_chunks, &all_chunk_names, &caller_counts);
@@ -281,8 +276,8 @@ pub(crate) fn scout_core<Mode>(
         .into_iter()
         .map(|(file, chunks)| {
             let relevance_score = chunks.iter().map(|(s, _)| s).sum::<f32>() / chunks.len() as f32;
-            // PERF-V1.36-11: HashSet<String>::contains accepts &str via Borrow,
-            // so the second to_string() is wasted allocation.
+            // HashSet<String>::contains accepts &str via Borrow, so no
+            // owned-String allocation is needed for the probe.
             let is_stale = stale_set.contains(file.to_string_lossy().as_ref());
 
             let scout_chunks: Vec<ScoutChunk> = chunks
@@ -375,7 +370,7 @@ pub(crate) fn scout_core<Mode>(
 /// If no clear gap exists (all gaps < 10%), only the top result qualifies.
 /// Tied scores at the threshold are included as ModifyTargets.
 fn compute_modify_threshold(results: &[crate::store::SearchResult], min_gap_ratio: f32) -> f32 {
-    // RB-18: Early return for empty results — no modify targets possible
+    // Early return for empty results — no modify targets possible
     if results.is_empty() {
         return f32::MAX;
     }
@@ -506,9 +501,8 @@ mod tests {
             classify_role(0.3, "test_helper", "src/lib.rs", 0.5),
             ChunkRole::TestToUpdate
         );
-        // v1.22.0 audit AC-4: `TestSuite` in non-test paths is a production
-        // type, not a test. After the `is_test_chunk` fix, this correctly
-        // classifies as a modification target, not a test to update.
+        // `TestSuite` in non-test paths is a production type, not a test, so
+        // it classifies as a modification target.
         assert_eq!(
             classify_role(0.8, "TestSuite", "src/lib.rs", 0.5),
             ChunkRole::ModifyTarget
@@ -525,17 +519,8 @@ mod tests {
         );
     }
 
-    /// Creates a mock SearchResult for testing purposes with the specified name, file path, and relevance score.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The identifier and name of the code chunk
-    /// * `file` - The file path as a string where the chunk is located
-    /// * `score` - The relevance score as a floating-point number
-    ///
-    /// # Returns
-    ///
-    /// A SearchResult containing a ChunkSummary with default/placeholder values for a Rust function chunk and the provided score.
+    /// Build a mock `SearchResult` for a Rust function chunk with the given
+    /// name, file, and score; other fields are placeholders.
     fn mock_result(name: &str, file: &str, score: f32) -> crate::store::SearchResult {
         crate::store::SearchResult {
             chunk: ChunkSummary {

@@ -581,10 +581,10 @@ fn post_process_csharp_csharp(
             &node_text[..node_text.floor_char_boundary(200)]
         };
 
-        // EX-V1.38-2 (#1463): consult LANG_CSHARP.{test_markers,endpoint_markers}
-        // instead of inline literals so adding xUnit's `[Theory(...)]` (already
-        // there) or new Spring-style annotations is one row in the LanguageDef
-        // entry below, not a duplicated edit.
+        // Consult LANG_CSHARP.{test_markers,endpoint_markers} instead of
+        // inline literals so adding xUnit's `[Theory(...)]` (already there) or
+        // new Spring-style annotations is one row in the LanguageDef entry
+        // below, not a duplicated edit.
         if LANG_CSHARP.test_markers.iter().any(|m| header.contains(*m)) {
             *chunk_type = ChunkType::Test;
         } else if LANG_CSHARP
@@ -2248,8 +2248,7 @@ static LANG_GO: LanguageDef = LanguageDef {
     unsafe_markers: &["unsafe.Pointer"],
     function_keywords: &["func"],
     receiver_strip: Some(strip_go_receiver),
-    // Data-driven pattern rules (formerly a custom arm in
-    // `where_to_add::extract_patterns`). See `patterns_data::GO` for the
+    // Data-driven pattern rules. See `patterns_data::GO` for the
     // uppercase-name-is-exported visibility convention.
     patterns: Some(&patterns_data::GO),
     line_comment_prefixes: &["//", "/*"],
@@ -3074,7 +3073,7 @@ fn post_process_java_java(
             &node_text[..node_text.floor_char_boundary(200)]
         };
 
-        // EX-V1.38-2 (#1463): consult LANG_JAVA.{test_markers,endpoint_markers}.
+        // Consult LANG_JAVA.{test_markers,endpoint_markers}.
         if LANG_JAVA.test_markers.iter().any(|m| header.contains(*m)) {
             *chunk_type = ChunkType::Test;
         } else if LANG_JAVA
@@ -3392,8 +3391,7 @@ static LANG_JAVASCRIPT: LanguageDef = LanguageDef {
     // both use the same surface syntax for async / catch / await.
     error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
     async_markers: &["async ", "await "],
-    // Data-driven pattern rules (formerly a custom arm in
-    // `where_to_add::extract_patterns`). See `patterns_data::TS_JS` for the
+    // Data-driven pattern rules. See `patterns_data::TS_JS` for the
     // regex-based `import` + CJS `require` extraction and export-based
     // visibility. Shared with TypeScript.
     patterns: Some(&patterns_data::TS_JS),
@@ -3667,7 +3665,7 @@ fn post_process_kotlin_kotlin(
         } else {
             &node_text[..node_text.floor_char_boundary(200)]
         };
-        // EX-V1.38-2 (#1463): consult LANG_KOTLIN.{test_markers,endpoint_markers}.
+        // Consult LANG_KOTLIN.{test_markers,endpoint_markers}.
         if LANG_KOTLIN.test_markers.iter().any(|m| header.contains(*m)) {
             *chunk_type = ChunkType::Test;
         } else if LANG_KOTLIN
@@ -4371,9 +4369,8 @@ static LANG_MARKDOWN: LanguageDef = LanguageDef {
     ],
     line_comment_prefixes: &["<!--"],
     aliases: &["md"],
-    // EX-V1.38-6 (#1463): per-chunk reference extractor. Replaces the
-    // hardcoded `if chunk.language == Language::Markdown` literal in
-    // `Parser::extract_calls_from_chunk`.
+    // Per-chunk reference extractor, dispatched by `LanguageDef` rather than
+    // a hardcoded language check in `Parser::extract_calls_from_chunk`.
     chunk_call_parser: Some(crate::parser::markdown::extract_calls_from_markdown_chunk),
     ..DEFAULTS
 };
@@ -6467,8 +6464,7 @@ static LANG_RUST: LanguageDef = LanguageDef {
     mutex_markers: &["Mutex", "RwLock", ".lock()"],
     unsafe_markers: &["unsafe "],
     function_keywords: &["fn"],
-    // Data-driven pattern rules (formerly a custom arm in
-    // `where_to_add::extract_patterns`). See `patterns_data::RUST` for the
+    // Data-driven pattern rules. See `patterns_data::RUST` for the
     // 3-way `pub(crate)` / `pub` / private triage and `#[cfg(test)]` inline
     // test marker.
     patterns: Some(&patterns_data::RUST),
@@ -7648,8 +7644,7 @@ static LANG_TYPESCRIPT: LanguageDef = LanguageDef {
     // empty-body marker nor an `// ignore` comment.
     error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
     async_markers: &["async ", "await "],
-    // Data-driven pattern rules (formerly a custom arm in
-    // `where_to_add::extract_patterns`). See `patterns_data::TS_JS` for the
+    // Data-driven pattern rules. See `patterns_data::TS_JS` for the
     // regex-based `import` + CJS `require` extraction and export-based
     // visibility. Shared with JavaScript. Methods are bare `name(` — no
     // introducer keyword.
@@ -8545,7 +8540,7 @@ static LANG_ASPX: LanguageDef = LanguageDef {
         "asmx",
     ],
     entry_point_names: &["Page_Load", "Page_Init", "Page_PreRender"],
-    // Grammar-less dispatch: closes the silent-routing class (issue #954).
+    // Grammar-less dispatch: avoids the silent-routing class of bugs.
     // `parse_file_relationships` reuses `custom_all_parser` when
     // `custom_call_parser` is None, so ASPX files still get call/type
     // extraction without a dedicated calls-only function.

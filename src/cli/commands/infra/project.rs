@@ -31,9 +31,9 @@ pub(crate) struct ProjectSearchResult {
     pub score: f32,
 }
 
-/// API-V1.29-1: JSON envelope row for `cqs --json project list`.
-/// `indexed` is true if either `.cqs/index.db` or the legacy `.cq/index.db`
-/// sits on disk — mirrors the text-mode `ok` / `missing index` status string.
+/// JSON envelope row for `cqs --json project list`.
+/// `indexed` is true if either `.cqs/index.db` or `.cq/index.db` sits on
+/// disk — mirrors the text-mode `ok` / `missing index` status string.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct ProjectListEntry {
     pub name: String,
@@ -50,27 +50,22 @@ pub(crate) struct ProjectListEntry {
 pub(crate) enum ProjectCommand {
     /// Add a project to the cross-project search registry
     ///
-    /// P3-29: renamed from `register` to align with `ref add`, `slot create`,
-    /// and `cache clear`. Old `register` form preserved as a visible alias
-    /// so existing scripts and `--help` searches keep working.
+    /// `register` is a visible alias for this subcommand.
     #[command(visible_alias = "register")]
     Add {
         /// Project name (used for identification)
         name: String,
         /// Path to project root (must have .cqs/index.db)
         path: PathBuf,
-        /// P3-25: shared `--json` arg so `cqs project add --json` emits the
-        /// envelope. Without this, `cqs --json project register` silently
-        /// dropped the top-level flag and `cqs project register --json` was
-        /// rejected at parse time as `unexpected argument`.
+        /// Shared `--json` arg so both `cqs --json project add` and
+        /// `cqs project add --json` emit the envelope.
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// List registered projects
     List {
-        /// API-V1.29-1: shared `--json` arg so `cqs --json project list`
-        /// honors the top-level flag. Without this, the `cli.json` bit was
-        /// dropped and agents consuming JSON got colored ANSI text.
+        /// Shared `--json` arg so `cqs --json project list` honors the
+        /// top-level flag.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -78,17 +73,17 @@ pub(crate) enum ProjectCommand {
     Remove {
         /// Project name to remove
         name: String,
-        /// API-V1.29-1: shared `--json` arg — see `List` above.
+        /// Shared `--json` arg — see `List` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Search across all registered projects.
     ///
-    /// #1459 item 1 (parity arm): mirrors the top-level `cqs <q>` filter
-    /// surface so `cqs project search` accepts the same `--lang`,
-    /// `--include-type`, `--exclude-type`, `--path`, `--name-boost`,
-    /// `--rrf`, and `--include-docs` flags. Each project's per-store
-    /// search applies the filter consistently before results are merged.
+    /// Mirrors the top-level `cqs <q>` filter surface so `cqs project
+    /// search` accepts the same `--lang`, `--include-type`,
+    /// `--exclude-type`, `--path`, `--name-boost`, `--rrf`, and
+    /// `--include-docs` flags. Each project's per-store search applies
+    /// the filter consistently before results are merged.
     Search {
         /// Search query
         query: String,
@@ -120,7 +115,7 @@ pub(crate) enum ProjectCommand {
         /// Include documentation, markdown, and config chunks. Mirrors top-level `--include-docs`.
         #[arg(long)]
         include_docs: bool,
-        /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
+        /// Shared `--json` arg.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -131,10 +126,8 @@ pub(crate) fn cmd_project(
     subcmd: &ProjectCommand,
     model_config: &ModelConfig,
 ) -> Result<()> {
-    // OB-V1.29-3: per-subcommand span so traces distinguish register / list /
-    // remove / search and carry the discriminating field (project name or
-    // query). The previous single `cmd_project` span collapsed four very
-    // different code paths into one trace entry.
+    // Per-subcommand span so traces distinguish register / list / remove /
+    // search and carry the discriminating field (project name or query).
     let _span = match subcmd {
         ProjectCommand::Add { name, .. } => {
             tracing::info_span!("cmd_project_add", name = %name).entered()
@@ -159,11 +152,9 @@ pub(crate) fn cmd_project(
 
             let mut registry = ProjectRegistry::load()?;
             registry.register(name.clone(), abs_path.clone())?;
-            // P3-25: emit JSON envelope when `--json` was passed at either
-            // the top level (`cqs --json project add ...`) or the subcommand
-            // level (`cqs project add ... --json`). Mirrors the `Remove` arm
-            // shape; agents piping through `jq` no longer need to special-
-            // case `register` as the one mutation that prints text.
+            // Emit JSON envelope when `--json` was passed at either the top
+            // level (`cqs --json project add ...`) or the subcommand level
+            // (`cqs project add ... --json`). Mirrors the `Remove` arm shape.
             let json = cli.json || output.json;
             if json {
                 crate::cli::json_envelope::emit_json(&serde_json::json!({
@@ -296,11 +287,11 @@ pub(crate) fn cmd_project(
     }
 }
 
-/// TC-HAP-V1.38-1 (#1463): build the per-project `SearchFilter` from the
-/// `cqs project search` flag surface. Extracted from `cmd_project`'s
-/// `Search` arm so the precedence rules between `--include-type`,
-/// `--include-docs`, and the code-only default can be tested without
-/// loading the embedder or any cross-project store.
+/// Build the per-project `SearchFilter` from the `cqs project search`
+/// flag surface. Split out of `cmd_project`'s `Search` arm so the
+/// precedence rules between `--include-type`, `--include-docs`, and the
+/// code-only default can be tested without loading the embedder or any
+/// cross-project store.
 ///
 /// Mirrors the top-level `cqs <q>` filter assembly at
 /// `src/cli/commands/search/query.rs` so per-project search behaves
@@ -410,7 +401,7 @@ mod tests {
         assert!(json.get("signature").is_none());
     }
 
-    // ===== TC-HAP-V1.38-1 (#1463) — build_project_search_filter behavior =====
+    // ===== build_project_search_filter behavior =====
     //
     // The parse-only test at `src/cli/mod.rs::test_cmd_project_search_full_flag_parity`
     // confirms each flag binds to the right field on `ProjectCommand::Search`.
@@ -531,8 +522,7 @@ mod tests {
     }
 
     /// `--rrf` and `--name-boost` flow through verbatim — these are the
-    /// hybrid-fusion knobs the audit found previously broken in cross-project
-    /// search (parse-only without behavior).
+    /// hybrid-fusion knobs for cross-project search.
     #[test]
     fn build_filter_rrf_and_name_boost_flow_through() {
         let f = build_project_search_filter("q", 0.5, true, None, None, None, None, false);

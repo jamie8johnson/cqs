@@ -14,33 +14,27 @@ use std::sync::Mutex;
 
 use thiserror::Error;
 
-/// DS-V1.33-6: process-global mutex serializing `EmbeddingCache::evict()`
-/// across all `EmbeddingCache` handles in this process.
+/// Process-global mutex serializing `EmbeddingCache::evict()` across all
+/// `EmbeddingCache` handles in this process.
 ///
-/// `EmbeddingCache::open` is called from multiple call paths (bulk pipeline
-/// `prepare_for_embedding`, watch daemon reindex, `cqs cache prune`); each
-/// returned a fresh per-instance `Mutex<()>` that pointed at the same
-/// `embeddings_cache.db` file but didn't coordinate. Two of those instances
-/// calling `evict()` concurrently from different runtimes would each measure
-/// the same logical size and issue overlapping `LIMIT ?` DELETEs — exactly
-/// the race the docstring promised to prevent.
-///
-/// Lifting the lock to module scope mirrors `WRITE_LOCK` in
-/// `src/store/mod.rs:54`. Cross-process serialization still relies on SQLite
-/// busy_timeout + the `BEGIN IMMEDIATE` evict transaction (DS-V1.33-4).
+/// `EmbeddingCache::open` is called from multiple paths (bulk pipeline
+/// `prepare_for_embedding`, watch daemon reindex, `cqs cache prune`). A
+/// shared lock prevents two instances calling `evict()` concurrently from
+/// different runtimes from each measuring the same logical size and issuing
+/// overlapping `LIMIT ?` DELETEs. Cross-process serialization relies on
+/// SQLite busy_timeout + the `BEGIN IMMEDIATE` evict transaction.
 static EMBEDDING_CACHE_EVICT_LOCK: Mutex<()> = Mutex::new(());
 
-/// DS-V1.33-6: process-global mutex serializing `QueryCache::evict()` across
-/// all `QueryCache` handles in this process. See `EMBEDDING_CACHE_EVICT_LOCK`.
+/// Process-global mutex serializing `QueryCache::evict()` across all
+/// `QueryCache` handles in this process. See `EMBEDDING_CACHE_EVICT_LOCK`.
 static QUERY_CACHE_EVICT_LOCK: Mutex<()> = Mutex::new(());
 
-/// DS-V1.33-8: cap the on-disk WAL at this many pages on each open so an
-/// abrupt shutdown (SIGKILL, panic, daemon worker crash) leaves a bounded
-/// WAL for the next open. Default 1000 pages mirrors SQLite's built-in
-/// autocheckpoint default; we set it explicitly so it actually applies to
-/// read-mostly cache connections that rarely COMMIT (without an explicit
-/// PRAGMA the autocheckpoint only runs on COMMIT). Override via
-/// `CQS_WAL_AUTOCHECKPOINT_PAGES`.
+/// Cap the on-disk WAL at this many pages on each open so an abrupt shutdown
+/// (SIGKILL, panic, daemon worker crash) leaves a bounded WAL for the next
+/// open. Default 1000 pages mirrors SQLite's built-in autocheckpoint default;
+/// set explicitly so it applies to read-mostly cache connections that rarely
+/// COMMIT (without an explicit PRAGMA the autocheckpoint only runs on COMMIT).
+/// Override via `CQS_WAL_AUTOCHECKPOINT_PAGES`.
 fn wal_autocheckpoint_pragma() -> String {
     let pages: u32 = std::env::var("CQS_WAL_AUTOCHECKPOINT_PAGES")
         .ok()
@@ -107,20 +101,18 @@ pub const PROJECT_EMBEDDINGS_CACHE_FILENAME: &str = "embeddings_cache.db";
 
 /// Discriminator for which dual-index column an embedding was generated for.
 ///
-/// #1128: the cache used to key on `(content_hash, model_fingerprint)`, but v18
-/// added a parallel `embedding_base` column (raw NL embedding, before #1040
-/// enrichment overwrites `embedding`). Same content + same model can now
-/// produce two different vectors — one for each column. Without a `purpose`
-/// discriminator in the cache PK, the second writer silently overwrites the
-/// first, and reads return whichever was last written.
+/// The cache keys on `(content_hash, model_fingerprint, purpose)`. The
+/// `embedding_base` column holds the raw NL embedding (before enrichment
+/// overwrites `embedding`), so the same content + model can produce two
+/// different vectors — one per column. Without a `purpose` discriminator in
+/// the cache PK, the second writer silently overwrites the first, and reads
+/// return whichever was last written.
 ///
-/// `Embedding` is the default (matches the only producer until enrichment
-/// caching lands), so existing rows migrate to `purpose = 'embedding'` via
-/// the schema's `DEFAULT 'embedding'`.
+/// `Embedding` is the default.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CachePurpose {
-    /// The post-enrichment embedding (or, today, the only one) — what
-    /// `chunks.embedding` holds and what HNSW serves search against.
+    /// The post-enrichment embedding — what `chunks.embedding` holds and what
+    /// HNSW serves search against.
     #[default]
     Embedding,
     /// The raw NL embedding (pre-enrichment) — what `chunks.embedding_base`
@@ -130,8 +122,7 @@ pub enum CachePurpose {
 
 impl CachePurpose {
     /// Stable string form persisted in the `purpose` column. Do NOT change
-    /// without a schema migration — existing caches store `'embedding'` as
-    /// the default for pre-#1128 rows.
+    /// without a schema migration — caches store `'embedding'` as the default.
     pub fn as_str(&self) -> &'static str {
         match self {
             CachePurpose::Embedding => "embedding",
@@ -140,23 +131,14 @@ impl CachePurpose {
     }
 }
 
-/// P2.3 (scope=structural): both [`EmbeddingCache::open_with_runtime`] and
+/// TODO: both [`EmbeddingCache::open_with_runtime`] and
 /// [`QueryCache::open_with_runtime`] share ~90 lines of parent-dir prep,
-/// runtime fallback, pool open, schema create, and 0o600 chmod loop with
-/// only `busy_timeout` (30000 vs 15000 ms) and the schema SQL differing.
-///
-/// A full extraction would yield three private helpers (`prepare_cache_dir_perms`,
+/// runtime fallback, pool open, schema create, and 0o600 chmod loop, with
+/// only `busy_timeout` (30000 vs 15000 ms) and the schema SQL differing. A
+/// full extraction would yield three private helpers (`prepare_cache_dir_perms`,
 /// `apply_db_file_perms`, `connect_cache_pool(path, busy_ms, runtime, schema_sql)`)
-/// collapsing each `open_with_runtime` to ~30 lines. Out of scope for this
-/// batch (touches both opens + their tests + WAL/SHM filename quirk handling
-/// in `apply_db_file_perms`); filed as follow-on issue. This module-level
-/// note is the breadcrumb so the next sweep doesn't re-discover the
-/// duplication from scratch.
-///
-/// Two of the duplications were just unified in spirit by the v1.30.0 audit
-/// fixes — P2.5 (zero-handling on `CQS_CACHE_MAX_SIZE`) and P2.27 (NaN/Inf
-/// rejection) both apply identically to both caches. When the helpers land,
-/// those will fold into a single shared function.
+/// collapsing each `open_with_runtime` to ~30 lines. Touches both opens + their
+/// tests + WAL/SHM filename quirk handling in `apply_db_file_perms`.
 #[cfg(unix)]
 fn apply_db_file_perms(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -188,33 +170,28 @@ fn apply_db_file_perms(_path: &Path) {}
 /// The index pipeline works identically with or without a functioning cache.
 pub struct EmbeddingCache {
     pool: sqlx::SqlitePool,
-    /// #968: `Arc<Runtime>` so the daemon can share one multi-thread runtime
-    /// across `Store`, `EmbeddingCache`, and `QueryCache` instead of each
-    /// constructor spinning up its own worker pool.
+    /// `Arc<Runtime>` so the daemon can share one multi-thread runtime across
+    /// `Store`, `EmbeddingCache`, and `QueryCache` instead of each constructor
+    /// spinning up its own worker pool.
     rt: Arc<tokio::runtime::Runtime>,
     max_size_bytes: u64,
-    // DS-V1.33-6: `evict_lock` was previously a per-instance `Mutex<()>` field,
-    // but `EmbeddingCache::open` is called from multiple paths in one process
-    // and each call constructed a fresh mutex pointing at the same DB file
-    // — defeating the serialization the docstring promised. Lifted to the
-    // module-level `EMBEDDING_CACHE_EVICT_LOCK` static; see its docs.
+    // Evict serialization uses the module-level `EMBEDDING_CACHE_EVICT_LOCK`
+    // static (process-global, so all handles in one process coordinate).
 }
 
 impl EmbeddingCache {
-    /// Legacy global cache location.
+    /// Global cache location, used by `cqs cache` invocations outside a project.
     ///
     /// Resolves to the platform's native user cache directory:
     /// - Linux: `$XDG_CACHE_HOME/cqs/embeddings.db` or `~/.cache/cqs/embeddings.db`
     /// - macOS: `~/Library/Caches/cqs/embeddings.db`
     /// - Windows: `%LOCALAPPDATA%\cqs\embeddings.db`
     ///
-    /// Kept so existing callers (`cqs cache` subcommand pre-slots) continue to
-    /// work for invocations outside a project. New code prefers
-    /// [`Self::project_default_path`] so caches are scoped to the project and
-    /// survive slot promotion / removal.
+    /// In-project, [`Self::project_default_path`] scopes caches to the project so
+    /// they survive slot promotion / removal.
     pub fn default_path() -> std::path::PathBuf {
-        // P3.32: prefer the platform's native cache dir; fall back to
-        // `~/.cache` for legacy behavior, then `.` for the headless case.
+        // Prefer the platform's native cache dir; fall back to `~/.cache`,
+        // then `.` for the headless case.
         dirs::cache_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -237,8 +214,8 @@ impl EmbeddingCache {
     }
 
     /// Open with a pre-existing runtime (saves ~15ms by avoiding runtime
-    /// creation and, per #968, lets the daemon share one runtime across
-    /// `Store`, `EmbeddingCache`, and `QueryCache`).
+    /// creation and lets the daemon share one runtime across `Store`,
+    /// `EmbeddingCache`, and `QueryCache`).
     pub fn open_with_runtime(
         path: &Path,
         runtime: Option<Arc<tokio::runtime::Runtime>>,
@@ -250,11 +227,10 @@ impl EmbeddingCache {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                // PB-V1.29-7: best-effort parent chmod. On NFS / read-only
-                // mounts / filesystems without unix permissions this fails,
-                // but the cache itself is still usable — log and continue
-                // instead of refusing to open. Mirrors the DB-file chmod
-                // warn arm below.
+                // Best-effort parent chmod. On NFS / read-only mounts /
+                // filesystems without unix permissions this fails, but the
+                // cache itself is still usable — log and continue instead of
+                // refusing to open. Mirrors the DB-file chmod warn arm below.
                 if let Err(e) =
                     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
                 {
@@ -278,13 +254,12 @@ impl EmbeddingCache {
             )
         };
 
-        // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
-        // SHL-V1.25-12: honour CQS_BUSY_TIMEOUT_MS like the main Store pool
-        // so the cache doesn't surrender while the store still waits.
-        // V1.36.2: default 5000→30000 — long-running `cqs index` runs on WSL
-        // surfaced `(code: 5) database is locked` at the 5s ceiling when WAL
-        // checkpoint pressure raced concurrent reads. 30s gives transient
-        // contention room without making real deadlocks invisible.
+        // Use SqliteConnectOptions to avoid URL-encoding issues with special
+        // paths. Honour CQS_BUSY_TIMEOUT_MS like the main Store pool so the
+        // cache doesn't surrender while the store still waits. The 30s default
+        // gives transient WAL-checkpoint contention room (seen on long-running
+        // WSL `cqs index` runs as `(code: 5) database is locked`) without
+        // making real deadlocks invisible.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -292,25 +267,23 @@ impl EmbeddingCache {
             .busy_timeout(busy_timeout_from_env(30_000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
-        // SEC-V1.33-2: tighten umask to 0o077 around pool creation so the DB
-        // (and WAL/SHM sidecars) are born 0o600, not the user's umask default
-        // (0o644). Without this, there is a window between SQLite first-write
-        // and `apply_db_file_perms` below where the sidecar files are
-        // world-readable. Mirrors the daemon-socket pattern at
-        // `cli/watch/mod.rs:563-570`. SAFETY: `libc::umask` is process-global;
-        // we do this on a synchronous open path before the pool spins up its
-        // worker, restoring before any other file-creating code runs.
+        // Tighten umask to 0o077 around pool creation so the DB (and WAL/SHM
+        // sidecars) are born 0o600, not the user's umask default (0o644).
+        // Without this, there is a window between SQLite first-write and
+        // `apply_db_file_perms` below where the sidecar files are
+        // world-readable. SAFETY: `libc::umask` is process-global; we do this
+        // on a synchronous open path before the pool spins up its worker,
+        // restoring before any other file-creating code runs.
         #[cfg(unix)]
         let prev_umask = unsafe { libc::umask(0o077) };
-        // DS-V1.33-8: cap the on-disk WAL via after_connect so every
-        // connection (including the read-only checkout one acquires for
-        // statistics) carries the ceiling. Same default and env override as
-        // the main store.
+        // Cap the on-disk WAL via after_connect so every connection (including
+        // the read-only checkout acquired for statistics) carries the ceiling.
+        // Same default and env override as the main store.
         let wal_pragma = wal_autocheckpoint_pragma();
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(1) // RM-2: single worker thread can only use 1 connection
-                .idle_timeout(std::time::Duration::from_secs(30)) // RM-5: release idle connections
+                .max_connections(1) // single worker thread can only use 1 connection
+                .idle_timeout(std::time::Duration::from_secs(30)) // release idle connections
                 .after_connect(move |conn, _meta| {
                     let wal = wal_pragma.clone();
                     Box::pin(async move {
@@ -323,12 +296,12 @@ impl EmbeddingCache {
                 .connect_with(connect_opts)
                 .await?;
 
-            // #1128: PRIMARY KEY now includes `purpose` so the same
+            // PRIMARY KEY includes `purpose` so the same
             // (content_hash, model_fingerprint) can hold both the post-
             // enrichment `embedding` and the raw `embedding_base` vectors
-            // without one overwriting the other. New caches get the column
-            // up-front in CREATE TABLE; existing caches get it via the
-            // idempotent ALTER below.
+            // without one overwriting the other. Fresh caches get the column
+            // up-front here; legacy caches get it via the idempotent migration
+            // below.
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS embedding_cache (
                     content_hash TEXT NOT NULL,
@@ -343,23 +316,22 @@ impl EmbeddingCache {
             .execute(&pool)
             .await?;
 
-            // #1128: idempotent migration for caches built before the
-            // `purpose` column existed. We detect the legacy schema via
-            // `pragma_table_info`; if present we rebuild the table so the
-            // PRIMARY KEY actually includes `purpose`.
+            // Idempotent migration for caches built before the `purpose`
+            // column existed. Detect the legacy schema via `pragma_table_info`;
+            // if missing, rebuild the table so the PRIMARY KEY includes
+            // `purpose`.
             //
-            // SQLite has no `DROP / ADD PRIMARY KEY` — adding the column
-            // alone leaves the legacy PK (content_hash, model_fingerprint)
-            // in force, which would silently REJECT future EmbeddingBase
-            // writes that share a hash with an existing Embedding row.
-            // The 12-step `ALTER TABLE` recipe (rename → CREATE → INSERT
-            // SELECT → DROP) is the SQLite-blessed way to relax the PK on
-            // an existing table. All in one transaction so a crash mid-
-            // migration leaves either the old shape or the new one,
-            // never a half-applied state.
+            // SQLite has no `DROP / ADD PRIMARY KEY` — adding the column alone
+            // leaves the legacy PK (content_hash, model_fingerprint) in force,
+            // which would silently REJECT future EmbeddingBase writes that
+            // share a hash with an existing Embedding row. The rename → CREATE
+            // → INSERT SELECT → DROP recipe is the SQLite-blessed way to relax
+            // the PK on an existing table. All in one transaction so a crash
+            // mid-migration leaves either the old shape or the new one, never a
+            // half-applied state.
             //
-            // Existing rows get `purpose = 'embedding'` because the legacy
-            // producer only ever wrote that purpose.
+            // Existing rows get `purpose = 'embedding'` to match the only
+            // purpose written before the column existed.
             let has_purpose: bool = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM pragma_table_info('embedding_cache') WHERE name = 'purpose'",
             )
@@ -411,24 +383,22 @@ impl EmbeddingCache {
 
             Ok::<_, sqlx::Error>(pool)
         })?;
-        // SEC-V1.33-2: restore the previous umask now that pool creation is
-        // done. Even if `block_on` returned `Err`, we still need to restore
-        // — but the `?` short-circuit above means we don't. Accept that on
-        // the error path the process exits (or `?` propagates) before any
-        // other umask-sensitive code runs. The success path is the common
-        // case and is correctly restored here.
+        // Restore the previous umask now that pool creation is done. On the
+        // `?` error path above this is skipped, but the process exits (or `?`
+        // propagates) before any other umask-sensitive code runs. The success
+        // path is the common case and is correctly restored here.
         #[cfg(unix)]
         unsafe {
             libc::umask(prev_umask);
         }
 
-        // P2.3: shared 0o600 chmod loop on the DB triplet — see helper docs
-        // (kept as belt-and-suspenders against future refactors that drop
-        // the umask wrap above).
+        // Shared 0o600 chmod loop on the DB triplet — see helper docs (kept as
+        // belt-and-suspenders against future refactors that drop the umask
+        // wrap above).
         apply_db_file_perms(path);
 
-        // P2.5: filter `0` so the env-var matches `QueryCache`'s semantic
-        // ("0 is invalid → fall back to default"). Without the filter, setting
+        // Filter `0` so the env-var matches `QueryCache`'s semantic ("0 is
+        // invalid → fall back to default"). Without the filter, setting
         // `CQS_CACHE_MAX_SIZE=0` silently disables eviction entirely (every
         // `evict()` thinks it's already under budget) and the cache grows
         // unbounded. With it, an explicit `0` still gets the 10GB default.
@@ -452,9 +422,9 @@ impl EmbeddingCache {
     /// Cache misses are simply absent from the map.
     ///
     /// `purpose` discriminates between the post-enrichment `embedding` and the
-    /// raw `embedding_base` (#1128) — same hash + same model can have one row
-    /// per purpose. The default purpose is `Embedding`, matching the only
-    /// producer until enrichment-purpose caching lands.
+    /// raw `embedding_base` — same hash + same model can have one row per
+    /// purpose. The default purpose is `Embedding`, matching the only producer
+    /// until enrichment-purpose caching lands.
     pub fn read_batch(
         &self,
         content_hashes: &[&str],
@@ -477,14 +447,13 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut result = HashMap::new();
 
-            // SHL-V1.25-4: Batch size matches modern SQLite variable limit
-            // (32766). Three vars per row accounts for the shared
-            // model_fingerprint + purpose binds plus the content_hash bind,
-            // with headroom. Cache hit lookups for a 50k-chunk index now
-            // fire 2-3 SELECTs instead of 500.
+            // Batch size matches the SQLite variable limit (32766). Three
+            // vars per row accounts for the shared model_fingerprint + purpose
+            // binds plus the content_hash bind, with headroom. Cache hit
+            // lookups for a 50k-chunk index fire 2-3 SELECTs instead of 500.
             for batch in content_hashes.chunks(max_rows_per_statement(3)) {
-                // P3 #130: cached helper. `?1` is `model_fingerprint`, `?2`
-                // is `purpose`, the IN clause starts at `?3`.
+                // `?1` is `model_fingerprint`, `?2` is `purpose`, the IN
+                // clause starts at `?3`.
                 let placeholders = make_placeholders_offset(batch.len(), 3);
                 let sql = format!(
                     "SELECT content_hash, embedding, dim FROM embedding_cache \
@@ -507,7 +476,7 @@ impl EmbeddingCache {
                     let dim: i64 = row.get("dim");
                     let blob: Vec<u8> = row.get("embedding");
 
-                    // Validate dimension (DS-46: guard negative before cast)
+                    // Validate dimension (guard negative before cast).
                     if dim < 0 || dim as usize != expected_dim {
                         tracing::debug!(
                             hash = &hash[..8.min(hash.len())],
@@ -518,15 +487,13 @@ impl EmbeddingCache {
                         continue;
                     }
 
-                    // PERF-V1.33-2 / #1377: zero-copy LE cast instead of the
-                    // per-element `from_le_bytes` loop. `bytemuck::cast_slice`
-                    // is sound here because (a) `embedding_to_bytes` is the
-                    // only producer and stamps blobs as `&[f32] → &[u8]` so
-                    // alignment + endianness match, and (b) the surrounding
-                    // length check below catches truncation. cqs ships
-                    // little-endian targets only; bytemuck's cast is a no-op
-                    // memcpy-equivalent on those platforms. Mirrors the fast
-                    // path in `helpers/embeddings.rs::bytes_to_embedding`.
+                    // Zero-copy LE cast. `bytemuck::cast_slice` is sound here
+                    // because (a) `embedding_to_bytes` is the only producer and
+                    // stamps blobs as `&[f32] → &[u8]` so alignment + endianness
+                    // match, and (b) the length check below catches truncation.
+                    // cqs ships little-endian targets only; the cast is a no-op
+                    // memcpy-equivalent there. Mirrors the fast path in
+                    // `helpers/embeddings.rs::bytes_to_embedding`.
                     let embedding: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&blob).to_vec();
 
                     if embedding.len() != expected_dim {
@@ -553,7 +520,7 @@ impl EmbeddingCache {
     /// Convenience wrapper that calls [`write_batch`](Self::write_batch) with
     /// borrowed slices. Used by tests; production paths should call
     /// `write_batch` directly with `&str` / `&[f32]` to avoid the intermediate
-    /// `Vec<(String, Vec<f32>)>` allocation (P3 #127).
+    /// `Vec<(String, Vec<f32>)>` allocation.
     pub fn write_batch_owned(
         &self,
         entries: &[(String, Vec<f32>)],
@@ -571,14 +538,14 @@ impl EmbeddingCache {
     /// Write a batch of embeddings to the cache.
     /// Best-effort: returns the number written, errors are logged.
     ///
-    /// P3 #127: signature accepts borrows (`&str`, `&[f32]`) so the GPU/CPU
-    /// embed paths don't need to clone every `content_hash` and embedding
-    /// vector into an intermediate `Vec<(String, Vec<f32>)>` per batch.
+    /// The signature accepts borrows (`&str`, `&[f32]`) so the GPU/CPU embed
+    /// paths don't need to clone every `content_hash` and embedding vector into
+    /// an intermediate `Vec<(String, Vec<f32>)>` per batch.
     ///
-    /// `purpose` (#1128) selects which dual-index column the cached vector
-    /// belongs to — `Embedding` (default, post-enrichment) or `EmbeddingBase`
-    /// (raw NL, pre-enrichment). Same hash + model can have one row per
-    /// purpose; INSERT OR IGNORE on collision.
+    /// `purpose` selects which dual-index column the cached vector belongs to —
+    /// `Embedding` (default, post-enrichment) or `EmbeddingBase` (raw NL,
+    /// pre-enrichment). Same hash + model can have one row per purpose;
+    /// INSERT OR IGNORE on collision.
     pub fn write_batch(
         &self,
         entries: &[(&str, &[f32])],
@@ -598,15 +565,14 @@ impl EmbeddingCache {
             return Ok(0);
         }
 
-        // P2.66: hold `EMBEDDING_CACHE_EVICT_LOCK` across the write so a
-        // concurrent `evict()` can't measure size, then DELETE rows that this
-        // in-flight write_batch committed between the SELECT and DELETE.
-        // Without this, a writer sees its INSERT succeed while a cross-session
-        // reader sees a cache miss — silently re-embedding chunks the cache
-        // "should" have. Mutex poisoning is non-fatal: a previous holder's
-        // panic shouldn't keep the cache write path locked out.
-        // DS-V1.33-6: process-global static so all `EmbeddingCache` handles in
-        // this process share the same mutex (was per-instance, useless).
+        // Hold `EMBEDDING_CACHE_EVICT_LOCK` across the write so a concurrent
+        // `evict()` can't measure size, then DELETE rows that this in-flight
+        // write_batch committed between the SELECT and DELETE. Without this, a
+        // writer sees its INSERT succeed while a cross-session reader sees a
+        // cache miss — silently re-embedding chunks the cache "should" have.
+        // Mutex poisoning is non-fatal: a previous holder's panic shouldn't
+        // keep the cache write path locked out. The lock is a process-global
+        // static so all `EmbeddingCache` handles in this process coordinate.
         let _evict_guard = EMBEDDING_CACHE_EVICT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -616,14 +582,14 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
             let mut written = 0usize;
-            let mut blob = Vec::with_capacity(dim * 4); // PF-6: reuse scratch buffer
+            let mut blob = Vec::with_capacity(dim * 4); // reused scratch buffer
 
             for &(content_hash, embedding) in entries {
                 if embedding.is_empty() {
                     continue;
                 }
 
-                // DS-44: validate dimension matches
+                // Validate dimension matches.
                 if embedding.len() != dim {
                     tracing::warn!(
                         hash = &content_hash[..8.min(content_hash.len())],
@@ -634,10 +600,9 @@ impl EmbeddingCache {
                     continue;
                 }
 
-                // P2.27: reject non-finite values. NaN/Inf in cached embeddings
-                // poison every downstream reader (cosine produces NaN, breaking
-                // sort+rank), and #1105 made it worse by extending cache lifetime
-                // across slot create/remove.
+                // Reject non-finite values. NaN/Inf in cached embeddings poison
+                // every downstream reader (cosine produces NaN, breaking
+                // sort+rank), and cache lifetime now spans slot create/remove.
                 if embedding.iter().any(|f| !f.is_finite()) {
                     tracing::warn!(
                         hash = &content_hash[..8.min(content_hash.len())],
@@ -646,9 +611,7 @@ impl EmbeddingCache {
                     continue;
                 }
 
-                // Encode &[f32] to blob (PF-6: reuse buffer).
-                // PERF-V1.33-2 / #1377: bytemuck zero-copy cast instead of
-                // the per-element `to_le_bytes` chain.
+                // Encode &[f32] to blob (reused buffer), bytemuck zero-copy cast.
                 blob.clear();
                 blob.extend_from_slice(bytemuck::cast_slice::<f32, u8>(embedding));
 
@@ -677,34 +640,33 @@ impl EmbeddingCache {
 
     /// Evict oldest entries if cache exceeds max size.
     ///
-    /// DS2-5: the size / AVG / DELETE trio runs inside a single transaction so
+    /// The size / AVG / DELETE trio runs inside a single transaction so
     /// concurrent `write_batch` traffic cannot invalidate the measurement
-    /// between steps. An in-process `evict_lock` mutex further prevents two
-    /// `evict()` callers from overlapping their `LIMIT ?` prefixes and each
-    /// over-counting `rows_affected()`.
+    /// between steps. The in-process `EMBEDDING_CACHE_EVICT_LOCK` mutex further
+    /// prevents two `evict()` callers from overlapping their `LIMIT ?` prefixes
+    /// and each over-counting `rows_affected()`.
     ///
-    /// DS-V1.33-4: the transaction uses `BEGIN IMMEDIATE` (not the sqlx
-    /// default deferred BEGIN) so the writer lock is acquired up front.
-    /// Without this, two cqs processes (e.g. `cqs cache prune` running while
-    /// the daemon is calling `write_batch`) each open their own pool, bypass
-    /// the in-process `evict_lock`, and SQLite WAL hands each a deferred
-    /// snapshot that doesn't include the other's in-flight commits — so the
-    /// cache can be evicted below `max_size_bytes / 2` even though only one
-    /// excess interval was supposed to be reclaimed. `BEGIN IMMEDIATE` makes
-    /// the second writer wait on the first instead of racing with stale data.
+    /// The transaction uses `BEGIN IMMEDIATE` (not the sqlx default deferred
+    /// BEGIN) so the writer lock is acquired up front. Without this, two cqs
+    /// processes (e.g. `cqs cache prune` running while the daemon is calling
+    /// `write_batch`) each open their own pool, bypass the in-process lock, and
+    /// SQLite WAL hands each a deferred snapshot that doesn't include the
+    /// other's in-flight commits — so the cache can be evicted below
+    /// `max_size_bytes / 2` even though only one excess interval was supposed to
+    /// be reclaimed. `BEGIN IMMEDIATE` makes the second writer wait on the
+    /// first instead of racing with stale data.
     pub fn evict(&self) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("cache_evict").entered();
 
         // Serialize evicts across threads. Mutex poisoning is non-fatal here:
         // if the previous holder panicked we still want to attempt an evict.
-        // DS-V1.33-6: process-global static — see `EMBEDDING_CACHE_EVICT_LOCK`
-        // docs for why per-instance was a bug.
+        // Process-global static — see `EMBEDDING_CACHE_EVICT_LOCK` docs.
         let _guard = EMBEDDING_CACHE_EVICT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         self.rt.block_on(async {
-            // DS-V1.33-4: hold one connection across the whole eviction so the
+            // Hold one connection across the whole eviction so the
             // BEGIN IMMEDIATE / SELECTs / DELETE / COMMIT all land on the same
             // connection. Returning the connection to the pool with no explicit
             // COMMIT triggers SQLite's implicit ROLLBACK — sqlx::Pool resets
@@ -722,7 +684,7 @@ impl EmbeddingCache {
                 return Ok(0);
             }
 
-            // Use logical data size, not physical pages (DS-49)
+            // Use logical data size, not physical pages.
             let size: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM embedding_cache",
             )
@@ -737,7 +699,7 @@ impl EmbeddingCache {
                 }
             };
 
-            // Guard against negative/zero size (SEC-10)
+            // Guard against negative/zero size.
             if size <= 0 || (size as u64) <= self.max_size_bytes {
                 let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
                 return Ok(0);
@@ -757,7 +719,7 @@ impl EmbeddingCache {
                     4200
                 }
             };
-            // AC-1: don't force minimum 100 deletions — delete only what's needed
+            // Delete only what's needed (no forced minimum).
             let entries_to_delete = (excess / avg_entry.max(1) as u64).max(1);
 
             let result = sqlx::query(
@@ -778,11 +740,9 @@ impl EmbeddingCache {
 
     /// Get cache statistics.
     ///
-    /// EH-V1.29-7: all five sub-queries propagate sqlx errors via `?` instead
-    /// of the previous `unwrap_or_else` zero-fallback. The return type is
-    /// `Result<CacheStats, CacheError>` and callers already handle `Err` — a
-    /// silent `{total_entries: 0, ...}` on a broken DB reads as "healthy
-    /// empty cache" to agents, which is wrong.
+    /// All five sub-queries propagate sqlx errors via `?`. A silent
+    /// `{total_entries: 0, ...}` on a broken DB would read as "healthy empty
+    /// cache" to agents, which is wrong.
     pub fn stats(&self) -> Result<CacheStats, CacheError> {
         let _span = tracing::info_span!("cache_stats").entered();
 
@@ -848,8 +808,8 @@ impl EmbeddingCache {
     ///
     /// `days` is clamped to a 100-year ceiling (`MAX_PRUNE_DAYS`) so a typo
     /// (e.g. `--older-than 999999999999`) can't underflow the cutoff and
-    /// silently delete everything (P3.20). The `now_unix_i64` helper
-    /// (P3.18) defends against clock-wrap above i64::MAX in 2554.
+    /// silently delete everything. The `now_unix_i64` helper defends against
+    /// clock-wrap above i64::MAX in 2554.
     pub fn prune_older_than(&self, days: u32) -> Result<usize, CacheError> {
         const MAX_PRUNE_DAYS: u32 = 36_500; // 100 years; longer is operator error
         let days_clamped = days.min(MAX_PRUNE_DAYS);
@@ -896,15 +856,15 @@ impl EmbeddingCache {
     ///
     /// Used by `cqs cache prune --model <id>` after a model swap when the
     /// user knows the corresponding embeddings will never be reused. Returns
-    /// the number of rows deleted. Identical to [`Self::clear`] with
-    /// `Some(model_id)` but exposes the spec's verb shape.
+    /// the number of rows deleted. Equivalent to [`Self::clear`] with
+    /// `Some(model_id)`.
     pub fn prune_by_model(&self, model_id: &str) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("cache_prune_by_model", model_id).entered();
         self.clear(Some(model_id))
     }
 
     /// `VACUUM` the cache database to reclaim unused pages after large
-    /// deletes. Spec §Cache: surface as `cqs cache compact`.
+    /// deletes. Surfaced as `cqs cache compact`.
     pub fn compact(&self) -> Result<(), CacheError> {
         let _span = tracing::info_span!("cache_compact").entered();
         self.rt.block_on(async {
@@ -944,9 +904,9 @@ impl EmbeddingCache {
     /// Partition `items` into (cached, missed) by checking which content
     /// hashes already have an embedding stored for `model_id` and `purpose`.
     ///
-    /// Spec §Cache: pre-filter before the embed batch so only misses go
-    /// through the GPU. `hash_fn` extracts the content hash bytes (matching
-    /// the cache's stored `content_hash` column) from each item.
+    /// Pre-filters before the embed batch so only misses go through the GPU.
+    /// `hash_fn` extracts the content hash bytes (matching the cache's stored
+    /// `content_hash` column) from each item.
     ///
     /// Returns `(cached_with_emb, missed)` where:
     /// - `cached_with_emb`: items whose hash hit, paired with the cached
@@ -958,9 +918,9 @@ impl EmbeddingCache {
     /// Preserves input order for both arrays so the caller can interleave
     /// fresh embeddings back in their original positions.
     ///
-    /// `purpose` (#1128) discriminates between the post-enrichment `embedding`
-    /// and the raw `embedding_base` columns — same hash + model can have one
-    /// row per purpose.
+    /// `purpose` discriminates between the post-enrichment `embedding` and the
+    /// raw `embedding_base` columns — same hash + model can have one row per
+    /// purpose.
     #[allow(clippy::type_complexity)]
     pub fn partition<'a, T>(
         &self,
@@ -985,9 +945,9 @@ impl EmbeddingCache {
         let hashes: Vec<&str> = items.iter().map(&hash_fn).collect();
         let hits = self.read_batch(&hashes, model_id, purpose, expected_dim)?;
         let mut cached = Vec::with_capacity(hits.len());
-        // RB-V1.33-5: saturating_sub prevents usize underflow if read_batch
-        // ever returns more entries than items (hash collision, SQL bug,
-        // future schema change). Over-allocation is bounded by items.len().
+        // saturating_sub prevents usize underflow if read_batch ever returns
+        // more entries than items (hash collision, SQL bug, future schema
+        // change). Over-allocation is bounded by items.len().
         let mut missed = Vec::with_capacity(items.len().saturating_sub(hits.len()));
         for item in items {
             let h = hash_fn(item);
@@ -1007,8 +967,8 @@ impl EmbeddingCache {
     /// Mixed `model_id` values across `entries` are handled by grouping
     /// entries per model and issuing one `write_batch` per group.
     ///
-    /// All entries are written under the supplied `purpose` (#1128). Callers
-    /// that need to write both `Embedding` and `EmbeddingBase` rows must call
+    /// All entries are written under the supplied `purpose`. Callers that need
+    /// to write both `Embedding` and `EmbeddingBase` rows must call
     /// `insert_many` once per purpose.
     pub fn insert_many(
         &self,
@@ -1028,8 +988,8 @@ impl EmbeddingCache {
         // Group by model_id.
         let mut groups: HashMap<&str, Vec<(String, &[f32])>> = HashMap::new();
         for (hash, model_id, emb) in entries {
-            // Cache stores content_hash as TEXT. Convert blob → utf-8 hex for
-            // backwards compatibility with the existing column type.
+            // Cache stores content_hash as TEXT. Convert blob → utf-8 hex to
+            // match the column type.
             let hex = blake3_hex_or_passthrough(hash);
             groups
                 .entry(model_id)
@@ -1038,8 +998,8 @@ impl EmbeddingCache {
         }
         let mut total = 0;
         for (model_id, group) in groups {
-            // Collapse to the borrowed shape the existing write_batch expects
-            // — owned String for the hash, borrowed slice for the embedding.
+            // Collapse to the borrowed shape write_batch expects — owned
+            // String for the hash, borrowed slice for the embedding.
             let borrowed: Vec<(&str, &[f32])> =
                 group.iter().map(|(h, e)| (h.as_str(), *e)).collect();
             total += self.write_batch(&borrowed, model_id, purpose, expected_dim)?;
@@ -1073,9 +1033,9 @@ impl EmbeddingCache {
     /// cache's `-wal` sidecar is gone or empty.
     ///
     /// Drop performs only a non-blocking [`PASSIVE`] checkpoint with a 1 s
-    /// timeout (#1343). If the daemon doesn't call `checkpoint_wal` first, a
-    /// large WAL persists across the restart — SQLite recovers from it on
-    /// next open, but the file lingers on disk.
+    /// timeout. If the daemon doesn't call `checkpoint_wal` first, a large WAL
+    /// persists across the restart — SQLite recovers from it on next open, but
+    /// the file lingers on disk.
     ///
     /// [`PASSIVE`]: https://www.sqlite.org/pragma.html#pragma_wal_checkpoint
     pub fn checkpoint_wal(&self) -> Result<(), CacheError> {
@@ -1090,14 +1050,13 @@ impl EmbeddingCache {
 }
 
 impl Drop for EmbeddingCache {
-    /// #1343 / RM-V1.33-3: best-effort `PRAGMA wal_checkpoint(PASSIVE)` with
-    /// a 1 s timeout, replacing the prior unbounded `TRUNCATE`. The previous
-    /// implementation could stall daemon shutdown by minutes when a 200 MiB
-    /// WAL had to be copied back synchronously, blowing past systemd's
-    /// `TimeoutStopSec` and triggering SIGKILL — which skips ALL further
-    /// `Drop` impls including [`SocketCleanupGuard`]. PASSIVE bails immediately
-    /// when active readers/writers exist (no copy), and the 1 s timeout caps
-    /// every other case. Operators who want the truncate semantics call
+    /// Best-effort `PRAGMA wal_checkpoint(PASSIVE)` with a 1 s timeout. An
+    /// unbounded `TRUNCATE` here could stall daemon shutdown by minutes when a
+    /// 200 MiB WAL had to be copied back synchronously, blowing past systemd's
+    /// `TimeoutStopSec` and triggering SIGKILL — which skips ALL further `Drop`
+    /// impls including [`SocketCleanupGuard`]. PASSIVE bails immediately when
+    /// active readers/writers exist (no copy), and the 1 s timeout caps every
+    /// other case. Operators who want the truncate semantics call
     /// [`EmbeddingCache::checkpoint_wal`] from the structured-shutdown path
     /// before drop.
     ///
@@ -1151,9 +1110,9 @@ mod tests {
         (0..dim).map(|i| seed + i as f32 * 0.001).collect()
     }
 
-    // P3.17: pin the surprises in `blake3_hex_or_passthrough` so a future
+    // Pin the surprises in `blake3_hex_or_passthrough` so a future
     // "always-encode" tightening surfaces as an intentional break, not a
-    // silent change in cache-key format. The current invariant is:
+    // silent change in cache-key format. The invariant is:
     //
     //   - Exactly 64 ASCII hex chars (any case) → passthrough as String.
     //   - Anything else (short, long, non-hex, raw bytes) → hex-encode.
@@ -1188,9 +1147,9 @@ mod tests {
         assert!(path.exists());
     }
 
-    /// #1343 / RM-V1.33-3: explicit `checkpoint_wal()` truncates the WAL.
-    /// After insert + checkpoint, the `-wal` sidecar should be empty (or
-    /// have been rolled back into the main DB).
+    /// Explicit `checkpoint_wal()` truncates the WAL. After insert +
+    /// checkpoint, the `-wal` sidecar should be empty (or have been rolled
+    /// back into the main DB).
     #[test]
     fn embedding_cache_checkpoint_wal_returns_ok() {
         let (cache, dir) = test_cache();
@@ -1217,11 +1176,11 @@ mod tests {
         }
     }
 
-    /// #1343 / RM-V1.33-3: drop must complete within ~2s even when the WAL
-    /// has uncheckpointed data, because the in-Drop checkpoint is now
-    /// `PASSIVE` with a 1s `tokio::time::timeout` wrapper. Pre-fix, drop
-    /// ran an unbounded `TRUNCATE` checkpoint that could stall daemon
-    /// shutdown for many seconds and trip systemd's `TimeoutStopSec`.
+    /// Drop must complete within ~2s even when the WAL has uncheckpointed
+    /// data, because the in-Drop checkpoint is `PASSIVE` with a 1s
+    /// `tokio::time::timeout` wrapper. An unbounded `TRUNCATE` checkpoint here
+    /// could stall daemon shutdown for many seconds and trip systemd's
+    /// `TimeoutStopSec`.
     #[test]
     fn embedding_cache_drop_is_bounded() {
         let (cache, _dir) = test_cache();
@@ -1250,11 +1209,9 @@ mod tests {
         );
     }
 
-    /// SEC-D.4: `EmbeddingCache::open` must restrict the DB file to 0o600.
-    /// The fix replaced `let _ = set_permissions(...)` with an `if let Err`
-    /// arm that emits a `tracing::warn!`. The happy-path test verifies the
-    /// chmod actually applies — the warn arm is still reachable on a
-    /// platform where the call fails (NFS, read-only mount, etc.) but
+    /// `EmbeddingCache::open` must restrict the DB file to 0o600. This
+    /// happy-path test verifies the chmod applies — the warn arm is reachable
+    /// on a platform where the call fails (NFS, read-only mount, etc.) but
     /// can't be triggered in a portable test without root.
     #[test]
     #[cfg(unix)]
@@ -1272,13 +1229,12 @@ mod tests {
         );
     }
 
-    /// SEC-V1.33-2: WAL and SHM sidecars must also be born 0o600. Pre-fix,
-    /// the umask wrap was missing and SQLite created sidecars with the
-    /// user's umask (typically 0o644) — there was a window between SQLite
-    /// first-write and the post-pool chmod where a co-located user could
-    /// `cat embeddings.db-wal`. The fix wraps pool creation in
-    /// `umask(0o077)` so all three files (DB + WAL + SHM) are private from
-    /// inception. We force a write so WAL exists, then verify perms.
+    /// WAL and SHM sidecars must also be born 0o600. Without the umask wrap,
+    /// SQLite would create sidecars with the user's umask (typically 0o644),
+    /// opening a window between SQLite first-write and the post-pool chmod
+    /// where a co-located user could `cat embeddings.db-wal`. Wrapping pool
+    /// creation in `umask(0o077)` makes all three files (DB + WAL + SHM)
+    /// private from inception. Force a write so WAL exists, then verify perms.
     #[test]
     #[cfg(unix)]
     fn embedding_cache_wal_shm_born_0o600() {
@@ -1424,11 +1380,11 @@ mod tests {
         assert_eq!(written, 0); // empty embeddings skipped
     }
 
-    /// C.1 / OB-NEW-6: `QueryCache::get` builds a query preview for the
-    /// "DB read failed" warn log via byte slicing. Raw `query.len().min(40)`
-    /// panics when byte 40 lands inside a multi-byte codepoint (CJK, emoji,
-    /// accented Latin). Use `floor_char_boundary(40)` so the preview always
-    /// lands on a UTF-8 boundary and the soft DB error stays soft.
+    /// `QueryCache::get` builds a query preview for the "DB read failed" warn
+    /// log via byte slicing. Raw `query.len().min(40)` panics when byte 40
+    /// lands inside a multi-byte codepoint (CJK, emoji, accented Latin).
+    /// `floor_char_boundary(40)` keeps the preview on a UTF-8 boundary so the
+    /// soft DB error stays soft.
     #[test]
     fn query_preview_does_not_panic_on_multibyte_query() {
         // Construct a query that places multi-byte CJK chars + an emoji
@@ -1594,7 +1550,7 @@ mod tests {
         }
     }
 
-    // ===== TC-20: read_batch crosses 100-entry sub-batch boundary =====
+    // ===== read_batch crosses 100-entry sub-batch boundary =====
 
     #[test]
     fn test_read_batch_crosses_100_boundary() {
@@ -1632,14 +1588,14 @@ mod tests {
         }
     }
 
-    // ===== TC-21: NaN embedding behavior (P2.27 — now rejected) =====
+    // ===== NaN embedding behavior (rejected) =====
 
     #[test]
     fn test_nan_embedding_rejected() {
         let (cache, _dir) = test_cache();
 
-        // Embeddings containing NaN/Inf are rejected by write_batch as of P2.27.
-        // Cache poisoning across processes is the failure mode prevented here.
+        // Embeddings containing NaN/Inf are rejected by write_batch. Cache
+        // poisoning across processes is the failure mode prevented here.
         let mut nan_emb = make_embedding(128, 1.0);
         nan_emb[0] = f32::NAN;
         nan_emb[64] = f32::NAN;
@@ -1669,23 +1625,16 @@ mod tests {
         assert_eq!(written_clean, 1);
     }
 
-    // ===== TC-24: prune edge cases =====
+    // ===== prune edge cases =====
 
     /// `prune(0)` should not touch entries with `created_at >= now`.
     ///
-    /// The earlier version of this test wrote entries via `write_batch_owned`
-    /// (which stamps `created_at = now()`) then called `prune(0)` and
-    /// asserted nothing was pruned. That worked when both calls landed in
-    /// the same wall-clock second — `created_at == cutoff` and the SQL
-    /// query is strict `<`, so the rows survived. But CI runners are
-    /// nondeterministically slow: when the prune call landed in the *next*
-    /// second, `cutoff = now + 1` while `created_at = now`, the query
-    /// matched, and all five rows got deleted (#1389).
-    ///
-    /// The fix: insert with `created_at = now + 1 day` via raw SQL, so the
-    /// rows are strictly *in the future* relative to whatever instant the
-    /// prune call materializes. The test now exercises the same `< cutoff`
-    /// boundary without depending on sub-second timing.
+    /// Inserts rows with `created_at = now + 1 day` via raw SQL so they are
+    /// strictly in the future relative to whatever instant the prune call
+    /// materializes. This exercises the `< cutoff` boundary without depending
+    /// on sub-second timing (a same-second `created_at == cutoff` row would
+    /// survive the strict `<`, but a prune landing in the next second would
+    /// delete it).
     #[test]
     fn test_prune_zero_days() {
         let (cache, _dir) = test_cache();
@@ -1748,7 +1697,7 @@ mod tests {
         assert_eq!(stats.total_entries, 3);
     }
 
-    // ===== TC-26: duplicate content_hash behavior =====
+    // ===== duplicate content_hash behavior =====
 
     #[test]
     fn test_write_batch_duplicate_hashes() {
@@ -2030,7 +1979,7 @@ mod tests {
         assert!(result2.is_empty());
     }
 
-    // ─── #1128: purpose discriminator tests ──────────────────────────────
+    // ─── purpose discriminator tests ─────────────────────────────────────
 
     /// Round-trip with each purpose independently — Embedding writes don't
     /// shadow EmbeddingBase reads and vice versa.
@@ -2089,7 +2038,7 @@ mod tests {
     }
 
     /// Writes for one purpose must not be read out under the other purpose
-    /// — silent overwrite was the pre-#1128 bug.
+    /// (no silent cross-purpose overwrite).
     #[test]
     fn test_purpose_isolation_no_cross_purpose_leak() {
         let (cache, _dir) = test_cache();
@@ -2113,15 +2062,15 @@ mod tests {
     }
 
     /// Migration: opening a cache created under the legacy schema (no
-    /// `purpose` column) must keep existing rows readable. Pre-#1128 caches
-    /// hold only `purpose='embedding'` rows by construction (the only
-    /// producer was the post-enrichment vector).
+    /// `purpose` column) must keep existing rows readable. Legacy caches hold
+    /// only `purpose='embedding'` rows by construction (the only producer was
+    /// the post-enrichment vector).
     #[test]
     fn test_migration_legacy_schema_rows_readable_as_embedding() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("legacy_cache.db");
 
-        // Create a legacy cache (pre-#1128 schema, no `purpose` column).
+        // Create a legacy cache (no `purpose` column).
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2209,12 +2158,12 @@ mod tests {
         assert_eq!(CachePurpose::default(), CachePurpose::Embedding);
     }
 
-    /// After migration, an EmbeddingBase write with a hash that already
-    /// exists as Embedding must succeed. Pre-#1128's "ADD COLUMN only" half-
-    /// migration leaves the legacy `(content_hash, model_fingerprint)` PK in
-    /// force and INSERT OR IGNORE would silently drop the EmbeddingBase row.
-    /// The 12-step rebuild migration (rename → CREATE → INSERT SELECT → DROP)
-    /// applies the new 3-column PK so both purposes coexist.
+    /// After migration, an EmbeddingBase write with a hash that already exists
+    /// as Embedding must succeed. An "ADD COLUMN only" half-migration would
+    /// leave the legacy `(content_hash, model_fingerprint)` PK in force and
+    /// INSERT OR IGNORE would silently drop the EmbeddingBase row. The rebuild
+    /// migration (rename → CREATE → INSERT SELECT → DROP) applies the 3-column
+    /// PK so both purposes coexist.
     #[test]
     fn test_migration_legacy_schema_accepts_embedding_base_after_rebuild() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2311,12 +2260,12 @@ mod tests {
         assert_eq!(cache.stats().unwrap().total_entries, 2);
     }
 
-    /// DS-V1.33-8 regression: every connection acquired from the embedding
-    /// cache pool carries `PRAGMA wal_autocheckpoint` set to a finite ceiling
-    /// (default 1000 pages). Without this, abrupt shutdown leaves the WAL
-    /// unbounded for the next open to replay. Asserting via PRAGMA query on a
-    /// freshly-opened cache pins the after_connect wiring so a refactor that
-    /// drops the hook surfaces here.
+    /// Every connection acquired from the embedding cache pool carries
+    /// `PRAGMA wal_autocheckpoint` set to a finite ceiling (default 1000
+    /// pages). Without this, abrupt shutdown leaves the WAL unbounded for the
+    /// next open to replay. Asserting via PRAGMA query on a freshly-opened
+    /// cache pins the after_connect wiring so a refactor that drops the hook
+    /// surfaces here.
     #[test]
     fn wal_autocheckpoint_pragma_is_applied_after_connect() {
         let (cache, _dir) = test_cache();
@@ -2337,12 +2286,11 @@ mod tests {
         );
     }
 
-    /// DS-V1.33-6 regression: `EMBEDDING_CACHE_EVICT_LOCK` is a process-global
-    /// static — opening two `EmbeddingCache` handles against different DB
-    /// paths still shares the same module-level mutex, so concurrent evicts
-    /// across handles don't race. Pinning the static's address is the
-    /// simplest structural assertion we can make without timing-sensitive
-    /// thread tests.
+    /// `EMBEDDING_CACHE_EVICT_LOCK` is a process-global static — two
+    /// `EmbeddingCache` handles against different DB paths still share the same
+    /// module-level mutex, so concurrent evicts across handles don't race.
+    /// Pinning the static's address is the simplest structural assertion
+    /// without timing-sensitive thread tests.
     #[test]
     fn embedding_cache_evict_lock_is_process_global() {
         let p1 = &EMBEDDING_CACHE_EVICT_LOCK as *const Mutex<()>;
@@ -2368,18 +2316,16 @@ mod tests {
 /// Best-effort: all failures are logged and silently skipped.
 pub struct QueryCache {
     pool: sqlx::SqlitePool,
-    /// #968: `Arc<Runtime>` so callers (e.g. the daemon) can share one
-    /// runtime across `Store`, `EmbeddingCache`, and `QueryCache`. When
-    /// no runtime is supplied `open` constructs its own.
+    /// `Arc<Runtime>` so callers (e.g. the daemon) can share one runtime
+    /// across `Store`, `EmbeddingCache`, and `QueryCache`. When no runtime is
+    /// supplied `open` constructs its own.
     rt: Arc<tokio::runtime::Runtime>,
-    /// P3 #124: max size cap. Honours `CQS_QUERY_CACHE_MAX_SIZE` (bytes,
-    /// default 100 MB). Read at `open` time and used by [`Self::evict`] —
-    /// no resize support, daemon restart picks up env changes.
+    /// Max size cap. Honours `CQS_QUERY_CACHE_MAX_SIZE` (bytes, default
+    /// 100 MB). Read at `open` time and used by [`Self::evict`] — no resize
+    /// support, daemon restart picks up env changes.
     max_size_bytes: u64,
-    // DS-V1.33-6: `evict_lock` lifted to module-level
-    // `QUERY_CACHE_EVICT_LOCK` static for the same reason as
-    // `EmbeddingCache` — multiple opens in one process should share the
-    // mutex, not race past it.
+    // Evict serialization uses the module-level `QUERY_CACHE_EVICT_LOCK`
+    // static so multiple opens in one process share the mutex.
 }
 
 impl QueryCache {
@@ -2388,7 +2334,7 @@ impl QueryCache {
     /// Uses the platform's native cache dir — see [`EmbeddingCache::default_path`]
     /// for the resolution order (`dirs::cache_dir()` → `~/.cache` → `.`).
     pub fn default_path() -> std::path::PathBuf {
-        // P3.32: native platform cache dir.
+        // Native platform cache dir.
         dirs::cache_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -2402,8 +2348,8 @@ impl QueryCache {
     }
 
     /// Open with a pre-existing runtime (saves ~15ms by avoiding runtime
-    /// creation and, per #968, lets the daemon share one runtime across
-    /// `Store`, `EmbeddingCache`, and `QueryCache`).
+    /// creation and lets the daemon share one runtime across `Store`,
+    /// `EmbeddingCache`, and `QueryCache`).
     pub fn open_with_runtime(
         path: &Path,
         runtime: Option<Arc<tokio::runtime::Runtime>>,
@@ -2415,7 +2361,7 @@ impl QueryCache {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                // PB-V1.29-7: best-effort parent chmod (same rationale as in
+                // Best-effort parent chmod (same rationale as in
                 // `EmbeddingCache::open`). Log and continue on failure rather
                 // than refusing to open the query cache.
                 if let Err(e) =
@@ -2441,9 +2387,9 @@ impl QueryCache {
             )
         };
 
-        // SHL-V1.25-12: query cache honours CQS_BUSY_TIMEOUT_MS too. V1.36.2:
-        // default 2000→15000 — same WAL-checkpoint contention class as the
-        // embedding cache, halved because the query cache is write-lighter.
+        // Query cache honours CQS_BUSY_TIMEOUT_MS too. Default 15000 — same
+        // WAL-checkpoint contention class as the embedding cache, halved
+        // because the query cache is write-lighter.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -2451,13 +2397,13 @@ impl QueryCache {
             .busy_timeout(busy_timeout_from_env(15_000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
-        // SEC-V1.33-2: same umask wrap as `EmbeddingCache::open_with_runtime`.
-        // Query text may be sensitive (user prompts, internal tooling
-        // queries) — born-private DB closes the window between SQLite first-
-        // write and `apply_db_file_perms` below.
+        // Same umask wrap as `EmbeddingCache::open_with_runtime`. Query text
+        // may be sensitive (user prompts, internal tooling queries) — a
+        // born-private DB closes the window between SQLite first-write and
+        // `apply_db_file_perms` below.
         #[cfg(unix)]
         let prev_umask = unsafe { libc::umask(0o077) };
-        // DS-V1.33-8: cap the on-disk WAL for the query cache too. See
+        // Cap the on-disk WAL for the query cache too. See
         // `wal_autocheckpoint_pragma` for rationale.
         let wal_pragma = wal_autocheckpoint_pragma();
         let pool = rt.block_on(async {
@@ -2490,19 +2436,19 @@ impl QueryCache {
 
             Ok::<_, sqlx::Error>(pool)
         })?;
-        // SEC-V1.33-2: restore umask after pool creation.
+        // Restore umask after pool creation.
         #[cfg(unix)]
         unsafe {
             libc::umask(prev_umask);
         }
 
-        // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to match
+        // Restrict DB + WAL/SHM sidecar files to 0o600 to match
         // `EmbeddingCache::open`. Belt-and-suspenders alongside the umask wrap
         // above so a future refactor that drops the umask doesn't silently
-        // regress. P2.3: shared with `EmbeddingCache` via `apply_db_file_perms`.
+        // regress. Shared with `EmbeddingCache` via `apply_db_file_perms`.
         apply_db_file_perms(path);
 
-        // P3 #124: surface cap from env, default 100 MB. Disk-only — no per-row
+        // Surface cap from env, default 100 MB. Disk-only — no per-row
         // accounting because the cache may persist across daemon restarts.
         let max_size_bytes = std::env::var("CQS_QUERY_CACHE_MAX_SIZE")
             .ok()
@@ -2522,28 +2468,28 @@ impl QueryCache {
     /// `CQS_QUERY_CACHE_MAX_SIZE` (default 100 MB). Best-effort — sqlite
     /// errors are logged and reported as `Ok(0)`.
     ///
-    /// P3 #124: mirrors [`EmbeddingCache::evict`]. Run from the same daemon
+    /// Mirrors [`EmbeddingCache::evict`]. Run from the same daemon
     /// periodic-eviction tick so disk usage stays bounded across long
     /// sessions.
     ///
-    /// DS2-5: size / AVG / DELETE run in a single transaction so concurrent
-    /// `put()` traffic cannot invalidate the measurement between steps.
-    /// `QUERY_CACHE_EVICT_LOCK` (process-global, DS-V1.33-6) serializes
-    /// parallel evict callers across all `QueryCache` handles in this process.
+    /// Size / AVG / DELETE run in a single transaction so concurrent `put()`
+    /// traffic cannot invalidate the measurement between steps.
+    /// `QUERY_CACHE_EVICT_LOCK` (process-global) serializes parallel evict
+    /// callers across all `QueryCache` handles in this process.
     ///
-    /// DS-V1.33-4: the transaction is opened with `BEGIN IMMEDIATE` so a
-    /// peer process running its own evict can't race us via deferred
-    /// snapshots. See `EmbeddingCache::evict` for the full rationale.
+    /// The transaction is opened with `BEGIN IMMEDIATE` so a peer process
+    /// running its own evict can't race us via deferred snapshots. See
+    /// `EmbeddingCache::evict` for the full rationale.
     pub fn evict(&self) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("query_cache_evict").entered();
 
-        // DS-V1.33-6: process-global static — see QUERY_CACHE_EVICT_LOCK docs.
+        // Process-global static — see QUERY_CACHE_EVICT_LOCK docs.
         let _guard = QUERY_CACHE_EVICT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         self.rt.block_on(async {
-            // DS-V1.33-4: same connection-held BEGIN IMMEDIATE pattern as
+            // Same connection-held BEGIN IMMEDIATE pattern as
             // `EmbeddingCache::evict`. Implicit ROLLBACK on connection return
             // keeps early `return Ok(0)` paths safe.
             let mut conn = match self.pool.acquire().await {
@@ -2616,7 +2562,7 @@ impl QueryCache {
 
     /// Logical size of the cache in bytes (sum of embedding blobs + row overhead).
     /// Used by `cqs cache stats --json` to surface query-cache size alongside
-    /// the embedding cache (P3 #124).
+    /// the embedding cache.
     pub fn size_bytes(&self) -> Result<u64, CacheError> {
         self.rt.block_on(async {
             let size: i64 = sqlx::query_scalar(
@@ -2631,9 +2577,8 @@ impl QueryCache {
     /// Look up a cached query embedding.
     pub fn get(&self, query: &str, model_fp: &str) -> Option<crate::embedder::Embedding> {
         self.rt.block_on(async {
-            // EH-17 / OB-NEW-6: log sqlite failures instead of treating them
-            // as a silent cache miss. A corrupted / locked cache is a real
-            // signal, not background noise.
+            // Log sqlite failures instead of treating them as a silent cache
+            // miss. A corrupted / locked cache is a real signal, not noise.
             let row: Option<(Vec<u8>,)> = match sqlx::query_as(
                 "SELECT embedding FROM query_cache WHERE query = ?1 AND model_fp = ?2",
             )
@@ -2644,10 +2589,10 @@ impl QueryCache {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    // OB-NEW-6 / robustness: `query.len().min(40)` panics if
-                    // byte 40 lands inside a multi-byte codepoint. Use
-                    // `floor_char_boundary` so non-ASCII queries don't
-                    // convert a soft DB-error log into hard process death.
+                    // `query.len().min(40)` would panic if byte 40 lands
+                    // inside a multi-byte codepoint. `floor_char_boundary`
+                    // keeps non-ASCII queries from turning a soft DB-error log
+                    // into hard process death.
                     let preview_len = query.floor_char_boundary(40);
                     tracing::warn!(
                         query_preview = %&query[..preview_len],
@@ -2659,10 +2604,9 @@ impl QueryCache {
             };
 
             let (bytes,) = row?;
-            // EH-17 / OB-NEW-6: a malformed embedding blob (length not a
-            // multiple of 4) means the row is corrupt. Don't let it sit in
-            // the DB forever — log it and delete so future reads skip the
-            // cost of re-checking the same bad row.
+            // A malformed embedding blob (length not a multiple of 4) means
+            // the row is corrupt. Log and delete so future reads skip the cost
+            // of re-checking the same bad row.
             if bytes.len() % std::mem::size_of::<f32>() != 0 {
                 tracing::warn!(
                     raw_len = bytes.len(),
@@ -2679,8 +2623,8 @@ impl QueryCache {
                 }
                 return None;
             }
-            // PERF-V1.33-2 / #1377: see `read_batch` above for the zero-copy
-            // cast rationale. Same producer/consumer invariants apply here.
+            // See `read_batch` above for the zero-copy cast rationale. Same
+            // producer/consumer invariants apply here.
             let floats: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&bytes).to_vec();
             Some(crate::embedder::Embedding::new(floats))
         })
@@ -2688,8 +2632,8 @@ impl QueryCache {
 
     /// Store a query embedding (write-through).
     pub fn put(&self, query: &str, model_fp: &str, embedding: &crate::embedder::Embedding) {
-        // P2.27: reject non-finite values so cached query embeddings can't
-        // poison downstream cosine math (NaN propagates through scoring).
+        // Reject non-finite values so cached query embeddings can't poison
+        // downstream cosine math (NaN propagates through scoring).
         if embedding.as_slice().iter().any(|f| !f.is_finite()) {
             tracing::warn!(
                 query_len = query.len(),
@@ -2697,7 +2641,7 @@ impl QueryCache {
             );
             return;
         }
-        // PERF-V1.33-2 / #1377: bytemuck zero-copy encode.
+        // bytemuck zero-copy encode.
         let bytes: Vec<u8> = bytemuck::cast_slice::<f32, u8>(embedding.as_slice()).to_vec();
         if let Err(e) = self.rt.block_on(async {
             sqlx::query(
@@ -2710,9 +2654,8 @@ impl QueryCache {
             .execute(&self.pool)
             .await
         }) {
-            // EH-17 / OB-NEW-6: write failures on the query cache are
-            // corruption / disk-full risks, not noise. Promote from debug!
-            // to warn! so operators see them in default logs.
+            // Write failures on the query cache are corruption / disk-full
+            // risks, not noise — warn so operators see them in default logs.
             tracing::warn!(error = %e, "Query cache write failed (non-fatal)");
         }
     }
@@ -2735,9 +2678,8 @@ impl QueryCache {
 
 impl QueryCache {
     /// Run a blocking `PRAGMA wal_checkpoint(TRUNCATE)` — see
-    /// [`EmbeddingCache::checkpoint_wal`] for the contract. Same #1343 /
-    /// RM-V1.33-3 motivation: structured shutdown paths call this before
-    /// drop; drop falls back to a 1 s PASSIVE checkpoint.
+    /// [`EmbeddingCache::checkpoint_wal`] for the contract. Structured shutdown
+    /// paths call this before drop; drop falls back to a 1 s PASSIVE checkpoint.
     pub fn checkpoint_wal(&self) -> Result<(), CacheError> {
         let _span = tracing::info_span!("query_cache_checkpoint_wal_truncate").entered();
         self.rt.block_on(async {
@@ -2750,9 +2692,9 @@ impl QueryCache {
 }
 
 impl Drop for QueryCache {
-    /// #1343 / RM-V1.33-3: see [`EmbeddingCache::drop`] for the rationale.
-    /// Best-effort `PRAGMA wal_checkpoint(PASSIVE)` with a 1 s timeout —
-    /// caps daemon-shutdown WAL-copy stalls. Explicit truncate via
+    /// See [`EmbeddingCache::drop`] for the rationale. Best-effort
+    /// `PRAGMA wal_checkpoint(PASSIVE)` with a 1 s timeout — caps
+    /// daemon-shutdown WAL-copy stalls. Explicit truncate via
     /// [`QueryCache::checkpoint_wal`].
     fn drop(&mut self) {
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2785,19 +2727,18 @@ impl Drop for QueryCache {
     }
 }
 
-// ─── TC-ADV-V1.33-6: QueryCache malformed-blob auto-delete ──────────────────
+// ─── QueryCache malformed-blob auto-delete ──────────────────────────────────
 //
-// EH-17 / OB-NEW-6: a malformed embedding blob (length not a multiple of
-// 4) is logged + deleted on `QueryCache::get`. Pins the auto-delete
-// behaviour so a re-poll loop on bad rows can't reintroduce the cost of
-// re-checking the same bad row.
+// A malformed embedding blob (length not a multiple of 4) is logged +
+// deleted on `QueryCache::get`. Pins the auto-delete behaviour so a re-poll
+// loop on bad rows can't reintroduce the cost of re-checking the same bad row.
 #[cfg(test)]
 mod query_cache_malformed_blob_tests {
     use super::*;
 
-    /// TC-ADV-V1.33-6: insert a row whose embedding blob length isn't a
-    /// multiple of 4 (corrupt row, schema migration mid-flight, manual SQL
-    /// stomp). `get` returns `None` and deletes the row.
+    /// Insert a row whose embedding blob length isn't a multiple of 4 (corrupt
+    /// row, schema migration mid-flight, manual SQL stomp). `get` returns
+    /// `None` and deletes the row.
     #[test]
     fn test_query_cache_get_deletes_malformed_blob() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2845,10 +2786,9 @@ mod query_cache_malformed_blob_tests {
         );
     }
 
-    /// DS-V1.33-8 regression for QueryCache: same as the EmbeddingCache test,
-    /// every connection from the query-cache pool must carry a finite
-    /// wal_autocheckpoint ceiling so an abrupt shutdown doesn't leave an
-    /// unbounded WAL tail.
+    /// Same as the EmbeddingCache test: every connection from the query-cache
+    /// pool must carry a finite wal_autocheckpoint ceiling so an abrupt
+    /// shutdown doesn't leave an unbounded WAL tail.
     #[test]
     fn query_cache_wal_autocheckpoint_pragma_is_applied_after_connect() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2869,7 +2809,7 @@ mod query_cache_malformed_blob_tests {
     }
 }
 
-// ─── #968 shared-runtime integration tests ──────────────────────────────────
+// ─── shared-runtime integration tests ───────────────────────────────────────
 //
 // Confirms that one `Arc<Runtime>` can drive Store + EmbeddingCache +
 // QueryCache simultaneously, as the daemon does, and that the runtime
@@ -2893,7 +2833,7 @@ mod shared_runtime_tests {
         )
     }
 
-    /// #968 core invariant: the daemon can build one `Arc<Runtime>` and hand
+    /// Core invariant: the daemon can build one `Arc<Runtime>` and hand
     /// the same handle to `Store::open_with_runtime`,
     /// `EmbeddingCache::open_with_runtime`, and
     /// `QueryCache::open_with_runtime`; all three operate concurrently and
@@ -2938,7 +2878,7 @@ mod shared_runtime_tests {
         let got = q_cache.get("select x", "fp").expect("round-trip");
         assert_eq!(got.as_slice().len(), 8);
 
-        // Five live Arcs: shared_rt + Store + Store's summary_queue (#1126)
+        // Five live Arcs: shared_rt + Store + Store's summary_queue
         // + EmbeddingCache + QueryCache. Store contributes two refs because
         // it spawns a `PendingSummaryQueue` that holds its own `Arc<Runtime>`
         // clone for `block_on` driving the queue's SQL writes.
@@ -2951,9 +2891,8 @@ mod shared_runtime_tests {
         assert_eq!(Arc::strong_count(&shared_rt), 1);
     }
 
-    /// #968: `Store::open_readonly_pooled_with_runtime` — the pre-968
-    /// template path — keeps working under the new `Arc<Runtime>`
-    /// signature. Guards against the template drifting from
+    /// `Store::open_readonly_pooled_with_runtime` works under the
+    /// `Arc<Runtime>` signature. Guards against the template drifting from
     /// `Store::open_with_runtime` as new knobs land.
     #[test]
     fn test_open_readonly_pooled_with_runtime_works() {

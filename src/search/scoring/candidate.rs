@@ -56,11 +56,11 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         return; // Need at least a container + 2 children
     }
 
-    // PF-V1.25-14: compute which result indices need boosting in an
-    // immutable-borrow phase so `parent_counts` can key on `&str` borrowed
-    // from `results` instead of cloning every `parent_type_name`. Once we
-    // have the `(index, boost)` list, `parent_counts` drops and the mutable
-    // pass runs without overlapping borrows.
+    // Compute which result indices need boosting in an immutable-borrow phase
+    // so `parent_counts` can key on `&str` borrowed from `results` instead of
+    // cloning every `parent_type_name`. Once we have the `(index, boost)`
+    // list, `parent_counts` drops and the mutable pass runs without
+    // overlapping borrows.
     let boosts: Vec<(usize, f32)> = {
         let mut parent_counts: HashMap<&str, usize> = HashMap::new();
         for r in results.iter() {
@@ -78,12 +78,11 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
             .iter()
             .enumerate()
             .filter_map(|(i, r)| {
-                // EXT-V1.36-2: include all container-shaped variants. The
-                // previous Class/Struct/Interface-only set silently dropped
-                // the boost on traits, enums, modules, objects (Kotlin/Swift),
+                // Include all container-shaped variants — Class, Struct,
+                // Interface, traits, enums, modules, objects (Kotlin/Swift),
                 // namespaces (C++/C#), and impl blocks (Rust). Methods on a
-                // matching trait/object/namespace deserve the same hub-boost
-                // their Class siblings get.
+                // matching trait/object/namespace get the same hub-boost their
+                // Class siblings get.
                 let is_container = matches!(
                     r.chunk.chunk_type,
                     ChunkType::Class
@@ -101,15 +100,13 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
                 }
                 let count = *parent_counts.get(r.chunk.name.as_str())?;
                 if count >= 2 {
-                    // AC-V1.38-6 (#1463): final clamp on the boost value
-                    // covers the ULP overshoot AC-V1.25-4's count clamp
-                    // doesn't reach — operator overrides like
+                    // Final clamp on the boost value covers ULP overshoot the
+                    // count clamp doesn't reach — operator overrides like
                     // `parent_boost_cap=1.20, parent_boost_per_child=0.03`
                     // produce `max_children = 6.6666665` and the
-                    // multiplied-back value can land at
-                    // 1.0000004... above the documented cap. One f32.min
-                    // matches the doc-comment promise ("capped at
-                    // `parent_boost_cap`").
+                    // multiplied-back value can land at 1.0000004... above the
+                    // documented cap. One f32.min matches the doc-comment
+                    // promise ("capped at `parent_boost_cap`").
                     let boost = (1.0
                         + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children))
                     .min(cfg.parent_boost_cap);
@@ -228,28 +225,21 @@ impl BoundedScoreHeap {
     /// (smallest score, largest id at that score). The eviction check
     /// `score > worst_score || (score == worst_score && id < worst_largest_id)`
     /// then correctly replaces the largest-id-at-lowest-score entry with a
-    /// smaller-id incoming entry. Earlier versions wrapped only the score in
-    /// `Reverse`, so `peek()` returned the *best* boundary entry (smallest
-    /// id at lowest score) and the eviction inverted the intended invariant
-    /// — under reverse push order ("c", "b", "a") the surviving set was
-    /// {"c", "a"} instead of {"a", "b"}.
+    /// smaller-id incoming entry.
+    ///
     /// Cheap pre-flight check: returns `true` if a `push(_, score)` would
     /// either insert (heap below capacity) or evict the current worst. Lets
     /// callers gate expensive id-cloning behind a peek when scoring a large
-    /// candidate pool against a much smaller K.
-    ///
-    /// PERF-V1.36-9: introduced for SpladeIndex::search_with_filter which
-    /// scored ~18k candidates per query and cloned each id into the heap
-    /// even though only ~k entries survived.
+    /// candidate pool against a much smaller K (e.g.
+    /// `SpladeIndex::search_with_filter` scores ~18k candidates per query
+    /// though only ~k survive).
     pub fn would_accept(&self, score: f32) -> bool {
         if !score.is_finite() {
             return false;
         }
-        // AC-V1.38-1 (#1463): a capacity-zero heap accepts nothing. Pre-fix
-        // the `peek() == None` arm fell through to `true` here, but `push`
-        // unconditionally rejects everything at capacity 0; trusting the
-        // mismatch yielded `would_accept(any) == true` followed by silent
-        // drop. Now both branches agree.
+        // A capacity-zero heap accepts nothing — `push` unconditionally
+        // rejects everything at capacity 0, so `would_accept` must agree to
+        // avoid a `true` followed by silent drop.
         if self.capacity == 0 {
             return false;
         }
@@ -257,19 +247,15 @@ impl BoundedScoreHeap {
             return true;
         }
         if let Some(Reverse((OrderedFloat(worst_score), _))) = self.heap.peek() {
-            // AC-V1.38-1 (#1463): the at-capacity branch must match the
-            // eviction-comparator contract documented above (`(score, id)`
-            // ascending: tied score → smaller id wins). Pre-fix
-            // `total_cmp(worst_score).is_gt()` returned `false` on tied
-            // scores, so the SPLADE caller `continue`d and never invoked
-            // `push()` — silently dropping a smaller-id incoming chunk
-            // that should have evicted the largest-id heap entry. We
-            // don't have the incoming `id` here, so the safe move is to
-            // be permissive on tied scores and let `push()` apply the
-            // full comparator: an extra cheap `id.to_string()` per tied
-            // score is cheaper than a wrong-result regression. Strict
-            // `Greater` for the score-strictly-better fast path; `Equal`
-            // falls through to `push()`'s eviction-on-id-less branch.
+            // The at-capacity branch must match the eviction-comparator
+            // contract documented above (`(score, id)` ascending: tied score →
+            // smaller id wins). We don't have the incoming `id` here, so be
+            // permissive on tied scores and let `push()` apply the full
+            // comparator: an extra cheap `id.to_string()` per tied score is
+            // cheaper than wrongly dropping a smaller-id chunk that should
+            // evict the largest-id heap entry. Strict `Greater` is the
+            // score-strictly-better fast path; `Equal` falls through to
+            // `push()`'s eviction-on-id-less branch.
             !score.total_cmp(worst_score).is_lt()
         } else {
             // capacity > 0 but heap empty → space available.
@@ -296,14 +282,12 @@ impl BoundedScoreHeap {
         // eviction boundary we break score ties on id ascending so the
         // surviving set is deterministic.
         if let Some(Reverse((OrderedFloat(worst_score), Reverse(worst_id)))) = self.heap.peek() {
-            // AC-V1.30.1-7 (P3-AC-3): use `total_cmp` instead of `==` /
-            // `>` on raw `f32`. `==` is incorrect for NaN (panics on
-            // some payloads via the wrapping `OrderedFloat`'s ordering
-            // contract), and the upstream non-finite filter at the top
-            // of this function should already have rejected NaN/Inf;
-            // pin that invariant with a debug assertion. `total_cmp` is
-            // a total order so the eviction decision is well-defined
-            // for every finite-or-NaN bit pattern that could leak past.
+            // Use `total_cmp` instead of `==` / `>` on raw `f32`. `==` is
+            // incorrect for NaN, and the upstream non-finite filter at the top
+            // of this function should already have rejected NaN/Inf; pin that
+            // invariant with a debug assertion. `total_cmp` is a total order
+            // so the eviction decision is well-defined for every
+            // finite-or-NaN bit pattern that could leak past.
             debug_assert!(
                 score.is_finite(),
                 "BoundedScoreHeap::push: non-finite scores must be filtered above"
@@ -346,9 +330,9 @@ pub(crate) struct ScoringContext<'a> {
     pub filter: &'a SearchFilter,
     pub name_matcher: Option<&'a NameMatcher>,
     pub glob_matcher: Option<&'a globset::GlobMatcher>,
-    /// PF-V1.25-4: accepts either a freshly-built `NoteBoostIndex` borrowing
-    /// from per-call notes, or a cached `Arc<OwnedNoteBoostIndex>` reused
-    /// across searches. The `NoteBoost` enum dispatches at the call site.
+    /// Accepts either a freshly-built `NoteBoostIndex` borrowing from per-call
+    /// notes, or a cached `Arc<OwnedNoteBoostIndex>` reused across searches.
+    /// The `NoteBoost` enum dispatches at the call site.
     pub note_index: &'a super::note_boost::NoteBoost<'a>,
     pub threshold: f32,
 }
@@ -364,18 +348,18 @@ pub(crate) fn apply_scoring_pipeline(
     file_part: &str,
     ctx: &ScoringContext<'_>,
 ) -> Option<f32> {
-    // P1.16 defense-in-depth: clamp name_boost into [0.0, 1.0] regardless of
-    // where it originated. CLI uses parse_unit_f32 (clap-bounded) and config
-    // uses clamp_config_f32, but a future programmatic / deserialised path
-    // could bypass both, in which case `(1.0 - 5.0) * embedding` would
-    // sign-flip search results silently. Cheap insurance.
+    // Defense-in-depth: clamp name_boost into [0.0, 1.0] regardless of where
+    // it originated. CLI uses parse_unit_f32 (clap-bounded) and config uses
+    // clamp_config_f32, but a programmatic / deserialised path could bypass
+    // both, in which case `(1.0 - 5.0) * embedding` would sign-flip search
+    // results silently. Cheap insurance.
     //
-    // P2.54: also clamp `embedding_score` into `[0.0, 1.0]` before the
-    // linear interpolation. Raw cosine can be negative for orthogonal-or-
-    // worse pairs, and a negative embedding contaminating the blend then
-    // hits the downstream `.max(0.0)` and silently deletes a good
-    // name-only match. Clamping inputs makes the blend always interpolate
-    // between two same-range numbers and never sign-flip.
+    // Also clamp `embedding_score` into `[0.0, 1.0]` before the linear
+    // interpolation. Raw cosine can be negative for orthogonal-or-worse
+    // pairs, and a negative embedding contaminating the blend then hits the
+    // downstream `.max(0.0)` and silently deletes a good name-only match.
+    // Clamping inputs makes the blend always interpolate between two
+    // same-range numbers and never sign-flip.
     let embedding_score = embedding_score.clamp(0.0, 1.0);
     let name_boost = ctx.filter.name_boost.clamp(0.0, 1.0);
     let base_score = if let Some(matcher) = ctx.name_matcher {
@@ -478,9 +462,7 @@ mod tests {
     fn bounded_heap_deterministic_under_reverse_push_order() {
         // Reverse insertion order ("c", "b", "a") with capacity 2: at the
         // eviction boundary "a" must displace "c" so the surviving set is
-        // {"a", "b"} — the smallest-id-wins-among-ties invariant. Earlier
-        // versions of `push` peeked the *best* boundary entry and ended up
-        // with {"c", "a"} instead.
+        // {"a", "b"} — the smallest-id-wins-among-ties invariant.
         let mut heap = BoundedScoreHeap::new(2);
         heap.push("c".to_string(), 0.5);
         heap.push("b".to_string(), 0.5);
@@ -653,13 +635,11 @@ mod tests {
 
     #[test]
     fn test_chunk_importance_test_upper() {
-        // v1.22.0 audit AC-4: `TestParseConfig` in `src/lib.go` is NOT a Go
-        // test — Go tests live in `_test.go` files, not regular `.go` files.
-        // The previous assertion (importance_test = 0.70) was wrong: it
-        // demoted production helpers named `TestFoo` in non-test Go files.
-        // After the fix, `TestParseConfig` in `src/lib.go` gets normal
-        // importance (1.0), but `TestParseConfig` in `src/lib_test.go`
-        // gets the test demotion via path-based detection.
+        // `TestParseConfig` in `src/lib.go` is NOT a Go test — Go tests live
+        // in `_test.go` files, not regular `.go` files. So `TestParseConfig`
+        // in `src/lib.go` gets normal importance (1.0), but `TestParseConfig`
+        // in `src/lib_test.go` gets the test demotion via path-based
+        // detection.
         assert_eq!(chunk_importance("TestParseConfig", "src/lib.go"), 1.0);
         // In an actual _test.go file, the path pattern catches it.
         assert_eq!(
@@ -779,10 +759,10 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.38-8 (#1463): pin the contract for non-finite thresholds.
-    /// `threshold = NaN` → IEEE-754 says `score >= NaN` is always false →
-    /// silent empty result set. Pin this so a future `is_finite` rejection
-    /// at the public boundary is a deliberate change.
+    /// Pins the contract for non-finite thresholds. `threshold = NaN` →
+    /// IEEE-754 says `score >= NaN` is always false → empty result set. Pin
+    /// this so a future `is_finite` rejection at the public boundary is a
+    /// deliberate change.
     #[test]
     fn test_score_candidate_nan_threshold_returns_empty() {
         let emb = test_embedding(1.0);
@@ -804,9 +784,9 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.38-8 (#1463): `threshold = -∞` → all candidates pass.
-    /// Pin behavior so an operator-supplied `--threshold -inf` (e.g. via
-    /// shell typo `-1e9999`) doesn't surprise downstream callers.
+    /// `threshold = -∞` → all candidates pass. Pin behavior so an
+    /// operator-supplied `--threshold -inf` (e.g. via shell typo `-1e9999`)
+    /// doesn't surprise downstream callers.
     #[test]
     fn test_score_candidate_neg_inf_threshold_passes_all() {
         let emb = test_embedding(1.0);
@@ -828,7 +808,7 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.38-8 (#1463): `threshold = +∞` → no candidates pass.
+    /// `threshold = +∞` → no candidates pass.
     #[test]
     fn test_score_candidate_pos_inf_threshold_returns_empty() {
         let emb = test_embedding(1.0);
@@ -1090,7 +1070,7 @@ mod tests {
 
     #[test]
     fn score_candidate_nan_query_filtered() {
-        // TC-4: All-NaN query vector should not panic, should return None.
+        // All-NaN query vector should not panic, should return None.
         let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
         let normal_emb = test_embedding(1.0);
         let filter = SearchFilter::default();
@@ -1114,7 +1094,7 @@ mod tests {
 
     #[test]
     fn score_candidate_nan_both_filtered() {
-        // TC-4: Both query and embedding NaN — must not panic.
+        // Both query and embedding NaN — must not panic.
         let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
         let nan_emb = vec![f32::NAN; crate::EMBEDDING_DIM];
         let filter = SearchFilter::default();

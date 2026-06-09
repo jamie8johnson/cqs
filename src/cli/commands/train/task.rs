@@ -275,7 +275,7 @@ const WATERFALL_IMPACT_DEFAULT: f64 = 0.15;
 const WATERFALL_PLACEMENT_DEFAULT: f64 = 0.10;
 // Notes section takes whatever budget remains (no explicit constant needed).
 
-/// EX-V1.38-5 (#1463): operator-tunable waterfall weight. Reads
+/// Operator-tunable waterfall weight. Reads
 /// `CQS_TASK_WATERFALL_<name>` (e.g. `CQS_TASK_WATERFALL_CODE=0.6`),
 /// rejects non-finite / negative / >1 values, falls back to `default`.
 fn waterfall_weight(name: &str, default: f64) -> f64 {
@@ -1046,7 +1046,7 @@ mod tests {
         assert_eq!(used, 90);
     }
 
-    // TC-8: index_pack with zero budget returns nothing
+    // index_pack with zero budget returns nothing
     #[test]
     fn test_index_pack_zero_budget() {
         let counts = vec![10, 20, 30];
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(used, 0);
     }
 
-    // TC-11: Waterfall surplus forwarding — verify unused budget flows to next section
+    // Waterfall surplus forwarding — verify unused budget flows to next section
     #[test]
     fn test_waterfall_surplus_forwarding() {
         let budget: usize = 1000;

@@ -1,25 +1,23 @@
 //! Daemon runtime helpers: shutdown signal flags, shared tokio runtime
 //! builder, SIGTERM handler.
 //!
-//! Carved out of `watch.rs`. The unix-only items here drive the daemon
-//! drain path (SIGTERM → flag → accept-loop break → main loop joins
-//! the socket thread). `build_shared_runtime` is cross-platform and
-//! powers `Store` / `EmbeddingCache` / `QueryCache` from a single pool.
+//! The unix-only items here drive the daemon drain path (SIGTERM → flag →
+//! accept-loop break → main loop joins the socket thread).
+//! `build_shared_runtime` is cross-platform and powers `Store` /
+//! `EmbeddingCache` / `QueryCache` from a single pool.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// RM-V1.25-9: Set on SIGTERM so the watch loop drains and exits
-/// cleanly instead of being hard-killed mid-write when systemd
-/// sends `stop`. The cross-platform `ctrlc::set_handler` (with the
-/// `termination` feature, since #1044 / DS-V1.30.2-D5) also raises
-/// SIGTERM into our `INTERRUPTED` flag — we keep this dedicated
-/// libc::signal path because the daemon socket accept loop polls
-/// `daemon_should_exit` (the OR of `SHUTDOWN_REQUESTED` and
-/// `INTERRUPTED`) and the SIGTERM handler must be async-signal-safe
-/// in the strict POSIX sense; the `ctrlc` path runs the closure on
-/// a separate thread, which the daemon-shutdown protocol can't rely
-/// on for ordering.
+/// Set on SIGTERM so the watch loop drains and exits cleanly instead of
+/// being hard-killed mid-write when systemd sends `stop`. The cross-platform
+/// `ctrlc::set_handler` (with the `termination` feature) also raises SIGTERM
+/// into our `INTERRUPTED` flag — we keep this dedicated libc::signal path
+/// because the daemon socket accept loop polls `daemon_should_exit` (the OR
+/// of `SHUTDOWN_REQUESTED` and `INTERRUPTED`) and the SIGTERM handler must be
+/// async-signal-safe in the strict POSIX sense; the `ctrlc` path runs the
+/// closure on a separate thread, which the daemon-shutdown protocol can't
+/// rely on for ordering.
 #[cfg(unix)]
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -28,8 +26,8 @@ pub(super) fn is_shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Acquire)
 }
 
-/// RM-V1.25-8: observable from both SIGTERM (SHUTDOWN_REQUESTED) and
-/// Ctrl+C (`check_interrupted`). The socket accept loop polls this so
+/// Observable from both SIGTERM (SHUTDOWN_REQUESTED) and Ctrl+C
+/// (`check_interrupted`). The socket accept loop polls this so
 /// the watch main loop can tell the daemon thread to drain without
 /// having to route a separate shutdown channel.
 #[cfg(unix)]
@@ -44,12 +42,12 @@ extern "C" fn on_sigterm(_sig: libc::c_int) {
 }
 
 /// Build the tokio runtime that the daemon shares across `Store`,
-/// `EmbeddingCache`, and `QueryCache` (#968).
+/// `EmbeddingCache`, and `QueryCache`.
 ///
-/// Uses `multi_thread` with `worker_threads = min(num_cpus, 4)` by default to match
-/// `Store::open`'s pre-968 default (that was the heaviest of the three).
-/// One shared pool replaces three separate per-struct runtimes that
-/// previously idled ~6–12 OS threads in the daemon with no overlap.
+/// Uses `multi_thread` with `worker_threads = min(num_cpus, 4)` by default,
+/// matching `Store::open`'s default (the heaviest of the three). One shared
+/// pool replaces three separate per-struct runtimes that would otherwise
+/// idle ~6–12 OS threads in the daemon with no overlap.
 ///
 /// Override via `CQS_DAEMON_WORKER_THREADS` for large hosts where the
 /// `min(_, 4)` cap leaves cores idle under heavy concurrent client load.

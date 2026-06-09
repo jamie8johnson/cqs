@@ -14,7 +14,7 @@ mod query;
 mod related;
 mod test_map;
 
-// #1574: re-export the in-tx function_calls writer so
+// Re-export the in-tx function_calls writer so
 // `store::chunks::crud::upsert_chunks_calls_and_prune` can fold the
 // file-level call-graph write into the same per-file transaction.
 pub(crate) use crud::write_function_calls_in_tx;
@@ -184,10 +184,9 @@ fn build_trait_method_names() -> Vec<&'static str> {
 /// Combines name patterns, content markers, and path patterns into a single
 /// OR-joined clause string. Computed once at startup via LazyLock callers.
 ///
-/// EXT-V1.36-3 (#1460): name patterns now flow from
-/// `language::REGISTRY.all_test_name_patterns()` — same source as
-/// `is_test_chunk` in lib.rs, so adding a Kotlin/Swift convention is
-/// one line in the language module instead of two coordinated edits.
+/// Name patterns flow from `language::REGISTRY.all_test_name_patterns()` —
+/// the same source as `is_test_chunk` in lib.rs, so adding a Kotlin/Swift
+/// convention is one line in the language module.
 fn build_test_chunk_filter() -> String {
     let mut clauses: Vec<String> = Vec::new();
     for pat in crate::language::REGISTRY.all_test_name_patterns() {

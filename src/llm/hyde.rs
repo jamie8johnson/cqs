@@ -19,7 +19,7 @@ pub fn hyde_query_pass(
 
     let llm_config = LlmConfig::resolve(config)?;
     tracing::debug!(
-        // SEC-V1.38-1 (#1463): redacted form so user:pass@host doesn't land in journald.
+        // Redacted form so user:pass@host doesn't land in journald.
         api_base = %llm_config.redacted_api_base(),
         "LLM API base"
     );
@@ -93,9 +93,9 @@ pub fn hyde_query_pass(
         &|c, items, max_tok| c.submit_batch(crate::llm::provider::BatchKind::Hyde, items, max_tok),
     );
 
-    // #1126 / P2.60: drain the per-Store summary queue regardless of
-    // success/failure. Streamed HyDE rows are buffered in-memory; the
-    // final flush narrows the re-fetch window and is idempotent.
+    // Drain the per-Store summary queue regardless of success/failure.
+    // Streamed HyDE rows are buffered in-memory; the final flush narrows the
+    // re-fetch window and is idempotent.
     if let Err(e) = store.flush_pending_summaries() {
         tracing::warn!(error = %e, "final flush of summary queue failed; rows retained for next run");
     }
@@ -108,27 +108,25 @@ pub fn hyde_query_pass(
     Ok(api_generated)
 }
 
-// P2.87: TC-HAP — empty-store happy-path pin for `hyde_query_pass`.
+// Empty-store happy-path pin for `hyde_query_pass`.
 //
-// `hyde_query_pass` shipped with zero tests. The full happy path needs a
-// running LLM endpoint (Anthropic Batches or local provider) with an
-// httpmock-backed fixture, which the existing `local_provider_integration`
-// suite exercises for `llm_summary_pass`. The minimal pin we add here is
-// the "no eligible chunks" path: with an empty store, `collect_eligible_chunks`
-// returns no items, `submit_or_resume` short-circuits before any HTTP, and
-// the function returns `Ok(0)`. A regression that, e.g., started making
-// an API call before checking the eligibility list would surface here as
-// a connection-refused error.
+// The full happy path needs a running LLM endpoint (Anthropic Batches or
+// local provider) with an httpmock-backed fixture, which the
+// `local_provider_integration` suite exercises for `llm_summary_pass`. The
+// minimal pin here is the "no eligible chunks" path: with an empty store,
+// `collect_eligible_chunks` returns no items, `submit_or_resume`
+// short-circuits before any HTTP, and the function returns `Ok(0)`. A
+// regression that, e.g., started making an API call before checking the
+// eligibility list would surface here as a connection-refused error.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
     use crate::store::{ModelInfo, Store};
 
-    // #1312 / #1305: HYDE_ENV_LOCK was a file-local Mutex; replaced by the
-    // module-wide `crate::llm::LLM_ENV_LOCK` so this test serializes
-    // against `doc_comments::tests` and any other future caller that
-    // mutates the shared `CQS_LLM_*` env vars.
+    // Use the module-wide `crate::llm::LLM_ENV_LOCK` so this test serializes
+    // against `doc_comments::tests` and any other caller that mutates the
+    // shared `CQS_LLM_*` env vars.
 
     /// Build an empty store with the canonical `ModelInfo::default()` so
     /// `init` succeeds and the dim/model metadata is in place. Returns
@@ -141,9 +139,9 @@ mod tests {
         (dir, store)
     }
 
-    /// P2.87: empty store → zero candidates → `submit_or_resume` short-
-    /// circuits to `Ok(HashMap::new())` → caller returns `Ok(0)`.
-    /// Local-provider config so no real API key / network is touched.
+    /// Empty store → zero candidates → `submit_or_resume` short-circuits to
+    /// `Ok(HashMap::new())` → caller returns `Ok(0)`. Local-provider config so
+    /// no real API key / network is touched.
     #[test]
     fn hyde_query_pass_returns_zero_for_empty_store() {
         let _g = crate::llm::LLM_ENV_LOCK

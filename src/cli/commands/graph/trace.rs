@@ -135,10 +135,10 @@ pub(crate) fn cmd_trace(
             path: result,
         };
 
-        // P4-3 (#1463): exhaustive match instead of if/else-if chains so a
-        // future `OutputFormat` variant fails to compile until every render
-        // site adds an arm. Pre-fix the `else` arm silently absorbed unknown
-        // formats as "text".
+        // Exhaustive match instead of if/else-if chains so a future
+        // `OutputFormat` variant fails to compile until every render site
+        // adds an arm, rather than silently absorbing unknown formats as
+        // "text".
         match format {
             OutputFormat::Json => {
                 crate::cli::json_envelope::emit_json(&trace_result)?;
@@ -462,15 +462,14 @@ fn trace_max_nodes() -> usize {
 /// Capped at `CQS_TRACE_MAX_NODES` (default 10,000) visited nodes to prevent
 /// OOM on dense graphs.
 ///
-/// Audit AC-V1.40-3: predecessor encoding is `Option<String>` instead of
-/// `String` — pre-fix used `String::new()` as the source-sentinel and
-/// `pred.is_empty()` as the chain-walk terminator, but the call graph
-/// can legitimately contain empty `caller_name` values (anonymous
-/// closures, expression chunks where the parent chunk has `name = ""`).
-/// A mid-graph anonymous predecessor matched the source-sentinel pattern,
-/// terminating chain reconstruction early and silently truncating paths.
-/// `None` is the unambiguous source marker; `Some("")` is a real-but-
-/// nameless predecessor and the chain walks through it correctly.
+/// Predecessor encoding is `Option<String>` rather than `String` because
+/// the call graph can legitimately contain empty `caller_name` values
+/// (anonymous closures, expression chunks where the parent chunk has
+/// `name = ""`). `None` is the unambiguous source marker; `Some("")` is a
+/// real-but-nameless predecessor and the chain walks through it correctly.
+/// Using `String::new()` as the source-sentinel would make a mid-graph
+/// anonymous predecessor terminate chain reconstruction early and silently
+/// truncate paths.
 pub(crate) fn bfs_shortest_path(
     forward: &HashMap<std::sync::Arc<str>, Vec<std::sync::Arc<str>>>,
     source: &str,
@@ -606,7 +605,7 @@ mod tests {
             .collect()
     }
 
-    // ===== node_letter tests (P3-17) =====
+    // ===== node_letter tests =====
 
     #[test]
     fn test_node_letter_a_to_z() {
@@ -624,7 +623,7 @@ mod tests {
         assert_eq!(node_letter(52), "A2");
     }
 
-    // ===== mermaid_escape tests (P3-17) =====
+    // ===== mermaid_escape tests =====
 
     #[test]
     fn test_mermaid_escape_quotes() {
@@ -687,16 +686,12 @@ mod tests {
         assert_eq!(path, vec!["A", "B", "C"]);
     }
 
-    /// AC-V1.40-3 regression: anonymous nodes (`name = ""`, common for
-    /// closure / expression chunks) along the BFS path must not be
-    /// confused with the source-sentinel during path reconstruction.
-    /// Pre-fix used `String::new()` as the source marker and
-    /// `pred.is_empty()` as the chain-walk terminator — a mid-chain
-    /// empty-named node short-circuited reconstruction with the
-    /// real source missing from the front. Post-fix encodes the
-    /// predecessor as `Option<String>` so `None` is unambiguously the
-    /// source and `Some("")` is a real-but-nameless predecessor that
-    /// the chain walks through.
+    /// Anonymous nodes (`name = ""`, common for closure / expression
+    /// chunks) along the BFS path must not be confused with the
+    /// source-sentinel during path reconstruction. The predecessor is
+    /// encoded as `Option<String>` so `None` is unambiguously the source
+    /// and `Some("")` is a real-but-nameless predecessor that the chain
+    /// walks through.
     #[test]
     fn test_bfs_path_walks_through_empty_named_node() {
         let mut forward = HashMap::new();

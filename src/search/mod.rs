@@ -134,7 +134,7 @@ mod tests {
         store.upsert_chunk(&chunk, &embedding, None).unwrap();
     }
 
-    // ===== TC-19: resolve_target tests =====
+    // ===== resolve_target tests =====
 
     #[test]
     fn resolve_target_prefers_non_test_chunk() {

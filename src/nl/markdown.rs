@@ -24,9 +24,9 @@ static JSDOC_RETURNS_RE: LazyLock<Regex> =
 ///
 /// `text` rather than `ignore` because `nl` is `pub(crate)` — external
 /// rustdoc can't actually call `cqs::nl::parse_jsdoc_tags`. The block
-/// is illustrative; under `cargo test -- --include-ignored` (the
-/// `ci-slow.yml` shape) `ignore`-tagged doctests *are* compiled and
-/// would surface the visibility error. (#1305)
+/// is illustrative; under `cargo test -- --include-ignored`
+/// `ignore`-tagged doctests *are* compiled and would surface the
+/// visibility error.
 ///
 /// ```text
 /// use cqs::nl::parse_jsdoc_tags;

@@ -87,10 +87,10 @@ fn run_git_log_line_range(
         );
     }
 
-    // v1.22.0 audit SEC-NEW-3: reject absolute paths and `..` components.
-    // Store-indexed chunks always have project-relative file paths, but this
-    // is defense-in-depth for any future path where the store gets content
-    // from an untrusted source (reference-index merge, imported chunks).
+    // Reject absolute paths and `..` components. Store-indexed chunks always
+    // have project-relative file paths; this is defense-in-depth for any
+    // future path where the store gets content from an untrusted source
+    // (reference-index merge, imported chunks).
     let p = std::path::Path::new(rel_file);
     if p.is_absolute()
         || p.components()
@@ -111,10 +111,10 @@ fn run_git_log_line_range(
     };
 
     // Normalize backslashes + strip Windows verbatim `\\?\` prefix for git.
-    // P3.37 (PB-3 follow-up): bare `replace('\\', "/")` turns `\\?\C:\...`
-    // into `//?/C:/...` which `git log -L start,end:<path>` parses as a
-    // pathspec containing a literal `?`. `normalize_slashes` strips the
-    // verbatim prefix first, so the resulting path matches the index entry.
+    // A bare `replace('\\', "/")` would turn `\\?\C:\...` into `//?/C:/...`,
+    // which `git log -L start,end:<path>` parses as a pathspec containing a
+    // literal `?`. `normalize_slashes` strips the verbatim prefix first, so
+    // the resulting path matches the index entry.
     let git_file = cqs::normalize_slashes(rel_file);
     let line_range = format!("{},{}:{}", start, end, git_file);
     let depth_str = depth.to_string();
@@ -151,10 +151,10 @@ fn run_git_log_line_range(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// SEC-9 + robustness: truncate git stderr so user-controlled path content
-/// can't bloat error messages, and so a non-ASCII path in git's error
-/// doesn't straddle the byte cutoff and panic the process. Slices at a
-/// UTF-8 char boundary via `floor_char_boundary`.
+/// Truncate git stderr so user-controlled path content can't bloat error
+/// messages, and so a non-ASCII path in git's error doesn't straddle the byte
+/// cutoff and panic the process. Slices at a UTF-8 char boundary via
+/// `floor_char_boundary`.
 pub(crate) fn truncate_git_stderr(stderr: &str) -> String {
     const MAX_STDERR_LEN: usize = 256;
     if stderr.len() > MAX_STDERR_LEN {
@@ -454,11 +454,11 @@ mod tests {
         assert_eq!(json["total_commits"], 0);
     }
 
-    /// C.2 / robustness: when a non-ASCII path appears in git's stderr (CJK
-    /// directory, emoji filename, accented Latin), the legacy code sliced
-    /// `&stderr[..MAX_STDERR_LEN]` directly. If byte 256 lands inside a
-    /// multi-byte codepoint, that panics the process. `truncate_git_stderr`
-    /// must use `floor_char_boundary` and produce valid UTF-8.
+    /// When a non-ASCII path appears in git's stderr (CJK directory, emoji
+    /// filename, accented Latin), a naive `&stderr[..MAX_STDERR_LEN]` slice
+    /// would panic if byte 256 lands inside a multi-byte codepoint.
+    /// `truncate_git_stderr` must use `floor_char_boundary` and produce valid
+    /// UTF-8.
     #[test]
     fn git_log_stderr_truncate_handles_non_ascii_paths() {
         // Build a stderr message that exceeds MAX_STDERR_LEN (256) and

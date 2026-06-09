@@ -8,14 +8,11 @@ use std::path::Path;
 use crate::embedder::Embedding;
 use crate::store::{ClearHnswDirty, Store, StoreError};
 
-// API-V1.36-6 follow-up: the `IndexBackendError` wrapper enum was a
-// single-variant `Store(StoreError)` after #1493 dropped its two
-// never-emitted variants. The wrapper added no information — every
-// non-fall-through error a backend produces is a store-level error,
+// Backend methods return `Result<_, StoreError>` directly: every
+// non-fall-through error a backend produces is a store-level error, and
 // every other failure mode is self-handled via `tracing::warn!` +
-// `Ok(None)`. The trait now returns `Result<_, StoreError>` directly;
-// `anyhow::Result<_>` still consumes it via `?` exactly as before
-// because `StoreError: std::error::Error`.
+// `Ok(None)`. `anyhow::Result<_>` consumes it via `?` because
+// `StoreError: std::error::Error`.
 
 /// Result from a vector index search
 #[derive(Debug, Clone)]
@@ -64,15 +61,14 @@ pub trait VectorIndex: Send + Sync {
         filter: &dyn Fn(&str) -> bool,
     ) -> Vec<IndexResult> {
         // Default: over-fetch unfiltered, post-filter by chunk_id.
-        // saturating_mul — sibling of P1-42 (v1.33 #1326) which fixed the same
-        // shape in src/search/. The trait default sat untouched.
+        // saturating_mul guards against overflow when k is large.
         let results: Vec<IndexResult> = self
             .search(query, k.saturating_mul(3))
             .into_iter()
             .filter(|r| filter(&r.id))
             .take(k)
             .collect();
-        // AC-7: Warn when post-filter yields fewer results than requested.
+        // Warn when post-filter yields fewer results than requested.
         // This indicates the filter is too restrictive relative to the over-fetch
         // multiplier (3x), or the index is too small.
         if results.len() < k && self.len() >= k {
@@ -86,7 +82,7 @@ pub trait VectorIndex: Send + Sync {
         results
     }
 
-    /// RM-V1.25-19: Has this index observed a panic / poisoned mutex mid-op?
+    /// Has this index observed a panic / poisoned mutex mid-op?
     ///
     /// The default answer is `false`; only the CAGRA GPU backend currently
     /// tracks this. When `true`, the caller should discard the index and
@@ -129,7 +125,7 @@ pub struct BackendContext<'a, Mode: ClearHnswDirty> {
     /// Backend selection policy from `[index.policy]` in `.cqs.toml`.
     /// `None` when the project's config has no policy override (or no
     /// `[index]` table at all); each backend then falls through to the
-    /// env > built-in default chain. P4-6 / #1463.
+    /// env > built-in default chain.
     pub policy: Option<&'a crate::config::IndexPolicy>,
 }
 
@@ -165,7 +161,7 @@ pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
     ) -> std::result::Result<Option<Box<dyn VectorIndex>>, StoreError>;
 }
 
-/// #1348 / EX-V1.33-2: declare the registered backends as a single table.
+/// Declare the registered backends as a single table.
 ///
 /// Each row is either an unconditional `name => path` or a feature-gated
 /// `name => path, cfg(feature = "...")`. The macro emits a private const
@@ -177,10 +173,9 @@ pub trait IndexBackend<Mode: ClearHnswDirty>: Send + Sync {
 ///
 /// Backends that ship in the future (USearch / Metal / ROCm / SIMD
 /// brute-force) drop in as one extra `Backend, cfg(feature = "<flag>"),`
-/// row each. The cfg-permutation matrix at the call site collapses; before
-/// this refactor a USearch backend would have required four `#[cfg]` arms
-/// (cuda+usearch, cuda only, usearch only, neither) per `backends()`
-/// definition.
+/// row each. The table keeps the cfg-permutation matrix collapsed: without
+/// it, a USearch backend would need four `#[cfg]` arms (cuda+usearch, cuda
+/// only, usearch only, neither) per `backends()` definition.
 macro_rules! register_index_backends {
     (
         $(

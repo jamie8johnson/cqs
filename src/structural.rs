@@ -152,8 +152,8 @@ const GENERIC_UNSAFE_MARKERS: &[&str] = &["unsafe"];
 ///   - Otherwise use the supplied `generic` slice.
 ///
 /// Each slice is treated disjunctively: any single substring hit triggers the
-/// pattern. Conjunctive markers (e.g. Python "except: AND pass") were folded
-/// into single specific phrases ("except:") that distinguish positive from
+/// pattern. Conjunctive markers (e.g. Python "except: AND pass") are expressed
+/// as single specific phrases ("except:") that distinguish positive from
 /// negative cases without the AND.
 fn matches_any_marker(
     content: &str,
@@ -177,10 +177,9 @@ fn matches_any_marker(
 
 /// Error swallowing: catch/except with empty body, unwrap_or_default, `_ => {}`, etc.
 ///
-/// Per-language markers live on `LanguageDef::error_swallow_patterns`. None of
-/// the language-specific slices include the conjunctive logic that the old
-/// dispatcher had — they were rewritten as specific disjunctive phrases that
-/// pass the same test cases (e.g. Python `["except:", "except Exception:"]`
+/// Per-language markers live on `LanguageDef::error_swallow_patterns`. The
+/// language-specific slices use specific disjunctive phrases rather than
+/// conjunctive logic (e.g. Python `["except:", "except Exception:"]`
 /// distinguishes bare-except from typed-except).
 fn matches_error_swallow(content: &str, language: Option<Language>) -> bool {
     matches_any_marker(

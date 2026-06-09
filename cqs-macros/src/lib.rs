@@ -1,8 +1,7 @@
 //! Internal proc-macros for the cqs crate.
 //!
-//! `#[derive(CqsCommands)]` replaces the hand-edited `for_each_command!`
-//! registry table (issue #1366 / EX-V1.33-10). Per-variant attributes live
-//! on the `Commands` enum; the macro emits:
+//! `#[derive(CqsCommands)]` generates the command registry from the
+//! `Commands` enum. Per-variant attributes live on the enum; the macro emits:
 //!
 //!   * `Commands::variant_name(&self) -> &'static str`
 //!   * `Commands::batch_support(&self) -> BatchSupport`
@@ -112,7 +111,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .filter(|v| matches!(v.group, Group::A))
         .map(|v| v.passthrough_arm(enum_ident, /*group_b_seen_in_a*/ false));
 
-    // DX (#1495 follow-up): emit a const-eval shim-existence guard. If any
+    // Emit a const-eval shim-existence guard. If any
     // `cmd_<snake>_dispatch` function is missing, the error fires once
     // here with a clear "function not found in `crate::cli::commands`"
     // message, rather than scattered per-call-site errors inside the
@@ -121,7 +120,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let dispatch_existence_checks = parsed.iter().map(|v| v.shim_existence_check());
 
     Ok(quote! {
-        // DX (#1495 follow-up): consolidated shim-existence check. If any
+        // Consolidated shim-existence check. If any
         // `cmd_<snake>_dispatch` function is missing or has the wrong
         // signature, the error fires here with a single clear message
         // tied to the derive expansion. Without this block, you'd get
@@ -277,8 +276,8 @@ impl ParsedVariant {
 
         // Default name: kebab-case of variant ident (matches clap's default
         // subcommand name). `Init` → `"init"`, `TrainData` → `"train-data"`,
-        // `AuditMode` → `"audit-mode"`. Override only when the legacy
-        // telemetry label diverges.
+        // `AuditMode` → `"audit-mode"`. Override only when the telemetry
+        // label diverges from the kebab-case default.
         let name_lit = name_lit.unwrap_or_else(|| to_kebab_case(&variant.ident.to_string()));
         let group = group.ok_or_else(|| {
             syn::Error::new_spanned(
@@ -397,7 +396,7 @@ impl ParsedVariant {
         }
     }
 
-    /// DX (#1495 follow-up): emit a single line of the consolidated
+    /// Emit a single line of the consolidated
     /// shim-existence guard. The guard is a `const _: ()` block that
     /// coerces every `cmd_<snake>_dispatch` through a typed local
     /// binding — if the function is missing or has the wrong shape, the

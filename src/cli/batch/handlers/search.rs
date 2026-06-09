@@ -7,9 +7,8 @@ use super::super::BatchView;
 use crate::cli::args::SearchArgs;
 
 /// Dispatches a search query and returns results as JSON.
-/// #947: takes the shared `SearchArgs` directly, no batch-local `SearchParams`
-/// redirection. Both CLI top-level search and batch search deserialize into
-/// the same struct, eliminating per-field drift as a possibility.
+/// Takes the shared `SearchArgs` directly. Both CLI top-level search and batch
+/// search deserialize into the same struct, eliminating per-field drift.
 /// # Arguments
 /// * `ctx` - The batch processing context containing the store and embedder
 /// * `args` - Parsed search arguments (shared with CLI top-level)
@@ -95,7 +94,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         .context("Failed to embed query")?;
 
     let limit = args.limit_arg.limit.clamp(1, 100);
-    // P3 #100: shared rerank pool sizing.
+    // Shared rerank pool sizing.
     let effective_limit = if args.rerank_active() {
         crate::cli::limits::rerank_pool_size(limit)
     } else {
@@ -135,7 +134,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
 
     // mmr_lambda intentionally left at default (None) — finalize_results
-    // resolves it via CQS_MMR_LAMBDA fallback. #1349: SearchFilter is
+    // resolves it via CQS_MMR_LAMBDA fallback. SearchFilter is
     // `#[non_exhaustive]`, so external-crate construction goes through
     // `Default` + field assignment.
     let filter = {
@@ -158,7 +157,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     // --ref scoped search: search only the named reference
     if let Some(ref ref_name) = args.ref_name {
         let ref_idx = crate::cli::commands::resolve::find_reference(&ctx.root, ref_name)?;
-        // P3 #100: shared rerank pool sizing.
+        // Shared rerank pool sizing.
         let ref_limit = if args.rerank_active() {
             crate::cli::limits::rerank_pool_size(limit)
         } else {
@@ -186,8 +185,8 @@ pub(in crate::cli::batch) fn dispatch_search(
         let json_results: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
-                // #1169: --ref scoped search — every chunk came from a single
-                // named reference, so trust_level = "reference-code" and
+                // --ref scoped search — every chunk came from a single named
+                // reference, so trust_level = "reference-code" and
                 // reference_name = ref_name for all of them.
                 serde_json::to_value(ChunkOutput::from_search_result_with_origin(
                     r,
@@ -247,8 +246,8 @@ pub(in crate::cli::batch) fn dispatch_search(
     };
     let index = index.as_deref();
 
-    // #1127: borrow_splade_index now returns Option<Arc<SpladeIndex>>; deref
-    // through the Arc when handing the &SpladeIndex to search_hybrid.
+    // borrow_splade_index returns Option<Arc<SpladeIndex>>; deref through the
+    // Arc when handing the &SpladeIndex to search_hybrid.
     let splade_index_ref = ctx.borrow_splade_index();
 
     let splade_arg = splade_query
@@ -299,14 +298,13 @@ pub(in crate::cli::batch) fn dispatch_search(
         results
     };
 
-    // --include-refs: merge reference results. RM-V1.29-1: use the
-    // BatchContext LRU so repeated `--include-refs` queries in a daemon
-    // session don't rebuild every reference Store+HNSW per call. The
-    // rayon call below uses the default global pool — the old sequential
-    // fallback that built a fresh 4-thread pool per query is gone.
+    // --include-refs: merge reference results. Uses the BatchContext LRU so
+    // repeated `--include-refs` queries in a daemon session don't rebuild
+    // every reference Store+HNSW per call. The rayon call below uses the
+    // default global pool.
     //
-    // #1169: the merged tagged Vec carries source info per result. We build
-    // a side-table (`origin_by_id`) keyed by chunk id so the downstream
+    // The merged tagged Vec carries source info per result. We build a
+    // side-table (`origin_by_id`) keyed by chunk id so the downstream
     // token-pack + serialize path stays a flat `Vec<UnifiedResult>` while
     // the JSON emission can still tag each chunk's trust origin.
     let mut origin_by_id: std::collections::HashMap<String, String> =
@@ -404,7 +402,7 @@ pub(in crate::cli::batch) fn dispatch_search(
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-// TC-HP-7 (issue #973): content-asserting tests for `dispatch_search`.
+// Content-asserting tests for `dispatch_search`.
 //
 // The batch `tests/cli_batch_test.rs` integration tests only assert schema
 // (field names, non-empty arrays), so a regression that returned zeros or the
@@ -563,8 +561,8 @@ mod tests {
         }
     }
 
-    /// Issue #973 / TC-HP-7a: exact-name `--name-only` query returns the
-    /// matching chunk as the *top* result with a deterministic score of 1.0.
+    /// Exact-name `--name-only` query returns the matching chunk as the *top*
+    /// result with a deterministic score of 1.0.
     ///
     /// Adversarial contract: the test fails if a different chunk sorts first
     /// — catches a sort/scoring regression in `search_by_name`.
@@ -616,8 +614,8 @@ mod tests {
         assert_eq!(results[0]["language"], "rust");
     }
 
-    /// Issue #973 / TC-HP-7b: prefix-match `--name-only` query returns the
-    /// prefixed chunk with score 0.9 (from `score_name_match_pre_lower`).
+    /// Prefix-match `--name-only` query returns the prefixed chunk with
+    /// score 0.9 (from `score_name_match_pre_lower`).
     /// Ensures the FTS5 prefix-match (`name:"parse"*`) path actually fires.
     #[test]
     fn test_dispatch_search_name_only_prefix_match_ranks_first() {
@@ -678,8 +676,8 @@ mod tests {
         }
     }
 
-    /// Issue #973 / TC-HP-7c: `--name-only --limit N` honours the limit
-    /// *and* clamps out-of-range values via `limit.clamp(1, 100)`. A regression
+    /// `--name-only --limit N` honours the limit *and* clamps out-of-range
+    /// values via `limit.clamp(1, 100)`. A regression
     /// that passed the raw limit through would return unlimited rows.
     #[test]
     fn test_dispatch_search_name_only_limit_clamp() {
@@ -726,8 +724,8 @@ mod tests {
         assert_eq!(json["results"].as_array().unwrap().len(), 3);
     }
 
-    /// Issue #973 / TC-HP-7d: no-match `--name-only` query returns empty
-    /// results with `total: 0`. The schema must still be present — callers
+    /// No-match `--name-only` query returns empty results with `total: 0`.
+    /// The schema must still be present — callers
     /// rely on `results[]` / `total` keys existing regardless of row count.
     ///
     /// This is the adversarial case the issue requires: a silent regression
@@ -756,8 +754,8 @@ mod tests {
         );
     }
 
-    /// Issue #973 / TC-HP-7e: name-only returns chunks from every inserted
-    /// language. Covers `ChunkOutput::from_search_result` rendering for
+    /// Name-only returns chunks from every inserted language. Covers
+    /// `ChunkOutput::from_search_result` rendering for
     /// non-Rust languages — a refactor that special-cased Rust or dropped
     /// the `language` field would break this.
     #[test]
@@ -817,11 +815,11 @@ mod tests {
         }
     }
 
-    /// Issue #973 / TC-HP-7f: `--include-type` with an invalid chunk type
-    /// name returns an error at the parsing boundary (dispatch_search:82-87),
+    /// `--include-type` with an invalid chunk type name returns an error at
+    /// the parsing boundary (dispatch_search:82-87),
     /// *before* the embedder is touched. This guards the
     /// `ChunkType::from_str` pipeline that refactors have historically
-    /// broken by regressing the `FromStr` impl or the CQ-5 alias handling.
+    /// broken by regressing the `FromStr` impl or the alias handling.
     ///
     /// We intentionally don't assert embedder output — the embedder path is
     /// not reached. The test is still content-asserting: it asserts the
@@ -843,8 +841,8 @@ mod tests {
         );
     }
 
-    /// Issue #973 / TC-HP-7g: `--exclude-type` with an invalid chunk type
-    /// name errors symmetrically with `--include-type`. The exclude path
+    /// `--exclude-type` with an invalid chunk type name errors symmetrically
+    /// with `--include-type`. The exclude path
     /// is a common forgotten mirror in refactors that rename the include
     /// branch.
     #[test]

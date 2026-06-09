@@ -12,9 +12,9 @@ use crate::store::helpers::IndexStats;
 use crate::store::StoreError;
 use crate::{compute_risk_batch, HnswIndex, RiskLevel, Store};
 
-// SHL-V1.29-7: the previous `HEALTH_HOTSPOT_COUNT = 5` constant was hardcoded.
-// It now scales with corpus size via `crate::limits::health_hotspot_count`.
-// Env override: `CQS_HEALTH_HOTSPOT_COUNT`.
+// The health hotspot count scales with corpus size via
+// `crate::limits::health_hotspot_count`. Env override:
+// `CQS_HEALTH_HOTSPOT_COUNT`.
 
 /// A function hotspot: high caller count indicates central importance.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -56,7 +56,7 @@ pub fn health_check<Mode>(
     // Fatal: can't report without basic stats
     let stats = store.stats()?;
 
-    // SHL-V1.29-7: scale hotspot thresholds with corpus size.
+    // Scale hotspot thresholds with corpus size.
     let chunk_count = stats.total_chunks as usize;
     let hotspot_count = health_hotspot_count(chunk_count);
     let min_callers = hotspot_min_callers(chunk_count);
@@ -204,19 +204,18 @@ mod tests {
 
         // Insert 3 chunks with distinct files. Materialize each file on disk
         // under the project root so `list_stale_files`'s `metadata()` call
-        // succeeds — P3 #135 changed the staleness check to treat metadata
-        // failures as stale (with a `current_mtime = -1` sentinel) rather
-        // than silently fresh, so synthetic happy-path tests must back the
-        // chunks with real files.
+        // succeeds — the staleness check treats metadata failures as stale
+        // (with a `current_mtime = -1` sentinel) rather than silently fresh,
+        // so synthetic happy-path tests must back the chunks with real files.
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         for (i, name) in ["alpha", "beta", "gamma"].iter().enumerate() {
             let file = format!("src/mod{}.rs", i);
             std::fs::write(dir.path().join(&file), format!("fn {}() {{ }}", name)).unwrap();
             let chunk = test_chunk(&file, name, 1, &format!("fn {}() {{ }}", name));
-            // Stamp the stored mtime to a large future value so the post-#135
-            // staleness check (now `current_mtime > stored_mtime`) correctly
-            // sees these chunks as fresh — the file's real mtime from
-            // `std::fs::write` above will be smaller.
+            // Stamp the stored mtime to a large future value so the staleness
+            // check (`current_mtime > stored_mtime`) sees these chunks as
+            // fresh — the file's real mtime from `std::fs::write` above will
+            // be smaller.
             store
                 .upsert_chunk(&chunk, &mock_embedding(0.0), Some(i64::MAX))
                 .unwrap();
@@ -358,8 +357,8 @@ mod tests {
         );
     }
 
-    /// TC-3: Verify untested_hotspots is populated when a high-caller function has no tests.
-    /// The filter (health.rs lines 93-97) requires:
+    /// Verify untested_hotspots is populated when a high-caller function has no tests.
+    /// The untested-hotspot filter requires:
     ///   caller_count >= HOTSPOT_MIN_CALLERS (5)
     ///   test_count == 0
     ///   risk_level == High  (score = callers * 1.0 >= 5.0 with 0 tests)
@@ -435,7 +434,7 @@ mod tests {
         );
     }
 
-    /// TC-3b: Verify untested_hotspots is empty when a hotspot has test coverage.
+    /// Verify untested_hotspots is empty when a hotspot has test coverage.
     /// When a high-caller function has at least one test, it should not appear
     /// in untested_hotspots even if risk is otherwise High.
     #[test]

@@ -1,7 +1,7 @@
 //! CAGRA GPU-accelerated vector search
 //!
 //! Uses NVIDIA cuVS for GPU-accelerated nearest neighbor search.
-//! Only available when compiled with the `gpu-index` feature.
+//! Only available when compiled with the `cuda-index` feature.
 //!
 //! ## Usage
 //!
@@ -12,12 +12,12 @@
 //! When GPU is available and this feature is enabled, CAGRA provides
 //! faster search than CPU-based HNSW for large indexes.
 //!
-//! ## Ownership Model (cuVS 26.4+)
+//! ## Ownership Model
 //!
 //! The cuVS `search()` method takes `&self` (non-consuming). The index is
-//! built once and reused for all searches. No rebuild machinery needed.
+//! built once and reused for all searches.
 //!
-//! ## Persistence (issue #950)
+//! ## Persistence
 //!
 //! The persisted form is two files next to each other:
 //!
@@ -34,8 +34,8 @@
 //!   4. Call `cuvsCagraDeserialize` to reconstitute the GPU index.
 //!
 //! Any failure logs a warn and returns `Err`, and the caller rebuilds from
-//! the store. The save path warn-logs failures (non-fatal) so we just
-//! rebuild next startup.
+//! the store. The save path warn-logs failures (non-fatal); we rebuild on
+//! next startup.
 //!
 //! Set `CQS_CAGRA_PERSIST=0` to disable save+load entirely (A/B testing or
 //! reducing on-disk footprint). Default: enabled.
@@ -67,7 +67,7 @@ const CAGRA_META_MAGIC: &str = "CAGRA01";
 #[cfg(feature = "cuda-index")]
 const CAGRA_META_VERSION: u32 = 1;
 
-/// Sentinel distance marking an output slot cuVS did not write (issue #952).
+/// Sentinel distance marking an output slot cuVS did not write.
 ///
 /// # Why a sentinel?
 ///
@@ -80,7 +80,7 @@ const CAGRA_META_VERSION: u32 = 1;
 /// A zero-initialized output buffer decodes those untouched slots as
 /// `(chunk_id = 0, distance = 0.0)` → `score = 1.0`, emitting phantom
 /// perfect-match hits pointing at whichever chunk happens to hold internal
-/// index 0. This is the class of bug tracked by issue #952.
+/// index 0.
 ///
 /// The fix is to pre-fill `distances_host` with this sentinel before the
 /// kernel launch and drop any slot whose distance still holds it after
@@ -102,15 +102,14 @@ const CAGRA_META_VERSION: u32 = 1;
 /// `is_nan()` exclusively, losing the "real distances are finite"
 /// structural guarantee.
 ///
-/// # cuVS API audit (cuvs 26.4, April 2026)
+/// # cuVS API audit
 ///
-/// The companion issue contemplated two upstream mechanisms that would
-/// make this sentinel unnecessary:
+/// Two upstream mechanisms would make this sentinel unnecessary:
 ///   1. A `fill_with_invalid` (or equivalent) option on
 ///      [`cuvs::cagra::SearchParams`] that pre-fills unused rows.
 ///   2. An `n_valid_results` output field on the search call.
 ///
-/// Neither exists in 26.4: `SearchParams` exposes only `itopk_size`,
+/// Neither exists: `SearchParams` exposes only `itopk_size`,
 /// `max_queries`, `max_iterations`, algo/team/block tuning, and hashmap
 /// knobs. The search entrypoint returns `Result<()>` with no per-row
 /// validity information. Re-audit this when bumping the `cuvs` pin; if
@@ -142,7 +141,7 @@ pub enum CagraError {
     ChecksumMismatch(String),
 }
 
-/// SHL-10: Configurable CAGRA CPU memory cap via `CQS_CAGRA_MAX_BYTES` env var.
+/// Configurable CAGRA CPU memory cap via `CQS_CAGRA_MAX_BYTES` env var.
 /// Defaults to 2GB. Cached in OnceLock for single parse.
 #[cfg(feature = "cuda-index")]
 fn cagra_max_bytes() -> usize {
@@ -155,15 +154,12 @@ fn cagra_max_bytes() -> usize {
     })
 }
 
-/// SHL-V1.33-9: Configurable CAGRA streaming batch size for `build_from_store`,
-/// overridable via `CQS_CAGRA_STREAM_BATCH_SIZE`. Default 10_000 matches the
-/// historical hardcoded constant — at dim=1024 that's a 40 MB allocation per
-/// batch (10_000 × 1024 × 4 bytes). Higher-dim models (e.g. hypothetical
-/// dim=4096) may want to shrink this to keep per-batch heap bounded; lower-dim
-/// models (E5-base, dim=768) can grow it for fewer SQL round trips.
-///
-/// SHL-V1.36-5: now scales with `dim` automatically. Env override
-/// `CQS_CAGRA_STREAM_BATCH_SIZE` still wins verbatim.
+/// Configurable CAGRA streaming batch size for `build_from_store`, scaled by
+/// `dim` and overridable via `CQS_CAGRA_STREAM_BATCH_SIZE` (which wins
+/// verbatim). The base 10_000 at dim=1024 is a 40 MB allocation per batch
+/// (10_000 × 1024 × 4 bytes). Higher-dim models shrink it to keep per-batch
+/// heap bounded; lower-dim models (E5-base, dim=768) grow it for fewer SQL
+/// round trips.
 #[cfg(feature = "cuda-index")]
 fn cagra_stream_batch_size(dim: usize) -> usize {
     if let Ok(val) = std::env::var("CQS_CAGRA_STREAM_BATCH_SIZE") {
@@ -176,7 +172,7 @@ fn cagra_stream_batch_size(dim: usize) -> usize {
     crate::limits::dim_scaled_batch(10_000, dim, 500, 50_000)
 }
 
-/// Issue #962: Scale `itopk_max` ceiling with corpus size. At 1k chunks we
+/// Scale `itopk_max` ceiling with corpus size. At 1k chunks we
 /// want the library default (~320); at 1M chunks we want ~640 or more.
 /// Logarithmic scaling based on chunk count:
 ///   ceiling = (log2(n_vectors) * 32).clamp(128, 4096)
@@ -190,7 +186,7 @@ fn cagra_itopk_max_default(n_vectors: usize) -> usize {
     scaled.clamp(128, 4096)
 }
 
-/// Issue #962: Build-time CAGRA graph degrees, overridable via env.
+/// Build-time CAGRA graph degrees, overridable via env.
 /// `CQS_CAGRA_GRAPH_DEGREE` (default 64) is the output graph degree.
 /// `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` (default 128) is the pruned-input
 /// graph degree. Both map to the corresponding cuVS `IndexParams` setters.
@@ -198,9 +194,8 @@ fn cagra_itopk_max_default(n_vectors: usize) -> usize {
 #[cfg(feature = "cuda-index")]
 fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
     // Use parse_env_usize_clamped so a literal "0" or empty string falls back
-    // to the default (sibling of P1-45 in v1.33: HNSW M/ef were hardened the
-    // same way; CAGRA branch was missed). cuvs treats 0 as "library default"
-    // on some versions, errors on others — silent-misconfig surface.
+    // to the default. cuvs treats 0 as "library default" on some versions,
+    // errors on others — silent-misconfig surface.
     let graph_degree =
         crate::limits::parse_env_usize_clamped("CQS_CAGRA_GRAPH_DEGREE", 64, 1, 4096);
     let intermediate_graph_degree =
@@ -231,11 +226,10 @@ pub struct CagraIndex {
     gpu: Mutex<GpuState>,
     /// Mapping from internal index to chunk ID.
     ///
-    /// P4-11 follow-up: `Box<str>` instead of `String` to drop the
-    /// 8-byte `cap` field per entry. Mirrors the change in
-    /// `HnswIndex::id_map`. ~8 MB reduction at 1M chunks.
+    /// `Box<str>` rather than `String` drops the 8-byte `cap` field per
+    /// entry (~8 MB reduction at 1M chunks). Mirrors `HnswIndex::id_map`.
     id_map: Vec<Box<str>>,
-    /// RM-V1.25-19: Set when a mutex poison is observed. The CUDA stream
+    /// Set when a mutex poison is observed. The CUDA stream
     /// may be in an inconsistent posture after a mid-op panic
     /// (cudaMalloc'd buffer unfreed, stream corked, resources leaked),
     /// so subsequent searches against the same `GpuState` could
@@ -285,31 +279,30 @@ impl std::fmt::Debug for CagraIndex {
 impl CagraIndex {
     /// Check if GPU is available for CAGRA.
     ///
-    /// Back-compat shim: equivalent to `gpu_available_for(0, 0)` so existing
-    /// boolean call sites still compile. New call sites should use
-    /// [`Self::gpu_available_for`] which estimates the build memory budget
+    /// Equivalent to `gpu_available_for(0, 0)`. Prefer
+    /// [`Self::gpu_available_for`], which estimates the build memory budget
     /// and refuses to claim GPU availability when the corpus would OOM the
     /// device.
     pub fn gpu_available() -> bool {
         Self::gpu_available_for(0, 0)
     }
 
-    /// P2.42 — GPU-availability + VRAM-budget check.
+    /// GPU-availability + VRAM-budget check.
     ///
     /// `cuvs::Resources::new().is_ok()` only verifies that the CUDA driver
     /// loads; it doesn't guard against the *build* peak memory exceeding
-    /// the device's free VRAM. On 8 GB GPUs this surfaced as OOM during
+    /// the device's free VRAM. On 8 GB GPUs an unguarded build OOMs during
     /// CAGRA construction with no graceful fallback to HNSW.
     ///
     /// Pass the actual `(n_vectors, dim)` of the corpus you're about to
-    /// index. With `(0, 0)` this collapses to the legacy boolean check.
+    /// index. With `(0, 0)` this collapses to a plain driver-loadable check.
     pub fn gpu_available_for(n_vectors: usize, dim: usize) -> bool {
         if cuvs::Resources::new().is_err() {
             return false;
         }
         if n_vectors == 0 || dim == 0 {
-            // Legacy callers asking only "is the driver loadable?" — keep
-            // existing semantics. The caller has no corpus shape to size.
+            // Callers asking only "is the driver loadable?" — the caller has
+            // no corpus shape to size.
             return true;
         }
         // Estimate build peak memory: dataset + graph + ~30% slack for cuVS
@@ -323,7 +316,7 @@ impl CagraIndex {
             .saturating_add(graph_bytes)
             .saturating_mul(130)
             / 100;
-        // P2.42: env override `CQS_CAGRA_MAX_GPU_BYTES` lets operators with
+        // env override `CQS_CAGRA_MAX_GPU_BYTES` lets operators with
         // workloads they understand opt out of the conservative default
         // (2 GiB). Without `nvml-wrapper` we can't probe free VRAM here;
         // 2 GiB keeps RTX 4000 8 GB safe for most realistic corpora.
@@ -400,11 +393,10 @@ impl CagraIndex {
         }
 
         let gpu = self.gpu.lock().unwrap_or_else(|poisoned| {
-            // RM-V1.25-19: a prior panic left the CUDA stream in an
-            // unknown state. Flag the index so the caller forces a
-            // rebuild on the next `vector_index()` access; return an
-            // empty result here rather than run a new kernel against
-            // possibly-corrupted resources.
+            // A prior panic left the CUDA stream in an unknown state. Flag
+            // the index so the caller forces a rebuild on the next
+            // `vector_index()` access; return an empty result here rather
+            // than run a new kernel against possibly-corrupted resources.
             self.poisoned.store(true, Ordering::Release);
             tracing::warn!(
                 "CAGRA GPU mutex poisoned — results from this call are discarded \
@@ -438,16 +430,14 @@ impl CagraIndex {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(|| cagra_itopk_max_default(self.len()));
-        // P2.37: cuVS CAGRA hard-requires `itopk_size >= k`. The previous
+        // cuVS CAGRA hard-requires `itopk_size >= k`. A plain
         // `(k * 2).clamp(min, max)` could clamp `itopk_size` *below* `k`
         // when `k > itopk_max` (e.g. `cqs search --limit 500` on a small
-        // corpus), and CAGRA then errored out with the result reaching
-        // the caller as an empty Vec — a silent zero-result regression.
-        // Force `itopk_size >= k` and refuse the search if the cap can't
-        // honour it.
-        // AC-V1.38-9 (#1463): saturating_mul mirrors the HNSW search
-        // path — pathological `k` values now saturate rather than
-        // panic/wrap.
+        // corpus); CAGRA then errors out and the result reaches the caller
+        // as an empty Vec — a silent zero-result. Force `itopk_size >= k`
+        // and refuse the search if the cap can't honour it. `saturating_mul`
+        // mirrors the HNSW search path — pathological `k` saturates rather
+        // than panics/wraps.
         // Defense-in-depth: dispatch sites read `VectorIndex::max_k()`
         // (returns `Some(itopk_max)` for this backend) and trim `k` so
         // the call below succeeds. This branch only fires when a caller
@@ -491,8 +481,8 @@ impl CagraIndex {
         // copies data to GPU but the DLTensor shape pointer still references the host
         // ndarray's internal shape storage.
         let mut neighbors_host: Array2<u32> = Array2::zeros((1, k));
-        // Sentinel-init (issue #952): cuVS does not write slots beyond the
-        // number of real neighbours it found, so we seed every slot with
+        // Sentinel-init: cuVS does not write slots beyond the number of
+        // real neighbours it found, so we seed every slot with
         // `INVALID_DISTANCE` and filter against it after copy-back. See
         // the `INVALID_DISTANCE` doc for the cuVS API audit that motivates
         // the sentinel approach.
@@ -524,7 +514,7 @@ impl CagraIndex {
                 }
             };
 
-        // Perform search — non-consuming in cuVS 26.4+
+        // Perform search — non-consuming.
         let result = if let Some(bitset) = bitset_device {
             gpu.index.search_with_filter(
                 &gpu.resources,
@@ -568,7 +558,7 @@ impl CagraIndex {
         for i in 0..k {
             let idx = neighbor_row[i] as usize;
             let dist = distance_row[i];
-            // Sentinel check (issue #952): a slot still holding
+            // Sentinel check: a slot still holding
             // `INVALID_DISTANCE` means cuVS did not overwrite it, so the
             // paired `neighbor_row[i]` is garbage and must be dropped.
             // `!is_finite()` is a superset of `dist == INVALID_DISTANCE`
@@ -581,8 +571,6 @@ impl CagraIndex {
             if idx < self.id_map.len() {
                 let score = 1.0 - dist / 2.0;
                 results.push(IndexResult {
-                    // P4-11 follow-up: Box<str>::to_string() — same
-                    // single-allocation cost as the prior String::clone().
                     id: self.id_map[idx].to_string(),
                     score,
                 });
@@ -611,9 +599,9 @@ impl VectorIndex for CagraIndex {
         "CAGRA"
     }
 
-    /// RM-V1.25-19: expose the poison flag so `BatchContext::vector_index`
-    /// can force a full rebuild instead of reusing a possibly-corrupt
-    /// CUDA context after a prior panic.
+    /// Expose the poison flag so `BatchContext::vector_index` can force a
+    /// full rebuild instead of reusing a possibly-corrupt CUDA context
+    /// after a prior panic.
     fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Acquire)
     }
@@ -687,7 +675,7 @@ impl VectorIndex for CagraIndex {
             return Vec::new();
         }
 
-        // P2.52: cap effective `k` at the bitset's `included` count. Asking
+        // Cap effective `k` at the bitset's `included` count. Asking
         // CAGRA for more slots than feasible silently under-fills (or, when
         // `k > itopk_max`, errors and returns empty). Both modes hide a
         // "candidate pool was small" answer behind the same empty Vec a
@@ -711,8 +699,7 @@ impl VectorIndex for CagraIndex {
         );
 
         let gpu = self.gpu.lock().unwrap_or_else(|poisoned| {
-            // RM-V1.25-19: same recovery path as `search()`. See that
-            // comment for the rationale — CUDA state may be corrupt, we
+            // Same recovery path as `search()`. CUDA state may be corrupt;
             // flag for rebuild and drop the work rather than kernel-launch
             // against a bad stream.
             self.poisoned.store(true, Ordering::Release);
@@ -753,10 +740,9 @@ unsafe impl Sync for CagraIndex {}
 #[cfg(feature = "cuda-index")]
 impl CagraIndex {
     /// Build CAGRA index from all embeddings in a Store.
-    /// Unlike HNSW, CAGRA indexes are not persisted to disk.
-    /// Note: CAGRA (cuVS) requires all data upfront for GPU index building,
-    /// so we can't stream incrementally like HNSW. However, we stream from
-    /// SQLite to avoid double-buffering in memory.
+    /// CAGRA (cuVS) requires all data upfront for GPU index building, so we
+    /// can't stream incrementally like HNSW. We stream from SQLite to avoid
+    /// double-buffering in memory.
     /// Notes are excluded — they use brute-force search from SQLite.
     pub fn build_from_store<Mode>(
         store: &crate::Store<Mode>,
@@ -785,10 +771,10 @@ impl CagraIndex {
             )));
         }
 
-        // RM-V1.36-10: sanity-bound chunk_count before with_capacity in case
-        // a corrupt store reports usize::MAX (matching SPLADE's defensive
-        // pattern in splade/index.rs). 1<<28 = ~268M chunks, well above any
-        // realistic corpus.
+        // Sanity-bound chunk_count before with_capacity in case a corrupt
+        // store reports usize::MAX (matching SPLADE's defensive pattern in
+        // splade/index.rs). 1<<28 = ~268M chunks, well above any realistic
+        // corpus.
         const MAX_CHUNKS_SANITY: usize = 1 << 28;
         if chunk_count > MAX_CHUNKS_SANITY {
             return Err(CagraError::Io(format!(
@@ -799,10 +785,10 @@ impl CagraIndex {
         let mut id_map = Vec::with_capacity(chunk_count);
         let mut flat_data = Vec::with_capacity(chunk_count.saturating_mul(dim));
 
-        // SHL-V1.33-9: streaming batch size is env-overridable so future
-        // higher-dim models can shrink the per-batch heap footprint without
-        // a recompile. At dim=1024 the default is 40 MB / batch
-        // (10_000 × 1024 × 4 bytes); at hypothetical dim=4096, 160 MB / batch.
+        // Streaming batch size is env-overridable so higher-dim models can
+        // shrink the per-batch heap footprint without a recompile. At
+        // dim=1024 the default is 40 MB / batch (10_000 × 1024 × 4 bytes);
+        // at dim=4096, 160 MB / batch.
         let batch_size = cagra_stream_batch_size(dim);
         let mut loaded_chunks = 0usize;
         for batch_result in store.embedding_batches(batch_size) {
@@ -861,10 +847,10 @@ impl CagraIndex {
 
         tracing::info!("CAGRA index built successfully");
 
-        // P4-11 follow-up: convert Vec<String> → Vec<Box<str>> at the
-        // CagraIndex construction boundary. `String::into_boxed_str()` is
-        // zero-copy (shrinks the existing heap allocation, drops the
-        // `cap` field). Saves ~8 bytes per entry of resident memory.
+        // Convert Vec<String> → Vec<Box<str>> at the CagraIndex
+        // construction boundary. `String::into_boxed_str()` is zero-copy
+        // (shrinks the existing heap allocation, drops the `cap` field),
+        // saving ~8 bytes per entry of resident memory.
         let id_map_boxed: Vec<Box<str>> = id_map.into_iter().map(String::into_boxed_str).collect();
 
         Ok(Self {
@@ -895,7 +881,7 @@ struct CagraMeta {
     dim: usize,
     /// Number of vectors in the persisted index. Must match the store on load.
     chunk_count: usize,
-    /// `Store::splade_generation()` at save time. Bumped by the v20 delete trigger.
+    /// `Store::splade_generation()` at save time. Bumped by the delete trigger.
     /// Coarse staleness check; a mismatch is not fatal because CAGRA builds
     /// survive deletion-free INSERTs, but we log it as an informational warn.
     splade_generation: u64,
@@ -947,8 +933,8 @@ impl CagraIndex {
     pub fn save(&self, path: &Path) -> Result<(), CagraError> {
         let _span = tracing::info_span!("cagra_save", path = %path.display()).entered();
         if !cagra_persist_enabled() {
-            // OB-V1.36-3 / P2-3: per-call warn — "looked done, did nothing"
-            // silent skips surface only as missing blobs at next load.
+            // Per-call warn — a silent skip would surface only as a missing
+            // blob at next load.
             tracing::warn!(path = %path.display(), "CAGRA save skipped — CQS_CAGRA_PERSIST=0");
             return Err(CagraError::Io(
                 "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
@@ -956,9 +942,9 @@ impl CagraIndex {
         }
 
         let gpu = self.gpu.lock().map_err(|_| {
-            // RM-V1.25-19: the mutex was poisoned by a prior panic in the
-            // search path. Rather than try to serialize a potentially
-            // corrupt CUDA context, refuse and let the caller rebuild.
+            // The mutex was poisoned by a prior panic in the search path.
+            // Rather than try to serialize a potentially corrupt CUDA
+            // context, refuse and let the caller rebuild.
             self.poisoned.store(true, Ordering::Release);
             CagraError::Io("CAGRA mutex poisoned, refusing to save".to_string())
         })?;
@@ -980,12 +966,10 @@ impl CagraIndex {
             }
         }
 
-        // DS-V1.36-2 (P4-12 / #1463): atomic save with `.bak` rollback.
-        // Pre-fix, cuVS wrote directly to the final path, destroying the
-        // previous good blob on any mid-save failure. Now: stage to a tmp
-        // path, atomic_replace onto the live name, restore from `.bak` on
-        // failure. Mirrors `src/hnsw/persist.rs:467-484` and the SPLADE
-        // pattern (DS-V1.36-5).
+        // Atomic save with `.bak` rollback: stage to a tmp path,
+        // atomic_replace onto the live name, restore from `.bak` on failure
+        // so a mid-save failure can't destroy the previous good blob.
+        // Mirrors `src/hnsw/persist.rs` and the SPLADE pattern.
         let meta_path = meta_path_for(path);
         let blob_hash = save_blob_atomic_with_rollback(self, &gpu, path)?;
 
@@ -997,9 +981,8 @@ impl CagraIndex {
             // splade_generation default of 0 — callers wanting the coarse
             // staleness check should use `save_with_store`.
             splade_generation: 0,
-            // P4-11 follow-up: convert Vec<Box<str>> → Vec<String> at the
-            // sidecar boundary (the on-disk schema stays Vec<String> for
-            // backward-compatible `serde_json` decode).
+            // Convert Vec<Box<str>> → Vec<String> at the sidecar boundary
+            // (the on-disk schema is Vec<String> for `serde_json` decode).
             id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
             blake3: blob_hash,
         };
@@ -1071,8 +1054,8 @@ impl CagraIndex {
             }
         };
 
-        // DS-V1.36-2 (P4-12 / #1463): atomic save with `.bak` rollback.
-        // See `save` above for the full rationale.
+        // Atomic save with `.bak` rollback. See `save` above for the
+        // full rationale.
         let meta_path = meta_path_for(path);
         let blob_hash = save_blob_atomic_with_rollback(self, &gpu, path)?;
 
@@ -1082,9 +1065,8 @@ impl CagraIndex {
             dim: self.dim,
             chunk_count: self.id_map.len(),
             splade_generation: generation,
-            // P4-11 follow-up: convert Vec<Box<str>> → Vec<String> at the
-            // sidecar boundary (the on-disk schema stays Vec<String> for
-            // backward-compatible `serde_json` decode).
+            // Convert Vec<Box<str>> → Vec<String> at the sidecar boundary
+            // (the on-disk schema is Vec<String> for `serde_json` decode).
             id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
             blake3: blob_hash,
         };
@@ -1249,8 +1231,8 @@ impl CagraIndex {
         Ok(Self {
             dim: meta.dim,
             gpu: Mutex::new(GpuState { resources, index }),
-            // P4-11 follow-up: convert Vec<String> → Vec<Box<str>> at the
-            // load boundary. Zero-copy via `String::into_boxed_str()`.
+            // Convert Vec<String> → Vec<Box<str>> at the load boundary.
+            // Zero-copy via `String::into_boxed_str()`.
             id_map: meta
                 .id_map
                 .into_iter()
@@ -1309,10 +1291,10 @@ fn blake3_of_path(path: &Path) -> Result<String, CagraError> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// DS-V1.36-2 (P4-12 / #1463): write the cuVS blob via stage-tmp + atomic-replace
-/// with `.bak` rollback so a mid-save failure can restore the prior good blob.
+/// Write the cuVS blob via stage-tmp + atomic-replace with `.bak` rollback
+/// so a mid-save failure can restore the prior good blob.
 ///
-/// Sequence (mirrors `src/hnsw/persist.rs:467-484` and the SPLADE pattern):
+/// Sequence (mirrors `src/hnsw/persist.rs` and the SPLADE pattern):
 ///   1. Refuse if a stale `<path>.bak` already exists — it's a recovery
 ///      breadcrumb from a prior failed save and must be cleared first.
 ///   2. cuVS serializes the index to `<path>.<suffix>.tmp` (NOT the live path).
@@ -1538,11 +1520,9 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
         &self,
         ctx: &crate::index::BackendContext<'_, Mode>,
     ) -> std::result::Result<Option<Box<dyn VectorIndex>>, crate::store::StoreError> {
-        // P4-6 (#1463): resolution order is env > [index.policy] > default.
-        // The env var has been the only knob since v1.25; the config layer
-        // just adds a per-project pin without requiring shell setup. A
-        // missing / unparseable env var falls through to the policy table;
-        // a missing policy falls through to the built-in default.
+        // Resolution order is env > [index.policy] > default. A missing /
+        // unparseable env var falls through to the policy table; a missing
+        // policy falls through to the built-in default.
         const CAGRA_THRESHOLD_DEFAULT: u64 = 5000;
         let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
             .ok()
@@ -1553,17 +1533,16 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
             tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
             0
         });
-        // SHL-V1.33-1: route through `gpu_available_for(n, dim)` so the P2.42
-        // VRAM-budget check actually fires. The legacy zero-arg
-        // `gpu_available()` collapses to `gpu_available_for(0, 0)` which
-        // short-circuits the corpus-aware branch — the gate then claims
-        // eligibility even on a corpus that would OOM CAGRA build on 8 GB
-        // GPUs.
+        // Route through `gpu_available_for(n, dim)` so the VRAM-budget
+        // check actually fires. The zero-arg `gpu_available()` collapses to
+        // `gpu_available_for(0, 0)` which short-circuits the corpus-aware
+        // branch — the gate would then claim eligibility even on a corpus
+        // that would OOM CAGRA build on 8 GB GPUs.
         let dim = ctx.store.dim();
         let gpu_available = CagraIndex::gpu_available_for(chunk_count as usize, dim);
         if chunk_count < cagra_threshold || !gpu_available {
-            // OB-V1.38-5 (#1463): info-level so an operator with default log
-            // filtering can see the GPU/CPU fallback decision in journald.
+            // Info-level so an operator with default log filtering can see
+            // the GPU/CPU fallback decision in journald.
             // One line per Store init (not per query), tagged with the same
             // `backend` / `source` shape as the success arms (cagra=persisted
             // / built; hnsw=cagra-ineligible) so log filters work uniformly.
@@ -1579,7 +1558,7 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
             return Ok(None);
         }
 
-        // Issue #950: try the persisted index first. cuVS native
+        // Try the persisted index first. cuVS native
         // deserialize is fast (~sub-second even for tens of thousands of
         // vectors) compared to the ~30s rebuild on a mid-size repo, so
         // the daemon cold-start cost drops dramatically across systemctl
@@ -1831,8 +1810,8 @@ mod tests {
         assert!(!results.is_empty());
     }
 
-    /// Issue #952 regression: when `k > index.len()`, cuVS leaves the
-    /// extra output slots untouched. The `INVALID_DISTANCE` sentinel must
+    /// When `k > index.len()`, cuVS leaves the extra output slots
+    /// untouched. The `INVALID_DISTANCE` sentinel must
     /// filter them out so we never emit phantom perfect-match hits
     /// (distance `0.0` → score `1.0`) pointing at internal index 0.
     #[test]
@@ -1893,9 +1872,8 @@ mod tests {
         assert!(over > max_bytes);
     }
 
-    /// Issue #950 acceptance test: build → save → load → search, asserting
-    /// bit-exact (same order, same scores) neighbors before and after the
-    /// round-trip.
+    /// build → save → load → search, asserting bit-exact (same order, same
+    /// scores) neighbors before and after the round-trip.
     #[test]
     fn test_save_load_round_trip() {
         let _guard = GPU_LOCK.lock().unwrap();
@@ -1957,7 +1935,7 @@ mod tests {
         }
     }
 
-    // ====== DS-V1.36-2 (P4-12 / #1463) — `.bak` rollback pattern ======
+    // ====== `.bak` rollback pattern ======
 
     /// First save (no prior file) leaves no `.bak` and no `.tmp`. Pins the
     /// "skipped backup" branch.

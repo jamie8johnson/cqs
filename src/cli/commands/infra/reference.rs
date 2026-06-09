@@ -47,19 +47,19 @@ pub(crate) enum RefCommand {
         /// Path to the source codebase to index
         source: PathBuf,
         /// Score weight multiplier (0.0-1.0, default 0.8)
-        // AC-V1.29-5: bounded at parse time via `parse_unit_f32`. The
-        // after-the-fact range check in `cmd_ref_add` still guards the
-        // config-file loader path, so we keep belt-and-braces here.
+        // Bounded at parse time via `parse_unit_f32`. The after-the-fact
+        // range check in `cmd_ref_add` still guards the config-file loader
+        // path, so we keep belt-and-braces here.
         #[arg(long, default_value = "0.8", value_parser = crate::cli::definitions::parse_unit_f32)]
         weight: f32,
-        /// API-V1.29-2: shared `--json` arg — without it, `cqs --json ref add`
-        /// still printed colored text and broke downstream JSON parsers.
+        /// Shared `--json` arg so `cqs --json ref add` emits JSON rather than
+        /// colored text.
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// List configured references
     List {
-        /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
+        /// Shared `--json` arg.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -67,27 +67,23 @@ pub(crate) enum RefCommand {
     Remove {
         /// Name of the reference to remove
         name: String,
-        /// API-V1.29-2: shared `--json` arg.
+        /// Shared `--json` arg.
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Update a reference index from its source.
     ///
-    /// API-V1.36-3 (#1459): exposed as both `update` and the
-    /// `reindex` visible alias so cross-command muscle memory
-    /// transfers from `cqs index --force` (the project-side
-    /// equivalent verb).
+    /// Exposed as both `update` and the `reindex` visible alias so
+    /// cross-command muscle memory transfers from `cqs index --force` (the
+    /// project-side equivalent verb).
     ///
-    /// #1459 item 3 (deep parity arm): mirrors `cqs index`'s
-    /// `--llm-summaries` / `--improve-docs` / `--hyde-queries`
-    /// flag set so ref refresh has the same enrichment surface
-    /// as the project-side reindex. `--apply` (in-place doc
-    /// rewrite of source files) is intentionally NOT exposed
-    /// for refs — references typically point at vendored or
-    /// external code, and silently writing back into someone
-    /// else's tree is the wrong default. `--improve-docs`
-    /// always writes proposed patches to
-    /// `<ref-dir>/proposed-docs/` for review.
+    /// Mirrors `cqs index`'s `--llm-summaries` / `--improve-docs` /
+    /// `--hyde-queries` flag set so ref refresh has the same enrichment
+    /// surface as the project-side reindex. `--apply` (in-place doc rewrite
+    /// of source files) is NOT exposed for refs — references typically point
+    /// at vendored or external code, and silently writing back into someone
+    /// else's tree is the wrong default. `--improve-docs` always writes
+    /// proposed patches to `<ref-dir>/proposed-docs/` for review.
     #[command(visible_alias = "reindex")]
     Update {
         /// Name of the reference to update
@@ -121,7 +117,7 @@ pub(crate) enum RefCommand {
         #[cfg(feature = "llm-summaries")]
         #[arg(long)]
         max_hyde: Option<usize>,
-        /// API-V1.29-2: shared `--json` arg.
+        /// Shared `--json` arg.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -170,8 +166,8 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
     }
 }
 
-/// #1459 item 3: opts bundle for `cqs ref reindex`'s LLM/HyDE flag parity
-/// with `cqs index`. Empty marker struct under
+/// Opts bundle for `cqs ref reindex`'s LLM/HyDE flag parity with
+/// `cqs index`. Empty marker struct under
 /// `#[cfg(not(feature = "llm-summaries"))]` so the dispatcher signature
 /// stays identical regardless of feature gate.
 #[cfg(feature = "llm-summaries")]
@@ -223,8 +219,8 @@ fn cmd_ref_add(
     let source = dunce::canonicalize(source)
         .map_err(|e| anyhow::anyhow!("Source path '{}' not found: {}", source.display(), e))?;
 
-    // SEC-V1.30.1-6 (#1222): if `dunce::canonicalize` redirected the
-    // user-supplied path through a symlink, surface it. The submitted
+    // If `dunce::canonicalize` redirected the user-supplied path through a
+    // symlink, surface it. The submitted
     // index will live at the *resolved* path; an operator who
     // symlinks `vendored-monorepo-pull/` → `~/work/customer-A-private/`
     // and runs `cqs ref add foo vendored-monorepo-pull/` deserves a
@@ -260,8 +256,8 @@ fn cmd_ref_add(
     }
 
     // Create reference directory with restrictive permissions.
-    // SEC-V1.30.1-9: walk every parent that `create_dir_all` may have
-    // freshly created and chmod each to 0o700. Without this, the
+    // Walk every parent that `create_dir_all` may have freshly created and
+    // chmod each to 0o700. Without this, the
     // `~/.local/share/cqs/refs/` chain inherits the user's umask
     // (typically 0o022 → 0o755), so `~/.local/share/cqs/refs/` itself
     // is world-readable and a co-located user can `ls` the names of
@@ -277,9 +273,8 @@ fn cmd_ref_add(
         if let Err(e) = std::fs::set_permissions(&ref_dir, std::fs::Permissions::from_mode(0o700)) {
             tracing::debug!(path = %ref_dir.display(), error = %e, "Failed to set file permissions");
         }
-        // SEC-V1.30.1-9: also chmod `~/.local/share/cqs/refs/` so the
-        // index *names* (one per ref subdir) aren't readable by other
-        // users on a multi-user host.
+        // Also chmod `~/.local/share/cqs/refs/` so the index *names* (one per
+        // ref subdir) aren't readable by other users on a multi-user host.
         if let Some(refs_root) = ref_dir.parent() {
             if let Err(e) =
                 std::fs::set_permissions(refs_root, std::fs::Permissions::from_mode(0o700))
@@ -324,8 +319,8 @@ fn cmd_ref_add(
         false,
         cli.quiet,
         cli.try_model_config()?.clone(),
-        // #1452: ref add does not run the LLM summary pass, so first-pass
-        // embed is the only embed — never skip it for refs.
+        // Ref add does not run the LLM summary pass, so first-pass embed is
+        // the only embed — never skip it for refs.
         false,
     )?;
 
@@ -340,9 +335,9 @@ fn cmd_ref_add(
         }
     }
 
-    // SEC-V1.30.1-10: chmod 0o600 on every file in `ref_dir` (DB, WAL,
-    // SHM, HNSW snapshot). Mirrors the `cqs export-model` pattern for
-    // `model.toml`. Without this, the per-user umask leaks the index
+    // chmod 0o600 on every file in `ref_dir` (DB, WAL, SHM, HNSW snapshot).
+    // Mirrors the `cqs export-model` pattern for `model.toml`. Without this,
+    // the per-user umask leaks the index
     // contents to other users on a multi-user host. Best-effort —
     // failures are logged at debug, not surfaced; the directory is
     // already 0o700 from the parent block, so file-mode failures
@@ -397,8 +392,8 @@ fn cmd_ref_add(
     Ok(())
 }
 
-/// SEC-V1.30.1-6 (#1222): detect whether `dunce::canonicalize` redirected
-/// `source_input` through a symlink. Returns `Ok(Some(message))` on
+/// Detect whether `dunce::canonicalize` redirected `source_input` through a
+/// symlink. Returns `Ok(Some(message))` on
 /// redirect, `Ok(None)` when the input lexically matches the canonical
 /// path, and `Err` only when the absolute form of `source_input` cannot
 /// be computed.
@@ -454,10 +449,9 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
 
     if config.references.is_empty() {
         if want_json {
-            // API-V1.29-2 + P2.15: emit `{references: []}` envelope so list
-            // commands share a uniform `data.<plural>` accessor across
-            // ref/model/project/slot/notes — matches the standard
-            // documented in `docs/audit-fix-prompts.md::P2.15`.
+            // Emit `{references: []}` envelope so list commands share a
+            // uniform `data.<plural>` accessor across
+            // ref/model/project/slot/notes.
             crate::cli::json_envelope::emit_json(&serde_json::json!({
                 "references": Vec::<RefListEntry>::new(),
             }))?;
@@ -498,7 +492,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                 }
             })
             .collect();
-        // P2.15: wrap in `{references: [...]}` so the list shape matches
+        // Wrap in `{references: [...]}` so the list shape matches
         // slot/project/notes envelopes.
         crate::cli::json_envelope::emit_json(&serde_json::json!({
             "references": refs,
@@ -548,9 +542,9 @@ fn cmd_ref_remove(name: &str, json: bool) -> Result<()> {
     let removed = remove_reference_from_config(&config_path, name)?;
 
     if !removed {
-        // API-V1.29-2: in JSON mode, surface `not_found` as a structured
-        // envelope error instead of an anyhow bail that would serialize as
-        // plain text on stderr.
+        // In JSON mode, surface `not_found` as a structured envelope error
+        // instead of an anyhow bail that would serialize as plain text on
+        // stderr.
         if json {
             crate::cli::json_envelope::emit_json_error(
                 crate::cli::json_envelope::error_codes::NOT_FOUND,
@@ -597,11 +591,10 @@ fn cmd_ref_remove(name: &str, json: bool) -> Result<()> {
 
 /// Re-index a reference from its source directory.
 fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> Result<()> {
-    // OB-V1.38-1 (#1463): per-subcommand entry span. The parent
-    // `cmd_ref` span carries `cmd_ref` only; without a child here,
-    // structured-trace consumers can't tell which ref name was reindexed
-    // or which post-pipeline pass (LLM / HyDE / docs / enrichment) is
-    // the slow leg without RUST_LOG=debug. Mirrors the
+    // Per-subcommand entry span. The parent `cmd_ref` span carries `cmd_ref`
+    // only; without a child here, structured-trace consumers can't tell
+    // which ref name was reindexed or which post-pipeline pass (LLM / HyDE /
+    // docs / enrichment) is the slow leg without RUST_LOG=debug. Mirrors the
     // `cmd_project_search` per-subcommand span pattern in
     // `src/cli/commands/infra/project.rs`.
     #[cfg(feature = "llm-summaries")]
@@ -616,9 +609,9 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
     #[cfg(not(feature = "llm-summaries"))]
     let _span = tracing::info_span!("cmd_ref_update", ref_name = %name).entered();
 
-    // #1459 item 3: enforce flag-dependency invariants up front so misuse
-    // bails before the (potentially long) index pipeline runs. Mirrors
-    // `cmd_index`'s pre-flight at `src/cli/commands/index/build.rs`.
+    // Enforce flag-dependency invariants up front so misuse bails before the
+    // (potentially long) index pipeline runs. Mirrors `cmd_index`'s
+    // pre-flight at `src/cli/commands/index/build.rs`.
     #[cfg(feature = "llm-summaries")]
     {
         if opts.improve_docs && !opts.llm_summaries {
@@ -635,7 +628,7 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
     let ref_config = match config.references.iter().find(|r| r.name == name) {
         Some(r) => r,
         None => {
-            // API-V1.29-2: structured envelope error in JSON mode.
+            // Structured envelope error in JSON mode.
             if json {
                 crate::cli::json_envelope::emit_json_error(
                     crate::cli::json_envelope::error_codes::NOT_FOUND,
@@ -659,12 +652,11 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
         );
     }
 
-    // SEC-V1.38-4 (#1463): mirror cmd_ref_add's symlink-redirect warn so
-    // an operator who pointed `vendored-deps/ → ~/work/customer-A-private/`
-    // after the original `cqs ref add` sees a loud notice on the next
-    // update / reindex. The check is cheap (lexical normalize +
-    // canonicalize) and surfaces the same threat — vendored content
-    // swap — that SEC-V1.30.1-6 was filed for.
+    // Mirror cmd_ref_add's symlink-redirect warn so an operator who pointed
+    // `vendored-deps/ → ~/work/customer-A-private/` after the original
+    // `cqs ref add` sees a loud notice on the next update / reindex. The
+    // check is cheap (lexical normalize + canonicalize) and surfaces the
+    // vendored-content-swap threat.
     if let Ok(canonical) = dunce::canonicalize(source) {
         match symlink_redirect_warning(source, &canonical) {
             Ok(Some(msg)) => {
@@ -744,8 +736,8 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
         false,
         cli.quiet,
         cli.try_model_config()?.clone(),
-        // #1452: ref update does not run the LLM summary pass, so
-        // first-pass embed is the only embed — never skip it for refs.
+        // Ref update does not run the LLM summary pass, so first-pass embed
+        // is the only embed — never skip it for refs.
         false,
     )?;
 
@@ -785,10 +777,9 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
         println!("  Pruned: {} (deleted files)", pruned);
     }
 
-    // #1459 item 3 (deep parity arm): mirror `cmd_index`'s post-pipeline
-    // LLM / doc-comment / HyDE / enrichment passes against the ref store.
-    // Passes are gated behind their own flags so the default `cqs ref
-    // reindex` behavior is byte-identical to the pre-#1505 path.
+    // Mirror `cmd_index`'s post-pipeline LLM / doc-comment / HyDE /
+    // enrichment passes against the ref store. Passes are gated behind their
+    // own flags so the default `cqs ref reindex` behavior runs none of them.
     //
     // Rationale for matching `cmd_index`:
     //   - LLM summaries are keyed by content_hash and shared across
@@ -797,7 +788,7 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
     //     when both run for the same source.
     //   - enrichment_pass is the gate that clears `needs_embedding=1`
     //     rows; with `--llm-summaries` we skip the first-pass embed in
-    //     the pipeline (#1452), so without enrichment the ref index would
+    //     the pipeline, so without enrichment the ref index would
     //     ship full of zero-vec sentinels.
     //   - `--improve-docs` writes patches to `<ref-dir>/proposed-docs/`,
     //     never directly to source — refs typically point at vendored
@@ -1017,7 +1008,7 @@ mod tests {
         assert_eq!(json["chunks"], 0);
     }
 
-    // SEC-V1.30.1-6 (#1222) — symlink-redirect detection.
+    // symlink-redirect detection.
 
     #[test]
     fn lexical_normalize_resolves_dot_and_dotdot() {

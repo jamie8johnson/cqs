@@ -121,13 +121,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Creates a new in-memory Store instance with a temporary database for testing purposes.
-    /// # Returns
-    /// A tuple containing:
-    /// - `Store`: A newly initialized store instance
-    /// - `TempDir`: The temporary directory containing the database file, kept alive for the store's lifetime
-    /// # Panics
-    /// Panics if temporary directory creation, database opening, or store initialization fails.
+    /// Open a fresh Store backed by a temp DB. The `TempDir` is returned so
+    /// the caller keeps it alive for the store's lifetime.
     fn make_store() -> (Store, TempDir) {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
@@ -225,13 +220,8 @@ mod tests {
     use crate::parser::types::{Chunk, Language};
     use std::path::PathBuf;
 
-    /// Creates a mock Chunk representing a function with a generated blake3 content hash.
-    /// # Arguments
-    /// * `name` - The name of the function for the chunk
-    /// * `file` - The file path where the chunk is located
-    /// * `lang` - The programming language of the chunk
-    /// # Returns
-    /// A fully initialized Chunk struct with synthetic function content, a computed blake3 hash, and default metadata. The chunk spans lines 1-5 with a placeholder function body.
+    /// Build a mock function Chunk with synthetic content and a blake3
+    /// content hash, spanning lines 1-5.
     fn make_chunk(name: &str, file: &str, lang: Language) -> Chunk {
         let content = format!("fn {}() {{ /* body */ }}", name);
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
@@ -265,7 +255,7 @@ mod tests {
         Embedding::new(v)
     }
 
-    // --- Populated-store tests (TC-14) ---
+    // --- Populated-store tests ---
 
     #[test]
     fn test_drift_with_matching_functions() {

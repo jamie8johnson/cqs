@@ -14,17 +14,17 @@ pub fn set_rrf_k_from_config(overrides: &crate::config::ScoringOverrides) {
     knob::set_overrides_from_config(&overrides.knobs);
 }
 
-/// PF-2: RRF constant K. Resolved via the shared knob table — see
+/// RRF constant K. Resolved via the shared knob table — see
 /// `src/search/scoring/knob.rs` for the resolution order
 /// (config → `CQS_RRF_K` env → default 60.0).
 fn rrf_k() -> f32 {
     knob::resolve_knob("rrf_k")
 }
 
-/// PERF-V1.33-8: zero-alloc analogue of `score_name_match_pre_lower` for the
-/// ASCII fast path. Both inputs must be ASCII; `query_lower` must already
-/// be lowercase. Returns the same 1.0 / 0.9 / 0.8 / 0.7 / 0.0 tiers as the
-/// reference function (see `helpers::scoring`). Avoids per-row
+/// Zero-alloc analogue of `score_name_match_pre_lower` for the ASCII fast
+/// path. Both inputs must be ASCII; `query_lower` must already be lowercase.
+/// Returns the same 1.0 / 0.9 / 0.8 / 0.7 / 0.0 tiers as the reference
+/// function (see `helpers::scoring`). Avoids per-row
 /// `chunk.name.to_lowercase()` allocations on the dominant code-identifier
 /// path inside `search_by_name`.
 ///
@@ -129,12 +129,11 @@ impl<Mode> Store<Mode> {
         }
 
         self.rt.block_on(async {
-            // #1452: JOIN chunks + filter `needs_embedding = 0` so
-            // FTS-only candidates that haven't been embedded yet stay
-            // out of the RRF mix. They'd otherwise rank lower than
-            // expected (zero cosine score against zero-vec sentinel)
-            // and pollute the result list during a `--llm-summaries`
-            // reindex's partial state.
+            // JOIN chunks + filter `needs_embedding = 0` so FTS-only
+            // candidates that haven't been embedded yet stay out of the RRF
+            // mix. They'd otherwise rank lower than expected (zero cosine
+            // score against zero-vec sentinel) and pollute the result list
+            // during a `--llm-summaries` reindex's partial state.
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT f.id FROM chunks_fts f \
                  JOIN chunks c ON c.id = f.id \
@@ -155,7 +154,7 @@ impl<Mode> Store<Mode> {
     /// Searches the FTS5 name column for exact or prefix matches.
     /// Use this for "where is X defined?" queries instead of semantic search.
     ///
-    /// # Limit cap (P3 #101)
+    /// # Limit cap
     ///
     /// `limit` is silently clamped to a hard ceiling of **100**. Callers
     /// requesting more get exactly 100 results. The clamp is logged at
@@ -184,12 +183,12 @@ impl<Mode> Store<Mode> {
             return Ok(vec![]);
         }
 
-        // Pre-lowercase query once for score_name_match_pre_lower (PF-3)
+        // Pre-lowercase query once for score_name_match_pre_lower.
         let lower_name = name.to_lowercase();
 
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
-        // SEC-10: Runtime guard — sanitize_fts_query strips `"` but defense-in-depth
+        // Runtime guard — sanitize_fts_query strips `"` but defense-in-depth
         // prevents FTS5 injection if sanitization logic ever changes.
         if normalized.contains('"') {
             tracing::warn!(
@@ -200,15 +199,15 @@ impl<Mode> Store<Mode> {
         }
         let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
-        // SHL-V1.33-8 + SEC-V1.33-9: BM25 weights via canonical helper, plus
-        // SELECT `c.vendored` so `resolve_target` / `read --focus` can emit the
-        // correct `trust_level` for chunks under `node_modules/`/`vendor/`.
-        // Without that column the `ChunkRow::from_row` `try_get` falls back
-        // to false and every vendored chunk masquerades as user-code.
-        // #1452: filter `c.needs_embedding = 0` so chunks in the partial
-        // state of a `--llm-summaries` reindex (parser stage written, not
-        // yet enriched) are invisible from name-search until enrichment
-        // lands their real embedding. Same visibility gate as HNSW build.
+        // BM25 weights via canonical helper, plus SELECT `c.vendored` so
+        // `resolve_target` / `read --focus` can emit the correct
+        // `trust_level` for chunks under `node_modules/`/`vendor/`. Without
+        // that column the `ChunkRow::from_row` `try_get` falls back to false
+        // and every vendored chunk masquerades as user-code.
+        // Filter `c.needs_embedding = 0` so chunks in the partial state of a
+        // `--llm-summaries` reindex (parser stage written, not yet enriched)
+        // are invisible from name-search until enrichment lands their real
+        // embedding. Same visibility gate as HNSW build.
         let sql = format!(
             "SELECT {cols}
              FROM chunks c
@@ -228,13 +227,13 @@ impl<Mode> Store<Mode> {
                 .fetch_all(&self.pool)
                 .await?;
 
-            // PERF-V1.33-8: skip the per-row `to_lowercase()` allocation when
-            // both query and chunk name are pure ASCII (the dominant case for
-            // code identifiers — exotic Unicode in function names is rare).
-            // ASCII path uses `eq_ignore_ascii_case` + `score_name_match_ascii`
-            // for zero-alloc scoring; Unicode names still fall through to the
-            // existing `to_lowercase()` + `score_name_match_pre_lower` path
-            // so semantics are identical.
+            // Skip the per-row `to_lowercase()` allocation when both query
+            // and chunk name are pure ASCII (the dominant case for code
+            // identifiers — exotic Unicode in function names is rare). ASCII
+            // path uses `eq_ignore_ascii_case` + `score_name_match_ascii` for
+            // zero-alloc scoring; Unicode names fall through to the
+            // `to_lowercase()` + `score_name_match_pre_lower` path so
+            // semantics are identical.
             let lower_name_ascii = lower_name.is_ascii();
             let mut results = rows
                 .into_iter()
@@ -251,7 +250,7 @@ impl<Mode> Store<Mode> {
                 .collect::<Vec<_>>();
 
             // Re-sort by name-match score (FTS bm25 ordering may differ).
-            // P3 #122: chunk id sorts line numbers lexicographically
+            // Chunk id sorts line numbers lexicographically
             // (`"file.rs:10:..." < "file.rs:2:..."`), so the *real* line-2
             // definition would lose to the line-10 stub at score ties.
             // Tuple key prefers earlier file (alphabetic), then earlier
@@ -270,32 +269,30 @@ impl<Mode> Store<Mode> {
 
     /// Compute RRF (Reciprocal Rank Fusion) scores for combining N ranked lists.
     ///
-    /// Generalizes the historical 2-list `rrf_fuse(semantic, fts, ...)` so any
-    /// number of ranked sources can contribute on a single, uniform pipeline
+    /// Any number of ranked sources contribute on a single uniform pipeline
     /// (semantic embedding + FTS keyword + SPLADE sparse + name-fingerprint +
     /// future signals all become slice elements). Each list is deduped
     /// independently — duplicates within a list collapse to first-occurrence
     /// rank, but a chunk that appears in multiple lists still accumulates one
     /// RRF contribution per list, which is the desired "rewards overlap"
-    /// property that #1130 phase 1 preserves bit-for-bit.
+    /// property.
     ///
     /// Pre-allocates the HashMap with the total candidate budget across all
-    /// inputs (PERF-28). PF-V1.25-2: uses `BoundedScoreHeap` for the final
-    /// top-`limit` extraction instead of full-sorting every candidate, with
-    /// the id tie-breaker for deterministic ordering.
+    /// inputs. Uses `BoundedScoreHeap` for the final top-`limit` extraction
+    /// instead of full-sorting every candidate, with the id tie-breaker for
+    /// deterministic ordering.
     pub(crate) fn rrf_fuse_n(ranked_lists: &[&[&str]], limit: usize) -> Vec<(String, f32)> {
         // K=60 is the standard RRF constant from the Cormack et al. (2009)
-        // paper, originally tuned for web search. For code search with smaller
-        // corpora (10k-100k chunks), the optimal K may differ. Empirically,
-        // K=60 performs well on our eval set (90.9% R@1). Override via
-        // CQS_RRF_K env var.
+        // paper, tuned for web search. For code search with smaller corpora
+        // (10k-100k chunks), the optimal K may differ; K=60 performs well on
+        // our eval set. Override via CQS_RRF_K env var.
         let k = rrf_k();
 
         let total_capacity: usize = ranked_lists.iter().map(|l| l.len()).sum();
         let mut scores: HashMap<&str, f32> = HashMap::with_capacity(total_capacity);
 
         for list in ranked_lists {
-            // AC-9: per-list dedup — duplicates within a list collapse to
+            // Per-list dedup — duplicates within a list collapse to
             // first-occurrence rank (best score). Cross-list overlap is
             // intentional and gets the "rewards overlap" boost.
             let mut seen = std::collections::HashSet::with_capacity(list.len());
@@ -318,9 +315,8 @@ impl<Mode> Store<Mode> {
         heap.into_sorted_vec()
     }
 
-    /// Backward-compatible 2-list wrapper for the historical semantic + FTS
-    /// pairing. New call sites should target [`rrf_fuse_n`] directly so they
-    /// can plug additional signals without touching this signature.
+    /// 2-list wrapper for the semantic + FTS pairing. Prefer [`rrf_fuse_n`]
+    /// directly to plug additional signals without touching this signature.
     pub(crate) fn rrf_fuse(
         semantic_ids: &[&str],
         fts_ids: &[String],
@@ -396,12 +392,12 @@ mod tests {
         });
     }
 
-    /// P3 #122 regression: when two chunks share a name in the same file but
-    /// at different line numbers, the result for `cqs --name-only build`
-    /// must list the *earlier* line first. The previous chunk-id-only
-    /// tie-breaker sorted "file.rs:10:..." before "file.rs:2:..." because
-    /// `"1" < "2"` lexicographically, so the line-10 stub beat the line-2
-    /// real definition. Tuple key fixes it: `(file, line_start, id)`.
+    /// When two chunks share a name in the same file but at different line
+    /// numbers, the result for `cqs --name-only build` must list the
+    /// *earlier* line first. A chunk-id-only tie-breaker would sort
+    /// "file.rs:10:..." before "file.rs:2:..." lexicographically, letting the
+    /// line-10 stub beat the line-2 real definition. The tuple key
+    /// `(file, line_start, id)` prevents that.
     #[test]
     fn search_by_name_prefers_earlier_line_in_same_file() {
         let (store, _dir) = setup_store();
@@ -423,9 +419,9 @@ mod tests {
         assert_eq!(results[1].chunk.line_start, 10);
     }
 
-    /// PERF-V1.33-8: `score_name_match_ascii` must produce the same tier
-    /// as `score_name_match_pre_lower` for every ASCII case. Pins parity so
-    /// the per-row `to_lowercase()` skip doesn't silently change ranking.
+    /// `score_name_match_ascii` must produce the same tier as
+    /// `score_name_match_pre_lower` for every ASCII case. Pins parity so the
+    /// per-row `to_lowercase()` skip doesn't silently change ranking.
     #[test]
     fn score_name_match_ascii_matches_reference_for_ascii_inputs() {
         let cases: &[(&str, &str)] = &[
@@ -573,13 +569,12 @@ mod tests {
         }
     }
 
-    // ===== Direct rrf_fuse_n tests (#1130 phase 1) =====
+    // ===== Direct rrf_fuse_n tests =====
     //
-    // The 2-list rrf_fuse path is already exhaustively covered by the
-    // proptests above (it now delegates to rrf_fuse_n). These tests exercise
-    // the new generic surface with shapes the wrapper doesn't reach: empty
-    // input list, a single list, three lists, and "rewards overlap" across
-    // 3+ sources.
+    // The 2-list rrf_fuse path is exhaustively covered by the proptests above
+    // (it delegates to rrf_fuse_n). These tests exercise the generic surface
+    // with shapes the wrapper doesn't reach: empty input list, a single list,
+    // three lists, and "rewards overlap" across 3+ sources.
 
     #[test]
     fn rrf_fuse_n_empty_input_returns_empty() {

@@ -52,9 +52,9 @@ fn flush_calls(
             "Periodic flush: deferred chunk calls"
         );
         if let Err(e) = store.upsert_calls_batch(&ready) {
-            // EH-10: on transient upsert failure, push `ready` back into
-            // `retained` so the next flush attempt retries them. Discarding
-            // was silent permanent data loss.
+            // On transient upsert failure, push `ready` back into `retained`
+            // so the next flush attempt retries them. Discarding would be
+            // silent permanent data loss.
             tracing::warn!(
                 count = ready.len(),
                 error = %e,
@@ -81,7 +81,7 @@ fn flush_type_edges(store: &Store, edges: &[(PathBuf, Vec<cqs::parser::ChunkType
     match store.upsert_type_edges_for_files(edges) {
         Ok(()) => true,
         Err(e) => {
-            // EH-11: leave the buffer intact for retry rather than silently
+            // Leave the buffer intact for retry rather than silently
             // dropping all deferred edges on transient failure.
             tracing::warn!(
                 files = edges.len(),
@@ -110,13 +110,13 @@ pub(super) fn store_stage(
     let mut total_calls = 0;
     let mut deferred_type_edges: Vec<(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)> = Vec::new();
     let mut deferred_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
-    // #1283: track every chunk id we upsert per file so we can prune phantom
-    // rows (chunks at the same origin from prior runs whose ID format / hash
+    // Track every chunk id we upsert per file so we can prune phantom rows
+    // (chunks at the same origin from prior runs whose ID format / hash
     // changed) after the loop completes. Per-batch pruning is unsafe because
     // a single file's chunks can split across batches when the file is large
     // — pruning mid-loop would delete chunks the next batch is about to
-    // re-insert. The watch path already passes per-file live_ids to
-    // `upsert_chunks_calls_and_prune`; this brings the full reindex pipeline
+    // re-insert. The watch path passes per-file live_ids to
+    // `upsert_chunks_calls_and_prune`; this keeps the full reindex pipeline
     // in line.
     let mut live_ids_per_file: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     let mut batch_counter: usize = 0;
@@ -127,7 +127,7 @@ pub(super) fn store_stage(
             break;
         }
 
-        // PERF-28: Use pre-extracted chunk calls from the parse stage (rayon parallel)
+        // Use pre-extracted chunk calls from the parse stage (rayon parallel)
         // instead of re-parsing each chunk sequentially here.
         // Defer chunk_calls — they reference caller_id with FK on chunks(id),
         // and chunks from later batches aren't in the DB yet.
@@ -136,12 +136,12 @@ pub(super) fn store_stage(
         let batch_count = batch.chunk_embeddings.len();
         let no_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
 
-        // Upsert chunks WITHOUT calls (calls are deferred).
-        // #1283: also accumulate per-file live IDs for the post-loop prune pass.
+        // Upsert chunks WITHOUT calls (calls are deferred). Also accumulate
+        // per-file live IDs for the post-loop prune pass.
         //
-        // #1452: when `uncached_need_embedding` is set, the chunks past
-        // index `cached_count` carry zero-vec sentinels (skip-first-pass
-        // path under `--llm-summaries`). Cached chunks still carry real
+        // When `uncached_need_embedding` is set, the chunks past index
+        // `cached_count` carry zero-vec sentinels (skip-first-pass path
+        // under `--llm-summaries`). Cached chunks still carry real
         // embeddings (from the global cache). Slice the batch and route
         // each half to the correct upsert path so cached chunks land at
         // `needs_embedding=0` while sentinel chunks land at
@@ -178,13 +178,12 @@ pub(super) fn store_stage(
             store.upsert_chunks_unembedded_batch(chunks, mtime)?;
         }
 
-        // Store function calls extracted during parsing (for the `function_calls` table).
-        //
-        // P2 #64 (recovery wave): defer-and-batch like type edges. The previous
-        // per-file `upsert_function_calls` opened one transaction per file —
-        // 2,500 BEGIN/COMMIT round-trips on a typical wire. Collect every
-        // (file, calls) tuple first, then a single batched call writes them
-        // all in one transaction.
+        // Store function calls extracted during parsing (for the
+        // `function_calls` table). Defer-and-batch like type edges: a
+        // per-file `upsert_function_calls` would open one transaction per
+        // file (~2,500 BEGIN/COMMIT round-trips on a typical wire). Collect
+        // every (file, calls) tuple first, then a single batched call writes
+        // them all in one transaction.
         let mut function_call_entries: Vec<(PathBuf, Vec<cqs::parser::FunctionCalls>)> =
             Vec::with_capacity(batch.relationships.function_calls.len());
         for (file, function_calls) in batch.relationships.function_calls {
@@ -224,28 +223,26 @@ pub(super) fn store_stage(
             parsed, embedded, total_embedded
         ));
 
-        // RM-9: Periodic flush to bound deferred vec memory.
+        // Periodic flush to bound deferred vec memory.
         batch_counter += 1;
         if batch_counter.is_multiple_of(flush_interval) {
             deferred_chunk_calls = flush_calls(store, std::mem::take(&mut deferred_chunk_calls));
-            // EH-11: only clear the buffer on successful flush; on failure
-            // the buffer is left intact so the next flush retries.
+            // Only clear the buffer on successful flush; on failure the
+            // buffer is left intact so the next flush retries.
             if flush_type_edges(store, &deferred_type_edges) {
                 deferred_type_edges.clear();
             }
         }
     }
 
-    // #1283: prune phantom chunks per file. Walks every origin we touched,
-    // deletes rows whose ID isn't in the current live set. Catches old-format
-    // chunk IDs from prior chunker versions (e.g. `:t3wN:` middle segments
-    // dropped in later versions, `:wN` window suffix added/removed). The
-    // watch path already does this per-file via
-    // `upsert_chunks_calls_and_prune(prune_file: Some(...))`; the full reindex
-    // pipeline didn't, so a `cqs index --force` after a chunker bump would
-    // accumulate orphans (~2% of rows on the cqs default slot before this
-    // fix). Runs before the deferred call/edge flushes so any FK-cascading
-    // delete from `chunks` happens before fresh calls reference the new IDs.
+    // Prune phantom chunks per file. Walks every origin we touched, deletes
+    // rows whose ID isn't in the current live set. Catches old-format chunk
+    // IDs from prior chunker versions (e.g. `:t3wN:` middle segments, `:wN`
+    // window suffixes). Mirrors the watch path's per-file
+    // `upsert_chunks_calls_and_prune(prune_file: Some(...))` so a
+    // `cqs index --force` after a chunker bump doesn't accumulate orphans.
+    // Runs before the deferred call/edge flushes so any FK-cascading delete
+    // from `chunks` happens before fresh calls reference the new IDs.
     let mut total_orphans_pruned: u32 = 0;
     for (file, live_ids) in &live_ids_per_file {
         let live_ids_vec: Vec<&str> = live_ids.iter().map(|s| s.as_str()).collect();
@@ -269,12 +266,12 @@ pub(super) fn store_stage(
         );
     }
 
-    // Final flush: insert any remaining deferred items now that all chunks are in the DB.
-    // Issue #1281: only credit `total_calls` on a successful insert. The
-    // upsert is a single transaction — one bad FK rolls back the whole
-    // batch, so an Err means *zero* rows landed, not "we tried." Counting
-    // the attempt anyway makes the "Pipeline indexing complete
-    // total_calls=N" log lie about graph completeness.
+    // Final flush: insert any remaining deferred items now that all chunks
+    // are in the DB. Only credit `total_calls` on a successful insert — the
+    // upsert is a single transaction, so one bad FK rolls back the whole
+    // batch and an Err means *zero* rows landed. Counting the attempt
+    // anyway would make the "Pipeline indexing complete total_calls=N" log
+    // lie about graph completeness.
     if !deferred_chunk_calls.is_empty() {
         match store.upsert_calls_batch(&deferred_chunk_calls) {
             Ok(()) => {
@@ -290,7 +287,7 @@ pub(super) fn store_stage(
         }
     }
 
-    // PERF-26: Single transaction for all remaining files instead of per-file transactions.
+    // Single transaction for all remaining files instead of per-file transactions.
     if !deferred_type_edges.is_empty() {
         if let Err(e) = store.upsert_type_edges_for_files(&deferred_type_edges) {
             tracing::warn!(

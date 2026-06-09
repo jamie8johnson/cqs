@@ -1,7 +1,7 @@
 //! Doc comment generation and source file rewriting.
 //!
-//! This module provides per-language doc comment formatting and (in future tasks)
-//! source file rewriting for LLM-generated documentation.
+//! Provides per-language doc comment formatting (`formats`) and source file
+//! rewriting (`rewriter`) for LLM-generated documentation.
 
 pub mod formats;
 pub mod rewriter;
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::language::Language;
 
-/// Result from Phase 2 LLM doc generation.
+/// Result from LLM doc generation.
 /// Carries everything needed to write a doc comment back to a source file:
 /// the target location, the generated text, and metadata for cache/idempotency.
 #[derive(Debug, Clone)]

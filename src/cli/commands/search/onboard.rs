@@ -27,7 +27,7 @@ pub(crate) fn cmd_onboard(
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
-    // Task A3: cap on call_chain + callers + tests entries. Applied AFTER the
+    // Cap on call_chain + callers + tests entries. Applied AFTER the
     // BFS+search so the entry_point is always preserved and so the order
     // (relevance → depth) is respected before truncation.
     let limit = limit.clamp(1, 100);
@@ -54,7 +54,7 @@ pub(crate) fn cmd_onboard(
             crate::cli::commands::inject_token_info(&mut output, Some((used, budget)));
         }
 
-        // #1167: onboard only queries the project store — every chunk is user-code.
+        // Onboard only queries the project store — every chunk is user-code.
         crate::cli::commands::tag_user_code_trust_level(&mut output);
 
         crate::cli::json_envelope::emit_json(&output)?;

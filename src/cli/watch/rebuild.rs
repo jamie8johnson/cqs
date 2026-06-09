@@ -2,12 +2,12 @@
 //! embedder init, model resolution, threshold helpers, and the
 //! foreground/background rebuild paths.
 //!
-//! Carved out of `watch.rs`. The watch loop calls into this module to
-//! kick off a background rebuild (`spawn_hnsw_rebuild`), drain a
-//! completed one (`drain_pending_rebuild`), or fall back to retrying a
-//! flaky embedder (`try_init_embedder` + `EmbedderBackoff`). The model
-//! resolution helper lives here because it feeds the rebuild thread
-//! and the watch loop's main `Embedder` from the same source of truth.
+//! The watch loop calls into this module to kick off a background rebuild
+//! (`spawn_hnsw_rebuild`), drain a completed one (`drain_pending_rebuild`), or
+//! fall back to retrying a flaky embedder (`try_init_embedder` +
+//! `EmbedderBackoff`). The model resolution helper lives here because it feeds
+//! the rebuild thread and the watch loop's main `Embedder` from the same
+//! source of truth.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -32,7 +32,7 @@ pub(super) fn hnsw_rebuild_threshold() -> usize {
             .unwrap_or(100)
     })
 }
-/// #1090: handle to an in-flight background HNSW rebuild.
+/// Handle to an in-flight background HNSW rebuild.
 ///
 /// The rebuild thread streams embeddings from a read-only Store opened on
 /// the same `index.db`, builds a fresh `Owned` `HnswIndex`, and saves it to
@@ -43,64 +43,60 @@ pub(super) fn hnsw_rebuild_threshold() -> usize {
 /// closing the TOCTOU between the rebuild thread's snapshot and `recv`.
 pub(super) struct PendingRebuild {
     pub(super) rx: std::sync::mpsc::Receiver<RebuildOutcome>,
-    /// P1.17 / #1124: each entry carries the chunk's `content_hash` alongside
-    /// (id, embedding) so the swap-time drain can compare against the
-    /// rebuild thread's snapshot. An id-only dedup would silently drop the
-    /// fresh embedding for any chunk that was re-embedded mid-rebuild
-    /// (snapshot has the OLD vector under the same id; delta has the NEW
-    /// one) — the HNSW would carry the stale vector until the next
-    /// threshold rebuild.
+    /// Each entry carries the chunk's `content_hash` alongside (id, embedding)
+    /// so the swap-time drain can compare against the rebuild thread's
+    /// snapshot. An id-only dedup would silently drop the fresh embedding for
+    /// any chunk that was re-embedded mid-rebuild (snapshot has the OLD vector
+    /// under the same id; delta has the NEW one) — the HNSW would carry the
+    /// stale vector until the next threshold rebuild.
     pub(super) delta: Vec<(String, Embedding, String)>,
     pub(super) started_at: std::time::Instant,
-    /// P2.71: held so daemon shutdown can `join` (or detect the thread is
-    /// finished) instead of leaking a detached worker. `None` if the spawn
-    /// itself failed — the channel disconnect path then handles cleanup.
+    /// Held so daemon shutdown can `join` (or detect the thread is finished)
+    /// instead of leaking a detached worker. `None` if the spawn itself failed
+    /// — the channel disconnect path then handles cleanup.
     pub(super) handle: Option<std::thread::JoinHandle<()>>,
-    /// P2.72: latched once `delta` exceeds the dim-aware
-    /// [`pending_rebuild_delta_max`] cap. When
-    /// set, the drain path discards the rebuilt index instead of swapping
-    /// (the missed embeddings would silently disappear); the next threshold
-    /// rebuild reads fresh state from SQLite and recovers cleanly.
+    /// Latched once `delta` exceeds the dim-aware [`pending_rebuild_delta_max`]
+    /// cap. When set, the drain path discards the rebuilt index instead of
+    /// swapping (the missed embeddings would silently disappear); the next
+    /// threshold rebuild reads fresh state from SQLite and recovers cleanly.
     pub(super) delta_saturated: bool,
 }
 
-/// P1.17 / #1124: the rebuild thread reports both the freshly-built
-/// `HnswIndex` AND a fingerprint of every (id, content_hash) the build
-/// consumed. The drain path needs the snapshot to detect mid-rebuild
-/// re-embeddings — without it, a hash-aware dedup would have to issue a
-/// second SQL query (and lose snapshot consistency under concurrent
-/// writers).
+/// The rebuild thread reports both the freshly-built `HnswIndex` AND a
+/// fingerprint of every (id, content_hash) the build consumed. The drain path
+/// needs the snapshot to detect mid-rebuild re-embeddings — without it, a
+/// hash-aware dedup would have to issue a second SQL query (and lose snapshot
+/// consistency under concurrent writers).
 ///
-/// #1244 / RM-4: pre-fix this was `HashMap<String, String>` (~3 MB on
-/// a 17 k-chunk corpus, held across the full rebuild window). Now a
-/// `HashSet<u64>` of `snapshot_fingerprint(id, hash)` — ~7× smaller.
+/// `snapshot_keys` is a `HashSet<u64>` of `snapshot_fingerprint(id, hash)` —
+/// far smaller than a `HashMap<String, String>` held across the rebuild
+/// window (~3 MB on a 17 k-chunk corpus).
 pub(crate) struct RebuildResult {
     pub index: HnswIndex,
     pub snapshot_keys: std::collections::HashSet<u64>,
 }
 
-/// P2.72: cap on per-rebuild delta size. A stale-rebuild that runs longer
-/// than expected (very large index, slow disk) accumulates one entry per
-/// chunk re-embedded by the watch loop. Without a cap a multi-GB embedding
-/// vector backlog is possible — every entry is `Vec<f32>` of `dim` floats.
-/// 5,000 entries × 1024 dim × 4 bytes ≈ 20 MB worst case, recoverable by the
-/// next threshold rebuild's fresh SQLite scan.
+/// Cap on per-rebuild delta size. A stale-rebuild that runs longer than
+/// expected (very large index, slow disk) accumulates one entry per chunk
+/// re-embedded by the watch loop. Without a cap a multi-GB embedding vector
+/// backlog is possible — every entry is `Vec<f32>` of `dim` floats. 5,000
+/// entries × 1024 dim × 4 bytes ≈ 20 MB worst case, recoverable by the next
+/// threshold rebuild's fresh SQLite scan.
 ///
-/// SHL-V1.38-1 (#1463): the constant value below is the *baseline at
-/// 1024-dim*. The actual cap is dim-scaled by [`pending_rebuild_delta_max`]
-/// so a 4096-dim Qwen3-style backbone gets ~1,250 entries (still ~20 MB)
-/// instead of the dim-blind 5,000 (which would be ~80 MB). Bound on both
-/// sides via `dim_scaled_batch(_, dim, 500, 50_000)` so a tiny-dim
-/// preset doesn't go unbounded either. Operators can override the
-/// baseline via `CQS_PENDING_REBUILD_DELTA_MAX`.
+/// The constant below is the *baseline at 1024-dim*. The actual cap is
+/// dim-scaled by [`pending_rebuild_delta_max`] so a 4096-dim Qwen3-style
+/// backbone gets ~1,250 entries (still ~20 MB) instead of the dim-blind 5,000
+/// (which would be ~80 MB). Bound on both sides via
+/// `dim_scaled_batch(_, dim, 500, 50_000)` so a tiny-dim preset doesn't go
+/// unbounded either. Operators can override the baseline via
+/// `CQS_PENDING_REBUILD_DELTA_MAX`.
 pub(super) const MAX_PENDING_REBUILD_DELTA_BASELINE: usize = 5_000;
 
-/// SHL-V1.38-1 (#1463): dim-aware resolution of the pending-rebuild
-/// delta cap. Reads `CQS_PENDING_REBUILD_DELTA_MAX` for a baseline override
-/// (rejected if 0 or unparseable, falls back to the compiled-in baseline),
-/// then dim-scales via [`crate::limits::dim_scaled_batch`] so wider models
-/// don't blow the per-rebuild memory budget. Returns the absolute cap
-/// (entries, not bytes).
+/// Dim-aware resolution of the pending-rebuild delta cap. Reads
+/// `CQS_PENDING_REBUILD_DELTA_MAX` for a baseline override (rejected if 0 or
+/// unparseable, falls back to the compiled-in baseline), then dim-scales via
+/// [`crate::limits::dim_scaled_batch`] so wider models don't blow the
+/// per-rebuild memory budget. Returns the absolute cap (entries, not bytes).
 pub(super) fn pending_rebuild_delta_max(dim: usize) -> usize {
     let baseline = std::env::var("CQS_PENDING_REBUILD_DELTA_MAX")
         .ok()
@@ -157,12 +153,11 @@ impl EmbedderBackoff {
 }
 
 /// Try to initialize the shared embedder, returning a reference from the
-/// Arc-backed OnceLock. Deduplicates the 7-line pattern that appeared
-/// twice in cmd_watch. Uses `backoff` to apply exponential backoff on
-/// repeated failures (RM-24).
+/// Arc-backed OnceLock. Uses `backoff` to apply exponential backoff on
+/// repeated failures.
 ///
-/// RM-V1.25-28: the OnceLock is shared with the daemon thread; whichever
-/// side initializes first wins, and the other reuses the same Arc.
+/// The OnceLock is shared with the daemon thread; whichever side initializes
+/// first wins, and the other reuses the same Arc.
 pub(super) fn try_init_embedder<'a>(
     embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     backoff: &mut EmbedderBackoff,
@@ -207,11 +202,10 @@ pub(super) fn resolve_index_aware_model_for_watch(
     root: &std::path::Path,
     cli_model: Option<&str>,
 ) -> Result<ModelConfig> {
-    // EH-V1.38-2 (#1463): use the strict variant so a corrupt-metadata
-    // read surfaces as an error in journald instead of silently
-    // collapsing to None and triggering a wrong-dim embedder pick. The
-    // open-readonly Err arm already warns; mirror that on the metadata
-    // read.
+    // Use the strict variant so a corrupt-metadata read surfaces as an error
+    // in journald instead of silently collapsing to None and triggering a
+    // wrong-dim embedder pick. The open-readonly Err arm already warns; mirror
+    // that on the metadata read.
     let stored = match cqs::Store::open_readonly(index_path) {
         Ok(s) => match s.try_stored_model_name() {
             Ok(opt) => opt,
@@ -250,9 +244,9 @@ pub(super) fn resolve_index_aware_model_for_watch(
     );
     Ok(resolved)
 }
-/// #1090: Spawn a background thread to rebuild the enriched HNSW from the
-/// store and save it to disk. Returns a `PendingRebuild` whose `rx` will
-/// receive the new `Owned` index (or an error) when the build completes.
+/// Spawn a background thread to rebuild the enriched HNSW from the store and
+/// save it to disk. Returns a `PendingRebuild` whose `rx` will receive the new
+/// `Owned` index (or an error) when the build completes.
 ///
 /// The thread opens its own read-only Store on the same `index.db` so the
 /// main watch loop's `&Store` isn't borrowed across thread boundaries.
@@ -281,16 +275,16 @@ pub(super) fn spawn_hnsw_rebuild(
         .spawn(move || {
             let _enter = span.entered();
             let result: RebuildOutcome = (|| -> RebuildOutcome {
-                // #1344 / RM-V1.33-4: use the lower-footprint readonly open
-                // instead of `open_readonly_pooled`. The watch loop's main
-                // (read-write) store is already resident with 256 MiB mmap +
-                // 16 MiB cache; if we re-opened the rebuild store at the
-                // same size, the rebuild window peaked at 2× SQLite mapping
-                // (272 MiB) on top of the dual HNSW indexes (~50–200 MiB
-                // each). `open_readonly` keeps mmap at 64 MiB + cache at
-                // 4 MiB — `build_hnsw_index_owned` streams chunks via the
-                // batched embedding API, so the smaller mapping doesn't hurt
-                // rebuild throughput on the corpora that hit this path.
+                // Use the lower-footprint readonly open instead of
+                // `open_readonly_pooled`. The watch loop's main (read-write)
+                // store is already resident with 256 MiB mmap + 16 MiB cache;
+                // re-opening the rebuild store at the same size would peak the
+                // rebuild window at 2× SQLite mapping (272 MiB) on top of the
+                // dual HNSW indexes (~50–200 MiB each). `open_readonly` keeps
+                // mmap at 64 MiB + cache at 4 MiB — `build_hnsw_index_owned`
+                // streams chunks via the batched embedding API, so the smaller
+                // mapping doesn't hurt rebuild throughput on the corpora that
+                // hit this path.
                 let store = cqs::Store::open_readonly(&index_path).map_err(anyhow::Error::from)?;
                 if store.dim() != expected_dim {
                     anyhow::bail!(
@@ -313,9 +307,8 @@ pub(super) fn spawn_hnsw_rebuild(
                         "base HNSW rebuild failed in background; router falls back to enriched-only"
                     ),
                 }
-                // P1.17 / #1124 + #1244 / RM-4: package the
-                // (index, snapshot_keys) pair so the drain can detect
-                // mid-rebuild re-embeddings via fingerprint set.
+                // Package the (index, snapshot_keys) pair so the drain can
+                // detect mid-rebuild re-embeddings via fingerprint set.
                 Ok(enriched.map(|(index, snapshot_keys)| RebuildResult {
                     index,
                     snapshot_keys,
@@ -363,8 +356,8 @@ pub(super) fn spawn_hnsw_rebuild(
     }
 }
 
-/// #1090: Try to consume a completed background HNSW rebuild and swap it
-/// into `state.hnsw_index`. Replays any chunks captured in
+/// Try to consume a completed background HNSW rebuild and swap it into
+/// `state.hnsw_index`. Replays any chunks captured in
 /// `pending.delta` into the new index before saving + swapping so chunks
 /// committed during the rebuild window aren't dropped.
 ///
@@ -400,10 +393,10 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
             index: mut new_index,
             snapshot_keys,
         })) => {
-            // P2.72: if the delta saturated, the rebuilt index is missing
-            // events that we dropped on the floor; swapping it in would
-            // silently lose those chunks. Discard instead — the next
-            // threshold rebuild reads fresh state from SQLite and recovers.
+            // If the delta saturated, the rebuilt index is missing events that
+            // we dropped on the floor; swapping it in would silently lose
+            // those chunks. Discard instead — the next threshold rebuild reads
+            // fresh state from SQLite and recovers.
             if pending.delta_saturated {
                 let elapsed_ms = pending.started_at.elapsed().as_millis();
                 tracing::warn!(
@@ -420,13 +413,12 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                 }
                 return;
             }
-            // P1.17 / #1124: replay captured delta — skip only entries
-            // whose (id, content_hash) match the snapshot. An id that was
-            // re-embedded mid-rebuild has a NEW hash in delta but the
-            // snapshot baked in the OLD vector; the entry must replay so
-            // the fresh embedding lands in the swapped HNSW. Pure id-only
-            // dedup (the pre-fix shape) silently dropped these and left
-            // the HNSW serving stale vectors until the next threshold
+            // Replay captured delta — skip only entries whose (id,
+            // content_hash) match the snapshot. An id that was re-embedded
+            // mid-rebuild has a NEW hash in delta but the snapshot baked in the
+            // OLD vector; the entry must replay so the fresh embedding lands in
+            // the swapped HNSW. Pure id-only dedup would silently drop these
+            // and leave the HNSW serving stale vectors until the next threshold
             // rebuild.
             //
             // Trade-off when an id IS re-embedded: `insert_batch` on
@@ -438,11 +430,10 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                 .delta
                 .into_iter()
                 .filter(|(id, _, hash)| {
-                    // #1244 / RM-4: fingerprint round-trip replaces the prior
-                    // `HashMap<id, hash>` lookup. `snapshot_keys` contains
-                    // the fingerprint for every (id, hash) the rebuild
-                    // consumed; replay only when the (id, hash) we observed
-                    // mid-rebuild was NOT in the rebuild's snapshot.
+                    // `snapshot_keys` contains the fingerprint for every (id,
+                    // hash) the rebuild consumed; replay only when the (id,
+                    // hash) we observed mid-rebuild was NOT in the rebuild's
+                    // snapshot.
                     let fp = crate::cli::commands::snapshot_fingerprint(id, hash);
                     !snapshot_keys.contains(&fp)
                 })
@@ -503,7 +494,7 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
     }
 }
 
-/// DS2-7: Clear the HNSW-dirty flag for `kind`, retrying once on a
+/// Clear the HNSW-dirty flag for `kind`, retrying once on a
 /// transient error (e.g. `SQLITE_BUSY` when a concurrent writer is
 /// finishing a transaction). If both attempts fail, emits a warn and
 /// returns — the caller keeps the in-memory HNSW but the persistent

@@ -20,12 +20,11 @@ use cqs::Store;
 
 /// Baseline streaming batch size for the UMAP projection's
 /// `embedding_batches` paginator at 1024-dim. At 1024-dim each batch is
-/// ~4 MB; at 4096-dim it would be ~16 MB without scaling. SHL-V1.38-5
-/// (#1463) adds dim-aware scaling so wide-dim slots don't blow heap, and
-/// `CQS_UMAP_STREAM_BATCH` for operator override.
+/// ~4 MB; at 4096-dim it would be ~16 MB without scaling. Dim-aware scaling
+/// keeps wide-dim slots from blowing heap; `CQS_UMAP_STREAM_BATCH` overrides.
 const STREAM_BATCH_SIZE_BASELINE: usize = 1024;
 
-/// SHL-V1.38-5 (#1463): dim-aware UMAP stream batch size with env override.
+/// Dim-aware UMAP stream batch size with env override.
 fn umap_stream_batch_size(dim: usize) -> usize {
     let baseline = std::env::var("CQS_UMAP_STREAM_BATCH")
         .ok()
@@ -117,11 +116,11 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
 
     let id_max_len = buffered.iter().map(|(id, _)| id.len()).max().unwrap_or(0);
 
-    // RB-V1.29-2: the wire format writes `n_rows`, `dim`, and `id_max_len`
-    // as little-endian u32. A 64-bit host could in principle buffer more
-    // than 4 billion rows / a >4 GB max id length — validate before the
-    // narrowing cast so we fail loud instead of silently truncating and
-    // producing a corrupt payload.
+    // The wire format writes `n_rows`, `dim`, and `id_max_len` as
+    // little-endian u32. A 64-bit host could in principle buffer more than
+    // 4 billion rows / a >4 GB max id length — validate before the narrowing
+    // cast so we fail loud instead of silently truncating and producing a
+    // corrupt payload.
     anyhow::ensure!(
         n_rows <= u32::MAX as usize,
         "UMAP input has too many rows for wire format: {n_rows} > u32::MAX"
@@ -135,13 +134,12 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
         "UMAP id_max_len exceeds wire format: {id_max_len} > u32::MAX"
     );
 
-    // RB-V1.38-5 (#1463): the per-row size formula and the n_rows
-    // multiplication can each overflow on a 64-bit host even when the
-    // individual operands fit in u32 (the `ensure!` block above only
-    // validates each operand). Use saturating arithmetic so a
-    // pathological input bails with an explicit error instead of
-    // panicking on `Vec::with_capacity` or wrapping silently and
-    // hitting an out-of-bounds extend later.
+    // The per-row size formula and the n_rows multiplication can each
+    // overflow on a 64-bit host even when the individual operands fit in u32
+    // (the `ensure!` block above only validates each operand). Use saturating
+    // arithmetic so a pathological input bails with an explicit error instead
+    // of panicking on `Vec::with_capacity` or wrapping silently and hitting
+    // an out-of-bounds extend later.
     let per_row = 2usize
         .saturating_add(id_max_len)
         .saturating_add(dim.saturating_mul(4));
@@ -202,11 +200,10 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
     }
     drop(payload); // free wire buffer; child has it now
 
-    // RM-V1.38-4 (#1463): bounded streaming read of stdout/stderr instead
-    // of `wait_with_output()` (which buffers both unbounded). Mirrors the
-    // RM-V1.36-2 PDF converter pattern. Stdout carries the coord lines
-    // (~64 bytes per chunk × N chunks); cap at a generous ceiling so
-    // pathological / hostile script output can't OOM the indexer process.
+    // Bounded streaming read of stdout/stderr instead of
+    // `wait_with_output()` (which buffers both unbounded). Stdout carries the
+    // coord lines (~64 bytes per chunk × N chunks); cap at a generous ceiling
+    // so pathological / hostile script output can't OOM the indexer process.
     // Default 1 GiB (sufficient for ~16M chunks at 64 bytes/line),
     // env-overridable via `CQS_UMAP_MAX_STDOUT_BYTES`.
     use std::io::Read;
@@ -310,11 +307,10 @@ mod tests {
         (store, dir)
     }
 
-    /// #1357 / TC-HAP-V1.33-8: pin the documented graceful-skip path on
-    /// machines without Python. Pre-test, a future refactor that promoted
-    /// the skip to a hard error would silently break `cqs index --umap` on
-    /// the install base that doesn't have umap-learn — exactly the case the
-    /// graceful skip exists for.
+    /// Pin the documented graceful-skip path on machines without Python. A
+    /// refactor that promoted the skip to a hard error would break
+    /// `cqs index --umap` on the install base without umap-learn — exactly
+    /// the case the graceful skip exists for.
     ///
     /// Mutates the process-global `PATH`, so `#[serial]` to avoid races
     /// with any other test that shells out (notably the doctor / convert
@@ -350,8 +346,8 @@ mod tests {
         }
     }
 
-    /// #1357 / TC-HAP-V1.33-8: empty corpus also returns Ok(0). Reachable
-    /// only when Python + umap-learn are present (otherwise the earlier
+    /// Empty corpus also returns Ok(0). Reachable only when Python +
+    /// umap-learn are present (otherwise the earlier
     /// graceful-skip branch fires); this assertion is correct under both
     /// paths so the test is portable across the dev workstation and CI
     /// runners that lack umap-learn.

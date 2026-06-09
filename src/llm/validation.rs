@@ -1,4 +1,4 @@
-//! Validate LLM summary output before caching. (#1170)
+//! Validate LLM summary output before caching.
 //!
 //! Indirect prompt-injection defence: a poisoned chunk can produce a
 //! summary that contains injection text ("Ignore prior instructions...",
@@ -14,7 +14,7 @@
 //!   matches, log a warning and KEEP the summary (defence-in-depth, the
 //!   warning surfaces the issue without blocking legitimate prose that
 //!   happens to match a heuristic).
-//! - `off`: skip validation entirely. Existing behaviour for back-compat.
+//! - `off`: skip validation entirely.
 //!
 //! This catches *lazy* injections — summaries containing visibly
 //! instruction-shaped text. It will not catch *subtle* injections
@@ -142,7 +142,7 @@ fn detect_injection_pattern(text: &str) -> Option<&'static str> {
 }
 
 /// Return every injection pattern that matches, deduplicated and in
-/// detection order. Empty `Vec` when nothing matches. (#1181)
+/// detection order. Empty `Vec` when nothing matches.
 ///
 /// Used by chunk-emission paths to populate the per-chunk `injection_flags`
 /// array — agents see which heuristics fired without cqs deciding for them
@@ -197,8 +197,8 @@ pub fn detect_all_injection_patterns(text: &str) -> Vec<&'static str> {
         flags.push("embedded-url");
     }
 
-    // OB-V1.36-3 / P3: emit a debug log line per matched flag so operators
-    // running RUST_LOG=cqs=debug can see which patterns trip during a batch
+    // Emit a debug log line per matched flag so operators running
+    // RUST_LOG=cqs=debug can see which patterns trip during a batch
     // summarization run. validate_summary already covers strict-mode
     // rejection at warn level; this is the broader-pattern equivalent.
     if !flags.is_empty() {
@@ -337,12 +337,11 @@ mod tests {
     }
 
     /// Shared mutex for env-mutating tests in this module. Per-test
-    /// `static ENV_LOCK` declarations are independent Mutex instances
-    /// and don't actually serialize against each other — same race
-    /// trap fixed in `src/embedder/provider.rs::tests` via #1260. CI
-    /// caught the flake on v1.32.0 release commit when
-    /// `from_env_strict` raced with `from_env_unknown_falls_back_to_loose`
-    /// and read each other's `CQS_SUMMARY_VALIDATION` writes.
+    /// `static ENV_LOCK` declarations would be independent Mutex instances
+    /// that don't actually serialize against each other, letting
+    /// `from_env_strict` race with `from_env_unknown_falls_back_to_loose`
+    /// and read each other's `CQS_SUMMARY_VALIDATION` writes. A single
+    /// module-level mutex serializes them.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]

@@ -2,7 +2,7 @@
 //!
 //! Split into submodules by concern:
 //! - `config` - scoring configuration constants
-//! - `knob` - shared resolver for f32 scoring knobs (#1132)
+//! - `knob` - shared resolver for f32 scoring knobs
 //! - `name_match` - name matching/boosting logic
 //! - `note_boost` - note-based score boosting
 //! - `filter` - SQL filter building, glob compilation, chunk ID parsing

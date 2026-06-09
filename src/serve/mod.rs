@@ -9,10 +9,10 @@
 //! - `axum` HTTP server reading from a `Store<ReadOnly>`
 //! - Frontend is one HTML page + Cytoscape.js, all embedded in the binary
 //!   via `include_str!` / `include_bytes!`
-//! - Per-launch 256-bit auth token gates every request (#1118 / SEC-7);
-//!   3 credential channels (Bearer / cookie / `?token=` query); `--no-auth`
-//!   requires `NoAuthAcknowledgement` proof token. No WebSocket, no live
-//!   updates — single-user local exploration
+//! - Per-launch 256-bit auth token gates every request; 3 credential channels
+//!   (Bearer / cookie / `?token=` query); `--no-auth` requires a
+//!   `NoAuthAcknowledgement` proof token. No WebSocket, no live updates —
+//!   single-user local exploration
 //!
 //! # Threading
 //! `run_server` is async-friendly but synchronous from the caller's
@@ -53,16 +53,16 @@ pub use error::ServeError;
 /// Shared state passed to every axum handler. Wraps a read-only store
 /// behind an `Arc` so the handler tree can read concurrently.
 ///
-/// P2.76: the `blocking_permits` semaphore caps how many handlers may
-/// hold a `spawn_blocking` slot at once. Without it, axum's default
+/// The `blocking_permits` semaphore caps how many handlers may hold a
+/// `spawn_blocking` slot at once. Without it, axum's default
 /// runtime allows up to 512 blocking threads — a single hostile (or
 /// pathological) client can fan out 512 graph queries and pin ~5 GB
 /// of working set across SQLite per-connection scratch buffers.
 /// Default 32 permits is plenty for an interactive single-user UI;
 /// `CQS_SERVE_BLOCKING_PERMITS` overrides per-launch (clamped 1..1024).
 ///
-/// #1345 / RM-V1.33-5: `last_request_epoch` is an epoch-seconds timestamp
-/// touched by every incoming request via [`touch_idle_clock`]. The
+/// `last_request_epoch` is an epoch-seconds timestamp touched by every
+/// incoming request via [`touch_idle_clock`]. The
 /// idle-eviction future in `run_server` polls it; when the gap exceeds
 /// `CQS_SERVE_IDLE_MINUTES`, the server shuts down gracefully so the
 /// `Store<ReadOnly>` mmap and tokio runtime release. `0` disables.
@@ -77,13 +77,13 @@ pub(crate) struct AppState {
 /// bind address. Shared via `Arc` so the middleware closure is cheap to
 /// clone per-request.
 ///
-/// P2.58: an empty set means "wildcard bind — accept any Host". This
+/// An empty set means "wildcard bind — accept any Host". This
 /// short-circuits the DNS-rebinding allowlist when `--bind 0.0.0.0`,
 /// because the listening socket has no idea which interface IP a
 /// legitimate LAN browser will dial. Without this carve-out, every
 /// LAN client gets `400 disallowed Host header` and operators are
-/// pushed to `--no-auth`. The per-launch token (#1096) remains the
-/// primary defence in this mode.
+/// pushed to `--no-auth`. The per-launch token remains the primary
+/// defence in this mode.
 pub(crate) type AllowedHosts = Arc<HashSet<String>>;
 
 /// Run the `cqs serve` HTTP server.
@@ -96,11 +96,11 @@ pub(crate) type AllowedHosts = Arc<HashSet<String>>;
 /// `quiet` suppresses the "listening on" stdout banner so test code
 /// can run the server without polluting test output.
 ///
-/// `auth` is the per-launch token (#1096) wrapped in [`AuthMode`].
+/// `auth` is the per-launch token wrapped in [`AuthMode`].
 /// Pass [`AuthMode::Required`] to enforce the token on every route via
 /// [`auth::enforce_auth`]; pass [`AuthMode::Disabled`] (which requires
-/// a [`NoAuthAcknowledgement`] proof token) for the back-compat
-/// unauthenticated mode. The CLI calls this with `Disabled` when
+/// a [`NoAuthAcknowledgement`] proof token) for the unauthenticated mode.
+/// The CLI calls this with `Disabled` when
 /// `--no-auth` is set, after emitting a loud-warning banner. The
 /// caller is responsible for emitting the token in the "listening on"
 /// banner, since `quiet=true` callers (tests) construct their own URL.
@@ -112,13 +112,12 @@ pub fn run_server(
 ) -> Result<()> {
     let _span = tracing::info_span!("serve", addr = %bind_addr).entered();
 
-    // P2.76: bound concurrent `spawn_blocking` jobs across all
-    // handlers. See `AppState` doc comment.
+    // Bound concurrent `spawn_blocking` jobs across all handlers. See
+    // `AppState` doc comment.
     let permits = crate::limits::serve_blocking_permits();
     tracing::info!(permits, "serve: spawn_blocking semaphore initialised");
-    // #1345 / RM-V1.33-5: prime the idle clock to "now" so a startup that
-    // immediately backgrounds doesn't fire eviction before the first
-    // request arrives.
+    // Prime the idle clock to "now" so a startup that immediately backgrounds
+    // doesn't fire eviction before the first request arrives.
     let last_request_epoch = Arc::new(std::sync::atomic::AtomicU64::new(now_epoch_secs()));
     let state = AppState {
         store: Arc::new(store),
@@ -143,14 +142,14 @@ pub fn run_server(
             .with_context(|| format!("Failed to read local_addr after bind {bind_addr}"))?;
 
         if !quiet {
-            // #1096: when auth is enabled, emit the paste-ready URL
-            // (token + bind addr) so a fresh launch is one click away
-            // from being usable. The token appears here once and is
+            // When auth is enabled, emit the paste-ready URL (token + bind
+            // addr) so a fresh launch is one click away from being usable.
+            // The token appears here once and is
             // never logged via tracing — auditors can grep for serve
             // banners separately from the structured log stream.
             //
-            // P1.13 / SEC: route the token-bearing banner to stderr when
-            // stdout is not a TTY. systemd `StandardOutput=journal` and
+            // Route the token-bearing banner to stderr when stdout is not a
+            // TTY. systemd `StandardOutput=journal` and
             // container log drivers persist stdout into a 30-day retention
             // store — stderr is similarly captured but is the conventional
             // place for "informational interactive output" and operators
@@ -185,10 +184,9 @@ pub fn run_server(
         }
         tracing::info!(addr = %actual, auth_enabled = auth.token().is_some(), "cqs serve started");
 
-        // #1345 / RM-V1.33-5: race the SIGINT/SIGTERM signal future
-        // against an idle-eviction future. With `idle_minutes == 0` the
-        // idle future is `pending::<()>()` and the server only exits on
-        // signal — preserves prior behavior under the explicit opt-out.
+        // Race the SIGINT/SIGTERM signal future against an idle-eviction
+        // future. With `idle_minutes == 0` the idle future is
+        // `pending::<()>()` and the server only exits on signal.
         axum::serve(listener, app)
             .with_graceful_shutdown(idle_or_signal(last_request_epoch, idle_minutes))
             .await
@@ -203,8 +201,8 @@ pub fn run_server(
 
 /// Race a signal-driven shutdown against an idle-driven shutdown. With
 /// `idle_minutes == 0` the idle arm is `pending::<()>()` so only signals
-/// can resolve the future — matches the pre-#1345 behavior under explicit
-/// opt-out. Otherwise the server shuts down on whichever fires first.
+/// can resolve the future. Otherwise the server shuts down on whichever
+/// fires first.
 async fn idle_or_signal(last_request_epoch: Arc<std::sync::atomic::AtomicU64>, idle_minutes: u64) {
     if idle_minutes == 0 {
         tracing::info!("serve: idle eviction disabled (CQS_SERVE_IDLE_MINUTES=0)");
@@ -280,13 +278,13 @@ async fn touch_idle_clock(State(state): State<AppState>, request: Request, next:
 /// The `allowed_hosts` allowlist is wired through a middleware that
 /// rejects DNS-rebinding attacks (see [`enforce_host_allowlist`]).
 ///
-/// `auth` is the per-launch token (#1096) wrapped in [`AuthMode`].
+/// `auth` is the per-launch token wrapped in [`AuthMode`].
 /// On [`AuthMode::Required`], every route requires the token via
 /// header / cookie / query param (see [`auth::enforce_auth`]). On
 /// [`AuthMode::Disabled`], the auth layer is omitted — the
 /// [`NoAuthAcknowledgement`] proof token inside that variant
-/// guarantees an explicit opt-in (#1136).
-/// SEC-V1.36-9 (#1461): cap concurrent in-flight requests pre-everything.
+/// guarantees an explicit opt-in.
+/// Concurrent in-flight requests are capped pre-everything.
 /// `try_acquire` returns immediately — saturation is `503 Service
 /// Unavailable`, never a queued allocation. Sits as the outermost
 /// middleware so it gates EVERY downstream layer (auth, host allowlist,
@@ -330,28 +328,26 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
         .route("/static/{*path}", get(assets::static_asset))
         .with_state(state);
 
-    // #1345 / RM-V1.33-5: touch the idle clock on every request. Sits
-    // inside auth (after this layer order is finalized below) so even
-    // unauthenticated pings count as activity — the threat model is "user
-    // walked away," not "adversary keeps the server alive."
+    // Touch the idle clock on every request. Sits inside auth (after this
+    // layer order is finalized below) so even unauthenticated pings count as
+    // activity — the threat model is "user walked away," not "adversary keeps
+    // the server alive."
     app = app.layer(from_fn_with_state(touch_state, touch_idle_clock));
 
-    // #1096 SEC-7: per-launch auth. Sits inside the host-header
-    // allowlist (rejected hosts skip auth — saves a constant-time
-    // compare on a request we'd reject anyway) and outside the
-    // compression/trace layers (so 401 responses are still gzipped
-    // and traced).
+    // Per-launch auth. Sits inside the host-header allowlist (rejected hosts
+    // skip auth — saves a constant-time compare on a request we'd reject
+    // anyway) and outside the compression/trace layers (so 401 responses are
+    // still gzipped and traced).
     match auth {
         AuthMode::Required { token, cookie_port } => {
-            // PF-V1.30.1-6: `new()` pre-builds the cookie name and lookup
-            // needle once so the per-request middleware path doesn't
-            // allocate.
+            // `new()` pre-builds the cookie name and lookup needle once so the
+            // per-request middleware path doesn't allocate.
             let middleware_state = auth::AuthMiddlewareState::new(token, cookie_port);
             app = app.layer(from_fn_with_state(middleware_state, auth::enforce_auth));
         }
         AuthMode::Disabled(_ack) => {
-            // #1136: the proof token has been consumed; auth layer
-            // omitted by explicit construction. Surface a structured
+            // The proof token has been consumed; auth layer omitted by
+            // explicit construction. Surface a structured
             // log line at error level so a misconfigured caller is
             // visible regardless of `quiet` (the eprintln banner is
             // gated on `quiet=false`).
@@ -360,11 +356,10 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
     }
 
     app
-        // SEC-1: Host-header allowlist closes the DNS-rebinding class.
-        // Must sit inside the compression layer so rejections skip the
-        // gzip round-trip.
+        // Host-header allowlist closes the DNS-rebinding class. Must sit
+        // inside the compression layer so rejections skip the gzip round-trip.
         .layer(from_fn_with_state(allowed_hosts, enforce_host_allowlist))
-        // P1.14 / SEC: cap request bodies. Every route is GET; legitimate
+        // Cap request bodies. Every route is GET; legitimate
         // clients never send a body. 64 KiB is plenty for query strings
         // and cookies (which travel in headers, not body); axum rejects
         // bodies larger than this with 413 Payload Too Large before
@@ -377,22 +372,21 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
         // corpus); vendor JS bundles compress ~3×. Negligible CPU on
         // the server side, big win on parse/transfer time at the browser.
         .layer(CompressionLayer::new())
-        // OB-V1.29-5: TraceLayer emits a span per request plus
-        // on-response events with latency + status. Handlers already
-        // log entry via `tracing::info!`; this layer closes the loop
-        // by logging completion, giving per-endpoint latency in the
-        // journal without hand-wrapping every handler body.
+        // TraceLayer emits a span per request plus on-response events with
+        // latency + status. Handlers already log entry via `tracing::info!`;
+        // this layer closes the loop by logging completion, giving
+        // per-endpoint latency in the journal without hand-wrapping every
+        // handler body.
         //
-        // P1.11 / SEC: customise MakeSpan to record path only, NOT the
-        // full URI — the `?token=…` query param lands in span fields
-        // otherwise and bleeds the per-launch token into journald /
-        // RUST_LOG=debug.
+        // MakeSpan records path only, NOT the full URI — the `?token=…` query
+        // param lands in span fields otherwise and bleeds the per-launch token
+        // into journald / RUST_LOG=debug.
         //
-        // P2-1 (audit v1.33.0): generate a per-process monotonic
-        // `request_id` so concurrent requests for the same path can
-        // be correlated in `journalctl --user -u cqs-watch` output.
-        // `AtomicU64` counter (no extra dep) — sufficient for one
-        // daemon's journal; not globally unique by design.
+        // Generate a per-process monotonic `request_id` so concurrent requests
+        // for the same path can be correlated in
+        // `journalctl --user -u cqs-watch` output. `AtomicU64` counter (no
+        // extra dep) — sufficient for one daemon's journal; not globally
+        // unique by design.
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request| {
             use std::sync::atomic::{AtomicU64, Ordering};
             static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -404,8 +398,8 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
                 request_id,
             )
         }))
-        // SEC-V1.36-9 (#1461): outermost middleware. Caps concurrent
-        // in-flight requests so an attacker on `--bind 0.0.0.0` can't
+        // Outermost middleware. Caps concurrent in-flight requests so an
+        // attacker on `--bind 0.0.0.0` can't
         // fan out N connections each holding a 64 KiB pre-auth body
         // buffer (bound only by FD limit otherwise). `try_acquire`
         // makes saturation return 503 immediately — no queueing, no
@@ -425,7 +419,7 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
 ///
 /// Any other `Host` value is refused by [`enforce_host_allowlist`].
 ///
-/// P2.58: when `bind_addr.ip().is_unspecified()` (i.e. `0.0.0.0` or
+/// When `bind_addr.ip().is_unspecified()` (i.e. `0.0.0.0` or
 /// `[::]`), return an *empty* set. The listening socket can't enumerate
 /// which interface IP a legitimate LAN client will use, so any concrete
 /// allowlist is wrong. `enforce_host_allowlist` interprets the empty
@@ -459,7 +453,7 @@ pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
 /// axum middleware: reject requests whose `Host` header isn't on the
 /// allowlist.
 ///
-/// SEC-1 (DNS-rebinding). An attacker page at `evil.example.com` with
+/// Closes the DNS-rebinding class. An attacker page at `evil.example.com` with
 /// a TTL-0 DNS record pointing at `127.0.0.1` can make the victim's
 /// browser fetch `http://evil.example.com:8080/api/chunk/<id>` and
 /// same-origin it to the running cqs serve. The browser *sends* the
@@ -470,13 +464,13 @@ pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
 /// does not, but a no-Host request bypasses DNS-rebinding protection (the
 /// allowlist has nothing to compare against) so we treat it as malformed.
 /// Tests must build requests with a Host header (see `src/serve/tests.rs`
-/// fixtures). (P1.12.)
+/// fixtures).
 async fn enforce_host_allowlist(
     State(allowed): State<AllowedHosts>,
     req: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    // P2.58: empty allowlist = wildcard bind, accept any Host.
+    // Empty allowlist = wildcard bind, accept any Host.
     // `allowed_host_set` emits the startup warning; per-launch auth
     // token remains the primary defence in this mode.
     if allowed.is_empty() {
@@ -501,7 +495,7 @@ async fn enforce_host_allowlist(
 
 /// Listen for Ctrl-C or SIGTERM (Unix) to trigger axum's graceful
 /// shutdown. Without SIGTERM handling, `systemctl stop` and `launchd`
-/// shutdowns escalate to SIGKILL with no graceful drain. (P1.19.)
+/// shutdowns escalate to SIGKILL with no graceful drain.
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {

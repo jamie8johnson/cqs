@@ -22,15 +22,12 @@ pub struct DocFormat {
     pub suffix: &'static str,
     /// Where the doc comment is inserted relative to the function.
     pub position: InsertionPosition,
-    /// EX-V1.38-8 (#1463): subject-first first-line template. Some
-    /// languages convention the first doc-comment line to lead with the
-    /// function name (Go: `// FuncName does X`). When `Some`, the
-    /// formatter prepends `func_name + " "` to the first line. `None`
-    /// = no prepend (the default for every language other than Go).
-    /// Pre-fix this was a hardcoded `if language == Language::Go { ... }`
-    /// in the formatter; promoting to the format struct removes the
-    /// language-name literal and lets a future "subject-first" preset
-    /// (Erlang `%% function/arity:`, custom house style) opt in.
+    /// Subject-first first-line template. Some languages lead the first
+    /// doc-comment line with the function name (Go: `// FuncName does X`).
+    /// When `true`, the formatter prepends `func_name + " "` to the first
+    /// line. Default `false` for every language other than Go. A future
+    /// subject-first preset (Erlang `%% function/arity:`, custom house style)
+    /// can opt in here.
     pub prepend_func_name: bool,
 }
 
@@ -78,7 +75,7 @@ fn doc_format_from_tag(tag: &str) -> DocFormat {
             line_prefix: "// ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
-            // EX-V1.38-8 (#1463): Go convention is "// FuncName does X".
+            // Go convention is "// FuncName does X".
             prepend_func_name: true,
         },
         "javadoc" => DocFormat {
@@ -177,10 +174,9 @@ pub fn format_doc_comment(text: &str, language: Language, indent: &str, func_nam
 
     let mut result = String::new();
 
-    // EX-V1.38-8 (#1463): subject-first prepend driven by `DocFormat
-    // .prepend_func_name` instead of a `Language::Go` literal. Go is the
-    // only currently-shipped language with this convention; other languages
-    // can opt in by setting the flag in `doc_format_from_tag`.
+    // Subject-first prepend driven by `DocFormat.prepend_func_name`. Go is
+    // the only language with this convention; others can opt in by setting
+    // the flag in `doc_format_from_tag`.
     let prepended_first_line: String;
     let effective_lines: Vec<&str> = if format.prepend_func_name {
         if let Some(&first) = lines.first() {
@@ -479,7 +475,7 @@ mod tests {
 
     #[test]
     fn all_language_doc_formats_are_valid() {
-        // EX-36: Verify all language doc_format tags map to known formats.
+        // Verify all language doc_format tags map to known formats.
         // A typo in a language definition would silently fall through to "default".
         let valid = [
             "triple_slash",

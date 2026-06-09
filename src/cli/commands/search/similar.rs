@@ -22,16 +22,14 @@ pub(crate) fn cmd_similar(
     let store = &ctx.store;
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
-    // CQ-V1.25-2: clamp via shared constant so CLI and batch return the
-    // same number of results. Previously CLI had no clamp; `cqs -n 10000`
-    // cascaded into unbounded allocation in search_filtered_with_index.
+    // Clamp via shared constant so CLI and batch return the same number of
+    // results. Without it, `cqs -n 10000` cascades into unbounded allocation
+    // in search_filtered_with_index.
     let limit = limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
-    // CQ-V1.29-3: resolve via the shared `cqs::resolve_target` helper (already
-    // used by `cmd_neighbors` and `dispatch_similar`). The previous local
-    // `resolve_target` picked `results[0]`, which surfaced test chunks first
-    // when names collided — CLI and batch/daemon returned different answers
-    // for the same target.
+    // Resolve via the shared `cqs::resolve_target` helper (also used by
+    // `cmd_neighbors` and `dispatch_similar`) so CLI and batch/daemon return
+    // the same answer for a given target.
     let resolved = cqs::resolve_target(store, name)?;
     let chunk_id = resolved.chunk.id.clone();
     let chunk_name = resolved.chunk.name.clone();
@@ -56,8 +54,8 @@ pub(crate) fn cmd_similar(
         None => None,
     };
 
-    // #1349: SearchFilter is `#[non_exhaustive]`; external-crate construction
-    // goes through `Default` + field assignment.
+    // SearchFilter is `#[non_exhaustive]`; external-crate construction goes
+    // through `Default` + field assignment.
     let filter = {
         let mut f = SearchFilter::default();
         f.languages = languages;
@@ -123,11 +121,9 @@ pub(crate) fn cmd_similar(
 
 #[cfg(test)]
 mod tests {
-    // CQ-V1.29-3: `parse_target` is re-exported from the library via
-    // `cqs::parse_target`. These coverage tests stayed in this file with the
-    // removal of the CLI-local `resolve_target` helper — no equivalent direct
-    // `parse_target` tests exist in `src/search/mod.rs` yet (only
-    // `resolve_target` is covered).
+    // `parse_target` is re-exported from the library via `cqs::parse_target`.
+    // These coverage tests live in this file — no direct `parse_target` tests
+    // exist in `src/search/mod.rs` (only `resolve_target` is covered there).
     use cqs::parse_target;
 
     #[test]
@@ -153,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_parse_target_empty_name_fallback() {
-        // Trailing colon — stripped per P1 F11 fix
+        // Trailing colon — stripped.
         let (file, name) = parse_target("something:");
         assert_eq!(file, None);
         assert_eq!(name, "something");

@@ -2,31 +2,29 @@
 //!
 //! ## Why this exists
 //!
-//! Before #1126 / P2.60, [`crate::store::Store::stream_summary_writer`] returned
-//! a callback that executed `INSERT OR IGNORE INTO llm_summaries ...` directly
-//! against `&self.pool`, **bypassing** [`crate::store::WRITE_LOCK`]. Two
-//! concrete races followed:
+//! Routing streamed `llm_summaries` inserts through this queue avoids two
+//! problems an `INSERT OR IGNORE` directly against `&pool` (bypassing
+//! [`crate::store::WRITE_LOCK`]) would cause:
 //!
 //! 1. A `cqs index` reindex running in the same process as a streaming
-//!    LLM batch could collide with the per-row implicit-tx writes the
-//!    callback fired. With WAL mode and a 30s `busy_timeout`, either side
-//!    could `SQLITE_BUSY` and abort.
+//!    LLM batch would collide with the per-row implicit-tx writes. With WAL
+//!    mode and a 30s `busy_timeout`, either side could `SQLITE_BUSY` and abort.
 //! 2. Multiple concurrent LLM streams (Haiku + doc-comments + hyde) each
-//!    fired one INSERT-OR-IGNORE per item. sqlx wraps a bare statement in
+//!    firing one INSERT-OR-IGNORE per item — sqlx wraps a bare statement in
 //!    its own implicit transaction → 1 fsync per row. A kill mid-stream
-//!    left partial writes visible to readers immediately.
+//!    leaves partial writes visible to readers immediately.
 //!
-//! ## How this module fixes it
+//! ## How this module works
 //!
-//! The streaming callback now calls [`PendingSummaryQueue::push`] which
-//! enqueues the row in-memory. When the queue length crosses
+//! The streaming callback calls [`PendingSummaryQueue::push`] which enqueues
+//! the row in-memory. When the queue length crosses
 //! [`PendingSummaryQueue::flush_threshold_rows`] OR more than
 //! [`PendingSummaryQueue::flush_interval`] elapsed since the last drain,
 //! [`PendingSummaryQueue::flush`] runs synchronously: it drains the buffer,
 //! acquires the process-wide [`crate::store::WRITE_LOCK`] via
 //! [`crate::store::Store::begin_write`]'s discipline, and commits the rows
-//! in a single multi-row INSERT batch. All `index.db` writes are now
-//! serialized through the same lock — the pre-existing fix for DS-5.
+//! in a single multi-row INSERT batch. All `index.db` writes serialize
+//! through the same lock.
 //!
 //! ## Backpressure
 //!
@@ -52,13 +50,12 @@ use super::WRITE_LOCK;
 
 /// Recover from a poisoned mutex with a `tracing::warn!` breadcrumb.
 ///
-/// Replaces the bare `lock().unwrap_or_else(|e| e.into_inner())` pattern
-/// at every call site so a producer panic that poisons one of the
-/// queue's mutexes leaves a visible trail in the logs. The Vec /
-/// Instant interior is the only state under those locks, so recovery
-/// is safe — the next operation either drains the Vec (replacing torn
-/// state) or overwrites the Instant — but a poison is still a real
-/// bug class that must not be silent.
+/// Used at every queue lock call site so a producer panic that poisons one
+/// of the queue's mutexes leaves a visible trail in the logs. The Vec /
+/// Instant interior is the only state under those locks, so recovery is safe
+/// — the next operation either drains the Vec (replacing torn state) or
+/// overwrites the Instant — but a poison is still a real bug class that must
+/// not be silent.
 fn lock_recover<'a, T>(m: &'a Mutex<T>, ctx: &'static str) -> MutexGuard<'a, T> {
     match m.lock() {
         Ok(g) => g,
@@ -85,21 +82,16 @@ pub(crate) struct PendingSummary {
     pub purpose: String,
 }
 
-/// Default rows-per-flush threshold. Picked to amortize fsync cost across
-/// a bunch of streamed completions without holding individual rows in
-/// memory for too long.
-///
-/// See brief Q1: "Starting guess: `N=64, T=200ms`. Run a benchmark on the
-/// local LLM path before committing to numbers." Local benchmarking
-/// (`item27_streaming_persist_writes_each_item`) confirmed that with
-/// concurrency=1 streaming five items takes well under 200 ms total —
-/// flushes are expected to be driven by the *final-flush* contract more
-/// often than by the threshold, which is fine: a final flush still folds
-/// every queued row into one tx.
+/// Default rows-per-flush threshold. Amortizes fsync cost across a bunch of
+/// streamed completions without holding individual rows in memory for too
+/// long. With concurrency=1, streaming a handful of items takes well under
+/// the flush interval, so flushes are usually driven by the final-flush
+/// contract rather than this threshold — either way a flush folds every
+/// queued row into one tx.
 const DEFAULT_FLUSH_THRESHOLD_ROWS: usize = 64;
 
-/// Default flush time-interval. Same Q1 starting-guess; an idle workload
-/// that pushed one row 200 ms ago must not strand it forever.
+/// Default flush time-interval. An idle workload that pushed one row 200 ms
+/// ago must not strand it forever.
 const DEFAULT_FLUSH_INTERVAL_MS: u64 = 200;
 
 /// Hard cap on queue depth. Past this, the next `push` runs a synchronous
@@ -107,10 +99,9 @@ const DEFAULT_FLUSH_INTERVAL_MS: u64 = 200;
 /// a runaway producer.
 const DEFAULT_HARD_CAP_ROWS: usize = 10_000;
 
-/// SHL-V1.38-9 (#1463): operator-tunable summary-queue thresholds.
-/// Pre-fix all three were `const`. With the local vLLM provider sustaining
-/// ~50 chunks/sec the queue can hit 64 in <2 sec, triggering a flush every
-/// 2 sec — fine but tunable lets an operator on a slow disk push to
+/// Operator-tunable summary-queue thresholds. With the local vLLM provider
+/// sustaining ~50 chunks/sec the queue hits 64 in <2 sec, triggering a flush
+/// every ~2 sec; the env overrides let an operator on a slow disk push to
 /// 256+/500ms. Returns `(flush_threshold_rows, flush_interval, hard_cap_rows)`.
 fn summary_queue_config() -> (usize, Duration, usize) {
     let rows = std::env::var("CQS_SUMMARY_FLUSH_ROWS")
@@ -169,8 +160,8 @@ pub(crate) struct PendingSummaryQueue {
     /// Time-since-last-flush threshold.
     flush_interval: Duration,
     /// Hard cap on queue depth before backpressure (synchronous flush
-    /// in `push` before enqueueing). SHL-V1.38-9: instance field instead
-    /// of const so `CQS_SUMMARY_HARD_CAP_ROWS` can override per-process.
+    /// in `push` before enqueueing). Instance field so
+    /// `CQS_SUMMARY_HARD_CAP_ROWS` can override per-process.
     hard_cap_rows: usize,
     /// Counter of consecutive flush failures. Bumped in `flush`'s error
     /// path, reset to 0 on success. When ≥ [`MAX_CONSECUTIVE_FLUSH_FAILURES`],
@@ -182,8 +173,8 @@ pub(crate) struct PendingSummaryQueue {
 
 impl PendingSummaryQueue {
     /// Build a new queue tied to `pool` + `rt`. Reads tunables via
-    /// [`summary_queue_config`] (env-overridable since SHL-V1.38-9);
-    /// tests construct via [`PendingSummaryQueue::with_thresholds`].
+    /// [`summary_queue_config`] (env-overridable); tests construct via
+    /// [`PendingSummaryQueue::with_thresholds`].
     pub(crate) fn new(pool: SqlitePool, rt: Arc<Runtime>) -> Self {
         let (rows, interval, hard_cap) = summary_queue_config();
         Self {
@@ -247,10 +238,10 @@ impl PendingSummaryQueue {
     /// hard cap (backpressure). Runs a synchronous flush AFTER enqueueing
     /// if either threshold (rows ≥ N OR elapsed ≥ interval) is met.
     ///
-    /// Per the brief: "the closure swallows-and-warns the conditional
-    /// flush error since `flush_pending_summaries` is idempotent and will
-    /// retry." A flush failure leaves rows in the queue; the next push or
-    /// the LLM pass's final flush will retry.
+    /// A conditional flush error is swallowed-and-warned since
+    /// `flush_pending_summaries` is idempotent and retries. A flush failure
+    /// leaves rows in the queue; the next push or the LLM pass's final flush
+    /// retries.
     pub(crate) fn push(&self, row: PendingSummary) {
         // Backpressure: at the hard cap, synchronously flush before
         // enqueueing so the in-memory footprint stays bounded.
@@ -579,10 +570,9 @@ mod tests {
         );
     }
 
-    /// Concurrency test from brief §5: a chunk-upsert (`begin_write`
-    /// path) running concurrently with a queue flush must serialize
-    /// cleanly through `WRITE_LOCK` — no SQLITE_BUSY abort, no torn
-    /// state.
+    /// A chunk-upsert (`begin_write` path) running concurrently with a queue
+    /// flush must serialize cleanly through `WRITE_LOCK` — no SQLITE_BUSY
+    /// abort, no torn state.
     #[test]
     fn flush_serializes_with_concurrent_upsert() {
         use crate::parser::{ChunkType, Language};
@@ -650,10 +640,9 @@ mod tests {
         assert_eq!(got.len(), 50, "all 50 summaries must have landed");
     }
 
-    /// fsync-amortization pin (brief §5): pushing 200 rows under a
-    /// threshold of 64 + final flush should produce ≤ 5 flushes
-    /// (200 / 64 = 3 threshold flushes + 1 final flush + slack for
-    /// concurrent test scheduling).
+    /// fsync-amortization pin: pushing 200 rows under a threshold of 64 +
+    /// final flush should produce ≤ 5 flushes (200 / 64 = 3 threshold flushes
+    /// + 1 final flush + slack for concurrent test scheduling).
     ///
     /// We can't easily count `begin_write` spans without instrumenting
     /// a custom subscriber here — instead we count flushes via an
@@ -695,11 +684,11 @@ mod tests {
         );
     }
 
-    /// Fix 1 (post-#1126 review): a permanently failing flush must
-    /// trip the `consecutive_flush_failures` kill-switch so `should_flush`
-    /// stops returning `true` once `MAX_CONSECUTIVE_FLUSH_FAILURES` is
-    /// reached. The explicit final flush from the LLM pass / `cmd_index`
-    /// is unaffected — its success resets the counter.
+    /// A permanently failing flush must trip the `consecutive_flush_failures`
+    /// kill-switch so `should_flush` stops returning `true` once
+    /// `MAX_CONSECUTIVE_FLUSH_FAILURES` is reached. The explicit final flush
+    /// from the LLM pass / `cmd_index` is unaffected — its success resets the
+    /// counter.
     ///
     /// Failure-injection strategy: drop the `llm_summaries` table via
     /// raw SQL on the underlying pool. Subsequent `INSERT OR IGNORE`

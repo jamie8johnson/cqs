@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 use super::args;
 
-// EX-4: Verify clap default_value strings match the actual constants.
+// Verify clap default_value strings match the actual constants.
 // Integer constants can use compile-time assert; f32 checked in tests below.
 const _: () = assert!(crate::cli::config::DEFAULT_LIMIT == 5);
 
@@ -36,7 +36,7 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
-/// AD-49: Common output format arguments shared across commands that support text/json/mermaid.
+/// Common output format arguments shared across commands that support text/json/mermaid.
 #[derive(Clone, Debug, clap::Args)]
 pub struct OutputArgs {
     /// Output format: text, json, mermaid (use --json as shorthand for --format json)
@@ -58,12 +58,9 @@ impl OutputArgs {
     }
 }
 
-/// AD-49 + v1.22.0 audit API-1: Output format for commands that only support
-/// text or JSON. Previously exposed `--format text|json` alongside `--json`,
-/// but 25+ command handlers read `output.json` directly and never checked
-/// `output.format`, so `--format json` was silently accepted and ignored.
-/// Removed `--format`; commands that genuinely support multiple output formats
-/// (e.g. `--format mermaid`) use [`OutputArgs`] instead.
+/// Output format for commands that only support text or JSON. Exposes `--json`
+/// only; commands that genuinely support multiple output formats (e.g.
+/// `--format mermaid`) use [`OutputArgs`] instead.
 #[derive(Clone, Debug, clap::Args)]
 pub struct TextJsonArgs {
     /// Output as JSON
@@ -113,11 +110,11 @@ pub(crate) fn validate_finite_f32(val: f32, name: &str) -> anyhow::Result<f32> {
 
 /// Clap-compatible parser for finite f32 flags.
 ///
-/// API-V1.25-7: used as `value_parser` on every f32 CLI flag to reject
-/// `NaN` / `Infinity` / `-Infinity` at argument-parse time, before the value
-/// can flow into scoring, thresholds, or filter construction. The signature
-/// matches clap's expectation (`fn(&str) -> Result<T, String>`), unlike
-/// `validate_finite_f32` which runs on an already-parsed f32.
+/// Used as `value_parser` on every f32 CLI flag to reject `NaN` / `Infinity`
+/// / `-Infinity` at argument-parse time, before the value can flow into
+/// scoring, thresholds, or filter construction. The signature matches clap's
+/// expectation (`fn(&str) -> Result<T, String>`), unlike `validate_finite_f32`
+/// which runs on an already-parsed f32.
 pub(crate) fn parse_finite_f32(s: &str) -> std::result::Result<f32, String> {
     let val: f32 = s.parse().map_err(|e| format!("{e}"))?;
     if val.is_finite() {
@@ -129,11 +126,11 @@ pub(crate) fn parse_finite_f32(s: &str) -> std::result::Result<f32, String> {
     }
 }
 
-/// AC-V1.29-5: finite-f32 bounded to the `[0.0, 1.0]` unit interval. Used as
+/// Finite-f32 bounded to the `[0.0, 1.0]` unit interval. Used as
 /// `value_parser` for CLI flags that encode a weight or blending fraction
 /// (e.g., `--name-boost`, `cqs ref add --weight`) where out-of-range values
-/// silently corrupt scoring instead of surfacing a clap error. Rejects NaN /
-/// ±Inf via the underlying `parse_finite_f32`, then fences the range.
+/// would silently corrupt scoring instead of surfacing a clap error. Rejects
+/// NaN / ±Inf via the underlying `parse_finite_f32`, then fences the range.
 pub(crate) fn parse_unit_f32(s: &str) -> std::result::Result<f32, String> {
     let v = parse_finite_f32(s)?;
     if !(0.0..=1.0).contains(&v) {
@@ -155,10 +152,8 @@ pub struct Cli {
 
     /// Max results
     ///
-    /// API-V1.38-10 (#1463): rejects `--limit 0` at parse time — search
-    /// with limit=0 is semantically meaningless and previously coerced
-    /// (via the dispatcher's `cli.limit.clamp(1, 100)` at dispatch.rs:204)
-    /// instead of failing fast at the boundary.
+    /// Rejects `--limit 0` at parse time — search with limit=0 is
+    /// semantically meaningless, so it fails fast at the boundary.
     #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
     pub limit: usize,
 
@@ -175,7 +170,7 @@ pub struct Cli {
 
     /// Weight for name matching in hybrid search (0.0-1.0)
     ///
-    /// AC-V1.29-5: bounded parser — see `SearchArgs::name_boost`.
+    /// Bounded parser — see `SearchArgs::name_boost`.
     #[arg(long, default_value = "0.2", value_parser = parse_unit_f32)]
     pub name_boost: f32,
 
@@ -211,14 +206,10 @@ pub struct Cli {
     #[arg(long)]
     pub include_docs: bool,
 
-    /// Reranker mode: `none|onnx` (#1372).
+    /// Reranker mode: `none|onnx`.
     ///
     /// Mirrors `cqs eval --reranker`. `none` is the default; `onnx` runs the
     /// cross-encoder configured by `[reranker]` / `CQS_RERANKER_MODEL`.
-    ///
-    /// API-V1.36-9 (#1459): the legacy `--rerank` bool was dropped; per
-    /// "no external users" project policy, breaking renames without
-    /// aliases are clean cuts. `--reranker onnx` is the canonical form.
     #[arg(long = "reranker", value_enum)]
     pub reranker: Option<args::RerankerMode>,
 
@@ -234,9 +225,8 @@ pub struct Cli {
     /// SPLADE fusion weight (None = use per-category router).
     ///
     /// When set, overrides the per-category router with a constant α for all
-    /// queries: 1.0 = pure cosine, 0.0 = pure sparse, 0.7 was the legacy
-    /// one-size default. Leaving this unset lets `classify_query` pick per
-    /// category (the production path).
+    /// queries: 1.0 = pure cosine, 0.0 = pure sparse. Leaving this unset lets
+    /// `classify_query` pick per category (the production path).
     #[arg(long, value_parser = parse_finite_f32)]
     pub splade_alpha: Option<f32>,
 
@@ -254,10 +244,9 @@ pub struct Cli {
 
     /// Expand search results with their parent type/module context (small-to-big retrieval).
     ///
-    /// API-V1.22-3: renamed from `--expand` to `--expand-parent` to disambiguate
-    /// from `gather --expand <N>` (graph depth, `usize`). Same flag name with two
-    /// incompatible types had bitten agents that batched both commands. The old
-    /// `--expand` form is no longer accepted; switch scripts to `--expand-parent`.
+    /// Named `--expand-parent` to disambiguate from `gather --expand <N>`
+    /// (graph depth, `usize`) — same flag name with two incompatible types
+    /// would bite agents that batch both commands.
     #[arg(long = "expand-parent")]
     pub expand_parent: bool,
 
@@ -304,10 +293,9 @@ pub struct Cli {
     /// subcommands** — those manage slots and the cache themselves, so
     /// scoping them to a slot is incoherent. Use the explicit
     /// `<subcommand> <name>` argument instead (e.g. `cqs slot remove
-    /// <name>`, `cqs cache stats <name>`). Audit P3-27 / #1365: clap-derive
-    /// can't suppress a `global = true` arg per subcommand, so the
-    /// runtime bails in `cli/commands/infra/slot.rs` and
-    /// `cli/commands/infra/cache_cmd.rs`.
+    /// <name>`, `cqs cache stats <name>`). clap-derive can't suppress a
+    /// `global = true` arg per subcommand, so the runtime bails in
+    /// `cli/commands/infra/slot.rs` and `cli/commands/infra/cache_cmd.rs`.
     #[arg(long, global = true)]
     pub slot: Option<String>,
 
@@ -317,10 +305,9 @@ pub struct Cli {
 
     /// Resolved model config (set by dispatch, not CLI).
     ///
-    /// API-V1.38-5 (#1463): `pub(super)` because the field is `#[arg(skip)]`
-    /// — clap doesn't need it `pub`, and only `cli::dispatch` (writer) and
-    /// `cli::definitions::Cli::try_model_config` (reader) touch it. External
-    /// readers should go through `try_model_config()` (still `pub`).
+    /// `pub(super)` because the field is `#[arg(skip)]` — only `cli::dispatch`
+    /// (writer) and `cli::definitions::Cli::try_model_config` (reader) touch
+    /// it. External readers should go through `try_model_config()`.
     #[arg(skip)]
     pub(super) resolved_model: Option<cqs::embedder::ModelConfig>,
 }
@@ -337,7 +324,6 @@ impl Cli {
     }
 
     /// Effective reranker mode. Returns `RerankerMode::None` when no flag is set.
-    /// API-V1.36-9 (#1459): legacy `--rerank` bool gone; `--reranker` is canonical.
     pub(crate) fn rerank_mode(&self) -> args::RerankerMode {
         self.reranker.unwrap_or(args::RerankerMode::None)
     }
@@ -353,14 +339,12 @@ pub(super) enum Commands {
     /// Download model and create .cqs/
     #[cqs_cmd(group = "a", batch = "cli")]
     Init {
-        /// P2.12: emit a structured JSON envelope summarizing the init.
-        /// Keeps `cqs init` parity with the rest of the CLI's `--json`
-        /// contract; without this, JSON-driven agents had no way to confirm
-        /// the directory and model that got created.
+        /// Emit a structured JSON envelope summarizing the init, for parity
+        /// with the rest of the CLI's `--json` contract so JSON-driven agents
+        /// can confirm the directory and model that got created.
         ///
-        /// P3-30: flattens shared `TextJsonArgs` so a future change to the
-        /// flag (NDJSON, `--pretty`, `--format`) is a one-file edit instead
-        /// of six.
+        /// Flattens shared `TextJsonArgs` so a future change to the flag
+        /// (NDJSON, `--pretty`, `--format`) is a one-file edit.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -391,7 +375,7 @@ pub(super) enum Commands {
         /// Colored human-readable check progress is routed to stderr in this
         /// mode so `cqs doctor --json | jq` works.
         ///
-        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        /// Flattens shared `TextJsonArgs` — see `Init` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -434,10 +418,9 @@ pub(super) enum Commands {
         base: Option<String>,
         /// Read diff from stdin instead of running git.
         ///
-        /// API-V1.22-6: brings `affected` in line with `review`, `ci`, and
-        /// `impact-diff`, which already accept `--stdin`. Lets agents pipe a
-        /// captured diff (`git diff main | cqs affected --stdin --json`)
-        /// without re-shelling git.
+        /// Lets agents pipe a captured diff
+        /// (`git diff main | cqs affected --stdin --json`) without re-shelling
+        /// git, in line with `review`, `ci`, and `impact-diff`.
         #[arg(long)]
         stdin: bool,
         #[command(flatten)]
@@ -749,9 +732,9 @@ pub(super) enum Commands {
         path: String,
         /// Output directory for .md files [default: same as input]
         ///
-        /// P3-30: field renamed `output` → `output_dir` to avoid colliding
-        /// with the flattened `TextJsonArgs.output` envelope. The
-        /// user-facing flag `-o`/`--output` is preserved via `long = "output"`.
+        /// Named `output_dir` to avoid colliding with the flattened
+        /// `TextJsonArgs.output` envelope. The user-facing flag
+        /// `-o`/`--output` is preserved via `long = "output"`.
         #[arg(short = 'o', long = "output")]
         output_dir: Option<String>,
         /// Overwrite existing .md files
@@ -759,22 +742,22 @@ pub(super) enum Commands {
         overwrite: bool,
         /// Preview conversions (default writes the .md files).
         ///
-        /// Audit P2 #38: per the CONTRIBUTING "Dry-Run vs Apply" rule, side-effect
-        /// commands (`index`, `convert`) default to mutating; analyser commands
-        /// (`doctor`, `suggest`) default to read-only and require `--fix`/`--apply`
-        /// to mutate. TODO(docs-agent): document this rule in CONTRIBUTING.md.
+        /// Per the "Dry-Run vs Apply" rule, side-effect commands (`index`,
+        /// `convert`) default to mutating; analyser commands (`doctor`,
+        /// `suggest`) default to read-only and require `--fix`/`--apply` to
+        /// mutate. TODO(docs-agent): document this rule in CONTRIBUTING.md.
         #[arg(long)]
         dry_run: bool,
         /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
         #[arg(long)]
         clean_tags: Option<String>,
-        /// P2.12: emit a structured JSON envelope summarizing conversions.
+        /// Emit a structured JSON envelope summarizing conversions.
         /// Suppresses the per-file text rendering in favor of a
         /// `{converted: [...], skipped: [...], took_ms}` summary.
         ///
-        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above. The
-        /// command's destination directory was previously `output`, now
-        /// `output_dir` to avoid the collision with the flattened envelope.
+        /// Flattens shared `TextJsonArgs` — see `Init` above. The command's
+        /// destination directory is `output_dir` to avoid colliding with the
+        /// flattened envelope.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -789,11 +772,8 @@ pub(super) enum Commands {
         output: std::path::PathBuf,
         /// Embedding dimension override (auto-detected from config.json if omitted)
         ///
-        /// API-V1.38-7 (#1463): `usize` aligns with `ModelConfig.dim`,
-        /// `EmbeddingConfig.dim`, `VectorIndex::dim()` etc. — every other
-        /// dim field in the codebase. The previous `Option<u64>` parsed
-        /// identically (`--dim 768`) but required `as usize` casts at the
-        /// handler boundary.
+        /// `usize` aligns with `ModelConfig.dim`, `EmbeddingConfig.dim`,
+        /// `VectorIndex::dim()` etc. — every other dim field in the codebase.
         #[arg(long)]
         dim: Option<usize>,
     },
@@ -808,8 +788,7 @@ pub(super) enum Commands {
         output: std::path::PathBuf,
         /// Maximum commits to process per repo (omit for unlimited).
         ///
-        /// API-V1.22-13: `Option<usize>` (`None` = unlimited). Was `usize` with
-        /// `0` as a magic sentinel — now matches `TrainPairs::limit`.
+        /// `Option<usize>` (`None` = unlimited), matching `TrainPairs::limit`.
         #[arg(long)]
         max_commits: Option<usize>,
         /// Minimum commit message length to include
@@ -833,14 +812,14 @@ pub(super) enum Commands {
     TrainPairs {
         /// Output JSONL file path.
         ///
-        /// API-V1.22-13: `PathBuf` (was `String`) so the same file-path concept
-        /// uses one type across both training commands.
+        /// `PathBuf` so the same file-path concept uses one type across both
+        /// training commands.
         #[arg(long)]
         output: std::path::PathBuf,
         /// Max pairs to extract (omit for unlimited)
         ///
-        /// API-V1.29-7: `-n` short flag added for parity with other result-cap
-        /// knobs across the CLI surface.
+        /// `-n` short flag for parity with other result-cap knobs across the
+        /// CLI surface.
         #[arg(short = 'n', long)]
         limit: Option<usize>,
         /// Filter by language (e.g., "Rust", "Python")
@@ -867,20 +846,20 @@ pub(super) enum Commands {
     ///
     /// Connects to the running daemon socket and prints its current state.
     /// Exits 1 if no daemon is running. Use `--json` for machine-readable
-    /// output. Reuses [`cqs::daemon_translate::daemon_ping`] under the hood
-    /// so other tools (e.g. `cqs doctor --verbose`) can pull the same data.
+    /// output. Uses [`cqs::daemon_translate::daemon_ping`] so other tools
+    /// (e.g. `cqs doctor --verbose`) can pull the same data.
     #[cqs_cmd(group = "a", batch = "cli")]
     Ping {
         /// Output as JSON.
         ///
-        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        /// Flattens shared `TextJsonArgs` — see `Init` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Watch-mode freshness — show whether the index is caught up
     ///
-    /// #1182 layer 3: connects to the running `cqs watch --serve` daemon and
-    /// reports the latest [`cqs::watch_status::WatchSnapshot`]. Useful for
+    /// Connects to the running `cqs watch --serve` daemon and reports the
+    /// latest [`cqs::watch_status::WatchSnapshot`]. Useful for
     /// agent loops that want to gate work on freshness (eval runners,
     /// pre-query checks). Exits 1 if no daemon is running.
     ///
@@ -906,33 +885,33 @@ pub(super) enum Commands {
         /// Note: `cqs eval --require-fresh-secs` has the same semantics;
         /// default differs by use case (eval default = 600, status = 30).
         ///
-        /// API-V1.38-8 (#1463): `--require-fresh-secs` exposed as a
-        /// visible alias so an agent that learned the eval-side spelling
-        /// can use it on `cqs status` too. Both spellings parse to the
-        /// same field; prefer `--wait-secs` in CI scripts (shorter).
+        /// `--require-fresh-secs` is a visible alias so an agent that learned
+        /// the eval-side spelling can use it on `cqs status` too. Both
+        /// spellings parse to the same field; prefer `--wait-secs` in CI
+        /// scripts (shorter).
         #[arg(long, visible_alias = "require-fresh-secs", default_value_t = 30)]
         wait_secs: u64,
         /// Output as JSON. Without this, prints a one-line human summary.
         ///
-        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        /// Flattens shared `TextJsonArgs` — see `Init` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Invalidate daemon caches and re-open the Store
     ///
-    /// API-V1.29-6: exposes the existing `BatchCmd::Refresh` handler at the
-    /// top-level CLI so agents can trigger `ctx.invalidate()` without the
-    /// `cqs batch` JSON dance. No-op when no daemon is running — a fresh CLI
-    /// process has no caches to invalidate.
+    /// Exposes the `BatchCmd::Refresh` handler at the top-level CLI so agents
+    /// can trigger `ctx.invalidate()` without the `cqs batch` JSON dance.
+    /// No-op when no daemon is running — a fresh CLI process has no caches to
+    /// invalidate.
     #[command(visible_alias = "invalidate")]
     #[cqs_cmd(group = "a", batch = "daemon")]
     Refresh {
-        /// Emit a structured JSON envelope summarizing the refresh outcome.
-        /// P2.14: brings `cqs refresh` in line with the rest of the CLI's
-        /// `--json` contract; without this, JSON-driven agents had no way to
-        /// detect whether the daemon was actually running and got refreshed.
+        /// Emit a structured JSON envelope summarizing the refresh outcome,
+        /// for parity with the rest of the CLI's `--json` contract so
+        /// JSON-driven agents can detect whether the daemon was running and
+        /// got refreshed.
         ///
-        /// P3-30: flattens shared `TextJsonArgs` — see `Init` above.
+        /// Flattens shared `TextJsonArgs` — see `Init` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -942,7 +921,7 @@ pub(super) enum Commands {
         #[command(flatten)]
         args: super::commands::EvalCmdArgs,
     },
-    /// Manage cqs git hooks: install/uninstall/fire/status. (#1182 — Layer 1)
+    /// Manage cqs git hooks: install/uninstall/fire/status.
     ///
     /// Hooks live in `.git/hooks/post-{checkout,merge,rewrite}` and post a
     /// `reconcile` socket message to the running `cqs watch --serve` daemon
@@ -974,10 +953,10 @@ pub(super) enum Commands {
         port: u16,
         /// Bind address. Default 127.0.0.1.
         ///
-        /// Non-loopback binds are gated by the per-launch auth token
-        /// (#1096 / SEC-7) — every request without the token is 401'd.
-        /// With `--no-auth`, this exposes an un-authenticated server
-        /// beyond localhost (loud-warning banner on boot).
+        /// Non-loopback binds are gated by the per-launch auth token —
+        /// every request without the token is 401'd. With `--no-auth`, this
+        /// exposes an un-authenticated server beyond localhost (loud-warning
+        /// banner on boot).
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
         /// Open the system browser on start.
@@ -987,7 +966,7 @@ pub(super) enum Commands {
         /// post-auth redirect, so reload + bookmark both work.
         #[arg(long)]
         open: bool,
-        /// Disable the per-launch auth token (#1096).
+        /// Disable the per-launch auth token.
         ///
         /// Default behavior generates a fresh 256-bit token per
         /// launch, prints the paste-ready URL on stdout, and rejects
@@ -1008,10 +987,9 @@ pub(super) use super::commands::{
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can
 /// be forwarded to the batch daemon.
 ///
-/// #947: replaces the hand-maintained allowlist that previously lived inline
-/// in `try_daemon_query`. The rule is simple: every `Commands` variant must
-/// classify itself here, the `match` is exhaustive (no wildcard), and adding
-/// a new CLI variant without picking a classification fails to compile.
+/// Every `Commands` variant must classify itself here, the `match` is
+/// exhaustive (no wildcard), and adding a new CLI variant without picking a
+/// classification fails to compile.
 ///
 /// The policy:
 /// - `Cli`: command is CLI-only, do not forward. Reasons include process
@@ -1030,12 +1008,10 @@ pub(crate) enum BatchSupport {
     Daemon,
 }
 
-// #1366: `Commands::batch_support()`, `Commands::variant_name()`,
-// `dispatch_group_a()`, and `dispatch_group_b()` are emitted by
-// `cqs_macros::CqsCommands` derive on the enum above (see line 337). The
-// previous `for_each_command!` central registry table + `gen_*_impl!`
-// emitters are gone — per-variant attributes now carry the metadata the
-// table used to centralize.
+// `Commands::batch_support()`, `Commands::variant_name()`,
+// `dispatch_group_a()`, and `dispatch_group_b()` are emitted by the
+// `cqs_macros::CqsCommands` derive on the enum above. Per-variant attributes
+// carry the dispatch metadata.
 //
 // Runtime batch_support helpers for variants whose support level depends
 // on the inner subcommand:
@@ -1071,12 +1047,6 @@ pub(crate) fn suggest_batch_support(cmd: &Commands) -> BatchSupport {
     }
 }
 
-// (Old `gen_batch_support_impl!` / `gen_variant_name_impl!` macros and
-// their invocations were removed when the `cqs_macros::CqsCommands`
-// derive landed. The derive emits `Commands::batch_support`,
-// `Commands::variant_name`, `dispatch_group_a`, and `dispatch_group_b`
-// from per-variant `#[cqs_cmd(...)]` attributes — see the enum above.)
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,7 +1077,7 @@ mod tests {
         assert_eq!(validate_finite_f32(0.42, "x").unwrap(), 0.42);
     }
 
-    /// EX-4: Verify clap default_value strings match the f32 constants.
+    /// Verify clap default_value strings match the f32 constants.
     /// f32 can't be used in const assert, so we check at test time.
     #[test]
     fn clap_defaults_match_constants() {
@@ -1120,7 +1090,7 @@ mod tests {
         assert!((DEFAULT_NAME_BOOST - 0.2).abs() < f32::EPSILON);
     }
 
-    // API-V1.25-7: parse_finite_f32 accepts finite values and rejects NaN/±Inf.
+    // parse_finite_f32 accepts finite values and rejects NaN/±Inf.
     #[test]
     fn parse_finite_f32_accepts_finite() {
         assert_eq!(parse_finite_f32("0.0").unwrap(), 0.0);
@@ -1149,9 +1119,9 @@ mod tests {
         assert!(parse_finite_f32("").is_err());
     }
 
-    // AC-V1.29-5: `parse_unit_f32` is `parse_finite_f32` bounded to [0.0, 1.0]
-    // so flags like `--name-boost 1.5` surface a clap parse error instead of
-    // silently degrading scoring.
+    // `parse_unit_f32` is `parse_finite_f32` bounded to [0.0, 1.0] so flags
+    // like `--name-boost 1.5` surface a clap parse error instead of silently
+    // degrading scoring.
     #[test]
     fn parse_unit_f32_accepts_unit_range() {
         assert_eq!(parse_unit_f32("0.0").unwrap(), 0.0);
@@ -1189,7 +1159,7 @@ mod tests {
         assert!(r.is_err());
     }
 
-    // #947: spot-check the batch-support classifier. The exhaustive match in
+    // Spot-check the batch-support classifier. The exhaustive match in
     // `Commands::batch_support` does the real work — if a new variant is
     // added without classification, the whole crate fails to compile. These
     // tests pin the policy for a few sensitive variants so an accidental
@@ -1211,8 +1181,8 @@ mod tests {
     #[test]
     fn batch_support_notes_mutations_are_cli_only() {
         use clap::Parser;
-        // v1.25.0: notes add/update/remove reindex the filesystem; list mode
-        // is daemon-safe. The classifier must distinguish them.
+        // notes add/update/remove reindex the filesystem; list mode is
+        // daemon-safe. The classifier must distinguish them.
         let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
         assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
 
@@ -1237,7 +1207,7 @@ mod tests {
         assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
     }
 
-    /// API-V1.22-3: top-level `--expand-parent` (bool, parent context) and
+    /// Top-level `--expand-parent` (bool, parent context) and
     /// `gather --expand <N>` (usize, graph depth) must parse independently
     /// without colliding. Pinning both spellings here so a future revert
     /// can't silently re-introduce the same-name-different-type ambiguity.
@@ -1265,9 +1235,9 @@ mod tests {
         }
     }
 
-    /// API-V1.22-6: `cqs affected --stdin` accepts a captured diff piped in.
-    /// Was a divergence from `review`/`ci`/`impact-diff`, all of which already
-    /// take `--stdin`. Pinning the parse here so the flag stays valid.
+    /// `cqs affected --stdin` accepts a captured diff piped in, matching
+    /// `review`/`ci`/`impact-diff`. Pinning the parse here so the flag stays
+    /// valid.
     #[test]
     fn cli_affected_accepts_stdin_flag() {
         use clap::Parser;
@@ -1278,11 +1248,11 @@ mod tests {
         }
     }
 
-    /// #1097: `Commands::variant_name()` is generated from the registry
-    /// table. Pin a few high-traffic command labels so a typo in the
-    /// registration string surfaces as a test failure rather than rotting
-    /// in tracing output. The registry's exhaustiveness already prevents
-    /// missing rows; this test is the second line of defense for typos.
+    /// `Commands::variant_name()` is derive-generated. Pin a few high-traffic
+    /// command labels so a typo in the registration string surfaces as a test
+    /// failure rather than rotting in tracing output. Exhaustiveness already
+    /// prevents missing rows; this test is the second line of defense for
+    /// typos.
     #[test]
     fn variant_name_pins_critical_command_labels() {
         use clap::Parser;
@@ -1310,12 +1280,11 @@ mod tests {
         }
     }
 
-    /// #1495 follow-up: regression guard pinning the **set** of
-    /// top-level CLI subcommands. With per-variant `#[cqs_cmd(...)]`
-    /// attributes driving dispatch (#1366), accidentally renaming or
-    /// dropping a `Commands` variant compiles cleanly because kebab-
-    /// case auto-derives. Without this guard, the help text could
-    /// silently drift out from under agents that have command-name
+    /// Regression guard pinning the **set** of top-level CLI subcommands.
+    /// With per-variant `#[cqs_cmd(...)]` attributes driving dispatch,
+    /// accidentally renaming or dropping a `Commands` variant compiles
+    /// cleanly because kebab-case auto-derives. Without this guard, the help
+    /// text could silently drift out from under agents that have command-name
     /// muscle memory baked into prompts.
     ///
     /// Adding a variant means appending to `EXPECTED_SUBCOMMANDS`

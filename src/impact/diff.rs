@@ -43,17 +43,17 @@ pub fn map_hunks_to_functions<Mode>(
     let mut seen = HashSet::new();
     let mut functions = Vec::new();
 
-    // Group hunks by file. P2.49: BTreeMap so iteration order is by path,
-    // not HashMap-randomized. The downstream `seen.insert()` dedup is
-    // first-wins, so the order this loop visits files determines which
-    // ChangedFunction representative survives a duplicate name across
-    // files. With HashMap the answer flipped per process invocation.
+    // Group hunks by file. BTreeMap so iteration order is by path, not
+    // HashMap-randomized. The downstream `seen.insert()` dedup is first-wins,
+    // so the order this loop visits files determines which ChangedFunction
+    // representative survives a duplicate name across files; BTreeMap keeps
+    // that deterministic across process invocations.
     let mut by_file: BTreeMap<&Path, Vec<&crate::diff_parse::DiffHunk>> = BTreeMap::new();
     for hunk in hunks {
         by_file.entry(&hunk.file).or_default().push(hunk);
     }
 
-    // PF-1: Batch-fetch all file chunks in a single query instead of N queries
+    // Batch-fetch all file chunks in a single query instead of N queries
     let normalized_paths: Vec<String> = by_file
         .keys()
         .map(|f| normalize_slashes(&f.to_string_lossy()))
@@ -78,7 +78,7 @@ pub fn map_hunks_to_functions<Mode>(
             if hunk.count == 0 {
                 continue;
             }
-            // AC-14: Skip malformed hunks where start + count overflows u32
+            // Skip malformed hunks where start + count overflows u32
             let hunk_end = match hunk.start.checked_add(hunk.count) {
                 Some(end) => end,
                 None => {
@@ -106,11 +106,11 @@ pub fn map_hunks_to_functions<Mode>(
         }
     }
 
-    // P2.49: post-loop sort for full determinism. Even with the BTreeMap
-    // file iteration above, the inner `for chunk in chunks` order depends
-    // on `Vec<ChunkSummary>` from the batch fetch — sort the final
-    // returned `Vec<ChangedFunction>` so JSON consumers see stable output
-    // and `.take(cap)` truncation drops the same tail every run.
+    // Post-loop sort for full determinism. Even with the BTreeMap file
+    // iteration above, the inner `for chunk in chunks` order depends on
+    // `Vec<ChunkSummary>` from the batch fetch — sort the final returned
+    // `Vec<ChangedFunction>` so JSON consumers see stable output and
+    // `.take(cap)` truncation drops the same tail every run.
     functions.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
@@ -161,11 +161,10 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         });
     }
 
-    // RT-RES-9 / SHL-V1.25-7: cap changed functions to prevent unbounded
-    // processing on massive diffs. The cap is overridable via
-    // CQS_IMPACT_MAX_CHANGED_FUNCTIONS. `truncated_functions` surfaces the
-    // dropped count in the summary so JSON consumers can detect silent
-    // truncation without scraping stderr.
+    // Cap changed functions to prevent unbounded processing on massive diffs.
+    // The cap is overridable via CQS_IMPACT_MAX_CHANGED_FUNCTIONS.
+    // `truncated_functions` surfaces the dropped count in the summary so JSON
+    // consumers can detect silent truncation without scraping stderr.
     let cap = max_changed_functions();
     let total = changed.len();
     let truncated = total > cap;
@@ -187,8 +186,8 @@ pub fn analyze_diff_impact_with_graph<Mode>(
     let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
     // Batch-fetch callers for all changed functions in a single query.
-    // EH-V1.29-9: track batch-fetch failures so the JSON consumer can
-    // distinguish "no callers" from "batch query failed silently".
+    // Track batch-fetch failures so the JSON consumer can distinguish
+    // "no callers" from "batch query failed silently".
     let mut degraded = false;
     let callee_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
     let callers_by_callee = store
@@ -241,8 +240,8 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         .collect();
 
     // Single attributed BFS: discovers all reachable ancestors AND tracks which
-    // changed function (by index) produced the shortest path to each node.
-    // Replaces both reverse_bfs_multi (discovery) and N×reverse_bfs (attribution).
+    // changed function (by index) produced the shortest path to each node,
+    // covering both discovery and attribution in one pass.
     let start_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
     let attributed =
         reverse_bfs_multi_attributed(graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
@@ -621,7 +620,7 @@ mod tests {
         assert_eq!(result.all_tests[0].via, "func_a");
     }
 
-    /// RT-RES-9: When changed functions exceed the cap, results are truncated
+    /// When changed functions exceed the cap, results are truncated
     /// and summary.truncated is true.
     #[test]
     fn test_changed_functions_truncated_when_exceeding_cap() {

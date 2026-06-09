@@ -216,8 +216,8 @@ pub type CustomAllParserFn = fn(
     crate::parser::types::ParserError,
 >;
 
-/// EX-V1.38-6 (#1463): function signature for a per-chunk call/reference
-/// extractor. Distinct from [`CustomCallParserFn`] which operates on full
+/// Function signature for a per-chunk call/reference extractor.
+/// Distinct from [`CustomCallParserFn`] which operates on full
 /// source files in `parse_file_relationships` — this hook fires inside
 /// `Parser::extract_calls_from_chunk` when only a single already-extracted
 /// chunk is available. Markdown registers
@@ -312,7 +312,7 @@ pub struct LanguageDef {
     /// Receives `(stem, parent_dir)` and returns a suggested test path.
     /// `None` uses the fallback pattern `{parent}/tests/{stem}_test.{ext}`.
     pub test_file_suggestion: Option<fn(&str, &str) -> String>,
-    /// Suggest a test function name for a given function name (EX-18).
+    /// Suggest a test function name for a given function name.
     /// Receives `base_name` (stripped of `self.` prefix) and returns suggested test name.
     /// `None` uses the fallback `test_{base_name}` (snake_case).
     pub test_name_suggestion: Option<fn(&str) -> String>,
@@ -351,22 +351,18 @@ pub struct LanguageDef {
     /// not a pure substring-match (e.g. Python's `@app.route(`-style needs
     /// its own logic).
     ///
-    /// EX-V1.38-2 (#1463): single source of truth for the per-language
-    /// endpoint classifier. Pre-fix, C#/Java/Kotlin post-processors carried
-    /// their own hardcoded `header.contains("[HttpGet]") || ...` chains —
-    /// adding Spring's `@RestController` or xUnit's `[Theory(...)]` meant
-    /// editing two unrelated spots. C#: `[Http*]` / `[Route(`. Java/Kotlin:
-    /// `@*Mapping` family. Python's `app.route(`-style stays inline because
-    /// the pattern needs `decorated_definition` walking, not substring.
+    /// Single source of truth for the per-language endpoint classifier.
+    /// C#: `[Http*]` / `[Route(`. Java/Kotlin: `@*Mapping` family. Python's
+    /// `app.route(`-style stays inline because the pattern needs
+    /// `decorated_definition` walking, not substring.
     pub endpoint_markers: &'static [&'static str],
     /// Test path patterns — file path suffixes/directories (SQL LIKE syntax).
     /// E.g., `&["%_test.rs", "%/tests/%"]`. Empty = use global defaults.
     pub test_path_patterns: &'static [&'static str],
     /// Test function/method name patterns — SQL LIKE syntax with `\_` for
-    /// literal underscore. EXT-V1.36-3 (#1460): single source of truth for
-    /// `is_test_chunk` (lib.rs) and `TEST_NAME_PATTERNS` (store/calls/mod.rs).
-    /// Empty = use the global default set built from `is_test_chunk`'s
-    /// post-AC-4 patterns. Languages with their own conventions (Kotlin/Swift,
+    /// literal underscore. Single source of truth for `is_test_chunk`
+    /// (lib.rs) and `TEST_NAME_PATTERNS` (store/calls/mod.rs).
+    /// Empty = use the global default set. Languages with their own conventions (Kotlin/Swift,
     /// JUnit5 `@DisplayName`, Go's loose `Test%`, BDD `_when_should_*`) add
     /// rows here so adding a new convention is one line in the language module.
     pub test_name_patterns: &'static [&'static str],
@@ -430,15 +426,13 @@ pub struct LanguageDef {
     /// instead of the tree-sitter pipeline. `None` falls through to the
     /// default markdown-style parser. Adding a grammar-less language
     /// without setting this field routes to the markdown fallback — which
-    /// is usually wrong. Closes the silent-routing class from issue #954.
+    /// is usually wrong.
     pub custom_chunk_parser: Option<CustomChunkParserFn>,
-    /// EX-V1.38-6 (#1463): per-chunk call/reference extractor. Invoked
+    /// Per-chunk call/reference extractor. Invoked
     /// by `Parser::extract_calls_from_chunk` for languages whose chunks
     /// don't fit the tree-sitter call-site model (Markdown links,
     /// future natural-language doc formats, SQL stored-proc cross-refs).
-    /// `None` means the tree-sitter call extractor handles it. Pre-fix,
-    /// `extract_calls_from_chunk` had a hardcoded `if chunk.language ==
-    /// Language::Markdown { ... }` branch that this field replaces.
+    /// `None` means the tree-sitter call extractor handles it.
     pub chunk_call_parser: Option<ChunkCallParserFn>,
     /// Custom combined chunk+calls+type-refs extraction for grammar-less languages.
     /// Used by `parse_file_all`. When `None`, falls through to the markdown default.
@@ -622,7 +616,7 @@ macro_rules! define_chunk_types {
             /// in `define_chunk_types!`. The exhaustive match generated here
             /// makes "forgot to give the new variant a spaced form" a
             /// compile-time category — no `_ =>` fallback can rot a future
-            /// `MetaProgram` into `"metaprogram"` (issue #1047).
+            /// `MetaProgram` into `"metaprogram"`.
             pub fn human_name(&self) -> &'static str {
                 match self {
                     $(
@@ -664,7 +658,7 @@ macro_rules! define_chunk_types {
         impl std::str::FromStr for ChunkType {
             type Err = ParseChunkTypeError;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                // AD-6: Accept hyphenated aliases (e.g., "stored-proc", "type-alias", "config-key")
+                // Accept hyphenated aliases (e.g., "stored-proc", "type-alias", "config-key")
                 // by stripping hyphens after lowercasing, so both forms parse identically.
                 let normalized = s.to_lowercase().replace('-', "");
                 match normalized.as_str() {
@@ -850,16 +844,15 @@ impl ChunkType {
 
     /// Returns all code chunk types (for use in SearchFilter::include_types).
     ///
-    /// P3 #128: cached via `LazyLock`. The set is derived from a const
-    /// classification (`classify`) so it is fixed at build time; previously
-    /// every search query allocated a fresh ~20-element `Vec`.
+    /// Cached via `LazyLock`. The set is derived from a const classification
+    /// (`classify`) so it is fixed at build time.
     pub fn code_types() -> Vec<ChunkType> {
         Self::code_types_static().to_vec()
     }
 
     /// Borrowed view of the code-types set — zero allocation. Prefer this
-    /// for new call sites; [`code_types`] retained for API stability with
-    /// `SearchFilter::include_types` which expects an owned `Vec`.
+    /// for new call sites; [`code_types`] returns an owned `Vec` for
+    /// `SearchFilter::include_types`.
     pub fn code_types_static() -> &'static [ChunkType] {
         static CODE_TYPES: LazyLock<Vec<ChunkType>> = LazyLock::new(|| {
             ChunkType::ALL
@@ -879,7 +872,7 @@ impl ChunkType {
             .filter(|ct| ct.is_callable())
             .map(|ct| {
                 let s = ct.to_string();
-                // SEC-13: Guard against SQL injection if a future variant name contains quotes
+                // Guard against SQL injection if a future variant name contains quotes
                 debug_assert!(!s.contains('\''), "ChunkType display contains quote: {s}");
                 format!("'{}'", s)
             })
@@ -1006,15 +999,13 @@ impl LanguageRegistry {
 
     /// Collect all unique test path patterns from all enabled languages.
     ///
-    /// PF-V1.38-1 (#1463): cached behind a static `OnceLock` because the
-    /// patterns depend only on compile-time `LanguageDef::test_path_patterns`
-    /// and `is_test_chunk` is called per-candidate per-search (~500
-    /// candidates per query at default `enable_demotion = true`). Pre-fix
-    /// every call walked all 54 language defs and built a fresh `Vec` +
-    /// `HashSet`. Now the dedup runs once per process; subsequent calls
-    /// are a single static-slice clone (cheap because entries are
-    /// `&'static str`). Returns a `Vec` rather than `&'static [&str]` to
-    /// keep the API shape stable for callers that expect ownership.
+    /// Cached behind a static `OnceLock` because the patterns depend only on
+    /// compile-time `LanguageDef::test_path_patterns` and `is_test_chunk` is
+    /// called per-candidate per-search (~500 candidates per query at default
+    /// `enable_demotion = true`). The dedup runs once per process; subsequent
+    /// calls are a single static-slice clone (cheap because entries are
+    /// `&'static str`). Returns a `Vec` rather than `&'static [&str]` for
+    /// callers that expect ownership.
     pub fn all_test_path_patterns(&self) -> Vec<&'static str> {
         static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
         CACHE
@@ -1034,10 +1025,10 @@ impl LanguageRegistry {
     }
 
     /// Collect all unique test name patterns from all enabled languages,
-    /// always including the post-AC-4 cross-language defaults.
+    /// always including the cross-language defaults.
     ///
-    /// EXT-V1.36-3 (#1460): single source of truth for `is_test_chunk`
-    /// (lib.rs) and `TEST_NAME_PATTERNS` (store/calls/mod.rs).
+    /// Single source of truth for `is_test_chunk` (lib.rs) and
+    /// `TEST_NAME_PATTERNS` (store/calls/mod.rs).
     ///
     /// Patterns use SQL LIKE syntax with `\_` escaping a literal
     /// underscore. The cross-language defaults below mirror the
@@ -1067,7 +1058,7 @@ impl LanguageRegistry {
             "%\\_test\\_%",
             "%.test%",
         ];
-        // PF-V1.38-1 (#1463): cached — see `all_test_path_patterns` above.
+        // Cached — see `all_test_path_patterns` above.
         static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
         CACHE
             .get_or_init(|| {
@@ -1219,12 +1210,11 @@ impl Language {
     /// Get the language definition from the registry.
     ///
     /// # Panics
-    /// Panics if the language's feature flag is disabled. This panic was
-    /// originally intentional for compile-time language references, but
-    /// production code paths that read the variant from stored chunk rows
-    /// can also reach it after a feature-flag-mismatched rebuild — see
-    /// RB-V1.36-8 / P2-8. Such callers should switch to [`Self::try_def`]
-    /// and route through `LanguageError`.
+    /// Panics if the language's feature flag is disabled. Intended for
+    /// compile-time language references; production code paths that read the
+    /// variant from stored chunk rows can also reach it after a
+    /// feature-flag-mismatched rebuild. Such callers should use
+    /// [`Self::try_def`] and route through `LanguageError`.
     pub fn def(&self) -> &'static LanguageDef {
         self.try_def().unwrap_or_else(|| {
             // Log at error! before the panic so operators can correlate the
@@ -1253,7 +1243,7 @@ impl Language {
     }
 
     /// Get the tree-sitter grammar, returning `None` if the language feature
-    /// is disabled or the language has no tree-sitter grammar (RB-16).
+    /// is disabled or the language has no tree-sitter grammar.
     pub fn try_grammar(&self) -> Option<tree_sitter::Language> {
         self.try_def()
             .and_then(|def| def.grammar)
@@ -1288,11 +1278,11 @@ pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry
 mod tests {
     use super::*;
 
-    /// EXT-1: Every ChunkType variant must be explicitly classified in is_code().
-    /// This test fails with a compile error when a new variant is added to
+    /// Every ChunkType variant must be explicitly classified in is_code().
+    /// Fails with a compile error when a new variant is added to
     /// define_chunk_types! without updating is_callable() or is_code().
     /// Every variant must round-trip through `classify` -> `is_callable` /
-    /// `is_code`. Mirrors EXT-1 against the new `ChunkClass` enum.
+    /// `is_code`.
     #[test]
     fn test_chunk_class_round_trip() {
         for &ct in ChunkType::ALL {
@@ -1322,7 +1312,7 @@ mod tests {
         }
     }
 
-    /// P3.28: Every language with a tree-sitter grammar must ship a non-empty
+    /// Every language with a tree-sitter grammar must ship a non-empty
     /// `chunk_query`. An accidentally empty `chunks.scm` `include_str!`s as `""`
     /// and silently emits zero chunks for that language — one assertion catches it.
     #[test]
@@ -2620,7 +2610,7 @@ mod tests {
 
     // ===== EXT-3: human_name() compile-time guard =====
 
-    /// Verify that `human_name()` returns a properly spaced, lowercase string for
+    /// Verify that `human_name()` returns a spaced, lowercase string for
     /// every `ChunkType` variant. Catches CamelCase leaks like "TypeAlias" instead
     /// of "type alias" — any uppercase letter immediately followed by a lowercase
     /// letter indicates a missing `human_name()` match arm.

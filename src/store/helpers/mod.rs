@@ -96,51 +96,50 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   Pre-v26, SQLite probed `idx_chunks_source_type` then row-visited; with
 ///   the composite, both filter and DISTINCT walk satisfy from a single
 ///   index pass. ~50× speedup expected at 50k+ chunk corpora; index size
-///   ~5-15% of the chunks table. PERF-V1.33-10 / #1371.
+///   ~5-15% of the chunks table.
 /// - v23: source_size INTEGER + source_content_hash BLOB columns on chunks for
-///   the reconcile fingerprint (issue #1219 / EX-V1.30.1-6). Layer 2 periodic
-///   reconciliation previously diverged on `disk_mtime != stored_mtime` only,
-///   which (a) misses content-identical-but-mtime-bumped files (`git checkout`,
-///   formatter passes) — every flip re-embeds ~3-5k chunks unnecessarily — and
-///   (b) misses coarse-mtime collisions on FAT32/NTFS/HFS+/SMB where two saves
+///   the reconcile fingerprint. They let Layer 2 periodic reconciliation
+///   compare more than `disk_mtime != stored_mtime`, which alone (a) misses
+///   content-identical-but-mtime-bumped files (`git checkout`, formatter
+///   passes) — every flip re-embeds ~3-5k chunks unnecessarily — and (b)
+///   misses coarse-mtime collisions on FAT32/NTFS/HFS+/SMB where two saves
 ///   inside one second produce identical mtimes. Both columns are nullable so
-///   pre-v23 rows stay valid until first re-embed populates them; the
-///   `MtimeOrHash` policy uses hash as a tiebreaker on mtime equality.
+///   rows stay valid until first re-embed populates them; the `MtimeOrHash`
+///   policy uses hash as a tiebreaker on mtime equality.
 /// - v22: umap_x / umap_y REAL columns on chunks for the `cqs serve` cluster
 ///   view (step 3 of `docs/plans/2026-04-22-cqs-serve-3d-progressive.md`).
 ///   Both nullable — the columns stay NULL until `cqs index --umap` runs and
 ///   writes 2D projections from the chunk embeddings via the umap-learn
 ///   Python script (`scripts/run_umap.py`). The /api/embed/2d endpoint
 ///   skips chunks whose coords are NULL, so the feature is fully optional.
-/// - v21: parser_version column on chunks (v1.28.0 audit P2 #29 — incremental
-///   UPSERT now refreshes rows whose `content_hash` is unchanged but whose
-///   `parser_version` bumped, e.g. when `extract_doc_fallback_for_short_chunk`
+/// - v21: parser_version column on chunks — incremental UPSERT refreshes rows
+///   whose `content_hash` is unchanged but whose `parser_version` bumped,
+///   e.g. when `extract_doc_fallback_for_short_chunk`
 ///   logic changes the value of `doc` for a previously-indexed chunk. Without
 ///   this column the watch path's content-hash short-circuit silently
 ///   discards the new `doc`. See `parser::chunk::PARSER_VERSION` for the
 ///   in-memory value and `chunks/async_helpers.rs::batch_insert_chunks` for
 ///   the corresponding `OR parser_version != excluded.parser_version` UPSERT
 ///   filter.)
-/// - v20: AFTER DELETE trigger on chunks bumps splade_generation in metadata
-///   (v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6 — `cqs watch` never touched
-///   SPLADE, so deletes that cascade to sparse_vectors left the persisted
-///   `splade.index.bin` stale. The trigger fires once per deleted chunk
-///   (1-200 fires per watch cycle, tolerable) and invalidates the cached
-///   index without requiring instrumentation at every chunks-delete site.)
-/// - v19: sparse_vectors gains FK(chunk_id) → chunks(id) ON DELETE CASCADE
-///   (v1.22.0 audit DS-W3 — orphan sparse rows previously leaked on every
-///   chunks-delete path; CASCADE makes the invariant structural)
-/// - v18: embedding_base column on chunks (Phase 5 dual embeddings)
+/// - v20: AFTER DELETE trigger on chunks bumps splade_generation in metadata.
+///   Deletes that cascade to sparse_vectors would otherwise leave the
+///   persisted `splade.index.bin` stale. The trigger fires once per deleted
+///   chunk (1-200 fires per watch cycle, tolerable) and invalidates the
+///   cached index without requiring instrumentation at every chunks-delete
+///   site.
+/// - v19: sparse_vectors gains FK(chunk_id) → chunks(id) ON DELETE CASCADE,
+///   making the no-orphan-sparse-rows invariant structural
+/// - v18: embedding_base column on chunks (dual embeddings)
 /// - v17: sparse_vectors table + enrichment_version column
 /// - v16: composite PK on llm_summaries (content_hash + purpose)
-/// - v15: 768-dim embeddings -- dropped sentiment dimension (SQ-9)
-/// - v14: llm_summaries table for SQ-6
+/// - v15: 768-dim embeddings -- dropped sentiment dimension
+/// - v14: llm_summaries table
 /// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
 ///
-/// - v27: chunks.needs_embedding flag (#1452). Set on chunks written by
+/// - v27: chunks.needs_embedding flag. Set on chunks written by
 ///   the parser stage during a `--llm-summaries` reindex without a
 ///   first-pass embed; cleared by `enrichment_pass` once a real embedding
 ///   is written. `embedding` column stays `BLOB NOT NULL` (zero-vec
@@ -155,6 +154,6 @@ pub const CURRENT_SCHEMA_VERSION: i32 = 27;
 #[cfg(test)]
 pub(crate) const DEFAULT_MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
-/// AD-52: ModelInfo moved to embedder::models where it logically belongs.
-/// Re-exported here so `store::helpers::ModelInfo` and `store::ModelInfo` continue to work.
+/// ModelInfo lives in `embedder::models`. Re-exported here so
+/// `store::helpers::ModelInfo` and `store::ModelInfo` both resolve.
 pub use crate::embedder::ModelInfo;

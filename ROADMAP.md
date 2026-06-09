@@ -1,21 +1,16 @@
 # Roadmap
 
-## Current: v1.40.0 (cut 2026-05-08, crates.io published) + Phase 1 polymorphic routing complete
+## Current: v1.41.0 (cut 2026-05-20, crates.io published)
 
-Minor release. **Breaking change to default JSON output** on the CLI direct path — `cqs <cmd> --json` now emits the bare JSON payload (no envelope wrap). `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge.
+Minor release. 30 commits since v1.40.0; no breaking changes (v1.40.0 carried the SNR wire-format flip). Three threads: polymorphic routing Phase 1 completion (matrix below), post-v1.40.0 audit cycle closure, `cqs dead` false-positive reduction (table below).
 
-**v1.40.0 (2026-05-08):** 14-PR release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). Bundled SNR restoration Phases 1-4 + polymorphic-routing Phase 1 plumbing + first cell. Seven substantive PRs (plus three docs/tears) landed post-release on main: cell-completion (#1616, #1617, #1618), Phase 1 daemon-path sweep (#1620), and `cqs dead` Tier 2a + 2b false-positive reduction (#1621, #1622, #1623). Phase 1 polymorphic routing now complete on **both** CLI-direct and daemon-path surfaces (60 dispatch points). Worth a future v1.41 minor (or v1.40.1 patch if no further breaks pile up) to capture the post-release work; for now main is ahead of crates.io v1.40.0 by the polymorphic-routing matrix completion + dead-code filter improvements.
+**Post-v1.40.0 audit cycle (closed in v1.41.0):** 16-category audit, 150 raw findings → 78 triaged → 9 closeout PRs (#1626–#1634). 21 of 23 P1s closed; 2 deferred with rationale (DS-V1.40-1 daemon Store cache invalidation, DS-V1.40-7 sentiment CHECK constraint — tracked in Open Issues below). Highlights: lying-docs sweep (#1626), Tier 2b `filter_invoked_macros` correctness — LIKE → GLOB, Rust-only guard, recursive-macro self-exclusion (#1627), Posture/OutputFormat env-var caching + truthy aliases (#1629), `worktree_stale` signal restored under V2Bare (#1630), atomic backup-restore sidecar ordering (#1631), kind-fallback DoS caps (#1632), BFS sentinel + Tier 2a anchoring (#1633).
 
-**v1.40.0 release contents:**
+Also: `cqs chat` honors `CQS_OUTPUT_FORMAT=v1` (#1650, first external-contributor fix), `cli_chat_format_test` aligned with the slim envelope — closed 8 consecutive nightly failures (#1655), screw-mcp/screw-tape moved to its own repo (#1656).
 
-- **SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613):** `Posture` enum + per-result skip-when-default + posture-gated force-emit + slim batch/daemon envelope + CLI direct → bare payload. Restores high-SNR baseline. ~30% smaller per result + ~70 KB saved per 1000-line fixture batch + bare CLI direct shape.
-- **Polymorphic routing Phase 1 plumbing + first cell (#1610, #1612):** `cqs::kind` module (Kind enum, classifier, `Store::lookup_by_name`, `detect_kind_for_store`) + `cqs impact <const>` returns kind-labeled definitions instead of empty.
+**Post-release on main (ahead of v1.41.0 tag):** sqlx 0.8.6 → 0.9.0 with `AssertSqlSafe` on dynamic SQL (#1666), clippy 1.96 `manual_option_zip` fix (#1672), comment-cleanup sweep across all 264 source files, and dependabot bumps (tree-sitter 0.26.9, tree-sitter-erlang 0.18, reqwest 0.13.4, similar 3.1.1, serde_json 1.0.150, log 0.4.31, serial_test 3.5.0, uuid 1.23.2).
 
-Plus: env-var-docs hardening (#1606), v3.v2 fixture refresh (#1607, agg R@K +6.4/+2.7/+3.2pp), gitignore housekeeping (#1603), telemetry reset.
-
-Verified eval baseline post-release (v3.v2 218q dual-judge, default slot): test 49.5/72.5/84.4, dev 56.0/82.6/94.5, agg 52.7/77.5/89.4 R@1/R@5/R@20 — above v1.36-snapshot range.
-
-**Post-release polymorphic-routing matrix completion (on main, ahead of v1.40.0 tag):**
+**Polymorphic-routing Phase 1 matrix (first cell v1.40.0 #1612; completed in v1.41.0):**
 
 | Command | Function | Type | Const | Module | Ambiguous |
 |---|---|---|---|---|---|
@@ -36,14 +31,20 @@ Verified eval baseline post-release (v3.v2 218q dual-judge, default slot): test 
 | 2a base | #1621 | `field_initializer` + `(call_expression arguments)` patterns in `rust.calls.scm` | -52 (66 → 14 in `src/language/languages.rs`) |
 | 2a follow-up | #1622 | `type_cast_expression` patterns for `Some(fn as T)` casts | -14 (closes `post_process_*` to 0) |
 | 2b partial | #1623 | `WHERE content LIKE '%<name>!%'` filter in `dead_code.rs` | -3 of 5 macro false positives |
+| 2b correctness | #1627 (v1.41.0) | LIKE → GLOB (case-sensitive, no `_` collision), Rust-only guard, recursive-macro self-exclusion, GLOB metachar escape, +7 tests | closes the Tier 2b false-match edge cases |
 
-Cumulative: ~114 → 35 cqs-dead entries today. Remaining 35 includes 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) flagged because their only invocation is at file scope (line 606 of `src/cli/batch/commands.rs`) — outside any chunk's byte range. Closing fully requires a chunker change to include doc comments / file-level statements; deferred as architectural.
+Cumulative: ~114 → 35 cqs-dead entries (as of v1.41.0). Remaining 35 includes 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) flagged because their only invocation is at file scope (line 606 of `src/cli/batch/commands.rs`) — outside any chunk's byte range. Closing fully requires a chunker change to include doc comments / file-level statements; deferred as architectural.
 
-## Previous: v1.39.0 (cut 2026-05-07)
+## Previous: v1.40.0 (cut 2026-05-08)
 
-Minor release. Schema v27 (bumped from v26 in #1497).
+**v1.40.0 (2026-05-08):** 14-PR minor release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). **Breaking:** CLI direct `--json` emits the bare JSON payload (no envelope wrap); `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge. Contents:
+- **SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613):** `Posture` enum + per-result skip-when-default + posture-gated force-emit + slim batch/daemon envelope + CLI direct → bare payload. ~30% smaller per result + ~70 KB saved per 1000-line fixture batch.
+- **Polymorphic routing Phase 1 plumbing + first cell (#1610, #1612):** `cqs::kind` module (Kind enum, classifier, `Store::lookup_by_name`, `detect_kind_for_store`) + `cqs impact <const>` returns kind-labeled definitions instead of empty.
+- Plus: env-var-docs hardening (#1606), v3.v2 fixture refresh (#1607, agg R@K +6.4/+2.7/+3.2pp), gitignore housekeeping (#1603), telemetry reset.
 
-**v1.39.0 (2026-05-07):** 88-commit minor release. Three threads:
+Verified eval baseline post-release (v3.v2 218q dual-judge, default slot): test 49.5/72.5/84.4, dev 56.0/82.6/94.5, agg 52.7/77.5/89.4 R@1/R@5/R@20 — above v1.36-snapshot range.
+
+**v1.39.0 (2026-05-07):** 88-commit minor release. Schema v27 (bumped from v26 in #1497). Three threads:
 - v1.38.0-cohort audit follow-ups (#1487–#1511): proc-macro `#[derive(CqsCommands)]` (#1495 closes #1366), schema v27 `--llm-summaries` skip-first-pass embed (#1497 closes #1452), atomic SPLADE/CAGRA save with `.bak` rollback (#1491/#1492), `cqs ref reindex` LLM/HyDE flag parity (#1506), `cqs project search` filter knobs (#1507), `cqs index --model` drift detection (#1505), `[index.policy]` config section (#1511).
 - Post-v1.38 audit cycle: 154 findings catalogued in PR #1515; ~64 closed across ~33 cluster PRs (#1514–#1570). Sub-clusters covered needs_embedding wiring (DS-V1.38-1/2/3/8), lying-docs sweep (DOC-V1.38-1..10), stored_model_name lossy-caller migration (EH-V1.38-1/2/3/4), algorithm correctness sweep (AC-V1.38-1/2/3/5/6/9), security hardening (SEC-V1.38-1/2/3/4/8/9), env-override sweep (10 new knobs across SHL-V1.38-*), TC-HAP-V1.38 test backfill (9 of 10 sub-items).
 - Post-cycle hardening of the watch/reindex path: atomic per-file reindex (#1575 closes #1574), TRT-incompatibility blocklist for Gemma (#1577 closes #1576), `cqs dead` noise filter (#1572 closes ~50% of false positives).
@@ -72,7 +73,7 @@ Surface changes that justify minor not patch: `EmbedderError::HfHub` → `ModelD
 
 **v1.33.0 (2026-05-02):** eval-matcher drift fix (#1284, ~38% of gold chunks were going invisible after audit-driven line shifts), placeholder-cache 30s startup tax fix (#1288, CI 38min→6min), chunk-orphan pipeline prune (#1283), `bge-large-ft` LoRA preset (#1289), daemon test refactor + nightly CI workflow (#1292, #1286 Phase 1).
 
-**Eval baseline (v3.v2 218q dual-judge, post-v1.39.0 default):**
+**Eval baseline (v3.v2 218q dual-judge, historical snapshot at v1.39.0 — current baseline is under "Previous: v1.40.0"):**
 
 | Slot | Test R@5 | Dev R@5 | Test R@20 | Dev R@20 |
 |---|---:|---:|---:|---:|
@@ -164,7 +165,7 @@ Core finding: R@5 is alpha-insensitive on this corpus state across [0, 1]. The O
 - [x] **Index-aware embedder resolution.** Shipped — `src/cli/store.rs:138` `model_config()` reads `Store::stored_model_name()` and overrides env/CLI via `ModelConfig::resolve_for_query`. Closes the `CQS_EMBEDDING_MODEL=foo` foot-gun where queries against a `bar`-model index silently returned zero results.
 - [x] **Embedder abstraction.** [#949](https://github.com/jamie8johnson/cqs/issues/949) closed. `ModelConfig` carries `input_names` / `output_name` / `pooling` / `tokenizer`; non-BERT models (Jina v3, Stella, GTE, custom) can be added as config entries rather than encoder forks.
 - [x] **Content-keyed embeddings cache + named slots — shipped 2026-04-25 (PR #1105).** `.cqs/embeddings_cache.db` keyed by `(content_hash, model_id)` + project-level `.cqs/slots/<name>/` directories + `cqs slot {list,create,promote,remove,active}` + `cqs cache {stats,clear,prune,compact}` + `--slot`/`CQS_SLOT` on every major command + one-shot migration of `.cqs/index.db` → `.cqs/slots/default/`. Spec at `docs/plans/2026-04-24-embeddings-cache-and-slots.md`. Post-merge wiring fix added `cqs::resolve_index_db()` helper to handle 8 callers that built `.cqs/index.db` paths directly.
-  - **Follow-ups filed:** [#1107](https://github.com/jamie8johnson/cqs/issues/1107) (`cqs slot create --model` validates but doesn't persist; must pass `--model` globally on every invocation), [#1108](https://github.com/jamie8johnson/cqs/issues/1108) (5 hot search SELECTs omit `content_hash`, ~2,180 warnings/eval, surfaced when running A/B evals on the new infra).
+  - **Follow-ups:** [#1107](https://github.com/jamie8johnson/cqs/issues/1107) (slot create `--model` persistence) and [#1108](https://github.com/jamie8johnson/cqs/issues/1108) (hot search SELECTs omitting `content_hash`) both closed.
   - **A/B technique that works:** copy `llm_summaries` rows cross-slot by `content_hash` before `cqs index --llm-summaries`. Summary text is model-independent (NL describing the chunk); only the embedding into the slot's HNSW changes. Reduced API spend on coderank A/B prep to ~$0.03 (894 new summaries) and v9-200k to $0 (full overlap on eligible chunks).
 - [x] **EmbeddingGemma-300m promoted to default in v1.35.0 (2026-05-02).** PR #1385 swapped the `define_embedder_presets!` `default = true` annotation from `bge_large` to `embeddinggemma_300m`. Apples-to-apples eval (after #1384 truncation fix): agg R@1=49.1% / R@5=72.5% / R@20=86.2%, beats BGE-large on R@1 by +1.9pp at 308M params / 768 dim / 2K context. BGE-large remains a first-class preset (`CQS_EMBEDDING_MODEL=bge-large`); existing slot indexes keep their stored model. TRT-RTX wiring is still a prerequisite for FP16 — TRT 10 fails the engine build on Gemma3's bidirectional-attention head plugin op; `CQS_DISABLE_TENSORRT=1` knob (#1301) falls through to CUDA EP at FP32. Full A/B writeup in `research/models.md`.
 - [x] **Qwen3-Embedding-4B ceiling probe — closed 2026-05-04. Result: gemma-300m wins.** Probed Qwen3-Embedding-**4B** as a tractable proxy for the 8B (8B mmap risks on WSL still load-bearing, but 4B carries the same architecture: decoder-only, last-token pooling, instruct-prefix). Full enrichment + per-cat α tuning lifted qwen3-4b to test R@5 69.7% / dev R@5 77.1%, **still 2.7-2.8pp below gemma-300m's 72.5% / 79.8%** despite 13× the params and 3.3× the dim. The probe paid for itself in engineering — DB-lock root cause (#1451), FP16 dispatch (#1442), per-model α-set proof (#1453) — but the architecture finding is decisive: the Qwen3-Embedding family's MTEB-strong general-retrieval profile does not transfer to code search on this fixture. **Embedder-scale retired as a knob for cqs.** Full results in PROJECT_CONTINUITY.md "Right Now". Sweep artifacts: `/tmp/qwen3-sweep/{test,dev}-*.json` (capture before reboot).
@@ -230,11 +231,11 @@ Two designs, both docs landed and reviewable, no implementation yet:
   - ✅ **Phase 1** (#1601): `Posture` enum + `_with_posture` emission helpers. Additive; no behavior change.
   - ✅ **Phase 2** (#1602): per-result skip-when-default + posture-gated force-emit. `build_chunk_json_inner` posture-aware. Per-result lean shape under Friendly is ~30% smaller in the typical case.
   - ✅ **Phase 3** (#1604): slim batch/daemon envelope. `wrap_value` / `wrap_error` / `write_json_line` emit `{"data": <payload>}` or `{"error": {...}}` under Friendly; full envelope under `CQS_ULTRASECURITY=1`. ~70 KB saved on a 1000-line fixture batch.
-  - ⏸️ **Phase 4** (CLI direct → bare payload): deferred. Genuinely invasive — 21+ integration test files, 50+ eval harness Python scripts parse the envelope shape on stdout. Coordinated migration is a multi-day effort (not autopilot-friendly). Pick up in a fresh session: branch off main, change `emit_json` to emit bare under Friendly, sweep tests with `parsed["data"][...] → parsed[...]`, sweep eval harness `evals/*.py` similarly. Eval harness option: set `CQS_ULTRASECURITY=1` in the harness Bash invocations to keep envelope assertions; explicit decision either way.
-  - ⏸️ **Phase 5** (CQS_ULTRASECURITY=1 restores full envelope on CLI direct): deferred until Phase 4 lands. The plumbing already exists (Phase 1 made `emit_json` posture-aware via `Posture::current()`); Phase 5 is just confirming the restoration contract under `CQS_ULTRASECURITY=1` once Phase 4 introduces the bare default.
-  - ⏸️ **Phase 6** (docs / README / CHANGELOG finalization): deferred until Phase 4 + 5 land.
+  - ✅ **Phase 4** (#1613): CLI direct → bare payload. Shipped as v1.40.0's breaking change; `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge. Tests + eval harness migrated in the same release.
+  - ✅ **Phase 5**: `CQS_ULTRASECURITY=1` restores the full envelope on CLI direct. Restoration contract hardened in v1.41.0 — #1630 restored the `worktree_stale` signal under the V2Bare default.
+  - ✅ **Phase 6** (#1626): docs / README / CHANGELOG finalized in the v1.41.0 lying-docs sweep.
 
-  Phases 1-3 already deliver real SNR wins on per-result fields and batch/daemon surface. The remaining CLI direct envelope wrap is the deferred user-visible chunk.
+  All six phases shipped. Per-source rate limit and tracing-noise-suppress remain scoped out — telemetry-contingent on whether agents still struggle with response size.
 
   Superseded design at [`docs/json-noise-audit.md`](docs/json-noise-audit.md), kept for traceability — Appendix A in the SNR doc explains the framing evolution.
 
@@ -244,31 +245,26 @@ Two designs, both docs landed and reviewable, no implementation yet:
 
 ## Open Issues
 
-Re-audited 2026-05-02 post-v1.33.0-audit close. The v1.33.0 cycle and post-release audit together closed 134 audit findings; 25 medium-effort items filed as tracking issues (#1337-#1377). #1286 + #1290 closed during the audit chain. Remaining issues split below.
+Re-audited 2026-06-09 against GitHub state. The v1.39–v1.41 audit cycles closed nearly everything filed from v1.33.0: of the 25 medium-effort tracking issues (#1337–#1377), only #1350 and #1351 remain open. Perf tier-3 lost #1244/#1229/#1228 (closed); refactor tier-3 lost #1216 (closed).
 
-**v1.33.0 audit follow-ups (filed 2026-05-02, all medium-effort):**
+**v1.33.0 audit follow-ups still open:**
 
-| Range | Theme | Count |
-|-------|-------|------:|
-| [#1337-#1359](https://github.com/jamie8johnson/cqs/issues/1337) | P4 batch — security defense-in-depth, RM eviction, Extensibility refactors, Platform Behavior on Windows, missing e2e smoke tests | 23 |
-| [#1365](https://github.com/jamie8johnson/cqs/issues/1365) | P3-27: clap `--slot` help-text mismatch on slot/cache subcommands | 1 |
-| [#1366](https://github.com/jamie8johnson/cqs/issues/1366) | P3-49: structural CLI registry — top-level command needs three coordinated edits | 1 |
-| [#1370](https://github.com/jamie8johnson/cqs/issues/1370) | P2-9: HNSW M/ef defaults static — auto-scale with corpus | 1 |
-| [#1371](https://github.com/jamie8johnson/cqs/issues/1371) | P2-37: SQLite chunks missing composite index `(source_type, origin)` | 1 |
-| [#1372](https://github.com/jamie8johnson/cqs/issues/1372) | P2-14: `--rerank` (bool) on search vs `--reranker <mode>` on eval | 1 |
-| [#1373](https://github.com/jamie8johnson/cqs/issues/1373) | P2-13: `--depth` flag four defaults across five commands | 1 |
-| [#1374](https://github.com/jamie8johnson/cqs/issues/1374) | P2-4: `IndexBackend` public-lib trait uses `anyhow::Result` instead of `thiserror` | 1 |
-| [#1375](https://github.com/jamie8johnson/cqs/issues/1375) | P3-52: `lib.rs` wildcard `pub use` leaks internal API surface | 1 |
-| [#1376](https://github.com/jamie8johnson/cqs/issues/1376) | P2-8: `serve` async handlers duplicate ~15-20 LOC × 6 — extract helper | 1 |
-| [#1377](https://github.com/jamie8johnson/cqs/issues/1377) | Umbrella: P2-36 + P3-53/54/55 perf micro-opts cluster | 1 |
+| # | Finding |
+|---|---------|
+| [#1350](https://github.com/jamie8johnson/cqs/issues/1350) | P4-14: `apply_scoring_pipeline` hand-coded — adding a third signal means editing two paths |
+| [#1351](https://github.com/jamie8johnson/cqs/issues/1351) | P4-15: HNSW distance metric type-baked as `DistCosine`; switching needs a persist migration |
+
+**v1.40.0 audit cycle — deferred P1s (rationale in CHANGELOG v1.41.0):**
+
+| Finding | Status |
+|---------|--------|
+| DS-V1.40-1: daemon Store cache invalidation via `PRAGMA data_version` | Symptom rare; caches reload on the 100ms staleness check. Cluster D bundling deferred to the v1.42 cycle |
+| DS-V1.40-7: sentiment column CHECK constraint (schema v28) | Single-user discrete-value compliance is reliable; migration cost > benefit unless telemetry shows misuse |
 
 **Perf tier-3 (real wins, but each ≥1hr):**
 
 | # | Finding | Status |
 |---|---------|--------|
-| [#1244](https://github.com/jamie8johnson/cqs/issues/1244) | RM-4: Reduce build_hnsw_index_owned 17 MB content_hash snapshot | Audit's "240×" claim assumed nonexistent u32 chunk_ids; actual win ~1 MB via `[u8; 32]` repr |
-| [#1229](https://github.com/jamie8johnson/cqs/issues/1229) | RM-5: Stream enumerate_files walk + per-file SQL lookup | Real win at 1M-file repos; needs `enumerate_files_iter` API + batched 1k-row SQL |
-| [#1228](https://github.com/jamie8johnson/cqs/issues/1228) | RM-2: wait_for_fresh persistent connection | Daemon-side reads one request per connection — option (a) needs daemon-side loop change too |
 | [#916](https://github.com/jamie8johnson/cqs/issues/916) | perf: mmap SPLADE body (PF-11) | Audit-deprioritized — 59 MB peak transient, dominated by parse-side allocations |
 | [#717](https://github.com/jamie8johnson/cqs/issues/717) | perf: HNSW fully loaded into RAM (RM-40) | Needs lib swap to hnswlib-rs (nightly-only) |
 
@@ -276,7 +272,6 @@ Re-audited 2026-05-02 post-v1.33.0-audit close. The v1.33.0 cycle and post-relea
 
 | # | Finding | Status |
 |---|---------|--------|
-| [#1216](https://github.com/jamie8johnson/cqs/issues/1216) | EX: Drive BatchCmd dispatch from macro table (33-arm match) | Current dispatch already exhaustive; win is hypothetical-future-regression-prevention |
 | [#1140](https://github.com/jamie8johnson/cqs/issues/1140) | EX: Embedder preset extras map | Explicitly skipped per autopilot directive |
 | [#1139](https://github.com/jamie8johnson/cqs/issues/1139) | EX: structural_matchers shared library | Touches 50+ language modules; explicitly skipped |
 

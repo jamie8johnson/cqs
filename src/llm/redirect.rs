@@ -10,8 +10,7 @@
 //! `Authorization` cross-origin by default, that strip is silent
 //! (operator sees a 401 loop on the redirect target instead of a
 //! clean fail-fast) and it depends on a default that could shift
-//! across versions. SEC-V1.30.1-7 (#1223) closed that gap by adding
-//! `same_origin_redirect_policy`, which:
+//! across versions. `same_origin_redirect_policy` closes that gap:
 //!
 //! 1. Refuses any redirect whose target origin (scheme + host + port)
 //!    differs from the previous hop's origin, with a `tracing::warn!`

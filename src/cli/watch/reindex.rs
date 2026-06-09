@@ -4,14 +4,14 @@
 //!
 //! `reindex_files` is the heaviest function in the watch loop — it
 //! coordinates the file enumeration, parser, embedder cache lookups
-//! (per-slot store + global cross-slot, #1129), and the chunk upsert.
-//! Carved out so the loop's surrounding state machine
+//! (per-slot store + global cross-slot), and the chunk upsert.
+//! Lives apart so the loop's surrounding state machine
 //! (`process_file_changes` in `events.rs`) reads as orchestration
 //! rather than being inlined alongside ~350 lines of pipeline detail.
 
 use super::*;
 
-/// P2.74: count directories under `root` that `notify::RecommendedWatcher`
+/// Count directories under `root` that `notify::RecommendedWatcher`
 /// would register an inotify watch on, honoring `.gitignore` so we don't
 /// over-count dirs the watcher already excludes via the gitignore matcher.
 ///
@@ -29,7 +29,7 @@ pub(super) fn count_watchable_dirs(root: &Path) -> usize {
     count
 }
 
-/// Opaque identity of a database file for detecting replacements (DS-W5).
+/// Opaque identity of a database file for detecting replacements.
 /// On Unix uses (device, inode) — survives renames that preserve the inode
 /// and detects replacements where `index --force` creates a new file.
 #[cfg(unix)]
@@ -43,7 +43,7 @@ pub(super) fn db_file_identity(path: &Path) -> Option<(u64, u64)> {
 pub(super) fn db_file_identity(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
-/// #1004: Build the resident SPLADE encoder for the daemon's incremental
+/// Build the resident SPLADE encoder for the daemon's incremental
 /// reindex path. Returns `None` when:
 ///
 /// - `CQS_WATCH_INCREMENTAL_SPLADE=0` (feature flag kill-switch)
@@ -95,7 +95,7 @@ pub(super) fn build_splade_encoder_for_watch() -> Option<cqs::splade::SpladeEnco
     }
 }
 
-/// #1004: Encode + upsert sparse vectors for the chunks that were just
+/// Encode + upsert sparse vectors for the chunks that were just
 /// (re)indexed. Called after a successful `reindex_files` when an encoder
 /// is resident. Best-effort: encoding failures are logged and skipped
 /// so a pathological chunk cannot block the watch loop.
@@ -104,10 +104,9 @@ pub(super) fn encode_splade_for_changed_files(
     store: &Store,
     changed_files: &[PathBuf],
 ) {
-    // SHL-V1.36-6: read the encoder's probed dims so the batch size
-    // scales with model width / seq length. ensembledistil at 768/256
-    // gets the historic 32; SPLADE-Code 0.6B at 1024/512 gets 8 instead
-    // of OOMing.
+    // Read the encoder's probed dims so the batch size scales with model
+    // width / seq length. ensembledistil at 768/256 gets 32; SPLADE-Code
+    // 0.6B at 1024/512 gets 8 instead of OOMing.
     let (hidden_size, max_length) = {
         let enc = encoder_mu.lock().unwrap_or_else(|p| p.into_inner());
         (enc.hidden_size(), enc.max_length())
@@ -126,10 +125,10 @@ pub(super) fn encode_splade_for_changed_files(
     // upsert_sparse_vectors deletes then inserts atomically).
     let mut batch: Vec<(String, String)> = Vec::new();
     for file in changed_files {
-        // PB-V1.29-2: `file.display()` emits Windows backslashes, which
-        // never match the forward-slash origins stored at ingest (chunks
-        // are upserted via `normalize_path`). Using `.display()` here
-        // makes SPLADE encoding a silent no-op on Windows.
+        // `file.display()` emits Windows backslashes, which never match the
+        // forward-slash origins stored at ingest (chunks are upserted via
+        // `normalize_path`). Using `.display()` here would make SPLADE
+        // encoding a silent no-op on Windows.
         let origin = cqs::normalize_path(file);
         let chunks = match store.get_chunks_by_origin(&origin) {
             Ok(v) => v,
@@ -209,12 +208,11 @@ const SPLADE_REFERENCE_HIDDEN: usize = 768;
 const SPLADE_REFERENCE_MAX_LENGTH: usize = 256;
 
 /// SPLADE batch size for incremental encoding. Mirrors the reranker
-/// batch pattern (#963). Default 32 matches the reranker default.
+/// batch pattern. Default 32 matches the reranker default.
 ///
-/// Legacy free function. Callers that have a [`SpladeEncoder`] in
-/// scope should use [`splade_batch_size_for`] instead so the batch
-/// scales by the loaded model's `(hidden_size, max_length)`. Kept as
-/// a backwards-compatible no-op for the env-only path.
+/// Env-only path. Callers that have a [`SpladeEncoder`] in scope should
+/// use [`splade_batch_size_for`] instead so the batch scales by the loaded
+/// model's `(hidden_size, max_length)`.
 pub(super) fn splade_batch_size() -> usize {
     std::env::var("CQS_SPLADE_BATCH")
         .ok()
@@ -223,11 +221,11 @@ pub(super) fn splade_batch_size() -> usize {
         .unwrap_or(DEFAULT_SPLADE_BATCH)
 }
 
-/// SHL-V1.36-6: SPLADE batch size scaled by `(hidden_size, max_length)`.
+/// SPLADE batch size scaled by `(hidden_size, max_length)`.
 /// Mirrors `reranker::reranker_batch_size`. Lets SPLADE-Code 0.6B at
 /// 1024-hidden / 512-seq use a smaller batch than ensembledistil at
 /// 768/256, instead of OOMing the same default. `CQS_SPLADE_BATCH` env
-/// continues to win regardless of the loaded model's dims.
+/// wins regardless of the loaded model's dims.
 ///
 /// Formula:
 ///   batch = 32 * (REFERENCE_HIDDEN / hidden).max(0.25)
@@ -256,20 +254,17 @@ pub(super) fn splade_batch_size_for(hidden_size: usize, max_length: usize) -> us
     rounded
 }
 
-/// EH-V1.33-8 (#1290): touch the stored `source_mtime` to disk's mtime so
-/// the next reconcile pass sees `disk == stored` and stops re-queuing the
-/// file. Returns `true` on success.
+/// Touch the stored `source_mtime` to disk's mtime so the next reconcile
+/// pass sees `disk == stored` and stops re-queuing the file. Returns `true`
+/// on success.
 ///
-/// Pre-fix this was a four-deep `if let Ok` chain (`metadata` → `modified`
-/// → `duration_since(UNIX_EPOCH)` → `touch_source_mtime`); any one of
-/// those four steps failing silently abandoned the touch, leaving the
-/// stored mtime stale and the reconcile loop running forever for that
-/// file. Worse, `cqs status --watch-fresh` would then claim
-/// `state == fresh` while the touch never landed — operators trusting
-/// the readiness signal would proceed against a stale index.
-///
-/// The helper logs a distinct `tracing::warn!` at each failure step so
-/// operators can see exactly which FS API or store call broke the chain.
+/// Each FS step (`metadata` → `modified` → `duration_since(UNIX_EPOCH)` →
+/// `touch_source_mtime`) that fails silently would abandon the touch, leaving
+/// the stored mtime stale and the reconcile loop running forever for that
+/// file — and `cqs status --watch-fresh` would then claim `state == fresh`
+/// while the touch never landed. The helper logs a distinct `tracing::warn!`
+/// at each failure step so operators can see exactly which FS API or store
+/// call broke the chain.
 pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Path) -> bool {
     let meta = match std::fs::metadata(abs_path) {
         Ok(m) => m,
@@ -322,11 +317,11 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
 /// incremental HNSW insertion (looking up embeddings by hash instead of
 /// rebuilding the full index).
 ///
-/// `global_cache` (#1129) is the project-scoped cross-slot embedding cache;
-/// when present, the cache is consulted before the per-slot store fallback,
-/// matching the bulk pipeline's `prepare_for_embedding` shape. `None` mirrors
-/// the pre-#1129 behaviour (store cache only) for tests and the
-/// `CQS_CACHE_ENABLED=0` operator override.
+/// `global_cache` is the project-scoped cross-slot embedding cache; when
+/// present, the cache is consulted before the per-slot store fallback,
+/// matching the bulk pipeline's `prepare_for_embedding` shape. `None` is the
+/// store-cache-only path used by tests and the `CQS_CACHE_ENABLED=0` operator
+/// override.
 pub(super) fn reindex_files(
     root: &Path,
     store: &Store,
@@ -345,20 +340,18 @@ pub(super) fn reindex_files(
     info!(file_count = files.len(), "Reindexing files");
 
     // Parse changed files once — extract chunks, calls, AND type refs in a single pass.
-    // Avoids the previous double-read + double-parse per file.
     let mut all_type_refs: Vec<(PathBuf, Vec<ChunkTypeRefs>)> = Vec::new();
-    // P2.67: collect per-chunk call sites from the parser instead of re-parsing
-    // each chunk's body via `extract_calls_from_chunk` after the fact. The bulk
-    // pipeline already does this via `parse_file_all_with_chunk_calls`; the
-    // watch path was paying ~14k extra tree-sitter parses per repo-wide reindex.
+    // Collect per-chunk call sites from the parser instead of re-parsing each
+    // chunk's body via `extract_calls_from_chunk` after the fact. The bulk
+    // pipeline does this via `parse_file_all_with_chunk_calls`; re-parsing
+    // would pay ~14k extra tree-sitter parses per repo-wide reindex.
     let mut per_file_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
-    // #1574: stash file-level function_calls per origin so they can be
-    // written in the SAME tx as the chunks/FTS upsert below. Pre-fix, the
-    // flat_map called `upsert_function_calls` per file synchronously,
-    // BEFORE the heavy embed phase. A daemon crash during embed (we
-    // observed SIGFPE crashes on TensorRT) left the function_calls table
-    // ahead of chunks/FTS — `cqs callers <new_fn>` worked, search /
-    // `cqs explain` didn't.
+    // Stash file-level function_calls per origin so they're written in the
+    // SAME tx as the chunks/FTS upsert below. Writing them before the heavy
+    // embed phase would leave the function_calls table ahead of chunks/FTS on
+    // a daemon crash during embed (SIGFPE crashes have been observed on
+    // TensorRT) — `cqs callers <new_fn>` would work, search / `cqs explain`
+    // wouldn't.
     use std::collections::HashMap;
     let mut all_function_calls: HashMap<PathBuf, Vec<cqs::parser::FunctionCalls>> = HashMap::new();
     let chunks: Vec<_> = files
@@ -366,7 +359,7 @@ pub(super) fn reindex_files(
         .flat_map(|rel_path| {
             let abs_path = root.join(rel_path);
             if !abs_path.exists() {
-                // RT-DATA-7: File was deleted — remove its chunks from the store
+                // File was deleted — remove its chunks from the store
                 if let Err(e) = store.delete_by_origin(rel_path) {
                     tracing::warn!(
                         path = %rel_path.display(),
@@ -378,17 +371,17 @@ pub(super) fn reindex_files(
             }
             match parser.parse_file_all_with_chunk_calls(&abs_path) {
                 Ok((mut file_chunks, calls, chunk_type_refs, chunk_calls)) => {
-                    // Rewrite paths to be relative (AC-2: fix both file and id)
+                    // Rewrite paths to be relative — fix both file and id.
                     //
-                    // PB-V1.29-3: Use `cqs::normalize_path` on both sides. On
-                    // Windows verbatim paths (`\\?\C:\...`) `abs_path.display()`
-                    // keeps backslashes + the verbatim prefix, but `chunk.id`
-                    // is built by the parser with forward-slash / stripped
-                    // prefix — so the strip silently misses and chunks keep
-                    // the absolute prefix, breaking cross-index equality and
-                    // call-graph resolution. Normalize both sides so the
-                    // prefix-strip actually matches, and the replacement uses
-                    // the same convention.
+                    // Use `cqs::normalize_path` on both sides. On Windows
+                    // verbatim paths (`\\?\C:\...`) `abs_path.display()` keeps
+                    // backslashes + the verbatim prefix, but `chunk.id` is
+                    // built by the parser with forward-slash / stripped
+                    // prefix — so the strip would silently miss and chunks
+                    // would keep the absolute prefix, breaking cross-index
+                    // equality and call-graph resolution. Normalize both sides
+                    // so the prefix-strip matches and the replacement uses the
+                    // same convention.
                     let abs_norm = cqs::normalize_path(&abs_path);
                     let rel_norm = cqs::normalize_path(rel_path);
                     for chunk in &mut file_chunks {
@@ -399,9 +392,9 @@ pub(super) fn reindex_files(
                             chunk.id = format!("{}{}", rel_norm, rest);
                         }
                     }
-                    // P2.67: stash chunk-level calls keyed by the post-rewrite
-                    // chunk id so the post-loop fold can build `calls_by_id`
-                    // without re-parsing each chunk.
+                    // Stash chunk-level calls keyed by the post-rewrite chunk
+                    // id so the post-loop fold can build `calls_by_id` without
+                    // re-parsing each chunk.
                     for (abs_chunk_id, call) in chunk_calls {
                         let chunk_id = match abs_chunk_id.strip_prefix(abs_norm.as_str()) {
                             Some(rest) => format!("{}{}", rel_norm, rest),
@@ -413,18 +406,16 @@ pub(super) fn reindex_files(
                     if !chunk_type_refs.is_empty() {
                         all_type_refs.push((rel_path.clone(), chunk_type_refs));
                     }
-                    // #1574: stash function_calls for atomic per-file write
-                    // alongside chunks/FTS below. Pre-fix this called
-                    // `store.upsert_function_calls` synchronously here,
-                    // BEFORE the embed phase — leaving an asymmetric state
-                    // when the daemon crashed mid-embed.
+                    // Stash function_calls for atomic per-file write alongside
+                    // chunks/FTS below (rather than a synchronous upsert before
+                    // the embed phase, which would leave an asymmetric state
+                    // when the daemon crashed mid-embed).
                     //
                     // Always stash (even with empty `calls`): the per-file
                     // upsert below does DELETE WHERE file=X then INSERT
-                    // current. Skipping when empty leaks rows for files
-                    // that previously had function_calls but no longer do
-                    // (audit P1 #17 / E.2: `delete_phantom_chunks` cannot
-                    // do this cleanup itself).
+                    // current. Skipping when empty leaks rows for files that
+                    // previously had function_calls but no longer do
+                    // (`delete_phantom_chunks` cannot do this cleanup itself).
                     all_function_calls.insert(rel_path.clone(), calls);
                     file_chunks
                 }
@@ -434,28 +425,19 @@ pub(super) fn reindex_files(
                         error = %e,
                         "Failed to parse file — touching mtime to break reconcile loop"
                     );
-                    // EH-V1.30.1-1: refresh `chunks.source_mtime` for this
-                    // origin so the next `run_daemon_reconcile` pass sees
-                    // `disk == stored` and stops re-queuing the file every
-                    // 30 s (default reconcile cadence). Without this the
-                    // file stays in the divergent set forever — every
-                    // tick triggers a parse, fails, emits a warn, and
-                    // requeues. The mtime touch is the load-bearing
-                    // piece; the file's previous chunks remain visible
-                    // in search until the user fixes the syntax error
-                    // and the next save retriggers a successful re-parse.
+                    // Refresh `chunks.source_mtime` for this origin so the next
+                    // `run_daemon_reconcile` pass sees `disk == stored` and
+                    // stops re-queuing the file every 30 s (default reconcile
+                    // cadence). Without this the file stays in the divergent
+                    // set forever — every tick triggers a parse, fails, emits a
+                    // warn, and requeues. The mtime touch is the load-bearing
+                    // piece; the file's previous chunks remain visible in
+                    // search until the user fixes the syntax error and the next
+                    // save retriggers a successful re-parse.
                     //
-                    // EH-V1.33-8 (#1290): the previous nested `if let Ok`
-                    // chain swallowed metadata / modified / duration_since
-                    // failures silently. A clock-skewed mtime, a deleted
-                    // file mid-walk, or a permission flake on the second
-                    // FS read would silently abandon the touch — and
-                    // `cqs status --watch-fresh` would then claim the
-                    // index is fresh while the touch never landed.
-                    // Refactored to a fail-loud helper that logs a
-                    // distinct warn at each step so operators can see
-                    // *why* a touch failed and the reconcile loop
-                    // persisted.
+                    // `touch_mtime_or_warn` is a fail-loud helper that logs a
+                    // distinct warn at each FS step so operators can see *why* a
+                    // touch failed and the reconcile loop persisted.
                     touch_mtime_or_warn(store, rel_path, &abs_path);
                     vec![]
                 }
@@ -470,16 +452,15 @@ pub(super) fn reindex_files(
         return Ok((0, Vec::new()));
     }
 
-    // #1129: cache-check chain mirrors `prepare_for_embedding`'s
-    // global-cache → store-cache → embed fallback. Pre-#1129 the watch path
-    // only consulted `store.get_embeddings_by_hashes` so a chunk hashed in
-    // another slot (or under a previous model) paid GPU cost on every save
-    // even though `EmbeddingCache::project_default_path` had the vector.
+    // Cache-check chain mirrors `prepare_for_embedding`'s global-cache →
+    // store-cache → embed fallback. The global cache lets a chunk hashed in
+    // another slot (or under a previous model) skip GPU cost when
+    // `EmbeddingCache::project_default_path` already has the vector.
     //
-    // The dim guard matches `prepare_for_embedding`: skip the per-slot
-    // store cache when `embedder.embedding_dim() != store.dim()` (a model
-    // swap is in progress); the global cache is dim-checked inside
-    // `read_batch` so dimension drift there is silently filtered.
+    // The dim guard matches `prepare_for_embedding`: skip the per-slot store
+    // cache when `embedder.embedding_dim() != store.dim()` (a model swap is in
+    // progress); the global cache is dim-checked inside `read_batch` so
+    // dimension drift there is silently filtered.
     let dim = embedder.embedding_dim();
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
 
@@ -505,8 +486,8 @@ pub(super) fn reindex_files(
     }
 
     // Step 2: per-slot store cache. Only query for hashes the global cache
-    // didn't satisfy (P3.42 mirror) and only when the embedder's dim matches
-    // store dim — a model swap mid-watch means the stored vectors are stale.
+    // didn't satisfy, and only when the embedder's dim matches store dim — a
+    // model swap mid-watch means the stored vectors are stale.
     let mut store_hits: HashMap<String, Embedding> = if dim == store.dim() {
         let missed: Vec<&str> = hashes
             .iter()
@@ -529,12 +510,12 @@ pub(super) fn reindex_files(
 
     let mut cached: Vec<(usize, Embedding)> = Vec::new();
     let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
-    // P3.46: take ownership via `.remove()` instead of `.get().clone()`. Each
-    // cached embedding is ~4 KB (1024-dim BGE-large), so cloning per chunk on
-    // a thousand-chunk reindex was 4 MB of avoidable allocation churn. Two
+    // Take ownership via `.remove()` instead of `.get().clone()`. Each cached
+    // embedding is ~4 KB (1024-dim BGE-large), so cloning per chunk on a
+    // thousand-chunk reindex would be 4 MB of avoidable allocation churn. Two
     // chunks with the same content_hash within one reindex (rare — implies
-    // duplicate content across files) fall through to `to_embed` on the
-    // second hit, which is correct: one cached embedding satisfies one slot.
+    // duplicate content across files) fall through to `to_embed` on the second
+    // hit, which is correct: one cached embedding satisfies one slot.
     let global_hits_total = global_hits.len();
     for (i, chunk) in chunks.iter().enumerate() {
         if let Some(emb) = global_hits.remove(&chunk.content_hash) {
@@ -546,8 +527,8 @@ pub(super) fn reindex_files(
         }
     }
 
-    // OB-11: Log cache hit/miss stats for observability. #1129 expands the
-    // breakdown to surface global vs. store cache hits independently.
+    // Log cache hit/miss stats for observability, surfacing global vs. store
+    // cache hits independently.
     tracing::info!(
         cached = cached.len(),
         global_hits = global_hits_total,
@@ -560,10 +541,10 @@ pub(super) fn reindex_files(
     // Unchanged chunks (cache hits) are already in the HNSW index from a prior cycle,
     // so re-inserting them would create duplicates (hnsw_rs has no dedup).
     //
-    // PF-V1.30.1-7: pre-allocate to skip the `Vec` resize cost on the hot
-    // reindex path. Real fix is changing the downstream HNSW insert API
-    // to take `&[&str]` so the per-element clone disappears entirely; the
-    // pre-allocation is the immediate cheap win.
+    // Pre-allocate to skip the `Vec` resize cost on the hot reindex path.
+    // TODO: change the downstream HNSW insert API to take `&[&str]` so the
+    // per-element clone disappears entirely; the pre-allocation is the cheap
+    // interim win.
     let mut content_hashes: Vec<String> = Vec::with_capacity(to_embed.len());
     content_hashes.extend(to_embed.iter().map(|(_, c)| c.content_hash.clone()));
 
@@ -571,9 +552,9 @@ pub(super) fn reindex_files(
     let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
         vec![]
     } else {
-        // P2.38 (CQ-V1.33.0-1): use the model-aware NL variant so section
-        // chunks get the full content budget the model can absorb (e.g.
-        // nomic-coderank's 2048-seq capacity instead of the legacy 512 cap).
+        // Use the model-aware NL variant so section chunks get the full
+        // content budget the model can absorb (e.g. nomic-coderank's 2048-seq
+        // capacity instead of a 512 cap).
         let model_max_seq_len = embedder.model_config().max_seq_length;
         let texts: Vec<String> = to_embed
             .iter()
@@ -583,10 +564,10 @@ pub(super) fn reindex_files(
         embedder.embed_documents(&text_refs)?.into_iter().collect()
     };
 
-    // #1129: write fresh embeddings back to the global cache so the next
-    // file save (or another slot) hits cache instead of going through the
-    // embedder. Best-effort — mirrors the bulk pipeline's write-back shape
-    // with borrowed slices to skip per-entry allocations (P3 #127).
+    // Write fresh embeddings back to the global cache so the next file save
+    // (or another slot) hits cache instead of going through the embedder.
+    // Best-effort — mirrors the bulk pipeline's write-back shape with borrowed
+    // slices to skip per-entry allocations.
     if let (Some(cache), false) = (global_cache, to_embed.is_empty()) {
         let entries: Vec<(&str, &[f32])> = to_embed
             .iter()
@@ -605,9 +586,9 @@ pub(super) fn reindex_files(
 
     // Merge cached and new embeddings in original chunk order.
     //
-    // P3.41: build via a HashMap keyed by chunk index instead of pre-allocating
-    // `chunk_count` empty `Embedding::new(vec![])` placeholders. The old shape
-    // wasted N×Vec allocations on every reindex AND left a zero-length-vector
+    // Build via a HashMap keyed by chunk index rather than pre-allocating
+    // `chunk_count` empty `Embedding::new(vec![])` placeholders — that would
+    // waste N×Vec allocations on every reindex and leave a zero-length-vector
     // landmine if a slot was ever skipped (cosine distance with len-0 = NaN).
     // Mirrors the bulk pipeline's `create_embedded_batch` order-merge logic.
     let chunk_count = chunks.len();
@@ -618,16 +599,13 @@ pub(super) fn reindex_files(
     for ((i, _), emb) in to_embed.into_iter().zip(new_embeddings) {
         by_index.insert(i, emb);
     }
-    // RB-V1.38-2 (#1463): replace the daemon-killing `panic!` with a
-    // graceful early return. Pre-fix any future code path where
-    // `new_embeddings.len() != to_embed.len()` (partial ORT batch
-    // failure, embedder API change, etc.) would crash the watch
-    // thread mid-reindex. The watch loop already recovers from a
-    // returned `Err` by logging and skipping the file batch on the
-    // next tick — much better than a hard crash that drops the
-    // entire daemon. The "should be unreachable" invariant is
-    // preserved as a `tracing::error!` so any real-world hit shows
-    // up in journald.
+    // A code path where `new_embeddings.len() != to_embed.len()` (partial ORT
+    // batch failure, embedder API change, etc.) returns an Err rather than
+    // crashing the watch thread mid-reindex. The watch loop recovers from a
+    // returned `Err` by logging and skipping the file batch on the next tick —
+    // much better than a hard crash that drops the entire daemon. The "should
+    // be unreachable" invariant is preserved as a `tracing::error!` so any
+    // real-world hit shows up in journald.
     let mut embeddings: Vec<Embedding> = Vec::with_capacity(chunk_count);
     for i in 0..chunk_count {
         match by_index.remove(&i) {
@@ -648,10 +626,10 @@ pub(super) fn reindex_files(
         }
     }
 
-    // P2.67: build calls_by_id directly from `per_file_chunk_calls` (collected
-    // by `parse_file_all_with_chunk_calls` above) instead of re-parsing every
-    // chunk's body with `extract_calls_from_chunk`. The bulk indexing pipeline
-    // has used this shape since #1040; the watch path now matches it.
+    // Build calls_by_id directly from `per_file_chunk_calls` (collected by
+    // `parse_file_all_with_chunk_calls` above) instead of re-parsing every
+    // chunk's body with `extract_calls_from_chunk`, matching the bulk indexing
+    // pipeline.
     let mut calls_by_id: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
     for (chunk_id, call) in per_file_chunk_calls {
         calls_by_id.entry(chunk_id).or_default().push(call);
@@ -667,29 +645,26 @@ pub(super) fn reindex_files(
             .push((chunk, embedding));
     }
     for (file, pairs) in &by_file {
-        // PF-V1.38-8 (#1463): hoist `root.join(file)` so the same PathBuf
-        // is reused by both the mtime cache and the v23 fingerprint
-        // write-back below. Pre-fix the join allocated twice per file —
-        // ms-scale on WSL 9P which adds up across a 200-file watch
+        // Hoist `root.join(file)` so the same PathBuf is reused by both the
+        // mtime cache and the fingerprint write-back below. Joining twice per
+        // file is ms-scale on WSL 9P, which adds up across a 200-file watch
         // tick.
         let abs_path = root.join(file);
         let mtime = *mtime_cache.entry(file.clone()).or_insert_with(|| {
-            // bundle-reconcile-stat: capture the stat error separately so
-            // we can surface it via tracing instead of silently storing
-            // `mtime=None` for the file. A `None` here means reconcile
-            // (`reconcile.rs:124-138`) treats the entry as un-stat-able
-            // and skips it indefinitely, so the operator needs an
-            // observable trail when the cause is a permission flip or
+            // Capture the stat error separately so we can surface it via
+            // tracing instead of silently storing `mtime=None` for the file.
+            // A `None` here means reconcile (`reconcile.rs:124-138`) treats the
+            // entry as un-stat-able and skips it indefinitely, so the operator
+            // needs an observable trail when the cause is a permission flip or
             // transient-AV-scan.
             match abs_path.metadata().and_then(|m| m.modified()) {
                 Ok(t) => t
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()
-                    // RB-4: surface overflow as None (treated same as
-                    // missing mtime) instead of silently wrapping past
-                    // `i64::MAX` (~292M years). Real mtimes are nowhere
-                    // near the cap, so the saturation is functionally
-                    // equivalent on every valid input.
+                    // Surface overflow as None (treated same as missing mtime)
+                    // instead of silently wrapping past `i64::MAX` (~292M
+                    // years). Real mtimes are nowhere near the cap, so this is
+                    // functionally equivalent on every valid input.
                     .and_then(|d| i64::try_from(d.as_millis()).ok()),
                 Err(e) => {
                     tracing::debug!(
@@ -701,7 +676,7 @@ pub(super) fn reindex_files(
                 }
             }
         });
-        // PERF-4: O(1) lookup per chunk via pre-grouped HashMap instead of linear scan.
+        // O(1) lookup per chunk via pre-grouped HashMap instead of linear scan.
         let file_calls: Vec<_> = pairs
             .iter()
             .flat_map(|(c, _)| {
@@ -711,17 +686,14 @@ pub(super) fn reindex_files(
                     .flat_map(|calls| calls.iter().map(|call| (c.id.clone(), call.clone())))
             })
             .collect();
-        // DS2-4: Upsert chunks+calls AND prune phantom chunks in one tx.
-        // The previous two-step `upsert_chunks_and_calls` + `delete_phantom_chunks`
-        // committed independently — a crash between them left the index
-        // half-pruned (new chunks visible, removed chunks still present)
-        // alongside a dirty HNSW flag. `upsert_chunks_calls_and_prune` fuses
-        // both operations into a single `begin_write` transaction, making the
-        // reindex all-or-nothing. RT-DATA-10 / DS-37.
-        //
-        // #1574: also fold the file-level `function_calls` write into the
-        // same per-file tx (was a separate tx before the embed phase, which
-        // left an asymmetric state when the daemon crashed mid-embed).
+        // Upsert chunks+calls AND prune phantom chunks in one tx. Committing
+        // the upsert and prune independently would leave the index half-pruned
+        // (new chunks visible, removed chunks still present) alongside a dirty
+        // HNSW flag on a crash between them. `upsert_chunks_calls_and_prune`
+        // fuses both operations into a single `begin_write` transaction,
+        // making the reindex all-or-nothing. The file-level `function_calls`
+        // write folds into the same per-file tx so a mid-embed daemon crash
+        // can't leave an asymmetric state.
         let live_ids: Vec<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
         let file_fn_calls = all_function_calls
             .get(file)
@@ -736,20 +708,16 @@ pub(super) fn reindex_files(
             Some(file_fn_calls),
         )?;
 
-        // #1219: populate the v23 reconcile fingerprint columns
-        // (`source_size`, `source_content_hash`) so the next
-        // `run_daemon_reconcile` pass can fall back to BLAKE3 when
-        // mtime/size alone is unreliable (coarse-mtime FAT32/NTFS/HFS+/SMB
-        // mounts; `git checkout` and formatter passes that bump mtime
-        // without changing content). Compute size+hash on the same file
-        // bytes we just parsed; the fingerprint UPDATE rides outside the
-        // upsert transaction (best-effort), so a stat or read failure
-        // here only forfeits the BLAKE3 tiebreak — the next save fires
-        // the same path.
-        // RB-V1.36-5 / P2-7: streaming blake3 + size-from-metadata so we
-        // don't have to slurp the whole file into RAM just to hash it.
-        // PF-V1.38-8 (#1463): `abs_path` was already hoisted above; reuse
-        // it instead of re-joining.
+        // Populate the reconcile fingerprint columns (`source_size`,
+        // `source_content_hash`) so the next `run_daemon_reconcile` pass can
+        // fall back to BLAKE3 when mtime/size alone is unreliable (coarse-mtime
+        // FAT32/NTFS/HFS+/SMB mounts; `git checkout` and formatter passes that
+        // bump mtime without changing content). Compute size+hash on the same
+        // file bytes we just parsed; the fingerprint UPDATE rides outside the
+        // upsert transaction (best-effort), so a stat or read failure here only
+        // forfeits the BLAKE3 tiebreak — the next save fires the same path.
+        // Streaming blake3 + size-from-metadata avoids slurping the whole file
+        // into RAM just to hash it. Reuse the `abs_path` hoisted above.
         let size_hint = std::fs::metadata(&abs_path).ok().map(|m| m.len());
         let fp = match std::fs::File::open(&abs_path) {
             Ok(f) => {
@@ -796,14 +764,12 @@ pub(super) fn reindex_files(
         }
     }
 
-    // #1574: any file that parsed to ZERO chunks is in `all_function_calls`
-    // but NOT in `by_file`. The per-file upsert loop above only ran for
-    // files with at least one chunk, so empty-chunk files would leak old
-    // function_calls rows if we didn't also clear them here. Pre-fix the
-    // flat_map called `upsert_function_calls` per file unconditionally
-    // before the embed phase; this preserves that cleanup for the
-    // zero-chunk edge case (deleted-only / parser-emitted-empty) while
-    // keeping the atomic-with-chunks path for the common case.
+    // Any file that parsed to ZERO chunks is in `all_function_calls` but NOT
+    // in `by_file`. The per-file upsert loop above only ran for files with at
+    // least one chunk, so empty-chunk files would leak old function_calls rows
+    // without this clear. Handles the zero-chunk edge case (deleted-only /
+    // parser-emitted-empty) while keeping the atomic-with-chunks path for the
+    // common case.
     for (rel_path, fcs) in &all_function_calls {
         if !by_file.contains_key(rel_path) {
             if let Err(e) = store.upsert_function_calls(rel_path, fcs) {
@@ -844,8 +810,8 @@ pub(super) fn reindex_notes(root: &Path, store: &Store, quiet: bool) -> Result<u
         return Ok(0);
     }
 
-    // DS-34: Hold shared lock during read+index to prevent partial reads
-    // if another process is writing notes concurrently (e.g., `cqs notes add`).
+    // Hold shared lock during read+index to prevent partial reads if another
+    // process is writing notes concurrently (e.g., `cqs notes add`).
     let lock_file = std::fs::File::open(&notes_path)?;
     lock_file.lock_shared()?;
 

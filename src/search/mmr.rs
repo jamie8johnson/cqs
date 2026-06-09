@@ -90,7 +90,7 @@ pub(crate) fn mmr_rerank(candidates: &[MmrCandidate<'_>], limit: usize, lambda: 
             };
 
             let mmr = lambda * cand.score - (1.0 - lambda) * max_sim;
-            // AC-V1.38-2 (#1463): use `total_cmp` instead of `f32 ==`. Raw
+            // Use `total_cmp` instead of `f32 ==`. Raw
             // float comparison treats NaN as `not greater AND not equal`,
             // so a NaN MMR (which would imply an upstream bug — degenerate
             // cosine, etc.) silently skips the candidate; the loop may
@@ -163,7 +163,7 @@ fn similarity(a: &MmrCandidate<'_>, b: &MmrCandidate<'_>) -> f32 {
 pub(crate) fn mmr_lambda_from_env() -> Option<f32> {
     let raw = std::env::var("CQS_MMR_LAMBDA").ok()?;
     match raw.parse::<f32>() {
-        // AC-V1.33-10: reject NaN/Inf so they don't slip through `clamp`
+        // Reject NaN/Inf so they don't slip through `clamp`
         // (clamp propagates NaN). Downstream checks `lambda < 1.0`, which
         // returns false for NaN, silently disabling MMR.
         Ok(v) if v.is_finite() => Some(v.clamp(0.0, 1.0)),

@@ -11,9 +11,8 @@ use crate::limits::{dead_cluster_min_size, hotspot_min_callers, suggest_hotspot_
 use crate::store::StoreError;
 use crate::{compute_risk_batch, normalize_slashes, RiskLevel, Store};
 
-// SHL-V1.29-7: the previous hardcoded thresholds (`5`/`5`/`20`) now scale
-// with corpus size via `crate::limits::*`. Env overrides —
-// `CQS_HOTSPOT_MIN_CALLERS`, `CQS_DEAD_CLUSTER_MIN_SIZE`,
+// Detector thresholds scale with corpus size via `crate::limits::*`. Env
+// overrides — `CQS_HOTSPOT_MIN_CALLERS`, `CQS_DEAD_CLUSTER_MIN_SIZE`,
 // `CQS_SUGGEST_HOTSPOT_POOL` — pin exact values when projects need
 // policy-stable thresholds across reindexes.
 
@@ -30,20 +29,20 @@ pub struct SuggestedNote {
 /// Scan the index for anti-patterns and suggest notes.
 /// Each detector runs independently — if one fails, the others still produce results.
 ///
-/// Previously a `fn(&Store, &Path) -> ...` registry; the #946 typestate
-/// refactor made `Store` generic over `Mode`, so fn pointer registries
-/// that pin a concrete `Mode` don't compose. Inlining the sequence keeps
-/// the "each detector independent, errors non-fatal" contract while
-/// letting callers pass either `Store<ReadOnly>` or `Store<ReadWrite>`.
+/// The sequence is inlined rather than driven by a fn-pointer registry:
+/// `Store` is generic over `Mode`, so fn pointer registries that pin a
+/// concrete `Mode` don't compose. Inlining keeps the "each detector
+/// independent, errors non-fatal" contract while letting callers pass either
+/// `Store<ReadOnly>` or `Store<ReadWrite>`.
 pub fn suggest_notes<Mode>(
     store: &Store<Mode>,
     root: &Path,
 ) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
 
-    // SHL-V1.29-7: fetch corpus size once; the detectors scale their
-    // thresholds off it. If stats fail (unlikely — tests still pass at 0)
-    // we degrade to chunk_count=0, which yields the minimum-floor defaults.
+    // Fetch corpus size once; the detectors scale their thresholds off it.
+    // If stats fail, degrade to chunk_count=0, which yields the
+    // minimum-floor defaults.
     let chunk_count = match store.stats() {
         Ok(s) => s.total_chunks as usize,
         Err(e) => {
@@ -98,7 +97,7 @@ fn detect_dead_clusters<Mode>(
     // Group by file
     let mut by_file: HashMap<String, usize> = HashMap::new();
     for dead in &confident {
-        // P3.33: emit forward-slash paths so JSON consumers don't see Windows backslashes.
+        // Emit forward-slash paths so JSON consumers don't see Windows backslashes.
         let file = crate::normalize_path(&dead.chunk.file);
         *by_file.entry(file).or_default() += 1;
     }
@@ -141,7 +140,7 @@ fn detect_risk_patterns<Mode>(
         let caller_count = hotspot.caller_count;
         let mentions = vec![name.to_string()];
 
-        // Untested hotspot: min_callers+ callers, 0 tests (SHL-V1.29-7)
+        // Untested hotspot: min_callers+ callers, 0 tests.
         if risk.caller_count >= min_callers && risk.test_count == 0 {
             suggestions.push(SuggestedNote {
                 text: format!("{name} has {caller_count} callers but no tests"),
@@ -288,7 +287,7 @@ fn detect_stale_mentions<Mode>(
 
 /// Check all notes for stale mentions.
 /// Returns `(note_text, stale_mentions)` pairs for each note that has at least
-/// one stale mention. Reusable by `notes list --check` and future `health` integration.
+/// one stale mention. Reusable by `notes list --check` and `health`.
 pub fn check_note_staleness<Mode>(
     store: &Store<Mode>,
     root: &Path,
@@ -565,12 +564,12 @@ mod tests {
         );
     }
 
-    /// TC-2: Verify the high_risk branch in detect_risk_patterns.
+    /// Verify the high_risk branch in detect_risk_patterns.
     /// A function with many callers but *some* tests still scores High if
     /// coverage is low enough (score = callers * (1 - coverage) >= 5.0).
     /// With 6 callers and 1 test: score = 6 * (1 - 1/6) = 5.0 → High.
     /// Because test_count > 0, the untested_hotspot branch is skipped and
-    /// we must land in the high_risk branch (lines 140-150 of suggest.rs).
+    /// we land in the high_risk branch.
     #[test]
     fn test_suggest_high_risk_with_few_tests() {
         use crate::language::{ChunkType, Language};

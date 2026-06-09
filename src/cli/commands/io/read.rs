@@ -23,7 +23,7 @@ use cqs::{compute_hints, FunctionHints, COMMON_TYPES};
 /// Validate path (traversal, size) and read file contents.
 /// Returns `(file_path, content)` where `file_path` is root.join(path).
 ///
-/// SEC-D.5: existence check is folded into the same "Invalid path" rejection
+/// The existence check is folded into the same "Invalid path" rejection
 /// as the traversal check so a daemon client can't use distinguishable
 /// error messages as a path-existence oracle for files outside the project
 /// root (e.g. `/home/other/.ssh/id_rsa`).
@@ -45,16 +45,12 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
         bail!("Invalid path");
     }
 
-    // SEC-V1.38-6 (#1463): drop the redundant `file_path.exists()` check
-    // — `dunce::canonicalize` above already proved existence — and route
-    // the size cap and the read both through `&canonical`. Pre-fix, the
-    // size cap stat'd the unresolved `file_path` while the read consumed
-    // `canonical`; a symlink swap between the two narrowed but didn't
-    // close the bypass window. Same-path stat-then-read is still TOCTOU
-    // against a swap mid-syscall, but the residual race is at the OS
-    // level rather than amplified by inconsistent path use here.
+    // `dunce::canonicalize` above already proved existence, so the size cap
+    // and the read both route through `&canonical`. Statting and reading the
+    // same resolved path keeps the residual TOCTOU at the OS level rather
+    // than amplifying it with inconsistent path use here.
     //
-    // P3 #107: env-overridable via CQS_READ_MAX_FILE_SIZE (default 10 MiB).
+    // Env-overridable via CQS_READ_MAX_FILE_SIZE (default 10 MiB).
     let max_file_size = crate::cli::limits::read_max_file_size();
     let metadata = std::fs::metadata(&canonical).context("Failed to read file metadata")?;
     if metadata.len() > max_file_size {
@@ -81,8 +77,8 @@ pub(crate) fn build_file_note_header(
     let mut notes_injected = false;
 
     if let Some(status) = audit_state.status_line() {
-        // PERF-V1.33-4: write! straight into the destination buffer avoids
-        // the throwaway `format!` String per call.
+        // write! straight into the destination buffer avoids the throwaway
+        // `format!` String per call.
         let _ = writeln!(header, "// {}\n//", status);
     }
 
@@ -118,17 +114,14 @@ pub(crate) fn build_file_note_header(
 pub(crate) struct FocusedReadResult {
     pub output: String,
     pub hints: Option<FunctionHints>,
-    /// P2.23: human-readable warnings emitted when an upstream batch query
-    /// returned `Err`. The previous `unwrap_or_else(_, HashMap::new())`
-    /// silently dropped type-definition lookups; agents now see exactly
-    /// what was missed instead of inferring it from absent JSON keys.
+    /// Human-readable warnings emitted when an upstream batch query returned
+    /// `Err`, so agents see exactly what was missed instead of inferring it
+    /// from absent JSON keys.
     pub warnings: Vec<String>,
-    /// SEC-V1.33-9: was the resolved focus chunk indexed under a vendored
-    /// path (`vendor/`, `node_modules/`, `third_party/`, …)? Mirrors
-    /// `ChunkSummary::vendored` (#1221, schema v24). Both CLI and daemon
-    /// JSON paths emit `trust_level: "vendored-code"` when this is true,
-    /// closing the v1.33.0 gap where `dispatch_read` and `cmd_read --focus`
-    /// hardcoded `"user-code"` regardless of the chunk's actual origin.
+    /// Whether the resolved focus chunk is indexed under a vendored path
+    /// (`vendor/`, `node_modules/`, `third_party/`, …). Mirrors
+    /// `ChunkSummary::vendored` (schema v24). Both CLI and daemon JSON paths
+    /// emit `trust_level: "vendored-code"` when this is true.
     pub vendored: bool,
 }
 
@@ -147,8 +140,8 @@ pub(crate) fn build_focused_output<Mode>(
 
     let mut output = String::new();
 
-    // Header — PERF-V1.33-4: write! into output buffer avoids throwaway
-    // `format!` String per fragment.
+    // Header — write! into output buffer avoids throwaway `format!` String
+    // per fragment.
     let _ = writeln!(
         output,
         "// [cqs] Focused read: {} ({}:{}-{})",
@@ -216,8 +209,8 @@ pub(crate) fn build_focused_output<Mode>(
     output.push('\n');
 
     // Type dependencies.
-    // P2 #65: usize::MAX preserves existing "all rows" behaviour. The display
-    // path filters by COMMON_TYPES then truncates inline downstream.
+    // usize::MAX requests all rows. The display path filters by COMMON_TYPES
+    // then truncates inline downstream.
     // TODO: cap at e.g. 50 once we measure typical edge count per chunk.
     let type_deps = match store.get_types_used_by(&chunk.name, usize::MAX) {
         Ok(pairs) => pairs,
@@ -237,15 +230,15 @@ pub(crate) fn build_focused_output<Mode>(
         "Type deps for focused read"
     );
 
-    // Batch lookup instead of N+1 queries (CQ-15)
+    // Batch lookup instead of N+1 queries
     let type_names: Vec<&str> = filtered_types
         .iter()
         .map(|t| t.type_name.as_str())
         .collect();
-    // P2.23: capture batch failure as a structured warning rather than
-    // silently empty the map. Type definitions still get omitted (the
-    // dependency surface is best-effort), but downstream JSON callers
-    // now see a `warnings` entry telling them why.
+    // Capture batch failure as a structured warning rather than silently
+    // empty the map. Type definitions still get omitted (the dependency
+    // surface is best-effort), but downstream JSON callers see a `warnings`
+    // entry telling them why.
     let mut warnings: Vec<String> = Vec::new();
     let batch_results = match store.search_by_names_batch(&type_names, 5) {
         Ok(m) => m,
@@ -295,9 +288,8 @@ pub(crate) fn build_focused_output<Mode>(
         output,
         hints,
         warnings,
-        // SEC-V1.33-9: surface the resolved chunk's vendored flag so
-        // both CLI and daemon JSON paths can emit the correct
-        // `trust_level` instead of hardcoding `"user-code"`.
+        // Surface the resolved chunk's vendored flag so both CLI and daemon
+        // JSON paths emit the correct `trust_level` instead of `"user-code"`.
         vendored: chunk.vendored,
     })
 }
@@ -327,27 +319,24 @@ struct ReadHints {
 struct FocusedReadJsonOutput {
     focus: String,
     content: String,
-    /// SEC-V1.30.1-1: every chunk-returning JSON output must carry a
-    /// trust_level. `read --focus` reads from the project store only
-    /// (no reference-store fan-in), so the value is either `"user-code"`
-    /// or `"vendored-code"` depending on the resolved chunk's
-    /// `chunks.vendored` flag (schema v24). SEC-V1.33-9 closed the gap
-    /// where this was hardcoded `"user-code"` even for vendored chunks,
-    /// defeating the #1221 trust boundary.
-    /// SECURITY.md's mitigation contract is that agents can branch
-    /// safely on this field; the `read --focus` path was missing it.
+    /// Every chunk-returning JSON output carries a trust_level. `read
+    /// --focus` reads from the project store only (no reference-store
+    /// fan-in), so the value is either `"user-code"` or `"vendored-code"`
+    /// depending on the resolved chunk's `chunks.vendored` flag (schema v24).
+    /// SECURITY.md's mitigation contract is that agents can branch safely on
+    /// this field.
     trust_level: &'static str,
-    /// SEC-V1.30.1-1: parallel field to chunk JSON. `read --focus`
-    /// content is delivered as a single concatenated string, not a
-    /// per-chunk list, so there is no per-chunk array — a single
-    /// empty array satisfies the schema-stability contract.
+    /// Parallel field to chunk JSON. `read --focus` content is delivered as
+    /// a single concatenated string, not a per-chunk list, so there is no
+    /// per-chunk array — a single empty array satisfies the schema-stability
+    /// contract.
     injection_flags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hints: Option<ReadHints>,
-    /// P2.23: warnings emitted by the underlying assembly (e.g.
-    /// `search_by_names_batch` failed). Mirrors `SummaryOutput::warnings`
-    /// per EH-V1.29-9 — agents need to distinguish "no type deps" from
-    /// "type-deps lookup failed silently".
+    /// Warnings emitted by the underlying assembly (e.g.
+    /// `search_by_names_batch` failed). Mirrors `SummaryOutput::warnings` —
+    /// agents need to distinguish "no type deps" from "type-deps lookup
+    /// failed silently".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
 }
@@ -438,9 +427,9 @@ fn cmd_read_focused(
         let output = FocusedReadJsonOutput {
             focus: focus.to_string(),
             content: result.output,
-            // SEC-V1.33-9: honor the resolved chunk's vendored flag so a
-            // chunk under `node_modules/` is reported as `vendored-code`,
-            // matching the index-time labeling shape used by search/scout.
+            // Honor the resolved chunk's vendored flag so a chunk under
+            // `node_modules/` is reported as `vendored-code`, matching the
+            // index-time labeling shape used by search/scout.
             trust_level: if result.vendored {
                 "vendored-code"
             } else {
@@ -452,7 +441,7 @@ fn cmd_read_focused(
         };
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
-        // P2.23: surface warnings on stderr so non-JSON callers also see them.
+        // Surface warnings on stderr so non-JSON callers also see them.
         for w in &result.warnings {
             eprintln!("warning: {w}");
         }
@@ -502,7 +491,7 @@ mod tests {
         assert_eq!(json["hints"]["test_count"], 2);
         assert_eq!(json["hints"]["no_callers"], false);
         assert_eq!(json["hints"]["no_tests"], false);
-        // P2.23: warnings field omitted when empty.
+        // warnings field omitted when empty.
         assert!(json.get("warnings").is_none());
     }
 
@@ -521,9 +510,9 @@ mod tests {
         assert!(json.get("hints").is_none());
     }
 
-    /// P2.23 regression-pin: `warnings` populated when batch lookup fails.
-    /// Verified at the JSON-shape level here; the production wiring goes
-    /// through `build_focused_output` which has integration coverage.
+    /// `warnings` populated when batch lookup fails. Verified at the
+    /// JSON-shape level here; the production wiring goes through
+    /// `build_focused_output` which has integration coverage.
     #[test]
     fn focused_read_output_with_warnings() {
         let output = FocusedReadJsonOutput {
@@ -540,11 +529,10 @@ mod tests {
         assert!(warns[0].as_str().unwrap().contains("db locked"));
     }
 
-    /// SEC-V1.30.1-1: SECURITY.md:57 promises `read --focus` JSON carries
+    /// SECURITY.md:57 promises `read --focus` JSON carries
     /// `trust_level: "user-code" | "reference-code"` and `injection_flags: []`.
-    /// Before this fix, the doc was lying — `FocusedReadJsonOutput` had
-    /// neither field. This regression-pin keeps the contract honest: future
-    /// removal of these fields would silently break SECURITY.md again.
+    /// This regression-pin keeps the contract honest: future removal of
+    /// these fields would silently break SECURITY.md.
     #[test]
     fn focused_read_output_emits_sec_trust_level_and_injection_flags() {
         let output = FocusedReadJsonOutput {
@@ -567,10 +555,10 @@ mod tests {
         assert!(flags.is_empty(), "no per-content heuristics fired yet");
     }
 
-    /// TC-ADV-V1.33-9: file exceeding `CQS_READ_MAX_FILE_SIZE` is rejected
-    /// with the documented error message including both the actual size
-    /// and the cap. The size-cap branch is the only DoS-prevention layer
-    /// for arbitrary-content reads — a flipped comparison sign would slip
+    /// A file exceeding `CQS_READ_MAX_FILE_SIZE` is rejected with the
+    /// documented error message including both the actual size and the cap.
+    /// The size-cap branch is the only DoS-prevention layer for
+    /// arbitrary-content reads — a flipped comparison sign would slip
     /// through CI without a regression test.
     #[test]
     fn read_rejects_oversized_file() {
@@ -613,12 +601,9 @@ mod tests {
         );
     }
 
-    /// SEC-D.5: `validate_and_read_file` must produce identical error text
-    /// for "file outside project root" and "file not found" so a daemon
-    /// client can't probe filesystem layout via distinguishable messages.
-    /// Before the fix, missing-inside-root returned "File not found: X" and
-    /// outside-root returned "Path traversal not allowed: X" — agents (and
-    /// attackers) could distinguish.
+    /// `validate_and_read_file` must produce identical error text for "file
+    /// outside project root" and "file not found" so a daemon client can't
+    /// probe filesystem layout via distinguishable messages.
     #[test]
     fn read_rejects_path_outside_root_with_same_message_as_nonexistent() {
         let root_dir = tempfile::TempDir::new().unwrap();

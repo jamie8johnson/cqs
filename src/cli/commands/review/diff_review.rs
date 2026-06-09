@@ -14,9 +14,9 @@ pub(crate) fn cmd_review(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_review", ?format, ?max_tokens).entered();
 
-    // P4-3 (#1463): exhaustive match — Mermaid bails, Json/Text drive a
-    // boolean used downstream by the apply/display path. The match shape
-    // means a future `OutputFormat` variant fails to compile here.
+    // Exhaustive match — Mermaid bails, Json/Text drive a boolean used
+    // downstream by the apply/display path. The match shape means a future
+    // `OutputFormat` variant fails to compile here.
     let json = match format {
         crate::cli::OutputFormat::Mermaid => {
             anyhow::bail!("Mermaid output is not supported for review — use text or json");
@@ -107,10 +107,9 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
 
     // Fit callers within remaining budget (prioritize callers over tests).
     //
-    // P3 #121: gate the `.max(1)` floor on a positive budget so a true-zero
-    // budget produces zero callers/tests. Previously the floor always added
-    // at least one item, overshooting tight budgets by ~50 tokens with no
-    // way for the caller to shrink to nothing.
+    // Gate the `.max(1)` floor on a positive budget so a true-zero budget
+    // produces zero callers/tests, rather than always adding at least one
+    // item and overshooting tight budgets by ~50 tokens.
     let callers_budget = (budget.saturating_sub(used)) * 2 / 3; // 2/3 of remaining for callers
     let max_callers = callers_budget / tokens_per_caller;
     let original_callers = review.affected_callers.len();
@@ -444,10 +443,9 @@ mod tests {
         );
     }
 
-    /// P3 #121: a true-zero budget must produce zero callers/tests, not one.
-    /// Previously the `.max(1)` floor unconditionally added at least one
-    /// caller and one test, overshooting the requested budget by ~50 tokens.
-    /// The fix gates the floor on a positive budget.
+    /// A true-zero budget must produce zero callers/tests, not one. The
+    /// `.max(1)` floor is gated on a positive budget so it doesn't
+    /// unconditionally add at least one caller and one test.
     #[test]
     fn test_apply_token_budget_zero_produces_zero_items() {
         let mut review = make_review(10, 10);

@@ -20,9 +20,9 @@ impl Parser {
         end_byte: usize,
         line_offset: u32,
     ) -> Vec<CallSite> {
-        // P3 #93: span carries the language + chunk byte range so the
-        // tree-sitter parse-failure warns below have enough identity to
-        // distinguish "grammar broken globally" from "one weird chunk".
+        // Span carries the language + chunk byte range so the tree-sitter
+        // parse-failure warns below have enough identity to distinguish
+        // "grammar broken globally" from "one weird chunk".
         let _span = tracing::debug_span!(
             "extract_calls",
             %language,
@@ -49,8 +49,6 @@ impl Parser {
         };
         let mut parser = tree_sitter::Parser::new();
         if let Err(e) = parser.set_language(&grammar) {
-            // EH-V1.38-8 (#1463): Display, not Debug — matches the
-            // sibling `error = %e` pattern at line 79.
             tracing::warn!(
                 error = %e,
                 %language,
@@ -124,8 +122,8 @@ impl Parser {
     /// Extract function calls from a parsed chunk
     /// Convenience method that extracts calls from the chunk's content.
     ///
-    /// EX-V1.38-6 (#1463): per-chunk extractor consults
-    /// `LanguageDef::chunk_call_parser` first. Markdown registers
+    /// Per-chunk extractor consults `LanguageDef::chunk_call_parser` first.
+    /// Markdown registers
     /// `extract_calls_from_markdown_chunk`; future grammar-less languages
     /// (SQL stored-proc cross-refs, L5X tag references, NL doc formats)
     /// can opt in by populating the field on their `LanguageDef`. Falls
@@ -217,7 +215,7 @@ impl Parser {
 
         // Build set of type names that have at least one classified entry.
         //
-        // P3 #129: borrow `&str` from `classified` instead of cloning every
+        // Borrow `&str` from `classified` instead of cloning every
         // `type_name` into an owned `HashSet<String>` — the membership check
         // doesn't outlive `classified`, so no allocation is needed.
         // The set is consumed via `into_iter` of catch_all below; it must
@@ -264,7 +262,7 @@ impl Parser {
         let _span =
             tracing::info_span!("parse_file_relationships", path = %path.display()).entered();
 
-        // P3 #104: env-overridable cap (CQS_PARSER_MAX_FILE_SIZE).
+        // Env-overridable cap (CQS_PARSER_MAX_FILE_SIZE).
         let max_file_size = crate::limits::parser_max_file_size();
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > max_file_size => {
@@ -297,7 +295,7 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages use custom reference extraction (issue #954):
+        // Grammar-less languages use custom reference extraction:
         // prefer `custom_call_parser` (relationships only), fall back to
         // `custom_all_parser` (drops chunks), then to the markdown default.
         // The layered fallback means a language that only defines the
@@ -1030,7 +1028,7 @@ fn process(config: Config) -> StoreError {
 
         #[test]
         fn test_parse_file_calls_unchanged() {
-            // Verify the thin wrapper returns same results as before
+            // The thin wrapper returns the same results as parse_file_relationships
             let content = r#"
 fn caller() {
     helper();
@@ -1100,16 +1098,13 @@ fn another() {
         }
     }
 
-    /// Diagnostic: verify type queries compile for all languages with type_query defined
+    /// Diagnostic: verify type queries compile for all languages with type_query defined.
     ///
-    /// EX-V1.38-10 (#1463): iterate `Language::all_variants()` filtered by
-    /// `def().type_query.is_some()` instead of a hand-rolled array — a
-    /// new language with a type query gets covered automatically. FSharp
-    /// has a `type_query` registered on its LanguageDef but the query
-    /// has a pre-existing tree-sitter-fsharp node-type mismatch (`type`
-    /// is not a valid node), so we skip it here. Removing the registration
-    /// is a separate cleanup; the test should still cover every other
-    /// language whose `type_query.is_some()`.
+    /// Iterates `Language::all_variants()` filtered by
+    /// `def().type_query.is_some()` so a new language with a type query gets
+    /// covered automatically. FSharp has a `type_query` registered on its
+    /// LanguageDef but the query has a tree-sitter-fsharp node-type mismatch
+    /// (`type` is not a valid node), so it's skipped here.
     #[test]
     fn test_type_queries_compile() {
         let parser = Parser::new().unwrap();
@@ -1140,15 +1135,11 @@ fn another() {
         );
     }
 
-    /// #1573 Tier 2a: struct-field-assignment edges — Rust call query now
-    /// captures `field: function_path` patterns inside `struct_expression`
-    /// literals so functions used as Option<fn> / fn-pointer field values
-    /// no longer surface as `cqs dead` false positives.
-    ///
-    /// Pre-fix, 66 false positives on cqs main were all functions
-    /// assigned to LanguageDef fields (strip_go_receiver,
-    /// extract_return_c, etc.). This test pins the new query patterns
-    /// against representative inputs.
+    /// Struct-field-assignment edges — the Rust call query captures
+    /// `field: function_path` patterns inside `struct_expression` literals so
+    /// functions used as Option<fn> / fn-pointer field values don't surface
+    /// as `cqs dead` false positives. Pins the query patterns against
+    /// representative inputs.
     #[test]
     fn test_struct_field_assignment_captures_function_value() {
         let parser = Parser::new().unwrap();
@@ -1207,8 +1198,7 @@ fn build() {
 
     /// Pin the `Some(fn_path as TypeAlias)` cast pattern — Rust dispatch
     /// tables sometimes coerce a fn-item to a fn-pointer type before
-    /// storing in `Option<fn(...) -> ...>`. The 14 `post_process_*` false
-    /// positives in src/language/languages.rs all matched this shape.
+    /// storing in `Option<fn(...) -> ...>`.
     #[test]
     fn test_struct_field_assignment_captures_type_cast_function() {
         let parser = Parser::new().unwrap();

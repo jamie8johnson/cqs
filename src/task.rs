@@ -17,15 +17,15 @@ use crate::{AnalysisError, Embedder, Store};
 
 /// BFS expansion depth for gather phase (how many call-graph hops from modify targets).
 ///
-/// SHL-V1.30-4: `CQS_TASK_GATHER_DEPTH` env override per-task; falls back to this
-/// constant when unset. Also honors `CQS_GATHER_DEPTH` as a cross-cutting default
-/// for any caller that wants to set both `gather` and `task` depth in one place.
+/// `CQS_TASK_GATHER_DEPTH` overrides this per-task; falls back to this constant
+/// when unset. Also honors `CQS_GATHER_DEPTH` as a cross-cutting default for any
+/// caller that wants to set both `gather` and `task` depth in one place.
 const TASK_GATHER_DEPTH_DEFAULT: usize = 2;
 
 /// Multiplier applied to `limit` for gather phase truncation.
 const TASK_GATHER_LIMIT_MULTIPLIER: usize = 3;
 
-/// SHL-V1.30-4: Resolve gather depth for the task pipeline.
+/// Resolve gather depth for the task pipeline.
 ///
 /// Precedence:
 /// 1. `CQS_TASK_GATHER_DEPTH` (per-task override)
@@ -165,10 +165,9 @@ pub fn task_with_resources<Mode>(
         let mut name_scores: HashMap<String, (f32, usize)> =
             targets.iter().map(|n| (n.to_string(), (1.0, 0))).collect();
 
-        // SHL-V1.30-4: drop the hardcoded `with_max_expanded_nodes(100)` override
-        // so `CQS_GATHER_MAX_NODES` (resolved by `GatherOptions::default()`) flows
-        // through. Depth is `CQS_TASK_GATHER_DEPTH` / `CQS_GATHER_DEPTH` overridable
-        // via `task_gather_depth()`.
+        // `GatherOptions::default()` resolves `CQS_GATHER_MAX_NODES` for the
+        // node cap; depth is `CQS_TASK_GATHER_DEPTH` / `CQS_GATHER_DEPTH`
+        // overridable via `task_gather_depth()`.
         bfs_expand(
             &mut name_scores,
             graph,
@@ -533,7 +532,7 @@ mod tests {
         assert_eq!(json["summary"]["total_files"], 0);
     }
 
-    // TC-3: TaskResult serialization with populated code/risk/tests/placement
+    // TaskResult serialization with populated code/risk/tests/placement
     #[test]
     fn test_task_result_serialization_populated_values() {
         use crate::gather::GatheredChunk;

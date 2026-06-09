@@ -3,23 +3,17 @@
 //!
 //! # Why this file exists
 //!
-//! CQ-V1.25-2 (v1.25.0 audit): the CLI path and the batch/daemon path
-//! independently clamped `--limit` on several commands, and the two sides
-//! drifted out of sync — e.g. `cqs scout` clamped to 10 on the CLI but
-//! 50 in the batch handler, so the same query could return a different
-//! number of results depending on whether the daemon was up.
+//! The CLI path and the batch/daemon path both clamp `--limit` on several
+//! commands; without a shared source the two sides drift (e.g. `cqs scout`
+//! clamped to 10 on the CLI but 50 in the batch handler returns a different
+//! result count depending on whether the daemon is up). All callers clamp via
+//! these constants, so updating one value updates both paths atomically.
 //!
-//! All callers now clamp via these constants, so updating one value
-//! updates both paths atomically.
-//!
-//! # P3 audit (post-v1.27.0)
-//!
-//! Items #100, #107, #109: a wave of magic-number caps scattered across
-//! the CLI layer (rerank pool, stdin/diff caps, display/read file size
-//! caps, daemon response cap) were extracted here so they share a single
-//! env-override pattern. Library-level caps (parser, FTS, graph,
-//! converter) live in `crate::limits` because their callers (`parser/`,
-//! `store/`, `nl/`, `convert/`) cannot reach into the CLI module.
+//! Magic-number caps scattered across the CLI layer (rerank pool, stdin/diff
+//! caps, display/read file size caps, daemon response cap) are collected here
+//! so they share a single env-override pattern. Library-level caps (parser,
+//! FTS, graph, converter) live in `crate::limits` because their callers
+//! (`parser/`, `store/`, `nl/`, `convert/`) cannot reach into the CLI module.
 
 /// Maximum `--limit` accepted by `cqs scout` and the batch `scout`
 /// handler. Scout's downstream grouping and token packing scale roughly
@@ -36,7 +30,7 @@ pub(crate) const SIMILAR_LIMIT_MAX: usize = 100;
 /// types) each get their own top-N, so the total return cap is 3× this.
 pub(crate) const RELATED_LIMIT_MAX: usize = 50;
 
-// ============ P3 #100: reranker pool sizing ============
+// ============ reranker pool sizing ============
 
 /// Default over-retrieval multiplier for the cross-encoder reranker.
 /// At `--rerank --limit N` we send `N * MULTIPLIER` candidates through
@@ -48,20 +42,18 @@ pub(crate) const RERANK_OVER_RETRIEVAL_MULTIPLIER: usize = 4;
 /// At `--limit 50 --rerank` the multiplier alone would yield 200 — the
 /// cap keeps ORT memory and per-batch latency bounded on small GPUs.
 ///
-/// The Reranker V2 post-mortem (2026-04-17) found that weak cross-encoders
-/// degrade monotonically with pool size — at 80 candidates they're just
-/// shuffling noise. "Drowning in Documents" (arXiv 2411.11767) reports
-/// similar behavior for off-the-shelf cross-encoders; small pools
-/// (~20) consistently beat large ones on recall@k. We cap here.
+/// Weak cross-encoders degrade monotonically with pool size — at 80
+/// candidates they're just shuffling noise. "Drowning in Documents" (arXiv
+/// 2411.11767) reports the same for off-the-shelf cross-encoders; small pools
+/// (~20) consistently beat large ones on recall@k.
 ///
 /// Honored by [`rerank_pool_size`].
 pub(crate) const RERANK_POOL_MAX: usize = 20;
 
-/// EX-V1.38-3 (#1463): process-global cache of the resolved
-/// `[reranker] pool_max` and `over_retrieval` TOML overrides. Set once
-/// at dispatch entry via [`install_reranker_pool_overrides`]; consulted
-/// by the resolvers below as a fallback between env and the compiled
-/// default.
+/// Process-global cache of the resolved `[reranker] pool_max` and
+/// `over_retrieval` TOML overrides. Set once at dispatch entry via
+/// [`install_reranker_pool_overrides`]; consulted by the resolvers below as a
+/// fallback between env and the compiled default.
 static RERANKER_POOL_OVERRIDES: std::sync::OnceLock<RerankerPoolOverrides> =
     std::sync::OnceLock::new();
 
@@ -126,18 +118,17 @@ pub(crate) fn rerank_pool_max() -> usize {
 
 /// Compute the over-retrieval pool size for a given user-facing limit.
 /// Used by the four production rerank call sites (CLI query, CLI ref-only
-/// query, batch search, batch ref search) so the policy lives in one
-/// place. See P3 #100 in `docs/audit-findings.md`.
+/// query, batch search, batch ref search) so the policy lives in one place.
 pub(crate) fn rerank_pool_size(user_limit: usize) -> usize {
     user_limit
         .saturating_mul(rerank_over_retrieval_multiplier())
         .min(rerank_pool_max())
 }
 
-// ============ P3 #107: stdin/diff/display/read file caps ============
+// ============ stdin/diff/display/read file caps ============
 
 /// Default 50 MiB cap on stdin diff input (`cqs impact --diff`,
-/// `cqs review --stdin`) and on `git diff` subprocess stdout. See P3 #107.
+/// `cqs review --stdin`) and on `git diff` subprocess stdout.
 pub(crate) const MAX_DIFF_BYTES: usize = 50 * 1024 * 1024;
 
 /// Default 10 MiB cap on file size for `display::read_context_lines`
@@ -164,11 +155,10 @@ pub(crate) fn read_max_file_size() -> u64 {
     parse_env_u64("CQS_READ_MAX_FILE_SIZE", READ_MAX_FILE_SIZE)
 }
 
-// ============ P3 #109: daemon response cap ============
+// ============ daemon response cap ============
 
-/// Default 16 MiB cap on the daemon-to-CLI response buffer. Larger
-/// payloads force the CLI to fall back to direct (non-daemon) execution.
-/// See P3 #109.
+/// Default 16 MiB cap on the daemon-to-CLI response buffer. Larger payloads
+/// force the CLI to fall back to direct (non-daemon) execution.
 pub(crate) const MAX_DAEMON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Resolve the daemon response cap honoring `CQS_DAEMON_MAX_RESPONSE_BYTES`.
@@ -176,7 +166,7 @@ pub(crate) fn max_daemon_response_bytes() -> u64 {
     parse_env_u64("CQS_DAEMON_MAX_RESPONSE_BYTES", MAX_DAEMON_RESPONSE_BYTES)
 }
 
-// ============ SHL-V1.29-9: daemon periodic GC cadence ============
+// ============ daemon periodic GC cadence ============
 
 /// Default idle-time periodic GC interval (seconds). The daemon checks
 /// for a tick every loop iteration; the actual prune only fires once
@@ -208,7 +198,7 @@ pub(crate) fn daemon_periodic_gc_idle_secs() -> u64 {
     )
 }
 
-// ============ #1182 Layer 2: periodic full-tree reconciliation ============
+// ============ periodic full-tree reconciliation ============
 
 /// Default periodic reconciliation interval (seconds). Every this many
 /// seconds the watch loop walks the working tree, compares stored mtime
@@ -235,13 +225,11 @@ pub(crate) fn daemon_reconcile_interval_secs() -> u64 {
     )
 }
 
-// ============ SHL-V1.29-2: batch stdin line cap ============
+// ============ batch stdin line cap ============
 
 /// Default cap on a single batch stdin / daemon line. Matches
-/// [`MAX_DIFF_BYTES`] (50 MiB) so a piped `--stdin` diff that passes the
-/// CLI path is not silently rejected by the batch path. Historically this
-/// was 1 MiB, which blocked realistic unified diffs of large PRs from
-/// reaching the daemon.
+/// [`MAX_DIFF_BYTES`] (50 MiB) so a piped `--stdin` diff that passes the CLI
+/// path is not silently rejected by the batch path.
 pub(crate) const DEFAULT_MAX_BATCH_LINE_LEN: usize = MAX_DIFF_BYTES;
 
 /// Resolve the batch-line cap honoring `CQS_BATCH_MAX_LINE_LEN`.
@@ -256,12 +244,10 @@ pub(crate) fn batch_max_line_len() -> usize {
 /// here treats the value as a non-zero size limit; a caller that wants to
 /// disable a check should remove the call, not set it to zero.
 ///
-/// EH-V1.38-10 (#1463): warn loudly on a malformed-but-set value so an
-/// operator who typoed `CQS_RERANK_POOL_MAX=128 ` (trailing space) or
-/// `=abc` sees the silent-default fall-through instead of debugging
-/// "why isn't my env var doing anything." Mirrors the warn pattern in
-/// every other env-knob helper in the repo (gather.rs, trace.rs,
-/// pipeline/types.rs, etc.).
+/// Warns loudly on a malformed-but-set value so an operator who typoed
+/// `CQS_RERANK_POOL_MAX=128 ` (trailing space) or `=abc` sees the
+/// silent-default fall-through instead of debugging "why isn't my env var
+/// doing anything." Mirrors the warn pattern in the other env-knob helpers.
 fn parse_env_usize(key: &str, default: usize) -> usize {
     match std::env::var(key) {
         Ok(v) => match v.parse::<usize>() {
@@ -280,8 +266,7 @@ fn parse_env_usize(key: &str, default: usize) -> usize {
 }
 
 /// Same as [`parse_env_usize`] but for `u64`-shaped byte limits.
-///
-/// EH-V1.38-10 (#1463): same warn-on-malformed contract.
+/// Same warn-on-malformed contract.
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     match std::env::var(key) {
         Ok(v) => match v.parse::<u64>() {

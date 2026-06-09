@@ -1,4 +1,4 @@
-#![allow(clippy::doc_lazy_continuation)] // Bulk doc comment cleanup left some continuation formatting
+#![allow(clippy::doc_lazy_continuation)] // Some doc comments use continuation formatting clippy flags
 //! # cqs - Code Intelligence and RAG for AI Agents
 //!
 //! Semantic search, call graph analysis, impact tracing, type dependencies, and smart
@@ -6,7 +6,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, qwen3-embedding-4b, qwen3-embedding-8b, and custom ONNX presets). High recall on the curated fixture eval; see README.md#retrieval-quality for current numbers.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (embeddinggemma-300m default; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank, qwen3-embedding-4b, qwen3-embedding-8b, and custom ONNX presets). High recall on the curated fixture eval; see README.md#retrieval-quality for current numbers.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -19,7 +19,7 @@
 //! - **Doc comment generation**: `--improve-docs` stages proposed doc comments as `.cqs/proposed-docs/*.patch` files for review (`--apply` writes them directly to source)
 //! - **HyDE query predictions**: `--hyde-queries` generates synthetic search queries per function for improved recall
 //! - **Training data generation**: `train-data` command generates fine-tuning triplets from git history
-//! - **GPU acceleration**: CUDA/TensorRT with CPU fallback (CoreML and ROCm scaffolding present, wiring deferred per #956 Phase B/C)
+//! - **GPU acceleration**: CUDA/TensorRT with CPU fallback (CoreML and ROCm scaffolding present, wiring not yet complete)
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
 //!
 //! ## Quick Start
@@ -59,7 +59,7 @@
 //! # }
 //! ```
 //!
-// RB-V1.29-6: cqs routinely narrows `u64` row counts and SQLite `i64` row IDs
+// cqs routinely narrows `u64` row counts and SQLite `i64` row IDs
 // to `usize` (e.g. `chunk_count as usize` in `cli/store.rs`, HNSW ID map
 // loads, store batch readers). On a 32-bit target those casts would silently
 // truncate once a corpus exceeds ~4 billion elements. Rather than sprinkle
@@ -126,7 +126,7 @@ pub mod llm;
 pub mod plan;
 pub(crate) mod scout;
 pub mod search;
-// P3-11: shared `#[serde(skip_serializing_if = ...)]` predicates so envelope
+// Shared `#[serde(skip_serializing_if = ...)]` predicates so envelope
 // modules don't redeclare 1-line `is_false` / `is_zero_usize` / `is_true`
 // helpers per file. See serde_helpers.rs. `pub` (not `pub(crate)`) so the
 // binary crate's `cli/` modules can reference these via path strings inside
@@ -136,12 +136,12 @@ pub(crate) mod structural;
 pub(crate) mod task;
 pub(crate) mod where_to_add;
 
-// #972: pure arg-shaping translator for daemon-forward mode. Lives in the
+// Pure arg-shaping translator for daemon-forward mode. Lives in the
 // library (not `src/cli/`) so integration tests can exercise it without
 // reaching into the binary-only `cli` module tree.
 pub mod daemon_translate;
 
-// #1182: freshness snapshot exposed via the daemon socket so `cqs status
+// Freshness snapshot exposed via the daemon socket so `cqs status
 // --watch-fresh` can answer "is the index fresh?". Watch loop publishes
 // every cycle; daemon socket handler reads. Lives in lib so the CLI's
 // `cqs status` command and the `daemon_status` socket helper share the
@@ -158,14 +158,11 @@ pub mod test_helpers;
 /// - `embedder::tests::embedder_init_failure` (2 tests)
 /// - `cli::commands::infra::doctor::tests` (4 tests)
 ///
-/// Pre-fix each cohort had its own `static Mutex<()>` and they didn't
-/// actually serialize against each other — under cargo's parallel
-/// runner a poisoned lock from a 401-on-CI HF download cascaded into
-/// `PoisonError` panics in the next two tests. (#1305 / ci-slow.yml run
-/// 25255950909 retry surface)
-///
-/// Same shape as `crate::llm::LLM_ENV_LOCK` from #1318 — hoist to a
-/// single shared lock so all cohorts serialize through one Mutex.
+/// A single shared lock (rather than a per-cohort `static Mutex<()>`) so all
+/// cohorts serialize through one Mutex — separate locks don't serialize
+/// against each other, and under cargo's parallel runner a poisoned lock from
+/// a 401-on-CI HF download cascades into `PoisonError` panics in sibling
+/// tests. Same shape as `crate::llm::LLM_ENV_LOCK`.
 ///
 /// Visibility is `pub` (not `pub(crate)`) because `doctor::tests` lives
 /// in the binary crate and reaches the lib via `cqs::ONNX_DIR_ENV_LOCK`;
@@ -189,21 +186,19 @@ pub use note::{
     NOTES_HEADER,
 };
 pub use parser::{Chunk, Parser};
-// CQ-V1.33.0-8: `LlmReranker` is a SCAFFOLD-ONLY stub (every score call
-// returns Err). Demoted to `pub(crate)` and dropped from this re-export
-// until the production wiring lands in #1220.
+// `LlmReranker` is a scaffold-only stub (every score call returns Err), so
+// it is `pub(crate)` and absent from this re-export.
 pub use reranker::{NoopReranker, OnnxReranker, Reranker};
 pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 
 // Re-exports for binary crate (CLI) — these are NOT part of the public library
 // API but need to be accessible to src/cli/* and tests/.
 //
-// #1372 / P3-52: previously a chain of `pub use module::*` wildcards. The
-// glob made it easy to silently widen the surface area: a future
-// `pub struct InternalScratch` in `gather/mod.rs` would have auto-leaked
-// to `cqs::InternalScratch`. Each module now lists exactly what crosses
-// the lib boundary; new pub items in submodules stay internal until
-// explicitly added here.
+// Each module lists exactly what crosses the lib boundary rather than
+// re-exporting with `pub use module::*`. A glob would silently widen the
+// surface area — a new `pub struct InternalScratch` in `gather/mod.rs`
+// would auto-leak to `cqs::InternalScratch`. New pub items in submodules
+// stay internal until explicitly added here.
 pub use diff::{semantic_diff, DiffEntry, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
@@ -263,8 +258,6 @@ pub use cagra::CagraIndex;
 use std::path::PathBuf;
 
 /// Unified error type for analysis operations (scout, where-to-add, etc.)
-///
-/// Replaces the former `ScoutError` and `SuggestError` which were near-identical.
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisError {
     #[error(transparent)]
@@ -286,7 +279,7 @@ pub const INDEX_DIR: &str = ".cqs";
 /// Filename of the SQLite index database inside [`INDEX_DIR`].
 pub const INDEX_DB_FILENAME: &str = "index.db";
 
-/// Legacy index directory name (pre-v0.9.7). Used for auto-migration.
+/// Legacy index directory name. Used for auto-migration to `.cqs/`.
 const LEGACY_INDEX_DIR: &str = ".cq";
 
 /// Resolve the index directory for a project, migrating from `.cq/` to `.cqs/` if needed.
@@ -294,7 +287,7 @@ const LEGACY_INDEX_DIR: &str = ".cq";
 /// If the legacy `.cq/` exists and `.cqs/` does not, renames it automatically.
 /// Falls back gracefully if the rename fails (e.g., permissions).
 ///
-/// **Worktree fallback (#1254):** when neither `<project_root>/.cqs/` nor
+/// **Worktree fallback:** when neither `<project_root>/.cqs/` nor
 /// the legacy `<project_root>/.cq/` exists AND `project_root` is a git
 /// worktree (per [`crate::worktree::resolve_main_project_dir`]), this
 /// function returns the main project's `.cqs/` if that one exists, and
@@ -321,10 +314,10 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
         return old_dir;
     }
 
-    // #1254: worktree fallback. `git worktree add` doesn't copy
-    // `.cqs/`; pre-fix this returned the empty path and every cqs
-    // command in the worktree errored, which led agents to fall back
-    // to absolute paths under main's tree.
+    // Worktree fallback. `git worktree add` doesn't copy `.cqs/`; without
+    // this fallback a worktree with no index returns the empty path and
+    // every cqs command in it errors, pushing agents to absolute paths
+    // under main's tree.
     match crate::worktree::lookup_main_cqs_dir(project_root) {
         crate::worktree::MainIndexLookup::WorktreeUseMain {
             worktree_root,
@@ -402,24 +395,17 @@ pub fn resolve_index_db(project_cqs_dir: &Path) -> PathBuf {
     crate::slot::slot_dir(project_cqs_dir, crate::slot::DEFAULT_SLOT).join(INDEX_DB_FILENAME)
 }
 
-/// Default embedding dimension (1024, BGE-large-en-v1.5).
+/// Default embedding dimension, derived from `ModelConfig::default_model().dim`.
 /// The actual dimension is detected at runtime from the model output.
 /// Use `Embedder::embedding_dim()` for the runtime value.
-/// Derived from `ModelConfig::default_model().dim`.
 pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
 
-/// EX-V1.30.1-7 (P3-EX-2): test whether a string is one of the canonical
-/// "off" tokens the cqs CLI accepts in `CQS_*` env vars.
+/// Test whether a string is one of the canonical "off" tokens the cqs CLI
+/// accepts in `CQS_*` env vars: `"0"`, `"false"`, `"no"`, `"off"` —
+/// case-insensitive, whitespace-trimmed.
 ///
-/// Mirrors the dispatch the audit found duplicated across ~30 sites:
-/// `"0"`, `"false"`, `"no"`, `"off"` — case-insensitive, whitespace-trimmed.
-/// Centralised here so the next migration pass can swap a hand-rolled
-/// match for a single call without re-debating the spelling list.
-///
-/// Companion `env_truthy` is intentionally not added today — the audit's
-/// 30-site backlog only matters once we start migrating the rest, and
-/// the truthy spelling list (e.g. should `"y"` work?) deserves its own
-/// pass.
+/// No companion `env_truthy` — the truthy spelling list (e.g. should `"y"`
+/// work?) deserves its own pass.
 #[inline]
 pub fn env_falsy(value: &str) -> bool {
     matches!(
@@ -428,24 +414,21 @@ pub fn env_falsy(value: &str) -> bool {
     )
 }
 
-/// DS2-10: Convert a [`std::time::Duration`] to milliseconds as `i64` for
-/// storage in SQLite `INTEGER` mtime columns.
+/// Convert a [`std::time::Duration`] to milliseconds as `i64` for storage in
+/// SQLite `INTEGER` mtime columns.
 ///
-/// The underlying `as_millis()` returns `u128`, and all 13 prior call sites
-/// lost the overflow check by casting with `as i64` — a duration past
-/// `~292M years` since the Unix epoch would silently wrap to a negative
-/// value. `i64::try_from` returns an error which we collapse to
-/// `i64::MAX` (the closest representable "far future" mtime); the alternative
-/// — truncating wrap — would invert monotonic ordering and break freshness
-/// comparisons. Real-world mtimes are never anywhere near this cap, so the
-/// saturation is functionally equivalent to the prior cast on every valid
-/// input.
+/// `as_millis()` returns `u128`; a bare `as i64` cast would silently wrap a
+/// duration past `~292M years` since the Unix epoch to a negative value.
+/// `i64::try_from` collapses overflow to `i64::MAX` (the closest representable
+/// "far future" mtime); a truncating wrap would instead invert monotonic
+/// ordering and break freshness comparisons. Real-world mtimes never approach
+/// this cap.
 #[inline]
 pub fn duration_to_mtime_millis(d: std::time::Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
 }
 
-/// RB-3 / RB-10: Defensive `SystemTime::now() → Unix seconds as i64`.
+/// Defensive `SystemTime::now() → Unix seconds as i64`.
 ///
 /// Returns `None` when the clock is before epoch (RTC mis-set, hypervisor
 /// pause, NTP-pre-sync boot) and emits a `tracing::warn!` once per process
@@ -469,12 +452,12 @@ pub fn unix_secs_i64() -> Option<i64> {
     }
 }
 
-// # Batch Size Constants (#683)
+// # Batch Size Constants
 //
 // `const BATCH_SIZE` definitions across store/pipeline/search modules,
 // intentionally local — each is tuned for its SQL query shape.
 //
-// SQLite host-parameter ceiling: 32766 (SQLite ≥3.32.0; previously 999).
+// SQLite host-parameter ceiling: 32766 (SQLite ≥3.32.0).
 // Compute the per-statement row cap via
 // `crate::store::helpers::sql::max_rows_per_statement(params_per_row)`,
 // which returns `min(rows, SQLITE_MAX_VARIABLES / params_per_row)`. New
@@ -498,12 +481,12 @@ pub fn unix_secs_i64() -> Option<i64> {
 /// detection (`TEST_NAME_PATTERNS`, `TEST_CONTENT_MARKERS`, `TEST_PATH_PATTERNS`)
 /// that also checks content markers like `#[test]` and `@Test`.
 pub fn is_test_chunk(name: &str, file: &str) -> bool {
-    // Name-based patterns from the language registry (EXT-V1.36-3 / #1460).
+    // Name-based patterns from the language registry.
     //
     // Single source of truth for both this matcher and
-    // `store::calls::TEST_NAME_PATTERNS`. The default set encodes the v1.22.0
-    // AC-4 tightening: `Test\_%` matches `Test_bar` but NOT `TestRegistry`
-    // (which the loose `Test%` was incorrectly demoting by 30%). Languages
+    // `store::calls::TEST_NAME_PATTERNS`. The default set uses `Test\_%`, which
+    // matches `Test_bar` but NOT `TestRegistry` (a looser `Test%` would
+    // incorrectly demote test-framework API types). Languages
     // with their own conventions (Kotlin/Swift `should_*`, JUnit5
     // `@DisplayName`, BDD `_when_should_*`) extend the set via
     // `LanguageDef::test_name_patterns`. SQL LIKE syntax with `\_` for
@@ -516,11 +499,9 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
     // Path-based patterns from the language registry (all 54 languages).
     // Patterns use SQL LIKE syntax: `%` = any chars, `\_` = literal underscore.
     //
-    // PF-V1.38-1 (#1463): skip the `\\` → `/` replace when there's no
-    // backslash in the input. On Linux that's the common case; the
-    // pre-fix `replace('\\', "/")` allocated a fresh `String` for every
-    // candidate even when the result was byte-identical to the input.
-    // Now allocates only on Windows-style paths.
+    // Skip the `\\` → `/` replace when there's no backslash in the input
+    // (the common case on Linux); allocate a fresh `String` only on
+    // Windows-style paths.
     let normalized: std::borrow::Cow<'_, str> = if file.contains('\\') {
         std::borrow::Cow::Owned(file.replace('\\', "/"))
     } else {
@@ -594,10 +575,10 @@ use std::path::Path;
 /// Converts `Path`/`PathBuf` to `String`, replacing backslashes with forward slashes
 /// for cross-platform consistency (WSL, Windows paths in JSON output).
 ///
-/// P3 #142: strips the Windows `\\?\` UNC prefix (and `\\?\UNC\`) before
-/// slash conversion so JSON output and chunk IDs don't carry the verbatim
-/// path marker. `dunce::canonicalize` strips most of these at ingest, but
-/// callers passing already-canonicalized `&Path` deserve symmetric behavior.
+/// Strips the Windows `\\?\` UNC prefix (and `\\?\UNC\`) before slash
+/// conversion so JSON output and chunk IDs don't carry the verbatim path
+/// marker. `dunce::canonicalize` strips most of these at ingest, but callers
+/// passing already-canonicalized `&Path` get symmetric behavior here.
 pub fn normalize_path(path: &Path) -> String {
     let raw = path.to_string_lossy();
     let stripped = strip_windows_verbatim_prefix(&raw);
@@ -607,7 +588,7 @@ pub fn normalize_path(path: &Path) -> String {
 /// Normalize backslashes to forward slashes in a string path.
 ///
 /// For already-stringified paths. Strips Windows `\\?\` / `\\?\UNC\` verbatim
-/// prefix (P3 #142) before slash conversion. Returns the input unchanged on
+/// prefix before slash conversion. Returns the input unchanged on
 /// non-Windows-flavored strings.
 pub fn normalize_slashes(path: &str) -> String {
     strip_windows_verbatim_prefix(path).replace('\\', "/")
@@ -679,9 +660,8 @@ pub fn rel_display(path: &Path, root: &Path) -> String {
 /// (Windows NTFS, macOS HFS+/APFS default), `path.starts_with(root)` can
 /// pass while `path.strip_prefix(root)` byte-equals fails — case skew
 /// between the canonicalized project root and the indexed chunk path.
-/// PB-V1.36-5 / P2-13: this helper centralizes the "warn-and-fall-back"
-/// shim that `enumerate_files` already learned (lib.rs:940), so caller
-/// sites don't keep silently leaking absolute paths into JSON envelopes
+/// Centralizes the "warn-and-fall-back" shim `enumerate_files` also uses, so
+/// caller sites don't silently leak absolute paths into JSON envelopes
 /// documented as "relative to project root".
 pub fn relativize_or_warn(file: &Path, root: &Path) -> std::path::PathBuf {
     match file.strip_prefix(root) {
@@ -702,7 +682,7 @@ pub fn relativize_or_warn(file: &Path, root: &Path) -> std::path::PathBuf {
 /// Index notes into the database (store without embeddings)
 ///
 /// Shared logic used by CLI commands.
-/// Stores notes in the database for mention-based lookup (SQ-9: note embeddings removed).
+/// Stores notes in the database for mention-based lookup (no note embeddings).
 ///
 /// # Arguments
 /// * `notes` - Notes to index
@@ -778,7 +758,7 @@ fn max_file_size() -> u64 {
 /// wrapper that materializes the whole walk into a single allocation.
 /// Callers that don't need the count or random access (`run_daemon_reconcile`,
 /// 1k-file streaming queries) should consume the iterator directly to keep
-/// peak heap bounded by batch size rather than tree size. (#1229)
+/// peak heap bounded by batch size rather than tree size.
 pub fn enumerate_files(
     root: &Path,
     extensions: &[&str],
@@ -799,8 +779,7 @@ pub fn enumerate_files(
 /// long-lived loops (the watch reconcile path is the canonical consumer).
 ///
 /// Failures in the walk surface via `tracing::warn!` (first three) /
-/// `tracing::debug!` (rest), matching the pre-#1229 silent-skip-with-log
-/// contract. The iterator yields *only* the paths that successfully
+/// `tracing::debug!` (rest). The iterator yields *only* the paths that successfully
 /// passed every filter — operators inspecting the walk count vs `find`
 /// output can grep journalctl for the "Skipping …" lines if the counts
 /// disagree.
@@ -852,13 +831,13 @@ pub fn enumerate_files_iter(
         .build();
 
     let size_cap = max_file_size();
-    // EH-V1.33-4: when `metadata()` fails (broken symlink target, transient FS
-    // error, permission flip mid-walk), surface it via the same first-3-warn-
+    // When `metadata()` fails (broken symlink target, transient FS error,
+    // permission flip mid-walk), surface it via the same first-3-warn-
     // then-debug shape used by the canonicalize arm below. Silently dropping
     // files leaves operators staring at fewer chunks than expected with no
     // diagnostic trail.
     //
-    // #1229: counters live in `Arc<AtomicUsize>` so the per-row closures can
+    // Counters live in `Arc<AtomicUsize>` so the per-row closures can
     // each hold their own clone. The walker outlives the function call (it's
     // returned via `impl Iterator`), so `&AtomicUsize` lifetimes wouldn't
     // work — Arc is the cheapest move-into-closure shape.
@@ -881,9 +860,9 @@ pub fn enumerate_files_iter(
             Ok(m) => {
                 let len = m.len();
                 if len > size_cap {
-                    // SHL-V1.25-11: surface skipped oversize files at info
-                    // so users debugging "why doesn't my symbol show up"
-                    // discover CQS_MAX_FILE_SIZE instead of silent drop.
+                    // Surface skipped oversize files at info so users
+                    // debugging "why doesn't my symbol show up" discover
+                    // CQS_MAX_FILE_SIZE instead of a silent drop.
                     tracing::info!(
                         path = %e.path().display(),
                         size = len,
@@ -896,10 +875,10 @@ pub fn enumerate_files_iter(
                 }
             }
             Err(err) => {
-                // EH-V1.33-4: `ignore::Error::Display` already prints the
-                // underlying io kind (e.g., "permission denied", "no such
-                // file or directory"), so the operator gets the kind
-                // implicitly via `error = %err`.
+                // `ignore::Error::Display` already prints the underlying io
+                // kind (e.g., "permission denied", "no such file or
+                // directory"), so the operator gets the kind implicitly via
+                // `error = %err`.
                 let count = metadata_failures_for_filter
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if count < 3 {
@@ -919,9 +898,8 @@ pub fn enumerate_files_iter(
             }
         })
         .filter(move |e| {
-            // P3 #141: `to_ascii_lowercase` allocated a fresh `String` per
-            // candidate file. `eq_ignore_ascii_case` compares case-insensitively
-            // without an allocation.
+            // `eq_ignore_ascii_case` compares case-insensitively without
+            // allocating, unlike `to_ascii_lowercase`.
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -955,16 +933,15 @@ pub fn enumerate_files_iter(
                 }
             };
             if path.starts_with(&root_for_filter) {
-                // RB-6: `starts_with` and `strip_prefix` can disagree on
+                // `starts_with` and `strip_prefix` can disagree on
                 // case-insensitive filesystems (NTFS, HFS+) — `Cqs` vs
                 // `cqs` matches under `starts_with` but `strip_prefix`
-                // does byte-equal segment compare and refuses. The old
-                // `unwrap_or(&path).to_path_buf()` then silently leaked
-                // the absolute path into the relative-path workflow,
-                // breaking every downstream lookup keyed by relative
-                // origin. Skipping with a warn surfaces the
-                // disagreement so the operator can fix the case skew
-                // (or re-canonicalize the project root).
+                // does a byte-equal segment compare and refuses. Falling
+                // back to the absolute path would silently leak it into
+                // the relative-path workflow, breaking every downstream
+                // lookup keyed by relative origin. Skipping with a warn
+                // surfaces the disagreement so the operator can fix the
+                // case skew (or re-canonicalize the project root).
                 match path.strip_prefix(&root_for_filter) {
                     Ok(rel) => Some(rel.to_path_buf()),
                     Err(_) => {
@@ -987,8 +964,8 @@ pub fn enumerate_files_iter(
 mod tests {
     use super::*;
 
-    /// #1229 (RM-5): the iterator API yields the same set of files as the
-    /// eager wrapper for a small synthetic tree. Pins the contract that
+    /// The iterator API yields the same set of files as the eager wrapper for
+    /// a small synthetic tree. Pins the contract that
     /// `enumerate_files = enumerate_files_iter.collect()`.
     #[test]
     fn enumerate_files_iter_matches_eager_for_small_tree() {
@@ -1015,9 +992,9 @@ mod tests {
         assert_eq!(eager.len(), 2, "expected 2 .rs files, got {eager:?}");
     }
 
-    /// #1229 (RM-5): the iterator yields paths *one at a time* — calling
-    /// `.next()` materializes a single PathBuf, not the whole walk. Pins
-    /// the contract by counting yields against an explicit `take(N)`.
+    /// The iterator yields paths *one at a time* — calling `.next()`
+    /// materializes a single PathBuf, not the whole walk. Pins the contract
+    /// by counting yields against an explicit `take(N)`.
     /// Memory bounding is impractical to assert directly without a
     /// custom allocator, but this proves the iterator surface accepts
     /// partial consumption.
@@ -1047,11 +1024,11 @@ mod tests {
         assert!(is_test_chunk("foo_test", "src/lib.rs"));
         assert!(is_test_chunk("foo_test_bar", "src/lib.rs"));
         assert!(is_test_chunk("foo.test", "src/lib.rs"));
-        // Negative: name-based
-        // v1.22.0 audit AC-4: "TestSuite", "TestHarness", "TestRegistry" etc.
-        // are NOT tests — they're test-framework API types that should not be
-        // demoted 30% in search results. Only `test_` and `Test_` prefixes
-        // (with underscore) are treated as test chunks by name.
+        // Negative: name-based.
+        // "TestSuite", "TestHarness", "TestRegistry" etc. are NOT tests —
+        // they're test-framework API types that should not be demoted in
+        // search results. Only `test_` and `Test_` prefixes (with
+        // underscore) are treated as test chunks by name.
         assert!(!is_test_chunk("TestSuite", "src/lib.rs"));
         assert!(!is_test_chunk("TestHarness", "src/lib.rs"));
         assert!(!is_test_chunk("TestRegistry", "src/lib.rs"));
@@ -1124,7 +1101,7 @@ mod tests {
         assert_eq!(rel_display(path, root), "/var/log/app.log");
     }
 
-    // ─── normalize_path / normalize_slashes verbatim-prefix tests (P3 #142) ─
+    // ─── normalize_path / normalize_slashes verbatim-prefix tests ─
 
     #[test]
     fn test_normalize_path_strips_windows_verbatim_prefix() {
@@ -1263,7 +1240,7 @@ mentions = ["store.rs"]
         assert!((summaries[0].sentiment - (-1.0)).abs() < f32::EPSILON);
     }
 
-    // ─── resolve_index_dir tests (TC-4) ──────────────────────────────────
+    // ─── resolve_index_dir tests ──────────────────────────────────
 
     #[test]
     fn test_resolve_index_dir_only_legacy_exists() {
@@ -1312,7 +1289,7 @@ mentions = ["store.rs"]
         );
     }
 
-    // ─── enumerate_files tests (TC-9) ────────────────────────────────────
+    // ─── enumerate_files tests ────────────────────────────────────
 
     #[test]
     fn test_enumerate_files_finds_supported_extensions() {
@@ -1390,10 +1367,10 @@ mentions = ["store.rs"]
         );
     }
 
-    /// TC-ADV-V1.33-5: SECURITY.md promises `follow_links=false` per
-    /// SEC-V1.30.1-2. A symlink to a real `.rs` file inside the project
-    /// must NOT appear in the enumerated list — the walker is configured
-    /// to skip links, not to dereference them. Pins the security policy.
+    /// SECURITY.md promises `follow_links=false`. A symlink to a real `.rs`
+    /// file inside the project must NOT appear in the enumerated list — the
+    /// walker is configured to skip links, not to dereference them. Pins the
+    /// security policy.
     #[test]
     #[cfg(unix)]
     fn test_enumerate_files_skips_symlinks_to_files() {
@@ -1425,8 +1402,8 @@ mentions = ["store.rs"]
         );
     }
 
-    /// TC-ADV-V1.33-5: files exceeding `CQS_MAX_FILE_SIZE` must be
-    /// silently filtered. Pins the size cap behaviour at lines 759-779.
+    /// Files exceeding `CQS_MAX_FILE_SIZE` must be silently filtered. Pins
+    /// the size cap behaviour.
     #[test]
     fn test_enumerate_files_skips_oversized_files() {
         use std::sync::Mutex;
@@ -1464,8 +1441,8 @@ mentions = ["store.rs"]
         );
     }
 
-    /// TC-ADV-V1.33-5: file with a non-UTF8 byte sequence in its name on
-    /// Linux must not crash `enumerate_files`. The walker may either skip
+    /// A file with a non-UTF8 byte sequence in its name on Linux must not
+    /// crash `enumerate_files`. The walker may either skip
     /// or include it (both are defensible) but a panic is unacceptable —
     /// a hostile filename should never bring down the indexer.
     #[test]
@@ -1521,7 +1498,7 @@ mentions = ["store.rs"]
         assert!(!is_test_chunk("inspector", "src/inspect.rs"));
     }
 
-    // TC-6: _tests.rs suffix and nested /tests/ path
+    // _tests.rs suffix and nested /tests/ path
     #[test]
     fn is_test_chunk_tests_suffix_and_nested_path() {
         // File with _test suffix

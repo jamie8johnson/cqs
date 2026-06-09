@@ -17,20 +17,16 @@ pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
 
 /// Maximum number of notes to parse from a single file.
 /// Prevents memory exhaustion from malicious or corrupted note files.
-///
-/// SHL-V1.30-7: env override `CQS_NOTES_MAX_ENTRIES`. Documented in README.md.
+/// Env override `CQS_NOTES_MAX_ENTRIES`.
 const MAX_NOTES_DEFAULT: usize = 10_000;
 
 /// Maximum size of `notes.toml` (in bytes) before reads/writes refuse to load
 /// the file. Both the read-only `parse_notes` path and the read-modify-write
 /// `rewrite_notes_file` path enforce the same cap so a truncated/corrupt
-/// rewrite can't exceed it either.
-///
-/// SHL-V1.30-7: hoisted from per-call-site duplicate `const` declarations to
-/// module scope. Env override `CQS_NOTES_MAX_FILE_SIZE`. Default 10 MiB.
+/// rewrite can't exceed it either. Env override `CQS_NOTES_MAX_FILE_SIZE`.
 const MAX_NOTES_FILE_SIZE_DEFAULT: u64 = 10 * 1024 * 1024;
 
-/// SHL-V1.30-7: resolve `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB).
+/// Resolve `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB).
 fn max_notes_file_size() -> u64 {
     std::env::var("CQS_NOTES_MAX_FILE_SIZE")
         .ok()
@@ -39,7 +35,7 @@ fn max_notes_file_size() -> u64 {
         .unwrap_or(MAX_NOTES_FILE_SIZE_DEFAULT)
 }
 
-/// SHL-V1.30-7: resolve `CQS_NOTES_MAX_ENTRIES` (default 10_000).
+/// Resolve `CQS_NOTES_MAX_ENTRIES` (default 10_000).
 fn max_notes() -> usize {
     std::env::var("CQS_NOTES_MAX_ENTRIES")
         .ok()
@@ -76,11 +72,11 @@ pub struct NoteEntry {
     /// Code paths/functions mentioned (for linking)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
-    /// v25 / #1133: free-form kind tag (`todo`, `design-decision`,
-    /// `deprecation`, `known-bug`, …). When present, takes precedence
-    /// over `sentiment`'s implicit "Warning:"/"Pattern:" mapping for
-    /// the embedding-text prefix; the structural field also enables
-    /// `cqs notes list --kind <kind>` filtering.
+    /// Free-form kind tag (`todo`, `design-decision`, `deprecation`,
+    /// `known-bug`, …). When present, takes precedence over `sentiment`'s
+    /// implicit "Warning:"/"Pattern:" mapping for the embedding-text prefix;
+    /// the structural field also enables `cqs notes list --kind <kind>`
+    /// filtering.
     ///
     /// Free-string by design: a closed enum would force a coordinated
     /// edit every time someone wants a new tag. The cqs convention is
@@ -108,10 +104,9 @@ pub struct Note {
     pub sentiment: f32,
     /// Code paths/functions mentioned
     pub mentions: Vec<String>,
-    /// v25 / #1133: optional structured kind tag (see [`NoteEntry::kind`]).
-    /// Drives the embedding-text prefix when present; serialized to JSON
-    /// only when set so the existing wire shape stays backward-compatible
-    /// for kind-less notes.
+    /// Optional structured kind tag (see [`NoteEntry::kind`]). Drives the
+    /// embedding-text prefix when present; serialized to JSON only when set so
+    /// kind-less notes keep their wire shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
 }
@@ -119,7 +114,7 @@ pub struct Note {
 impl Note {
     /// Generate embedding text for this note.
     ///
-    /// Prefix priority (#1133):
+    /// Prefix priority:
     /// 1. `kind` is set: `"<Kind>: "` — capitalized, kind takes
     ///    precedence over the sentiment-based fallback so structured
     ///    notes get a structured retrieval signal.
@@ -224,8 +219,8 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
         ))
     })?;
 
-    // Size guard: notes.toml should be well under 10MB. SHL-V1.30-7: env-overridable
-    // via CQS_NOTES_MAX_FILE_SIZE, single source of truth at module scope.
+    // Size guard: notes.toml should be well under 10MB. Env-overridable via
+    // CQS_NOTES_MAX_FILE_SIZE, single source of truth at module scope.
     let max_size = max_notes_file_size();
     if let Ok(meta) = data_file.metadata() {
         if meta.len() > max_size {
@@ -301,7 +296,7 @@ pub fn rewrite_notes_file(
             ))
         })?;
 
-    // Size guard (same limit as read path). SHL-V1.30-7: shared resolver.
+    // Size guard (same limit as read path). Shared resolver.
     let max_size = max_notes_file_size();
     if let Ok(meta) = data_file.metadata() {
         if meta.len() > max_size {
@@ -339,25 +334,24 @@ pub fn rewrite_notes_file(
         }
     };
 
-    // RM-V1.33-8: wrap the write + permission fixup in a closure so
-    // any intermediate failure (disk full, EIO, EROFS) cleans up the
-    // tmp file before propagating. Previously the bare `?` on the
-    // `std::fs::write` left `notes.toml.<hex>.tmp` files behind on
-    // every failed attempt — names include 16 hex chars of randomness
-    // so failures piled up rather than collided.
+    // Wrap the write + permission fixup in a closure so any intermediate
+    // failure (disk full, EIO, EROFS) cleans up the tmp file before
+    // propagating. A bare `?` on `std::fs::write` would leave
+    // `notes.toml.<hex>.tmp` files behind on every failed attempt — names
+    // include 16 hex chars of randomness so failures pile up rather than
+    // collide.
     //
-    // PB-V1.33-9 (#1356): preserve the existing on-disk line ending
-    // convention so cqs doesn't fight with `core.autocrlf=true` on
-    // Windows. Without this, every write replaces CRLF with bare LF;
-    // git's smudge filter converts back to CRLF on the next checkout;
-    // cqs reads the file, sees byte-different content, and reindexes
-    // even though the semantic content is identical. With CLAUDE.md
-    // explicitly encouraging users to commit `docs/notes.toml`, the
-    // CRLF interaction shipped on every Windows project.
+    // Preserve the existing on-disk line ending convention so cqs doesn't
+    // fight with `core.autocrlf=true` on Windows. Without this, every write
+    // replaces CRLF with bare LF; git's smudge filter converts back to CRLF on
+    // the next checkout; cqs reads the file, sees byte-different content, and
+    // reindexes even though the semantic content is identical. Users are
+    // encouraged to commit `docs/notes.toml`, so the CRLF interaction would
+    // hit every Windows project.
     //
-    // Sniff once from `content` (already in memory). If the existing
-    // file uses CRLF, translate every bare LF in the formatted output
-    // back to CRLF so the round trip is byte-stable.
+    // Sniff once from `content` (already in memory). If the existing file uses
+    // CRLF, translate every bare LF in the formatted output back to CRLF so
+    // the round trip is byte-stable.
     let line_ending = if content.contains("\r\n") {
         "\r\n"
     } else {
@@ -400,9 +394,8 @@ pub fn rewrite_notes_file(
     }
 
     // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
-    // Previously the notes path open-coded the rename + fs::copy fallback but
-    // never fsynced the tmp or the parent dir, so a power cut between write
-    // and rename could lose notes that appeared committed to the user.
+    // fsyncing the tmp and parent dir ensures a power cut between write and
+    // rename can't lose notes that appeared committed to the user.
     crate::fs::atomic_replace(&tmp_path, notes_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
         NoteError::Io(std::io::Error::new(
@@ -427,9 +420,9 @@ pub fn rewrite_notes_file(
 pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     let file: NoteFile = toml::from_str(content)?;
 
-    // SHL-V1.30-7: surface truncation rather than silently dropping entries.
-    // Previously `.take(MAX_NOTES)` ate the surplus with no signal; now we warn so
-    // users see they need to lift the cap (or split the file).
+    // Surface truncation rather than silently dropping entries — `.take(cap)`
+    // eats the surplus, so warn here so users see they need to lift the cap
+    // (or split the file).
     let cap = max_notes();
     let total = file.note.len();
     if total > cap {
@@ -498,11 +491,9 @@ fn capitalize_kind_for_prefix(kind: &str) -> String {
 
 /// Normalize `path` for slash-matching without allocating when possible.
 ///
-/// PF-V1.25-13: `normalize_slashes` always allocates a fresh `String` even
-/// when the input has no backslashes (the Unix common case and, in practice,
-/// most indexed paths on Windows that already came from `normalize_path`).
-/// This helper returns `Cow::Borrowed(s)` when no substitution is needed,
-/// avoiding the allocation entirely.
+/// Returns `Cow::Borrowed(s)` when no substitution is needed (no backslashes —
+/// the Unix common case and most Windows paths that already came from
+/// `normalize_path`), avoiding the allocation entirely.
 fn normalize_slashes_cow(s: &str) -> std::borrow::Cow<'_, str> {
     if s.contains('\\') {
         std::borrow::Cow::Owned(s.replace('\\', "/"))
@@ -515,13 +506,10 @@ fn normalize_slashes_cow(s: &str) -> std::borrow::Cow<'_, str> {
 /// "gather.rs" matches "src/gather.rs" but not "src/gatherer.rs"
 /// "src/store" matches "src/store/chunks.rs" but not "my_src/store.rs"
 ///
-/// PF-V1.25-13: previously allocated two `String`s per (note mention ×
-/// candidate) via `normalize_slashes`. In search scoring this runs
-/// O(notes × path_mentions × candidates) times per query; on Unix every
-/// allocation was wasted (no backslashes to replace) and on Windows only
-/// paths that weren't already slash-normalized upstream needed the work.
-/// Switched to `Cow<str>`: zero allocation on the already-slash-clean path,
-/// identical semantics on the backslash path.
+/// Uses `Cow<str>` to avoid allocation: in search scoring this runs
+/// O(notes × path_mentions × candidates) times per query, so the
+/// already-slash-clean path (Unix, and most Windows paths) costs zero
+/// allocations while the backslash path keeps identical semantics.
 pub fn path_matches_mention(path: &str, mention: &str) -> bool {
     // Normalize backslashes to forward slashes for cross-platform matching
     let path = normalize_slashes_cow(path);
@@ -529,11 +517,11 @@ pub fn path_matches_mention(path: &str, mention: &str) -> bool {
     let path: &str = path.as_ref();
     let mention: &str = mention.as_ref();
 
-    // PB-V1.36-7: on case-insensitive filesystems (Windows NTFS, macOS HFS+/APFS
-    // default), notes authored on Linux silently failed to apply — `Cargo.toml`
-    // mention vs `cargo.toml` indexed path. Lowercase both sides on those
-    // platforms so the suffix/prefix strip is case-insensitive while staying
-    // byte-exact on Linux ext4.
+    // On case-insensitive filesystems (Windows NTFS, macOS HFS+/APFS default),
+    // notes authored on Linux would otherwise silently fail to apply —
+    // `Cargo.toml` mention vs `cargo.toml` indexed path. Lowercase both sides
+    // on those platforms so the suffix/prefix strip is case-insensitive while
+    // staying byte-exact on Linux ext4.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let (path_buf, mention_buf) = (path.to_ascii_lowercase(), mention.to_ascii_lowercase());
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -707,11 +695,11 @@ text = "first note"
         );
     }
 
-    /// PB-V1.33-9 / #1356: a notes file written with CRLF line endings on
-    /// disk (e.g., touched by git's `core.autocrlf=true` smudge filter on
-    /// Windows) must round-trip back to CRLF when cqs rewrites it. Without
-    /// preservation, every cqs note edit fights with git's smudge filter
-    /// and triggers a phantom reindex on every checkout.
+    /// A notes file written with CRLF line endings on disk (e.g., touched by
+    /// git's `core.autocrlf=true` smudge filter on Windows) must round-trip
+    /// back to CRLF when cqs rewrites it. Without preservation, every cqs note
+    /// edit fights with git's smudge filter and triggers a phantom reindex on
+    /// every checkout.
     #[test]
     fn test_rewrite_preserves_crlf_line_endings() {
         let dir = tempfile::tempdir().unwrap();
@@ -784,14 +772,13 @@ text = "first note"
         assert!(result.is_err());
     }
 
-    // ===== TC-ADV-7: size guard + MAX_NOTES truncation =====
+    // ===== size guard + MAX_NOTES truncation =====
     //
     // `parse_notes` has two guards against memory exhaustion:
-    //   1. A 10MB file-size cap (`MAX_NOTES_FILE_SIZE = 10 * 1024 * 1024`)
-    //      that errors with `ErrorKind::InvalidData` before reading content.
-    //   2. A `MAX_NOTES = 10_000` cap in `parse_notes_str` that silently
-    //      truncates via `.take(MAX_NOTES)`.
-    // Neither was exercised by the suite before TC-ADV-7.
+    //   1. A 10MB file-size cap (`MAX_NOTES_FILE_SIZE_DEFAULT`) that errors
+    //      with `ErrorKind::InvalidData` before reading content.
+    //   2. A `MAX_NOTES_DEFAULT = 10_000` cap in `parse_notes_str` that
+    //      silently truncates via `.take(cap)`.
 
     /// Over-sized notes file is rejected with a clear `InvalidData` error
     /// and the `"file too large"` phrase, before any TOML parsing.
@@ -909,18 +896,18 @@ text = "first note"
         }
     }
 
-    // ===== TC-ADV-1.29-5: adversarial content in note entries =====
+    // ===== adversarial content in note entries =====
     //
     // `parse_notes_str` trusts the TOML parser to sanitize, then blake3-hashes
     // the raw text for stable IDs. These tests pin behaviour on three input
-    // shapes that were previously untested:
+    // shapes:
     //
     // * a huge `mentions` array (10k+ entries) — memory-bound, should not
     //   panic or get silently truncated. Only the outer `MAX_NOTES` cap
     //   bounds the note count; per-note mentions have no explicit cap.
     // * an empty `text` field — the blake3 hash of "" is a fixed constant,
     //   so two empty-text notes collide. Parsing succeeds; collision is a
-    //   known accepted trade-off documented at `parse_notes_str:322-324`.
+    //   known accepted trade-off.
     // * a NUL byte embedded in `text` — the TOML parser accepts NUL in a
     //   double-quoted string (encoded as ` `) and `parse_notes_str`
     //   preserves it verbatim. This pins the current behaviour so a future
@@ -960,9 +947,9 @@ text = "first note"
 
     /// Empty `text` field parses cleanly. The hash-based ID is a fixed
     /// constant for the empty string, so multiple empty-text notes collide
-    /// on a single ID — the 0.003% collision rate documented at `:322-324`
-    /// is accepted for the higher-priority "stable across reordering"
-    /// property. This test pins that empty text is NOT rejected.
+    /// on a single ID — the small collision rate is accepted for the
+    /// higher-priority "stable across reordering" property. This test pins
+    /// that empty text is NOT rejected.
     #[test]
     fn test_parse_notes_str_empty_text() {
         let content = "[[note]]\ntext = \"\"\n";
@@ -976,9 +963,8 @@ text = "first note"
     }
 
     /// A NUL byte embedded in `text` (via TOML ` `) is preserved
-    /// verbatim. AUDIT-FOLLOWUP (TC-ADV-1.29-5): if a future sanitation
-    /// layer rejects or strips NUL bytes, this test should be updated to
-    /// reflect the new contract.
+    /// verbatim. If a future sanitation layer rejects or strips NUL bytes,
+    /// update this test to reflect the new contract.
     #[test]
     fn test_parse_notes_str_nul_byte_in_text_preserved_verbatim() {
         let content = "[[note]]\ntext = \"has \\u0000 nul\"\n";
@@ -999,7 +985,7 @@ text = "first note"
     /// NUL-only text (`" "`) — boundary case for the preserve-verbatim
     /// contract. After `.trim()` on `text` the NUL stays (trim only strips
     /// ASCII whitespace). The ID derives from the unstripped raw text so
-    /// two "NUL-only" notes collide — the audit documents no guard here.
+    /// two "NUL-only" notes collide — there is no guard here.
     #[test]
     fn test_parse_notes_str_nul_only_text() {
         let content = "[[note]]\ntext = \"\\u0000\"\n";
@@ -1011,8 +997,8 @@ text = "first note"
         );
     }
 
-    /// #1133: kind round-trips through TOML parse. Lower-cased, trimmed,
-    /// with empty-string normalized to `None`.
+    /// kind round-trips through TOML parse. Lower-cased, trimmed, with
+    /// empty-string normalized to `None`.
     #[test]
     fn test_parse_notes_str_with_kind() {
         let toml = r#"
@@ -1046,9 +1032,8 @@ kind = ""
         assert_eq!(notes[3].kind, None);
     }
 
-    /// #1133: `embedding_text()` prefix priority. Kind wins over
-    /// sentiment when set; sentiment-based prefixes still apply when
-    /// kind is None.
+    /// `embedding_text()` prefix priority. Kind wins over sentiment when set;
+    /// sentiment-based prefixes still apply when kind is None.
     #[test]
     fn test_embedding_text_prefix_priority() {
         // Kind set → kind prefix (capitalized).
@@ -1099,11 +1084,10 @@ kind = ""
         assert_eq!(n.embedding_text(), "Todo: Review the eval fixture");
     }
 
-    /// #1133: `capitalize_kind_for_prefix` handles single + multi-segment
-    /// kebab-case strings. Pinning the formatting protects against a
-    /// future refactor that passes raw lowercase to the embedder (the
-    /// embedder treats `Design-Decision` as more meaningful English
-    /// than `design-decision`).
+    /// `capitalize_kind_for_prefix` handles single + multi-segment kebab-case
+    /// strings. Pinning the formatting protects against a future refactor that
+    /// passes raw lowercase to the embedder (the embedder treats
+    /// `Design-Decision` as more meaningful English than `design-decision`).
     #[test]
     fn test_capitalize_kind_for_prefix() {
         assert_eq!(capitalize_kind_for_prefix("todo"), "Todo");

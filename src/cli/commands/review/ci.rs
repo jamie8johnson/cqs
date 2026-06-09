@@ -16,9 +16,9 @@ pub(crate) fn cmd_ci(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_ci", ?format, ?gate, ?max_tokens).entered();
 
-    // P4-3 (#1463): exhaustive match — Mermaid bails, Json/Text drive a
-    // boolean used downstream by `apply_token_budget`. The match shape
-    // means a future `OutputFormat` variant fails to compile here.
+    // Exhaustive match — Mermaid bails, Json/Text drive a boolean used
+    // downstream by `apply_token_budget`. A future `OutputFormat` variant
+    // fails to compile here until it adds an arm.
     let json = match format {
         crate::cli::OutputFormat::Mermaid => {
             anyhow::bail!("Mermaid output is not supported for ci — use text or json");
@@ -95,8 +95,8 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
 
     // Fit callers within remaining budget (2/3 for callers).
     //
-    // P3 #121: gate the `.max(1)` floor on positive budget — true-zero must
-    // produce zero, not one. Mirrors the same fix in `diff_review.rs`.
+    // Gate the `.max(1)` floor on positive budget — a true-zero budget must
+    // produce zero items, not one. Same rule as in `diff_review.rs`.
     let callers_budget = (budget.saturating_sub(used)) * 2 / 3;
     let max_callers = callers_budget / tokens_per_caller;
     let original_callers = review.affected_callers.len();
@@ -224,9 +224,9 @@ fn display_ci_text(
         }
     }
 
-    // Dead code in diff — EH-V1.29-2: surface scan failures so operators
-    // can distinguish "no dead code found" from "scan never ran". The gate
-    // fails on scan failure; this message explains why.
+    // Dead code in diff — surface scan failures so operators can distinguish
+    // "no dead code found" from "scan never ran". The gate fails on scan
+    // failure; this message explains why.
     if !report.dead_scan_ok {
         println!();
         println!(
@@ -393,10 +393,10 @@ mod tests {
         }
     }
 
-    /// TC-HAP-V1.36-5 / P3: pin apply_ci_token_budget shape with json=true
-    /// accounting (sibling test_apply_token_budget_truncates_when_over only
-    /// covers json=false). Adds JSON_OVERHEAD_PER_RESULT to per-item cost,
-    /// so the same budget fits fewer items.
+    /// Pin apply_ci_token_budget shape with json=true accounting (sibling
+    /// test_apply_token_budget_truncates_when_over only covers json=false).
+    /// json=true adds JSON_OVERHEAD_PER_RESULT to per-item cost, so the same
+    /// budget fits fewer items.
     #[test]
     fn test_apply_ci_token_budget_truncates_callers_and_tests() {
         let mut review = make_review(50, 50);

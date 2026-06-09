@@ -17,7 +17,7 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 
     let python = find_python()?;
 
-    // RM-V1.36-2: bound PDF stdout. Default 100 MiB cap, env-overridable via
+    // Bound PDF stdout. Default 100 MiB cap, env-overridable via
     // CQS_PDF_MAX_BYTES. A pathological / hostile PDF can produce arbitrary
     // stdout that .output() would buffer unbounded. Mirrors the spawn+take
     // pattern in train_data::git_diff_tree.
@@ -81,24 +81,24 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 /// 2. `scripts/pdf_to_md.py` relative to CWD
 /// 3. Relative to the cqs binary location
 ///
-/// SEC-V1.25-8: If `CQS_PDF_SCRIPT` is set, the script is rejected unless it
-/// is owned by the current effective user and is not group/world writable.
-/// A daemon that inherits a stale env pointing at `/tmp/evil.py` no longer
-/// executes attacker code — it bails with a clear error.
+/// If `CQS_PDF_SCRIPT` is set, the script is rejected unless it is owned by
+/// the current effective user and is not group/world writable. A daemon that
+/// inherits a stale env pointing at `/tmp/evil.py` bails with a clear error
+/// rather than executing attacker code.
 fn find_pdf_script() -> Result<String> {
     // Check env var first
     if let Ok(script) = std::env::var("CQS_PDF_SCRIPT") {
         tracing::warn!(script = %script, "Using custom PDF script from CQS_PDF_SCRIPT env var");
         let p = PathBuf::from(&script);
-        // SEC-14: Extension-only check. This prevents trivial misuse (e.g., running
-        // a .sh or .exe) but does NOT prevent a malicious .py script placed via
-        // .envrc or shell profile in a cloned repository. See SECURITY.md for the
-        // full threat model of CQS_PDF_SCRIPT.
+        // Extension-only check. This prevents trivial misuse (e.g., running
+        // a .sh or .exe) but does NOT prevent a malicious .py script placed
+        // via .envrc or shell profile in a cloned repository. See SECURITY.md
+        // for the full threat model of CQS_PDF_SCRIPT.
         if p.extension().is_none_or(|e| e != "py") {
             anyhow::bail!("CQS_PDF_SCRIPT must have .py extension (got: {}).", script);
         }
         if p.exists() {
-            // SEC-V1.25-8: enforce ownership + permissions on unix before trusting.
+            // Enforce ownership + permissions on unix before trusting.
             #[cfg(unix)]
             validate_script_safety(&p)
                 .with_context(|| format!("CQS_PDF_SCRIPT safety check failed for {}", script))?;
@@ -117,12 +117,11 @@ fn find_pdf_script() -> Result<String> {
 
     for candidate in &candidates {
         if candidate.exists() {
-            // Audit P2 #36: the CWD-relative and binary-relative candidates
-            // must clear the same ownership / permissions check as the
-            // CQS_PDF_SCRIPT env var. A user who runs `cqs convert` from
-            // any directory containing `scripts/pdf_to_md.py` would
-            // otherwise execute that script regardless of who owns it or
-            // whether it is group/world-writable.
+            // The CWD-relative and binary-relative candidates must clear the
+            // same ownership / permissions check as the CQS_PDF_SCRIPT env
+            // var. Otherwise a user who runs `cqs convert` from any directory
+            // containing `scripts/pdf_to_md.py` would execute that script
+            // regardless of who owns it or whether it is group/world-writable.
             #[cfg(unix)]
             validate_script_safety(candidate).with_context(|| {
                 format!(
@@ -140,8 +139,8 @@ fn find_pdf_script() -> Result<String> {
     )
 }
 
-/// SEC-V1.25-8: Validate that the script is owned by the current effective user
-/// and is not group/world writable. A daemon inheriting a stale env pointing at
+/// Validate that the script is owned by the current effective user and is not
+/// group/world writable. A daemon inheriting a stale env pointing at
 /// `/tmp/evil.py` must not execute attacker code.
 #[cfg(unix)]
 fn validate_script_safety(path: &std::path::Path) -> Result<()> {
@@ -183,25 +182,16 @@ mod tests {
     }
 
     impl EnvGuard {
-        /// Sets an environment variable and returns a guard that restores the previous value.
-        /// This method temporarily modifies an environment variable and returns an `EnvGuard` that will restore the original value when dropped. Useful for testing code that depends on environment variables.
-        /// # Arguments
-        /// * `key` - The name of the environment variable to set
-        /// * `val` - The new value to assign to the environment variable
-        /// # Returns
-        /// An `EnvGuard` instance that stores the previous value of the environment variable and will restore it upon being dropped.
+        /// Set an environment variable, returning a guard that restores the
+        /// previous value on drop.
         fn set(key: &'static str, val: &str) -> Self {
             let prev = std::env::var(key).ok();
             std::env::set_var(key, val);
             EnvGuard { key, prev }
         }
 
-        /// Temporarily removes an environment variable and returns a guard that restores it.
-        /// This method removes the environment variable specified by `key` and captures its previous value. When the returned `EnvGuard` is dropped, it automatically restores the variable to its previous state, or removes it if it didn't exist before.
-        /// # Arguments
-        /// * `key` - The name of the environment variable to remove.
-        /// # Returns
-        /// An `EnvGuard` that, when dropped, restores the environment variable to its previous value or removes it if it was not previously set.
+        /// Remove an environment variable, returning a guard that restores
+        /// the previous value on drop.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             std::env::remove_var(key);
@@ -210,13 +200,8 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
-        /// Restores the previous environment variable state when this guard is dropped.
-        /// # Arguments
-        /// `&mut self` - A mutable reference to the environment variable guard
-        /// # Returns
-        /// Nothing
-        /// # Description
-        /// If a previous value existed before this guard was created, it is restored. Otherwise, the environment variable is removed entirely. This implements automatic cleanup of environment variable changes through Rust's drop semantics.
+        /// Restore the variable to its previous value, or remove it if it
+        /// was unset before the guard was created.
         fn drop(&mut self) {
             match &self.prev {
                 Some(v) => std::env::set_var(self.key, v),
@@ -271,9 +256,9 @@ mod tests {
     }
 
     /// CQS_PDF_SCRIPT not set and scripts/pdf_to_md.py exists relative to CWD → found.
-    /// After audit P2 #36 the CWD candidate must also clear the safety check,
-    /// so the script is created with a non-writable mode to make the test
-    /// deterministic regardless of the running user's umask.
+    /// The CWD candidate must also clear the safety check, so the script is
+    /// created with a non-writable mode to make the test deterministic
+    /// regardless of the running user's umask.
     #[test]
     #[serial_test::serial]
     fn test_find_pdf_script_cwd_relative_path() {
@@ -286,7 +271,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // 0o644 — owner writable only; passes the audit P2 #36 check.
+            // 0o644 — owner writable only; passes the safety check.
             fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
 
@@ -338,7 +323,7 @@ mod tests {
         }
     }
 
-    /// CQS_PDF_SCRIPT with a non-.py extension is now rejected (RT-INJ-1).
+    /// CQS_PDF_SCRIPT with a non-.py extension is rejected.
     #[test]
     #[serial_test::serial]
     fn test_find_pdf_script_env_var_non_py_extension_rejected() {
@@ -358,7 +343,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.25-8: world-writable script is rejected.
+    // World-writable script is rejected.
     #[test]
     #[serial_test::serial]
     #[cfg(unix)]
@@ -382,7 +367,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.25-8: user-owned, non-world-writable script passes.
+    // User-owned, non-world-writable script passes.
     #[test]
     #[serial_test::serial]
     #[cfg(unix)]
@@ -403,7 +388,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.25-8: group-writable script is rejected.
+    // Group-writable script is rejected.
     #[test]
     #[serial_test::serial]
     #[cfg(unix)]
@@ -421,12 +406,9 @@ mod tests {
         assert!(result.is_err(), "group-writable script must be rejected");
     }
 
-    /// Audit P2 #36: a CWD-relative `scripts/pdf_to_md.py` that is
-    /// world-writable must be rejected by `find_pdf_script` — the prior
-    /// code only validated `CQS_PDF_SCRIPT` and would happily execute any
-    /// `scripts/pdf_to_md.py` it found relative to the CWD regardless of
-    /// ownership or permissions. An attacker who could drop a hostile
-    /// `scripts/pdf_to_md.py` into a shared workspace gained code
+    /// A CWD-relative `scripts/pdf_to_md.py` that is world-writable must be
+    /// rejected by `find_pdf_script`. Otherwise an attacker who drops a
+    /// hostile `scripts/pdf_to_md.py` into a shared workspace gains code
     /// execution under the convert-running user's UID.
     #[test]
     #[serial_test::serial]

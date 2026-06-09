@@ -73,8 +73,8 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        // TC-ADV-2: reject non-finite query vectors before they reach the
-        // dense library. `hnsw_rs`/`anndists` asserts `dist_unchecked >= ε`
+        // Reject non-finite query vectors before they reach the dense
+        // library. `hnsw_rs`/`anndists` asserts `dist_unchecked >= ε`
         // on the cosine distance result; a NaN query produces NaN and the
         // assert panics. We would rather return an empty result than crash
         // the search loop on a malformed query (encoder bug, query-cache
@@ -97,8 +97,8 @@ impl HnswIndex {
         // ef=100 collapses to ef=500 inside the library; the k*2 floor here pushes
         // it to 1000, which IS a real expansion of the candidate pool.
         //
-        // AC-V1.38-9 (#1463): `saturating_mul` instead of `*` so a
-        // pathological caller that smuggles in `k = usize::MAX-1` (e.g. a
+        // `saturating_mul` instead of `*` so a pathological caller that
+        // smuggles in `k = usize::MAX-1` (e.g. a
         // misbehaving daemon client) saturates at usize::MAX rather than
         // panicking on debug or wrapping silently in release. The
         // `.min(index_size)` immediately after still bounds the value
@@ -132,10 +132,9 @@ impl HnswIndex {
                         return None;
                     }
                     Some(IndexResult {
-                        // P4-11 follow-up: id_map is now Vec<Box<str>>;
-                        // IndexResult::id is `String`, so convert via
-                        // `to_string()` (one allocation per result, same
-                        // as the prior `String::clone()`).
+                        // id_map is `Vec<Box<str>>` and IndexResult::id is
+                        // `String`, so convert via `to_string()` (one
+                        // allocation per result).
                         id: self.id_map[idx].to_string(),
                         score,
                     })

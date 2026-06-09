@@ -30,12 +30,11 @@ use super::synonyms::expand_query_for_fts;
 /// Resolve the type-boost factor used by `finalize_results` Step 4b.
 ///
 /// Multiplicative boost applied to chunks whose type matches the
-/// router-provided type hints. Phase 5 placeholder; never empirically
-/// swept. Default + bounds + env var name live on the `type_boost` row
-/// in [`crate::search::scoring::knob::SCORING_KNOBS`]; the row's
-/// `cache: false` setting is load-bearing — `evals/run_sweep.py`
-/// mutates `CQS_TYPE_BOOST` between queries within the same `cqs`
-/// process and expects every call to re-read the env.
+/// router-provided type hints. Default + bounds + env var name live on the
+/// `type_boost` row in [`crate::search::scoring::knob::SCORING_KNOBS`]; the
+/// row's `cache: false` setting is load-bearing — `evals/run_sweep.py` mutates
+/// `CQS_TYPE_BOOST` between queries within the same `cqs` process and expects
+/// every call to re-read the env.
 pub(crate) fn type_boost_factor() -> f32 {
     crate::search::scoring::knob::resolve_knob("type_boost")
 }
@@ -76,13 +75,11 @@ impl<Mode> Store<Mode> {
     /// Without this guard, a query against an index built with a different
     /// model silently returns zero results: the dim mismatch surfaces as a
     /// `tracing::warn!` deep inside the index backend (HNSW or CAGRA) and the
-    /// caller sees an empty result set with no actionable signal. Hours of
-    /// debugging followed (see ROADMAP.md "Embedder swap workflow").
+    /// caller sees an empty result set with no actionable signal.
     ///
-    /// With index-aware embedder resolution in place
-    /// (`ModelConfig::resolve_for_query`), this case is rare — but the guard
-    /// remains as a defensive net for the "no recorded model" / corrupt-meta
-    /// edge case.
+    /// Index-aware embedder resolution (`ModelConfig::resolve_for_query`) makes
+    /// this case rare; the guard is a defensive net for the "no recorded model"
+    /// / corrupt-meta edge case.
     pub(crate) fn check_query_dim(&self, query: &Embedding) -> Result<(), StoreError> {
         if query.len() == self.dim {
             return Ok(());
@@ -131,9 +128,9 @@ impl<Mode> Store<Mode> {
                 .entered();
         // Defensive guard: surface query/index dim mismatch as a structured
         // error instead of returning empty results from a downstream
-        // tracing::warn!. With Fix 1 (index-aware embedder resolution) in
-        // place this should rarely trigger, but it remains a safety net for
-        // missing-stored-model / corrupt-meta edges.
+        // tracing::warn!. Rarely triggers given index-aware embedder
+        // resolution, but it remains a safety net for missing-stored-model /
+        // corrupt-meta edges.
         self.check_query_dim(query)?;
         // Load notes once for note-boosted ranking (cheap — no embeddings)
         let notes = match self.cached_notes_summaries() {
@@ -159,16 +156,16 @@ impl<Mode> Store<Mode> {
         threshold: f32,
         notes: &[NoteSummary],
     ) -> Result<Vec<SearchResult>, StoreError> {
-        // OB-V1.36-1: no nested `info_span!("search_filtered", ...)` here — the
-        // `search_filtered` public wrapper at line 103 already opens the span
-        // for the whole call tree, and `search_filtered_with_index` (line 689)
-        // opens its own `search_index_guided` span first. A duplicate span
-        // here doubled the per-query span allocation on the hottest daemon
-        // path and made flame graphs look like recursion that wasn't there.
+        // No nested `info_span!("search_filtered", ...)` here — the
+        // `search_filtered` public wrapper already opens the span for the whole
+        // call tree, and `search_filtered_with_index` opens its own
+        // `search_index_guided` span first. A duplicate span here would double
+        // the per-query span allocation on the hottest daemon path and make
+        // flame graphs look like recursion.
         self.rt.block_on(async {
             let fsql = build_filter_sql(filter);
-            // AC-V1.33-3: saturating mul matches sibling paths (lines 505, 696);
-            // overflow on pathological `limit` would panic in debug.
+            // Saturating mul matches sibling paths; overflow on pathological
+            // `limit` would panic in debug.
             let semantic_limit = if fsql.use_rrf {
                 limit.saturating_mul(3)
             } else {
@@ -190,16 +187,16 @@ impl<Mode> Store<Mode> {
                 None
             };
 
-            // PF-V1.25-4: use the cached `OwnedNoteBoostIndex` instead of
-            // rebuilding from `&[NoteSummary]` on every search. Falls back
-            // to a fresh borrowed build if the cache fetch fails (which is
-            // transient and can happen if the notes query errors).
+            // Use the cached `OwnedNoteBoostIndex` instead of rebuilding from
+            // `&[NoteSummary]` on every search. Falls back to a fresh borrowed
+            // build if the cache fetch fails (transient — can happen if the
+            // notes query errors).
             let note_boost = match self.cached_note_boost_index() {
                 Ok(arc) => NoteBoost::Owned(arc),
                 Err(e) => {
-                    // Rust 1.95: cache-fetch failure is the cold path; the
-                    // borrowed rebuild only fires when the cache layer has
-                    // already failed once.
+                    // Cache-fetch failure is the cold path; the borrowed
+                    // rebuild only fires when the cache layer has already
+                    // failed once.
                     core::hint::cold_path();
                     tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
                     NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
@@ -224,11 +221,11 @@ impl<Mode> Store<Mode> {
             // O(total_chunks). Uses the same cursor pattern as
             // EmbeddingBatchIterator in store/chunks.rs.
             //
-            // SHL-V1.36-3: scale by query dim so a 4096-dim model doesn't hold
-            // 80 MB per batch in memory while a 768-dim model only holds 15.
-            // 5000 is the BGE-large baseline (1024-dim); at 768-dim that's
-            // 6_666 (clamped to 50_000), at 4096-dim it's 1_250 (above the
-            // 500 floor). Env override: CQS_BRUTE_FORCE_BATCH_SIZE wins.
+            // Scale by query dim so a 4096-dim model doesn't hold 80 MB per
+            // batch in memory while a 768-dim model only holds 15. 5000 is the
+            // BGE-large baseline (1024-dim); at 768-dim that's 6_666 (clamped
+            // to 50_000), at 4096-dim it's 1_250 (above the 500 floor). Env
+            // override: CQS_BRUTE_FORCE_BATCH_SIZE wins.
             let brute_force_batch_size: i64 = std::env::var("CQS_BRUTE_FORCE_BATCH_SIZE")
                 .ok()
                 .and_then(|v| v.parse::<i64>().ok())
@@ -336,14 +333,13 @@ impl<Mode> Store<Mode> {
         // Resolve MMR setting: explicit `filter.mmr_lambda` wins, else env
         // var, else None (disabled).
         //
-        // Status: surface-feature MMR (path + name) was net-negative on
-        // v3 test for non-RRF queries — the first sweep regressed R@5 by
-        // 3-9pp at every λ ∈ [0.7, 0.95]. Root cause unconfirmed. Code
-        // is plumbed but inert under the default pool size; opt-in only.
-        // For RRF queries (pool = `limit * 2`) MMR has more to work
-        // with but hasn't been A/B'd yet — that's a follow-up. Embedding-
-        // based similarity (instead of surface features) is the other
-        // obvious direction.
+        // Surface-feature MMR (path + name) is net-negative on v3 test for
+        // non-RRF queries — sweeps regressed R@5 by 3-9pp at every λ ∈ [0.7,
+        // 0.95], root cause unconfirmed. Code is plumbed but inert under the
+        // default pool size; opt-in only. For RRF queries (pool = `limit * 2`)
+        // MMR has more to work with but isn't A/B'd yet. Embedding-based
+        // similarity (instead of surface features) is the other obvious
+        // direction.
         let mmr_lambda = mmr_lambda.or_else(mmr_lambda_from_env);
         // Step 1: RRF fusion with FTS keyword search, or plain truncate
         let final_scored: Vec<(String, f32)> = if use_rrf {
@@ -366,8 +362,8 @@ impl<Mode> Store<Mode> {
                 .bind((limit * 3) as i64)
                 .fetch_all(&self.pool)
                 .await?;
-                // Apply path filter to FTS results (FTS5 doesn't support JOIN filtering)
-                // Reuses the pre-compiled glob matcher from the caller (PF-8).
+                // Apply path filter to FTS results (FTS5 doesn't support JOIN
+                // filtering). Reuses the caller's pre-compiled glob matcher.
                 let fts_all: Vec<String> = fts_rows.into_iter().map(|(id,)| id).collect();
                 if let Some(gm) = glob_matcher {
                     fts_all
@@ -384,7 +380,7 @@ impl<Mode> Store<Mode> {
             let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
             // Request extra candidates from RRF to compensate for parent dedup
             // filtering below — dedup can drop results, leaving fewer than `limit`.
-            // AC-V1.33-3: saturating mul to match sibling paths.
+            // Saturating mul to match sibling paths.
             Self::rrf_fuse(&semantic_ids, &fts_ids, limit.saturating_mul(2))
         } else {
             scored.truncate(limit);
@@ -395,13 +391,13 @@ impl<Mode> Store<Mode> {
             return Ok(vec![]);
         }
 
-        // Step 2: Fetch full content only for top-N results (PF-5 payoff —
-        // heavy content/doc/signature columns loaded only for winners)
+        // Step 2: Fetch full content only for top-N results — heavy
+        // content/doc/signature columns loaded only for winners.
         let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
         let mut rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
 
         // Step 3: Parent dedup — keep first occurrence per parent_id.
-        // Use remove() instead of get()+clone() to avoid copying 10+ Strings per result (PERF-6).
+        // remove() instead of get()+clone() avoids copying 10+ Strings per result.
         let mut seen_parents: HashSet<String> = HashSet::new();
         let mut results: Vec<SearchResult> = final_scored
             .into_iter()
@@ -425,11 +421,8 @@ impl<Mode> Store<Mode> {
         // Step 4b: Type boost from adaptive routing.
         //
         // Default 1.2x for matching types, overridable via CQS_TYPE_BOOST env
-        // var so we can sweep this knob without rebuilding the binary. The
-        // 1.2x default is a Phase 5 placeholder — see
-        // docs/plans/adaptive-retrieval.md and the open question
-        // "Should type boost factor be configurable? (Later — hardcode 1.2x for v1)".
-        // Empirical sweep is queued in the roadmap.
+        // var so the knob can be swept without rebuilding the binary. See
+        // docs/plans/adaptive-retrieval.md.
         //
         // Boost is multiplicative (not additive) so it stays scale-invariant
         // across cosine [0,1] and re-ranker scores [-inf, inf]. Boost == 1.0
@@ -492,8 +485,8 @@ impl<Mode> Store<Mode> {
         Ok(results)
     }
 
-    /// Search with optional vector index for O(log n) candidate retrieval
-    /// Search with optional SPLADE sparse-dense fusion.
+    /// Search with optional SPLADE sparse-dense fusion and vector-index
+    /// candidate retrieval.
     ///
     /// When `splade` is Some and `filter.enable_splade` is true, fuses dense
     /// (cosine) and sparse (SPLADE) results via linear interpolation.
@@ -509,9 +502,8 @@ impl<Mode> Store<Mode> {
             &crate::splade::SparseVector,
         )>,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        // RB-V1.33-9: collapse the "not enabled OR no index" guard and the
-        // subsequent `splade.unwrap()` into a single let-else so the unwrap
-        // branch is structurally impossible.
+        // The "not enabled OR no index" guard and the `splade` unwrap collapse
+        // into a single match so the unwrap branch is structurally impossible.
         let (splade_index, sparse_query) = match (filter.enable_splade, splade) {
             (false, _) => {
                 return self.search_filtered_with_index(query, filter, limit, threshold, index);
@@ -535,10 +527,9 @@ impl<Mode> Store<Mode> {
             }
         };
 
-        // #1583: dense-retrieval pool floor 500 (was 100 pre-#1583).
-        // `cqs::limits::candidate_count_for` enforces the floor and
-        // honors `CQS_SEARCH_CANDIDATE_FLOOR`. TC-ADV-5 `saturating_mul`
-        // guard preserved (pathological `limit >= usize::MAX / 5`).
+        // Dense-retrieval pool floor 500. `cqs::limits::candidate_count_for`
+        // enforces the floor, honors `CQS_SEARCH_CANDIDATE_FLOOR`, and
+        // saturating-muls to guard pathological `limit >= usize::MAX / 5`.
         let candidate_count = candidate_count_for(limit);
 
         // Build chunk filter predicate
@@ -589,13 +580,12 @@ impl<Mode> Store<Mode> {
             "Hybrid search: fusing results"
         );
 
-        // Normalize sparse scores to [0, 1] via min-max.
-        // AC-V1.36-7 / P2-10: reduce-from-first instead of fold-from-0.0 so a
-        // cohort whose maximum score is < 0 doesn't get its max dominated by
-        // the seed. SPLADE itself is non-negative today (ReLU on logits) but
-        // any future sparse signal that isn't (learned dot-product, BM25-like
-        // delta) would silently degenerate to dense-only retrieval. When max
-        // is non-positive we also warn so eval/CI catches the collapse.
+        // Normalize sparse scores to [0, 1] via min-max. Reduce-from-first
+        // (not fold-from-0.0) so a cohort whose maximum score is < 0 doesn't
+        // get its max dominated by the seed. SPLADE is non-negative (ReLU on
+        // logits), but a future sparse signal that isn't (learned dot-product,
+        // BM25-like delta) would silently degenerate to dense-only retrieval.
+        // When max is non-positive we also warn so eval/CI catches the collapse.
         let max_sparse = sparse_results
             .iter()
             .map(|r| r.score)
@@ -609,10 +599,9 @@ impl<Mode> Store<Mode> {
             );
         }
 
-        // PF-V1.25-1: pre-size hash containers from known input counts.
-        // Upper bound on unique candidates is |dense| + |sparse|; default
-        // construction would rehash 2-3 times growing to this size on every
-        // SPLADE query.
+        // Pre-size hash containers from known input counts. Upper bound on
+        // unique candidates is |dense| + |sparse|; default construction would
+        // rehash 2-3 times growing to this size on every SPLADE query.
         let dense_len = dense_results.len();
         let sparse_len = sparse_results.len();
         let union_upper = dense_len + sparse_len;
@@ -667,15 +656,12 @@ impl<Mode> Store<Mode> {
                 let d = dense_scores.get(id).copied().unwrap_or(0.0);
                 let s = sparse_scores.get(id).copied().unwrap_or(0.0);
                 let score = if alpha <= 0.0 {
-                    // P2.53: pure re-rank mode used to emit `1.0 + s` for any
-                    // SPLADE-found chunk, putting its score in `[1.0, 2.0]`
-                    // while dense-only chunks stayed in cosine `[-1, 1]`.
-                    // Any positive sparse signal beat every dense match — a
-                    // strong cosine match (0.95) was outranked by a token
-                    // overlap whose normalized SPLADE score was 0.001
-                    // (yielding 1.001). The new formulation keeps the dense
-                    // cosine as the dominant signal and lets SPLADE nudge
-                    // it within the same band.
+                    // Pure re-rank mode: keep the dense cosine as the dominant
+                    // signal and let SPLADE nudge it within the same band. A
+                    // naive `1.0 + s` would put SPLADE-found chunks in
+                    // `[1.0, 2.0]` while dense-only chunks stay in cosine
+                    // `[-1, 1]`, letting any positive sparse signal beat every
+                    // dense match.
                     let boost = s * 0.1;
                     d + boost
                 } else {
@@ -695,18 +681,14 @@ impl<Mode> Store<Mode> {
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");
 
-        // AC-V1.33-8: build `candidate_ids` from the sorted `fused` Vec
-        // BEFORE populating the score-lookup HashMap so the positional
-        // order of candidate_ids matches the fusion sort. The previous
-        // `PF-V1.25-16` shape drained ids into the HashMap first, then
-        // iterated `fused_map.keys()` to build candidate_ids — HashMap
-        // iteration order is unspecified, scrambling the tie-broken sort
-        // order computed by the `fused.sort_by(...)` above. The downstream
-        // re-sort in `search_by_candidate_ids_with_notes` recovers final
-        // ranking, but the contract that "candidate_ids order == fusion
-        // order" was load-bearing for any future tie-breaker that uses
-        // positional rank — and the silent scramble was only documented
-        // by an in-line comment, not enforced by the code structure.
+        // Build `candidate_ids` from the sorted `fused` Vec BEFORE populating
+        // the score-lookup HashMap so the positional order of candidate_ids
+        // matches the fusion sort. Building it from `fused_map.keys()` instead
+        // would scramble the tie-broken sort order (HashMap iteration order is
+        // unspecified). The downstream re-sort in
+        // `search_by_candidate_ids_with_notes` recovers final ranking, but
+        // "candidate_ids order == fusion order" is load-bearing for any
+        // tie-breaker that uses positional rank.
         //
         // Cost: N clones of chunk-id strings (typically ~32 hex chars,
         // N <= candidate_count ~= 200). Negligible vs the search work.
@@ -736,10 +718,10 @@ impl<Mode> Store<Mode> {
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         // Defensive guard for query/index dim mismatch — see `check_query_dim`
-        // for rationale. Index backends (HNSW, CAGRA) used to swallow this
+        // for rationale. Index backends (HNSW, CAGRA) otherwise swallow this
         // case as a `tracing::warn!` and return zero candidates.
         self.check_query_dim(query)?;
-        // PERF-44: Load notes once for all search paths
+        // Load notes once for all search paths.
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
             Err(e) => {
@@ -751,7 +733,7 @@ impl<Mode> Store<Mode> {
         if let Some(idx) = index {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
-            // #1583: see `search_hybrid` for the floor rationale +
+            // See `search_hybrid` for the floor rationale +
             // CQS_SEARCH_CANDIDATE_FLOOR override.
             let candidate_count = candidate_count_for(limit);
             let has_type_or_lang_filter = filter.include_types.is_some()
@@ -785,8 +767,8 @@ impl<Mode> Store<Mode> {
             };
 
             if index_results.is_empty() {
-                // P3 #98: structured fields so the brute-force fallback is
-                // attributable per call without having to grep the message.
+                // Structured fields so the brute-force fallback is attributable
+                // per call without having to grep the message.
                 tracing::info!(
                     query_dim = query.len(),
                     limit,
@@ -873,14 +855,14 @@ impl<Mode> Store<Mode> {
             return Ok(vec![]);
         }
 
-        // AC-24: Reuse flag computation from build_filter_sql to stay consistent
+        // Reuse flag computation from build_filter_sql to stay consistent.
         let flags = build_filter_sql(filter);
         let use_hybrid = flags.use_hybrid;
         let use_rrf = flags.use_rrf;
 
         self.rt.block_on(async {
-            // Phase 1: Lightweight candidate fetch — only scoring fields + embedding.
-            // Excludes heavy content/doc/signature columns (PF-5).
+            // Phase 1: Lightweight candidate fetch — only scoring fields +
+            // embedding. Excludes heavy content/doc/signature columns.
             let candidates = self.fetch_candidates_by_ids_async(candidate_ids).await?;
 
             // Compile glob pattern once outside the loop (not per-chunk).
@@ -893,9 +875,9 @@ impl<Mode> Store<Mode> {
                 None
             };
 
-            // PF-V1.25-4: prefer the cached `OwnedNoteBoostIndex` shared
-            // across searches instead of rebuilding per-call. Fallback to
-            // a fresh borrowed build on cache fetch failure.
+            // Prefer the cached `OwnedNoteBoostIndex` shared across searches
+            // instead of rebuilding per-call. Fall back to a fresh borrowed
+            // build on cache fetch failure.
             let note_boost = match self.cached_note_boost_index() {
                 Ok(arc) => NoteBoost::Owned(arc),
                 Err(e) => {
@@ -914,11 +896,11 @@ impl<Mode> Store<Mode> {
                 threshold,
             };
 
-            // Pre-build filter sets once — avoids per-candidate string parsing (PF-1).
-            // PERF-V1.36-2: drop `.to_lowercase()` because both `Language` and
-            // `ChunkType` Display already emit canonical lowercase (see DB-write
-            // and the comment 12 lines below). The to_string() still allocates
-            // but is unavoidable since HashSet<&str> would borrow from filter.
+            // Pre-build filter sets once — avoids per-candidate string parsing.
+            // No `.to_lowercase()` because both `Language` and `ChunkType`
+            // Display already emit canonical lowercase. The to_string() still
+            // allocates but is unavoidable since HashSet<&str> would borrow
+            // from filter.
             let lang_set: Option<HashSet<String>> = filter
                 .languages
                 .as_ref()
@@ -931,11 +913,10 @@ impl<Mode> Store<Mode> {
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
                 .filter_map(|(candidate, embedding_bytes)| {
-                    // v1.22.0 audit PF-7: previously called `.to_lowercase()`
-                    // per candidate (500+ String allocations per search). DB
-                    // values are already canonical lowercase from
-                    // Language::to_string / ChunkType::to_string, so use
-                    // direct contains on the pre-lowercased set.
+                    // DB values are already canonical lowercase from
+                    // Language::to_string / ChunkType::to_string, so use direct
+                    // contains on the pre-lowercased set (no per-candidate
+                    // `.to_lowercase()`).
                     if let Some(ref langs) = lang_set {
                         if !langs.contains(&candidate.language) {
                             return None;
@@ -992,12 +973,9 @@ impl<Mode> Store<Mode> {
 
     /// Code-only search returning [`UnifiedResult::Code`] variants.
     ///
-    /// CQ-V1.33.0-10: renamed from `search_unified_with_index` post-SQ-9
-    /// (notes removed from the search pipeline). The function maps
-    /// `search_filtered_with_index` results into the `UnifiedResult::Code`
-    /// variant so callers that historically dispatched on the unified
-    /// enum keep compiling. When an HNSW index is provided, uses
-    /// O(log n) candidate retrieval.
+    /// Maps `search_filtered_with_index` results into the `UnifiedResult::Code`
+    /// variant so callers that dispatch on the unified enum keep compiling.
+    /// When an HNSW index is provided, uses O(log n) candidate retrieval.
     pub fn search_code_results(
         &self,
         query: &Embedding,
@@ -1435,15 +1413,12 @@ mod tests {
         assert_eq!(results.len(), 3);
     }
 
-    // ===== TC-ADV-5: candidate-count multiply overflow guards =====
+    // ===== candidate-count multiply overflow guards =====
     //
     // `search_hybrid` and `search_filtered_with_index` both compute the
-    // dense-retrieval pool size via `cqs::limits::candidate_count_for`.
-    // Pre-#1583 the formula was `limit.saturating_mul(5).max(100)` inline
-    // at each site; #1583 hoisted the floor to 500 and made it
-    // env-overridable via `CQS_SEARCH_CANDIDATE_FLOOR`. The
-    // `saturating_mul` guard against `limit >= usize::MAX / 5` panics is
-    // preserved.
+    // dense-retrieval pool size via `cqs::limits::candidate_count_for`, which
+    // applies a floor of 500 (env-overridable via `CQS_SEARCH_CANDIDATE_FLOOR`)
+    // and a `saturating_mul` guard against `limit >= usize::MAX / 5` panics.
 
     /// Direct arithmetic regression for the saturating-multiply expression.
     /// Guards against a refactor that reverts to naive `limit * 5`.
@@ -1458,7 +1433,7 @@ mod tests {
         // Saturating — no panic — and bounded at usize::MAX.
         assert_eq!(candidate_count, usize::MAX);
 
-        // Small limit respects the new #1583 floor of 500 (was 100).
+        // Small limit respects the floor of 500.
         let small = candidate_count_for(5);
         assert!(
             small >= 500,
@@ -1470,13 +1445,12 @@ mod tests {
         assert_eq!(typical, 1000);
     }
 
-    /// Regression for the CAGRA itopk_max cliff. Pre-fix, when
-    /// `candidate_count` exceeded the backend's `max_k`, the backend silently
-    /// returned an empty Vec; in the SPLADE-fusion path with `α = 1.0` this
-    /// collapsed R@5 from ~0.66 to ~0.16 on v3.v2 test queries when
-    /// `CQS_SEARCH_CANDIDATE_FLOOR` crossed 441 (the cap for a 14k corpus).
-    /// `cap_k_to_backend` now trims `k` to the reported cap so the index
-    /// returns its actual capacity instead.
+    /// Regression for the CAGRA itopk_max cliff. When `candidate_count`
+    /// exceeds the backend's `max_k`, the backend returns an empty Vec; in the
+    /// SPLADE-fusion path with `α = 1.0` that collapses R@5 from ~0.66 to ~0.16
+    /// on v3.v2 test queries when `CQS_SEARCH_CANDIDATE_FLOOR` crosses 441 (the
+    /// cap for a 14k corpus). `cap_k_to_backend` trims `k` to the reported cap
+    /// so the index returns its actual capacity instead.
     #[test]
     fn test_cap_k_to_backend_trims_to_max_k() {
         use crate::embedder::Embedding;

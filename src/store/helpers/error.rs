@@ -20,10 +20,8 @@ pub enum StoreError {
     /// file-scoped resolution misses. Lets callers distinguish "doesn't exist"
     /// from other runtime errors for retry/suggest logic.
     NotFound(String),
-    /// P3-31: struct-style fields. Positional `(String, i32, i32)` made every
-    /// construction site re-derive which integer was "found" vs "expected" —
-    /// `QueryDimMismatch` further down already uses named fields and is
-    /// self-documenting; this matches.
+    /// Struct-style fields so each construction site is self-documenting about
+    /// which integer is "found" vs "expected", matching `QueryDimMismatch`.
     ///
     /// `db_path` (not `source`) — `thiserror` reserves the `source` field
     /// name for the error-chain `Error::source()` accessor and rejects
@@ -36,7 +34,7 @@ pub enum StoreError {
     },
     #[error("Index created by newer cqs version (schema v{0}). Please upgrade cqs.")]
     SchemaNewerThanCq(i32),
-    /// P3-31: struct-style fields — see `SchemaMismatch` above.
+    /// Struct-style fields — see `SchemaMismatch` above.
     #[error("No migration path from schema v{from} to v{to}. Run 'cqs index --force' to rebuild.")]
     MigrationNotSupported { from: i32, to: i32 },
     #[error(

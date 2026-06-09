@@ -6,14 +6,13 @@ mod provider;
 pub use models::{EmbeddingConfig, InputNames, ModelConfig, ModelInfo, PoolingStrategy};
 
 /// Default embedding dimension (compile-time mirror of `ModelConfig::DEFAULT_DIM`).
-/// Kept as a `pub const` for `pub const EMBEDDING_DIM` in `lib.rs` and other
-/// `pub const` consumers. Sourced from the `default = true` row in
-/// `define_embedder_presets!`.
+/// A `pub const` for `pub const EMBEDDING_DIM` in `lib.rs` and other `pub const`
+/// consumers. Sourced from the `default = true` row in `define_embedder_presets!`.
 pub const DEFAULT_DIM: usize = ModelConfig::DEFAULT_DIM;
 
 /// Default model repo as a `&'static str` (compile-time mirror of
-/// `ModelConfig::DEFAULT_REPO`). Kept for store/metadata callers that
-/// want a `&'static str` rather than `default_model().repo` (a `String`).
+/// `ModelConfig::DEFAULT_REPO`). For store/metadata callers that want a
+/// `&'static str` rather than `default_model().repo` (a `String`).
 pub const DEFAULT_MODEL_REPO: &str = ModelConfig::DEFAULT_REPO;
 
 use crate::ort_helpers::ort_err;
@@ -27,11 +26,6 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-
-// CQ-V1.33.0-3: `model_repo()` was removed. It silently dropped any CLI/env
-// override by calling `ModelConfig::resolve(None, None)`, which made
-// `cqs doctor --model X` lie about the runtime repo (always reporting the
-// compile-time default). Callers now use `model_config.repo` directly.
 
 // blake3 checksums — empty to skip validation (configurable models have different checksums)
 const MODEL_BLAKE3: &str = "";
@@ -55,16 +49,15 @@ pub enum EmbedderError {
     EmptyQuery,
     /// HuggingFace Hub model download failure.
     ///
-    /// API-V1.38-9 (#1463): renamed from `HfHub` for naming parity with
-    /// [`crate::reranker::RerankerError::ModelDownload`] — both wrap the
-    /// same `hf_hub::ApiError` shape and emit the same display string,
-    /// so a future shared error handler can pattern-match on a single
-    /// variant name across the embedder + reranker boundary.
+    /// Mirrors [`crate::reranker::RerankerError::ModelDownload`] — both wrap the
+    /// same `hf_hub::ApiError` shape and emit the same display string, so a
+    /// shared error handler can pattern-match on a single variant name across
+    /// the embedder + reranker boundary.
     #[error("Model download failed: {0}")]
     ModelDownload(String),
 }
 
-/// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
+/// Route a stringified ORT message into
 /// [`InferenceFailed`](EmbedderError::InferenceFailed) so the shared
 /// [`crate::ort_helpers::ort_err`] helper can hand back the right
 /// variant for embedder call sites. Sealed trait, not `From<String>`,
@@ -78,8 +71,8 @@ impl crate::ort_helpers::FromOrtMessage for EmbedderError {
 
 /// An L2-normalized embedding vector.
 ///
-/// Dimension depends on the configured model (e.g., 1024 for BGE-large, 768 for E5-base).
-/// Can be compared using cosine similarity (dot product for normalized vectors).
+/// Dimension depends on the configured model (e.g., 768 for EmbeddingGemma, 1024 for BGE-large).
+/// Compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
 
@@ -132,7 +125,7 @@ impl Embedding {
     /// Create a new embedding with validation.
     ///
     /// Returns `Err` if the vector is empty or contains non-finite values.
-    /// Dimension is no longer validated here — the Embedder enforces consistency.
+    /// Dimension is not validated here — the Embedder enforces consistency.
     ///
     /// # Example
     /// ```
@@ -193,14 +186,12 @@ impl Embedding {
 
 /// Hardware execution provider for inference.
 ///
-/// Issue #956: variants for non-NVIDIA backends are gated behind the
-/// matching `ep-*` cargo features so a build with no GPU support doesn't
-/// drag in unused enum arms or downstream match-arm scaffolding. CUDA
-/// and TensorRT are unconditional today because the `ort` crate's
-/// `cuda` and `tensorrt` features are always enabled on Linux/Windows
-/// (see `[target.'cfg(not(target_os = "macos"))'.dependencies]` in
-/// `Cargo.toml`); a future scope split could move them behind their
-/// own cargo features too.
+/// Variants for non-NVIDIA backends are gated behind the matching `ep-*`
+/// cargo features so a build with no GPU support doesn't drag in unused enum
+/// arms or downstream match-arm scaffolding. CUDA and TensorRT are
+/// unconditional because the `ort` crate's `cuda` and `tensorrt` features are
+/// always enabled on Linux/Windows (see
+/// `[target.'cfg(not(target_os = "macos"))'.dependencies]` in `Cargo.toml`).
 #[derive(Debug, Clone, Copy)]
 pub enum ExecutionProvider {
     /// NVIDIA CUDA (requires CUDA toolkit)
@@ -242,7 +233,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using a configurable model (default since v1.35.0: EmbeddingGemma-300m)
+/// Text embedding generator using a configurable model (default: EmbeddingGemma-300m).
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -267,24 +258,20 @@ pub struct Embedder {
     session: Mutex<Option<Session>>,
     /// Lazy-loaded tokenizer.
     ///
-    /// RM-V1.25-15: Stored as `Mutex<Option<Arc<Tokenizer>>>` (instead of the
-    /// previous `OnceCell<Tokenizer>`) so `clear_session` can drop the
-    /// tokenizer alongside the ONNX session. Accessor `tokenizer()` hands
-    /// back an `Arc<Tokenizer>` clone — `Tokenizer::encode` takes `&self`,
-    /// so call sites using `arc.encode(...)` still work via `Arc` deref
-    /// without needing to touch the mutex during inference.
+    /// Stored as `Mutex<Option<Arc<Tokenizer>>>` so `clear_session` can drop the
+    /// tokenizer alongside the ONNX session. Accessor `tokenizer()` hands back an
+    /// `Arc<Tokenizer>` clone — `Tokenizer::encode` takes `&self`, so call sites
+    /// using `arc.encode(...)` work via `Arc` deref without touching the mutex
+    /// during inference.
     tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
     /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
     model_paths: OnceCell<(PathBuf, PathBuf)>,
-    /// P2.75: lazy execution-provider resolution. Was a precomputed
-    /// `ExecutionProvider` populated in `Embedder::new` via
-    /// `select_provider()` — that function probes for CUDA, runs symlink
-    /// ops, and is invoked on every CLI process even for commands that
-    /// never embed (notes list, slot list, cache stats, …). The
-    /// `OnceLock` defers the probe to first inference. `None` in the
-    /// initial slot encodes "no provider was eagerly chosen"; a `Some`
-    /// pre-populated by `new_with_provider(_, CPU)` keeps the explicit
-    /// `Embedder::new_cpu` shortcut working.
+    /// Lazy execution-provider resolution. `select_provider()` probes for CUDA
+    /// and runs symlink ops, so deferring it via `OnceLock` keeps commands that
+    /// never embed (notes list, slot list, cache stats, …) from paying that
+    /// cost. `None` in the initial slot encodes "no provider was eagerly
+    /// chosen"; a `Some` pre-populated by `new_with_provider(_, CPU)` keeps the
+    /// explicit `Embedder::new_cpu` shortcut working.
     provider: std::sync::OnceLock<ExecutionProvider>,
     max_length: usize,
     /// LRU cache for query embeddings (avoids re-computing same queries)
@@ -292,36 +279,34 @@ pub struct Embedder {
     /// Disk-backed query cache (persists across CLI invocations).
     /// Best-effort: failures are logged and silently skipped.
     ///
-    /// P2.92: lazily opened on first `embed_query` so commands that never
-    /// touch query embeddings (`notes list`, `slot list`, `cache stats`,
-    /// etc.) skip the WSL DrvFS 30-50ms cold-open + 7-day prune. The
-    /// outer `OnceLock` is initialized empty in `Embedder::new`; the inner
-    /// `Option` is populated on first access — `Some` if the cache opened
-    /// successfully, `None` if it failed (best-effort fallback).
+    /// Lazily opened on first `embed_query` so commands that never touch query
+    /// embeddings (`notes list`, `slot list`, `cache stats`, etc.) skip the WSL
+    /// DrvFS 30-50ms cold-open + 7-day prune. The outer `OnceLock` is
+    /// initialized empty; the inner `Option` is populated on first access —
+    /// `Some` if the cache opened successfully, `None` if it failed.
     disk_query_cache: std::sync::OnceLock<Option<crate::cache::QueryCache>>,
     /// Detected embedding dimension from the model. Set on first inference.
     ///
-    /// DS-V1.33-7: switched from `OnceLock<usize>` to `Mutex<Option<usize>>`
-    /// so [`Self::clear_session`] can reset the slot. `OnceLock` cannot be
-    /// reset under `&self`, which would have left a model swap reading the
-    /// first-loaded model's dim forever — silently feeding the wrong dim to
-    /// `EmbeddingCache::read_batch`'s dimension filter (which then drops
-    /// every cache hit on dim mismatch). Mutex contention is irrelevant: a
-    /// single quick lock per `embedding_dim()` call.
+    /// `Mutex<Option<usize>>` rather than `OnceLock<usize>` so
+    /// [`Self::clear_session`] can reset the slot under `&self`. Without the
+    /// reset, a model swap would read the first-loaded model's dim forever —
+    /// silently feeding the wrong dim to `EmbeddingCache::read_batch`'s
+    /// dimension filter (which then drops every cache hit on dim mismatch).
+    /// Mutex contention is irrelevant: a single quick lock per
+    /// `embedding_dim()` call.
     detected_dim: Mutex<Option<usize>>,
     /// Model configuration (repo, paths, prefixes, dimensions)
     model_config: ModelConfig,
     /// blake3 fingerprint of the ONNX model file, computed lazily on first access.
     /// Used as cache key to distinguish models with the same name but different weights.
     ///
-    /// DS-V1.33-7: switched from `OnceLock<String>` to `Mutex<Option<String>>`
-    /// so [`Self::clear_session`] can reset the slot alongside the session
-    /// drop. `OnceLock` cannot be reset under `&self`, which would have
-    /// left a model swap reading the first-loaded model's fingerprint —
-    /// silently caching every new embedding under the wrong model_id key
-    /// in the on-disk embedding cache.
+    /// `Mutex<Option<String>>` rather than `OnceLock<String>` so
+    /// [`Self::clear_session`] can reset the slot alongside the session drop.
+    /// Without the reset, a model swap would read the first-loaded model's
+    /// fingerprint — silently caching every new embedding under the wrong
+    /// model_id key in the on-disk embedding cache.
     model_fingerprint: Mutex<Option<String>>,
-    /// SHL-V1.29-1: Pad token id resolved at tokenizer-init time.
+    /// Pad token id resolved at tokenizer-init time.
     ///
     /// Cache set once per embedder lifetime on first call to [`Self::pad_id`].
     /// Read order:
@@ -343,10 +328,10 @@ pub struct Embedder {
 /// and qwen3-embedding (2560/4096-dim) 10-16 KB/entry. Override with
 /// `CQS_QUERY_CACHE_SIZE`.
 ///
-/// SHL-V1.36-9 / P3: bumped 128 → 1024. Daemon-mode agent fleets routinely
-/// hit 30+ unique queries per task (scout, gather, where, task) so 128 was
-/// a coin toss for hit rate. 1024 is ~3 MB at default, ~16 MB at qwen3-8B
-/// — still trivial vs the model footprint.
+/// 1024 entries: daemon-mode agent fleets routinely hit 30+ unique queries per
+/// task (scout, gather, where, task), so a smaller cache is a coin toss for hit
+/// rate. 1024 is ~3 MB at default, ~16 MB at qwen3-8B — trivial vs the model
+/// footprint.
 const DEFAULT_QUERY_CACHE_SIZE: usize = 1024;
 
 impl Embedder {
@@ -361,7 +346,7 @@ impl Embedder {
     /// embedding request. This avoids HuggingFace API calls for commands
     /// that don't need embeddings.
     ///
-    /// P2.75: provider selection (CUDA probe + ORT EP symlink ops) is also
+    /// Provider selection (CUDA probe + ORT EP symlink ops) is also
     /// deferred — see [`Self::provider`].
     pub fn new(model_config: ModelConfig) -> Result<Self, EmbedderError> {
         Self::new_lazy_provider(model_config)
@@ -375,7 +360,7 @@ impl Embedder {
         Self::new_with_provider(model_config, ExecutionProvider::CPU)
     }
 
-    /// P2.75: build an embedder without resolving the execution provider.
+    /// Build an embedder without resolving the execution provider.
     /// The probe runs on first inference via [`Self::provider`].
     fn new_lazy_provider(model_config: ModelConfig) -> Result<Self, EmbedderError> {
         let mut emb = Self::new_inner(model_config)?;
@@ -389,8 +374,8 @@ impl Embedder {
         provider: ExecutionProvider,
     ) -> Result<Self, EmbedderError> {
         let emb = Self::new_inner(model_config)?;
-        // P2.75: pre-populate the OnceLock so `provider()` returns this
-        // explicit choice without ever calling `select_provider()`.
+        // Pre-populate the OnceLock so `provider()` returns this explicit
+        // choice without ever calling `select_provider()`.
         let _ = emb.provider.set(provider);
         Ok(emb)
     }
@@ -421,15 +406,15 @@ impl Embedder {
             NonZeroUsize::new(cache_size).expect("cache_size is non-zero"),
         ));
 
-        // P2.92: defer disk-cache open + 7-day prune until first `embed_query`.
-        // The 16+ commands that never embed a query (notes/slot/cache/etc.) used
-        // to pay 30-50ms on WSL DrvFS for a cache they never touched.
+        // Disk-cache open + 7-day prune is deferred until first `embed_query`,
+        // so the commands that never embed a query (notes/slot/cache/etc.)
+        // don't pay 30-50ms on WSL DrvFS for a cache they never touch.
 
         Ok(Self {
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
             model_paths: OnceCell::new(),
-            // P2.75: lazy. Both `new_lazy_provider` and `new_with_provider`
+            // Lazy. Both `new_lazy_provider` and `new_with_provider`
             // overwrite this slot before returning.
             provider: std::sync::OnceLock::new(),
             max_length,
@@ -442,11 +427,9 @@ impl Embedder {
         })
     }
 
-    /// P2.75: lazy provider accessor. Resolves on first call by running the
-    /// CUDA probe, then memoises. Pre-populated by `new_with_provider` for
-    /// the explicit-CPU path. Replaces the eagerly-resolved `provider`
-    /// field; matches the public visibility of the previous accessor so
-    /// out-of-crate callers compile unchanged.
+    /// Lazy provider accessor. Resolves on first call by running the CUDA
+    /// probe, then memoises. Pre-populated by `new_with_provider` for the
+    /// explicit-CPU path.
     pub fn provider(&self) -> ExecutionProvider {
         *self
             .provider
@@ -485,19 +468,18 @@ impl Embedder {
     /// models with the same name but different weights (fine-tuned, different
     /// HF revision, different ONNX export).
     pub fn model_fingerprint(&self) -> String {
-        // P2.63: stable fallback fingerprint — must NOT include any value
-        // that changes across process restarts. Cross-slot embedding cache
-        // copy by content_hash relies on the model fingerprint matching
-        // across runs, so a per-restart Unix timestamp shape would fragment
-        // the cache and orphan every fallback embedding.
+        // Stable fallback fingerprint — must NOT include any value that
+        // changes across process restarts. Cross-slot embedding cache copy by
+        // content_hash relies on the model fingerprint matching across runs, so
+        // a per-restart Unix timestamp shape would fragment the cache and
+        // orphan every fallback embedding.
         fn fallback_fingerprint(repo: &str, size: u64) -> String {
             format!("{}:fallback:size={}", repo, size)
         }
-        // DS-V1.33-7: lock-and-init pattern replaces the previous
-        // `OnceLock::get_or_init`. Returns owned `String` (not `&str`) so
-        // the value lives independently of the mutex guard. `clear_session`
-        // resets the inner Option to None so a model swap re-fingerprints
-        // on next access. Fast-path: lock, see Some, clone, return.
+        // Lock-and-init pattern. Returns owned `String` (not `&str`) so the
+        // value lives independently of the mutex guard. `clear_session` resets
+        // the inner Option to None so a model swap re-fingerprints on next
+        // access. Fast-path: lock, see Some, clone, return.
         {
             let guard = self
                 .model_fingerprint
@@ -513,17 +495,11 @@ impl Embedder {
                 Ok((model_path, _)) => {
                     match std::fs::metadata(model_path) {
                         Ok(meta) if meta.len() > 2 * 1024 * 1024 * 1024 => {
-                            // P2.63: >2GB models skip the streaming hash (would
-                            // OOM on 32-bit / RAM-constrained boxes), but the
-                            // previous `repo_size_mtime` shape used wall-clock
-                            // mtime — `touch model.onnx` after every download
-                            // would mint a new fingerprint and orphan the cache.
-                            // mtime IS stable across restarts (filesystem
-                            // metadata, not wall clock at fingerprint time), so
-                            // it's safe in principle, but we prefer the
-                            // size-only fallback for parity with the
-                            // hash-failure path below — operators see the same
-                            // shape regardless of which fallback fired.
+                            // >2GB models skip the streaming hash (would OOM on
+                            // 32-bit / RAM-constrained boxes) and use a
+                            // size-only fallback. Parity with the hash-failure
+                            // path below — operators see the same shape
+                            // regardless of which fallback fired.
                             let fp = fallback_fingerprint(&self.model_config.repo, meta.len());
                             tracing::info!(
                                 size = meta.len(),
@@ -532,11 +508,10 @@ impl Embedder {
                             fp
                         }
                         _ => {
-                            // v1.22.0 audit RM-1: previously `std::fs::read`
-                            // loaded the entire ONNX into heap (~1.3 GB for
-                            // BGE-large) just to hash it. Use streaming
-                            // `update_reader` (same pattern as HNSW checksum
-                            // at hnsw/persist.rs:298-306) — constant memory.
+                            // Streaming `update_reader` hashes the ONNX file in
+                            // constant memory (same pattern as the HNSW
+                            // checksum in hnsw/persist.rs), avoiding a ~1.3 GB
+                            // heap load for BGE-large.
                             match std::fs::File::open(model_path) {
                                 Ok(file) => {
                                     let mut hasher = blake3::Hasher::new();
@@ -550,16 +525,15 @@ impl Embedder {
                                             hash
                                         }
                                         Err(e) => {
-                                            // P1.8 / P2.63: stable size-based
-                                            // fallback, not timestamp — every
-                                            // restart with a transient hash
-                                            // failure used to mint a NEW
-                                            // fingerprint and thrash the cache.
-                                            // EH-V1.33-6: when metadata also
+                                            // Stable size-based fallback, not a
+                                            // timestamp — a transient hash
+                                            // failure must not mint a new
+                                            // fingerprint per restart and thrash
+                                            // the cache. When metadata also
                                             // fails (the same FS hiccup that
                                             // broke the hash), distinguish by
-                                            // failure mode instead of
-                                            // collapsing every model under
+                                            // failure mode instead of collapsing
+                                            // every model under
                                             // `:fallback:size=0`.
                                             tracing::warn!(
                                                 error = %e,
@@ -585,10 +559,10 @@ impl Embedder {
                                     }
                                 }
                                 Err(e) => {
-                                    // P1.8 / P2.63: stable size-based fallback (see above).
-                                    // EH-V1.33-6: when metadata also fails,
-                                    // emit a no-stat sentinel so distinct
-                                    // models don't all share `:fallback:size=0`.
+                                    // Stable size-based fallback (see above).
+                                    // When metadata also fails, emit a no-stat
+                                    // sentinel so distinct models don't all
+                                    // share `:fallback:size=0`.
                                     tracing::warn!(
                                         error = %e,
                                         "Failed to open model for fingerprint, using repo+size fallback"
@@ -611,9 +585,9 @@ impl Embedder {
                     }
                 }
                 Err(e) => {
-                    // P1.8: model path resolution failed entirely — no path to
-                    // stat — but `:fallback:no-path` is still deterministic
-                    // (does not vary by wall-clock).
+                    // Model path resolution failed entirely — no path to stat —
+                    // but `:fallback:no-path` is still deterministic (does not
+                    // vary by wall-clock).
                     tracing::warn!(
                         error = %e,
                         "Failed to get model paths for fingerprint, using repo-only fallback"
@@ -658,11 +632,10 @@ impl Embedder {
 
     /// Get or initialize the tokenizer.
     ///
-    /// RM-V1.25-15: Returns an `Arc<Tokenizer>` so callers can release the
-    /// mutex immediately and let `clear_session` drop the inner tokenizer
-    /// without racing against in-flight inference. `Tokenizer::encode` /
-    /// `decode` take `&self`, so call sites using `arc.encode(...)` work
-    /// via `Arc` deref.
+    /// Returns an `Arc<Tokenizer>` so callers can release the mutex immediately
+    /// and let `clear_session` drop the inner tokenizer without racing against
+    /// in-flight inference. `Tokenizer::encode` / `decode` take `&self`, so
+    /// call sites using `arc.encode(...)` work via `Arc` deref.
     fn tokenizer(&self) -> Result<Arc<tokenizers::Tokenizer>, EmbedderError> {
         {
             let guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
@@ -685,7 +658,7 @@ impl Embedder {
         Ok(loaded)
     }
 
-    /// SHL-V1.29-1: Resolve the pad token id once, caching on the embedder.
+    /// Resolve the pad token id once, caching on the embedder.
     ///
     /// Returns the id used to fill `input_ids` below `max_length` during
     /// batched inference. Priority:
@@ -704,10 +677,10 @@ impl Embedder {
         let resolved: i64 = match tokenizer.get_padding() {
             Some(p) => p.pad_id as i64,
             None => {
-                // EH-V1.36-4 / P3: warn once when the tokenizer.json has no
-                // [padding] section and we fall back to model_config.pad_id.
-                // Most HF tokenizer.json exports include padding; missing
-                // sections silently skewed attention masks for custom models.
+                // Warn once when tokenizer.json has no [padding] section and we
+                // fall back to model_config.pad_id. Most HF tokenizer.json
+                // exports include padding; a missing section silently skews
+                // attention masks for custom models.
                 static WARN_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
                 if WARN_ONCE.set(()).is_ok() {
                     tracing::warn!(
@@ -740,9 +713,9 @@ impl Embedder {
     ///
     /// Returns `EmbedderError::Tokenizer` if the tokenizer is unavailable or if encoding the text fails.
     pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
-        // OB-V1.36-7 / P3: debug span — per-chunk during indexing, per-query
-        // during retrieval. Slow indexing on large files is hard to attribute
-        // between token_count vs the ONNX forward without per-call timing.
+        // Debug span — per-chunk during indexing, per-query during retrieval.
+        // Slow indexing on large files is hard to attribute between token_count
+        // vs the ONNX forward without per-call timing.
         let _span = tracing::debug_span!("token_count", text_len = text.len()).entered();
         // Same truncation-bypass as `split_into_windows`: count actual
         // tokens, not whatever the tokenizer's `truncation` cap returns.
@@ -909,10 +882,9 @@ impl Embedder {
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         let _span = tracing::info_span!("embed_documents", count = texts.len()).entered();
         let prefix = &self.model_config.doc_prefix;
-        // CQ-V1.33.0-2: route through `ModelConfig::embed_batch_size` so the
-        // inner loop scales with model dim/seq instead of hardcoding 64.
-        // BGE-large stays at 64; nomic-coderank (768 dim × 2048 seq) drops
-        // to 16 to avoid OOM on 8 GB GPUs.
+        // `ModelConfig::embed_batch_size` scales the inner loop with model
+        // dim/seq. BGE-large stays at 64; nomic-coderank (768 dim × 2048 seq)
+        // drops to 16 to avoid OOM on 8 GB GPUs.
         let max_batch: usize = self.model_config.embed_batch_size();
         let started = std::time::Instant::now();
         let result = if texts.len() <= max_batch {
@@ -927,8 +899,8 @@ impl Embedder {
             }
             Ok(all)
         };
-        // P3.10: completion event with output dim/count/time. Entry span only
-        // carries inputs; without this operators have no signal that the call
+        // Completion event with output dim/count/time. The entry span only
+        // carries inputs; without this, operators have no signal that the call
         // actually produced what was asked for.
         if let Ok(ref embeddings) = result {
             tracing::info!(
@@ -949,12 +921,11 @@ impl Embedder {
     /// This means two simultaneous queries for the same text may both compute embeddings, but this
     /// is preferable to serializing all queries through a single lock. The duplicate work is rare
     /// and the cache update is idempotent.
-    /// Maximum input bytes before truncation (RT-RES-5).
-    /// The tokenizer will further truncate to max_seq_length tokens, but this
+    /// Maximum input bytes before truncation.
+    /// The tokenizer further truncates to max_seq_length tokens, but this
     /// prevents O(n) tokenization work on megabyte-sized inputs.
     /// Configurable via `CQS_MAX_QUERY_BYTES` (default 32768).
     fn max_query_bytes() -> usize {
-        // P2.4: route through shared `parse_env_usize` helper.
         crate::limits::parse_env_usize("CQS_MAX_QUERY_BYTES", 32 * 1024)
     }
 
@@ -968,16 +939,15 @@ impl Embedder {
 
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let _span = tracing::info_span!("embed_query").entered();
-        // P3-3 (audit v1.33.0): time end-to-end so cache-hit vs. miss
-        // latency is queryable on the completion events. Without this
-        // operators can't tell "model is suddenly slow" from "cache hit
-        // rate cratered".
+        // Time end-to-end so cache-hit vs. miss latency is queryable on the
+        // completion events — distinguishes "model is suddenly slow" from
+        // "cache hit rate cratered".
         let start = std::time::Instant::now();
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);
         }
-        // RT-RES-5: Truncate oversized input before tokenization to bound CPU work.
+        // Truncate oversized input before tokenization to bound CPU work.
         let max_query_bytes = Self::max_query_bytes();
         let text = truncate_at_char_boundary(text, max_query_bytes);
 
@@ -989,9 +959,9 @@ impl Embedder {
             });
             if let Some(cached) = cache.get(text) {
                 tracing::trace!(query = text, "Query cache hit (memory)");
-                // P3-3: emit cache-aware completion (no query text — leaks at
-                // trace level otherwise) so operators tracking hit-rate can
-                // see hits at debug without enabling trace journals.
+                // Cache-aware completion (no query text — it leaks at trace
+                // level otherwise) so operators tracking hit-rate see hits at
+                // debug without enabling trace journals.
                 tracing::debug!(
                     dim = self.embedding_dim(),
                     elapsed_ms = start.elapsed().as_millis() as u64,
@@ -1010,7 +980,7 @@ impl Embedder {
                 // Populate in-memory LRU for fast subsequent hits
                 let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
                 cache.put(text.to_string(), cached.clone());
-                // P3-3: disk-hit completion mirrors memory_hit shape.
+                // Disk-hit completion mirrors memory_hit shape.
                 tracing::debug!(
                     dim = self.embedding_dim(),
                     elapsed_ms = start.elapsed().as_millis() as u64,
@@ -1044,11 +1014,10 @@ impl Embedder {
             disk.put(text, &model_fp, &embedding);
         }
 
-        // P3.10: completion event so embed_query has parity with the
-        // embed_documents log line. Debug-level — embed_query runs once per
-        // search and the entry span already covers timing.
-        // P3-3 (audit v1.33.0): add elapsed_ms + cache-tier so the journal
-        // distinguishes "model slow on miss" from "everything was a hit".
+        // Completion event so embed_query has parity with the embed_documents
+        // log line. Debug-level — embed_query runs once per search and the
+        // entry span already covers timing. elapsed_ms + cache-tier let the
+        // journal distinguish "model slow on miss" from "everything was a hit".
         tracing::debug!(
             dim = self.embedding_dim(),
             elapsed_ms = start.elapsed().as_millis() as u64,
@@ -1057,12 +1026,6 @@ impl Embedder {
         );
         Ok(embedding)
     }
-
-    // P2.75: previously `pub fn provider(&self) -> ExecutionProvider`
-    // returned the eagerly-resolved field. Now superseded by the lazy
-    // accessor defined above (`pub(crate) fn provider`). External callers
-    // expecting the public symbol fall through to the lazy accessor's
-    // `pub(crate)` visibility — switch to that name.
 
     /// Clear the ONNX session to free memory (~500MB).
     ///
@@ -1079,21 +1042,20 @@ impl Embedder {
         // if model config changes before session is re-created.
         let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
         cache.clear();
-        // RM-V1.25-15: Drop the tokenizer too (~10MB on BGE-large, ~20MB on
-        // larger BPE vocabularies). The Arc holds a strong ref so in-flight
-        // inference that grabbed an Arc clone before this call continues
-        // with its own copy; the inner `Option` slot is cleared and will
-        // lazy-reload on the next `tokenizer()` access.
+        // Drop the tokenizer too (~10MB on BGE-large, ~20MB on larger BPE
+        // vocabularies). The Arc holds a strong ref so in-flight inference that
+        // grabbed an Arc clone before this call continues with its own copy;
+        // the inner `Option` slot is cleared and lazy-reloads on the next
+        // `tokenizer()` access.
         let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
-        // P2.77: surface the doubled-memory window when in-flight inference
-        // is mid-encode. `Arc::strong_count > 1` means a worker thread
-        // holds a clone of the old tokenizer; the inner Option clears here,
-        // but the cloned Arc keeps the old tokenizer alive until that
-        // thread releases it. Peak memory transiently exceeds the
-        // documented ~500 MB by the tokenizer size (~10–20 MB on BGE-large).
-        // Operators correlating memory spikes need this signal — option (a)
-        // (RwLock around tokenizer + clear takes write lock) is higher-risk
-        // because it extends the inference critical section.
+        // Surface the doubled-memory window when in-flight inference is
+        // mid-encode. `Arc::strong_count > 1` means a worker thread holds a
+        // clone of the old tokenizer; the inner Option clears here, but the
+        // cloned Arc keeps the old tokenizer alive until that thread releases
+        // it. Peak memory transiently exceeds the documented ~500 MB by the
+        // tokenizer size (~10–20 MB on BGE-large). Operators correlating memory
+        // spikes need this signal; an RwLock-around-tokenizer alternative is
+        // higher-risk because it extends the inference critical section.
         if let Some(t) = tok.as_ref() {
             let strong = std::sync::Arc::strong_count(t);
             if strong > 1 {
@@ -1106,12 +1068,12 @@ impl Embedder {
             }
         }
         *tok = None;
-        // DS-V1.33-7: also reset detected_dim and model_fingerprint so a
-        // model swap re-detects dim and re-fingerprints on next inference.
-        // Without this reset, the OnceLock-replaced Mutex<Option<...>>
-        // slots would carry the first-loaded model's values forever,
-        // silently feeding the wrong dim to `EmbeddingCache::read_batch`'s
-        // dimension filter and the wrong fingerprint to the disk cache key.
+        // Reset detected_dim and model_fingerprint so a model swap re-detects
+        // dim and re-fingerprints on next inference. Without this reset, the
+        // Mutex<Option<...>> slots would carry the first-loaded model's values
+        // forever, silently feeding the wrong dim to
+        // `EmbeddingCache::read_batch`'s dimension filter and the wrong
+        // fingerprint to the disk cache key.
         {
             let mut dim_guard = self.detected_dim.lock().unwrap_or_else(|p| p.into_inner());
             *dim_guard = None;
@@ -1130,16 +1092,15 @@ impl Embedder {
 
     /// Warm up the model with a dummy inference
     pub fn warm(&self) -> Result<(), EmbedderError> {
-        // P3-7 (audit v1.33.0): operators investigating "daemon takes 4s
-        // to come up" need a "warm started/completed" anchor. The dummy
-        // embed_query triggers ~250 MB+ ORT session + tokenizer load (1-3s
-        // on first GPU inference) and previously emitted nothing of its own.
+        // Operators investigating "daemon takes 4s to come up" need a "warm
+        // started/completed" anchor. The dummy embed_query triggers ~250 MB+
+        // ORT session + tokenizer load (1-3s on first GPU inference).
         let _span = tracing::info_span!("embedder_warm", model = %self.model_config.name).entered();
         let start = std::time::Instant::now();
-        // EH-V1.36-1 / P3: validate the warmup result has the declared
-        // dimension so a misconfigured ONNX session that returns shape [1,0]
-        // surfaces here instead of "warmed" + a confusing dim-mismatch error
-        // on the first user query.
+        // Validate the warmup result has the declared dimension so a
+        // misconfigured ONNX session that returns shape [1,0] surfaces here
+        // instead of "warmed" + a confusing dim-mismatch error on the first
+        // user query.
         let warm_vec = self.embed_query("warmup")?;
         if warm_vec.as_slice().len() != self.embedding_dim() {
             return Err(EmbedderError::InferenceFailed(format!(
@@ -1159,9 +1120,9 @@ impl Embedder {
     /// Returns the embedding dimension detected from the model.
     /// Falls back to the model config's declared dimension if no inference has been run yet.
     pub fn embedding_dim(&self) -> usize {
-        // DS-V1.33-7: read through the Mutex<Option<usize>> slot. Falls
-        // back to the model config's declared dim when no inference has
-        // populated the slot yet (or after `clear_session` reset it).
+        // Read through the Mutex<Option<usize>> slot. Falls back to the model
+        // config's declared dim when no inference has populated the slot yet
+        // (or after `clear_session` reset it).
         let detected = self
             .detected_dim
             .lock()
@@ -1202,8 +1163,8 @@ impl Embedder {
             return Ok(vec![]);
         }
 
-        // Tokenize (lazy init tokenizer)
-        // PERF-36: `encode_batch` requires `Vec<EncodeInput>` (owned), so `texts.to_vec()` is
+        // Tokenize (lazy init tokenizer).
+        // `encode_batch` requires `Vec<EncodeInput>` (owned), so `texts.to_vec()` is
         // unavoidable — the tokenizer API does not accept `&[impl AsRef<str>]`.
         let encodings = {
             let _tokenize = tracing::debug_span!("tokenize").entered();
@@ -1212,9 +1173,9 @@ impl Embedder {
                 .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?
         };
 
-        // Pad to max length in batch. PERF-V1.33-3 / #1377: compute max_len
-        // directly from encodings (no allocation), then build Array2 from
-        // encodings in one pass instead of through `Vec<Vec<i64>>`.
+        // Pad to max length in batch. max_len is computed directly from
+        // encodings (no allocation); the Array2 is built from encodings in one
+        // pass instead of through `Vec<Vec<i64>>`.
         let max_len = encodings
             .iter()
             .map(|e| e.get_ids().len())
@@ -1222,21 +1183,19 @@ impl Embedder {
             .unwrap_or(0)
             .min(self.max_length);
 
-        // SHL-V1.29-1: Read the pad id from the tokenizer (cached on first
-        // call). `input_ids` uses the model-declared pad token; the attention
-        // mask always pads with `0` regardless — a `0` mask entry zeroes the
-        // padded position at attention time, which is the whole point of the
-        // mask.
+        // Read the pad id from the tokenizer (cached on first call).
+        // `input_ids` uses the model-declared pad token; the attention mask
+        // always pads with `0` regardless — a `0` mask entry zeroes the padded
+        // position at attention time, which is the whole point of the mask.
         let input_pad_id = self.pad_id()?;
         let input_ids_arr =
             pad_2d_i64_from_encodings(&encodings, |e| e.get_ids(), max_len, input_pad_id);
         let attention_mask_arr =
             pad_2d_i64_from_encodings(&encodings, |e| e.get_attention_mask(), max_len, 0);
 
-        // Create tensors. PERF-V1.33-3 / #1377: clone the mask Array2 for
-        // the tensor so the post-inference pooling can still read the
-        // original. Net: 1 i64-Array2 clone (memcpy) replaces the prior
-        // `Vec<Vec<i64>>` + per-element u32→i64 conversion in mean_pool.
+        // Create tensors. Clone the mask Array2 for the tensor so the
+        // post-inference pooling can still read the original — one i64-Array2
+        // clone (memcpy).
         let input_ids_tensor = Tensor::from_array(input_ids_arr).map_err(ort_err)?;
         let attention_mask_tensor =
             Tensor::from_array(attention_mask_arr.clone()).map_err(ort_err)?;
@@ -1265,17 +1224,14 @@ impl Embedder {
             ));
         }
         if let Some(ref pos_name) = names.position_ids {
-            // #1442: third-party Qwen3-Embedding-4B ONNX exports require
-            // an explicit `position_ids` input. We use right-padding
-            // (BERT-style — the same shape `pad_2d_i64_from_encodings`
-            // emits via the tokenizer's default), so positions are simply
-            // `[0, 1, ..., max_len-1]` for every row. Padding tokens get
-            // positions too; they're masked out by `attention_mask` at
-            // attention time, same as for `input_ids`.
-            // RM-V1.36-3: extend directly from the range iterator instead of
-            // collecting into a throwaway `Vec<i64>` per row. saturating_mul
-            // guards the with_capacity arg consistent with the rest of the
-            // codebase.
+            // Some third-party ONNX exports (Qwen3-Embedding-4B) require an
+            // explicit `position_ids` input. With right-padding (BERT-style —
+            // the same shape `pad_2d_i64_from_encodings` emits via the
+            // tokenizer's default), positions are simply `[0, 1, ...,
+            // max_len-1]` for every row. Padding tokens get positions too;
+            // they're masked out by `attention_mask` at attention time, same as
+            // for `input_ids`. Extend directly from the range iterator;
+            // saturating_mul guards the with_capacity arg.
             let mut pos_data: Vec<i64> = Vec::with_capacity(texts.len().saturating_mul(max_len));
             for _ in 0..texts.len() {
                 pos_data.extend(0..max_len as i64);
@@ -1308,34 +1264,28 @@ impl Embedder {
                 outputs.keys().collect::<Vec<_>>()
             ))
         })?;
-        // #1442 follow-up: dispatch on output dtype. Most ONNX exports
-        // emit `Tensor<f32>`, but FP16 / bfloat16 quantized exports
-        // (e.g. zhiqing/Qwen3-Embedding-4B-ONNX) emit `Tensor<f16>` or
-        // `Tensor<bf16>` and the f32 extract fails fast with
-        // "Cannot extract Tensor<f32> from Tensor<f16>" — strict
-        // dtype check, not a silent reinterpret. Try f32 first
-        // (zero-copy fast path), then half-precision variants on
-        // mismatch and convert each element to f32 in software.
-        // The conversion cost (one map per inference) is negligible
-        // next to the model forward pass.
+        // Dispatch on output dtype. Most ONNX exports emit `Tensor<f32>`, but
+        // FP16 / bfloat16 quantized exports (e.g. Qwen3-Embedding-4B-ONNX) emit
+        // `Tensor<f16>` or `Tensor<bf16>` and the f32 extract fails fast with
+        // "Cannot extract Tensor<f32> from Tensor<f16>" — strict dtype check,
+        // not a silent reinterpret. Try f32 first (zero-copy fast path), then
+        // half-precision variants on mismatch and convert each element to f32
+        // in software. The conversion cost (one map per inference) is
+        // negligible next to the model forward pass.
         //
         // `shape` and `data` after this block are owned `Vec<i64>` /
-        // `Vec<f32>`; the f32 fast path pays one extra `.to_vec()`
-        // (~few MB/batch) for shape uniformity vs branching the rest
-        // of the function body.
-        // EH-V1.38-7 (#1463): preserve the swallowed f32 / f16 errors when
-        // the bf16 fallback also fails, so the surfaced error reflects
-        // the real root cause instead of just the last branch's
-        // "wrong-dtype" trail. Pre-fix all three branches collapsed to a
-        // bare bf16 error: an actual ORT failure ("session output index
-        // out of range", "tensor backing memory invalid") on the f32
-        // path was invisible.
+        // `Vec<f32>`; the f32 fast path pays one extra `.to_vec()` (~few
+        // MB/batch) for shape uniformity vs branching the rest of the function
+        // body.
         //
-        // Each non-bf16 error is also logged at debug as the cascade
-        // walks past it — operators with `RUST_LOG=cqs=debug` see the
-        // dtype-probe progression directly. The chain stays cheap: the
-        // happy f32 path returns immediately; only fallback hits the
-        // logging + carry overhead.
+        // The bf16-fallback error preserves the swallowed f32 / f16 errors so
+        // the surfaced error reflects the real root cause — an actual ORT
+        // failure ("session output index out of range", "tensor backing memory
+        // invalid") on the f32 path would otherwise be invisible behind a bare
+        // bf16 "wrong-dtype" error. Each non-bf16 error is also logged at debug
+        // as the cascade walks past it, so `RUST_LOG=cqs=debug` shows the
+        // dtype-probe progression. The happy f32 path returns immediately; only
+        // fallback hits the logging + carry overhead.
         let (shape_vec, data_vec): (Vec<i64>, Vec<f32>) = match output.try_extract_tensor::<f32>() {
             Ok((s, d)) => (s.to_vec(), d.to_vec()),
             Err(e_f32) => {
@@ -1368,7 +1318,7 @@ impl Embedder {
         // PoolingStrategy::Identity: the ONNX output is already pooled to
         // `[batch, dim]`. Skip the 3D reshape + pool dispatch and emit
         // L2-normalized rows directly. Used by EmbeddingGemma's
-        // `sentence_embedding` output (#1220 follow-up).
+        // `sentence_embedding` output.
         if self.model_config.pooling == PoolingStrategy::Identity {
             if shape.len() != 2 {
                 return Err(EmbedderError::InferenceFailed(format!(
@@ -1384,7 +1334,7 @@ impl Embedder {
             }
             let embedding_dim = shape[1] as usize;
             {
-                // DS-V1.33-7: lock-and-set the Mutex<Option<usize>> slot.
+                // Lock-and-set the Mutex<Option<usize>> slot.
                 let mut guard = self.detected_dim.lock().unwrap_or_else(|p| p.into_inner());
                 match *guard {
                     Some(expected) if expected != embedding_dim => {
@@ -1420,8 +1370,8 @@ impl Embedder {
             )));
         }
         let embedding_dim = shape[2] as usize;
-        // Set or validate embedding dimension from model output
-        // DS-V1.33-7: lock-and-set the Mutex<Option<usize>> slot.
+        // Set or validate embedding dimension from model output.
+        // Lock-and-set the Mutex<Option<usize>> slot.
         {
             let mut guard = self.detected_dim.lock().unwrap_or_else(|p| p.into_inner());
             match *guard {
@@ -1458,12 +1408,10 @@ impl Embedder {
             PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask_arr, embedding_dim),
             PoolingStrategy::Cls => cls_pool(&hidden),
             PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask_arr),
-            // EXT-V1.36-3 / P3: surface as a structured error rather than
-            // panic. Identity is supposed to be intercepted by the 2D
-            // shortcut at line 1309 — reaching here implies the ONNX model
-            // emitted 3D output AND configured Identity pooling, which is a
-            // config-shape mismatch. A future model exposing Identity on a
-            // 3D output should error cleanly, not crash the daemon.
+            // Surface as a structured error rather than panic. Identity is
+            // intercepted by the 2D shortcut above — reaching here implies the
+            // ONNX model emitted 3D output AND configured Identity pooling, a
+            // config-shape mismatch. Error cleanly rather than crash the daemon.
             PoolingStrategy::Identity => {
                 return Err(EmbedderError::InferenceFailed(
                     "PoolingStrategy::Identity is not supported on 3D model outputs — \
@@ -1484,17 +1432,14 @@ impl Embedder {
     }
 }
 
-/// Download model and tokenizer from HuggingFace Hub
 /// Truncate `text` to at most `max_bytes` bytes, snapping back to a
 /// valid UTF-8 char boundary. Returns the original `text` unchanged if
 /// it already fits.
 ///
-/// RT-RES-5 / TC-ADV-V1.38-7 (#1463): factored out of `embed_query` so
-/// the boundary-snap behavior can be unit-tested without loading an
-/// ONNX session. The naive `&text[..max_bytes]` panics on multi-byte
-/// boundary crossings (a 4-byte emoji at byte position `max_bytes - 1`
-/// would slice mid-codepoint); this walks back at most `c-1 ≤ 3` bytes
-/// where `c` is the longest UTF-8 sequence length.
+/// The naive `&text[..max_bytes]` panics on multi-byte boundary crossings
+/// (a 4-byte emoji at byte position `max_bytes - 1` would slice
+/// mid-codepoint); this walks back at most `c-1 ≤ 3` bytes where `c` is
+/// the longest UTF-8 sequence length.
 fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
     if text.len() <= max_bytes {
         return text;
@@ -1511,6 +1456,7 @@ fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
     &text[..end]
 }
 
+/// Download model and tokenizer from HuggingFace Hub (or load from `CQS_ONNX_DIR`).
 fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderError> {
     // CQS_ONNX_DIR: bypass HF download, load from local directory.
     // Directory must contain model.onnx and tokenizer.json.
@@ -1551,11 +1497,9 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
     // (TLS handshake glitch, HTTP/2 reset, throttling) aborts the download
     // with no retry. The Python `huggingface-cli` retries internally and
     // succeeds, so the same file from the same server can fail in cqs and
-    // succeed in Python. Bump retries to 5 to match human expectations
-    // and to make >2 GB external-data downloads (Gemma, Qwen3) reliable.
-    // Discovered 2026-05-03 during the Qwen3-Embedding-8B ceiling-probe
-    // attempt: a `model.onnx_data` fetch silently failed with no retry,
-    // ORT then panicked at session init with "cannot get file size".
+    // succeed in Python. 5 retries make >2 GB external-data downloads
+    // (Gemma, Qwen3) reliable: a silently-failed `model.onnx_data` fetch
+    // otherwise makes ORT panic at session init with "cannot get file size".
     let api = ApiBuilder::from_env()
         .with_retries(5)
         .build()
@@ -1626,9 +1570,9 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
             if !TOKENIZER_BLAKE3.is_empty() {
                 verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
             }
-            // Write marker after successful verification. EH-V1.36-5 / P3:
-            // surface failure at warn so operators see why subsequent cold
-            // starts re-blake3 the model file (~600 MB at 4s+ per startup).
+            // Write marker after successful verification. Surface failure at
+            // warn so operators see why subsequent cold starts re-blake3 the
+            // model file (~600 MB at 4s+ per startup).
             if let Err(e) = std::fs::write(&marker, &expected_marker) {
                 tracing::warn!(
                     path = %marker.display(),
@@ -1682,10 +1626,9 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
 
 /// Pad 2D sequences to a fixed length.
 ///
-/// PERF-V1.33-3 / #1377: production embed/rerank now uses
-/// [`pad_2d_i64_from_encodings`] which fills the `Array2` directly from
-/// tokenizer encodings. This helper stays for tests + future callers
-/// that have a `&[Vec<i64>]` already in hand.
+/// Production embed/rerank uses [`pad_2d_i64_from_encodings`], which fills the
+/// `Array2` directly from tokenizer encodings. This helper is for tests +
+/// callers that have a `&[Vec<i64>]` already in hand.
 #[allow(dead_code)]
 pub(crate) fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
     let batch_size = inputs.len();
@@ -1698,20 +1641,14 @@ pub(crate) fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) ->
     arr
 }
 
-/// PERF-V1.33-3 / #1377: build the padded `Array2<i64>` directly from
-/// tokenizer encodings, skipping the per-batch `Vec<Vec<i64>>` intermediate
-/// that [`pad_2d_i64`] previously consumed.
+/// Build the padded `Array2<i64>` directly from tokenizer encodings, with no
+/// per-batch `Vec<Vec<i64>>` intermediate.
 ///
 /// `extract` selects which encoding field to pull (`get_ids`,
-/// `get_attention_mask`, `get_type_ids`); the function is generic over `&[u32]`
-/// vs `&[u32]` so the same helper covers all three fields. The cast from
-/// `u32` → `i64` happens in the inner loop alongside the array write —
-/// no intermediate `Vec<i64>` is allocated.
-///
-/// At `CQS_EMBED_BATCH_SIZE=64` and `seq_len=512`, the prior
-/// `Vec<Vec<i64>>` shape allocated ~98K i64 conversions + 192 inner Vecs
-/// per batch (3 fields × 64 batch × ~512 seq + 3 outer Vecs). This helper
-/// drops to zero auxiliary heap allocations beyond the final `Array2`.
+/// `get_attention_mask`, `get_type_ids`); the same helper covers all three
+/// fields. The cast from `u32` → `i64` happens in the inner loop alongside the
+/// array write, so no intermediate `Vec<i64>` is allocated — zero auxiliary
+/// heap allocations beyond the final `Array2`.
 pub(crate) fn pad_2d_i64_from_encodings<F>(
     encodings: &[tokenizers::Encoding],
     extract: F,
@@ -1748,9 +1685,8 @@ fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
 // Each pooler takes the `[batch, seq, dim]` hidden-state tensor and returns
 // one `Vec<f32>` per batch item (unnormalized). The caller normalizes.
 //
-// Mean pooling is the BGE / E5 / v9-200k path. CLS and LastToken are present
-// for future non-BERT models (tested with synthetic fixtures today; wiring
-// for a real model is handled via `ModelConfig::pooling`).
+// Mean pooling is the BGE / E5 / v9-200k path. CLS and LastToken cover
+// non-BERT models, dispatched via `ModelConfig::pooling`.
 
 /// Mean-pool the masked token positions.
 ///
@@ -1759,15 +1695,14 @@ fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
 /// by the mask sum. Matches BGE reference / sentence-transformers mean pooling.
 ///
 /// Batches whose attention mask is all zero return a zero vector and log a
-/// warning — this preserves pre-refactor behavior.
+/// warning.
 fn mean_pool(
     hidden: &Array3<f32>,
     attention_mask: &Array2<i64>,
     embedding_dim: usize,
 ) -> Vec<Vec<f32>> {
-    // PERF-V1.33-3 / #1377: takes the already-built `Array2<i64>` directly
-    // (was `&[Vec<i64>]`) so the embed pipeline doesn't have to keep a
-    // parallel `Vec<Vec<i64>>` of the mask alongside the tensor.
+    // Takes the already-built `Array2<i64>` directly so the embed pipeline
+    // doesn't keep a parallel `Vec<Vec<i64>>` of the mask alongside the tensor.
     let (batch_size, seq_len, _) = hidden.dim();
     let mask_2d = Array2::from_shape_fn((batch_size, seq_len), |(i, j)| {
         attention_mask.get([i, j]).copied().unwrap_or(0) as f32
@@ -1815,16 +1750,14 @@ fn cls_pool(hidden: &Array3<f32>) -> Vec<Vec<f32>> {
 /// first token and logs a warning. If a batch item's mask has no `1`s we
 /// use index 0.
 fn last_token_pool(hidden: &Array3<f32>, attention_mask: &Array2<i64>) -> Vec<Vec<f32>> {
-    // PERF-V1.33-3 / #1377: takes the `Array2<i64>` directly — see
-    // `mean_pool` above for the rationale.
+    // Takes the `Array2<i64>` directly — see `mean_pool` for the rationale.
     let (batch_size, seq_len, _) = hidden.dim();
     let (mask_batch, mask_seq) = attention_mask.dim();
     (0..batch_size)
         .map(|i| {
-            // Find the last position where the mask is set. `i` may be
-            // beyond the mask Array2's first dim only if a caller passes a
-            // mismatched shape — fall back to index 0 and warn, mirroring
-            // the prior `attention_mask.get(i)` defensive read.
+            // Find the last position where the mask is set. `i` may be beyond
+            // the mask Array2's first dim only if a caller passes a mismatched
+            // shape — fall back to index 0 and warn.
             let last_idx = if i < mask_batch {
                 let bound = seq_len.min(mask_seq);
                 let mut found = None;
@@ -1857,16 +1790,11 @@ fn last_token_pool(hidden: &Array3<f32>, attention_mask: &Array2<i64>) -> Vec<Ve
 mod tests {
     use super::*;
 
-    // ===== TC-ADV-V1.38-7 (#1463): truncate_at_char_boundary =====
+    // ===== truncate_at_char_boundary =====
     //
-    // RT-RES-5's truncation logic was inline in `embed_query`. The audit
-    // flagged that no test exercised: (a) the truncate path firing at
-    // all (every test set max_query_bytes high enough that `text.len()
-    // <= max` short-circuits), (b) multi-byte UTF-8 boundary handling
-    // when the cap lands mid-codepoint. Pin both with cheap unit tests
-    // — refactored the inline block into the free
-    // `truncate_at_char_boundary(&str, usize) -> &str` so the test
-    // doesn't need an ONNX session.
+    // Pins (a) the truncate path firing at all, and (b) multi-byte UTF-8
+    // boundary handling when the cap lands mid-codepoint. The free function
+    // lets these run without an ONNX session.
 
     #[test]
     fn truncate_at_char_boundary_fits_under_cap() {
@@ -1949,13 +1877,11 @@ mod tests {
 
     // ===== FP16 / BF16 conversion smoke tests =====
     //
-    // #1442 follow-up: the embed loop dispatches output extraction on
-    // dtype (`try_extract_tensor::<f32>` → fall back to `f16` then
-    // `bf16`). The actual ORT extraction needs a live session, but
-    // the half-crate conversion arithmetic that we depend on is
-    // worth pinning at the unit level so a future `half` crate bump
-    // (or a precision regression in the representation) trips a fast
-    // local test instead of a 5-7 hour reindex.
+    // The embed loop dispatches output extraction on dtype
+    // (`try_extract_tensor::<f32>` → fall back to `f16` then `bf16`). The ORT
+    // extraction needs a live session, but the half-crate conversion arithmetic
+    // is pinned at the unit level so a future `half` crate bump (or a precision
+    // regression) trips a fast local test instead of a 5-7 hour reindex.
     #[test]
     fn f16_round_trip_preserves_chunk_embedding_range() {
         // Embedding values are normalized to [-1, 1] (cosine-comparable
@@ -2152,14 +2078,13 @@ mod tests {
         );
     }
 
-    // TC-ADV-1.29-2: embed_batch does not validate ORT output before
-    // Embedding::new. The load-bearing contract test we can land without
-    // a real ORT session is that Embedding::new accepts non-finite values
-    // (NaN, Inf). Since embed_batch eventually passes pooled rows through
-    // Embedding::new, a NaN-poisoned ORT output would become a NaN-poisoned
-    // Embedding and propagate into search scoring. Embedding::try_new DOES
-    // reject non-finite — but `embed_batch` calls `Embedding::new` (the
-    // infallible path) instead. This test pins that mismatch.
+    // embed_batch does not validate ORT output before Embedding::new. The
+    // load-bearing contract test that lands without a real ORT session is that
+    // Embedding::new accepts non-finite values (NaN, Inf). Since embed_batch
+    // passes pooled rows through Embedding::new, a NaN-poisoned ORT output
+    // becomes a NaN-poisoned Embedding and propagates into search scoring.
+    // Embedding::try_new rejects non-finite — but `embed_batch` calls the
+    // infallible `Embedding::new` instead. This test pins that mismatch.
 
     #[test]
     fn test_embedding_new_accepts_nan_unlike_try_new() {
@@ -2217,9 +2142,8 @@ mod tests {
         Array3::from_shape_vec((batch, seq, dim), flat).expect("synthetic shape mismatch")
     }
 
-    /// PERF-V1.33-3 / #1377: pooling now consumes `&Array2<i64>` instead of
-    /// `&[Vec<i64>]`. Tests build the mask as a flat `Vec<Vec<i64>>` for
-    /// readability and convert here.
+    /// Pooling consumes `&Array2<i64>`. Tests build the mask as a flat
+    /// `Vec<Vec<i64>>` for readability and convert here.
     fn mask_2d(rows: Vec<Vec<i64>>) -> Array2<i64> {
         let batch = rows.len();
         let seq = rows.first().map(|r| r.len()).unwrap_or(0);
@@ -2317,7 +2241,7 @@ mod tests {
     #[test]
     fn test_model_dimensions() {
         // EMBEDDING_DIM derives from the preset row marked `default = true`
-        // in `define_embedder_presets!`. EmbeddingGemma-300m since v1.35.0.
+        // in `define_embedder_presets!` (EmbeddingGemma-300m, 768-dim).
         assert_eq!(EMBEDDING_DIM, 768);
     }
 
@@ -2472,13 +2396,11 @@ mod tests {
         embedder.clear_session(); // clear again -- should not panic
     }
 
-    /// DS-V1.33-7: `clear_session` must reset `detected_dim` and
-    /// `model_fingerprint` so a model swap re-detects on the next inference.
-    /// Pre-fix, both fields were `OnceLock` and could not be cleared under
-    /// `&self`, leaving the first-loaded model's values in place forever.
-    /// This test directly mutates the Mutex<Option<...>> slots to simulate
-    /// post-inference state, calls clear_session, and verifies the slots
-    /// are now None — no model load required.
+    /// `clear_session` must reset `detected_dim` and `model_fingerprint` so a
+    /// model swap re-detects on the next inference. This test directly mutates
+    /// the Mutex<Option<...>> slots to simulate post-inference state, calls
+    /// clear_session, and verifies the slots are now None — no model load
+    /// required.
     #[test]
     fn clear_session_resets_detected_dim_and_model_fingerprint() {
         let embedder = Embedder::new_cpu(ModelConfig::e5_base()).unwrap();
@@ -2626,7 +2548,6 @@ mod tests {
         /// Windowing must preserve raw source formatting — decoding token IDs
         /// back to text is lossy on WordPiece tokenizers (lowercases, inserts
         /// spaces between subwords), which would corrupt stored chunk content.
-        /// Regression check for the 2026-04-20 windowing fix.
         #[test]
         #[ignore]
         fn split_into_windows_preserves_original_text() {
@@ -2722,13 +2643,12 @@ mod tests {
     mod ensure_model_tests {
         use super::*;
 
-        // ONNX_DIR_MUTEX hoisted to the crate-level shared
-        // `crate::ONNX_DIR_ENV_LOCK` (#1305) so this test mod serializes
-        // against `embedder_init_failure` (sibling) and the
-        // `cli::commands::infra::doctor::tests` cohort. Pre-fix all three
-        // had separate Mutex instances and raced on `CQS_ONNX_DIR` under
-        // cargo's parallel runner — a poisoned lock from a 401-on-CI HF
-        // download cascaded into PoisonError on the next two tests.
+        // Uses the crate-level shared `crate::ONNX_DIR_ENV_LOCK` so this test
+        // mod serializes against `embedder_init_failure` (sibling) and the
+        // `cli::commands::infra::doctor::tests` cohort on `CQS_ONNX_DIR`.
+        // Separate Mutex instances would race under cargo's parallel runner —
+        // a poisoned lock from a 401-on-CI HF download cascades into
+        // PoisonError on the next tests.
 
         fn test_model_config() -> ModelConfig {
             ModelConfig {
@@ -2828,9 +2748,9 @@ mod tests {
     mod embedder_init_failure {
         use super::*;
 
-        // ONNX_DIR_MUTEX hoisted to `crate::ONNX_DIR_ENV_LOCK` (#1305) so
-        // this mod serializes against `ensure_model_tests` and
-        // `doctor::tests`. See the comment in `ensure_model_tests` above.
+        // Uses `crate::ONNX_DIR_ENV_LOCK` so this mod serializes against
+        // `ensure_model_tests` and `doctor::tests`. See the comment in
+        // `ensure_model_tests` above.
 
         #[test]
         fn embedder_with_bogus_onnx_path_returns_err_on_embed() {

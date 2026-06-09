@@ -43,9 +43,9 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
     let _span = tracing::info_span!("apply_windowing", chunk_count = chunks.len()).entered();
     let mut result = Vec::with_capacity(chunks.len());
 
-    // P3 #119: max_tokens and overlap are model-fixed; computed once outside the loop.
-    // #1042: factor in doc prefix length so long-prefix models (nomic, instruction-tuned)
-    // don't silently overflow max_seq_length.
+    // max_tokens and overlap are model-fixed; computed once outside the loop.
+    // Factor in doc prefix length so long-prefix models (nomic,
+    // instruction-tuned) don't silently overflow max_seq_length.
     let prefix_tokens = embedder.doc_prefix_token_count();
     let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length, prefix_tokens);
     let overlap = window_overlap_tokens(max_tokens);

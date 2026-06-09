@@ -1,10 +1,9 @@
-//! Watch-mode freshness snapshot. (#1182 — Layer 3)
+//! Watch-mode freshness snapshot.
 //!
 //! `cqs watch` (the daemon) keeps a small live picture of the index's
 //! relationship to the working tree: how many files have been observed
 //! changing, whether a rebuild is in flight, when the last reindex
-//! finished. That state is owned by the watch loop thread and not
-//! visible to socket clients today.
+//! finished. That state is owned by the watch loop thread.
 //!
 //! This module exposes the snapshot via an `Arc<RwLock<WatchSnapshot>>`
 //! that the watch loop updates once per cycle and the daemon's
@@ -58,11 +57,11 @@ impl FreshnessState {
     }
 }
 
-/// API-V1.30.1-9: implement `Display` so `tracing::info!(state = %snap.state)`
-/// works without callers having to reach for `.as_str()` everywhere. Delegates
-/// to `as_str()` so the wire-shape lowercase strings stay the single source of
-/// truth — JSON consumers, structured logs, and human-readable text all see
-/// the same spelling.
+/// `Display` so `tracing::info!(state = %snap.state)` works without callers
+/// reaching for `.as_str()` everywhere. Delegates to `as_str()` so the
+/// wire-shape lowercase strings stay the single source of truth — JSON
+/// consumers, structured logs, and human-readable text all see the same
+/// spelling.
 impl std::fmt::Display for FreshnessState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -108,9 +107,8 @@ pub struct WatchSnapshot {
     /// Unix timestamp (UTC seconds) when the watch loop last observed
     /// *any* filesystem event. Lets clients compute fresh idle on
     /// demand (`now - last_event_unix_secs`) without retransacting
-    /// through the daemon — the previous `idle_secs` field was frozen
-    /// at snapshot-publish time and lied once read N seconds later
-    /// (API-V1.30.1-10).
+    /// through the daemon. A frozen-at-publish-time idle value would go
+    /// stale the moment the client reads it N seconds later.
     pub last_event_unix_secs: i64,
     /// Unix timestamp (UTC seconds) of the last completed reindex —
     /// the mtime of `index.db` after the most recent write. `None`
@@ -119,13 +117,13 @@ pub struct WatchSnapshot {
     /// Unix timestamp (UTC seconds) when this snapshot was published.
     /// Lets clients tell how stale the *snapshot itself* is (stale
     /// snapshot ⇒ daemon hasn't ticked recently). `None` only on a
-    /// clock-before-epoch system error (RB-10) — formerly silently `0`,
-    /// which made every snapshot look "56 years stale" and tripped
-    /// downstream freshness gates. Operators see a once-per-process
-    /// warn from `now_unix_secs` when this happens.
+    /// clock-before-epoch system error — a silent `0` would make every
+    /// snapshot look "56 years stale" and trip downstream freshness gates.
+    /// Operators see a once-per-process warn from `now_unix_secs` when this
+    /// happens.
     pub snapshot_at: Option<i64>,
-    /// DS-V1.30.1-D4 (#1232): name of the slot the daemon is currently
-    /// serving. Lets `cqs slot remove <name>` refuse to unlink a slot
+    /// Name of the slot the daemon is currently serving. Lets `cqs slot
+    /// remove <name>` refuse to unlink a slot
     /// directory while a long-lived daemon holds open file descriptors
     /// against `slots/<name>/index.db` — on Linux the unlink succeeds
     /// against the held inode and the daemon's WAL checkpoints persist
@@ -175,7 +173,7 @@ pub fn shared_unknown() -> SharedWatchSnapshot {
 }
 
 /// Cross-thread one-shot signal that asks the watch loop to run an
-/// out-of-band reconciliation pass on its next tick. (#1182 — Layer 1.)
+/// out-of-band reconciliation pass on its next tick.
 ///
 /// Set to `true` by:
 ///   - The daemon's `dispatch_reconcile` handler when a `cqs hook fire`
@@ -200,9 +198,8 @@ pub fn shared_reconcile_signal() -> SharedReconcileSignal {
     Arc::new(AtomicBool::new(false))
 }
 
-/// #1228 (RM-2): event-driven freshness notifier. Replaces the
-/// client-side 250 ms-poll loop in `wait_for_fresh` with a single
-/// server-side park-and-wake.
+/// Event-driven freshness notifier: a single server-side park-and-wake
+/// rather than a client-side poll loop.
 ///
 /// The watch loop calls [`FreshNotifier::set_fresh`] on every
 /// `publish_watch_snapshot` cycle (cheap when the value is unchanged —
@@ -325,8 +322,8 @@ pub struct WatchSnapshotInput<'a> {
     pub dropped_this_cycle: usize,
     pub last_event: std::time::Instant,
     pub last_synced_at: Option<i64>,
-    /// DS-V1.30.1-D4 (#1232): borrowed slot name set once at watch
-    /// startup. Cloned into the snapshot's `active_slot: Option<String>`
+    /// Borrowed slot name set once at watch startup. Cloned into the
+    /// snapshot's `active_slot: Option<String>`
     /// each tick so the daemon's status response can name what it's
     /// currently serving. The lifetime ties this borrow to the watch
     /// loop's owned `WatchState` field.
@@ -337,11 +334,11 @@ pub struct WatchSnapshotInput<'a> {
 }
 
 impl<'a> WatchSnapshotInput<'a> {
-    /// API-V1.30.1-7: named-field constructor so callers don't have to
-    /// remember to set `_marker: PhantomData` themselves. The lifetime
-    /// parameter remains in case future additions take borrowed fields
-    /// (e.g. `last_error: Option<&str>`); today the marker is the only
-    /// reason `'a` exists.
+    /// Named-field constructor so callers don't have to set
+    /// `_marker: PhantomData` themselves. The lifetime parameter remains in
+    /// case future additions take borrowed fields (e.g.
+    /// `last_error: Option<&str>`); today the marker is the only reason `'a`
+    /// exists.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pending_files_count: usize,
@@ -367,8 +364,8 @@ impl<'a> WatchSnapshotInput<'a> {
         }
     }
 
-    /// DS-V1.30.1-D4 (#1232): builder-style chain for the slot name. The
-    /// watch loop calls `WatchSnapshotInput::new(...).with_active_slot(&s)`
+    /// Builder-style chain for the slot name. The watch loop calls
+    /// `WatchSnapshotInput::new(...).with_active_slot(&s)`
     /// each tick so the snapshot publishes the slot the daemon is
     /// serving. Default is `None` to keep existing call sites that
     /// don't care about slot tracking compiling unchanged.
@@ -383,10 +380,10 @@ impl WatchSnapshot {
     /// Pure function — pulls only the fields it needs and resolves the
     /// `state` machine deterministically.
     pub fn compute(input: WatchSnapshotInput<'_>) -> Self {
-        // P2-2 (audit v1.33.0): trace the freshness state machine so
-        // operators investigating "why did the gate report Stale at
-        // 14:32:01?" can see what `compute()` saw at that timestamp.
-        // `debug_span` keeps the per-tick noise behind RUST_LOG=debug.
+        // Trace the freshness state machine so operators investigating "why
+        // did the gate report Stale at 14:32:01?" can see what `compute()`
+        // saw at that timestamp. `debug_span` keeps the per-tick noise behind
+        // RUST_LOG=debug.
         let _span = tracing::debug_span!(
             "watch_snapshot_compute",
             pending_files = input.pending_files_count,
@@ -403,9 +400,8 @@ impl WatchSnapshot {
             || input.dropped_this_cycle > 0
             || input.delta_saturated
         {
-            // CQ-V1.30.1-2 / DS-V1.30.1-D6: a saturated delta means the
-            // rebuilt HNSW was discarded on swap (rebuild.rs:60-63); the
-            // on-disk index is whatever was there before the rebuild
+            // A saturated delta means the rebuilt HNSW is discarded on swap;
+            // the on-disk index is whatever was there before the rebuild
             // started. Treat as Stale until the next threshold rebuild
             // lands cleanly, so `cqs eval --require-fresh` waits.
             FreshnessState::Stale
@@ -413,15 +409,14 @@ impl WatchSnapshot {
             FreshnessState::Fresh
         };
 
-        // API-V1.30.1-10: anchor the last-event timestamp to wall-clock so
-        // consumers can compute fresh idle (`now - last_event_unix_secs`)
-        // on read. `WatchState.last_event` is an `Instant` (monotonic, no
-        // wall-clock conversion), so reconstruct the wall-clock value as
-        // "now minus elapsed". Saturating arithmetic handles the (in
-        // practice unreachable) clock-before-epoch case symmetrically with
-        // `now_unix_secs`.
-        // RB-3: defensive bad-clock handling via `unix_secs_i64()` — falls
-        // back to 0 on epoch errors with a once-per-process warn upstream.
+        // Anchor the last-event timestamp to wall-clock so consumers can
+        // compute fresh idle (`now - last_event_unix_secs`) on read.
+        // `WatchState.last_event` is an `Instant` (monotonic, no wall-clock
+        // conversion), so reconstruct the wall-clock value as "now minus
+        // elapsed". Saturating arithmetic handles the (in practice
+        // unreachable) clock-before-epoch case symmetrically with
+        // `now_unix_secs`. `unix_secs_i64()` falls back to 0 on epoch errors
+        // with a once-per-process warn upstream.
         let last_event_unix_secs = crate::unix_secs_i64()
             .map(|now| {
                 let elapsed_i64 =
@@ -430,19 +425,16 @@ impl WatchSnapshot {
             })
             .unwrap_or(0);
 
-        // P2-2: emit the resolved state so the per-call decision is
-        // queryable without rebuilding the state-machine inputs.
+        // Emit the resolved state so the per-call decision is queryable
+        // without rebuilding the state-machine inputs.
         tracing::trace!(state = %state, "compute decision");
 
         Self {
             state,
-            // RB-7: saturating `usize → u64`. On 64-bit platforms `as u64`
-            // is total, but on 32-bit (still supported via `cargo install`
-            // crates.io) the cast is also total — the saturating shape
-            // costs nothing and keeps the wire surface uniform with the
-            // RB-V1.30-3 pattern. Defense-in-depth against future caller
-            // shapes (e.g. a usize that happens to come from a wrapping
-            // counter elsewhere).
+            // Saturating `usize → u64`. The cast is total on every supported
+            // platform, but the saturating shape costs nothing and keeps the
+            // wire surface uniform — defense-in-depth against a usize that
+            // happens to come from a wrapping counter elsewhere.
             modified_files: u64::try_from(input.pending_files_count).unwrap_or(u64::MAX),
             pending_notes: input.pending_notes,
             rebuild_in_flight: input.rebuild_in_flight,
@@ -457,17 +449,17 @@ impl WatchSnapshot {
     }
 }
 
-/// RB-3 / RB-10: thin delegator to the central [`crate::unix_secs_i64`]
-/// helper. Watch-status snapshots prefer `Option<i64>` so the bad-clock
-/// case can surface as JSON `null` (versus a silent `0` lie).
+/// Thin delegator to the central [`crate::unix_secs_i64`] helper.
+/// Watch-status snapshots prefer `Option<i64>` so the bad-clock case can
+/// surface as JSON `null` rather than a silent `0`.
 fn now_unix_secs() -> Option<i64> {
     let result = crate::unix_secs_i64();
     if result.is_none() {
-        // P2-2 (audit v1.33.0): leave a per-call trace breadcrumb when the
-        // clock is bad. The central helper already emits a once-per-process
-        // warn, but a per-call trace lets operators correlate individual
-        // snapshot publications with the bad-clock condition under
-        // RUST_LOG=trace without re-firing the noisier warn.
+        // Leave a per-call trace breadcrumb when the clock is bad. The
+        // central helper already emits a once-per-process warn, but a
+        // per-call trace lets operators correlate individual snapshot
+        // publications with the bad-clock condition under RUST_LOG=trace
+        // without re-firing the noisier warn.
         tracing::trace!("now_unix_secs: clock before epoch — returning None");
     }
     result
@@ -527,10 +519,10 @@ mod tests {
         assert!(snap.rebuild_in_flight);
     }
 
-    /// TC-HAP-1.30.1-8: zero pending + zero saturation + rebuild in flight
-    /// is the canonical "Rebuilding" path — operator sees a clean rebuild
-    /// without any backlog. `is_fresh()` must be false because a rebuild is
-    /// in flight (the daemon hasn't published the new chunks yet).
+    /// Zero pending + zero saturation + rebuild in flight is the canonical
+    /// "Rebuilding" path — operator sees a clean rebuild without any backlog.
+    /// `is_fresh()` must be false because a rebuild is in flight (the daemon
+    /// hasn't published the new chunks yet).
     #[test]
     fn compute_with_rebuild_in_flight_zero_pending_returns_rebuilding() {
         let snap = WatchSnapshot::compute(input(0, true, false, 0));
@@ -553,12 +545,12 @@ mod tests {
         assert_eq!(snap.dropped_this_cycle, 7);
     }
 
-    /// CQ-V1.30.1-2 / TC-ADV-1.30.1-8: a saturated delta means the in-flight
-    /// rebuild's pending delta exceeded `MAX_PENDING_REBUILD_DELTA` and the
-    /// rebuilt HNSW will be discarded on swap. Until the next threshold
-    /// rebuild reads SQLite fresh, the on-disk index is stale. The flag
-    /// is published; `compute()` must treat it as a Stale signal so
-    /// `cqs eval --require-fresh` doesn't accept a doomed rebuild.
+    /// A saturated delta means the in-flight rebuild's pending delta exceeded
+    /// `MAX_PENDING_REBUILD_DELTA` and the rebuilt HNSW will be discarded on
+    /// swap. Until the next threshold rebuild reads SQLite fresh, the on-disk
+    /// index is stale. The flag is published; `compute()` must treat it as a
+    /// Stale signal so `cqs eval --require-fresh` doesn't accept a doomed
+    /// rebuild.
     #[test]
     fn delta_saturated_marks_stale_when_no_other_work() {
         let snap = WatchSnapshot::compute(WatchSnapshotInput {
@@ -626,10 +618,10 @@ mod tests {
         assert_eq!(s.read().unwrap().state, FreshnessState::Unknown);
     }
 
-    /// #1182 — Layer 1: a fresh signal starts cleared and round-trips
-    /// through `swap` cleanly. Pin both halves so a future refactor of
-    /// `shared_reconcile_signal()` (e.g. switching to a notifier crate)
-    /// can't silently regress to "always pending".
+    /// A reconcile signal starts cleared and round-trips through `swap`
+    /// cleanly. Pin both halves so a refactor of `shared_reconcile_signal()`
+    /// (e.g. switching to a notifier crate) can't silently regress to
+    /// "always pending".
     #[test]
     fn shared_reconcile_signal_starts_cleared_and_round_trips() {
         use std::sync::atomic::Ordering;

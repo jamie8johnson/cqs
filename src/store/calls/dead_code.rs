@@ -50,15 +50,15 @@ impl<Mode> Store<Mode> {
             // Phase 1 filtering: name/test/path/trait checks (don't need content)
             let mut candidates = Self::filter_candidates(all_uncalled, &test_names);
 
-            // Phase 1.5 (#1573 Tier 2b): macros invoked at file-scope live
-            // outside any function chunk, so their `!()` invocation never
-            // produces a `function_calls` edge. Result: every macro_rules!
-            // shows up as "uncalled" even when it's used heavily. The
-            // call-graph extractor can't fix this without chunker changes
-            // (file-level macro_invocations aren't in any chunk's byte
-            // range), so we special-case Macro chunks at this layer:
-            // scan all chunks' content for `<name>!` substring; if any
-            // hit, drop from the candidates list.
+            // Phase 1.5: macros invoked at file-scope live outside any
+            // function chunk, so their `!()` invocation never produces a
+            // `function_calls` edge. Result: every macro_rules! shows up
+            // as "uncalled" even when it's used heavily. The call-graph
+            // extractor can't fix this without chunker changes (file-level
+            // macro_invocations aren't in any chunk's byte range), so we
+            // special-case Macro chunks at this layer: scan all chunks'
+            // content for `<name>!` substring; if any hit, drop from the
+            // candidates list.
             //
             // False-negative-friendly: a comment like "// foo! is broken"
             // counts as a reference, keeping the macro live even when the
@@ -87,7 +87,7 @@ impl<Mode> Store<Mode> {
     /// Phase 1: Query all callable chunks with no callers in the call graph.
     /// Returns lightweight metadata without content/doc to minimize memory.
     ///
-    /// Tier-1 noise filters (cqs/issues — `cqs dead` over-reporting):
+    /// Tier-1 noise filters:
     /// - **Exclude `Property` chunk_type.** CSS `rule_set`s and similar
     ///   language-property nodes are classified as `Callable` for search
     ///   purposes but are not function-shaped. They have no callers by
@@ -157,35 +157,30 @@ impl<Mode> Store<Mode> {
 
     /// Phase 1.5: drop macros from the dead-code candidates if they're
     /// invoked anywhere in the corpus. Closes the file-level macro-
-    /// invocation gap (#1573 Tier 2b): the call-graph extractor only
-    /// runs over chunks, but `define_languages! { ... }` and similar
-    /// invocations live at file-scope outside any chunk's byte range.
+    /// invocation gap: the call-graph extractor only runs over chunks,
+    /// but `define_languages! { ... }` and similar invocations live at
+    /// file-scope outside any chunk's byte range.
     ///
     /// For each Rust Macro candidate, runs:
     ///   `SELECT 1 FROM chunks WHERE content GLOB '*<name>!*' AND id != ?2 LIMIT 1`
     /// `LIMIT 1` short-circuits at the first match — fast even on large
     /// indexes. Non-Macro candidates pass through untouched.
     ///
-    /// Audit-driven contract refinements (Cluster A, post-v1.40.0):
-    /// - **Rust-only.** The `!` invocation suffix is Rust-specific
-    ///   (AC-V1.40-1). Other languages with macros (C/C++, Elixir,
-    ///   Erlang, Julia, Verilog) use different invocation syntaxes;
-    ///   running this filter on them would emit a wrong pattern. The
-    ///   guard preserves existing behavior (those macros pass through
-    ///   to dead candidates as if the filter never existed) until a
-    ///   language-aware `macro_invocation_pattern` lands per
-    ///   EXT-V1.40-3 / #1573.
-    /// - **GLOB instead of LIKE** (PB-V1.40-1). SQLite's `LIKE` is
-    ///   ASCII case-insensitive by default — `MyMacro!` content would
-    ///   cross-fire against `mymacro!` definitions. `GLOB` is case-
-    ///   sensitive. As a side benefit, GLOB has no `_`/`%` wildcard
-    ///   collision (EH-V1.40-1) — we still defensively escape `*`/`?`/
-    ///   `[`/`]` for pathological identifier names.
-    /// - **Self-match exclusion** (AC-V1.40-2). Recursive `macro_rules!`
-    ///   bodies contain the macro's own name + `!` in expansion
-    ///   examples or recursive invocations. Without `id != ?2`, every
-    ///   recursive macro keeps itself alive even when no external
-    ///   caller exists.
+    /// Contract details:
+    /// - **Rust-only.** The `!` invocation suffix is Rust-specific. Other
+    ///   languages with macros (C/C++, Elixir, Erlang, Julia, Verilog)
+    ///   use different invocation syntaxes; running this filter on them
+    ///   would emit a wrong pattern, so their macros pass through to
+    ///   dead candidates untouched.
+    /// - **GLOB instead of LIKE.** SQLite's `LIKE` is ASCII case-
+    ///   insensitive by default — `MyMacro!` content would cross-fire
+    ///   against `mymacro!` definitions. `GLOB` is case-sensitive. GLOB
+    ///   also has no `_`/`%` wildcard collision — we still defensively
+    ///   escape `*`/`?`/`[`/`]` for pathological identifier names.
+    /// - **Self-match exclusion.** Recursive `macro_rules!` bodies
+    ///   contain the macro's own name + `!` in expansion examples or
+    ///   recursive invocations. Without `id != ?2`, every recursive
+    ///   macro keeps itself alive even when no external caller exists.
     async fn filter_invoked_macros(
         &self,
         candidates: Vec<LightChunk>,
@@ -220,7 +215,7 @@ impl<Mode> Store<Mode> {
         uncalled: Vec<LightChunk>,
         test_names: &std::collections::HashSet<String>,
     ) -> Vec<LightChunk> {
-        // PERF-23: Use LazyLock-cached sets instead of rebuilding on every call
+        // Use LazyLock-cached sets instead of rebuilding on every call
         static ENTRY_POINTS: LazyLock<std::collections::HashSet<&'static str>> =
             LazyLock::new(|| build_entry_point_names().into_iter().collect());
         static TRAIT_METHODS: LazyLock<std::collections::HashSet<&'static str>> =
@@ -263,9 +258,9 @@ impl<Mode> Store<Mode> {
     /// Fetch sets of files with call graph or type-edge activity.
     /// Used for confidence scoring: files with active functions are "active".
     async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
-        // PERF-22: Query function_calls directly (no JOIN on chunks) for files with callers.
+        // Query function_calls directly (no JOIN on chunks) for files with callers.
         // UNION with type_edges for files with type-edge activity.
-        // EH-17: propagate SQL error instead of swallowing — empty set inflates dead code confidence
+        // Propagate SQL error instead of swallowing — an empty set inflates dead code confidence.
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT file FROM function_calls
              UNION
@@ -290,9 +285,8 @@ impl<Mode> Store<Mode> {
         let mut content_map: std::collections::HashMap<String, (String, Option<String>)> =
             std::collections::HashMap::new();
 
-        // PF-V1.25-8: 500 was the pre-3.32 SQLite-limit-safe constant for
-        // a single-bind IN query. Modern SQLite permits 32766 variables;
-        // `max_rows_per_statement(1)` returns ~32466 here (1 var/row).
+        // Batch size for the single-bind IN query. SQLite permits 32766
+        // variables; `max_rows_per_statement(1)` returns ~32466 here (1 var/row).
         use crate::store::helpers::sql::max_rows_per_statement;
         let batch_size = max_rows_per_statement(1);
         for batch in candidate_ids.chunks(batch_size) {
@@ -318,7 +312,7 @@ impl<Mode> Store<Mode> {
         let mut possibly_dead_pub = Vec::new();
 
         for light in candidates {
-            // EH-18: log when content is missing — indicates deleted/stale chunk in index
+            // Log when content is missing — indicates a deleted/stale chunk in the index
             let (content, doc) = match content_map.remove(&light.id) {
                 Some(pair) => pair,
                 None => {
@@ -607,7 +601,7 @@ mod tests {
         );
     }
 
-    // ===== Tier 2b filter_invoked_macros tests (audit Cluster A) =====
+    // ===== filter_invoked_macros tests =====
 
     /// `glob_escape` wraps GLOB special chars in single-char classes
     /// so they match literally. Identifier characters (alphanumeric +
@@ -628,11 +622,10 @@ mod tests {
         assert_eq!(glob_escape("*?[]"), "[*][?][[][]]");
     }
 
-    /// Audit AC-V1.40-1: the Tier 2b filter is Rust-only because the
-    /// `!` invocation suffix is Rust-specific. Non-Rust macros (here:
-    /// an Elixir macro chunk) must pass through to dead candidates
-    /// unchanged regardless of whether their name appears in any
-    /// chunk's content.
+    /// The macro filter is Rust-only because the `!` invocation suffix
+    /// is Rust-specific. Non-Rust macros (here: an Elixir macro chunk)
+    /// must pass through to dead candidates unchanged regardless of
+    /// whether their name appears in any chunk's content.
     #[test]
     fn test_non_rust_macros_skip_filter() {
         let (store, _dir) = setup_store();
@@ -676,10 +669,10 @@ mod tests {
         let _ = names; // result not load-bearing for this contract test
     }
 
-    /// Audit AC-V1.40-2: a recursive macro's expansion examples or
-    /// recursive invocations contain its own name + `!`. Without the
-    /// `id != ?2` self-exclusion in the SQL, the macro keeps itself
-    /// alive even when no other caller exists.
+    /// A recursive macro's expansion examples or recursive invocations
+    /// contain its own name + `!`. Without the `id != ?2` self-exclusion
+    /// in the SQL, the macro keeps itself alive even when no other
+    /// caller exists.
     #[test]
     fn test_recursive_macro_self_match_excluded() {
         let (store, _dir) = setup_store();
@@ -722,9 +715,8 @@ mod tests {
         );
     }
 
-    /// Audit Cluster A happy path: a Rust macro with an external
-    /// caller (chunk content containing `<name>!`) is correctly
-    /// dropped from dead candidates.
+    /// A Rust macro with an external caller (chunk content containing
+    /// `<name>!`) is correctly dropped from dead candidates.
     #[test]
     fn test_invoked_rust_macro_dropped_from_dead() {
         let (store, _dir) = setup_store();
@@ -784,10 +776,10 @@ mod tests {
         );
     }
 
-    /// Audit PB-V1.40-1: SQLite `LIKE` is ASCII case-insensitive by
-    /// default; `MyMacro!` content would cross-fire against `mymacro!`
-    /// macro definition. GLOB is case-sensitive, so two macros with
-    /// names that differ only in case are correctly distinguished.
+    /// SQLite `LIKE` is ASCII case-insensitive by default; `MyMacro!`
+    /// content would cross-fire against a `mymacro!` macro definition.
+    /// GLOB is case-sensitive, so two macros with names that differ
+    /// only in case are correctly distinguished.
     #[test]
     fn test_macro_filter_is_case_sensitive() {
         let (store, _dir) = setup_store();
@@ -851,11 +843,12 @@ mod tests {
         );
     }
 
-    /// Audit EH-V1.40-1: macro names commonly contain `_`. Pre-fix
-    /// the LIKE pattern `%info_span!%` matched `infoXspan!`, `info1span!`,
-    /// etc. (since `_` is a single-char wildcard in LIKE). This test
-    /// pins that a macro with an underscore in its name is NOT falsely
-    /// kept alive by content that differs in the underscore position.
+    /// Macro names commonly contain `_`. The LIKE pattern `%info_span!%`
+    /// would match `infoXspan!`, `info1span!`, etc. (since `_` is a
+    /// single-char wildcard in LIKE). This test pins that a macro with
+    /// an underscore in its name is NOT falsely kept alive by content
+    /// that differs in the underscore position. GLOB does not treat `_`
+    /// as a wildcard.
     #[test]
     fn test_macro_underscore_not_treated_as_wildcard() {
         let (store, _dir) = setup_store();
@@ -886,7 +879,7 @@ mod tests {
             .unwrap();
 
         // Caller that uses `infoXspan!` — would falsely match
-        // `%info_span!%` under LIKE wildcard semantics.
+        // `%info_span!%` under LIKE wildcard semantics, but not under GLOB.
         let caller = crate::parser::Chunk {
             id: "src/caller.rs:10:bad_caller_hash".to_string(),
             file: std::path::PathBuf::from("src/caller.rs"),
@@ -913,9 +906,9 @@ mod tests {
             .map(|d| d.chunk.name.as_str())
             .collect();
 
-        // GLOB doesn't treat `_` as wildcard; pre-fix LIKE pattern
-        // `%info_span!%` would have matched `infoXspan!`. Post-fix
-        // the macro stays in dead candidates as it should.
+        // GLOB doesn't treat `_` as a wildcard; the LIKE pattern
+        // `%info_span!%` would have matched `infoXspan!`. With GLOB the
+        // macro stays in dead candidates as it should.
         assert!(
             names.contains(&"info_span"),
             "Macro `info_span` must not be falsely kept alive by `infoXspan!` content — \

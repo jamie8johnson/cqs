@@ -192,12 +192,10 @@ pub fn validate_slot_name(name: &str) -> Result<(), SlotError> {
 
 /// Path of `.cqs/slots/<name>/` for the given project `.cqs/` dir + slot name.
 ///
-/// SEC-V1.36-3: validates the slot name even on read paths. Write paths
-/// already call [`validate_slot_name`] up front, but read paths
-/// (`read_slot_model`, the public `cqs::resolve_slot_dir`, etc.) used to
-/// trust the caller. A `..`-bearing name would have produced a path that
-/// `Path::join` does *not* normalize, so callers passing attacker-controlled
-/// strings without their own validation could escape the slots dir. On
+/// Validates the slot name even on read paths. A `..`-bearing name would
+/// produce a path that `Path::join` does *not* normalize, so callers passing
+/// attacker-controlled strings without their own validation could escape the
+/// slots dir. On
 /// failure we substitute a sentinel name so downstream IO fails noisily
 /// inside the slots directory rather than silently traversing outside it.
 pub fn slot_dir(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
@@ -219,8 +217,8 @@ pub const SLOTS_LOCK_FILE: &str = "slots.lock";
 /// invocations across processes serialize their read-validate-mutate
 /// sequences. The lock file is created if missing.
 ///
-/// Defends against P2.61 / P2.28 (TOCTOU on concurrent promote+remove that
-/// would leave `active_slot` pointing at a deleted directory). Callers should
+/// Defends against TOCTOU on concurrent promote+remove that would leave
+/// `active_slot` pointing at a deleted directory. Callers should
 /// hold the returned `File` for the duration of the slot mutation; dropping
 /// the file releases the OS lock.
 pub fn acquire_slots_lock(project_cqs_dir: &Path) -> Result<fs::File, SlotError> {
@@ -240,8 +238,8 @@ pub fn acquire_slots_lock(project_cqs_dir: &Path) -> Result<fs::File, SlotError>
             slot: SLOTS_LOCK_FILE.to_string(),
             source,
         })?;
-    // std::fs::File::lock (Rust 1.89+) blocks until exclusive ownership is
-    // acquired across processes. MSRV 1.95 covers it.
+    // std::fs::File::lock blocks until exclusive ownership is acquired
+    // across processes.
     f.lock().map_err(|source| SlotError::Io {
         slot: SLOTS_LOCK_FILE.to_string(),
         source,
@@ -261,7 +259,7 @@ pub fn slot_config_path(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
 
 /// Read the per-slot SPLADE α overrides from `.cqs/slots/<name>/slot.toml`.
 ///
-/// Schema (#1453):
+/// Schema:
 /// ```toml
 /// [splade.alpha]
 /// behavioral_search = 0.0
@@ -350,7 +348,7 @@ fn read_slot_config(project_cqs_dir: &Path, slot_name: &str) -> Option<SlotConfi
 
 /// Read the embedding model preset/repo persisted in `.cqs/slots/<name>/slot.toml`.
 ///
-/// Schema (#1107):
+/// Schema:
 /// ```toml
 /// [embedding]
 /// model = "nomic-coderank"
@@ -360,9 +358,9 @@ fn read_slot_config(project_cqs_dir: &Path, slot_name: &str) -> Option<SlotConfi
 /// Caller falls back to the next priority in `ModelConfig::resolve`.
 pub fn read_slot_model(project_cqs_dir: &Path, slot_name: &str) -> Option<String> {
     let path = slot_config_path(project_cqs_dir, slot_name);
-    // P2.33: bound the read so a pathological slot.toml (multi-GB or
-    // unbounded growth) can't OOM every CLI invocation. 4 KiB is ~80x the
-    // realistic slot.toml size.
+    // Bound the read so a pathological slot.toml (multi-GB or unbounded
+    // growth) can't OOM every CLI invocation. 4 KiB is ~80x the realistic
+    // slot.toml size.
     let raw = match fs::File::open(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
@@ -408,16 +406,13 @@ pub fn read_slot_model(project_cqs_dir: &Path, slot_name: &str) -> Option<String
 /// (e.g. a future `[reranker]` or a hand-added `[notes]`) are preserved
 /// verbatim via the `#[serde(flatten)] extra: toml::Table` catch-all on
 /// `SlotConfigFile` — adding a new typed section to the struct in the
-/// future requires zero changes to this function (#1217). Comments are
-/// not preserved; the toml crate does not retain them across a
+/// future requires zero changes to this function. Comments are not
+/// preserved; the toml crate does not retain them across a
 /// deserialize/serialize round-trip.
 ///
-/// Atomic via temp+rename + parent-dir fsync (`crate::fs::atomic_replace`).
+/// Atomic via temp+rename + parent-dir fsync (`crate::fs::atomic_replace`),
+/// matching the durability contract of `notes.toml` / `audit-mode.json`.
 /// Creates the slot dir if missing (idempotent).
-///
-/// P3.39: routes through `crate::fs::atomic_replace` so the parent directory
-/// is fsynced after the rename — matches the durability contract of
-/// `notes.toml` / `audit-mode.json`.
 pub fn write_slot_model(
     project_cqs_dir: &Path,
     slot_name: &str,
@@ -440,9 +435,8 @@ pub fn write_slot_model(
     // corrupted slot.toml still recovers on the next write — matches the
     // tolerance pattern in `read_slot_model` (warn + None) and means
     // `cqs slot promote` can't deadlock on a hand-broken config.
-    // RB-V1.36-4: cap slot.toml read at the small-file budget. The sibling
-    // `Config::load_file` path enforces MAX_CONFIG_SIZE; this site was the
-    // only one without a guard.
+    // Cap slot.toml read at the small-file budget, matching the
+    // `Config::load_file` MAX_CONFIG_SIZE guard.
     let mut config: SlotConfigFile = if final_path.exists() {
         let max_bytes = crate::limits::small_file_max_bytes();
         let oversize = fs::metadata(&final_path)
@@ -488,9 +482,9 @@ pub fn write_slot_model(
         source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
     })?;
 
-    // DS-V1.33-2: include `crate::temp_suffix()` so concurrent writers (e.g.
-    // legacy migration in one CLI process while another `cqs slot promote`
-    // runs) each stage to their own temp file before atomic_replace, instead
+    // Include `crate::temp_suffix()` so concurrent writers (e.g. legacy
+    // migration in one CLI process while another `cqs slot promote` runs)
+    // each stage to their own temp file before atomic_replace, instead
     // of racing on a fixed `slot.toml.tmp` path.
     let suffix = crate::temp_suffix();
     let tmp_path = dir.join(format!("{}.{:016x}.tmp", SLOT_CONFIG_FILE, suffix));
@@ -533,8 +527,8 @@ pub fn write_slot_model(
 struct SlotConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<SlotEmbeddingSection>,
-    /// #1453: per-slot SPLADE fusion α overrides. Optional; absence
-    /// means the router uses its env-or-preset-default precedence chain.
+    /// Per-slot SPLADE fusion α overrides. Optional; absence means the
+    /// router uses its env-or-preset-default precedence chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     splade: Option<SlotSpladeSection>,
     #[serde(default, flatten, skip_serializing_if = "toml::Table::is_empty")]
@@ -547,7 +541,7 @@ struct SlotEmbeddingSection {
     model: Option<String>,
 }
 
-/// Per-slot SPLADE α overrides (#1453).
+/// Per-slot SPLADE α overrides.
 ///
 /// Schema:
 /// ```toml
@@ -586,9 +580,9 @@ pub fn active_slot_path(project_cqs_dir: &Path) -> PathBuf {
 /// as missing so a single mangled write doesn't render the project unusable.
 pub fn read_active_slot(project_cqs_dir: &Path) -> Option<String> {
     let path = active_slot_path(project_cqs_dir);
-    // P2.33: bound the read of the active-slot pointer so an oversize file
-    // can't OOM every CLI invocation. 4 KiB is two orders of magnitude
-    // headroom on the ~10 byte realistic content (`default\n`, etc.).
+    // Bound the read of the active-slot pointer so an oversize file can't
+    // OOM every CLI invocation. 4 KiB is two orders of magnitude headroom
+    // on the ~10 byte realistic content (`default\n`, etc.).
     let raw = match fs::File::open(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
@@ -639,13 +633,10 @@ pub fn read_active_slot(project_cqs_dir: &Path) -> Option<String> {
 /// Writes to a sibling `<active_slot>.tmp` then routes through
 /// `crate::fs::atomic_replace` for the rename + parent-dir fsync. Atomic on
 /// the same filesystem; crash between write and rename leaves the previous
-/// pointer intact.
+/// pointer intact. The parent directory is fsynced after the rename,
+/// matching the durability contract of `notes.toml` / `audit-mode.json`.
 ///
-/// P3.39: routes through `crate::fs::atomic_replace` so the parent directory
-/// is fsynced after the rename — matches the durability contract of
-/// `notes.toml` / `audit-mode.json`.
-///
-/// # Caller contract (DS-V1.38-7 / #1463)
+/// # Caller contract
 ///
 /// **The caller MUST hold the slots lock** ([`acquire_slots_lock`]) before
 /// calling this function. The atomic-replace primitive is concurrency-safe
@@ -663,9 +654,7 @@ pub fn read_active_slot(project_cqs_dir: &Path) -> Option<String> {
 ///
 /// Test callers run single-threaded by `serial_test::serial`. A future
 /// caller (e.g. a hypothetical `cqs slot set-default` shortcut) that
-/// forgets the lock silently loses updates under concurrency. This
-/// contract was previously implicit; making it explicit prevents that
-/// regression class.
+/// forgets the lock silently loses updates under concurrency.
 pub fn write_active_slot(project_cqs_dir: &Path, slot_name: &str) -> Result<(), SlotError> {
     validate_slot_name(slot_name)?;
     let _span = tracing::info_span!(
@@ -683,9 +672,9 @@ pub fn write_active_slot(project_cqs_dir: &Path, slot_name: &str) -> Result<(), 
     }
 
     let final_path = active_slot_path(project_cqs_dir);
-    // DS-V1.33-2: include `crate::temp_suffix()` so concurrent writers (e.g.
-    // legacy migration in one CLI process while another `cqs slot promote`
-    // runs) each stage to their own temp file before atomic_replace, instead
+    // Include `crate::temp_suffix()` so concurrent writers (e.g. legacy
+    // migration in one CLI process while another `cqs slot promote` runs)
+    // each stage to their own temp file before atomic_replace, instead
     // of racing on a fixed `active_slot.tmp` path.
     let suffix = crate::temp_suffix();
     let tmp_path = project_cqs_dir.join(format!("{}.{:016x}.tmp", ACTIVE_SLOT_FILE, suffix));
@@ -822,7 +811,7 @@ pub const MIGRATION_SENTINEL_FILE: &str = "migration.lock";
 /// otherwise falls back to copy + delete with an inventory-based rollback on
 /// partial failure.
 ///
-/// # Half-state robustness (P2.34)
+/// # Half-state robustness
 ///
 /// A `.cqs/migration.lock` sentinel is written before any file moves and only
 /// removed on full success. If a previous call crashed mid-migration the
@@ -831,7 +820,7 @@ pub const MIGRATION_SENTINEL_FILE: &str = "migration.lock";
 /// split (`.cqs/index.db` AND `.cqs/slots/default/index.db` both present, or
 /// neither) into a loud, recoverable signal.
 ///
-/// # WAL drain (P2.62)
+/// # WAL drain
 ///
 /// Before any file moves, we open the legacy DB and run
 /// `PRAGMA wal_checkpoint(TRUNCATE)` so uncommitted WAL pages are flushed into
@@ -854,8 +843,8 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         return Ok(false);
     }
 
-    // DS-V1.33-1: serialize with other slot lifecycle operations. Two
-    // concurrent CLI invocations on a fresh-clone project (e.g. a watch
+    // Serialize with other slot lifecycle operations. Two concurrent CLI
+    // invocations on a fresh-clone project (e.g. a watch
     // daemon starting at the same moment as `cqs search`) both observed the
     // pre-migration state, both passed the sentinel check, and both kicked
     // off the move loop — leaving sidecars split across `.cqs/` and
@@ -878,19 +867,19 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         return Ok(false);
     }
 
-    // P2.34: refuse to proceed if a previous migration crashed mid-flight.
+    // Refuse to proceed if a previous migration crashed mid-flight.
     // Sentinel content tells the operator exactly what went wrong and which
     // files (if any) had already moved — see the failure-arm `fs::write` below.
     let sentinel = project_cqs_dir.join(MIGRATION_SENTINEL_FILE);
     if sentinel.exists() {
-        // RB-5: cap the sentinel read at 64 KiB. The sentinel is written
-        // by the failure-arm `fs::write` below as a tiny key=value blurb;
-        // anything larger means corruption (or a hostile tree). Reading
-        // GiB-scale "sentinel" files into memory would OOM the process.
+        // Cap the sentinel read at 64 KiB. The sentinel is written by the
+        // failure-arm `fs::write` below as a tiny key=value blurb; anything
+        // larger means corruption (or a hostile tree). Reading GiB-scale
+        // "sentinel" files into memory would OOM the process.
         const SENTINEL_MAX_BYTES: u64 = 64 * 1024;
-        // EH-V1.36-7 / P3: distinguish "sentinel exists but unreadable" from
-        // "sentinel exists and was empty" so the operator can tell whether
-        // they need to chmod / fix perms before deleting the file.
+        // Distinguish "sentinel exists but unreadable" from "sentinel exists
+        // and was empty" so the operator can tell whether they need to
+        // chmod / fix perms before deleting the file.
         let detail = {
             let mut buf = String::new();
             match fs::File::open(&sentinel).and_then(|f| {
@@ -911,8 +900,8 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         )));
     }
 
-    // P2.34 / DS-V1.33-9: write the sentinel FIRST — before we touch the FS
-    // for any reason, including the WAL checkpoint below. The checkpoint is a
+    // Write the sentinel FIRST — before we touch the FS for any reason,
+    // including the WAL checkpoint below. The checkpoint is a
     // FS mutation (it truncates the WAL and removes uncommitted page state
     // from the live DB), so a crash between checkpoint and sentinel-write
     // leaves "WAL drained, no breadcrumb" — the next migration call cannot
@@ -929,7 +918,7 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         );
     }
 
-    // P2.62: drain WAL before moving files. Failure is non-fatal — same-fs
+    // Drain WAL before moving files. Failure is non-fatal — same-fs
     // renames are atomic per file so the WAL/SHM either move with index.db or
     // not at all. Cross-device moves (EXDEV fallback) accept the residual risk
     // and we log loudly so operators can correlate any post-migration loss.
@@ -990,7 +979,7 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
             let _ = fs::remove_dir(&dest);
             let _ = fs::remove_dir(&slots_dir);
 
-            // P2.34: persist failure context so the next migration call (which
+            // Persist failure context so the next migration call (which
             // will refuse to proceed) tells the operator exactly what happened.
             // Sentinel stays in place — operator must `rm` it after manual
             // recovery, which doubles as the "I have looked at this" gate.
@@ -1018,7 +1007,7 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
     // Finalize by writing the active_slot pointer.
     write_active_slot(project_cqs_dir, DEFAULT_SLOT)?;
 
-    // P2.34: success — remove the sentinel as the last step. If the process
+    // Success — remove the sentinel as the last step. If the process
     // dies after the moves but before this remove, the next call will refuse
     // to migrate but the slot is already in place; operator can simply
     // delete the sentinel.
@@ -1047,7 +1036,7 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
 /// before returning so file handles don't leak into the move loop.
 ///
 /// Used by [`migrate_legacy_index_to_default_slot`] to defend against
-/// non-atomic cross-device moves losing uncommitted WAL pages (P2.62).
+/// non-atomic cross-device moves losing uncommitted WAL pages.
 fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
     use sqlx::{ConnectOptions, Connection};
@@ -1085,13 +1074,11 @@ fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
 /// in the rest of the codebase.
 fn collect_migration_files(project_cqs_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    // Always-present
-    // DS-V1.36-1: include the full HNSW sidecar set. The previous list
-    // missed `hnsw.ids` and `hnsw.checksum` for both basenames. Post-PR #1325,
-    // verify_hnsw_checksums treats a checksum sidecar referencing files that
-    // don't exist as a hard error — a legacy-slot migration would leave
-    // .ids/.checksum behind in `.cqs/` and the next search either failed to
-    // verify or rebuilt from scratch (losing all enrichment work).
+    // Include the full HNSW sidecar set, including `hnsw.ids` and
+    // `hnsw.checksum` for both basenames. verify_hnsw_checksums treats a
+    // checksum sidecar referencing files that don't exist as a hard error —
+    // leaving .ids/.checksum behind in `.cqs/` would make the next search
+    // fail to verify or rebuild from scratch (losing all enrichment work).
     let candidates = [
         crate::INDEX_DB_FILENAME,
         "index.db-wal",
@@ -1127,10 +1114,8 @@ fn collect_migration_files(project_cqs_dir: &Path) -> Vec<PathBuf> {
 /// Move a file, atomic where possible; falls back to copy + remove on **any**
 /// rename failure.
 ///
-/// Previously this matched on a hardcoded `EXDEV` errno (18 on Linux/macOS,
-/// `ERROR_NOT_SAME_DEVICE = 17` on Windows) which silently mis-classified the
-/// cross-device case on Windows. Falling back unconditionally is cheaper than
-/// tracking platform-specific errno constants — if the source is gone or the
+/// Falling back unconditionally is cheaper than tracking platform-specific
+/// errno constants for the cross-device case — if the source is gone or the
 /// destination unwritable, the caller surfaces the I/O error from `copy()`
 /// instead.
 fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -1287,12 +1272,11 @@ mod tests {
         assert!(write_active_slot(dir.path(), "active").is_err()); // reserved
     }
 
-    /// TC-ADV-V1.38-5 (#1463): pin DS-V1.33-2's `crate::temp_suffix()` race
-    /// fix. Pre-fix, two concurrent `write_active_slot` calls each staged
-    /// to a fixed `active_slot.tmp` and one would clobber the other's temp
-    /// file before the rename, leaving the on-disk file partially written
-    /// or truncated. The DS-V1.33-2 fix appended a 64-bit suffix to each
-    /// temp filename so concurrent writers don't share the staging path.
+    /// Pin the `crate::temp_suffix()` race fix. Two concurrent
+    /// `write_active_slot` calls staging to a fixed `active_slot.tmp` would
+    /// clobber each other's temp file before the rename, leaving the on-disk
+    /// file partially written or truncated. The 64-bit suffix on each temp
+    /// filename means concurrent writers don't share the staging path.
     ///
     /// This test exercises the temp-collision avoidance directly: spawn 8
     /// threads × 50 writes each interleaving "slot_a" and "slot_b", join
@@ -1500,8 +1484,8 @@ mod tests {
         assert!(cqs.join("index.db").exists());
     }
 
-    /// P2.31 / P2.34: a migration that crashed mid-flight leaves the
-    /// `migration.lock` sentinel behind. The next call must refuse to
+    /// A migration that crashed mid-flight leaves the `migration.lock`
+    /// sentinel behind. The next call must refuse to
     /// proceed and surface the failure context for manual recovery —
     /// rather than silently re-running the migration over a partially
     /// migrated tree.
@@ -1538,9 +1522,9 @@ mod tests {
         assert!(!slots_root(&cqs).exists());
     }
 
-    /// P2.31: a successful migration removes the sentinel as the last
-    /// step, so subsequent calls can proceed (idempotent no-op via the
-    /// `slots/` check).
+    /// A successful migration removes the sentinel as the last step, so
+    /// subsequent calls can proceed (idempotent no-op via the `slots/`
+    /// check).
     #[test]
     fn migrate_clears_sentinel_on_full_success() {
         let dir = TempDir::new().unwrap();
@@ -1557,7 +1541,7 @@ mod tests {
         );
     }
 
-    // ── slot.toml read / write (#1107) ───────────────────────────────────
+    // ── slot.toml read / write ───────────────────────────────────────────
 
     #[test]
     fn read_slot_model_returns_none_when_missing() {
@@ -1626,12 +1610,9 @@ mod tests {
         assert_eq!(read_slot_model(&cqs, "x").as_deref(), Some("e5-base"));
     }
 
-    /// EX-V1.30.1-4 (#1217): the round-trip preserves unrelated top-level
-    /// sections. Pre-fix the function clobbered the file with a single
-    /// `[embedding]\nmodel = …` block, so any user-added or future-typed
-    /// section disappeared on the next `cqs slot promote`. With the
-    /// `#[serde(flatten)] extra: toml::Table` catch-all the unknown
-    /// section survives verbatim.
+    /// The round-trip preserves unrelated top-level sections. With the
+    /// `#[serde(flatten)] extra: toml::Table` catch-all, any user-added or
+    /// future-typed section survives a `cqs slot promote` write verbatim.
     #[test]
     fn write_slot_model_preserves_unrelated_sections() {
         let dir = TempDir::new().unwrap();
@@ -1670,10 +1651,10 @@ mod tests {
         );
     }
 
-    /// EX-V1.30.1-4 (#1217): malformed slot.toml on disk recovers via
-    /// rewrite-from-default rather than erroring the write path. Means a
-    /// hand-broken slot.toml can't deadlock `cqs slot promote` — pinning
-    /// the tolerance contract documented in the function's doc comment.
+    /// Malformed slot.toml on disk recovers via rewrite-from-default rather
+    /// than erroring the write path. Means a hand-broken slot.toml can't
+    /// deadlock `cqs slot promote` — pins the tolerance contract documented
+    /// in the function's doc comment.
     #[test]
     fn write_slot_model_recovers_from_malformed_existing() {
         let dir = TempDir::new().unwrap();
@@ -1701,7 +1682,7 @@ mod tests {
         );
     }
 
-    // ── slot.toml [splade.alpha] read (#1453) ────────────────────────────
+    // ── slot.toml [splade.alpha] read ────────────────────────────────────
 
     #[test]
     fn read_slot_splade_alpha_table_returns_empty_when_missing() {

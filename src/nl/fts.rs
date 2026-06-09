@@ -22,10 +22,9 @@ fn is_cjk(c: char) -> bool {
 /// # Examples
 ///
 /// `text` rather than `ignore` because `nl` is `pub(crate)` — external
-/// rustdoc can't actually call `cqs::nl::tokenize_identifier`. The block
-/// is illustrative; under `cargo test -- --include-ignored` (the
-/// `ci-slow.yml` shape) `ignore`-tagged doctests *are* compiled and
-/// would surface the visibility error. (#1305)
+/// rustdoc can't call `cqs::nl::tokenize_identifier`. The block is
+/// illustrative; under `cargo test -- --include-ignored` `ignore`-tagged
+/// doctests *are* compiled and would surface the visibility error.
 ///
 /// ```text
 /// use cqs::nl::tokenize_identifier;
@@ -56,10 +55,9 @@ struct TokenizeIdentifierIter<'a> {
 impl<'a> Iterator for TokenizeIdentifierIter<'a> {
     type Item = String;
 
-    /// Retrieves the next token from the input string.
-    /// Splits the input into tokens by treating underscores, hyphens, and spaces as delimiters. CJK (Chinese, Japanese, Korean) characters are emitted as individual tokens. Uppercase letters trigger token boundaries and are converted to lowercase. All other characters are converted to lowercase and accumulated into the current token.
-    /// # Returns
-    /// `Some(String)` containing the next token, or `None` if no more tokens are available.
+    /// Splits on underscores, hyphens, and spaces; emits CJK characters as
+    /// individual tokens; treats an uppercase letter as a token boundary.
+    /// All characters are lowercased.
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
             return None;
@@ -107,9 +105,9 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
 }
 
 /// Default upper bound on `normalize_for_fts` output bytes (kept for the
-/// existing test that pins the value). Production code resolves the cap
-/// via `crate::limits::fts_normalize_max()` so `CQS_FTS_NORMALIZE_MAX`
-/// can override it. P3 #102.
+/// test that pins the value). Production code resolves the cap via
+/// `crate::limits::fts_normalize_max()` so `CQS_FTS_NORMALIZE_MAX` can
+/// override it.
 #[allow(dead_code)]
 const MAX_FTS_OUTPUT_LEN: usize = crate::limits::FTS_NORMALIZE_MAX;
 
@@ -119,7 +117,7 @@ const MAX_FTS_OUTPUT_LEN: usize = crate::limits::FTS_NORMALIZE_MAX;
 /// Output is capped (default 16 KiB; override via `CQS_FTS_NORMALIZE_MAX`)
 /// to prevent memory issues with pathological inputs. Truncation is
 /// surfaced at `WARN` level so silent FTS-recall gaps on long chunks
-/// (P3 #102) become visible.
+/// become visible.
 /// # Security: FTS5 Injection Protection
 /// This function provides implicit protection against FTS5 injection attacks.
 /// By only emitting alphanumeric tokens joined by spaces, special FTS5 operators
@@ -136,7 +134,7 @@ const MAX_FTS_OUTPUT_LEN: usize = crate::limits::FTS_NORMALIZE_MAX;
 pub fn normalize_for_fts(text: &str) -> String {
     let mut result = String::new();
     let mut current_word = String::new();
-    // P3 #102: env-overridable cap via CQS_FTS_NORMALIZE_MAX.
+    // Env-overridable cap via CQS_FTS_NORMALIZE_MAX.
     let cap = crate::limits::fts_normalize_max();
     let input_len = text.len();
 

@@ -44,13 +44,12 @@ impl<Mode> Store<Mode> {
     /// - Content patterns: sourced from `LanguageDef::test_markers` per language
     /// - Path patterns: sourced from `LanguageDef::test_path_patterns` per language
     /// Uses a broad SQL filter then Rust post-filter for precision.
-    /// Cached test chunks — populated on first access, returns clone from OnceLock.
+    /// Cached test chunks — populated on first access, returns a clone from OnceLock.
     /// **No invalidation by design.** Same contract as `get_call_graph`: the cache is
     /// intentionally write-once for the `Store` lifetime. Long-lived modes (batch, watch)
     /// must re-open the `Store` to see updated test discovery — do not add a `clear()`.
-    /// ~14 call sites benefit from this single-scan caching.
-    /// PERF-1: Returns `Arc<Vec<ChunkSummary>>` — Arc::clone is O(1) vs cloning
-    /// the full Vec on every call (~14 call sites benefit).
+    /// Returns `Arc<Vec<ChunkSummary>>` so `Arc::clone` is O(1) rather than cloning the
+    /// full Vec on every call.
     pub fn find_test_chunks(&self) -> Result<std::sync::Arc<Vec<ChunkSummary>>, StoreError> {
         if let Some(cached) = self.test_chunks_cache.get() {
             return Ok(std::sync::Arc::clone(cached));

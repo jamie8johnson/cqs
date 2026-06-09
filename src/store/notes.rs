@@ -16,13 +16,7 @@ use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
 
 /// Insert a batch of notes + FTS entries within an existing transaction.
 ///
-/// PF-V1.29-7: the prior implementation issued 3 SQL statements per note
-/// (INSERT OR REPLACE notes, DELETE FROM notes_fts, INSERT INTO notes_fts).
-/// A 500-note reindex meant 1500 round-trips to SQLite; the single write
-/// transaction amortized commit cost but every statement still paid the
-/// query-prepare + row-binding overhead.
-///
-/// Now three batched statements per `max_rows_per_statement` chunk:
+/// Three batched statements per `max_rows_per_statement` chunk:
 ///   1. INSERT OR REPLACE INTO notes (9 binds/row) — multi-row via QueryBuilder.
 ///   2. DELETE FROM notes_fts WHERE id IN (?,?,...) — one statement per batch.
 ///   3. INSERT INTO notes_fts (2 binds/row) — multi-row via QueryBuilder.
@@ -40,8 +34,9 @@ async fn insert_notes_with_fts_batched(
         return Ok(());
     }
 
-    // Empty blob for embedding column (SQ-9: note embeddings removed).
-    // Column retained for SQLite compatibility (no DROP COLUMN in older versions).
+    // Empty blob for the embedding column: notes carry no embedding. The
+    // column is retained for SQLite compatibility (no DROP COLUMN in older
+    // versions).
     let empty_blob: &[u8] = &[];
 
     // Pre-serialize mentions JSON + FTS-normalized text once so the batch
@@ -52,7 +47,7 @@ async fn insert_notes_with_fts_batched(
         .collect::<Result<Vec<_>, _>>()?;
     let fts_text: Vec<String> = notes.iter().map(|n| normalize_for_fts(&n.text)).collect();
 
-    // Step 1: INSERT OR REPLACE INTO notes (10 cols per row — v25 / #1133 added kind).
+    // Step 1: INSERT OR REPLACE INTO notes (10 cols per row, including kind).
     const NOTES_BATCH: usize = max_rows_per_statement(10);
     for (batch_idx, batch) in notes.chunks(NOTES_BATCH).enumerate() {
         let row_offset = batch_idx * NOTES_BATCH;
@@ -452,7 +447,7 @@ mod tests {
     //
     // `upsert_notes_batch` binds sentiment as a raw f32, serializes
     // `mentions` via serde_json, and iterates every note inside one
-    // transaction. Previously uncovered edge cases:
+    // transaction. Edge cases covered here:
     //   - NaN sentiment (SQLite stores it; downstream `note_stats` threshold
     //     comparisons must not misclassify).
     //   - Empty mentions vec round-trips as `[]` JSON.

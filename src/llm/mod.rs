@@ -1,4 +1,4 @@
-//! Claude API client for LLM-generated function summaries (SQ-6).
+//! Claude API client for LLM-generated function summaries.
 //!
 //! Uses `reqwest::blocking` to avoid nested tokio runtime issues
 //! (the Store already uses `rt.block_on()`).
@@ -30,19 +30,16 @@ pub mod validation;
 /// and hold it through the read-back so a sibling test can't see partial
 /// state.
 ///
-/// Submodules used to declare their own per-file `Mutex<()>` (`HYDE_ENV_LOCK`,
-/// `DOC_ENV_LOCK`, etc.). Those are independent instances and don't actually
-/// serialize across files — `hyde::tests::hyde_query_pass_returns_zero_for_empty_store`
-/// would race against `doc_comments::tests` under `cargo test --release` /
-/// the ci-slow.yml full-suite job and pick up a different `CQS_LLM_API_BASE`
-/// than the one it had set, panicking on the read-back. (#1305 / #1312)
+/// A single module-wide lock is required because multiple submodules
+/// (`hyde::tests`, `doc_comments::tests`, `local::tests`) mutate the
+/// `CQS_LLM_*` vars. Per-file `Mutex<()>` instances don't serialize across
+/// files, so a test in one submodule could read a different
+/// `CQS_LLM_API_BASE` than the one it set and panic on the read-back under
+/// the parallel test runner.
 ///
 /// Intentionally public-to-the-crate (`pub(crate)`) and `#[cfg(test)]`-gated
 /// rather than scoped to a `tests` submodule so submodules can `use
-/// crate::llm::LLM_ENV_LOCK` directly. Same shape as the test-helper
-/// pattern in `embedder/provider.rs::tests` (#1260) — that fix used a
-/// per-file lock since only one file mutated `CQS_EMBED_*`; here multiple
-/// files mutate `CQS_LLM_*` so the lock must be at the parent module.
+/// crate::llm::LLM_ENV_LOCK` directly.
 #[cfg(test)]
 pub(crate) static LLM_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -91,9 +88,9 @@ pub(crate) fn collect_eligible_chunks(
     let mut cached = 0usize;
     let mut skipped = 0usize;
     let mut cursor = 0i64;
-    // SHL-V1.38-7 (#1463): operator-tunable via `CQS_LLM_PASS_PAGE_SIZE`.
-    // Smaller page (50-100) reduces peak heap on large repos; larger
-    // (1000+) reduces SQLite round-trip overhead on fast SSDs.
+    // Operator-tunable via `CQS_LLM_PASS_PAGE_SIZE`. Smaller page (50-100)
+    // reduces peak heap on large repos; larger (1000+) reduces SQLite
+    // round-trip overhead on fast SSDs.
     let page_size = std::env::var("CQS_LLM_PASS_PAGE_SIZE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -123,8 +120,8 @@ pub(crate) fn collect_eligible_chunks(
                 cached += 1;
                 continue;
             }
-            // Phase 5 follow-up: summarize all code chunk types, not just callable
-            // ones. Structs, enums, traits, impls, classes, constants etc. all
+            // Summarize all code chunk types, not just callable ones.
+            // Structs, enums, traits, impls, classes, constants etc. all
             // benefit from a one-line summary because the dual-index router
             // routes conceptual/behavioral queries to the base (non-summary)
             // index — and that routing has zero effect when the gold answer is
@@ -175,7 +172,7 @@ pub(crate) fn collect_eligible_chunks(
 // doc_comment_pass returns Vec<crate::doc_writer::DocCommentResult>
 pub use doc_comments::doc_comment_pass;
 
-/// Typed error for LLM operations (EH-14).
+/// Typed error for LLM operations.
 ///
 /// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
 #[derive(Debug, thiserror::Error)]
@@ -190,16 +187,15 @@ pub enum LlmError {
     BatchFailed(String),
     #[error("Invalid batch ID: {0}")]
     InvalidBatchId(String),
-    /// EXT-V1.36-1 / P3: client-side rejection of a model name that
-    /// doesn't match the provider's expected shape. Surfaced before any
-    /// API roundtrip so wrong-provider/model combos fail fast.
+    /// Client-side rejection of a model name that doesn't match the
+    /// provider's expected shape. Surfaced before any API roundtrip so
+    /// wrong-provider/model combos fail fast.
     #[error("Invalid model for provider: {0}")]
     InvalidModel(String),
-    /// EXT-V1.36-1 / P3: provider-side configuration error (empty model,
-    /// missing endpoint, etc.).
+    /// Provider-side configuration error (empty model, missing endpoint, etc.).
     #[error("LLM configuration error: {message}")]
     Configuration { message: String },
-    /// P2.18: a `fetch_batch_results` call could not locate the requested
+    /// A `fetch_batch_results` call could not locate the requested
     /// `batch_id` in its in-memory stash. Distinguished from transient
     /// `Http`/`Api` errors so callers can decide whether to retry.
     #[error("batch not found: {0}")]
@@ -237,9 +233,8 @@ fn max_content_chars() -> usize {
     })
 }
 const MIN_CONTENT_CHARS: usize = 50;
-// P2.39 — `MAX_BATCH_SIZE` const removed. Callers now use
-// `crate::limits::llm_max_batch_size()` directly so the env override
-// `CQS_LLM_MAX_BATCH_SIZE` takes effect.
+// Batch size comes from `crate::limits::llm_max_batch_size()` so the env
+// override `CQS_LLM_MAX_BATCH_SIZE` takes effect.
 /// Max tokens for HyDE query predictions (3-5 short queries).
 const HYDE_MAX_TOKENS: u32 = 150;
 /// Poll interval for batch completion
@@ -255,10 +250,9 @@ const DEFAULT_PROVIDER: &str = "anthropic";
 /// name; tests compare it as a plain `&str` (e.g. `"anthropic"`,
 /// `"local"`).
 ///
-/// SEC-V1.38-1 (#1463): hand-written `Debug` redacts `api_base` userinfo
-/// before emitting. The five downstream sites that log `LlmConfig` /
-/// `?config` previously echoed `https://user:pass@host` shapes verbatim
-/// to journald.
+/// The hand-written `Debug` impl redacts `api_base` userinfo before
+/// emitting, so logging `LlmConfig` / `?config` never echoes a
+/// `https://user:pass@host` shape to journald.
 pub struct LlmConfig {
     pub provider: &'static str,
     pub api_base: String,
@@ -271,8 +265,7 @@ pub struct LlmConfig {
 impl LlmConfig {
     /// Render `api_base` with any `user[:pass]@host` userinfo segment
     /// stripped. Use this in every `tracing::*` site instead of
-    /// `%self.api_base`. Pre-fix the userinfo could land in journald
-    /// at `info!` level whenever the daemon started up.
+    /// `%self.api_base` so userinfo never lands in journald.
     ///
     /// Returns `"[redacted]"` for unparseable URLs (so a misformatted
     /// env var doesn't accidentally leak the raw bytes through this
@@ -297,14 +290,11 @@ impl std::fmt::Debug for LlmConfig {
 /// Strip `user[:pass]@` userinfo from a URL, leaving scheme + host + path.
 /// Returns `[redacted]` for inputs that don't look like a URL.
 ///
-/// SEC-V1.40-2: per RFC 3986, userinfo precedes the FIRST `/` after the
-/// authority (`scheme://userinfo@host/path`). The boundary search must
-/// be confined to the authority component, otherwise a URL like
-/// `https://api.com/path/@anchor` (path-component `@`) silently
-/// rewrites the redacted form's host to the path fragment after `@`.
-/// Pre-fix output for that input was `https://anchor` (host swap);
-/// post-fix passes the URL through unchanged because no `@` appears
-/// inside the authority.
+/// Per RFC 3986, userinfo precedes the FIRST `/` after the authority
+/// (`scheme://userinfo@host/path`). The boundary search is confined to the
+/// authority component, otherwise a URL like `https://api.com/path/@anchor`
+/// (path-component `@`) would silently rewrite the redacted form's host to
+/// the path fragment after `@`.
 fn redact_userinfo(url: &str) -> String {
     if let Some(scheme_end) = url.find("://") {
         let after_scheme = &url[scheme_end + 3..];
@@ -329,9 +319,9 @@ fn redact_userinfo(url: &str) -> String {
 impl LlmConfig {
     /// Resolve config with priority: env vars > config file > hardcoded constants.
     ///
-    /// SEC-V1.25-13: Returns `Err` if `CQS_LLM_API_BASE` uses cleartext `http://`
-    /// and the explicit opt-in `CQS_LLM_ALLOW_INSECURE=1` is not set. Prevents
-    /// the API key from being sent in the clear on every call.
+    /// Returns `Err` if `CQS_LLM_API_BASE` uses cleartext `http://` and the
+    /// explicit opt-in `CQS_LLM_ALLOW_INSECURE=1` is not set. Prevents the
+    /// API key from being sent in the clear on every call.
     pub fn resolve(config: &crate::config::Config) -> Result<Self, LlmError> {
         let _span = tracing::info_span!("resolve_llm_config").entered();
 
@@ -361,8 +351,8 @@ impl LlmConfig {
                     })
                 })
                 .unwrap_or_else(|| api_base.clone());
-            // SEC-V1.25-13: cleartext http:// leaks the API key on every call.
-            // A `warn!` alone is not enough — demand explicit opt-in via
+            // Cleartext http:// leaks the API key on every call. A `warn!`
+            // alone is not enough — demand explicit opt-in via
             // CQS_LLM_ALLOW_INSECURE=1 for localhost testing.
             if api_base.starts_with("http://") {
                 if std::env::var("CQS_LLM_ALLOW_INSECURE").as_deref() != Ok("1") {
@@ -470,14 +460,13 @@ impl LlmConfig {
 
 /// Create a batch provider from the resolved config.
 ///
-/// EX-31/EX-34: Single factory, provider-aware. Returns a boxed trait object so
-/// callers don't need to care which provider is in use — all operations go
-/// through the [`BatchProvider`] trait.
+/// Single factory, provider-aware. Returns a boxed trait object so callers
+/// don't need to care which provider is in use — all operations go through
+/// the [`BatchProvider`] trait.
 ///
-/// EX-V1.30-2: Looks up the matching [`ProviderRegistry`] in [`PROVIDERS`]
-/// and delegates construction to its `build` method. Adding a third
-/// provider is one impl + one slice row — `resolve` and `create_client`
-/// stay untouched.
+/// Looks up the matching [`ProviderRegistry`] in [`PROVIDERS`] and delegates
+/// construction to its `build` method. Adding a provider is one impl + one
+/// slice row — `resolve` and `create_client` stay untouched.
 pub fn create_client(
     llm_config: LlmConfig,
     on_item: Option<provider::OnItemCallback>,
@@ -501,9 +490,9 @@ pub fn create_client(
 
 /// Static registry of available LLM providers.
 ///
-/// EX-V1.30-2: Adding a new provider means writing an impl for the
-/// trait and adding one row here. `resolve()` and `create_client()`
-/// dispatch from this slice without code changes elsewhere.
+/// Adding a new provider means writing an impl for the trait and adding one
+/// row here. `resolve()` and `create_client()` dispatch from this slice
+/// without code changes elsewhere.
 static PROVIDERS: &[&dyn ProviderRegistry] = &[&AnthropicRegistry, &LocalRegistry];
 
 struct AnthropicRegistry;
@@ -572,14 +561,10 @@ impl ProviderRegistry for LocalRegistry {
 ///
 /// Default 4. Values ≤0 clamp to 1; values >16 clamp to 16.
 ///
-/// P3.47: ceiling lowered from 64 → 16. Local LLM endpoints (vLLM,
-/// llama.cpp, ollama, lmstudio) bottleneck on GPU memory and KV cache
-/// scheduling well below 16 in-flight requests; values above that
-/// burn worker thread stacks (default 2 MB × N) without any throughput
-/// gain. The full per-thread stack-size knob (`Builder::stack_size`)
-/// would require lifting workers out of `thread::scope`, since
-/// `scope::Scope::spawn` lacks a stack-size hook — deferred until
-/// the provider API supports `Arc<Self>` worker dispatch.
+/// The ceiling is 16 because local LLM endpoints (vLLM, llama.cpp, ollama,
+/// lmstudio) bottleneck on GPU memory and KV cache scheduling well below 16
+/// in-flight requests; values above that burn worker thread stacks
+/// (default 2 MB × N) without any throughput gain.
 ///
 /// Not memoised: local-provider knobs are read once at `LocalProvider::new`
 /// time, not hot-path; tests that flip env vars need fresh reads.
@@ -743,16 +728,14 @@ struct ApiError {
 
 #[derive(Deserialize)]
 struct ApiErrorDetail {
-    /// Anthropic's `error.message` is intentionally NOT logged anywhere
-    /// (SEC-V1.38-2 #1463 + SEC-V1.36-2 / P2 #33) — it can echo prompt
-    /// fragments. Field still deserialized to keep parse-or-skip
-    /// semantics if Anthropic ships a response missing `type`.
+    /// Anthropic's `error.message` is intentionally NOT logged anywhere — it
+    /// can echo prompt fragments. Field still deserialized to keep
+    /// parse-or-skip semantics if Anthropic ships a response missing `type`.
     #[allow(dead_code)]
     message: String,
-    /// SEC-V1.38-2 (#1463): structural error type
-    /// (`invalid_request_error`, `authentication_error`, …). Safe to
-    /// log; does not echo input fragments. Optional because not every
-    /// upstream populates it.
+    /// Structural error type (`invalid_request_error`,
+    /// `authentication_error`, …). Safe to log; does not echo input
+    /// fragments. Optional because not every upstream populates it.
     #[serde(default)]
     r#type: String,
 }
@@ -768,11 +751,10 @@ pub struct SummaryEntry {
 mod tests {
     use super::*;
 
-    /// SEC-V1.38-1 (#1463): verify both `LlmConfig::redacted_api_base()`
-    /// and the hand-rolled `Debug` impl strip `user[:pass]@host` userinfo.
-    /// A regression that exposed the userinfo would surface here AND in
-    /// every downstream `tracing::*` site at once (those all route through
-    /// `redacted_api_base` after this PR).
+    /// Verify both `LlmConfig::redacted_api_base()` and the hand-rolled
+    /// `Debug` impl strip `user[:pass]@host` userinfo. A regression that
+    /// exposed the userinfo would surface here AND in every downstream
+    /// `tracing::*` site at once (those all route through `redacted_api_base`).
     #[test]
     fn redacted_api_base_strips_userinfo() {
         let cfg = LlmConfig {
@@ -807,8 +789,8 @@ mod tests {
         assert_eq!(redact_userinfo(""), "[redacted]");
     }
 
-    /// SEC-V1.40-2 happy-path: a URL with userinfo in the authority
-    /// has the userinfo stripped, but the path/query are preserved.
+    /// Happy path: a URL with userinfo in the authority has the userinfo
+    /// stripped, but the path/query are preserved.
     #[test]
     fn redact_userinfo_strips_authority_userinfo() {
         assert_eq!(
@@ -822,13 +804,11 @@ mod tests {
         assert_eq!(redact_userinfo("https://user@host.com"), "https://host.com");
     }
 
-    /// SEC-V1.40-2 regression: a URL with `@` in the path component
-    /// (e.g. an HTTPS gateway routing pattern, or a URL pointing at a
-    /// fragment anchor) must NOT have its host silently rewritten to
-    /// the path fragment after `@`. Pre-fix the redactor used
-    /// `find('@')` over the entire after-scheme portion and produced
-    /// `https://anchor`. Post-fix the URL passes through unchanged
-    /// because the `@` is in the path, not the authority.
+    /// A URL with `@` in the path component (e.g. an HTTPS gateway routing
+    /// pattern, or a URL pointing at a fragment anchor) must NOT have its
+    /// host silently rewritten to the path fragment after `@`. The URL
+    /// passes through unchanged because the `@` is in the path, not the
+    /// authority.
     #[test]
     fn redact_userinfo_preserves_at_in_path() {
         assert_eq!(
@@ -847,8 +827,8 @@ mod tests {
         );
     }
 
-    /// SEC-V1.40-2 regression: a URL with `@` in the query string
-    /// likewise must not be misinterpreted as userinfo.
+    /// A URL with `@` in the query string likewise must not be
+    /// misinterpreted as userinfo.
     #[test]
     fn redact_userinfo_preserves_at_in_query() {
         assert_eq!(
@@ -857,10 +837,9 @@ mod tests {
         );
     }
 
-    // ENV_MUTEX hoisted to module-wide `LLM_ENV_LOCK` (#1312 / #1305) so
-    // these tests serialize against `hyde::tests`, `doc_comments::tests`, and
-    // `local::tests` — all four were independent Mutex instances pre-fix and
-    // raced under cargo's parallel test runner.
+    // These tests use the module-wide `LLM_ENV_LOCK` so they serialize
+    // against `hyde::tests`, `doc_comments::tests`, and `local::tests` under
+    // cargo's parallel test runner.
 
     type SavedEnv = [Option<String>; 4];
 
@@ -977,7 +956,7 @@ mod tests {
         assert_eq!(llm.max_tokens, 500);
     }
 
-    // AD-32: CQS_LLM_API_BASE takes priority over CQS_API_BASE
+    // CQS_LLM_API_BASE takes priority over CQS_API_BASE
     #[test]
     fn llm_config_llm_api_base_takes_precedence() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1002,7 +981,7 @@ mod tests {
         );
     }
 
-    // AD-32: CQS_API_BASE still works as fallback
+    // CQS_API_BASE still works as fallback
     #[test]
     fn llm_config_api_base_fallback_still_works() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1026,7 +1005,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.25-13: http:// is rejected unless CQS_LLM_ALLOW_INSECURE=1 is also set.
+    // http:// is rejected unless CQS_LLM_ALLOW_INSECURE=1 is also set.
     #[test]
     fn llm_config_rejects_http_without_allow_insecure() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1062,7 +1041,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.25-13: With CQS_LLM_ALLOW_INSECURE=1 the http:// override is allowed.
+    // With CQS_LLM_ALLOW_INSECURE=1 the http:// override is allowed.
     #[test]
     fn llm_config_allows_http_with_allow_insecure() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1111,7 +1090,7 @@ mod tests {
         assert_eq!(llm.max_tokens, 300);
     }
 
-    // ===== TC-21: JSONL parsing tests =====
+    // ===== JSONL parsing tests =====
 
     /// Helper: parse JSONL body into a HashMap<custom_id, text>, replicating
     /// the inline logic from `LlmClient::fetch_batch_results`.
@@ -1312,7 +1291,7 @@ mod tests {
         );
     }
 
-    // ===== Local provider config sad-paths (spec items 23-25) =====
+    // ===== Local provider config sad-paths =====
 
     /// Helper to snapshot and restore the full local-provider env surface.
     type LocalEnv = [Option<String>; 6];
@@ -1345,8 +1324,8 @@ mod tests {
         }
     }
 
-    /// Item 23: `CQS_LLM_PROVIDER=local` without `CQS_LLM_API_BASE` →
-    /// `create_client` returns an actionable error before any HTTP traffic.
+    /// `CQS_LLM_PROVIDER=local` without `CQS_LLM_API_BASE` → `create_client`
+    /// returns an actionable error before any HTTP traffic.
     #[test]
     fn local_provider_missing_api_base_errors() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1381,8 +1360,7 @@ mod tests {
         );
     }
 
-    /// Item 24: `CQS_LLM_PROVIDER=local` without `CQS_LLM_MODEL` →
-    /// actionable error.
+    /// `CQS_LLM_PROVIDER=local` without `CQS_LLM_MODEL` → actionable error.
     #[test]
     fn local_provider_missing_model_errors() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1416,8 +1394,8 @@ mod tests {
         );
     }
 
-    /// Item 25: local provider inherits the existing SEC-V1.25-13 http://
-    /// rejection — opt-in required for cleartext bases.
+    /// Local provider inherits the http:// rejection — opt-in required for
+    /// cleartext bases.
     #[test]
     fn local_provider_rejects_http_without_allow_insecure() {
         let _lock = crate::llm::LLM_ENV_LOCK
@@ -1467,7 +1445,7 @@ mod tests {
         assert_eq!(llm_config.provider, "local");
     }
 
-    /// EX-V1.30-2: Unknown CQS_LLM_PROVIDER falls back to the default with a
+    /// Unknown CQS_LLM_PROVIDER falls back to the default with a
     /// `tracing::warn!`. Validates the fallback path drives off the registry,
     /// not a hand-coded match.
     #[test]
@@ -1493,8 +1471,8 @@ mod tests {
         );
     }
 
-    /// EX-V1.30-2: PROVIDERS slice contains both built-in registries.
-    /// Guards against accidental row deletion.
+    /// PROVIDERS slice contains both built-in registries. Guards against
+    /// accidental row deletion.
     #[test]
     fn providers_slice_has_anthropic_and_local() {
         let names: Vec<&'static str> = PROVIDERS.iter().map(|p| p.name()).collect();
