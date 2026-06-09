@@ -139,22 +139,21 @@ def find_rank_in_results(gold: dict, results: list[dict]) -> tuple[int | None, s
     """Return (1-based rank, match_kind). Strict → basename → name fallback."""
     target_origin = gold.get("origin")
     target_name = gold.get("name")
-    target_lstart = gold.get("line_start")
     target_basename = (target_origin or "").split("/")[-1].split("\\")[-1]
 
     for i, r in enumerate(results):
-        if (r.get("file"), r.get("name"), r.get("line_start")) == (
+        # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+        if (r.get("file"), r.get("name")) == (
             target_origin,
             target_name,
-            target_lstart,
         ):
             return i + 1, "strict"
     for i, r in enumerate(results):
         rb = (r.get("file") or "").split("/")[-1].split("\\")[-1]
-        if (rb, r.get("name"), r.get("line_start")) == (
+        # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+        if (rb, r.get("name")) == (
             target_basename,
             target_name,
-            target_lstart,
         ):
             return i + 1, "basename"
     for i, r in enumerate(results):

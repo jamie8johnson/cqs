@@ -169,12 +169,13 @@ def main() -> int:
                         errors += 1
                         continue
                     gold = q["gold_chunk"]
-                    gold_key = (gold.get("origin"), gold.get("name"), gold.get("line_start"))
+                    # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+                    gold_key = (gold.get("origin"), gold.get("name"))
                     res_list = out.get("results", [])
                     cat_total += 1
                     if res_list:
                         top = res_list[0]
-                        if (top.get("file"), top.get("name"), top.get("line_start")) == gold_key:
+                        if (top.get("file"), top.get("name")) == gold_key:
                             cat_hits += 1
                 except (json.JSONDecodeError, KeyError):
                     errors += 1
