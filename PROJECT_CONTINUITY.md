@@ -2,7 +2,16 @@
 
 ## Right Now
 
-**v1.40.0 cycle wrap-up — 2026-05-08/09.** 24-PR session shipped v1.40.0 to crates.io (SNR Phases 1-4 + Polymorphic Routing Phase 1 + Tier 2a/2b cqs-dead reductions). Then ran the **post-v1.40.0 16-category audit**: 150 raw findings → 78 triaged → 9 closeout PRs (#1626–#1633) closing **21 of 23 P1 entries** (~91%). 2 P1s deferred with rationale (DS-V1.40-1 daemon cache invalidation — symptom rare; DS-V1.40-7 sentiment CHECK constraint — single-user discrete-value compliance reliable). Audit cycle's diminishing-returns curve confirms project maturity: 14th full audit, no architectural-correctness P1s remain. Net read: cqs is at the "polished and shipping value" stage; remaining work is steady-state plus telemetry-driven (Phase 2 polymorphic routing) and a potential MCP interface.
+**Comment hygiene + dependabot drain — 2026-06-09.** Two arcs, both closed:
+
+- **All-source comment cleanup (#1673, merged).** 231 of 264 `.rs` files: removed ~1,500+ changelog/provenance refs from comments (audit IDs, PR citations, "previously/pre-fix" narration), rewrote present-tense. Executed by 10 parallel opus agents with disjoint file ownership; integration mechanically verified the diff was comment-only (trailing-comment edits on byte-identical code allowed) and reverted 17 string-literal leaks before commit. One real doc fix: `lib.rs` `EMBEDDING_DIM` doc said 1024/BGE-large, is 768/EmbeddingGemma. Same PR brought ROADMAP.md to v1.41.0 currency (v1.40.0 → Previous, SNR Phases 4-6 flipped to shipped, Open Issues re-audited — 30 closed rows pruned, DS-V1.40-1/DS-V1.40-7 deferred P1s now tracked).
+- **Dependabot drain (#1668–#1672, all merged).** Rust 1.96 stable's new `manual_option_zip` clippy lint broke CI on every open PR; fixed the two sites on main (#1672), `@dependabot rebase`d all four dep PRs, merged: uuid 1.23.2, log 0.4.31, serial_test 3.5.0, tree-sitter-swift 0.7.3. Two CI flakes encountered and cleared on rerun: HuggingFace 429 model download, `tc31_save_and_load_with_dim_1024` HNSW nearest-neighbor assert (noted in notes.toml — will bite again).
+
+State: zero open PRs, main green at c396dd8a, binary 1.41.0+main installed, daemon restarted with reconcile queued (comment churn → content-hash changes → background re-embed). Telemetry kind-fallback measurement window still accumulating since the 2026-05-08 reset.
+
+### Previous: v1.40.0 cycle wrap-up — 2026-05-08/09
+
+24-PR session shipped v1.40.0 to crates.io (SNR Phases 1-4 + Polymorphic Routing Phase 1 + Tier 2a/2b cqs-dead reductions). Then ran the **post-v1.40.0 16-category audit**: 150 raw findings → 78 triaged → 9 closeout PRs (#1626–#1633) closing **21 of 23 P1 entries** (~91%). 2 P1s deferred with rationale (DS-V1.40-1 daemon cache invalidation — symptom rare; DS-V1.40-7 sentiment CHECK constraint — single-user discrete-value compliance reliable). Audit cycle's diminishing-returns curve confirms project maturity: 14th full audit, no architectural-correctness P1s remain. Net read: cqs is at the "polished and shipping value" stage; remaining work is steady-state plus telemetry-driven (Phase 2 polymorphic routing) and a potential MCP interface.
 
 **Phase 1 polymorphic routing — 60/60 dispatch points complete.** Every function-or-type-specialized command (`impact`, `callers`, `callees`, `test-map`, `trace`, `deps`) consults `cqs::kind::classify_hits` against an exact-name lookup before its happy-path query, on both CLI-direct (#1612, #1616, #1617, #1618) and daemon-path (#1620). Const/Type/Module/Ambiguous kinds get a kind-labeled fallback shape (`{kind, fallback_from, name, definitions, note}`) instead of misrouted-to-empty results. Verified live: `cqs callers HANDLING_ADVICE` → const fallback; `cqs test-map ImpactOptions` → ambiguous fallback (struct + impl).
 
@@ -34,7 +43,7 @@
 
 **Audit mode disabled** at end of cycle (was on for ~12h). Notes are back in search/read for normal operation.
 
-### Shipped this session — 24 PRs
+### Shipped 2026-05-08 session — 24 PRs
 
 | PR | Title | Notes |
 |---|---|---|
@@ -166,9 +175,9 @@ Numbers are below the 2026-05-03 capture (50.9% / 76.2% / 88.6% agg) because the
 - ✅ **#1453** (per-slot SPLADE α) — closed by #1472
 - ✅ **#1458** (TC Happy 5 tests) — closed in v1.39.0 cycle
 
-## Open issues (re-verified 2026-05-07)
+## Open issues (re-verified 2026-06-09)
 
-All 15 open issues are still relevant — none stale.
+All 15 open issues confirmed still open against GitHub — none stale.
 
 | # | Status | Why open |
 |---|---|---|
