@@ -129,7 +129,8 @@ def build_work_items(repo_root: Path, limit_per_split: int | None) -> list[dict]
         for q_idx, entry in enumerate(rows):
             query = entry["query"]
             gold = entry.get("gold_chunk") or {}
-            gold_key = (gold.get("origin"), gold.get("name"), gold.get("line_start"))
+            # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+            gold_key = (gold.get("origin"), gold.get("name"))
             pool_entry = pools_by_query.get(query)
             if not pool_entry:
                 missing_pool += 1
@@ -144,7 +145,8 @@ def build_work_items(repo_root: Path, limit_per_split: int | None) -> list[dict]
                 if content is None:
                     missing_file += 1
                     continue
-                is_gold = (origin, name, line_start) == gold_key
+                # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+                is_gold = (origin, name) == gold_key
                 items.append({
                     "split": split_name,
                     "query": query,

@@ -60,12 +60,12 @@ def _make_client(backend: str):
 
 
 def chunk_matches(result: dict, gold: dict) -> bool:
-    """Origin + name + line_start identity. Chunk ids drift across reindexes
-    but origin/name/line_start stay stable for the same logical chunk."""
+    """Origin + name identity. Chunk ids and line numbers drift across
+    reindexes/refactors, but origin/name stay stable for the same logical chunk.
+    # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)"""
     return (
         result.get("file") == gold.get("origin")
         and result.get("name") == gold.get("name")
-        and result.get("line_start") == gold.get("line_start")
     )
 
 

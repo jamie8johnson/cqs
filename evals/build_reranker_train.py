@@ -37,7 +37,8 @@ NEGATIVES_PER_POSITIVE = 6  # 1 positive + 6 negatives = 7-way pair group
 
 
 def _chunk_key(r: dict) -> tuple:
-    return (r.get("file") or r.get("origin"), r.get("name"), r.get("line_start"))
+    # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+    return (r.get("file") or r.get("origin"), r.get("name"))
 
 
 def _result_content(result: dict) -> str:
@@ -81,7 +82,8 @@ def main() -> int:
                     n_missing_pool += 1
                     continue
 
-                gold_key = (gold.get("origin"), gold.get("name"), gold.get("line_start"))
+                # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+                gold_key = (gold.get("origin"), gold.get("name"))
                 pool = pool_entry["pool"]
 
                 # Find positive in pool (the pool member matching gold).

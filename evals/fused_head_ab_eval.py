@@ -29,13 +29,15 @@ OVERRIDE_PATH = Path.home() / ".config/systemd/user/cqs-watch.service.d/ab-overr
 
 
 def gold_key(g):
-    return (g.get("origin"), g.get("name"), g.get("line_start"))
+    # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+    return (g.get("origin"), g.get("name"))
 
 
 def match_at_k(gold, results, k):
     target = gold_key(gold)
     for i, r in enumerate(results[:k]):
-        if (r.get("file"), r.get("name"), r.get("line_start")) == target:
+        # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+        if (r.get("file"), r.get("name")) == target:
             return i + 1
     return None
 

@@ -61,11 +61,13 @@ CAT_ALIASES = {
 
 
 def gold_key(g: dict) -> tuple:
-    return (g.get("origin"), g.get("name"), g.get("line_start"))
+    # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+    return (g.get("origin"), g.get("name"))
 
 
 def candidate_key(c: dict) -> tuple:
-    return (c.get("file"), c.get("name"), c.get("line_start"))
+    # match (file, name) only — line numbers drift with refactors (mirrors Rust eval matcher)
+    return (c.get("file"), c.get("name"))
 
 
 def load_corpus() -> list[dict]:
