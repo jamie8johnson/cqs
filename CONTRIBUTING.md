@@ -210,7 +210,7 @@ src/
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
-  store/        - SQLite storage layer (Schema v27, WAL mode)
+  store/        - SQLite storage layer (Schema v28, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
     search.rs   - RRF fusion, search_filtered, search_unified_with_index
@@ -224,7 +224,7 @@ src/
     types.rs    - Type edge storage and queries
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
-    migrations.rs - Schema migration framework (v10-v27, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks, v27 chunks.needs_embedding for skip-first-pass embed under --llm-summaries (#1452))
+    migrations.rs - Schema migration framework (v10-v28, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks, v27 chunks.needs_embedding for skip-first-pass embed under --llm-summaries, v28 chunks.canonical_hash for comment-canonical embedding reuse)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError

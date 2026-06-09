@@ -2,7 +2,18 @@
 
 ## Right Now
 
-**Comment hygiene + dependabot drain — 2026-06-09.** Two arcs, both closed:
+**v1.42.0 cut — 2026-06-09 (evening).** Release PR in flight. Schema v28 (canonical_hash). Contents: comment-canonical embedding reuse (#1677), comment cleanup + CI provenance lint (#1673/#1676), cuvs fork retired onto official 26.6.0 + conda libcuvs 26.06 (#1679), eval drift-proofing (#1675), sqlx 0.9 + dep bumps. Toolchain updated to 1.96.0 (local now matches CI; this morning's manual_option_zip ambush can't recur).
+
+**In flight:**
+- **IVF-SQ Rust bindings agent** (~/cuvs-contrib, branch rust-ivf-sq) — next cuvs upstream contribution, tracked #1678. No pushes; review before anything goes upstream.
+- **Standing fix loop** (session cron, 5h): merges green PRs, continues ongoing work, else pulls from the verified audit queue (`docs/audit-triage.md` § Verification 2026-06-09 — 24 confirmed-open, priority-ordered) or fixable issues (#1680 MSRV 1.96 + assert_matches sweep, #1350, #1351).
+- **Post-release housekeeping queued:** tag + crates.io publish after release PR merges, then `cargo clean` (~/.cargo-target/cqs) + /tmp scratch cleanup.
+
+**Operational notes from today:** daemon CLI client has no socket read timeout — a request racing a daemon restart blocks forever (hung cli_envelope_test 40min; noted in notes.toml, queue it). Never restart cqs-watch while a test suite runs. Telemetry reset at 23:03 (archived 33-day window: impact 71% — pre-edit hook; search 4.4%; no kind-fallback visibility until OB-V1.40-2 ships).
+
+### Earlier today — comment hygiene + dependabot drain
+
+Two arcs, both closed:
 
 - **All-source comment cleanup (#1673, merged).** 231 of 264 `.rs` files: removed ~1,500+ changelog/provenance refs from comments (audit IDs, PR citations, "previously/pre-fix" narration), rewrote present-tense. Executed by 10 parallel opus agents with disjoint file ownership; integration mechanically verified the diff was comment-only (trailing-comment edits on byte-identical code allowed) and reverted 17 string-literal leaks before commit. One real doc fix: `lib.rs` `EMBEDDING_DIM` doc said 1024/BGE-large, is 768/EmbeddingGemma. Same PR brought ROADMAP.md to v1.41.0 currency (v1.40.0 → Previous, SNR Phases 4-6 flipped to shipped, Open Issues re-audited — 30 closed rows pruned, DS-V1.40-1/DS-V1.40-7 deferred P1s now tracked).
 - **Dependabot drain (#1668–#1672, all merged).** Rust 1.96 stable's new `manual_option_zip` clippy lint broke CI on every open PR; fixed the two sites on main (#1672), `@dependabot rebase`d all four dep PRs, merged: uuid 1.23.2, log 0.4.31, serial_test 3.5.0, tree-sitter-swift 0.7.3. Two CI flakes encountered and cleared on rerun: HuggingFace 429 model download, `tc31_save_and_load_with_dim_1024` HNSW nearest-neighbor assert (noted in notes.toml — will bite again).

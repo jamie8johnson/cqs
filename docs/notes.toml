@@ -1879,3 +1879,11 @@ mentions = [
 sentiment = -0.5
 text = "tc31_save_and_load_with_dim_1024 (hnsw/persist.rs) is flaky in CI — nearest-neighbor assertion failed on an unrelated dep-bump PR (#1671, 2026-06-09), passed on rerun. HNSW approximate recall on random vectors; consider seeding or relaxing to top-k containment."
 mentions = ["src/hnsw/persist.rs"]
+
+[[note]]
+sentiment = -1.0
+text = "Daemon CLI client has no socket read timeout: a request racing a daemon restart blocks forever (cli_envelope_test hung 40min when cqs-watch restarted mid-suite). Also: never restart cqs-watch while a test suite runs — tests leak to the live daemon socket when CQS_NO_DAEMON unset."
+mentions = [
+    "src/cli/watch/socket.rs",
+    "src/daemon_translate.rs",
+]
