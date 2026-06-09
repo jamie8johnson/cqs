@@ -29,6 +29,14 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Cache HF models
+        # Tests that warm the embedder (doctor, etc.) download the default
+        # model from HuggingFace; repeated CI runs trip HF's 429 rate limit.
+        # Bump the key suffix when the default model changes.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-embeddinggemma-300m-v1
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -49,11 +57,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - name: Format check
         run: cargo fmt --check
+      - name: Comment provenance check
+        if: github.event_name == 'pull_request'
+        # On pull_request, HEAD is the PR merge commit; HEAD^1 is the base tip,
+        # so this diff is exactly the PR's net effect.
+        run: |
+          git diff HEAD^1 HEAD -- '*.rs' \
+            | python3 scripts/check_comment_provenance.py
 
   msrv:
     runs-on: ubuntu-latest
