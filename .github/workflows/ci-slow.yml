@@ -54,16 +54,23 @@ jobs:
           # CI cache (different feature set, different output binaries).
           shared-key: ci-slow
 
+      - name: Cache HF models
+        # Model-loading tests under #[ignore] pull ~3 GB from HF (BGE-large +
+        # E5-base + SPLADE + the default EmbeddingGemma); repeated downloads
+        # trip HF's 429 rate limit. restore-keys seeds from the PR-time cache.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-slow-v1
+          restore-keys: |
+            hf-models-
+
       - name: Build (release)
         run: cargo build --release --verbose
 
       - name: Run full test suite (incl. ignored)
         if: ${{ github.event_name == 'schedule' || inputs.include_ignored != 'false' }}
         run: cargo test --release --verbose -- --include-ignored
-        # Note: model-loading tests under #[ignore] download from HF on first
-        # run (~3 GB across BGE-large + E5-base + SPLADE). Cache via separate
-        # `actions/cache` step on `~/.cache/huggingface` would help if egress
-        # becomes a concern; keeping it implicit for now since runs are daily.
 
       - name: Run regular suite only (manual dispatch fallback)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_ignored == 'false' }}
