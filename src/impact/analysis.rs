@@ -71,7 +71,7 @@ pub fn analyze_impact<Mode>(
     })
     .collect();
     let transitive_callers = if opts.depth > 1 {
-        // EH-V1.29-9: thread degraded flag through — batch name fetch inside
+        // Thread the degraded flag through — the batch name fetch inside
         // find_transitive_callers can silently truncate the list on store
         // failure without propagating upward.
         let (tc, tc_degraded) =
@@ -180,10 +180,9 @@ pub(super) fn extract_call_snippet_from_cache(
         return None;
     }
 
-    // PF-V1.38-7 (#1463): only the 3-line window survives, but `lines().collect()`
-    // pre-fix sized the Vec to the entire chunk's line count and walked the
-    // whole iterator. For 100+ line chunks this was a wasted allocation per
-    // caller. `skip(start).take(3)` lazy-iterates only the lines we keep.
+    // Only the 3-line window survives. `skip(start).take(3)` lazy-iterates
+    // only the lines we keep, avoiding a Vec sized to the entire chunk's line
+    // count for 100+ line chunks.
     let offset = caller.call_line.saturating_sub(best.chunk.line_start) as usize;
     let start = offset.saturating_sub(1);
     let snippet: Vec<&str> = best.chunk.content.lines().skip(start).take(3).collect();
@@ -229,8 +228,8 @@ pub(crate) fn find_affected_tests_with_chunks(
 /// Uses `reverse_bfs` to discover all ancestor names in a single graph traversal,
 /// then batch-fetches chunk locations with `search_by_names_batch` to avoid N+1 queries.
 ///
-/// EH-V1.29-9: returns `(callers, degraded)` — `degraded` is true when the
-/// batch name lookup failed and the caller list may be silently truncated.
+/// Returns `(callers, degraded)` — `degraded` is true when the batch name
+/// lookup failed and the caller list may be silently truncated.
 fn find_transitive_callers<Mode>(
     store: &Store<Mode>,
     graph: &crate::store::CallGraph,
@@ -242,7 +241,7 @@ fn find_transitive_callers<Mode>(
     let ancestors = reverse_bfs(graph, target_name, depth);
 
     // Filter out the target itself and depth-0 entries.
-    // #1377/P3-55: keys are `Arc<str>`; use `as_ref()` to borrow `&str`.
+    // Keys are `Arc<str>`; use `as_ref()` to borrow `&str`.
     let caller_entries: Vec<(&str, usize)> = ancestors
         .iter()
         .filter(|(name, &d)| d > 0 && name.as_ref() != target_name)
@@ -332,10 +331,9 @@ pub fn suggest_tests<Mode>(
             HashMap::new()
         });
 
-    // PF-V1.29-9 (#1115): one forward BFS from every test, instead of N
-    // independent reverse BFS calls (one per caller). Result is the set of
-    // every name reachable from any test through forward call edges. For
-    // each caller, "is_tested" is now an O(1) HashSet lookup.
+    // One forward BFS from every test yields the set of every name reachable
+    // from any test through forward call edges. For each caller, "is_tested"
+    // is then an O(1) HashSet lookup.
     let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
     let reachable_from_tests =
         forward_bfs_multi(&graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
@@ -343,10 +341,9 @@ pub fn suggest_tests<Mode>(
     let mut suggestions = Vec::new();
 
     for caller in &impact.callers {
-        // Caller is "tested" iff it's reachable from any test. This preserves
-        // the prior semantics of `reverse_bfs(caller).get(test).is_some_and(
-        // |d| d > 0)`: forward BFS excludes the source nodes themselves
-        // (depth 0), so a test isn't its own coverage.
+        // Caller is "tested" iff it's reachable from any test. Forward BFS
+        // excludes the source nodes themselves (depth 0), so a test isn't its
+        // own coverage.
         if reachable_from_tests.contains(caller.name.as_str()) {
             continue;
         }
@@ -376,7 +373,7 @@ pub fn suggest_tests<Mode>(
 
         let language = file_chunks.first().map(|c| c.language);
 
-        // EX-18: Generate test name via LanguageDef.test_name_suggestion
+        // Generate test name via LanguageDef.test_name_suggestion
         let base_name = caller.name.trim_start_matches("self.");
         let test_name = language
             .and_then(|lang| lang.def().test_name_suggestion)
@@ -440,9 +437,9 @@ fn find_type_impacted<Mode>(
 ) -> Result<Vec<TypeImpacted>, StoreError> {
     let _span = tracing::info_span!("find_type_impacted", target = target_name).entered();
 
-    // P2 #65: usize::MAX to preserve existing semantics. The type set is
-    // filtered by COMMON_TYPES + deduped, then drives a fan-out type-users
-    // query — capping here would silently truncate the impact graph.
+    // usize::MAX: the type set is filtered by COMMON_TYPES + deduped, then
+    // drives a fan-out type-users query — capping here would silently truncate
+    // the impact graph.
     // TODO: consider a per-target ceiling (~200) once we measure typical
     // edge counts at the impact-target level.
     let type_pairs = store.get_types_used_by(target_name, usize::MAX)?;

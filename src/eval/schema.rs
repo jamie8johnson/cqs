@@ -1,16 +1,13 @@
 //! Shared deserialization types for the v3 eval query format.
 //!
-//! Used by the production runner (`cqs eval`) and integration tests.
-//! Previously these lived inline in `src/cli/commands/eval/runner.rs` —
-//! moving them here closes the audit P2 #61 finding (three independent
-//! sources of truth for "what does an eval row look like").
+//! Single source of truth for the production runner (`cqs eval`) and
+//! integration tests.
 //!
 //! Wire format: `evals/queries/v3_*.json`. The on-disk envelope carries
-//! `judges`, `metadata`, and other fields that the runner ignores; we
-//! keep parsing forgiving (no `deny_unknown_fields`) so a future eval set
-//! with a different envelope still loads. The `#[test]` in
-//! `tests/eval_test.rs` (audit #61c) explicitly opts in to
-//! `deny_unknown_fields` to surface field drops at test time.
+//! `judges`, `metadata`, and other fields that the runner ignores; parsing
+//! stays forgiving (no `deny_unknown_fields`) so a future eval set with a
+//! different envelope still loads. The `#[test]` in `tests/eval_test.rs`
+//! opts in to `deny_unknown_fields` to surface field drops at test time.
 //!
 //! Adding a field that the runner needs to consume:
 //!   1. Add it here (with serde defaults if optional).
@@ -112,9 +109,8 @@ pub struct GoldChunk {
 mod tests {
     use super::*;
 
-    /// Sanity: the minimal v3-shaped payload deserializes. This mirrors
-    /// the equivalent assertion the production runner used to carry; we
-    /// keep it here so the schema's contract is testable in isolation.
+    /// Sanity: the minimal v3-shaped payload deserializes — keeps the
+    /// schema's contract testable in isolation.
     #[test]
     fn test_query_set_parses_v3_envelope() {
         let raw = r#"{

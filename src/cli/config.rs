@@ -12,13 +12,11 @@ use super::Cli;
 
 // Default values for CLI options.
 //
-// EX-V1.29-8: These constants are retained for tests that assert against the
-// default (see `cli::definitions::test_default_constants`), but the runtime
-// SYNC REQUIREMENT between them and clap's `default_value` attributes is
-// gone — `apply_config_defaults` now uses `ArgMatches::value_source()` to
-// detect "user didn't set this on the CLI". Changing a clap default no
-// longer silently breaks config-defaulting; you only need to update the
-// test expectation if you care about the compile-time assertion.
+// These constants back tests that assert against the default (see
+// `cli::definitions::test_default_constants`). They carry no runtime sync
+// requirement with clap's `default_value` attributes — `apply_config_defaults`
+// uses `ArgMatches::value_source()` to detect "user didn't set this on the
+// CLI". Changing a clap default only affects the test expectation.
 pub(crate) const DEFAULT_LIMIT: usize = 5;
 /// Minimum cosine similarity threshold for search results.
 /// Tuned for BGE-large and E5-base with enrichment. Different embedding models
@@ -26,19 +24,19 @@ pub(crate) const DEFAULT_LIMIT: usize = 5;
 /// for the same query-document pair). If using a custom model, you may need to
 /// adjust this via the config file `threshold` field or `--threshold` CLI flag.
 ///
-/// EX-V1.29-8: only consumed by tests (`test_default_constants`) after the
-/// runtime sync with clap defaults moved to `ValueSource`. Gated on
-/// `#[cfg(test)]` so release builds don't warn on dead code.
+/// Only consumed by tests (`test_default_constants`); the runtime sync with
+/// clap defaults lives in `ValueSource`. Gated on `#[cfg(test)]` so release
+/// builds don't warn on dead code.
 #[cfg(test)]
 pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
 // DEFAULT_NAME_BOOST lives in cqs::store (single source of truth).
-// EX-V1.29-8: only tests reference this re-export after the ValueSource
-// refactor; gate on `#[cfg(test)]` to keep release builds warning-free.
+// Only tests reference this re-export; gate on `#[cfg(test)]` to keep release
+// builds warning-free.
 #[cfg(test)]
 pub(crate) use cqs::store::DEFAULT_NAME_BOOST;
 
-/// EX-V1.29-8: represents a single optional section of the loaded
-/// `cqs::config::Config` that can project its fields onto the parsed CLI.
+/// Represents a single optional section of the loaded `cqs::config::Config`
+/// that can project its fields onto the parsed CLI.
 ///
 /// Adding a new top-level config section becomes a single impl block: a
 /// newtype wrapper around the section and a single call to
@@ -67,8 +65,8 @@ fn is_cli_default(matches: &clap::ArgMatches, id: &str) -> bool {
 
 /// Top-level scalar fields on `cqs::config::Config`. Grouping them behind
 /// one `ConfigSection` keeps `apply_config_defaults` a single `for_each`
-/// at the call site even for the historical flat shape. Future section
-/// types (e.g. `[scoring]`, `[embedding]`) each become their own impl.
+/// at the call site. Future section types (e.g. `[scoring]`, `[embedding]`)
+/// each become their own impl.
 struct TopLevelScalars<'a>(&'a cqs::config::Config);
 
 impl ConfigSection for TopLevelScalars<'_> {
@@ -112,13 +110,13 @@ impl ConfigSection for TopLevelScalars<'_> {
     }
 }
 
-/// P3.29: Project-root marker filenames in priority order — first match wins.
+/// Project-root marker filenames in priority order — first match wins.
 ///
 /// `(filename, label)` — `label` is informational only (used in tracing /
 /// future diagnostics), not in the lookup. Adding Maven / Gradle / .NET /
-/// Bazel becomes a one-row change here instead of editing the loop body.
+/// Bazel is a one-row change here instead of editing the loop body.
 ///
-/// EX-5: Intentionally NOT derived from `LanguageDef` — see comment in
+/// Intentionally NOT derived from `LanguageDef` — see comment in
 /// `find_project_root` for the orthogonality argument.
 static PROJECT_ROOT_MARKERS: &[(&str, &str)] = &[
     ("Cargo.toml", "rust"),       // Rust (with workspace-root detection)
@@ -186,7 +184,7 @@ fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {
     // Cap each Cargo.toml read at 1 MiB. Real Cargo.toml files are well
     // under 100 KB; a hostile parent directory with a multi-GB file at
     // `<parent>/Cargo.toml` would otherwise OOM `cqs` during config
-    // resolution before any user-facing arg parsing runs (RB-V1.33-3).
+    // resolution before any user-facing arg parsing runs.
     const MAX_CARGO_TOML_BYTES: u64 = 1 << 20;
     loop {
         let cargo_toml = candidate.join("Cargo.toml");
@@ -221,14 +219,13 @@ fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {
 /// Apply config file defaults to CLI options. CLI flags always override
 /// config values.
 ///
-/// EX-V1.29-8: dispatches through [`ConfigSection`] impls; adding a new
-/// top-level section is a single new `impl ConfigSection` + one line in
-/// the `sections` array below. The "did user set this explicitly" check
-/// uses clap's `ArgMatches::value_source()` rather than
-/// `cli.limit == DEFAULT_LIMIT`-style comparisons — the old pattern would
-/// treat `cqs -n 5 …` (user explicitly passed the default) as unset and
-/// silently override it with the config file, and it forced every
-/// `DEFAULT_*` constant to track the clap `default_value` attribute.
+/// Dispatches through [`ConfigSection`] impls; adding a new top-level section
+/// is a single new `impl ConfigSection` + one line in the `sections` array
+/// below. The "did user set this explicitly" check uses clap's
+/// `ArgMatches::value_source()` rather than `cli.limit == DEFAULT_LIMIT`-style
+/// comparisons, so `cqs -n 5 …` (user explicitly passed the default) counts
+/// as set and isn't overridden by the config file, and no `DEFAULT_*` constant
+/// has to track the clap `default_value` attribute.
 pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config) {
     // Rebuild the `ArgMatches` from the process argv so we can ask clap
     // "was this field user-supplied?" without threading matches through

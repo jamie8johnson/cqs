@@ -1,7 +1,7 @@
 //! Typed output structs for batch JSON responses.
 //!
-//! Replaces manual `serde_json::json!` assembly with `#[derive(Serialize)]` structs
-//! for chunk-shaped output. Ensures consistent field names and path normalization.
+//! `#[derive(Serialize)]` structs for chunk-shaped output, giving consistent
+//! field names and path normalization across handlers.
 
 use serde::Serialize;
 
@@ -9,13 +9,13 @@ use cqs::normalize_path;
 
 /// Common chunk output shape used by search, similar, and other handlers.
 ///
-/// Includes `trust_level` (#1167, #1169) to give consuming agents an explicit
-/// signal that distinguishes the user's own code from third-party reference
-/// content. `reference_name` is set on results from `cqs ref` indexes so an
-/// agent can map a chunk back to its originating reference without re-querying.
-/// `injection_flags` (#1181) lists every injection-pattern heuristic that
-/// fired on the chunk's raw content — empty when nothing matched, always
-/// present so the schema stays stable.
+/// Includes `trust_level` to give consuming agents an explicit signal that
+/// distinguishes the user's own code from third-party reference content.
+/// `reference_name` is set on results from `cqs ref` indexes so an agent can
+/// map a chunk back to its originating reference without re-querying.
+/// `injection_flags` lists every injection-pattern heuristic that fired on the
+/// chunk's raw content — empty when nothing matched, always present so the
+/// schema stays stable.
 #[derive(Serialize)]
 pub(super) struct ChunkOutput {
     pub name: String,
@@ -88,9 +88,9 @@ impl ChunkOutput {
 
 /// Wrap chunk content in trust-boundary delimiters unless `CQS_TRUST_DELIMITERS=0`.
 ///
-/// Default-on since #1181 — the wrapping is the visible boundary that
-/// downstream injection guards key off when the chunk is inlined into a
-/// larger prompt. Set `CQS_TRUST_DELIMITERS=0` to opt out (raw text).
+/// Default-on — the wrapping is the visible boundary that downstream injection
+/// guards key off when the chunk is inlined into a larger prompt. Set
+/// `CQS_TRUST_DELIMITERS=0` to opt out (raw text).
 fn maybe_wrap_content(content: &str, id: &str) -> String {
     if std::env::var("CQS_TRUST_DELIMITERS").as_deref() == Ok("0") {
         content.to_string()

@@ -342,7 +342,7 @@ mod tests {
         );
     }
 
-    // TC-3: extract_fenced_blocks edge case tests
+    // extract_fenced_blocks edge case tests
 
     #[test]
     fn test_extract_fenced_blocks_unclosed() {

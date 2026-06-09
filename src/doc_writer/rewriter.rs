@@ -244,9 +244,9 @@ pub fn compute_rewrite(
     edits: &[DocCommentResult],
     parser: &Parser,
 ) -> Result<Option<RewriteOutcome>, DocWriterError> {
-    // OB-V1.36-4 / P3: span on the parse-resolve-apply hot path. The two
-    // wrappers (rewrite_file, write_proposed_patch) carry their own spans,
-    // but direct callers of compute_rewrite (and tests) bypassed both.
+    // Span on the parse-resolve-apply hot path. The two wrappers
+    // (rewrite_file, write_proposed_patch) carry their own spans; this also
+    // covers direct callers of compute_rewrite (and tests).
     let _span = tracing::info_span!(
         "compute_rewrite",
         path = %path.display(),
@@ -257,7 +257,7 @@ pub fn compute_rewrite(
         return Ok(None);
     }
 
-    // RB-V1.36-1: gate by file size before slurping into a String.
+    // Gate by file size before slurping into a String.
     let max_bytes = crate::limits::small_file_max_bytes();
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > max_bytes {
@@ -315,8 +315,8 @@ pub fn rewrite_file(
         return Ok(0);
     }
 
-    // RB-33 / PB-7: Exclusive lock prevents concurrent modifications during
-    // the read->parse->edit->write cycle. Uses a separate .cqs-lock file
+    // Exclusive lock prevents concurrent modifications during the
+    // read->parse->edit->write cycle. Uses a separate .cqs-lock file
     // (same pattern as notes.rs) so the source file isn't held open, which
     // would conflict with the atomic-write (temp + rename) below.
     // Advisory lock: other cqs processes cooperate, external editors may not.
@@ -336,8 +336,7 @@ pub fn rewrite_file(
     lock_file.lock()?;
 
     // Read current file content (under the lock so the parse + write cycle
-    // sees a consistent snapshot — same rationale as the original inline
-    // implementation). RB-V1.36-1: size-gate before slurping.
+    // sees a consistent snapshot). Size-gate before slurping.
     let max_bytes = crate::limits::small_file_max_bytes();
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > max_bytes {
@@ -510,11 +509,9 @@ fn resolve_edits(
 /// Edits are sorted bottom-up so earlier-line edits don't shift line numbers
 /// for later ones.
 ///
-/// PB-V1.36-1: preserve the source file's line-ending convention (mirror of
-/// PB-V1.33-9 / #1356 in note.rs::write_notes_file). `str::lines()` strips
-/// both `\r\n` and `\n`; the previous re-emit was always `\n`, so every
-/// `cqs index --improve-docs` run on a Windows / CRLF source rewrote every
-/// line of the file as a side effect — fighting `core.autocrlf=true` and
+/// Preserves the source file's line-ending convention. `str::lines()` strips
+/// both `\r\n` and `\n`; a bare-`\n` re-emit on a Windows / CRLF source would
+/// rewrite every line as a side effect — fighting `core.autocrlf=true` and
 /// producing huge spurious diffs that swamp the actual doc-comment changes.
 /// Sniff once from `content`; on CRLF, translate the bare-LF re-emit back
 /// to CRLF so the round trip is byte-stable.
@@ -565,7 +562,7 @@ fn apply_resolved_edits(content: &str, resolved: &[ResolvedEdit]) -> String {
 /// root, render them as a unified diff (`git apply`-compatible), and write
 /// to `out_dir/<rel-path>.patch`. The file under the project root is **not**
 /// modified — this is the review-gate path that backs the default
-/// `cqs index --improve-docs` behaviour after #1166.
+/// `cqs index --improve-docs` behaviour.
 ///
 /// Returns `Ok(true)` when a non-empty patch was written, `Ok(false)` when
 /// there were no edits to propose (every edit skipped, or the rewrite was
@@ -614,13 +611,11 @@ pub fn write_proposed_patch(
     if let Some(parent) = patch_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // SEC-V1.38-3 (#1463): atomic write so a SIGINT / OOM kill / power
-    // loss between `create_dir_all` and the write completion doesn't
-    // leave a truncated `.patch` file at the final path. The user's
-    // review workflow is `git apply .cqs/proposed-docs/**/*.patch`;
-    // `git apply` on a truncated unified diff produces partial source
-    // changes — silent corruption. Reuse the existing `atomic_write`
-    // helper in this file (line 634, used by `rewrite_file`).
+    // Atomic write so a SIGINT / OOM kill / power loss between
+    // `create_dir_all` and the write completion doesn't leave a truncated
+    // `.patch` file at the final path. The review workflow is
+    // `git apply .cqs/proposed-docs/**/*.patch`; `git apply` on a truncated
+    // unified diff produces partial source changes — silent corruption.
     atomic_write(&patch_path, unified.as_bytes())?;
 
     tracing::info!(
@@ -634,7 +629,7 @@ pub fn write_proposed_patch(
 /// Write bytes to a file atomically: write to a temp file in the same
 /// directory, then rename.
 ///
-/// PB-4: On cross-device rename failure, falls back to copy-to-same-dir-then-rename
+/// On cross-device rename failure, falls back to copy-to-same-dir-then-rename
 /// instead of a bare `fs::write`. This copies the original file to a backup in
 /// the same directory, writes the new content to the original path, and removes
 /// the backup on success. If the write fails, the backup is renamed back.
@@ -681,12 +676,11 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
                     Ok(())
                 }
                 Err(write_err) => {
-                    // EH-V1.36-3: capture the restore-rename result so
-                    // operators see *which* recovery branch failed and where
-                    // the salvageable backup is. Pre-fix, a failed restore
-                    // silently dropped the backup_path on the floor and the
-                    // user got only the original write error — couldn't
-                    // recover from the leftover .bak.
+                    // Capture the restore-rename result so operators see
+                    // *which* recovery branch failed and where the salvageable
+                    // backup is. A failed restore must not drop the
+                    // backup_path — the user needs it to recover from the
+                    // leftover .bak.
                     let restore_err = if has_backup {
                         std::fs::rename(&backup_path, path).err()
                     } else {
@@ -1299,9 +1293,8 @@ impl Beta {
 
     #[test]
     fn test_apply_resolved_edits_preserves_crlf() {
-        // PB-V1.36-1: source file with CRLF line endings round-trips with
-        // CRLF preserved. Pre-fix, every doc rewrite flipped the entire
-        // file to bare LF.
+        // Source file with CRLF line endings round-trips with CRLF
+        // preserved (not flipped to bare LF).
         let crlf_content = "fn hello() {\r\n    println!(\"hi\");\r\n}\r\n";
         let resolved: Vec<ResolvedEdit> = Vec::new(); // empty edits — pure round-trip
         let out = apply_resolved_edits(crlf_content, &resolved);

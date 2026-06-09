@@ -50,16 +50,16 @@ pub fn find_related<Mode>(
     let shared_callees = resolve_to_related(store, &shared_callee_pairs);
 
     // 3. Shared types — query type_edges for target's types, find other functions using them.
-    // P2 #65: pass usize::MAX to preserve existing "all rows" behaviour. This
-    // path filters down via COMMON_TYPES + dedupe, and downstream uses each
-    // type to drive a fan-out query, so capping here would change semantics.
+    // Pass usize::MAX for "all rows": this path filters down via COMMON_TYPES
+    // + dedupe, and downstream uses each type to drive a fan-out query, so
+    // capping here would change semantics.
     // TODO: revisit if this becomes a hot path (currently O(types-per-target)
     // which is bounded in practice by the chunk's surface area).
     let type_pairs = store.get_types_used_by(&target, usize::MAX)?;
-    // P2.51: dedupe via HashSet (unordered) then sort, so the slice
-    // passed to `find_type_overlap` (and downstream `get_type_users_batch`)
-    // is in a stable order. The downstream function now also sorts its
-    // own iteration, but pinning here too keeps tracing output stable.
+    // Dedupe via HashSet (unordered) then sort, so the slice passed to
+    // `find_type_overlap` (and downstream `get_type_users_batch`) is in a
+    // stable order. find_type_overlap also sorts its own iteration, but
+    // pinning here too keeps tracing output stable.
     let mut type_names: Vec<String> = type_pairs
         .into_iter()
         .map(|t| t.type_name)
@@ -133,11 +133,11 @@ fn find_type_overlap<Mode>(
     let mut type_counts: HashMap<String, u32> = HashMap::new();
     let mut chunk_info: HashMap<String, (PathBuf, u32)> = HashMap::new();
 
-    // P2.51: iterate `results` in deterministic key order. The previous
-    // `for chunks in results.values()` loop (a) made `or_insert` first-wins
-    // depend on HashMap iteration, picking a different file representative
-    // per process; and (b) combined with the count-only sort below, the
-    // truncated tail also flipped between runs.
+    // Iterate `results` in deterministic key order. Iterating
+    // `results.values()` instead would make `or_insert` first-wins depend on
+    // HashMap iteration (a different file representative per process), and
+    // combined with the count-only sort below the truncated tail would also
+    // flip between runs.
     let mut keys: Vec<&String> = results.keys().collect();
     keys.sort();
     for key in keys {
@@ -153,10 +153,9 @@ fn find_type_overlap<Mode>(
                 continue;
             }
             *type_counts.entry(chunk.name.clone()).or_insert(0) += 1;
-            // P2.51: pick min (file, line) across all observations of the
-            // same name so two identically-named functions in different
-            // files produce a deterministic representative regardless of
-            // insertion order.
+            // Pick min (file, line) across all observations of the same name
+            // so two identically-named functions in different files produce a
+            // deterministic representative regardless of insertion order.
             let entry = (chunk.file.clone(), chunk.line_start);
             chunk_info
                 .entry(chunk.name.clone())
@@ -174,10 +173,9 @@ fn find_type_overlap<Mode>(
         "Type overlap candidates found"
     );
 
-    // P2.51: stable tie-break on name asc when two candidates share an
-    // overlap count. Without it, equal-count entries get sorted by
-    // HashMap iteration order — a fresh source of non-determinism even
-    // after the loop above.
+    // Stable tie-break on name asc when two candidates share an overlap
+    // count. Without it, equal-count entries sort by HashMap iteration order
+    // — a fresh source of non-determinism even after the loop above.
     let mut sorted: Vec<(String, u32)> = type_counts.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     sorted.truncate(limit);
@@ -234,7 +232,7 @@ mod tests {
         }
     }
 
-    // ===== Existing struct-construction tests =====
+    // ===== struct-construction tests =====
 
     #[test]
     fn test_related_function_fields() {

@@ -77,9 +77,6 @@ pub struct PlacementOptions {
 }
 
 impl Default for PlacementOptions {
-    /// Creates a new instance with default configuration values for placement search parameters.
-    /// # Returns
-    /// A new `Self` instance with `search_limit` set to `DEFAULT_PLACEMENT_SEARCH_LIMIT`, `search_threshold` set to `DEFAULT_PLACEMENT_SEARCH_THRESHOLD`, `max_imports` set to `MAX_IMPORT_COUNT`, and `query_embedding` set to `None`.
     fn default() -> Self {
         Self {
             search_limit: DEFAULT_PLACEMENT_SEARCH_LIMIT,
@@ -121,9 +118,9 @@ pub fn suggest_placement_with_options<Mode>(
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
-    // P3 #132: entry-level span so an `embed_query` failure (which short-
-    // circuits before `_core`'s span fires) still has tracing identity for
-    // the placement call.
+    // Entry-level span so an `embed_query` failure (which short-circuits
+    // before `_core`'s span fires) still has tracing identity for the
+    // placement call.
     let _span = tracing::info_span!(
         "suggest_placement_with_options",
         desc_len = description.len(),
@@ -215,10 +212,10 @@ fn suggest_placement_with_options_core<Mode>(
         let all_file_chunks = match all_origins_chunks.remove(origin_key.as_ref()) {
             Some(v) => v,
             None => {
-                // EH-V1.36-8 / P3: file had a search hit but its chunks were
-                // missing from the batch fetch (race: file deleted, or origin
-                // mismatch). Skip rather than emit a malformed suggestion
-                // pointing at a now-empty file.
+                // File had a search hit but its chunks were missing from
+                // the batch fetch (race: file deleted, or origin mismatch).
+                // Skip rather than emit a malformed suggestion pointing at a
+                // now-empty file.
                 tracing::debug!(
                     file = %file.display(),
                     "where_to_add: file in scores but no chunks fetched — skipping"
@@ -231,8 +228,8 @@ fn suggest_placement_with_options_core<Mode>(
         let best_chunk = chunks.iter().max_by(|a, b| a.0.total_cmp(&b.0));
 
         let (near_function, insertion_line) = match best_chunk {
-            // saturating_add — line_end is u32, panic in debug / wrap in release
-            // on synthetic / fuzzed input where line_end == u32::MAX (P1-41 sibling).
+            // saturating_add — line_end is u32; guards against panic in
+            // debug / wrap in release on input where line_end == u32::MAX.
             Some((_, chunk)) => (chunk.name.clone(), chunk.line_end.saturating_add(1)),
             None => ("(top of file)".to_string(), 1),
         };
@@ -269,11 +266,9 @@ const MAX_IMPORT_COUNT: usize = 5;
 /// Deduplicates imports using a HashSet and caps at `max` entries. This is the
 /// shared extraction logic used by all language arms in `extract_patterns`.
 fn extract_imports(chunks: &[ChunkSummary], prefixes: &[&str], max: usize) -> Vec<String> {
-    // P3.45: dedupe via borrowed `&str` keys; allocate the owned `String`
-    // only on accept (when the line is actually pushed into `imports`).
-    // The previous shape did `seen.insert(trimmed.to_string())` for every
-    // candidate line — including lines that were dropped because `imports`
-    // had already hit `max` — wasting one allocation per duplicate hit.
+    // Dedupe via borrowed `&str` keys; allocate the owned `String` only on
+    // accept (when the line is actually pushed into `imports`), so dropped
+    // candidate lines don't cost an allocation.
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut imports: Vec<String> = Vec::new();
     for chunk in chunks {
@@ -305,14 +300,15 @@ fn detect_error_style(chunks: &[ChunkSummary], patterns: &[(&str, &str)]) -> Str
 // ---------------------------------------------------------------------------
 // Data-driven pattern extraction
 //
-// Most languages follow the same 4-step pattern:
+// Every language follows the same 4-step pattern, driven by a
+// `LanguagePatternDef` lookup row:
 //   1. extract_imports(chunks, prefixes, MAX_IMPORT_COUNT)
 //   2. detect_error_style(chunks, error_patterns)
 //   3. Visibility counting via signature inspection
 //   4. Return (imports, visibility)
 //
-// Languages with truly custom logic (Rust, TS/JS, Go) keep dedicated arms.
-// Everything else is driven by `LanguagePatternDef` lookup tables.
+// Rust / TS-JS / Go use the richer `SigStartsTriage`, `RegexImportSet`, and
+// `NameCase` visibility rules but are otherwise data rows like the rest.
 // ---------------------------------------------------------------------------
 
 /// How to detect dominant visibility from chunk signatures.
@@ -367,12 +363,11 @@ pub enum VisibilityRule {
         else_: &'static str,
     },
     /// TS/JS-style imports with a visibility companion. The regex patterns
-    /// replace prefix-based extraction (`import_prefixes` is ignored when this
-    /// variant is the visibility rule) — a trimmed line counts as an import
-    /// when it matches any pattern. Visibility itself is a simple signature
-    /// check: if any chunk's signature contains `"export"` → `"export"`,
-    /// otherwise `"module-private"`. The hardcoded labels match the legacy
-    /// TS/JS branch in `extract_patterns`.
+    /// drive extraction (`import_prefixes` is ignored when this variant is
+    /// the visibility rule) — a trimmed line counts as an import when it
+    /// matches any pattern. Visibility itself is a simple signature check:
+    /// if any chunk's signature contains `"export"` → `"export"`, otherwise
+    /// `"module-private"`.
     RegexImportSet { patterns: &'static [&'static str] },
     /// Go-style name-case classification: count chunks whose name starts with
     /// an uppercase letter. Majority → `if_upper`; otherwise `if_lower`.
@@ -489,7 +484,7 @@ fn eval_visibility(rule: &VisibilityRule, chunks: &[ChunkSummary]) -> String {
         }
         VisibilityRule::RegexImportSet { .. } => {
             // Import regexes drive extraction; visibility is a simple
-            // signature contains check matching the legacy TS/JS semantics.
+            // signature contains check (TS/JS semantics).
             if chunks.iter().any(|c| c.signature.contains("export")) {
                 "export".to_string()
             } else {
@@ -703,9 +698,8 @@ pub mod patterns_data {
         inline_test_markers: &[],
     };
 
-    // --- New rows that fold the formerly-custom Rust / TS-JS / Go arms back
-    // into data. Each row mirrors the exact semantics of the match arm it
-    // replaces — see the doc comments on `SigStartsTriage`, `RegexImportSet`,
+    // --- Rust / TS-JS / Go rows. Each uses one of the richer visibility
+    // rules — see the doc comments on `SigStartsTriage`, `RegexImportSet`,
     // and `NameCase` for evaluation details.
     pub static RUST: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["use "],
@@ -764,15 +758,12 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
 /// Process-wide cache of compiled regex sets keyed by the patterns-slice
 /// address + length.
 ///
-/// PERF-V1.33-7: `extract_imports_regex` previously compiled the same
-/// `&'static [&'static str]` patterns on every `cqs where` / `cqs task`
-/// call (~50 compiles per session). Since each language carries one fixed
-/// `RegexImportSet { patterns }` slice in static storage, `(as_ptr() as
-/// usize, len)` is a stable cache key — same language → same compiled
-/// `Vec<Regex>`. The cache lives for the process lifetime which matches
-/// the patterns' `'static` bound. Failed compiles get logged once and
-/// produce a shorter `Vec<Regex>` that's still cached, so a broken pattern
-/// doesn't pay the warn-log tax on every call.
+/// Each language carries one fixed `RegexImportSet { patterns }` slice in
+/// static storage, so `(as_ptr() as usize, len)` is a stable cache key —
+/// same language → same compiled `Vec<Regex>`. The cache lives for the
+/// process lifetime, matching the patterns' `'static` bound. Failed
+/// compiles get logged once and produce a shorter `Vec<Regex>` that's still
+/// cached, so a broken pattern doesn't pay the warn-log tax on every call.
 fn compiled_import_regexes(patterns: &[&'static str]) -> std::sync::Arc<Vec<regex::Regex>> {
     use std::sync::{Arc, Mutex, OnceLock};
     type Key = (usize, usize);
@@ -822,9 +813,8 @@ fn extract_imports_regex(
     for chunk in chunks {
         for line in chunk.content.lines() {
             let trimmed = line.trim();
-            // PERF-V1.36-5: contains-then-insert to avoid `to_string()` on
-            // every duplicate line. seen.insert(to_string()) used to alloc
-            // a String per iteration regardless of whether it was new.
+            // contains-then-insert avoids a `to_string()` allocation on
+            // every duplicate line.
             if imports.len() < max
                 && !seen.contains(trimmed)
                 && compiled.iter().any(|re| re.is_match(trimmed))
@@ -840,9 +830,9 @@ fn extract_imports_regex(
 /// Extract local coding patterns from a file's chunks.
 /// Iterates chunks individually instead of concatenating all content into
 /// one string (avoids a large allocation for files with many chunks). Every
-/// code-carrying language is handled via `LanguagePatternDef` lookup — the
-/// formerly-custom Rust/TS-JS/Go arms now live as data rows using the
-/// `SigStartsTriage`, `RegexImportSet`, and `NameCase` variants.
+/// code-carrying language is handled via `LanguagePatternDef` lookup,
+/// including Rust/TS-JS/Go via the `SigStartsTriage`, `RegexImportSet`, and
+/// `NameCase` variants.
 fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> LocalPatterns {
     let mut error_style = String::new();
     let mut has_inline_tests = false;
@@ -919,14 +909,8 @@ mod tests {
     use super::*;
     use crate::parser::ChunkType;
 
-    /// Creates a ChunkSummary struct with test data for a function code chunk.
-    /// # Arguments
-    /// * `name` - The name of the function chunk
-    /// * `sig` - The function signature string
-    /// * `content` - The function body content
-    /// * `lang` - The programming language of the chunk
-    /// # Returns
-    /// A ChunkSummary struct populated with the provided parameters and default test values (file path "src/test.rs", lines 1-10, chunk_type as Function, and empty/None fields for doc, parent_id, parent_type_name, content_hash, and window_idx).
+    /// Build a `ChunkSummary` for a function chunk, with default test
+    /// values for file path, lines, and the optional fields.
     fn make_chunk(name: &str, sig: &str, content: &str, lang: Language) -> ChunkSummary {
         ChunkSummary {
             id: format!("id-{name}"),

@@ -26,23 +26,11 @@ impl HnswIndex {
     /// For large indexes (>50k chunks), prefer `build_batched_with_dim()` to
     /// avoid OOM.
     ///
-    /// # Deprecation Notice
-    ///
-    /// This method is soft-deprecated for new code. Prefer
-    /// `build_batched_with_dim()` which:
-    /// - Streams embeddings in configurable batch sizes
-    /// - Avoids OOM on large indexes
-    /// - Has negligible quality difference in practice
-    ///
     /// # Production routing
     ///
     /// `build_hnsw_index()` in `cli/commands/index.rs` unconditionally uses
     /// `build_batched_with_dim()` with 10k-row batches for all index sizes.
     /// This method is only used in tests.
-    ///
-    /// (Historical note: the earlier `build_batched()` convenience wrapper that
-    /// hardcoded 768-dim was removed in v0.9.0 as part of the configurable-model
-    /// migration — see "configurable models disaster" in `CLAUDE.md`.)
     ///
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
@@ -56,8 +44,7 @@ impl HnswIndex {
             return Err(HnswError::Build("Embedding dimension must be > 0".into()));
         }
         if embeddings.is_empty() {
-            // Create empty index — fall back to the small-tier default
-            // (#1370 / SHL-V1.33-12).
+            // Create empty index — fall back to the small-tier default.
             let hnsw = Hnsw::new(
                 super::max_nb_connection_for(0),
                 1,
@@ -78,8 +65,8 @@ impl HnswIndex {
 
         tracing::info!(count = nb_elem, "Building HNSW index");
 
-        // #1370 / SHL-V1.33-12: corpus-size-aware tier defaults. Env
-        // overrides still win — see `hnsw_tier_defaults` for the table.
+        // Corpus-size-aware tier defaults. Env overrides still win — see
+        // `hnsw_tier_defaults` for the table.
         let mut hnsw = Hnsw::new(
             super::max_nb_connection_for(nb_elem),
             nb_elem,
@@ -89,7 +76,8 @@ impl HnswIndex {
         );
 
         // Test-only path: allocates the full Vec<Vec<f32>> double-buffer here.
-        // Production code uses `build_batched` to avoid this peak allocation.
+        // Production code uses `build_batched_with_dim` to avoid this peak
+        // allocation.
         // Reconstruct Vec<f32> chunks from flat buffer for hnsw_rs API
         let chunks: Vec<Vec<f32>> = data.chunks_exact(dim).map(|c| c.to_vec()).collect();
         let data_for_insert: Vec<(&Vec<f32>, usize)> =
@@ -128,7 +116,7 @@ impl HnswIndex {
     /// `text` rather than `ignore` because the snippet references `store`
     /// without setup; `cargo test -- --include-ignored` (the `ci-slow.yml`
     /// shape) compiles `ignore`-tagged doctests and would surface
-    /// `cannot find value 'store' in this scope`. (#1305)
+    /// `cannot find value 'store' in this scope`.
     ///
     /// ```text
     /// let index = HnswIndex::build_batched_with_dim(
@@ -156,8 +144,8 @@ impl HnswIndex {
             capacity
         );
 
-        // #1370 / SHL-V1.33-12: tier defaults read from `capacity`, the
-        // estimated vector count for this build.
+        // Tier defaults read from `capacity`, the estimated vector count
+        // for this build.
         let mut hnsw = Hnsw::new(
             super::max_nb_connection_for(capacity),
             capacity,
@@ -179,8 +167,8 @@ impl HnswIndex {
             }
 
             // Validate dimensions and build insertion data in a single pass.
-            // Use a separate insertion counter (not loop index) because zero-vector
-            // skips would desync base_idx+i from id_map positions. (RT-DATA-1)
+            // Use a separate insertion counter (not the loop index) because
+            // zero-vector skips would desync base_idx+i from id_map positions.
             let mut data_for_insert: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(batch.len());
 
             for (chunk_id, embedding) in batch.iter() {
@@ -190,15 +178,16 @@ impl HnswIndex {
                         actual: embedding.len(),
                     });
                 }
-                // Skip zero-vector embeddings — they produce NaN cosine distances
-                // PERF-37: short-circuit on first non-zero element instead of full L2 norm
+                // Skip zero-vector embeddings — they produce NaN cosine
+                // distances. Short-circuit on the first non-zero element
+                // instead of computing the full L2 norm.
                 if !embedding.as_vec().iter().any(|x| *x != 0.0) {
                     tracing::warn!(chunk_id = %chunk_id, "Skipping zero-vector embedding");
                     continue;
                 }
                 let insert_idx = id_map.len();
                 tracing::trace!("Adding {} to HNSW index at {}", chunk_id, insert_idx);
-                // P4-11 follow-up: clone bytes into Box<str> (no cap field).
+                // Clone bytes into Box<str> (no cap field).
                 id_map.push(Box::from(chunk_id.as_str()));
                 data_for_insert.push((embedding.as_vec(), insert_idx));
             }
@@ -214,11 +203,10 @@ impl HnswIndex {
                 "HNSW batch inserted"
             );
             let progress_pct = (total_inserted * 100).checked_div(capacity).unwrap_or(100);
-            // PF-V1.25-15: demoted from info! to debug!. A 60k-chunk build
-            // emits 50+ batches; at info level they drown out meaningful
-            // log messages with no user-actionable signal per batch.
-            // The final "HNSW index built" message at end-of-build (emitted
-            // as info!) is sufficient for progress tracking.
+            // debug! not info!. A 60k-chunk build emits 50+ batches; at info
+            // level they drown out meaningful log messages with no
+            // user-actionable signal per batch. The final "HNSW index built"
+            // message (info!) is sufficient for progress tracking.
             tracing::debug!(
                 "HNSW build progress: {} / ~{} vectors ({}%)",
                 total_inserted,
@@ -342,14 +330,12 @@ mod tests {
         // Build same index both ways, verify similar search results.
         //
         // Seeds spaced by 1000 so the sin-based embeddings are genuinely
-        // distinct in cosine space — adjacent seeds (1..=20) produced
-        // near-collinear vectors that flaked on the small-tier HNSW
-        // defaults (post-#1425: M=16, ef_c=100, ef_s=50 for <5k chunks).
-        // The widened top-N=N window from #1431 wasn't enough; sin'(0.1)
-        // ≈ sin(0.2) and HNSW's approximate graph dropped one of them
-        // out of recall non-deterministically. Spaced seeds drop
-        // sin(100), sin(200), ... — uniformly distributed in [-1, 1] —
-        // so recall@N is deterministic.
+        // distinct in cosine space. Adjacent seeds (1..=20) produce
+        // near-collinear vectors that flake on the small-tier HNSW defaults
+        // (M=16, ef_c=100, ef_s=50 for <5k chunks): sin(0.1) ≈ sin(0.2),
+        // and HNSW's approximate graph drops one of them out of recall
+        // non-deterministically. Spaced seeds give sin(100), sin(200), ...
+        // — uniformly distributed in [-1, 1] — so recall@N is deterministic.
         let item_id = |i: u32| format!("item{}", i);
         let embeddings: Vec<(String, Embedding)> = (1..=20)
             .map(|i| (item_id(i), make_embedding(i * 1000)))
@@ -379,7 +365,7 @@ mod tests {
         assert!(batched_found, "Batched build should find item10 in top 20");
     }
 
-    // ===== TC-31: multi-model dim-threading (HNSW build) =====
+    // ===== multi-model dim-threading (HNSW build) =====
 
     /// Create a deterministic normalized embedding of arbitrary dimension.
     fn make_embedding_dim(seed: u32, dim: usize) -> Embedding {
@@ -398,7 +384,7 @@ mod tests {
 
     #[test]
     fn tc31_build_batched_with_dim_1024() {
-        // TC-31.4: Build HNSW index with 1024-dim embeddings via build_batched_with_dim.
+        // Build HNSW index with 1024-dim embeddings via build_batched_with_dim.
         let all_embeddings: Vec<(String, Embedding)> = (1..=10)
             .map(|i| (format!("chunk{}", i), make_embedding_dim(i, 1024)))
             .collect();
@@ -422,7 +408,7 @@ mod tests {
 
     #[test]
     fn tc31_build_with_dim_1024() {
-        // TC-31.4 variant: Single-pass build with 1024-dim.
+        // Single-pass build with 1024-dim.
         let embeddings: Vec<(String, Embedding)> = (1..=5)
             .map(|i| (format!("item{}", i), make_embedding_dim(i, 1024)))
             .collect();
@@ -439,7 +425,7 @@ mod tests {
 
     #[test]
     fn tc31_build_batched_dim_mismatch_rejected() {
-        // TC-31.4b: Feeding 128-dim embeddings to a 1024-dim build should fail.
+        // Feeding 128-dim embeddings to a 1024-dim build should fail.
         let bad_embeddings: Vec<(String, Embedding)> = (1..=3)
             .map(|i| {
                 let mut v = vec![0.0f32; 128]; // intentionally wrong dim
@@ -468,7 +454,7 @@ mod tests {
 
     #[test]
     fn tc40_build_batched_with_dim_zero() {
-        // TC-40 / RB-34: dim=0 should return an error (not panic on chunks_exact(0))
+        // dim=0 should return an error (not panic on chunks_exact(0))
         let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> = vec![];
         let result = HnswIndex::build_batched_with_dim(batches.into_iter(), 0, 0);
         assert!(result.is_err(), "dim=0 should return error");
@@ -481,7 +467,7 @@ mod tests {
 
     #[test]
     fn tc40_build_batched_with_dim_zero_nonempty_errors() {
-        // TC-40: dim=0 with actual embeddings should fail on dimension mismatch
+        // dim=0 with actual embeddings should fail on dimension mismatch
         let embeddings: Vec<(String, Embedding)> = vec![("chunk1".to_string(), make_embedding(1))];
         let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> =
             vec![Ok(embeddings)];
@@ -492,7 +478,7 @@ mod tests {
         );
     }
 
-    // ===== TC-17: HnswIndex::search_filtered predicate tests =====
+    // ===== HnswIndex::search_filtered predicate tests =====
 
     #[test]
     fn tc17_search_filtered_accepts_only_matching_ids() {
@@ -549,11 +535,11 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.33-2: `HnswIndex::search` with `k=0` must return an empty
-    /// result without panicking. Pins the contract at the cqs boundary so a
-    /// future `hnsw_rs` version bump can't silently change behavior — the
-    /// internal `ef_search = self.ef_search.max(k * 2).min(index_size)` math
-    /// must not trip on `k=0`.
+    /// `HnswIndex::search` with `k=0` must return an empty result without
+    /// panicking. Pins the contract at the cqs boundary so a future
+    /// `hnsw_rs` version bump can't silently change behavior — the internal
+    /// `ef_search = self.ef_search.max(k * 2).min(index_size)` math must not
+    /// trip on `k=0`.
     #[test]
     fn tc18_search_k_zero_returns_empty() {
         // Build a populated index so the k=0 path doesn't short-circuit on
@@ -572,9 +558,8 @@ mod tests {
         );
     }
 
-    /// TC-HAP-V1.36-6 / P3: empty-index direct test. The `id_map.is_empty()`
-    /// short-circuit must apply to unfiltered `search()` too, not only the
-    /// already-tested filtered path.
+    /// Empty-index direct test. The `id_map.is_empty()` short-circuit must
+    /// apply to unfiltered `search()` too, not only the filtered path.
     #[test]
     fn tc_hap_search_empty_index_returns_empty() {
         let index = HnswIndex::build_with_dim(Vec::new(), crate::EMBEDDING_DIM).unwrap();
@@ -582,8 +567,8 @@ mod tests {
         assert!(index.search(&query, 5).is_empty());
     }
 
-    /// TC-HAP-V1.36-6 / P3: dim-mismatch query must return empty without
-    /// crashing the dense library. Pins the early-return at hnsw/search.rs:65.
+    /// Dim-mismatch query must return empty without crashing the dense
+    /// library. Pins the early-return in hnsw/search.rs.
     #[test]
     fn tc_hap_search_dim_mismatch_returns_empty() {
         let embeddings: Vec<(String, Embedding)> = (0..5)
@@ -594,8 +579,8 @@ mod tests {
         assert!(index.search(&bad, 5).is_empty());
     }
 
-    /// TC-HAP-V1.36-6 / P3: NaN/Inf query must short-circuit before the
-    /// `assert dist >= ε` panic in the dense library.
+    /// NaN/Inf query must short-circuit before the `assert dist >= ε`
+    /// panic in the dense library.
     #[test]
     fn tc_hap_search_nonfinite_query_returns_empty() {
         let embeddings: Vec<(String, Embedding)> = (0..5)

@@ -11,11 +11,11 @@ use super::BatchView;
 /// A 3-stage pipeline dispatches at most 1 + DEFAULT + DEFAULT = 101 calls
 /// at the default 50.
 ///
-/// SHL-V1.38-3 (#1463): operators can override via `CQS_PIPELINE_FAN_OUT`,
-/// clamped to `[10, 1000]`. Hot functions like `Store::search_filtered`
-/// have >100 callers; capping at 50 silently truncates downstream
-/// stages. Bumping to 200+ adds ~10 s of daemon-mode latency but
-/// preserves the full call graph for agent-driven analysis.
+/// Operators can override via `CQS_PIPELINE_FAN_OUT`, clamped to `[10, 1000]`.
+/// Hot functions like `Store::search_filtered` have >100 callers; capping at
+/// 50 silently truncates downstream stages. Bumping to 200+ adds ~10 s of
+/// daemon-mode latency but preserves the full call graph for agent-driven
+/// analysis.
 const PIPELINE_FAN_OUT_LIMIT_DEFAULT: usize = 50;
 
 fn pipeline_fan_out_limit() -> usize {
@@ -274,7 +274,7 @@ pub(crate) fn execute_pipeline(
     let mut any_truncated = false;
 
     for (stage_idx, segment) in segments[1..].iter().enumerate() {
-        // P3 #120: stage numbering is 0-based and consistent across all log lines.
+        // Stage numbering is 0-based and consistent across all log lines.
         // Stage 0 was the first segment (logged above); subsequent segments are 1, 2, ...
         let stage_num = stage_idx + 1;
 
@@ -320,9 +320,9 @@ pub(crate) fn execute_pipeline(
 
         for name in &names {
             // Build tokens: prepend name to downstream segment.
-            // RT-INJ-1: Insert "--" end-of-options marker before the extracted
-            // name to prevent names like "--help" or "--format" from being
-            // interpreted as clap flags.
+            // Insert "--" end-of-options marker before the extracted name to
+            // prevent names like "--help" or "--format" from being interpreted
+            // as clap flags.
             let mut cmd_tokens = vec![segment[0].clone(), "--".to_string(), name.clone()];
             cmd_tokens.extend_from_slice(&segment[1..]);
 
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_extract_names_callees() {
-        // Matches CalleesOutput: "name" (was "function"), "line_start" (was "line")
+        // Matches CalleesOutput: "name", "line_start"
         let val = serde_json::json!({
             "name": "f",
             "calls": [{"name": "a", "line_start": 1}],
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_extract_names_impact() {
-        // Matches ImpactResult: "name" (was "function")
+        // Matches ImpactResult: "name"
         let val = serde_json::json!({
             "name": "f",
             "callers": [{"name": "a"}],
@@ -681,7 +681,7 @@ mod tests {
         }
     }
 
-    // ===== EX-1 sync test: PIPEABLE_NAMES matches is_pipeable() =====
+    // ===== sync test: PIPEABLE_NAMES matches is_pipeable() =====
 
     #[test]
     fn test_pipeable_names_sync() {
@@ -720,7 +720,7 @@ mod tests {
         }
     }
 
-    // ===== TC-6: pipeline error propagation tests =====
+    // ===== pipeline error propagation tests =====
 
     #[test]
     fn test_is_pipeable_command_rejects_non_pipeable() {
@@ -766,8 +766,8 @@ mod tests {
         assert!(!names.contains("stats"));
     }
 
-    /// P3 #120: pipeline stage numbering is 0-based and consistent.
-    /// For a 3-stage pipeline, stages should be numbered 0, 1, 2 — not 0, 2, 3.
+    /// Pipeline stage numbering is 0-based and consistent.
+    /// For a 3-stage pipeline, stages are numbered 0, 1, 2 — not 0, 2, 3.
     /// Verifies the `stage_num = stage_idx + 1` arithmetic for downstream stages
     /// matches the explicit `stage = 0` label on the first segment.
     #[test]
@@ -776,8 +776,8 @@ mod tests {
         //   - s0 is logged with stage = 0 (explicit constant in execute_pipeline)
         //   - For stage_idx = 0 (s1), stage_num = 1
         //   - For stage_idx = 1 (s2), stage_num = 2
-        // The previous code emitted `stage = stage_num + 1` for the inner span,
-        // so a 3-stage pipeline logged stages 0, 2, 3 (skipping 1).
+        // A `stage = stage_num + 1` for the inner span would log stages 0, 2, 3
+        // (skipping 1), which this pins against.
         let segments = vec![
             vec!["a".to_string()],
             vec!["b".to_string()],

@@ -1,5 +1,5 @@
-// DS-5: WRITE_LOCK guard is held across .await inside block_on().
-// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+// WRITE_LOCK guard is held across .await inside block_on().
+// Safe — block_on runs single-threaded, no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! SQLite storage for chunks, embeddings, and call graph data.
 //!
@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex, RwLock};
 /// SQLite WAL mode allows concurrent readers, but only one writer at a time.
 /// `pool.begin()` issues `BEGIN DEFERRED` — two concurrent processes (e.g.,
 /// `cqs watch` + `cqs index`) can both acquire deferred transactions and race
-/// to upgrade to exclusive, causing SQLITE_BUSY (DS-5).
+/// to upgrade to exclusive, causing SQLITE_BUSY.
 ///
 /// This mutex ensures at most one in-process write transaction is active at
 /// any time. The guard is held alongside the sqlx `Transaction` and dropped
@@ -145,7 +145,7 @@ pub use helpers::score_name_match_pre_lower;
 /// Result of atomic GC prune (all 4 operations in one transaction).
 pub use chunks::PruneAllResult;
 
-/// Per-file reconcile fingerprint stored alongside each chunk (#1219).
+/// Per-file reconcile fingerprint stored alongside each chunk.
 /// `mtime + size + content_hash`, used by `run_daemon_reconcile` to detect
 /// disk/index divergence under coarse-mtime FSes and content-identical mtime
 /// flips.
@@ -217,7 +217,7 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
 /// (`upsert_*`, `set_*`, `delete_*`, `prune_*`, etc.) live exclusively
 /// on `impl Store<ReadWrite>`, so the compiler refuses to call them on
 /// a read-only store. This converts a class of runtime errors into
-/// compile-time errors — see the closed-bug examples in GitHub #946.
+/// compile-time errors.
 #[derive(Debug, Clone, Copy)]
 pub struct ReadOnly;
 
@@ -269,8 +269,8 @@ impl ClearHnswDirty for ReadOnly {
 /// read-only or read-write. Read methods live on `impl<Mode> Store<Mode>`
 /// and are available to both. Write methods live on `impl Store<ReadWrite>`
 /// only — the compiler refuses any attempt to call a mutating method on
-/// a `Store<ReadOnly>` handle (GitHub #946). `Mode` defaults to
-/// [`ReadWrite`] so bare `Store` keeps working for legacy call sites.
+/// a `Store<ReadOnly>` handle. `Mode` defaults to [`ReadWrite`] so bare
+/// `Store` keeps working for legacy call sites.
 ///
 /// # Memory-mapped I/O
 /// `open()` sets `PRAGMA mmap_size = 256MB` per connection with a 4-connection pool,
@@ -294,18 +294,18 @@ pub struct Store<Mode = ReadWrite> {
     pub(crate) pool: SqlitePool,
     /// Tokio runtime driving async sqlx operations.
     ///
-    /// #968: Stored as `Arc<Runtime>` so callers (e.g. the daemon)
-    /// can construct one multi-thread runtime and hand the same `Arc`
-    /// to `Store`, `EmbeddingCache`, and `QueryCache`. `Runtime::block_on`
-    /// takes `&self`, so the `Arc` derefs transparently at call sites.
-    /// When no caller supplies one, each open builds its own `Arc`.
+    /// Stored as `Arc<Runtime>` so callers (e.g. the daemon) can construct one
+    /// multi-thread runtime and hand the same `Arc` to `Store`,
+    /// `EmbeddingCache`, and `QueryCache`. `Runtime::block_on` takes `&self`,
+    /// so the `Arc` derefs transparently at call sites. When no caller supplies
+    /// one, each open builds its own `Arc`.
     pub(crate) rt: Arc<Runtime>,
     /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
     pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
-    /// PF-V1.25-4: cached `OwnedNoteBoostIndex` derived from `notes_summaries_cache`.
+    /// Cached `OwnedNoteBoostIndex` derived from `notes_summaries_cache`.
     /// Built lazily on first `cached_note_boost_index()` call, invalidated
     /// alongside the notes cache in `invalidate_notes_cache`.
     note_boost_cache: RwLock<Option<Arc<crate::search::scoring::OwnedNoteBoostIndex>>>,
@@ -315,7 +315,7 @@ pub struct Store<Mode = ReadWrite> {
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
     chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
-    /// Write-coalescing queue for streamed `llm_summaries` inserts (#1126 / P2.60).
+    /// Write-coalescing queue for streamed `llm_summaries` inserts.
     ///
     /// Built unconditionally so the field is uniform across `Mode`s, but
     /// only `Store<ReadWrite>` exposes the public `queue_summary_write`
@@ -324,12 +324,11 @@ pub struct Store<Mode = ReadWrite> {
     /// dead weight, vs. plumbing a separate optional field through every
     /// constructor.
     pub(crate) summary_queue: Arc<summary_queue::PendingSummaryQueue>,
-    /// v24 / #1221: vendored-path prefix list for the trust-level
-    /// downgrade. Set once at index/daemon startup via
-    /// `set_vendored_prefixes`; on `None` the upsert pipeline treats no
-    /// chunks as vendored. Wrapped in `OnceLock` so the field can be
-    /// populated through a shared `&Store` (e.g. `Arc<Store>` in the
-    /// daemon) without `&mut` plumbing.
+    /// Vendored-path prefix list for the trust-level downgrade. Set once at
+    /// index/daemon startup via `set_vendored_prefixes`; on `None` the upsert
+    /// pipeline treats no chunks as vendored. Wrapped in `OnceLock` so the
+    /// field can be populated through a shared `&Store` (e.g. `Arc<Store>` in
+    /// the daemon) without `&mut` plumbing.
     pub(crate) vendored_prefixes: std::sync::OnceLock<Vec<String>>,
     /// Typestate marker — `ReadOnly` or `ReadWrite`. Zero-sized.
     _mode: PhantomData<Mode>,
@@ -350,7 +349,7 @@ struct StoreOpenConfig {
     cache_size: String,
     /// Pre-existing runtime to reuse. If `Some`, skips runtime creation
     /// (~15ms saving) and also lets callers share one runtime across
-    /// multiple consumers (Store + EmbeddingCache + QueryCache) per #968.
+    /// multiple consumers (Store + EmbeddingCache + QueryCache).
     /// If `None`, creates a new one per `use_current_thread`.
     runtime: Option<Arc<Runtime>>,
 }
@@ -442,12 +441,11 @@ fn is_slow_mmap_fs(path: &Path) -> bool {
             Ok(p) => p,
             Err(_) => return false,
         };
-        // RM-V1.33-7: bound `/proc/self/mountinfo` reads at 1 MiB. The
-        // file is reliably small in practice (a few KiB) but a system
-        // with thousands of mounts (containers, network FS, btrfs
-        // subvols) plus a malformed mount table could exceed reasonable
-        // size. 1 MiB is several orders of magnitude above realistic
-        // content; rejection falls through to "not slow".
+        // Bound `/proc/self/mountinfo` reads at 1 MiB. The file is reliably
+        // small in practice (a few KiB) but a system with thousands of mounts
+        // (containers, network FS, btrfs subvols) plus a malformed mount table
+        // could exceed reasonable size. 1 MiB is several orders of magnitude
+        // above realistic content; rejection falls through to "not slow".
         use std::io::Read;
         const MAX_MOUNTINFO_BYTES: u64 = 1 << 20;
         let mut mountinfo = String::new();
@@ -700,8 +698,8 @@ impl<Mode> Store<Mode> {
         self.dim = dim;
     }
 
-    /// Borrow the underlying tokio runtime. #968: callers that want to
-    /// share this runtime with `EmbeddingCache::open_with_runtime` or
+    /// Borrow the underlying tokio runtime. Callers that want to share this
+    /// runtime with `EmbeddingCache::open_with_runtime` or
     /// `QueryCache::open_with_runtime` call `Arc::clone(store.runtime())`.
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.rt
@@ -718,10 +716,10 @@ impl Store<ReadWrite> {
     /// tokio runtime. Same semantics as [`Store::open`] but reuses the
     /// caller-supplied runtime instead of constructing a new one.
     ///
-    /// #968: the daemon creates one multi-thread runtime and passes the
-    /// same `Arc` to `Store`, `EmbeddingCache`, and `QueryCache` so a
-    /// single worker pool drives all three (no longer ~12 idle threads
-    /// across three separate runtimes).
+    /// The daemon creates one multi-thread runtime and passes the same `Arc`
+    /// to `Store`, `EmbeddingCache`, and `QueryCache` so a single worker pool
+    /// drives all three, instead of ~12 idle threads across three separate
+    /// runtimes.
     pub fn open_with_runtime(path: &Path, runtime: Arc<Runtime>) -> Result<Self, StoreError> {
         Self::open_with_config(path, Self::default_open_config(path, Some(runtime)))
     }
@@ -731,10 +729,10 @@ impl Store<ReadWrite> {
     /// lockstep with the standalone version as pool / mmap / cache defaults
     /// evolve.
     fn default_open_config(path: &Path, runtime: Option<Arc<Runtime>>) -> StoreOpenConfig {
-        // SHL-V1.36-1: scale with available parallelism instead of a fixed 4.
-        // The pool size also gates `serve_blocking_permits()` (limits.rs), so
-        // a fixed 4 caps the entire serve concurrency budget at 4 even on
-        // 32-core hosts. Mirrors the v1.33 SHL-V1.33-10 fix in project.rs:260.
+        // Scale with available parallelism instead of a fixed 4. The pool size
+        // also gates `serve_blocking_permits()` (limits.rs), so a fixed 4 would
+        // cap the entire serve concurrency budget at 4 even on 32-core hosts.
+        // Mirrors the fix in project.rs:260.
         let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -758,8 +756,7 @@ impl Store<ReadOnly> {
     /// Shared config builder for `open_readonly_pooled` /
     /// `open_readonly_pooled_with_runtime`. Mirrors `default_open_config` on
     /// the read-write side so the runtime-sharing variant stays in lockstep
-    /// with the standalone version as pool / mmap / cache defaults evolve
-    /// (P2 #42).
+    /// with the standalone version as pool / mmap / cache defaults evolve.
     fn default_readonly_pooled_config(
         path: &Path,
         runtime: Option<Arc<Runtime>>,
@@ -780,9 +777,6 @@ impl Store<ReadOnly> {
     /// `open()`. Ideal for read-only CLI commands on the primary project index
     /// where we need full search performance but don't need multi-threaded
     /// async.
-    ///
-    /// AD-1: Renamed from `open_light` to clarify semantics — this is a
-    /// read-only pooled connection, not a "light" store.
     pub fn open_readonly_pooled(path: &Path) -> Result<Self, StoreError> {
         open_with_config_impl::<ReadOnly>(path, Self::default_readonly_pooled_config(path, None))
     }
@@ -810,8 +804,8 @@ impl Store<ReadOnly> {
     /// Open in read-only pooled mode using a pre-existing tokio runtime.
     /// Saves ~15ms per invocation by avoiding runtime creation.
     ///
-    /// #968: accepts `Arc<Runtime>` so the daemon can share one runtime
-    /// across `Store`, `EmbeddingCache`, and `QueryCache`.
+    /// Accepts `Arc<Runtime>` so the daemon can share one runtime across
+    /// `Store`, `EmbeddingCache`, and `QueryCache`.
     pub fn open_readonly_pooled_with_runtime(
         path: &Path,
         runtime: Arc<Runtime>,
@@ -915,7 +909,7 @@ fn open_with_config_impl<Mode>(
 
     // Reuse provided runtime or build a new one.
     //
-    // #968: `runtime` is `Arc<Runtime>` so one runtime can be shared across
+    // `runtime` is `Arc<Runtime>` so one runtime can be shared across
     // Store + EmbeddingCache + QueryCache. When no runtime is supplied we
     // build a fresh one and wrap it in `Arc` immediately so the internal
     // field type stays uniform.
@@ -961,14 +955,14 @@ fn open_with_config_impl<Mode>(
     // Build cache_size PRAGMA string once for the after_connect closure.
     let cache_pragma = format!("PRAGMA cache_size = {}", config.cache_size);
 
-    // DS-V1.33-8: cap the WAL at N pages so an abrupt shutdown (SIGKILL,
+    // Cap the WAL at N pages so an abrupt shutdown (SIGKILL,
     // panic-without-Drop, daemon worker thread crash) leaves a bounded WAL
     // for the next open to replay. Without this, a long-lived read-only
     // `cqs serve` that never commits never triggers SQLite's default 1000-
     // page autocheckpoint, and the on-disk WAL grows to whatever the kernel
     // buffered between explicit `wal_checkpoint(TRUNCATE)` calls. 1000 pages
-    // is the SQLite default — we set it explicitly so it actually applies
-    // to read-mostly connections that rarely COMMIT. Override via
+    // is the SQLite default — set explicitly so it actually applies to
+    // read-mostly connections that rarely COMMIT. Override via
     // `CQS_WAL_AUTOCHECKPOINT_PAGES` (e.g. for WSL-NTFS boxes where each
     // checkpoint is expensive — set higher; for tighter recovery — set
     // lower).
@@ -978,14 +972,13 @@ fn open_with_config_impl<Mode>(
         .unwrap_or(1000);
     let wal_pragma = format!("PRAGMA wal_autocheckpoint = {}", wal_autocheckpoint_pages);
 
-    // SEC-V1.36-1: tighten umask to 0o077 around pool creation so the DB
-    // (and WAL/SHM sidecars) are born 0o600 instead of inheriting the user's
-    // umask (typically 0o644). Without this, there's a window between SQLite's
-    // first commit and the post-open `set_permissions` block below where the
-    // sidecar files are world-readable on multi-user hosts. Mirrors the
-    // SEC-V1.33-2 fix to `cache.rs::open` (the cache had this; the main
-    // store had drifted). Write opens only — read-only opens never create
-    // files. Process-global; the surrounding open path is synchronous.
+    // Tighten umask to 0o077 around pool creation so the DB (and WAL/SHM
+    // sidecars) are born 0o600 instead of inheriting the user's umask
+    // (typically 0o644). Without this, there's a window between SQLite's first
+    // commit and the post-open `set_permissions` block below where the sidecar
+    // files are world-readable on multi-user hosts. Mirrors `cache.rs::open`.
+    // Write opens only — read-only opens never create files. Process-global;
+    // the surrounding open path is synchronous.
     #[cfg(unix)]
     let prev_umask = if !config.read_only {
         Some(unsafe { libc::umask(0o077) })
@@ -999,7 +992,7 @@ fn open_with_config_impl<Mode>(
                 std::env::var("CQS_IDLE_TIMEOUT_SECS")
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(30), // PB-2: shorter timeout to release WAL locks
+                    .unwrap_or(30), // shorter timeout to release WAL locks
             ))
             .after_connect(move |conn, _meta| {
                 let pragma = cache_pragma.clone();
@@ -1050,28 +1043,24 @@ fn open_with_config_impl<Mode>(
         "Database connected"
     );
 
-    // Cheap B-tree sanity check — write opens only.
+    // Cheap B-tree sanity check — write opens only, opt-in.
     //
-    // The previous `PRAGMA integrity_check(1)` walked every page and took
-    // 85s+ on a 1.1GB database over WSL /mnt/c, dominating every CLI
-    // invocation and blocking the eval harness (each `cqs search` shelled
-    // out, each open re-paid the cost). Two changes fix that:
+    // A full `PRAGMA integrity_check(1)` walks every page (85s+ on a 1.1GB
+    // database over WSL /mnt/c), so it isn't run by default:
     //
-    // 1. Skip the check entirely on read-only opens. Reads cannot
-    //    introduce corruption, and if a read encounters corrupt pages the
-    //    query will fail naturally — an upfront walk of the whole file
-    //    just to pre-discover that is not earning its cost for a
-    //    rebuildable search index.
-    // 2. On write opens, use `PRAGMA quick_check` instead of
-    //    `integrity_check`. quick_check validates the B-tree structure
-    //    without the slower cross-checks of index content vs table
-    //    content, which is the right tradeoff for a startup canary.
+    // 1. Skip the check entirely on read-only opens. Reads cannot introduce
+    //    corruption, and if a read encounters corrupt pages the query fails
+    //    naturally — an upfront walk of the whole file just to pre-discover
+    //    that doesn't earn its cost for a rebuildable search index.
+    // 2. On write opens, use `PRAGMA quick_check` instead of `integrity_check`.
+    //    quick_check validates the B-tree structure without the slower
+    //    cross-checks of index content vs table content, the right tradeoff for
+    //    a startup canary.
     //
-    // Opt-in via CQS_INTEGRITY_CHECK=1. The quick_check takes ~40s on
-    // WSL /mnt/c (NTFS over 9P) which dominated every write-open. For a
-    // rebuildable search index the risk/cost tradeoff favors skipping by
-    // default. Legacy CQS_SKIP_INTEGRITY_CHECK=1 still works (forces skip
-    // even when CQS_INTEGRITY_CHECK=1 is set).
+    // Opt-in via CQS_INTEGRITY_CHECK=1. quick_check still takes ~40s on WSL
+    // /mnt/c (NTFS over 9P), so for a rebuildable search index the risk/cost
+    // tradeoff favors skipping by default. CQS_SKIP_INTEGRITY_CHECK=1 forces
+    // skip even when CQS_INTEGRITY_CHECK=1 is set.
     let opt_in = std::env::var("CQS_INTEGRITY_CHECK").as_deref() == Ok("1");
     let force_skip = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
     let run_check = opt_in && !force_skip && !config.read_only;
@@ -1092,8 +1081,8 @@ fn open_with_config_impl<Mode>(
         })?;
     }
 
-    // P2.59 / issue #1125: run the schema-version check + migration BEFORE
-    // constructing `Store`. `migrations::migrate` takes the pool by value so
+    // Run the schema-version check + migration BEFORE constructing `Store`.
+    // `migrations::migrate` takes the pool by value so
     // it can `.close().await` before `restore_from_backup` runs an
     // `atomic_replace` over the DB file — SQLite's documented restore
     // protocol requires zero open connections during the file replace, and
@@ -1163,7 +1152,7 @@ fn open_with_config_impl<Mode>(
     };
 
     // Skip model name validation on open — dimension is validated at embed time,
-    // and configurable models (v1.7.0) can legitimately use any model name.
+    // and configurable models can legitimately use any model name.
     // Model mismatch is checked at index time via check_model_version_with().
     store.check_cq_version();
 
@@ -1184,7 +1173,7 @@ impl<Mode> Store<Mode> {
 }
 
 impl Store<ReadWrite> {
-    /// Begin a write transaction with in-process serialization (DS-5).
+    /// Begin a write transaction with in-process serialization.
     ///
     /// Acquires `WRITE_LOCK` before calling `pool.begin()`, preventing two
     /// concurrent write transactions from racing to upgrade their deferred
@@ -1204,7 +1193,7 @@ impl Store<ReadWrite> {
         ),
         sqlx::Error,
     > {
-        // v1.22.0 audit OB-20: span so write-lock contention is visible.
+        // Span so write-lock contention is visible.
         let _span = tracing::debug_span!("begin_write").entered();
         let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tx = self.pool.begin().await?;
@@ -1216,7 +1205,7 @@ impl Store<ReadWrite> {
     /// both call this at startup; the second call is a no-op). Pass
     /// an empty `Vec` to disable vendored detection entirely; pass
     /// [`crate::vendored::effective_prefixes`]'s resolved output to
-    /// apply config-with-fallback-to-defaults. See #1221.
+    /// apply config-with-fallback-to-defaults.
     pub fn set_vendored_prefixes(&self, prefixes: Vec<String>) {
         let _ = self.vendored_prefixes.set(prefixes);
     }
@@ -1322,10 +1311,10 @@ impl<Mode> Store<Mode> {
     pub fn close(self) -> Result<(), StoreError> {
         self.closed.store(true, Ordering::Release);
         self.rt.block_on(async {
-            // DS-V1.36-7: bound the TRUNCATE checkpoint with a 30s timeout and
-            // fall back to PASSIVE on expiry. PR #1450 added the same shape to
-            // Store::drop because TRUNCATE acquires SQLite's EXCLUSIVE lock and
-            // can stall under WSL 9P / NTFS contention; close() had drifted.
+            // Bound the TRUNCATE checkpoint with a 30s timeout and fall back to
+            // PASSIVE on expiry. TRUNCATE acquires SQLite's EXCLUSIVE lock and
+            // can stall under WSL 9P / NTFS contention; Store::drop uses the
+            // same shape.
             let truncate_result = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&self.pool),
@@ -1489,18 +1478,17 @@ impl<Mode> Drop for Store<Mode> {
         }
         // Best-effort WAL checkpoint on drop to bound the WAL.
         //
-        // V1.36.2: PASSIVE + 1s cap, replacing the prior unbounded TRUNCATE.
-        // The previous TRUNCATE acquired the EXCLUSIVE lock, so a transient
-        // `cqs stats` (or any other read-only Store handle) drop could block
-        // the long-running `cqs index` writer until completion. Under WSL
-        // 9P/NTFS the checkpoint sometimes took long enough that the
-        // indexer's next write hit `(code: 5) database is locked` even
-        // with the 30s busy_timeout — fatal because mid-transaction BUSY
-        // isn't recoverable. PASSIVE bails immediately when active
-        // readers/writers exist (no copy), and the 1s timeout caps every
-        // other case. Operators who want truncate semantics call
+        // PASSIVE + 1s cap rather than TRUNCATE: TRUNCATE acquires the
+        // EXCLUSIVE lock, so a transient `cqs stats` (or any other read-only
+        // Store handle) drop could block the long-running `cqs index` writer
+        // until completion. Under WSL 9P/NTFS the checkpoint sometimes takes
+        // long enough that the indexer's next write hits `(code: 5) database is
+        // locked` even with the 30s busy_timeout — fatal because
+        // mid-transaction BUSY isn't recoverable. PASSIVE bails immediately
+        // when active readers/writers exist (no copy), and the 1s timeout caps
+        // every other case. Operators who want truncate semantics call
         // [`Store::close`] from the structured-shutdown path before drop.
-        // Mirrors `EmbeddingCache::drop` (#1343 / RM-V1.33-3).
+        // Mirrors `EmbeddingCache::drop`.
         //
         // catch_unwind guards against block_on panicking when called from
         // within an async context (e.g., if Store is dropped inside a tokio runtime).
@@ -1581,7 +1569,7 @@ mod tests {
             prop_assert!(result.len() <= input.len() * 4);
         }
 
-        // ===== sanitize_fts_query property tests (SEC-4) =====
+        // ===== sanitize_fts_query property tests =====
 
         /// Output never contains FTS5 special characters
         #[test]
@@ -1693,7 +1681,7 @@ mod tests {
         }
     }
 
-    // ===== TC-19: concurrent access and edge-case tests =====
+    // ===== concurrent access and edge-case tests =====
 
     fn make_test_store_initialized() -> (Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1788,7 +1776,7 @@ mod tests {
 
     #[test]
     fn open_readonly_small_roundtrip() {
-        // #970: open_readonly_small right-sizes the mmap/cache for reference
+        // open_readonly_small right-sizes the mmap/cache for reference
         // indexes. Verify it still reads back data written by a normal Store.
         use crate::embedder::Embedding;
         use crate::parser::{Chunk, ChunkType, Language};
@@ -1849,7 +1837,7 @@ mod tests {
         assert_eq!(chunks[0].name, "small");
     }
 
-    // ===== open_readonly_after_init tests (#986) =====
+    // ===== open_readonly_after_init tests =====
 
     #[test]
     fn open_readonly_after_init_happy_path() {
@@ -1923,8 +1911,8 @@ mod tests {
         assert!(recovered.check_model_version().is_ok());
     }
 
-    /// DS-V1.33-8 regression: every connection from the main store pool must
-    /// carry a finite `wal_autocheckpoint` ceiling so an abrupt shutdown
+    /// Every connection from the main store pool must carry a finite
+    /// `wal_autocheckpoint` ceiling so an abrupt shutdown
     /// (SIGKILL, panic-without-Drop, daemon worker thread crash) leaves a
     /// bounded WAL for the next open. Asserting via PRAGMA query on a freshly-
     /// opened store pins the after_connect wiring so a refactor that drops the

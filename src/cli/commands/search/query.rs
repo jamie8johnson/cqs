@@ -125,8 +125,8 @@ pub(crate) fn cmd_query(
     }
 
     // Over-retrieve when reranking to give the cross-encoder more candidates.
-    // P3 #100: pool sizing centralized in `cli/limits.rs::rerank_pool_size`,
-    // honors CQS_RERANK_OVER_RETRIEVAL / CQS_RERANK_POOL_MAX.
+    // Pool sizing lives in `cli/limits.rs::rerank_pool_size`, honoring
+    // CQS_RERANK_OVER_RETRIEVAL / CQS_RERANK_POOL_MAX.
     let effective_limit = if cli.rerank_active() {
         crate::cli::limits::rerank_pool_size(cli.limit)
     } else {
@@ -200,17 +200,17 @@ pub(crate) fn cmd_query(
     // Semantics fix: prior to this, `--splade` bypassed the router and used
     // `cli.splade_alpha`'s clap default (0.7) for every query. That was a
     // regression introduced when routing landed — the flag predates routing.
-    // Now the router runs whenever classification succeeds, regardless of
+    // The router runs whenever classification succeeds, regardless of
     // `--splade`. Explicit `--splade-alpha` still overrides.
     //
-    // OB-NEW-1: `resolve_splade_alpha` emits the structured "SPLADE routing"
-    // log internally — no call-site log needed here.
+    // `resolve_splade_alpha` emits the structured "SPLADE routing" log
+    // internally — no call-site log needed here.
     let (use_splade, mut splade_alpha) = match (cli.splade_alpha, classification.as_ref()) {
         // Explicit α override wins in all cases.
         (Some(alpha), _) => (true, alpha),
         // Classified query → per-category router.
         (None, Some(c)) => (true, cqs::search::router::resolve_splade_alpha(&c.category)),
-        // Unknown category + --splade → force on at legacy α=0.7.
+        // Unknown category + --splade → force on at α=0.7.
         (None, None) if cli.splade => (true, 0.7),
         // Unknown category, no flags → SPLADE off (dense-only).
         (None, None) => (false, 1.0),
@@ -221,7 +221,7 @@ pub(crate) fn cmd_query(
         splade_alpha = splade_alpha.max(0.7);
     }
 
-    // #1349: SearchFilter is `#[non_exhaustive]`, so external-crate construction
+    // SearchFilter is `#[non_exhaustive]`, so external-crate construction
     // goes through `Default` + field assignment instead of a struct expression.
     // Adding a new field stays one-line on the struct definition; this site
     // doesn't need to know.
@@ -690,7 +690,7 @@ fn cmd_query_ref_only(ctx: &RefQueryContext<'_>, ref_name: &str) -> Result<()> {
 
     let ref_idx = crate::cli::commands::resolve::find_reference(ctx.root, ref_name)?;
 
-    // P3 #100: shared pool sizing.
+    // Shared pool sizing.
     let ref_limit = if ctx.cli.rerank_active() {
         crate::cli::limits::rerank_pool_size(ctx.cli.limit)
     } else {
@@ -886,7 +886,7 @@ fn resolve_parent_context<Mode>(
                 );
                 continue;
             }
-            // RB-V1.36-2: gate by file size before slurping for line-range slice.
+            // Gate by file size before slurping for line-range slice.
             let max_bytes = cqs::limits::small_file_max_bytes();
             if let Ok(meta) = std::fs::metadata(&canonical) {
                 if meta.len() > max_bytes {

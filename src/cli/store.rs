@@ -79,7 +79,7 @@ fn open_store_with<Mode>(
     opener: fn(&Path) -> std::result::Result<cqs::Store<Mode>, cqs::store::StoreError>,
     slot_flag: Option<&str>,
 ) -> Result<(cqs::Store<Mode>, SlotPaths)> {
-    // P3 #131: span on the shared opener so both `open_project_store` and
+    // Span on the shared opener so both `open_project_store` and
     // `open_project_store_readonly` (which fan into here) get consistent
     // tracing identity covering the index existence check + open.
     let _span = tracing::info_span!("open_project_store").entered();
@@ -99,13 +99,11 @@ fn open_store_with<Mode>(
     Ok((store, paths))
 }
 
-// CQ-V1.38-2 (#1463): `open_project_store()` (zero-arg, slot-bypass)
-// previously parked here `#[allow(dead_code)]` for "legacy in-tree
-// callers" that don't exist. Removing it eliminates the slot-bypass
-// regression footgun — every code path now goes through
-// [`open_project_store_for_slot`] which honors the `--slot` flag.
-// If a future caller genuinely needs slot-default behavior, pass
-// `slot_flag: None` to the slot-aware variant explicitly.
+// There is deliberately no zero-arg slot-bypass opener. Every code path goes
+// through [`open_project_store_for_slot`], which honors the `--slot` flag, so
+// a query can't silently bypass slot resolution. A caller that genuinely wants
+// slot-default behavior passes `slot_flag: None` to the slot-aware variant
+// explicitly.
 
 /// Open the project store honoring the resolved `--slot` flag from CLI / env / file.
 /// Bails with a user-friendly message if no index exists.
@@ -140,12 +138,11 @@ pub(crate) fn open_project_store_readonly_for_slot(
 /// The `Mode` type parameter records whether the store was opened read-only
 /// or read-write. Commands that only read (search, explain, etc.) take
 /// `&CommandContext<'_, ReadOnly>`; commands that mutate (gc, suggest
-/// --apply, notes add) take `&CommandContext<'_, ReadWrite>`. This makes
-/// GitHub #946 structurally impossible: a read-only command cannot
-/// accidentally call a write method at compile time.
+/// --apply, notes add) take `&CommandContext<'_, ReadWrite>`. A read-only
+/// command thus cannot accidentally call a write method — it's a compile-time
+/// error.
 ///
-/// `Mode` defaults to `ReadWrite` so pre-typestate call sites keep
-/// compiling. New code that only needs reads should prefer
+/// `Mode` defaults to `ReadWrite`. New code that only needs reads should prefer
 /// `CommandContext<'_, ReadOnly>`.
 pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     pub cli: &'a definitions::Cli,
@@ -272,7 +269,7 @@ impl<'a, Mode> CommandContext<'a, Mode> {
             return Ok(std::sync::Arc::clone(r));
         }
         let _span = tracing::info_span!("command_context_reranker_init").entered();
-        // P1.7: thread the `[reranker]` config section so .cqs.toml preset/
+        // Thread the `[reranker]` config section so .cqs.toml preset/
         // model_path is honoured instead of silently defaulting to ms-marco.
         let config = cqs::config::Config::load(&self.root);
         let r: std::sync::Arc<dyn cqs::Reranker> = std::sync::Arc::new(
@@ -434,7 +431,7 @@ pub(crate) fn build_vector_index_with_config<Mode: ClearHnswDirty>(
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _span = tracing::info_span!("build_vector_index_with_config").entered();
 
-    // P4-6 (#1463): pull `[index.policy]` off the project config and hand
+    // Pull `[index.policy]` off the project config and hand
     // it to each backend's `try_open` so policy knobs (e.g.
     // `cagra_threshold`) are visible without backends re-loading config or
     // re-reading env. Resolution order is still env > [index.policy] >
@@ -489,7 +486,7 @@ pub(crate) fn build_base_vector_index<Mode: ClearHnswDirty>(
     // Same self-heal logic as enriched: if checksums pass, clear the dirty
     // flag; otherwise fall back to enriched via the router.
     //
-    // EH-16: surface metadata-read failures for the base index path too.
+    // Surface metadata-read failures for the base index path too.
     let dirty = match store.is_hnsw_dirty(cqs::HnswKind::Base) {
         Ok(d) => d,
         Err(e) => {

@@ -1,6 +1,6 @@
 //! Misc dispatch handlers: notes, gc, plan, task, scout, where, gather, diff, drift, refresh, help.
 //!
-//! #1216: handlers take a single `&XArgs` argument so the macro-driven
+//! Handlers take a single `&XArgs` argument so the macro-driven
 //! `BatchCmd::dispatch` calls every row uniformly.
 
 use anyhow::{Context, Result};
@@ -15,9 +15,9 @@ use crate::cli::validate_finite_f32;
 
 /// Performs a semantic search gather operation with optional cross-index querying and token budget constraints.
 ///
-/// #947: takes `&GatherArgs` directly (the shared CLI/batch struct) instead
-/// of a batch-local `GatherParams`. Both paths deserialize into the same
-/// struct, so there is no per-field drift to reason about.
+/// Takes `&GatherArgs` directly (the shared CLI/batch struct). Both the CLI
+/// and batch paths deserialize into the same struct, so there is no per-field
+/// drift to reason about.
 pub(in crate::cli::batch) fn dispatch_gather(
     ctx: &BatchView,
     args: &GatherArgs,
@@ -86,7 +86,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
 /// otherwise, all notes are included. Each note is serialized to JSON with
 /// its text, sentiment score, sentiment label, and mentions.
 ///
-/// API-V1.29-4: `check: bool` routes staleness checks through the daemon
+/// `check: bool` routes staleness checks through the daemon
 /// path so agents calling `cqs notes list --check --json` via the socket
 /// receive `stale_mentions` per note — matching the CLI's `cmd_notes_list`
 /// shape (field present when `--check` is set, absent otherwise).
@@ -236,7 +236,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
     let tokens = args.tokens;
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
-    // CQ-V1.25-2: shared with CLI's cmd_scout.
+    // Shared with CLI's cmd_scout.
     let limit = args.limit_arg.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
@@ -253,8 +253,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
         (None, None)
     };
 
-    // CQ-V1.29-2: shared with CLI's cmd_scout — same JSON shape across both
-    // dispatch paths.
+    // Shared with CLI's cmd_scout — same JSON shape across both dispatch paths.
     crate::cli::commands::build_scout_output(&result, content_map.as_ref(), token_info)
 }
 
@@ -333,7 +332,7 @@ pub(in crate::cli::batch) fn dispatch_drift(
         .drifted
         .iter()
         .map(|e| {
-            // PB-V1.29-5: emit normalized forward-slash paths (match sister
+            // Emit normalized forward-slash paths (match sister
             // handlers in info.rs) so agents chaining `drift` → `context --json`
             // don't trip on Windows backslashes.
             serde_json::json!({
@@ -373,9 +372,8 @@ pub(in crate::cli::batch) fn dispatch_diff(
     let source_store = crate::cli::commands::resolve::resolve_reference_store(&ctx.root, source)?;
 
     let target_label = target.unwrap_or("project");
-    // P2.2: drop the dead `target_store` placeholder + duplicate match. The previous
-    // shape called `ctx.get_ref(target_label)?` then discarded the cached store,
-    // and re-opened via `resolve_reference_store` in the else arm anyway.
+    // `project` diffs against the open store; any other target resolves a
+    // reference store in the else arm.
     let result = if target_label == "project" {
         cqs::semantic_diff(
             &source_store,
@@ -398,7 +396,7 @@ pub(in crate::cli::batch) fn dispatch_diff(
         )?
     };
 
-    // PB-V1.29-5: emit normalized forward-slash paths (same rationale as
+    // Emit normalized forward-slash paths (same rationale as
     // `dispatch_drift` above) across added/removed/modified.
     let added: Vec<_> = result
         .added
@@ -482,8 +480,8 @@ pub(in crate::cli::batch) fn dispatch_plan(
 ///
 /// **Not available via the daemon path.** GC mutates the DB
 /// (chunks/calls/type_edges/summaries/sparse_vectors pruning), but the
-/// daemon only opens a `Store<ReadOnly>`. The typestate refactor in
-/// GitHub #946 makes this a compile-time invariant: `prune_all` is on
+/// daemon only opens a `Store<ReadOnly>`. The typestate makes this a
+/// compile-time invariant: `prune_all` is on
 /// `impl Store<ReadWrite>` so the daemon path cannot accidentally
 /// call it. Returns an error instructing the user to run `cqs gc`
 /// directly; the dispatcher in `cli/dispatch.rs` already classifies
@@ -501,7 +499,7 @@ pub(in crate::cli::batch) fn dispatch_gc(_ctx: &BatchView) -> Result<serde_json:
 
 /// Manually invalidates all mutable caches and re-opens the Store.
 ///
-/// #1127: the daemon path early-routes `Refresh` to `view.invalidate_via_outer()`
+/// The daemon path early-routes `Refresh` to `view.invalidate_via_outer()`
 /// inside `dispatch_via_view` (briefly re-locking the BatchContext) and the
 /// stdin batch path early-routes to `BatchContext::invalidate` directly. This
 /// handler is the fallback used when the dispatch reaches us via
@@ -519,9 +517,9 @@ pub(in crate::cli::batch) fn dispatch_refresh(ctx: &BatchView) -> Result<serde_j
 /// # Errors
 /// Returns an error if writing help text to the buffer fails or if UTF-8 conversion fails.
 pub(in crate::cli::batch) fn dispatch_help(_ctx: &BatchView) -> Result<serde_json::Value> {
-    // #1216: takes `&BatchView` to match the unit-variant handler shape
-    // even though help generation is fully static. Keeps the macro-driven
-    // dispatch table uniform.
+    // Takes `&BatchView` to match the unit-variant handler shape even though
+    // help generation is fully static. Keeps the macro-driven dispatch table
+    // uniform.
     use clap::CommandFactory;
     let mut buf = Vec::new();
     BatchInput::command().write_help(&mut buf)?;
@@ -531,7 +529,7 @@ pub(in crate::cli::batch) fn dispatch_help(_ctx: &BatchView) -> Result<serde_jso
 
 /// Daemon healthcheck — returns the JSON-serialized [`PingResponse`] snapshot.
 ///
-/// Task B2: thin wrapper over [`BatchContext::ping_snapshot`]. The handler
+/// Thin wrapper over [`BatchContext::ping_snapshot`]. The handler
 /// touches no I/O beyond a single `metadata()` call inside `ping_snapshot`,
 /// so it stays cheap even on a very busy daemon — important because the
 /// CLI's `cqs ping` may be polled by orchestration scripts.
@@ -544,7 +542,7 @@ pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchView) -> Result<serde_json
         .map_err(|e| anyhow::anyhow!("Failed to serialize PingResponse: {e}"))
 }
 
-/// #1182: watch-mode freshness snapshot — returns the latest
+/// Watch-mode freshness snapshot — returns the latest
 /// [`cqs::watch_status::WatchSnapshot`] the watch loop published. Outside
 /// `cqs watch --serve` (one-shot `cqs batch`) this returns the default
 /// `unknown` snapshot. Pure read — clones the small struct out from under
@@ -556,14 +554,12 @@ pub(in crate::cli::batch) fn dispatch_status(ctx: &BatchView) -> Result<serde_js
         .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"))
 }
 
-/// #1228 (RM-2): block until the watch loop transitions to Fresh, or
-/// `wait_secs` elapses. Replaces the prior 250 ms-poll loop in
-/// `wait_for_fresh` — one round-trip, zero busy-poll.
+/// Block until the watch loop transitions to Fresh, or `wait_secs` elapses.
+/// One round-trip, zero busy-poll.
 ///
 /// Behaviour:
 /// 1. Read the current snapshot. If already Fresh, return it immediately
-///    (no parking) — preserves the "already fresh tree pays no latency"
-///    contract from the old polling implementation.
+///    (no parking) — an already-fresh tree pays no latency.
 /// 2. Otherwise park on the shared [`cqs::watch_status::FreshNotifier`]
 ///    until either the next `false → true` transition fires
 ///    `notify_all`, or `deadline` expires. The waiter loop in
@@ -576,10 +572,9 @@ pub(in crate::cli::batch) fn dispatch_status(ctx: &BatchView) -> Result<serde_js
 ///    payload reflects the latest publish — not whatever was visible
 ///    when the request first parked.
 ///
-/// `wait_secs == 0` returns immediately with the current snapshot,
-/// matching how the prior client-side loop's deadline-first check
-/// behaves on a zero budget. Capped at 86_400 s (24 h) for parity
-/// with the client-side `wait_for_fresh` cap.
+/// `wait_secs == 0` returns immediately with the current snapshot
+/// (deadline-first check on a zero budget). Capped at 86_400 s (24 h) for
+/// parity with the client-side `wait_for_fresh` cap.
 pub(in crate::cli::batch) fn dispatch_wait_fresh(
     ctx: &BatchView,
     args: &WaitFreshArgs,
@@ -621,7 +616,7 @@ pub(in crate::cli::batch) fn dispatch_wait_fresh(
         .map_err(|e| anyhow::anyhow!("Failed to serialize WatchSnapshot: {e}"))
 }
 
-/// #1182 — Layer 1: git-hook-driven reconcile request. Flips the shared
+/// Git-hook-driven reconcile request. Flips the shared
 /// `SharedReconcileSignal` AtomicBool to `true`; the watch loop swaps it
 /// back to `false` and runs an immediate reconcile pass on its next tick.
 ///
@@ -650,8 +645,8 @@ pub(in crate::cli::batch) fn dispatch_reconcile(
         was_pending,
         "Reconcile requested"
     );
-    // API-V1.30.1-6: `queued: true` was always-true noise — `Ok(...)`
-    // already conveys "accepted by daemon". Dropped from the wire.
+    // No `queued` field on the wire: `Ok(...)` already conveys "accepted by
+    // daemon".
     Ok(serde_json::json!({
         "was_pending": was_pending,
         "hook": args.hook,
@@ -659,10 +654,9 @@ pub(in crate::cli::batch) fn dispatch_reconcile(
     }))
 }
 
-// P2.79: TC-HAP — embedder-free misc handler tests. `dispatch_ping`,
-// `dispatch_help`, and `dispatch_refresh` are the cheap healthcheck/
-// metadata surface and shipped with zero per-handler tests in the batch
-// module. Pin the contract here so a future regression in
+// Embedder-free misc handler tests. `dispatch_ping`, `dispatch_help`, and
+// `dispatch_refresh` are the cheap healthcheck/metadata surface. Pin the
+// contract here so a future regression in
 // `BatchContext::ping_snapshot` or the help text emitter surfaces locally.
 #[cfg(test)]
 mod tests {
@@ -672,7 +666,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    /// #1127: build a `BatchContext` wrapped in an `Arc<Mutex<...>>` plus a
+    /// Build a `BatchContext` wrapped in an `Arc<Mutex<...>>` plus a
     /// `BatchView` carrying it as `outer_lock`. Mirrors the daemon path so
     /// `dispatch_refresh` (which goes through `invalidate_via_outer`) can
     /// reach a real BatchContext to invalidate.
@@ -703,10 +697,9 @@ mod tests {
         assert!(!obj.is_empty(), "ping snapshot must not be empty");
     }
 
-    /// #1228 (RM-2): `dispatch_wait_fresh` returns immediately when the
-    /// snapshot is already Fresh on entry — no parking, no Condvar wait.
-    /// Pins the "already-fresh tree pays no latency" contract from the
-    /// pre-#1228 polling implementation.
+    /// `dispatch_wait_fresh` returns immediately when the snapshot is already
+    /// Fresh on entry — no parking, no Condvar wait. Pins the "already-fresh
+    /// tree pays no latency" contract.
     #[test]
     fn dispatch_wait_fresh_returns_immediately_when_already_fresh() {
         let (_dir, _ctx, view) = empty_view();
@@ -748,7 +741,7 @@ mod tests {
         );
     }
 
-    /// #1228 (RM-2): `dispatch_wait_fresh` parks until a `false → true`
+    /// `dispatch_wait_fresh` parks until a `false → true`
     /// transition fires `notify_all`. Spawns a "watch loop" thread that
     /// flips the notifier after a short sleep; the handler must wake
     /// promptly and return the freshly-published snapshot.
@@ -804,7 +797,7 @@ mod tests {
         );
     }
 
-    /// #1228 (RM-2): `dispatch_wait_fresh` returns the still-stale
+    /// `dispatch_wait_fresh` returns the still-stale
     /// snapshot when `wait_secs` runs out without a Fresh transition.
     /// Tight `wait_secs=1` keeps the test fast; the handler returns
     /// after ~1 s.
@@ -851,7 +844,7 @@ mod tests {
         assert_eq!(json.get("modified_files").and_then(|v| v.as_u64()), Some(7));
     }
 
-    /// #1182: `dispatch_status` against an empty `BatchContext` (no watch
+    /// `dispatch_status` against an empty `BatchContext` (no watch
     /// loop publishing) returns the default `unknown` snapshot, serialized
     /// to a JSON object matching the [`WatchSnapshot`] shape. The handler
     /// must not block, fail, or read disk — it's a pure RwLock-guarded
@@ -880,7 +873,7 @@ mod tests {
             obj.contains_key("snapshot_at"),
             "snapshot must carry `snapshot_at` timestamp"
         );
-        // RB-10: snapshot_at is `Option<i64>` — serializes to a JSON number
+        // snapshot_at is `Option<i64>` — serializes to a JSON number
         // on a healthy clock, JSON null on a clock-before-epoch system. CI
         // and dev workstations pass the healthy-clock path, so pin
         // `is_number()` to catch a regression that flips the wire shape.
@@ -893,7 +886,7 @@ mod tests {
         );
     }
 
-    /// #1182 — Layer 1: `dispatch_reconcile` flips the shared
+    /// `dispatch_reconcile` flips the shared
     /// `SharedReconcileSignal` AtomicBool. The handler is otherwise
     /// pure: no store access, no embedder. The view's reconcile_signal
     /// Arc is shared with the BatchContext's, so we can assert state
@@ -917,7 +910,7 @@ mod tests {
             args: vec!["abc".to_string(), "def".to_string(), "1".to_string()],
         };
         let json = dispatch_reconcile(&view, &args1).expect("dispatch_reconcile #1");
-        // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
+        // No `queued` field; Ok(...) implies queued.
         assert!(
             json.get("queued").is_none(),
             "queued field should be removed"
@@ -958,7 +951,7 @@ mod tests {
             args: Vec::new(),
         };
         let json = dispatch_reconcile(&view, &args).expect("dispatch_reconcile");
-        // API-V1.30.1-6: `queued` field dropped; Ok(...) implies queued.
+        // No `queued` field; Ok(...) implies queued.
         assert!(
             json.get("queued").is_none(),
             "queued field should be removed"
@@ -975,7 +968,7 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap_or_else(|| panic!("response must carry `help` string, got: {json}"));
         // Help output must mention at least one batch-mode command name.
-        // `search` has been a stable label since v0.x.
+        // `search` is a stable label.
         assert!(
             help.to_lowercase().contains("search"),
             "help text must mention at least one command, got: {help}"

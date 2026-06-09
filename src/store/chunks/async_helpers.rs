@@ -15,9 +15,8 @@ impl<Mode> Store<Mode> {
     ///
     /// Returns a map of chunk ID → ChunkRow for the given IDs.
     /// Used by search to hydrate top-N results after scoring.
-    /// PF-V1.29-2: batch size derives from the modern SQLite variable limit
-    /// (`max_rows_per_statement(1)`) — prior `500` was sized for the
-    /// pre-3.32 999-variable ceiling.
+    /// Batch size derives from the SQLite variable limit
+    /// (`max_rows_per_statement(1)`).
     pub(crate) async fn fetch_chunks_by_ids_async(
         &self,
         ids: &[&str],
@@ -53,13 +52,12 @@ impl<Mode> Store<Mode> {
         Ok(result)
     }
 
-    /// Lightweight candidate fetch for scoring (PF-5).
+    /// Lightweight candidate fetch for scoring.
     ///
     /// Returns only `(CandidateRow, embedding_bytes)` — excludes heavy `content`,
     /// `doc`, `signature`, `line_start`, `line_end` columns. Full content is
     /// loaded only for top-k survivors via `fetch_chunks_by_ids_async`.
-    /// PF-V1.29-2: batch size derives from `max_rows_per_statement(1)` —
-    /// prior `500` was sized for the pre-3.32 999-variable ceiling.
+    /// Batch size derives from `max_rows_per_statement(1)`.
     pub(crate) async fn fetch_candidates_by_ids_async(
         &self,
         ids: &[&str],
@@ -70,18 +68,15 @@ impl<Mode> Store<Mode> {
 
         const BATCH_SIZE: usize = crate::store::helpers::sql::max_rows_per_statement(1);
 
-        // PF-V1.25-6: previously built rows in DB order, then `sort_by_key`
-        // (O(N log N)) using a HashMap<&str, usize> position index to
-        // restore caller order. Drop the sort entirely by writing each row
-        // directly into its caller-ordered slot:
-        //   1. Build id→position map once (same cost as before, but now
-        //      amortizes the whole function instead of paying it twice).
+        // Write each DB row directly into its caller-ordered slot rather than
+        // sorting afterward:
+        //   1. Build id→position map once.
         //   2. Allocate `Vec<Option<T>>` sized to `ids.len()`.
         //   3. For each DB row, look up its position and place into slot.
         //   4. `flatten()` drops `None` slots (ids not found in DB) while
         //      preserving caller order.
-        // Tie-break semantics for downstream sorts are unchanged: the
-        // returned Vec has caller-provided ordering exactly as before.
+        // The returned Vec has caller-provided ordering, which downstream
+        // tie-break sorts rely on.
         let id_pos: std::collections::HashMap<&str, usize> =
             ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         let mut positioned: Vec<Option<(CandidateRow, Vec<u8>)>> =
@@ -190,7 +185,7 @@ impl<Mode> Store<Mode> {
     ///
     /// Same cursor-paginated single-pass shape as [`Store::embedding_batches`],
     /// but each row also carries the chunk's `content_hash`. This is the
-    /// snapshot path used by the background HNSW rebuild thread (see #1124):
+    /// snapshot path used by the background HNSW rebuild thread:
     /// the rebuild needs both the vector (to feed HNSW build) and the hash
     /// it was built from (so the swap-time drain can detect entries that
     /// were re-embedded mid-rebuild and replay the fresh vector instead of
@@ -216,12 +211,12 @@ impl<Mode> Store<Mode> {
         }
     }
 
-    /// Stream `embedding_base` rows in batches for the Phase 5 dual HNSW build.
+    /// Stream `embedding_base` rows in batches for the dual HNSW build.
     ///
-    /// Rows with NULL `embedding_base` are skipped — that happens after the
-    /// v17→v18 migration has added the column but before the next index pass
-    /// has re-populated it. The HNSW builder treats these as "not yet available"
-    /// and the router silently falls back to the enriched index.
+    /// Rows with NULL `embedding_base` are skipped — that state occurs before
+    /// the next index pass populates the column.
+    /// The HNSW builder treats these as "not yet available" and the router
+    /// silently falls back to the enriched index.
     ///
     /// Sync-only: internally uses `block_on`. Call from the same context as
     /// [`Store::embedding_batches`].
@@ -241,16 +236,15 @@ impl<Mode> Store<Mode> {
     }
 }
 
-// ── Shared async helpers for chunk upsert (PERF-3) ──────────────────────────
+// ── Shared async helpers for chunk upsert ──────────────────────────
 
 /// Pre-INSERT snapshot of fields used by the `ON CONFLICT DO UPDATE WHERE`
 /// short-circuit and by `upsert_fts_conditional`'s "did anything actually
 /// change?" filter.
 ///
-/// `content_hash` is the original PERF-3 / FTS skip key. `parser_version` was
-/// added in v1.28.0 audit P2 #29 so chunks whose source bytes are unchanged
-/// but whose parser logic moved on (e.g. `extract_doc_fallback_for_short_chunk`
-/// in PR #1040) still trigger a refresh.
+/// `content_hash` is the FTS skip key. `parser_version` makes chunks whose
+/// source bytes are unchanged but whose parser logic moved on (e.g.
+/// `extract_doc_fallback_for_short_chunk`) still trigger a refresh.
 #[derive(Clone)]
 pub(super) struct ChunkSnapshot {
     pub content_hash: String,
@@ -258,7 +252,7 @@ pub(super) struct ChunkSnapshot {
 }
 
 /// Snapshot existing content_hash + parser_version before INSERT overwrites
-/// them. Single-bind IN-list batched at the modern SQLite variable limit.
+/// them. Single-bind IN-list batched at the SQLite variable limit.
 pub(super) async fn snapshot_content_hashes(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
@@ -293,27 +287,24 @@ pub(super) async fn snapshot_content_hashes(
     Ok(old)
 }
 
-/// Batch INSERT chunks — derived from the modern SQLite variable limit.
+/// Batch INSERT chunks — batch size derived from the SQLite variable limit.
 ///
-/// v1.22.0 audit SHL-32: the previous `CHUNK_INSERT_BATCH = 49` (49 × 20
-/// params = 980) was sized for the pre-3.32 SQLite 999-variable limit. On
-/// a 12k-chunk reindex this produced ~245 INSERT statements. The modern
-/// limit (32766) permits ~1622 rows per statement, reducing to ~8 INSERTs
-/// for the same corpus — a 30× reduction in SQL round-trips.
+/// The 32766-variable limit permits ~1622 rows per statement (20 params per
+/// row), so a 12k-chunk reindex runs in ~8 INSERTs.
 ///
-/// Uses `ON CONFLICT(id) DO UPDATE` (upsert) instead of `INSERT OR REPLACE`
-/// to preserve `enrichment_hash` and `enrichment_version` columns that are
-/// set by the enrichment pass. `INSERT OR REPLACE` deletes and re-inserts the
-/// row, wiping those columns back to NULL/default (DS-2).
+/// Uses `ON CONFLICT(id) DO UPDATE` (upsert), not `INSERT OR REPLACE`, to
+/// preserve `enrichment_hash` and `enrichment_version` columns set by the
+/// enrichment pass. `INSERT OR REPLACE` deletes and re-inserts the row,
+/// wiping those columns back to NULL/default.
 ///
 /// The WHERE clause on content_hash skips the UPDATE when the content is
 /// unchanged, avoiding unnecessary write amplification.
 ///
-/// Phase 5 (v18): `embedding_base` is seeded with the same bytes as `embedding`
-/// on initial insert. The incoming embedding was generated from
-/// `generate_nl_description` (raw NL, no enrichment), so it IS the base.
-/// The enrichment pass later overwrites only `embedding`, leaving
-/// `embedding_base` intact as the dual-index target.
+/// `embedding_base` is seeded with the same bytes as `embedding` on initial
+/// insert. The incoming embedding is generated from `generate_nl_description`
+/// (raw NL, no enrichment), so it IS the base. The enrichment pass later
+/// overwrites only `embedding`, leaving `embedding_base` intact as the
+/// dual-index target.
 pub(super) async fn batch_insert_chunks(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
@@ -324,7 +315,7 @@ pub(super) async fn batch_insert_chunks(
     needs_embedding: bool,
 ) -> Result<(), StoreError> {
     use crate::store::helpers::sql::max_rows_per_statement;
-    // 23 binds per row (v27 / #1452: needs_embedding added after vendored).
+    // 23 binds per row (needs_embedding comes after vendored).
     const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(23);
     debug_assert_eq!(
         chunks.len(),
@@ -351,22 +342,20 @@ pub(super) async fn batch_insert_chunks(
                 .push_bind(chunk.line_start as i64)
                 .push_bind(chunk.line_end as i64)
                 .push_bind(&embedding_bytes[emb_offset + i])
-                // Phase 5 (v18): seed embedding_base with the same bytes. The
-                // incoming embedding comes from raw NL (no enrichment), so on
-                // initial insert it IS the base. Enrichment pass later updates
+                // Seed embedding_base with the same bytes. The incoming
+                // embedding comes from raw NL (no enrichment), so on initial
+                // insert it IS the base. Enrichment pass later updates
                 // `embedding` only; `embedding_base` stays put for dual-index.
                 //
-                // #1452 follow-up: when `needs_embedding` is set, the bytes
-                // above are a zero-vec sentinel (skip-first-pass under
-                // `--llm-summaries`). Stamping that as `embedding_base` would
-                // poison the base HNSW (`build_hnsw_base_index` filters
-                // `WHERE embedding_base IS NOT NULL` — zero-vec passes the
-                // filter and joins the index with corrupt zeros). Bind NULL
-                // instead so partial-state chunks naturally drop out of the
-                // base index until a non-skip reindex of their content lands
-                // a real base-NL embedding. Coverage trade-off documented in
-                // CHANGELOG; the base index is the routing-fallback channel,
-                // not the main search path.
+                // When `needs_embedding` is set, the bytes above are a
+                // zero-vec sentinel (skip-first-pass under `--llm-summaries`).
+                // Stamping that as `embedding_base` would poison the base HNSW
+                // (`build_hnsw_base_index` filters `WHERE embedding_base IS NOT
+                // NULL` — zero-vec passes the filter and joins the index with
+                // corrupt zeros). Bind NULL instead so partial-state chunks
+                // drop out of the base index until a non-skip reindex of their
+                // content lands a real base-NL embedding. The base index is
+                // the routing-fallback channel, not the main search path.
                 .push_bind(if needs_embedding {
                     None::<&[u8]>
                 } else {
@@ -378,36 +367,37 @@ pub(super) async fn batch_insert_chunks(
                 .push_bind(&chunk.parent_id)
                 .push_bind(chunk.window_idx.map(|i| i as i64))
                 .push_bind(&chunk.parent_type_name)
-                // P2 #29: stamp the parser version emitted with this chunk so
-                // a parser-logic bump (without source change) still refreshes.
+                // Stamp the parser version emitted with this chunk so a
+                // parser-logic bump (without source change) still refreshes.
                 .push_bind(chunk.parser_version as i64)
-                // v24 / #1221: vendored bit precomputed by `upsert_chunks_batch`
-                // from the chunk's origin and the store's configured prefix list.
+                // Vendored bit precomputed by `upsert_chunks_batch` from the
+                // chunk's origin and the store's configured prefix list.
                 .push_bind(if vendored_per_chunk[emb_offset + i] {
                     1_i64
                 } else {
                     0_i64
                 })
-                // v27 / #1452: 1 when this chunk was written without a real
-                // embedding (skip-first-pass for `--llm-summaries`); 0 when
-                // the embedding bytes are real. Cleared by `enrichment_pass`
-                // via `update_embeddings_with_hashes_batch`.
+                // 1 when this chunk was written without a real embedding
+                // (skip-first-pass for `--llm-summaries`); 0 when the
+                // embedding bytes are real. Cleared by `enrichment_pass` via
+                // `update_embeddings_with_hashes_batch`.
                 .push_bind(needs_embedding_i64);
         });
-        // DS-2: ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
+        // ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
         //
         // Skip the UPDATE only when BOTH content_hash and parser_version are
-        // identical to the existing row. P2 #29: a parser-logic bump (e.g.
-        // PR #1040's doc fallback) needs to refresh `doc` even though
-        // `content_hash` is unchanged. The OR clause handles that case.
+        // identical to the existing row. A parser-logic bump (e.g. doc
+        // fallback) needs to refresh `doc` even though `content_hash` is
+        // unchanged. The OR clause handles that case.
         //
-        // Phase 5: on content change, refresh embedding_base too — new content
-        // means new NL text means new base embedding. Reindex sets both columns.
-        // P1.15: invalidate UMAP coords on content change. The cluster view
-        // filters `WHERE umap_x IS NOT NULL` to find chunks needing reprojection;
-        // without nulling here, a re-embedded chunk renders at its old position
-        // until `cqs index --umap` is rerun. Parser-version-only bumps do NOT
-        // change the embedding, so the CASE preserves coords on that branch.
+        // On content change, refresh embedding_base too — new content means
+        // new NL text means new base embedding. Reindex sets both columns.
+        // Also invalidate UMAP coords on content change. The cluster view
+        // filters `WHERE umap_x IS NOT NULL` to find chunks needing
+        // reprojection; without nulling here, a re-embedded chunk renders at
+        // its old position until `cqs index --umap` is rerun. Parser-version-
+        // only bumps do NOT change the embedding, so the CASE preserves coords
+        // on that branch.
         qb.push(
             " ON CONFLICT(id) DO UPDATE SET \
              origin=excluded.origin, \
@@ -447,12 +437,12 @@ pub(super) async fn batch_insert_chunks(
 /// Conditional FTS upsert: skip if content_hash AND parser_version are
 /// unchanged (compared to pre-INSERT snapshot).
 ///
-/// P2 #29: the parser_version OR mirrors the UPSERT WHERE filter in
+/// The parser_version OR mirrors the UPSERT WHERE filter in
 /// `batch_insert_chunks`. A parser bump that updates `doc` without touching
 /// source bytes still needs the FTS row refreshed — `normalize_for_fts` is
 /// applied to `doc` and the FTS would otherwise serve stale text.
 ///
-/// Batches DELETE and INSERT for efficiency (PERF-2: was 2 SQL per chunk, now batched).
+/// Batches DELETE and INSERT for efficiency.
 pub(super) async fn upsert_fts_conditional(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
@@ -483,7 +473,7 @@ pub(super) async fn upsert_fts_conditional(
     }
 
     use crate::store::helpers::sql::max_rows_per_statement;
-    // Batch DELETE: remove old FTS entries for changed chunks (PF-8: reuse make_placeholders)
+    // Batch DELETE: remove old FTS entries for changed chunks
     for batch in changed.chunks(max_rows_per_statement(1)) {
         let placeholders = crate::store::helpers::make_placeholders(batch.len());
         let sql = format!("DELETE FROM chunks_fts WHERE id IN ({})", placeholders);
@@ -520,9 +510,9 @@ pub(super) async fn upsert_fts_conditional(
 /// Iterator for streaming embeddings in batches using cursor-based pagination.
 ///
 /// `column` selects which BLOB column to read: `"embedding"` (enriched, the
-/// default) or `"embedding_base"` (Phase 5 dual index). Rows where the
-/// selected column is NULL are silently skipped — NULL is valid state for
-/// `embedding_base` between the v17→v18 migration and the next index pass.
+/// default) or `"embedding_base"` (dual index). Rows where the selected
+/// column is NULL are silently skipped — NULL is a valid state for
+/// `embedding_base` before the next index pass populates it.
 struct EmbeddingBatchIterator<'a, Mode> {
     store: &'a Store<Mode>,
     batch_size: usize,
@@ -562,14 +552,13 @@ impl<'a, Mode> Iterator for EmbeddingBatchIterator<'a, Mode> {
             };
 
             let result = self.store.rt.block_on(async {
-                // DS-V1.38-1 (#1463 / #1452 follow-up): exclude chunks with
-                // `needs_embedding=1` so production callers (CAGRA build,
-                // UMAP projection, brute-force kNN in `cqs neighbors`) don't
-                // load zero-vec sentinels into their search structures.
-                // The sibling `EmbeddingHashBatchIterator` already had this
-                // gate; without it here, `--llm-summaries` chunks land in
-                // CAGRA's flat buffer as (0,…,0) and the index advertises a
-                // search neighborhood of "things near the origin" for them.
+                // Exclude chunks with `needs_embedding=1` so production callers
+                // (CAGRA build, UMAP projection, brute-force kNN in
+                // `cqs neighbors`) don't load zero-vec sentinels into their
+                // search structures. Without this gate, `--llm-summaries`
+                // chunks land in CAGRA's flat buffer as (0,…,0) and the index
+                // advertises a search neighborhood of "things near the origin"
+                // for them.
                 let sql = format!(
                     "SELECT rowid, id, {col} FROM chunks \
                      WHERE rowid > ?1 AND {col} IS NOT NULL AND needs_embedding = 0 \
@@ -640,9 +629,9 @@ impl<'a, Mode> std::iter::FusedIterator for EmbeddingBatchIterator<'a, Mode> {}
 ///
 /// Mirrors [`EmbeddingBatchIterator`]'s cursor pagination but reads the
 /// `content_hash` column in the same SQL pass so the hash is consistent
-/// with the embedding bytes the snapshot returned (#1124). Used only for
-/// the background-rebuild snapshot path; the regular `embedding` column
-/// (no hash) flows through [`EmbeddingBatchIterator`].
+/// with the embedding bytes the snapshot returned. Used only for the
+/// background-rebuild snapshot path; the regular `embedding` column (no
+/// hash) flows through [`EmbeddingBatchIterator`].
 struct EmbeddingHashBatchIterator<'a, Mode> {
     store: &'a Store<Mode>,
     batch_size: usize,
@@ -660,11 +649,11 @@ impl<'a, Mode> Iterator for EmbeddingHashBatchIterator<'a, Mode> {
             }
 
             let result = self.store.rt.block_on(async {
-                // #1452: filter `needs_embedding = 0` so HNSW build skips
-                // chunks that were written by the parser stage during a
-                // first-pass-skip reindex but haven't yet been re-embedded
-                // by `enrichment_pass`. Their `embedding` column carries a
-                // zero-vec sentinel that would corrupt the index.
+                // Filter `needs_embedding = 0` so HNSW build skips chunks
+                // written by the parser stage during a first-pass-skip reindex
+                // but not yet re-embedded by `enrichment_pass`. Their
+                // `embedding` column carries a zero-vec sentinel that would
+                // corrupt the index.
                 let sql = "SELECT rowid, id, embedding, content_hash FROM chunks \
                            WHERE rowid > ?1 AND embedding IS NOT NULL \
                              AND needs_embedding = 0 \
@@ -779,7 +768,7 @@ mod tests {
         assert!(batches.is_empty());
     }
 
-    /// P1.17 / #1124: `embedding_and_hash_batches` must yield each chunk's
+    /// `embedding_and_hash_batches` must yield each chunk's
     /// `(id, embedding, content_hash)` together from a single SQL pass —
     /// the rebuild snapshot relies on hash↔embedding consistency.
     #[test]
@@ -821,7 +810,7 @@ mod tests {
         assert!(batches.is_empty());
     }
 
-    // ===== embedding_base_batches tests (Phase 5) =====
+    // ===== embedding_base_batches tests =====
 
     /// Fresh inserts populate both `embedding` and `embedding_base` with the
     /// same bytes (the incoming embedding comes from raw NL, which IS the base).
@@ -858,9 +847,10 @@ mod tests {
         }
     }
 
-    /// NULL embedding_base rows (simulating a fresh v17→v18 migration before
-    /// the next index pass) are silently skipped by `embedding_base_batches`.
-    /// `embedding_batches` still yields them because `embedding` is NOT NULL.
+    /// NULL embedding_base rows (a state that occurs before the next index
+    /// pass populates the column) are silently skipped by
+    /// `embedding_base_batches`. `embedding_batches` still yields them because
+    /// `embedding` is NOT NULL.
     #[test]
     fn test_embedding_base_batches_skips_null_rows() {
         let (store, _dir) = setup_store();
@@ -907,7 +897,7 @@ mod tests {
         assert!(batches.is_empty());
     }
 
-    /// Phase 5 invariant: the enrichment pass (`update_embeddings_batch` /
+    /// The enrichment pass (`update_embeddings_batch` /
     /// `update_embeddings_with_hashes_batch`) writes ONLY to the `embedding`
     /// column. `embedding_base` must survive the enrichment update untouched
     /// — that's what makes dual indexing meaningful, since otherwise both
@@ -961,10 +951,10 @@ mod tests {
         assert_eq!(base_after[0].1.as_slice(), original_base.as_slice());
     }
 
-    /// Phase 5: when content changes, the re-upsert path must refresh BOTH
-    /// columns (new content → new base NL → new base embedding). The
-    /// ON CONFLICT clause includes `embedding_base = excluded.embedding_base`
-    /// to enforce this.
+    /// When content changes, the re-upsert path must refresh BOTH columns
+    /// (new content → new base NL → new base embedding). The ON CONFLICT
+    /// clause includes `embedding_base = excluded.embedding_base` to enforce
+    /// this.
     #[test]
     fn test_content_change_refreshes_both_columns() {
         let (store, _dir) = setup_store();

@@ -14,7 +14,7 @@ use cqs::{normalize_path, Parser as CqParser, Store};
 use super::types::{embed_batch_size_for, file_batch_size, ParsedBatch, RelationshipData};
 use crate::cli::check_interrupted;
 
-/// CQ-39: Context struct for parser_stage to avoid too_many_arguments.
+/// Context struct for parser_stage to avoid too_many_arguments.
 pub(super) struct ParserStageContext {
     pub root: PathBuf,
     pub force: bool,
@@ -22,9 +22,9 @@ pub(super) struct ParserStageContext {
     pub store: Arc<Store>,
     pub parsed_count: Arc<AtomicUsize>,
     pub parse_errors: Arc<AtomicUsize>,
-    /// SHL-V1.30-1: model config so the per-batch send loop can pick a
-    /// dim/seq-scaled batch size. At batch=64 nomic-coderank (768 dim,
-    /// 2048 seq) OOMs an 8 GB GPU; the model-aware helper drops it to 16.
+    /// Model config so the per-batch send loop can pick a dim/seq-scaled batch
+    /// size. At batch=64 nomic-coderank (768 dim, 2048 seq) OOMs an 8 GB GPU;
+    /// the model-aware helper drops it to 16.
     pub model_config: cqs::embedder::ModelConfig,
 }
 
@@ -95,10 +95,10 @@ pub(super) fn parser_stage(
                                     }
                                 }
                             }
-                            // P2 #63: parse_file_all_with_chunk_calls already
-                            // emitted (chunk_id, CallSite) pairs from Pass 2 —
-                            // no per-chunk re-parse needed here. Chunk ids
-                            // came back in `path:line:hash` form (from
+                            // parse_file_all_with_chunk_calls already emitted
+                            // (chunk_id, CallSite) pairs from Pass 2 — no
+                            // per-chunk re-parse needed here. Chunk ids come
+                            // back in `path:line:hash` form (from
                             // `extract_chunk` using the absolute path); apply
                             // the same id_map we built above so they line up
                             // with the rewritten chunk ids.
@@ -125,10 +125,10 @@ pub(super) fn parser_stage(
                             }
                         }
                         Err(e) => {
-                            // P3 #95: structured fields so a hot-path parse
-                            // failure carries `path` + `error` cleanly across
-                            // the rayon reduce instead of being interpolated
-                            // into the message.
+                            // Structured fields so a hot-path parse failure
+                            // carries `path` + `error` cleanly across the rayon
+                            // reduce instead of being interpolated into the
+                            // message.
                             tracing::warn!(
                                 path = %abs_path.display(),
                                 error = %e,
@@ -242,7 +242,7 @@ pub(super) fn parser_stage(
             // (function_calls, type_refs) is safe. Per-chunk data (chunk_calls,
             // type_edges) is deferred in store_stage until all chunks are committed.
             //
-            // PF-V1.25-18: drain owned chunks into each batch instead of
+            // Drain owned chunks into each batch instead of
             // `chunks.chunks(n)` + `.to_vec()`, which would clone every Chunk
             // (deep copy of id/file/signature/content/content_hash/...).
             // We own `chunks` here and never reuse it after this loop, so
@@ -282,8 +282,8 @@ mod tests {
     use crossbeam_channel::unbounded;
     use std::collections::HashSet;
 
-    /// PF-V1.25-18: fixture-driven regression test for the drain-based send
-    /// loop. Builds a small fixture corpus, runs `parser_stage` end-to-end,
+    /// Fixture-driven regression test for the drain-based send loop. Builds a
+    /// small fixture corpus, runs `parser_stage` end-to-end,
     /// and verifies:
     ///
     /// * every chunk the parser produced is delivered (no loss)

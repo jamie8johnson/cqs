@@ -28,15 +28,14 @@ impl Drop for SocketCleanupGuard {
         }
     }
 }
-/// SEC-V1.25-1: cap concurrent daemon client threads so a misbehaving
-/// (or malicious) local client can't spawn unbounded handlers and exhaust
-/// fds, threads, or stacks. The BatchContext mutex serialises dispatch
-/// inside `handle_socket_client`; this cap only bounds parallel
-/// read/parse/write I/O.
+/// Cap concurrent daemon client threads so a misbehaving (or malicious)
+/// local client can't spawn unbounded handlers and exhaust fds, threads, or
+/// stacks. The BatchContext mutex serialises dispatch inside
+/// `handle_socket_client`; this cap only bounds parallel read/parse/write I/O.
 ///
-/// P3 #125: default lowered from 64 → 16 (matches typical agent fan-out)
-/// and overridable via `CQS_MAX_DAEMON_CLIENTS`. At ~2 MB stack each, 16
-/// caps worst-case at ~32 MB instead of ~128 MB.
+/// Default 16 (matches typical agent fan-out), overridable via
+/// `CQS_MAX_DAEMON_CLIENTS`. At ~2 MB stack each, 16 caps worst-case at
+/// ~32 MB.
 const DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS: usize = 16;
 
 /// Resolve the effective cap from `CQS_MAX_DAEMON_CLIENTS`, defaulting to
@@ -44,10 +43,10 @@ const DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS: usize = 16;
 /// Called once at daemon startup, so an env-var change requires
 /// `systemctl restart cqs-watch`.
 ///
-/// SHL-V1.36-10 / P3: scale with cores within `[16, 64]`. Pre-fix, a
-/// 64-core box running a 32-task Claude Code Tasks fan-out would queue
-/// requests serially past 16 clients. Stack memory (16 × 2 MB = 32 MB)
-/// isn't the binding constraint on modern 64-bit hosts.
+/// Scales with cores within `[16, 64]` so a 64-core box running a large
+/// Tasks fan-out doesn't queue requests serially past 16 clients. Stack
+/// memory (16 × 2 MB = 32 MB) isn't the binding constraint on modern 64-bit
+/// hosts.
 pub(super) fn max_concurrent_daemon_clients() -> usize {
     std::env::var("CQS_MAX_DAEMON_CLIENTS")
         .ok()
@@ -62,11 +61,10 @@ pub(super) fn max_concurrent_daemon_clients() -> usize {
 /// Handle a single client connection on the daemon socket.
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
 ///
-/// SEC-V1.25-1: `batch_ctx` is a shared `Arc<Mutex<BatchContext>>`; reads and
-/// writes happen without the lock so concurrent clients can parse their
-/// requests in parallel. Only the dispatch itself acquires the mutex, so a
-/// slow/malicious client's 5 s read window no longer wedges the accept loop
-/// or sibling handlers.
+/// `batch_ctx` is a shared `Arc<Mutex<BatchContext>>`; reads and writes
+/// happen without the lock so concurrent clients can parse their requests in
+/// parallel. Only the dispatch itself acquires the mutex, so a slow/malicious
+/// client's read window can't wedge the accept loop or sibling handlers.
 pub(super) fn handle_socket_client(
     mut stream: std::os::unix::net::UnixStream,
     batch_ctx: &Arc<Mutex<crate::cli::batch::BatchContext>>,
@@ -75,14 +73,12 @@ pub(super) fn handle_socket_client(
     let _enter = span.enter();
     let start = std::time::Instant::now();
 
-    // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
+    // Explicit warn on timeout failures rather than silent `.ok()` —
     // without a timeout a wedged client would pin the handler thread forever.
     //
-    // P2 #41 (post-v1.27.0 audit): both timeouts now come from the shared
+    // Both timeouts come from the shared
     // `cqs::daemon_translate::resolve_daemon_timeout_ms` helper so a user
-    // raising `CQS_DAEMON_TIMEOUT_MS` raises both sides symmetrically. The
-    // previously-hardcoded 5s/30s values were the source of the
-    // TODO(cross-coordination) note in dispatch.rs.
+    // raising `CQS_DAEMON_TIMEOUT_MS` raises both sides symmetrically.
     let timeout = cqs::daemon_translate::resolve_daemon_timeout_ms();
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
         tracing::warn!(
@@ -97,21 +93,17 @@ pub(super) fn handle_socket_client(
         );
     }
 
-    // RM-1 (post-v1.30.1 audit): the original thread_local! REQ_LINE
-    // was a no-op. The accept loop in `daemon.rs:189-205` spawns a
-    // fresh `cqs-daemon-client` thread per connection, not a Tokio
-    // blocking-pool worker — so the thread_local never gets reused
-    // across calls and the "amortize the buffer" rationale was wrong.
-    // A plain stack-local `String::with_capacity(8192)` has the same
-    // single-allocation cost without the dead amortization story.
+    // A plain stack-local `String::with_capacity(8192)`. The accept loop in
+    // `daemon.rs` spawns a fresh `cqs-daemon-client` thread per connection,
+    // not a Tokio blocking-pool worker, so a thread_local buffer would never
+    // be reused across calls — the stack-local has the same single-allocation
+    // cost.
     let mut line = String::with_capacity(8192);
 
-    // SHL-V1.38-4 (#1463): align with the CLI's `MAX_DIFF_BYTES` so a
-    // multi-MB diff (`cqs review --stdin`, `cqs impact --diff`) routed
-    // through the daemon doesn't fail with `TooLarge` while the same
-    // diff via direct CLI succeeds. The 1 MB literal predated the
-    // review/impact daemon-routing additions and silently capped them.
-    // +4 KB JSON-envelope headroom for the daemon protocol wrapping.
+    // Align with the CLI's `MAX_DIFF_BYTES` so a multi-MB diff
+    // (`cqs review --stdin`, `cqs impact --diff`) routed through the daemon
+    // doesn't fail with `TooLarge` while the same diff via direct CLI
+    // succeeds. +4 KB JSON-envelope headroom for the daemon protocol wrapping.
     use std::io::Read as _;
     let max_request_bytes = crate::cli::limits::max_diff_bytes().saturating_add(4 * 1024);
     let take_cap = (max_request_bytes as u64).saturating_add(1);
@@ -167,17 +159,15 @@ pub(super) fn handle_socket_client(
         .get("command")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    // P3 #86: structurally validate args. The previous `filter_map` silently
-    // dropped non-string elements (numbers, nested arrays, nulls); the
-    // surviving args looked correct but the daemon then ran a half-formed
-    // command with no diagnostic. Now: collect the indices of non-string
-    // elements, warn on them, and reject the whole request as malformed
-    // rather than execute on a truncated arg list.
+    // Structurally validate args. Silently dropping non-string elements
+    // (numbers, nested arrays, nulls) would leave surviving args that look
+    // correct while the daemon runs a half-formed command. Instead: collect
+    // the indices of non-string elements, warn on them, and reject the whole
+    // request as malformed rather than execute on a truncated arg list.
     let raw_args = request.get("args").and_then(|v| v.as_array());
-    // P3.43: fold validation + extraction into a single walk. The previous
-    // shape iterated the array twice — once to collect non-string indices,
-    // once to extract strings. Single pass collects both results into the
-    // typed `Vec<String>` and a parallel `Vec<usize>` of bad indices.
+    // Fold validation + extraction into a single walk: one pass collects
+    // both the typed `Vec<String>` and a parallel `Vec<usize>` of bad
+    // indices.
     let (args, bad_arg_indices): (Vec<String>, Vec<usize>) = match raw_args {
         Some(arr) => {
             let mut args = Vec::with_capacity(arr.len());
@@ -212,10 +202,10 @@ pub(super) fn handle_socket_client(
     // Record command on the span so every event inside this handler is
     // enriched with it, without needing to repeat `command` on each log.
     //
-    // SEC-V1.25-16: `notes add`/`update`/`remove` carry the note body
-    // as the first arg, which may contain source snippets or secrets.
-    // Log only `notes/<subcommand>` so operators see the shape of
-    // activity without the body reaching the journal.
+    // `notes add`/`update`/`remove` carry the note body as the first arg,
+    // which may contain source snippets or secrets. Log only
+    // `notes/<subcommand>` so operators see the shape of activity without the
+    // body reaching the journal.
     let command_for_log: String = if command == "notes" {
         let sub = args.first().map(String::as_str).unwrap_or("<unknown>");
         // Only pass the subcommand itself through, never args beyond it.
@@ -228,13 +218,11 @@ pub(super) fn handle_socket_client(
     };
     span.record("command", command_for_log.as_str());
 
-    // P3 #138 (supersedes SEC-V1.25-9 / SEC-V1.25-16 / P2 #51 preview path):
-    // drop `args_preview` from `tracing::debug!` entirely. The 80-char preview
-    // still leaked file path fragments and search-query snippets at the daemon
-    // debug level — privileged-journal harvest. The command name is already on
-    // the span; `args_len` is enough for traffic shaping. If a finer-grained
-    // preview is ever needed, gate it behind `tracing::trace!` (off by default
-    // in production loggers).
+    // No `args_preview` in `tracing::debug!`: a preview would leak file path
+    // fragments and search-query snippets at the daemon debug level. The
+    // command name is already on the span; `args_len` is enough for traffic
+    // shaping. If a finer-grained preview is ever needed, gate it behind
+    // `tracing::trace!` (off by default in production loggers).
     tracing::debug!(
         command = %command_for_log,
         args_len = args.len(),
@@ -253,15 +241,15 @@ pub(super) fn handle_socket_client(
     }
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // PF-V1.29-1: Pass pre-split tokens straight to `dispatch_via_view`
-        // instead of joining them back into a shell string for
-        // `dispatch_line` to immediately re-split via `shell_words::split`.
-        // The round-trip is pure waste on every daemon query and a latent
-        // correctness bug on tokens containing shell metacharacters —
-        // `shell_words::join` quotes them, `shell_words::split` unquotes
-        // them, but any asymmetry silently corrupts the token boundary.
+        // Pass pre-split tokens straight to `dispatch_via_view` instead of
+        // joining them back into a shell string for `dispatch_line` to
+        // immediately re-split via `shell_words::split`. The round-trip is
+        // pure waste on every daemon query and a latent correctness bug on
+        // tokens containing shell metacharacters — `shell_words::join` quotes
+        // them, `shell_words::split` unquotes them, but any asymmetry
+        // silently corrupts the token boundary.
         let mut output = Vec::new();
-        // #1127: hold the BatchContext mutex only long enough to snapshot
+        // Hold the BatchContext mutex only long enough to snapshot
         // a `BatchView` (microseconds — clones a few `Arc`s under one
         // critical section). The handler then runs against the view
         // outside any BatchContext lock, so two slow queries (gather,
@@ -273,20 +261,15 @@ pub(super) fn handle_socket_client(
         // panics; an unrelated poisoning could still slip in).
         let view = crate::cli::batch::checkout_view_from_arc(batch_ctx);
         crate::cli::batch::dispatch_via_view(&view, command, &args, &mut output);
-        // P2 #62 (post-v1.27.0 audit, partial): the audit's full fix routes
-        // dispatch through a `dispatch_value` sibling in `batch/mod.rs` that
-        // returns `Value` directly. That refactor is owned by another agent
-        // and is deferred for this wave; see TODO below.
+        // Parse the dispatch bytes into a JSON `Value` and embed it as a real
+        // JSON field of the response envelope instead of round-tripping
+        // through `String::from_utf8` and embedding as a string-in-string.
+        // This eliminates the per-byte JSON-escape inflation that would
+        // double large search responses on the wire.
         //
-        // Partial win applied here: parse the dispatch bytes into a JSON
-        // `Value` and embed it as a real JSON field of the response envelope
-        // instead of round-tripping through `String::from_utf8` and embedding
-        // as a string-in-string. This eliminates the per-byte JSON-escape
-        // inflation that doubled large search responses on the wire.
-        //
-        // TODO(P2 #62 full fix): replace this parse with a `dispatch_value`
-        // call once `batch/mod.rs` exposes it. The bytes-then-parse shape
-        // here keeps the wire compatible while removing the escape pass.
+        // TODO(P2 #62): replace this parse with a `dispatch_value` call once
+        // `batch/mod.rs` exposes it. The bytes-then-parse shape here keeps the
+        // wire compatible while removing the escape pass.
         let trimmed = trim_trailing_newline(&output);
         match serde_json::from_slice::<serde_json::Value>(trimmed) {
             Ok(v) => Ok(v),

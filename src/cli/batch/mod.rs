@@ -49,12 +49,12 @@ use super::open_project_store_readonly;
 ///
 /// ## Why not mtime alone?
 ///
-/// DS-V1.25-6: WSL DrvFS / NTFS report mtime at 1-second resolution.
-/// A tight `cqs index --force` followed by a daemon query burst could
-/// share the same mtime bucket, causing `BatchContext` to keep serving
-/// results from the orphaned inode. Mixing in inode and size closes
-/// that sub-second race: the rename-over gives a new inode immediately,
-/// regardless of whether the mtime ticked.
+/// WSL DrvFS / NTFS report mtime at 1-second resolution. A tight
+/// `cqs index --force` followed by a daemon query burst could share the
+/// same mtime bucket, causing `BatchContext` to keep serving results from
+/// the orphaned inode. Mixing in inode and size closes that sub-second
+/// race: the rename-over gives a new inode immediately, regardless of
+/// whether the mtime ticked.
 ///
 /// On non-unix platforms the inode fields are omitted and the struct
 /// falls back to `(size, mtime)`; replacement on Windows still changes
@@ -114,8 +114,8 @@ fn idle_timeout_minutes() -> u64 {
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES)
 }
 
-/// P2 #67 / P2 #68: longer idle window for the heavyweight data caches
-/// (`hnsw`, `splade_index`, `call_graph`, `test_chunks`, `notes_cache`,
+/// Longer idle window for the heavyweight data caches (`hnsw`,
+/// `splade_index`, `call_graph`, `test_chunks`, `notes_cache`,
 /// `file_set`). The ONNX-session timeout (`CQS_BATCH_IDLE_MINUTES`,
 /// default 5 min) is tuned so the *next* user query stays responsive —
 /// reloading an ONNX model is ~500 ms. The data caches cost much more to
@@ -125,11 +125,11 @@ fn idle_timeout_minutes() -> u64 {
 /// interactive workstation.
 ///
 /// Override via `CQS_BATCH_DATA_IDLE_MINUTES`. Set to `0` to disable
-/// data-cache eviction entirely (the previous behavior).
+/// data-cache eviction entirely.
 const DEFAULT_DATA_CACHE_IDLE_MINUTES: u64 = 30;
 
 /// Resolve the data-cache idle-timeout minutes from env; 0 disables data-
-/// cache eviction entirely. P2 #67 / #68.
+/// cache eviction entirely.
 fn data_cache_idle_timeout_minutes() -> u64 {
     std::env::var("CQS_BATCH_DATA_IDLE_MINUTES")
         .ok()
@@ -137,19 +137,17 @@ fn data_cache_idle_timeout_minutes() -> u64 {
         .unwrap_or(DEFAULT_DATA_CACHE_IDLE_MINUTES)
 }
 
-/// P2 #69: TTL for the `audit_state` reload cache. The audit-mode file
-/// (`.cqs/audit-mode.json`) carries its own embedded `expires_at`, but the
-/// daemon's `OnceLock` cached the loaded value forever — a user who flipped
-/// `cqs audit-mode on` after the daemon booted, or whose audit window
-/// auto-expired mid-session, kept seeing the stale state. Re-reading every
-/// 30 s on each query is cheap (sub-ms file read) and bounds the staleness.
+/// TTL for the `audit_state` reload cache. The audit-mode file
+/// (`.cqs/audit-mode.json`) carries its own embedded `expires_at`. Re-reading
+/// every 30 s on each query is cheap (sub-ms file read) and bounds the
+/// staleness so the 30-min audit-mode auto-expire fires while the daemon is
+/// up, and `cqs audit-mode on` after daemon boot takes effect.
 const AUDIT_STATE_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// P2 #69: TTL for the `config` reload cache. `.cqs/config.toml` edits
-/// (e.g. tuning `splade_alpha` or `ef_search`) previously took effect only
-/// after a daemon restart because the config was held in `OnceLock`. 5 min
-/// is long enough to avoid hot-loop file reads while keeping ad-hoc config
-/// tweaks usable without `systemctl restart cqs-watch`.
+/// TTL for the `config` reload cache. `.cqs/config.toml` edits (e.g. tuning
+/// `splade_alpha` or `ef_search`) take effect after this interval without a
+/// daemon restart. 5 min is long enough to avoid hot-loop file reads while
+/// keeping ad-hoc config tweaks usable without `systemctl restart cqs-watch`.
 const CONFIG_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// Default number of reference indexes kept in the LRU cache. A "reference"
@@ -169,24 +167,20 @@ fn refs_lru_size() -> std::num::NonZeroUsize {
 }
 
 /// Minimum interval between `fs::metadata` calls on `index.db` during a
-/// batch session. PF-V1.25-10: `store()` is called on virtually every
-/// handler hop, and `ctx.store()` calls `check_index_staleness` which in
-/// turn calls `fs::metadata`. Most filesystem mtime resolutions are 1 ms
-/// on Linux ext4 / WSL, so polling more often than ~100 ms cannot detect
-/// anything mtime-based — we just pay a syscall per poll. 100 ms caps the
-/// syscall rate at ~10 Hz per batch session while keeping reindex
-/// detection latency well under a second.
+/// batch session. `store()` is called on virtually every handler hop, and
+/// `ctx.store()` calls `check_index_staleness` which in turn calls
+/// `fs::metadata`. Most filesystem mtime resolutions are 1 ms on Linux ext4
+/// / WSL, so polling more often than ~100 ms cannot detect anything
+/// mtime-based — we just pay a syscall per poll. 100 ms caps the syscall
+/// rate at ~10 Hz per batch session while keeping reindex detection latency
+/// well under a second.
 const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// P2 #69: a cached value paired with the instant it was loaded. The
-/// accessor consults `loaded_at.elapsed()` against a per-field reload
-/// interval; once the cache is older than the interval the value is
-/// re-loaded from the underlying source.
-///
-/// Replaces the prior `OnceLock<T>` pattern for `config` and `audit_state`
-/// where the OnceLock cached the boot-time value forever — a documented
-/// 30-min audit-mode auto-expire would never fire on a long-lived daemon,
-/// and `.cqs/config.toml` edits required `systemctl restart cqs-watch`.
+/// A cached value paired with the instant it was loaded. The accessor
+/// consults `loaded_at.elapsed()` against a per-field reload interval; once
+/// the cache is older than the interval the value is re-loaded from the
+/// underlying source. Used for `config` and `audit_state` so file edits and
+/// auto-expiry take effect without a daemon restart.
 struct CachedReload<T> {
     value: T,
     loaded_at: Instant,
@@ -216,88 +210,77 @@ struct CachedReload<T> {
 ///
 /// Manual invalidation is available via the `refresh` batch command.
 pub(crate) struct BatchContext {
-    // #1127: previously `RefCell<Store<ReadOnly>>`. The store is now wrapped in
-    // `Mutex<Arc<...>>` so `checkout_view` can clone the Arc under a brief
-    // critical section and hand it to handlers without holding the outer
-    // BatchContext mutex across dispatch. Mutex (not RwLock) is correct: the
-    // store is *swapped* on `check_index_staleness` re-open, never read
-    // concurrently with the swap — a Mutex is the cheapest correctness shape.
+    // The store is wrapped in `Mutex<Arc<...>>` so `checkout_view` can clone
+    // the Arc under a brief critical section and hand it to handlers without
+    // holding the outer BatchContext mutex across dispatch. Mutex (not RwLock)
+    // is correct: the store is *swapped* on `check_index_staleness` re-open,
+    // never read concurrently with the swap — a Mutex is the cheapest
+    // correctness shape.
     //
-    // #946 typestate: BatchContext is the daemon's shared store, which only
-    // ever dispatches read-only queries (daemon handlers never mutate). The
-    // compiler refuses to call a write method on a `Store<ReadOnly>`, so
-    // the class of runtime errors from PR #945 / #944 / dispatch_gc is
-    // structurally impossible on this path.
+    // Typestate: BatchContext is the daemon's shared store, which only ever
+    // dispatches read-only queries (daemon handlers never mutate). The compiler
+    // refuses to call a write method on a `Store<ReadOnly>`, so write-on-
+    // read-store runtime errors are structurally impossible on this path.
     store: Mutex<Arc<Store<ReadOnly>>>,
-    /// #968: the tokio runtime driving `store`. Kept here as well so
-    /// `invalidate()` and `check_index_staleness()` can re-open the
-    /// store on the same runtime — without this they would rebuild a
-    /// fresh current-thread runtime on every index swap and drift
-    /// apart from the daemon's shared pool.
+    /// The tokio runtime driving `store`. Held here so `invalidate()` and
+    /// `check_index_staleness()` re-open the store on the same runtime —
+    /// otherwise they would rebuild a fresh current-thread runtime on every
+    /// index swap and drift apart from the daemon's shared pool.
     runtime: Arc<tokio::runtime::Runtime>,
-    // Stable caches — keep OnceLock (not index-derived)
+    // Stable caches — OnceLock (not index-derived)
     //
-    // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
-    // can hand the same Embedder instance down into the daemon thread.
-    // Previously BatchContext owned its own Embedder and the watch
-    // loop owned a second one — two ~500 MB ONNX sessions could be
-    // resident at the same time. `BatchContext::new_with_embedder`
-    // accepts a pre-built Arc; `create_context` (CLI path) still
+    // `OnceLock<Arc<Embedder>>` so the watch outer scope can hand the same
+    // Embedder instance down into the daemon thread — without sharing, the
+    // BatchContext and the watch loop would each hold a ~500 MB ONNX session.
+    // `BatchContext::new_with_embedder` accepts a pre-built Arc; the CLI path
     // creates a fresh one lazily via `warm`.
     //
-    // #1127: wrapped in `Arc<...>` so `BatchView` can carry a clone of the
-    // same `OnceLock`; init through the view propagates to BatchContext
-    // and any other view sharing the Arc.
+    // Wrapped in `Arc<...>` so `BatchView` can carry a clone of the same
+    // `OnceLock`; init through the view propagates to BatchContext and any
+    // other view sharing the Arc.
     embedder: Arc<OnceLock<Arc<Embedder>>>,
-    /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<Config>>>`
-    /// so a `.cqs/config.toml` edit shows up after `CONFIG_RELOAD_INTERVAL`
-    /// (default 5 min) instead of requiring a daemon restart. The reload is
-    /// a sub-ms file read; cost is negligible per query.
+    /// `RefCell<Option<CachedReload<Config>>>` so a `.cqs/config.toml` edit
+    /// shows up after `CONFIG_RELOAD_INTERVAL` (default 5 min) without a daemon
+    /// restart. The reload is a sub-ms file read; cost is negligible per query.
     config: RefCell<Option<CachedReload<cqs::config::Config>>>,
-    /// #1127: `Arc<OnceLock<...>>` so views share one slot with the
-    /// BatchContext. EX-V1.30.1-8 (#1220): inner type is now
-    /// `Arc<dyn cqs::Reranker>` so the trait object can be swapped at
-    /// construction time (NoopReranker for ablation, future LlmReranker
-    /// for batch eval, etc.) without touching the cache surface.
+    /// `Arc<OnceLock<...>>` so views share one slot with the BatchContext. The
+    /// inner type is `Arc<dyn cqs::Reranker>` so the trait object can be
+    /// swapped at construction time (NoopReranker for ablation, future
+    /// LlmReranker for batch eval, etc.) without touching the cache surface.
     reranker: Arc<OnceLock<Arc<dyn cqs::Reranker>>>,
-    /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<AuditMode>>>`
-    /// so the documented 30-min audit auto-expire actually fires while the
-    /// daemon is up — previously the OnceLock cached the boot-time state
-    /// forever. Reloads from `.cqs/audit-mode.json` every
-    /// `AUDIT_STATE_RELOAD_INTERVAL` (default 30 s); the file already
-    /// carries its own embedded `expires_at` so the load itself respects
-    /// expiration.
+    /// `RefCell<Option<CachedReload<AuditMode>>>` so the 30-min audit
+    /// auto-expire fires while the daemon is up. Reloads from
+    /// `.cqs/audit-mode.json` every `AUDIT_STATE_RELOAD_INTERVAL` (default
+    /// 30 s); the file carries its own embedded `expires_at` so the load
+    /// itself respects expiration.
     audit_state: RefCell<Option<CachedReload<cqs::audit::AuditMode>>>,
     // Mutable caches — RefCell<Option<T>> for invalidation on index change
     hnsw: RefCell<Option<Arc<dyn VectorIndex>>>,
     base_hnsw: RefCell<Option<Arc<dyn VectorIndex>>>,
     call_graph: RefCell<Option<Arc<cqs::store::CallGraph>>>,
     test_chunks: RefCell<Option<Arc<Vec<cqs::store::ChunkSummary>>>>,
-    /// P3 #123: cache returns `Arc<HashSet<PathBuf>>` so callers don't clone
-    /// the full set on every invocation. Mirrors `call_graph` / `test_chunks`.
+    /// Cache returns `Arc<HashSet<PathBuf>>` so callers don't clone the full
+    /// set on every invocation. Mirrors `call_graph` / `test_chunks`.
     file_set: RefCell<Option<Arc<HashSet<PathBuf>>>>,
-    /// PF-V1.29-6: cached notes returned as `Arc<Vec<Note>>` so callers
-    /// don't clone the full Vec on every dispatch. Mirrors `call_graph` /
-    /// `test_chunks` / `file_set`.
+    /// Cached notes returned as `Arc<Vec<Note>>` so callers don't clone the
+    /// full Vec on every dispatch. Mirrors `call_graph` / `test_chunks` /
+    /// `file_set`.
     notes_cache: RefCell<Option<Arc<Vec<cqs::note::Note>>>>,
-    // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
-    // RM-V1.29-1: values are `Arc` so `get_all_refs` can fan out refs to
-    // parallel `--include-refs` searches without cloning the index bytes.
+    // LRU caps at 2 — each ReferenceIndex holds Store + HNSW (50-200MB).
+    // Values are `Arc` so `get_all_refs` can fan out refs to parallel
+    // `--include-refs` searches without cloning the index bytes.
     //
-    // #1127: was `RefCell<LruCache<...>>`. Now `Arc<Mutex<LruCache<...>>>` so
-    // BatchView can carry a clone of the same Arc and `get_all_refs` /
-    // `get_ref` work on the snapshot path without re-acquiring the outer
-    // BatchContext mutex.
+    // `Arc<Mutex<LruCache<...>>>` so BatchView can carry a clone of the same
+    // Arc and `get_all_refs` / `get_ref` work on the snapshot path without
+    // re-acquiring the outer BatchContext mutex.
     refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
-    /// #1127: `Arc<OnceLock<...>>` mirrors the embedder pattern — see field
-    /// doc above.
+    /// `Arc<OnceLock<...>>` mirrors the embedder pattern — see field doc above.
     splade_encoder: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
-    /// #1127: `Arc<Mutex<Option<Arc<SpladeIndex>>>>` so BatchView can carry an
-    /// Arc clone of the cell and `ensure_splade_index` can populate it from
-    /// either the BatchContext path or the view path. The SPLADE rebuild
-    /// path replaces the inner `Arc<SpladeIndex>`; existing readers that
-    /// already cloned the previous Arc keep their snapshot until the next
-    /// dispatch.
+    /// `Arc<Mutex<Option<Arc<SpladeIndex>>>>` so BatchView can carry an Arc
+    /// clone of the cell and `ensure_splade_index` can populate it from either
+    /// the BatchContext path or the view path. The SPLADE rebuild path replaces
+    /// the inner `Arc<SpladeIndex>`; existing readers that already cloned the
+    /// previous Arc keep their snapshot until the next dispatch.
     splade_index: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
@@ -305,65 +288,60 @@ pub(crate) struct BatchContext {
     /// Last-seen identity (inode + size + mtime on unix; size + mtime
     /// elsewhere) of index.db, used to detect concurrent index updates.
     ///
-    /// DS-V1.25-6: previously this tracked `SystemTime` alone. WSL NTFS
-    /// has 1-s mtime resolution, so a fast `cqs index --force` plus a
-    /// daemon query burst could share the same mtime bucket and keep
-    /// serving results from the orphaned inode. `DbFileIdentity` mixes
-    /// in inode + size so sub-second replacements still register.
+    /// WSL NTFS has 1-s mtime resolution, so a fast `cqs index --force` plus a
+    /// daemon query burst could share the same mtime bucket and keep serving
+    /// results from the orphaned inode. `DbFileIdentity` mixes in inode + size
+    /// so sub-second replacements still register.
     index_id: Cell<Option<DbFileIdentity>>,
     /// When the staleness check last ran. Used to rate-limit `fs::metadata`
-    /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`]. PF-V1.25-10.
+    /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`].
     last_staleness_check: Cell<Option<Instant>>,
-    /// #1127: `Arc<AtomicU64>` so `BatchView` carries a cheap clone of the
-    /// counter handle and handlers can read/bump without re-locking the
-    /// outer BatchContext mutex. The atomicity is the load-bearing
-    /// invariant; the Arc just lets the view participate.
+    /// `Arc<AtomicU64>` so `BatchView` carries a cheap clone of the counter
+    /// handle and handlers can read/bump without re-locking the outer
+    /// BatchContext mutex. The atomicity is the load-bearing invariant; the
+    /// Arc just lets the view participate.
     pub(crate) error_count: Arc<AtomicU64>,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
     last_command_time: Cell<Instant>,
     /// Wall-clock instant when this `BatchContext` was constructed.
     ///
-    /// Task B2: surfaces `uptime_secs` for `cqs ping`. Held as `Instant`
-    /// rather than `SystemTime` so it's monotonic — daylight-savings or
-    /// `ntpd` slewing won't cause a sudden negative uptime.
+    /// Surfaces `uptime_secs` for `cqs ping`. Held as `Instant` rather than
+    /// `SystemTime` so it's monotonic — daylight-savings or `ntpd` slewing
+    /// won't cause a sudden negative uptime.
     started_at: Instant,
     /// Cumulative number of socket / stdin queries this `BatchContext` has
-    /// dispatched. Bumped inside `dispatch_line` so both the daemon socket
-    /// path and the `cqs batch` stdin path increment the same counter.
-    /// Read by the `ping` handler. #1127: `Arc<AtomicU64>` for the same
-    /// reason as `error_count`.
+    /// dispatched. Bumped so both the daemon socket path and the `cqs batch`
+    /// stdin path increment the same counter. Read by the `ping` handler.
+    /// `Arc<AtomicU64>` for the same reason as `error_count`.
     pub(crate) query_count: Arc<AtomicU64>,
-    /// #1182: shared snapshot of watch-loop freshness state. Default is
-    /// the `unknown` snapshot — a `cqs status --watch-fresh` against a
-    /// `cqs batch` (no watch loop) gets `state: unknown` and an empty
-    /// counter set. Inside `cqs watch --serve`, the watch loop clones
-    /// this Arc and writes a fresh snapshot every cycle; the daemon's
-    /// `dispatch_status` handler reads through it. The `RwLock` cost is
-    /// trivial — one writer at 100 ms cadence, readers on the daemon
-    /// thread that snapshot-and-drop in microseconds.
+    /// Shared snapshot of watch-loop freshness state. Default is the `unknown`
+    /// snapshot — a `cqs status --watch-fresh` against a `cqs batch` (no watch
+    /// loop) gets `state: unknown` and an empty counter set. Inside `cqs watch
+    /// --serve`, the watch loop clones this Arc and writes a fresh snapshot
+    /// every cycle; the daemon's `dispatch_status` handler reads through it.
+    /// The `RwLock` cost is trivial — one writer at 100 ms cadence, readers on
+    /// the daemon thread that snapshot-and-drop in microseconds.
     pub(crate) watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
-    /// #1182 — Layer 1: shared one-shot signal. The daemon's
-    /// `dispatch_reconcile` handler flips this `true` when a `cqs hook
-    /// fire` client posts a `reconcile` socket message; the watch loop
-    /// observes the flip on its next 100 ms cycle and runs an immediate
-    /// reconcile pass (bypassing the periodic-tick idle gating). Default
-    /// is a fresh `Arc<AtomicBool>` with no listener — outside `cqs watch
-    /// --serve`, dispatching `reconcile` is a no-op rather than an error.
+    /// Shared one-shot signal. The daemon's `dispatch_reconcile` handler flips
+    /// this `true` when a `cqs hook fire` client posts a `reconcile` socket
+    /// message; the watch loop observes the flip on its next 100 ms cycle and
+    /// runs an immediate reconcile pass (bypassing the periodic-tick idle
+    /// gating). Default is a fresh `Arc<AtomicBool>` with no listener — outside
+    /// `cqs watch --serve`, dispatching `reconcile` is a no-op rather than an
+    /// error.
     pub(crate) reconcile_signal: cqs::watch_status::SharedReconcileSignal,
-    /// #1228 (RM-2): event-driven freshness wake-up. The watch loop's
-    /// `publish_watch_snapshot` calls `set_fresh` every cycle; the
-    /// daemon's `wait_fresh` handler parks on `wait_until_fresh` until
-    /// the state flips. Default outside `cqs watch --serve` is a fresh
-    /// notifier whose `is_fresh` flag stays `false` forever — a stray
-    /// `wait_fresh` request without an active watch loop hits the
-    /// caller's deadline naturally.
+    /// Event-driven freshness wake-up. The watch loop's
+    /// `publish_watch_snapshot` calls `set_fresh` every cycle; the daemon's
+    /// `wait_fresh` handler parks on `wait_until_fresh` until the state flips.
+    /// Default outside `cqs watch --serve` is a fresh notifier whose `is_fresh`
+    /// flag stays `false` forever — a stray `wait_fresh` request without an
+    /// active watch loop hits the caller's deadline naturally.
     pub(crate) fresh_notifier: cqs::watch_status::SharedFreshNotifier,
 }
 
-/// #1127: a number of `BatchContext` accessors are unreachable from non-test
-/// production code now that all dispatch goes through `BatchView`. Keeping
-/// them around (instead of deleting) is the cheaper choice — they back
+/// A number of `BatchContext` accessors are unreachable from non-test
+/// production code because all dispatch goes through `BatchView`. They back
 /// `BatchContext::build_view`, the test fixtures, and the stdin-batch
 /// `BatchContext::invalidate` shortcut. The compiler's unused-method warning
 /// fires on each one regardless; suppress at the impl level rather than per
@@ -383,28 +361,27 @@ impl BatchContext {
 
     /// Clear ONNX sessions if idle too long without resetting the clock.
     ///
-    /// RM-V1.25-3: called both from `check_idle_timeout` (on command arrival)
-    /// and from a periodic accept-loop tick (watch.rs), so a truly idle daemon
-    /// still releases ~500MB+ after the idle timeout. Unlike
-    /// `check_idle_timeout` it does NOT update `last_command_time`; the tick
-    /// is a passive observer.
+    /// Called both from `check_idle_timeout` (on command arrival) and from a
+    /// periodic accept-loop tick (watch.rs), so a truly idle daemon still
+    /// releases ~500MB+ after the idle timeout. Unlike `check_idle_timeout` it
+    /// does NOT update `last_command_time`; the tick is a passive observer.
     ///
-    /// SHL-V1.25-16: ONNX timeout is configurable via `CQS_BATCH_IDLE_MINUTES`
-    /// (default 5). Set to 0 to disable ONNX eviction entirely.
+    /// ONNX timeout is configurable via `CQS_BATCH_IDLE_MINUTES` (default 5).
+    /// Set to 0 to disable ONNX eviction entirely.
     ///
-    /// P2 #67 / P2 #68: also clears the data caches (`hnsw`, `splade_index`,
-    /// `call_graph`, `test_chunks`, `notes_cache`, `file_set`) after a
-    /// longer idle window, configurable via `CQS_BATCH_DATA_IDLE_MINUTES`
-    /// (default 30 min). Without this, a daemon idle for hours holds 600 MB+
-    /// of HNSW + SPLADE-index + call-graph caches that no agent is using.
-    /// The split timeout (5 min ONNX, 30 min data) preserves first-query
-    /// responsiveness — the next user query pays a sub-second ONNX init
-    /// rather than a multi-second HNSW rebuild.
+    /// Also clears the data caches (`hnsw`, `splade_index`, `call_graph`,
+    /// `test_chunks`, `notes_cache`, `file_set`) after a longer idle window,
+    /// configurable via `CQS_BATCH_DATA_IDLE_MINUTES` (default 30 min).
+    /// Without this, a daemon idle for hours holds 600 MB+ of HNSW +
+    /// SPLADE-index + call-graph caches that no agent is using. The split
+    /// timeout (5 min ONNX, 30 min data) preserves first-query responsiveness
+    /// — the next user query pays a sub-second ONNX init rather than a
+    /// multi-second HNSW rebuild.
     pub(crate) fn sweep_idle_sessions(&self) {
         let timeout_minutes = idle_timeout_minutes();
         if timeout_minutes > 0 {
             let elapsed = self.last_command_time.get().elapsed();
-            // RB-V1.29-1: saturating_mul so an operator passing
+            // saturating_mul so an operator passing
             // `CQS_BATCH_IDLE_MINUTES=u64::MAX` can't overflow into zero and
             // instant-evict sessions they meant to pin forever.
             let timeout = std::time::Duration::from_secs(timeout_minutes.saturating_mul(60));
@@ -423,7 +400,7 @@ impl BatchContext {
                         "Cleared reranker session after idle timeout"
                     );
                 }
-                // RM-3: Also clear SPLADE encoder session
+                // Also clear SPLADE encoder session
                 if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
                     splade.clear_session();
                     tracing::info!(
@@ -434,15 +411,15 @@ impl BatchContext {
             }
         }
 
-        // P2 #67 / P2 #68: separate (longer) idle window for the heavyweight
-        // data caches. Independent of the ONNX-session check above so an
-        // operator can disable one without disabling the other.
+        // Separate (longer) idle window for the heavyweight data caches.
+        // Independent of the ONNX-session check above so an operator can
+        // disable one without disabling the other.
         let data_timeout_minutes = data_cache_idle_timeout_minutes();
         if data_timeout_minutes == 0 {
             return;
         }
         let elapsed = self.last_command_time.get().elapsed();
-        // RB-V1.29-1: same overflow guard as the ONNX-session path above.
+        // Same overflow guard as the ONNX-session path above.
         let data_timeout = std::time::Duration::from_secs(data_timeout_minutes.saturating_mul(60));
         if elapsed >= data_timeout {
             tracing::info!(
@@ -460,17 +437,15 @@ impl BatchContext {
     /// all mutable caches and re-open the Store (which resets its internal
     /// OnceLock caches like call_graph_cache, test_chunks_cache).
     ///
-    /// DS-V1.25-6: identity is `(inode, size, mtime)` on unix and
-    /// `(size, mtime)` elsewhere. The extra discriminators catch
-    /// sub-second replacements on filesystems with 1-s mtime resolution
-    /// (WSL NTFS/DrvFS): a `cqs index --force` rename-over yields a new
-    /// inode immediately, so the batch session invalidates even when two
-    /// events share the same mtime bucket.
+    /// Identity is `(inode, size, mtime)` on unix and `(size, mtime)`
+    /// elsewhere. The extra discriminators catch sub-second replacements on
+    /// filesystems with 1-s mtime resolution (WSL NTFS/DrvFS): a `cqs index
+    /// --force` rename-over yields a new inode immediately, so the batch
+    /// session invalidates even when two events share the same mtime bucket.
     ///
-    /// PF-V1.25-10: rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`].
-    /// Every `ctx.store()` and every `vector_index` / `file_set` / etc. accessor
-    /// calls this; before the rate-limit it ran `fs::metadata` on every call,
-    /// producing dozens of syscalls per pipelined batch command for no benefit.
+    /// Rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`]. Every
+    /// `ctx.store()` and every `vector_index` / `file_set` / etc. accessor
+    /// calls this.
     pub(crate) fn check_index_staleness(&self) {
         let now = Instant::now();
         if let Some(prev) = self.last_staleness_check.get() {
@@ -480,15 +455,15 @@ impl BatchContext {
         }
         self.last_staleness_check.set(Some(now));
 
-        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        // Slot-aware index resolution.
         let index_path = cqs::resolve_index_db(&self.cqs_dir);
         let current_id = match DbFileIdentity::from_path(&index_path) {
             Some(id) => id,
             None => {
-                // v1.22.0 audit EH-8: previously silent return. If the DB
-                // becomes temporarily unstattable (permissions, concurrent
-                // rebuild, NFS glitch), every subsequent command in the batch
-                // session keeps using stale caches forever.
+                // If the DB becomes temporarily unstattable (permissions,
+                // concurrent rebuild, NFS glitch), warn rather than silently
+                // returning — a silent return would keep every subsequent
+                // command in the session using stale caches forever.
                 tracing::warn!(
                     path = %index_path.display(),
                     "Cannot stat index.db for staleness check — caches may remain stale"
@@ -504,11 +479,11 @@ impl BatchContext {
             self.invalidate_mutable_caches();
 
             // Re-open the Store to reset its internal OnceLock caches.
-            // #968: reuse the shared runtime so this re-open doesn't spin
-            // up a transient current_thread runtime on every index swap.
+            // Reuse the shared runtime so this re-open doesn't spin up a
+            // transient current_thread runtime on every index swap.
             match Store::open_readonly_pooled_with_runtime(&index_path, Arc::clone(&self.runtime)) {
                 Ok(new_store) => {
-                    // DS-43: Check if index dimension changed — OnceLock model_config
+                    // Check if index dimension changed — OnceLock model_config
                     // can't be cleared, so warn the user to restart the batch session.
                     let new_dim = new_store.dim();
                     if new_dim != self.model_config.dim {
@@ -518,7 +493,7 @@ impl BatchContext {
                             "Index dimension changed — queries may return wrong results until batch restart"
                         );
                     }
-                    // #1127: swap the Arc inside the Mutex. Existing readers
+                    // Swap the Arc inside the Mutex. Existing readers
                     // (BatchView snapshots already handed out) keep their
                     // old Arc and remain valid; the next `checkout_view`
                     // returns a snapshot pointing at the new store.
@@ -535,12 +510,11 @@ impl BatchContext {
 
     /// Clear all mutable caches. Called on index identity change or manual refresh.
     ///
-    /// v1.22.0 audit (CQ-2 / RM-3 / EH-8 / TC-2, quintuple-confirmed across
-    /// five independent auditors): previously this omitted `splade_index`,
-    /// so a long-lived batch session that had loaded the SPLADE posting
-    /// map once would serve results from the pre-reindex generation forever
-    /// after a concurrent `cqs index`. Clearing the RefCell here lets
-    /// `ensure_splade_index` see `None` on the next call and rebuild from
+    /// `splade_index` must be cleared here too — otherwise a long-lived batch
+    /// session that had loaded the SPLADE posting map once would serve results
+    /// from the pre-reindex generation forever after a concurrent `cqs index`.
+    /// Clearing the RefCell lets `ensure_splade_index` see `None` on the next
+    /// call and rebuild from
     /// the freshly persisted `splade.index.bin` (or SQLite fallback).
     fn invalidate_mutable_caches(&self) {
         // Use try_borrow_mut: a search handler may still hold a Ref<...>
@@ -570,8 +544,8 @@ impl BatchContext {
         try_clear_to_none!(self.test_chunks, "test_chunks");
         try_clear_to_none!(self.file_set, "file_set");
         try_clear_to_none!(self.notes_cache, "notes_cache");
-        // #1127: splade_index moved to `Arc<Mutex<...>>`. Use try_lock to
-        // mirror the borrow-deferral semantics of the RefCell branches.
+        // splade_index is `Arc<Mutex<...>>`. Use try_lock to mirror the
+        // borrow-deferral semantics of the RefCell branches.
         match self.splade_index.try_lock() {
             Ok(mut g) => *g = None,
             Err(_) => {
@@ -579,7 +553,7 @@ impl BatchContext {
                 tracing::debug!(slot = "splade_index", "lock held; deferring invalidation");
             }
         }
-        // #1127: refs LRU is `Arc<Mutex<...>>` (shared with BatchView).
+        // refs LRU is `Arc<Mutex<...>>` (shared with BatchView).
         // `try_lock` is the read-only equivalent of `try_borrow_mut`: if a
         // handler thread holds the mutex (e.g. iterating refs in a parallel
         // search), the eviction is deferred to the next sweep.
@@ -605,22 +579,22 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_manual_invalidation").entered();
         self.invalidate_mutable_caches();
 
-        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        // Slot-aware index resolution.
         let index_path = cqs::resolve_index_db(&self.cqs_dir);
-        // #968: pass the shared runtime so manual refreshes keep using
-        // the same worker pool as the session they're refreshing.
+        // Pass the shared runtime so manual refreshes keep using the same
+        // worker pool as the session they're refreshing.
         let new_store =
             Store::open_readonly_pooled_with_runtime(&index_path, Arc::clone(&self.runtime))
                 .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
-        // #1127: swap the Arc; existing BatchView snapshots keep the old.
+        // Swap the Arc; existing BatchView snapshots keep the old.
         *self.store.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_store);
 
         // Update identity to current so we don't immediately re-invalidate.
         if let Some(id) = DbFileIdentity::from_path(&index_path) {
             self.index_id.set(Some(id));
         }
-        // PF-V1.25-10: treat the manual refresh as a fresh staleness check
-        // so the next batch command hits the rate-limit fast path.
+        // Treat the manual refresh as a fresh staleness check so the next
+        // batch command hits the rate-limit fast path.
         self.last_staleness_check.set(Some(Instant::now()));
 
         tracing::info!("Manual cache invalidation complete");
@@ -630,17 +604,15 @@ impl BatchContext {
     /// Dispatch a single command line (e.g. "search foo -n 5 --json") and
     /// write the JSON result to `out`. Used by the daemon socket handler.
     ///
-    /// Task B2: every line that reaches the dispatcher bumps `query_count`
-    /// (so the ping handler can report total queries served), and any
-    /// parse / dispatch failure bumps `error_count` (so the daemon's
-    /// `cmd_batch` stdin loop and the daemon socket handler converge on
-    /// the same counter — previously only `cmd_batch` bumped `error_count`,
-    /// leaving socket queries invisible).
+    /// Every line that reaches the dispatcher bumps `query_count` (so the ping
+    /// handler can report total queries served), and any parse / dispatch
+    /// failure bumps `error_count` so the `cmd_batch` stdin loop and the daemon
+    /// socket handler converge on the same counter.
     ///
-    /// PF-V1.29-1: Daemon socket path now calls [`Self::dispatch_tokens`]
-    /// directly (skipping shell round-trip), and the `cmd_batch` stdin loop
-    /// does its own tokenization. `dispatch_line` is retained for tests and
-    /// any future stdin-style surface that needs shell parsing.
+    /// The daemon socket path calls [`Self::dispatch_tokens`] directly
+    /// (skipping the shell round-trip), and the `cmd_batch` stdin loop does its
+    /// own tokenization. `dispatch_line` is retained for tests and any future
+    /// stdin-style surface that needs shell parsing.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn dispatch_line(&self, line: &str, out: &mut impl std::io::Write) {
         use crate::cli::json_envelope::error_codes;
@@ -664,8 +636,8 @@ impl BatchContext {
         self.dispatch_parsed_tokens(&tokens, out);
     }
 
-    /// PF-V1.29-1: Dispatch pre-tokenized `(command, args)` directly, skipping
-    /// the `shell_words::join` / `shell_words::split` round-trip that
+    /// Dispatch pre-tokenized `(command, args)` directly, skipping the
+    /// `shell_words::join` / `shell_words::split` round-trip that
     /// `dispatch_line` requires for the stdin surface.
     ///
     /// The daemon socket path already receives `{ "command": "...", "args":
@@ -694,15 +666,15 @@ impl BatchContext {
     /// the two callers is how they reached a non-empty `tokens` vec — NUL
     /// check, counter bumps, clap parse, and handler dispatch are identical.
     ///
-    /// #1127: takes a snapshot via `build_view` and delegates to
+    /// Takes a snapshot via `build_view` and delegates to
     /// [`dispatch_via_view`]. Stdin batch holds no shared `Arc<Mutex>` so
     /// the view's `outer_lock` is `None`; refresh inside this path goes
     /// through `BatchContext::invalidate` directly.
     fn dispatch_parsed_tokens(&self, tokens: &[String], out: &mut impl std::io::Write) {
         use crate::cli::json_envelope::error_codes;
-        // D.2: NUL byte check parity with the daemon socket loop in cmd_batch.
+        // NUL byte check parity with the daemon socket loop in cmd_batch.
         // Both surfaces share downstream handlers; they must share input
-        // validation too. RT-INJ-2.
+        // validation too.
         if let Err(msg) = reject_null_tokens(tokens) {
             self.error_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
@@ -749,12 +721,12 @@ impl BatchContext {
                     }
                     Err(e) => {
                         self.error_count.fetch_add(1, Ordering::Relaxed);
-                        // P2 #33: redact_error walks the source chain and emits
-                        // a stable (code, message) pair instead of echoing the
-                        // raw anyhow chain (which can carry HTTP bodies, sqlite
-                        // query text, filesystem paths). The full unredacted
-                        // chain is logged via tracing::warn! inside redact_error
-                        // so an operator can correlate by chain-id.
+                        // redact_error walks the source chain and emits a stable
+                        // (code, message) pair instead of echoing the raw anyhow
+                        // chain (which can carry HTTP bodies, sqlite query text,
+                        // filesystem paths). The full unredacted chain is logged
+                        // via tracing::warn! inside redact_error so an operator
+                        // can correlate by chain-id.
                         let (code, msg) = crate::cli::json_envelope::redact_error(&e);
                         let _ = write_envelope_error(out, code.as_str(), &msg);
                     }
@@ -775,7 +747,7 @@ impl BatchContext {
     /// Build a [`cqs::daemon_translate::PingResponse`] snapshot of the
     /// daemon's current state.
     ///
-    /// Task B2: pure read-side helper — bumps no counters, blocks no
+    /// Pure read-side helper — bumps no counters, blocks no
     /// I/O, takes no locks. The `splade_loaded` / `reranker_loaded`
     /// flags peek the `OnceLock`s without forcing a load, so calling
     /// `ping` does not warm any ONNX session that wasn't already
@@ -784,10 +756,10 @@ impl BatchContext {
     /// missing file or unreadable metadata yields `None` rather than
     /// failing the whole ping.
     pub(crate) fn ping_snapshot(&self) -> cqs::daemon_translate::PingResponse {
-        // RB-3: surface overflow as None (treated same as "missing mtime")
-        // instead of silently wrapping past `i64::MAX`. Different shape from
+        // Surface overflow as None (treated same as "missing mtime") instead
+        // of silently wrapping past `i64::MAX`. Different shape from
         // `unix_secs_i64()` — reads file mtime, not wall-clock.
-        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        // Slot-aware index resolution.
         let last_indexed_at = std::fs::metadata(cqs::resolve_index_db(&self.cqs_dir))
             .ok()
             .and_then(|m| m.modified().ok())
@@ -820,11 +792,9 @@ impl BatchContext {
     /// Snapshot the Store as a refcounted `Arc`, checking for index staleness
     /// first.
     ///
-    /// #1127: previously returned `Ref<'_, Store<ReadOnly>>` which tied the
-    /// store-borrow lifetime to the BatchContext borrow. The store is now
-    /// held in `Mutex<Arc<Store<ReadOnly>>>`; this accessor takes the mutex
-    /// briefly, clones the Arc, and drops the lock — handlers hold a stable
-    /// snapshot for as long as they need it without keeping any
+    /// The store is held in `Mutex<Arc<Store<ReadOnly>>>`; this accessor takes
+    /// the mutex briefly, clones the Arc, and drops the lock — handlers hold a
+    /// stable snapshot for as long as they need it without keeping any
     /// BatchContext lock acquired.
     pub fn store(&self) -> Arc<Store<ReadOnly>> {
         self.check_index_staleness();
@@ -835,9 +805,9 @@ impl BatchContext {
     /// Pre-warm the embedder so the first query doesn't pay the ~500ms ONNX init.
     /// Called once at session start. Errors are logged but non-fatal.
     ///
-    /// RM-V1.25-28: if the watch outer scope installed a shared Embedder
-    /// via `adopt_embedder`, the OnceLock is already populated and this
-    /// is a no-op for model loading (cache eviction still runs).
+    /// If the watch outer scope installed a shared Embedder via
+    /// `adopt_embedder`, the OnceLock is already populated and this is a no-op
+    /// for model loading (cache eviction still runs).
     pub fn warm(&self) {
         if self.embedder.get().is_none() {
             let _span = tracing::info_span!("batch_warm").entered();
@@ -851,22 +821,19 @@ impl BatchContext {
                 }
             }
         }
-        // RM-V1.25-5: Evict the project's embeddings cache at daemon startup.
+        // Evict the project's embeddings cache at daemon startup. Otherwise a
+        // long-lived daemon / watch session on a machine that never runs a
+        // manual index can grow the cache past the `CQS_CACHE_MAX_SIZE` cap
+        // (default 10 GB) without ever trimming — the full `cqs index` pipeline
+        // is the only other evictor. A single post-warm eviction lets the
+        // daemon self-heal on boot.
         //
-        // `evict()` was previously only called at the tail of the full
-        // `cqs index` pipeline (src/cli/pipeline/mod.rs), so long-lived
-        // daemons / watch sessions on machines that never run a manual
-        // index can grow the cache past the `CQS_CACHE_MAX_SIZE` cap
-        // (default 10 GB) without ever trimming. Kick off a single post-warm
-        // eviction so the daemon self-heals on boot.
+        // The cache is project-scoped at `<project>/.cqs/embeddings_cache.db`,
+        // so resolve the path against the daemon's project root via
+        // `resolve_index_dir(&self.root)`.
         //
-        // Spec §Cache: the cache moved from `~/.cache/cqs/embeddings.db`
-        // (global) to `<project>/.cqs/embeddings_cache.db` (project-scoped),
-        // so we resolve the path against the daemon's project root via
-        // `resolve_index_dir(&self.root)` instead of the legacy global.
-        //
-        // #968: reuse the batch context's runtime so this one-shot open
-        // doesn't spawn a fresh current_thread runtime.
+        // Reuse the batch context's runtime so this one-shot open doesn't spawn
+        // a fresh current_thread runtime.
         let project_cqs_dir = cqs::resolve_index_dir(&self.root);
         let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
         evict_embeddings_cache_with_runtime(
@@ -876,7 +843,7 @@ impl BatchContext {
         );
     }
 
-    /// RM-V1.25-28: Install a shared Embedder from the outer watch scope.
+    /// Install a shared Embedder from the outer watch scope.
     ///
     /// Returns `true` if the Arc was installed, `false` if the OnceLock was
     /// already populated (lazy init already happened, or another caller won
@@ -886,7 +853,7 @@ impl BatchContext {
         self.embedder.set(shared).is_ok()
     }
 
-    /// #1182: Install a shared `Arc<RwLock<WatchSnapshot>>` from the outer
+    /// Install a shared `Arc<RwLock<WatchSnapshot>>` from the outer
     /// `cmd_watch` scope. Replaces the constructor's default `unknown`
     /// handle with one the watch loop also holds, so subsequent
     /// `watch_snapshot()` reads see the loop's most-recent publish.
@@ -898,10 +865,9 @@ impl BatchContext {
         self.watch_snapshot = shared;
     }
 
-    /// #1182 — Layer 1: install the shared reconcile-signal handle.
-    /// Called from the daemon thread before lock-wrapping the
-    /// `BatchContext`, so `dispatch_reconcile` flips a flag the watch
-    /// loop is actually watching.
+    /// Install the shared reconcile-signal handle. Called from the daemon
+    /// thread before lock-wrapping the `BatchContext`, so `dispatch_reconcile`
+    /// flips a flag the watch loop is actually watching.
     ///
     /// Outside `cqs watch --serve`, this is never called and the field
     /// stays at the no-op default (no listener picks it up).
@@ -909,10 +875,9 @@ impl BatchContext {
         self.reconcile_signal = shared;
     }
 
-    /// #1228 (RM-2): install the shared `FreshNotifier`. Called from
-    /// the daemon thread alongside `adopt_watch_snapshot` so the
-    /// `wait_fresh` handler parks on the same notifier the watch loop
-    /// updates from `publish_watch_snapshot`.
+    /// Install the shared `FreshNotifier`. Called from the daemon thread
+    /// alongside `adopt_watch_snapshot` so the `wait_fresh` handler parks on
+    /// the same notifier the watch loop updates from `publish_watch_snapshot`.
     pub fn adopt_fresh_notifier(&mut self, shared: cqs::watch_status::SharedFreshNotifier) {
         self.fresh_notifier = shared;
     }
@@ -967,10 +932,10 @@ impl BatchContext {
     /// `splade.index.bin` first, falls back to SQLite rebuild + persist if
     /// the file is absent, stale, or corrupt. Staleness is detected via
     /// the `splade_generation` metadata counter. If the generation cannot
-    /// be read at all (audit EH-3), this returns without populating the
-    /// RefCell — falling through with `0` would let a later persist write
-    /// a gen-0 file whose header lies about the DB state, creating a
-    /// self-perpetuating cache-poison loop.
+    /// be read at all, this returns without populating the RefCell — falling
+    /// through with `0` would let a later persist write a gen-0 file whose
+    /// header lies about the DB state, creating a self-perpetuating
+    /// cache-poison loop.
     pub fn ensure_splade_index(&self) {
         self.check_index_staleness();
         if self
@@ -994,12 +959,10 @@ impl BatchContext {
         };
         let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
         let store = self.store();
-        // RM-V1.25-11: time the build so operators can diagnose first-query
-        // latency spikes after a reindex. Full rebuild on a 200k-chunk repo
-        // with SPLADE-Code 0.6B takes ~45 s — scoped-down fix in lieu of
-        // an incremental update path; actual fix is tracked as P2 follow-up.
-        // The `rebuilt` flag comes back from `load_or_build` so we can split
-        // the log into a cheap cache hit vs a visible rebuild.
+        // Time the build so operators can diagnose first-query latency spikes
+        // after a reindex. Full rebuild on a 200k-chunk repo with SPLADE-Code
+        // 0.6B takes ~45 s. The `rebuilt` flag comes back from `load_or_build`
+        // so we can split the log into a cheap cache hit vs a visible rebuild.
         let build_start = Instant::now();
         let (idx, rebuilt) = cqs::splade::index::SpladeIndex::load_or_build(
             &splade_path,
@@ -1051,10 +1014,8 @@ impl BatchContext {
 
     /// Snapshot the cached SPLADE index as an `Option<Arc<SpladeIndex>>`.
     ///
-    /// #1127: previously returned `Ref<'_, Option<SpladeIndex>>` which kept
-    /// the BatchContext borrow alive for the entire search call. Returning
-    /// an Arc clone frees the borrow immediately so search handlers can
-    /// run outside any BatchContext borrow scope.
+    /// Returns an Arc clone rather than a borrow, so search handlers can run
+    /// outside any BatchContext borrow scope.
     pub fn borrow_splade_index(&self) -> Option<Arc<cqs::splade::index::SpladeIndex>> {
         self.splade_index
             .lock()
@@ -1069,10 +1030,9 @@ impl BatchContext {
     /// changed, rebuilds the vector index from the fresh Store.
     /// Returns a cloneable Arc so callers can hold a reference past RefCell borrow scope.
     ///
-    /// RM-V1.25-19: if the cached index reports `is_poisoned()` (only the
-    /// CAGRA GPU backend currently does), the cache slot is cleared and a
-    /// fresh index is built. Reusing a poisoned CUDA context risks
-    /// double-free and CUDA faults.
+    /// If the cached index reports `is_poisoned()` (only the CAGRA GPU backend
+    /// currently does), the cache slot is cleared and a fresh index is built.
+    /// Reusing a poisoned CUDA context risks double-free and CUDA faults.
     pub fn vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
         self.check_index_staleness();
         {
@@ -1091,7 +1051,7 @@ impl BatchContext {
         // Clear any poisoned cache before rebuilding.
         *self.hnsw.borrow_mut() = None;
         let _span = tracing::info_span!("batch_vector_index_init").entered();
-        // #1127: pull a snapshot Arc and pass `&Store<...>` via auto-deref.
+        // Pull a snapshot Arc and pass `&Store<...>` via auto-deref.
         let store = self.store_arc_locked();
         let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
         let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
@@ -1121,24 +1081,22 @@ impl BatchContext {
 
     /// Get a cached reference index by name, loading on first access.
     ///
-    /// Uses cached config (RM-21) and loads only the target reference (RM-16),
-    /// not all references.
+    /// Uses cached config and loads only the target reference, not all
+    /// references.
     ///
-    /// RM-V1.25-7: before serving a cached entry, peek its `is_stale()` so
-    /// a concurrent `cqs ref update <name>` (which rewrites the reference's
-    /// `index.db` without touching the primary project's `.cqs/index.db`)
-    /// forces a fresh load. Without this, a long-lived daemon would keep
-    /// serving results from a closed WAL snapshot / stale HNSW bytes for
-    /// days.
+    /// Before serving a cached entry, peek its `is_stale()` so a concurrent
+    /// `cqs ref update <name>` (which rewrites the reference's `index.db`
+    /// without touching the primary project's `.cqs/index.db`) forces a fresh
+    /// load. Without this, a long-lived daemon would keep serving results from
+    /// a closed WAL snapshot / stale HNSW bytes for days.
     pub fn get_ref(&self, name: &str) -> Result<()> {
         get_ref_via_refs_lru(&self.refs, &self.config(), name)
     }
 
     /// Return every configured reference as a shared `Arc`, populating the
-    /// LRU cache on miss. Amortizes Store+HNSW loads across a daemon
-    /// session — without this, each `--include-refs` query called
-    /// `cqs::reference::load_references(...)` which rebuilt every
-    /// reference from scratch (PERF regression RM-V1.29-1).
+    /// LRU cache on miss. Amortizes Store+HNSW loads across a daemon session —
+    /// without this, each `--include-refs` query would rebuild every reference
+    /// from scratch.
     ///
     /// Staleness is honored: a cached reference whose `index.db`
     /// identity changed (concurrent `cqs ref update <name>`) is evicted
@@ -1155,8 +1113,8 @@ impl BatchContext {
 
     /// Get or build the file set for staleness checks (cached).
     ///
-    /// P3 #123: returns `Arc<HashSet<PathBuf>>` so callers don't clone the
-    /// full set per invocation. Mirrors `call_graph` / `test_chunks`.
+    /// Returns `Arc<HashSet<PathBuf>>` so callers don't clone the full set per
+    /// invocation. Mirrors `call_graph` / `test_chunks`.
     pub(super) fn file_set(&self) -> Result<std::sync::Arc<HashSet<PathBuf>>> {
         self.check_index_staleness();
         {
@@ -1178,15 +1136,10 @@ impl BatchContext {
     /// cached value is older than [`AUDIT_STATE_RELOAD_INTERVAL`] (default
     /// 30 s), then returns an owned snapshot.
     ///
-    /// P2 #69: previously `OnceLock<AuditMode>`, which cached the boot-time
-    /// state forever. CLAUDE.md documents a 30-min auto-expire, but the
-    /// daemon never re-read the file — so `cqs audit-mode on` after daemon
-    /// boot, or audit-mode auto-expiring mid-session, both went unnoticed.
     /// The file is sub-ms to read; the 30 s interval bounds staleness while
-    /// keeping accessor cost negligible. Returning owned `AuditMode`
-    /// (rather than `&AuditMode` from a borrow) keeps the existing
-    /// `let audit = ctx.audit_state(); &audit` call-site pattern working
-    /// without juggling `Ref<'_, ...>` lifetimes.
+    /// keeping accessor cost negligible. Returning owned `AuditMode` (rather
+    /// than `&AuditMode` from a borrow) lets the `let audit = ctx.audit_state();
+    /// &audit` call-site pattern work without juggling `Ref<'_, ...>` lifetimes.
     pub(super) fn audit_state(&self) -> cqs::audit::AuditMode {
         let needs_reload = match self.audit_state.borrow().as_ref() {
             Some(c) => c.loaded_at.elapsed() >= AUDIT_STATE_RELOAD_INTERVAL,
@@ -1211,8 +1164,8 @@ impl BatchContext {
     }
 
     /// Get cached notes (parsed once per session, invalidated on index change).
-    /// PF-V1.29-6: returns `Arc<Vec<Note>>` so repeat calls bump a refcount
-    /// instead of cloning the full Vec — mirrors `call_graph` / `test_chunks`.
+    /// Returns `Arc<Vec<Note>>` so repeat calls bump a refcount instead of
+    /// cloning the full Vec — mirrors `call_graph` / `test_chunks`.
     pub(super) fn notes(&self) -> std::sync::Arc<Vec<cqs::note::Note>> {
         self.check_index_staleness();
         {
@@ -1225,10 +1178,10 @@ impl BatchContext {
         let notes = if notes_path.exists() {
             match cqs::note::parse_notes(&notes_path) {
                 Ok(notes) => notes,
-                // P3 #97: split absent-file (TOCTOU after the .exists()
-                // check above) from genuine parse failures, and include
-                // the path in the warn so the journal isn't ambiguous
-                // about which notes file failed.
+                // Split absent-file (TOCTOU after the .exists() check above)
+                // from genuine parse failures, and include the path in the
+                // warn so the journal isn't ambiguous about which notes file
+                // failed.
                 Err(e) => {
                     if let cqs::NoteError::Io(ref io_err) = e {
                         if io_err.kind() == std::io::ErrorKind::NotFound {
@@ -1274,7 +1227,7 @@ impl BatchContext {
         cache.get(name).map(Arc::clone)
     }
 
-    /// Get or load the call graph (cached, invalidated on index change). (PERF-22)
+    /// Get or load the call graph (cached, invalidated on index change).
     pub(super) fn call_graph(&self) -> Result<Arc<cqs::store::CallGraph>> {
         self.check_index_staleness();
         {
@@ -1292,7 +1245,7 @@ impl BatchContext {
     }
 
     /// Get or load test chunks (cached, invalidated on index change).
-    /// PERF-1: Returns Arc<Vec<ChunkSummary>> — O(1) clone.
+    /// Returns Arc<Vec<ChunkSummary>> — O(1) clone.
     pub(super) fn test_chunks(&self) -> Result<Arc<Vec<cqs::store::ChunkSummary>>> {
         self.check_index_staleness();
         {
@@ -1313,14 +1266,12 @@ impl BatchContext {
     /// cached value is older than [`CONFIG_RELOAD_INTERVAL`] (default 5 min),
     /// then returns an owned snapshot.
     ///
-    /// P2 #69 (originally RM-21): previously `OnceLock<Config>` which
-    /// cached the boot-time config forever — `.cqs/config.toml` edits
-    /// (e.g. `splade_alpha`, `ef_search`) required `systemctl restart
-    /// cqs-watch`. The 5-minute interval is conservative enough to avoid
-    /// hot-loop file reads while keeping ad-hoc tweaks usable. Returning
-    /// owned `Config` keeps existing call sites unchanged
-    /// (`self.config().ef_search` and `self.config().references` both
-    /// work via auto-deref).
+    /// `.cqs/config.toml` edits (e.g. `splade_alpha`, `ef_search`) take effect
+    /// after this interval without `systemctl restart cqs-watch`. The 5-minute
+    /// interval is conservative enough to avoid hot-loop file reads while
+    /// keeping ad-hoc tweaks usable. Returning owned `Config` lets call sites
+    /// use `self.config().ef_search` and `self.config().references` via
+    /// auto-deref.
     pub(super) fn config(&self) -> cqs::config::Config {
         let needs_reload = match self.config.borrow().as_ref() {
             Some(c) => c.loaded_at.elapsed() >= CONFIG_RELOAD_INTERVAL,
@@ -1341,18 +1292,18 @@ impl BatchContext {
             .clone()
     }
 
-    /// Get or create the reranker (cached for session). (RM-18)
+    /// Get or create the reranker (cached for session).
     ///
-    /// EX-V1.30.1-8 (#1220): returns the trait object so callers don't
-    /// pin to `OnnxReranker` — a future `--reranker` flag can swap impls
-    /// at construction time without touching the consumer.
+    /// Returns the trait object so callers don't pin to `OnnxReranker` — a
+    /// `--reranker` flag can swap impls at construction time without touching
+    /// the consumer.
     pub(super) fn reranker(&self) -> Result<Arc<dyn cqs::Reranker>> {
         if let Some(r) = self.reranker.get() {
             return Ok(Arc::clone(r));
         }
         let _span = tracing::info_span!("batch_reranker_init").entered();
-        // P1.7: thread the `[reranker]` config section so .cqs.toml preset/
-        // model_path is honoured instead of silently defaulting to ms-marco.
+        // Thread the `[reranker]` config section so .cqs.toml preset/model_path
+        // is honoured instead of silently defaulting to ms-marco.
         let config = self.config();
         let r: Arc<dyn cqs::Reranker> = Arc::new(
             cqs::OnnxReranker::with_section(config.reranker.clone())
@@ -1362,28 +1313,27 @@ impl BatchContext {
         Ok(r)
     }
 
-    /// #1127: take the BatchContext store mutex briefly, clone the inner Arc,
-    /// drop the lock. Lower-level than [`Self::store`] — does NOT run the
-    /// staleness check; callers that need staleness should call `store()`
-    /// instead. Used by the BatchContext-internal accessors that have
-    /// already passed through `check_index_staleness` upstream (e.g.
-    /// `vector_index`, `call_graph`, `test_chunks`).
+    /// Take the BatchContext store mutex briefly, clone the inner Arc, drop the
+    /// lock. Lower-level than [`Self::store`] — does NOT run the staleness
+    /// check; callers that need staleness should call `store()` instead. Used
+    /// by the BatchContext-internal accessors that have already passed through
+    /// `check_index_staleness` upstream (e.g. `vector_index`, `call_graph`,
+    /// `test_chunks`).
     fn store_arc_locked(&self) -> Arc<Store<ReadOnly>> {
         let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
         Arc::clone(&guard)
     }
 
-    /// #1127: build a `BatchView` from a `&self` borrow. Used by stdin batch
+    /// Build a `BatchView` from a `&self` borrow. Used by stdin batch
     /// (single-threaded) and by [`checkout_view`] after the outer Mutex is
-    /// taken. Stdin batch passes `outer_lock=None` because there is no
-    /// shared `Arc<Mutex<BatchContext>>` to back-channel through; the
-    /// `Refresh` handler in that path can call `BatchContext::invalidate`
-    /// directly through the BatchContext that owns the dispatch.
+    /// taken. Stdin batch passes `outer_lock=None` because there is no shared
+    /// `Arc<Mutex<BatchContext>>` to back-channel through; the `Refresh`
+    /// handler in that path can call `BatchContext::invalidate` directly
+    /// through the BatchContext that owns the dispatch.
     pub(crate) fn build_view(&self, outer_lock: Option<Arc<Mutex<BatchContext>>>) -> BatchView {
         // Run staleness check once at snapshot time so the view sees the
-        // current store generation. Subsequent queries that need fresh
-        // data after a mid-flight reindex will pick it up on their next
-        // checkout_view (matches today's behavior).
+        // current store generation. Subsequent queries that need fresh data
+        // after a mid-flight reindex pick it up on their next checkout_view.
         self.check_index_staleness();
         let store = {
             let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
@@ -1433,9 +1383,9 @@ impl BatchContext {
     }
 }
 
-/// #1127: produce a `BatchView` from an `Arc<Mutex<BatchContext>>`. Lock
-/// the mutex briefly, snapshot the Arcs, drop the guard. The view carries
-/// the `Arc<Mutex<BatchContext>>` as a back-channel for `Refresh`.
+/// Produce a `BatchView` from an `Arc<Mutex<BatchContext>>`. Lock the mutex
+/// briefly, snapshot the Arcs, drop the guard. The view carries the
+/// `Arc<Mutex<BatchContext>>` as a back-channel for `Refresh`.
 ///
 /// Free function (not an inherent method) because Rust does not yet allow
 /// `self: &Arc<Mutex<Self>>` in stable.
@@ -1450,7 +1400,7 @@ pub(crate) fn checkout_view_from_arc(ctx: &Arc<Mutex<BatchContext>>) -> BatchVie
     guard.build_view(Some(Arc::clone(ctx)))
 }
 
-/// #1127: handler-routing layer that operates on a [`BatchView`] snapshot.
+/// Handler-routing layer that operates on a [`BatchView`] snapshot.
 ///
 /// This is the inner half of the dispatch split. The outer half
 /// ([`BatchContext::dispatch_parsed_tokens`] for stdin batch and the daemon
@@ -1489,7 +1439,7 @@ pub(crate) fn dispatch_via_view(
         .chain(args.iter().cloned())
         .collect();
 
-    // D.2 / RT-INJ-2: NUL byte rejection — same contract as the stdin loop.
+    // NUL byte rejection — same contract as the stdin loop.
     if let Err(msg) = reject_null_tokens(&tokens) {
         view.error_count.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
@@ -1549,7 +1499,7 @@ pub(crate) fn dispatch_via_view(
     }
 }
 
-/// #1127: shared helper for `BatchContext::get_ref` and `BatchView::get_ref`.
+/// Shared helper for `BatchContext::get_ref` and `BatchView::get_ref`.
 /// Operates directly on the LRU mutex so both paths see the same cache.
 fn get_ref_via_refs_lru(
     refs: &Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>,
@@ -1572,7 +1522,7 @@ fn get_ref_via_refs_lru(
         }
     }
 
-    // Filter to just the target reference instead of loading all (RM-16)
+    // Filter to just the target reference instead of loading all.
     let single: Vec<_> = config
         .references
         .iter()
@@ -1599,8 +1549,8 @@ fn get_ref_via_refs_lru(
     Ok(())
 }
 
-/// #1127: shared helper for `BatchContext::get_all_refs` and the equivalent
-/// on `BatchView`. Walks the configured references, partitions hits/misses
+/// Shared helper for `BatchContext::get_all_refs` and the equivalent on
+/// `BatchView`. Walks the configured references, partitions hits/misses
 /// against the LRU under one lock, then loads misses outside the lock and
 /// re-acquires briefly to stash them.
 fn get_all_refs_via_refs_lru(
@@ -1653,19 +1603,18 @@ fn get_all_refs_via_refs_lru(
 
 // ─── BatchView ──────────────────────────────────────────────────────────────
 //
-// #1127: snapshot of the BatchContext fields a daemon-dispatchable handler
-// needs. Built by `BatchContext::checkout_view` (or `build_view` for stdin
-// batch) under a brief critical section, then handed to handlers running
-// outside the BatchContext lock. The view owns Arc clones — no borrows
-// into BatchContext — so it is `Send` and survives lock release.
+// Snapshot of the BatchContext fields a daemon-dispatchable handler needs.
+// Built by `BatchContext::checkout_view` (or `build_view` for stdin batch)
+// under a brief critical section, then handed to handlers running outside the
+// BatchContext lock. The view owns Arc clones — no borrows into BatchContext —
+// so it is `Send` and survives lock release.
 //
 // Two reasons this is the right shape (vs `RwLock<BatchContext>`):
 //
 //   1. `BatchContext: !Sync` because of its `RefCell`/`Cell` interior; the
 //      single-threaded "stable cache" pattern is correct for everything
-//      except the store / refs LRU. Converting all 12+ cells to RwLock is
-//      a much bigger refactor than #1127 implies (see design brief
-//      `docs/design/1126-1127-lock-topology.md`).
+//      except the store / refs LRU. Converting all 12+ cells to RwLock would
+//      be a much bigger refactor.
 //   2. The brief mutex hold is essentially free even under contention, while
 //      RwLock readers still have to acquire reader-state atomically per
 //      query. The snapshot pattern collapses both concerns into one short
@@ -1706,7 +1655,7 @@ pub(crate) struct BatchView {
     /// Shared refs LRU.
     refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
     /// Cheap clones at checkout. A reload mid-flight returns stale data for
-    /// the in-flight query — matches today's daemon behavior.
+    /// the in-flight query.
     config: cqs::config::Config,
     audit_state: cqs::audit::AuditMode,
     pub model_config: cqs::embedder::ModelConfig,
@@ -1723,21 +1672,20 @@ pub(crate) struct BatchView {
     /// `Some` for daemon connections, where `dispatch_refresh` re-acquires
     /// the mutex briefly to call `invalidate`.
     outer_lock: Option<Arc<Mutex<BatchContext>>>,
-    /// #1182: shared snapshot of watch-loop freshness state. Cloned from
-    /// `BatchContext::watch_snapshot` at view checkout — the Arc itself
-    /// is shared with the watch loop, so a `dispatch_status` handler
-    /// reads the *current* snapshot the loop most recently published, not
-    /// a stale one from the moment the view was built.
+    /// Shared snapshot of watch-loop freshness state. Cloned from
+    /// `BatchContext::watch_snapshot` at view checkout — the Arc itself is
+    /// shared with the watch loop, so a `dispatch_status` handler reads the
+    /// *current* snapshot the loop most recently published, not a stale one
+    /// from the moment the view was built.
     watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
-    /// #1182 — Layer 1: shared one-shot reconcile signal. Cloned the
-    /// same way as `watch_snapshot`. `dispatch_reconcile` flips this to
-    /// `true` on the daemon's behalf; the watch loop swaps it back to
-    /// `false` and runs an immediate reconcile pass.
+    /// Shared one-shot reconcile signal. Cloned the same way as
+    /// `watch_snapshot`. `dispatch_reconcile` flips this to `true` on the
+    /// daemon's behalf; the watch loop swaps it back to `false` and runs an
+    /// immediate reconcile pass.
     reconcile_signal: cqs::watch_status::SharedReconcileSignal,
-    /// #1228 (RM-2): shared event-driven freshness notifier. Cloned
-    /// the same way; `dispatch_wait_fresh` parks on this until the
-    /// watch loop publishes a Fresh transition or the caller's deadline
-    /// runs out.
+    /// Shared event-driven freshness notifier. Cloned the same way;
+    /// `dispatch_wait_fresh` parks on this until the watch loop publishes a
+    /// Fresh transition or the caller's deadline runs out.
     fresh_notifier: cqs::watch_status::SharedFreshNotifier,
 }
 
@@ -1924,9 +1872,8 @@ impl BatchView {
             return Arc::clone(notes);
         }
         // Snapshot was empty at checkout — load once from disk into a fresh
-        // Arc; we don't write back into the BatchContext cache because
-        // the next `checkout_view` after a real reindex will re-stat
-        // notes.toml anyway.
+        // Arc; we don't write back into the BatchContext cache because the next
+        // `checkout_view` after a real reindex will re-stat notes.toml anyway.
         let notes_path = self.root.join("docs/notes.toml");
         let notes = if notes_path.exists() {
             cqs::note::parse_notes(&notes_path).unwrap_or_else(|e| {
@@ -1983,7 +1930,7 @@ impl BatchView {
         cache.get(name).map(Arc::clone)
     }
 
-    /// #1182: take a deep clone of the latest [`cqs::watch_status::WatchSnapshot`]
+    /// Take a deep clone of the latest [`cqs::watch_status::WatchSnapshot`]
     /// the watch loop published. Reads through the shared `Arc<RwLock<...>>`,
     /// holding the read guard only long enough to clone the small struct out.
     /// Outside `cqs watch --serve` (e.g. one-shot `cqs batch`) returns the
@@ -1996,10 +1943,10 @@ impl BatchView {
             .unwrap_or_else(|p| (*p.into_inner()).clone())
     }
 
-    /// #1182 — Layer 1: flip the shared one-shot reconcile flag. Returns
-    /// `true` if the flag was already pending (caller can dedupe in
-    /// log lines), `false` if this call set it. Either way the watch
-    /// loop will run the reconcile on its next 100 ms tick.
+    /// Flip the shared one-shot reconcile flag. Returns `true` if the flag was
+    /// already pending (caller can dedupe in log lines), `false` if this call
+    /// set it. Either way the watch loop runs the reconcile on its next 100 ms
+    /// tick.
     ///
     /// `Release` ordering is enough: the watch loop's matching `swap` uses
     /// `AcqRel`, so any state the daemon thread published before flipping
@@ -2009,19 +1956,18 @@ impl BatchView {
             .swap(true, std::sync::atomic::Ordering::Release)
     }
 
-    /// #1228 (RM-2): borrow the shared freshness notifier so a
-    /// `wait_fresh` handler can park on it. Returns the `Arc` clone
-    /// so the daemon thread can call `wait_until_fresh` without
-    /// holding the BatchContext mutex (the wait can be minutes).
+    /// Borrow the shared freshness notifier so a `wait_fresh` handler can park
+    /// on it. Returns the `Arc` clone so the daemon thread can call
+    /// `wait_until_fresh` without holding the BatchContext mutex (the wait can
+    /// be minutes).
     pub fn fresh_notifier(&self) -> cqs::watch_status::SharedFreshNotifier {
         Arc::clone(&self.fresh_notifier)
     }
 
-    /// #1228 (RM-2): test-only helpers used by `dispatch_wait_fresh`'s
-    /// unit suite to seed the shared snapshot. Production code reaches
-    /// the snapshot through the watch loop's `publish_watch_snapshot`,
-    /// not these accessors. `pub(crate)` keeps the test wiring out of
-    /// the public API.
+    /// Test-only helpers used by `dispatch_wait_fresh`'s unit suite to seed the
+    /// shared snapshot. Production code reaches the snapshot through the watch
+    /// loop's `publish_watch_snapshot`, not these accessors. `pub(crate)` keeps
+    /// the test wiring out of the public API.
     #[cfg(test)]
     pub(crate) fn test_overwrite_watch_snapshot(&self, snap: cqs::watch_status::WatchSnapshot) {
         let mut guard = self
@@ -2040,10 +1986,10 @@ impl BatchView {
     /// Mirrors `BatchContext::ping_snapshot` but reads through the shared
     /// Arc handles in the view.
     pub fn ping_snapshot(&self) -> cqs::daemon_translate::PingResponse {
-        // RB-3: surface overflow as None (treated same as "missing mtime")
-        // instead of silently wrapping past `i64::MAX`. Different shape from
+        // Surface overflow as None (treated same as "missing mtime") instead
+        // of silently wrapping past `i64::MAX`. Different shape from
         // `unix_secs_i64()` — reads file mtime, not wall-clock.
-        // DS-V1.38-3 (#1463): slot-aware index resolution.
+        // Slot-aware index resolution.
         let last_indexed_at = std::fs::metadata(cqs::resolve_index_db(&self.cqs_dir))
             .ok()
             .and_then(|m| m.modified().ok())
@@ -2094,22 +2040,20 @@ fn build_vector_index<Mode: cqs::store::ClearHnswDirty>(
     crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
 }
 
-/// RM-V1.25-5: Evict the embeddings cache at `cache_path` if it exceeds its
-/// size cap.
+/// Evict the embeddings cache at `cache_path` if it exceeds its size cap.
 ///
 /// `EmbeddingCache::evict` is a no-op below `CQS_CACHE_MAX_SIZE` (default
 /// 10GB), so it's cheap to call. Opens the cache (WAL-mode SQLite, one
-/// connection), runs the eviction, then drops. Used by the daemon
-/// startup and the watch reindex path to keep the shared cache bounded
-/// even when the user never runs a full `cqs index`.
+/// connection), runs the eviction, then drops. Used by the daemon startup and
+/// the watch reindex path to keep the shared cache bounded even when the user
+/// never runs a full `cqs index`.
 ///
-/// Spec §Cache: callers resolve `cache_path` to
-/// `<project>/.cqs/embeddings_cache.db` rather than the legacy global.
+/// Callers resolve `cache_path` to `<project>/.cqs/embeddings_cache.db`.
 ///
-/// #968: takes an optional shared runtime so the daemon's one
-/// multi-thread pool drives this open instead of spinning up a fresh
-/// `current_thread` runtime. Pass `None` to fall back to the per-open
-/// runtime constructor (used by non-daemon callers like `cqs index`).
+/// Takes an optional shared runtime so the daemon's one multi-thread pool
+/// drives this open instead of spinning up a fresh `current_thread` runtime.
+/// Pass `None` to fall back to the per-open runtime constructor (used by
+/// non-daemon callers like `cqs index`).
 pub(crate) fn evict_embeddings_cache_with_runtime(
     cache_path: &std::path::Path,
     trigger: &str,
@@ -2149,14 +2093,13 @@ pub(crate) fn evict_embeddings_cache_with_runtime(
         }
     }
 
-    // P3 #124: same daemon tick also evicts the persistent QueryCache. The
-    // QueryCache is per-user disk-resident and grew unbounded before the
-    // 100 MB default cap landed; one shared tick keeps both caches honest
-    // without a second timer.
+    // Same daemon tick also evicts the persistent QueryCache. The QueryCache
+    // is per-user disk-resident, capped at 100 MB; one shared tick keeps both
+    // caches honest without a second timer.
     let q_path = cqs::cache::QueryCache::default_path();
     if q_path.exists() {
-        // RM-V1.29-2: reuse the shared daemon runtime instead of spinning up a
-        // fresh `current_thread` runtime every eviction tick.
+        // Reuse the shared daemon runtime instead of spinning up a fresh
+        // `current_thread` runtime every eviction tick.
         match cqs::cache::QueryCache::open_with_runtime(&q_path, runtime) {
             Ok(qc) => match qc.evict() {
                 Ok(n) if n > 0 => {
@@ -2185,7 +2128,7 @@ pub(crate) fn evict_embeddings_cache_with_runtime(
 
 // `sanitize_json_floats` lives in `crate::cli::json_envelope` so all
 // JSON-emitting surfaces (CLI `emit_json`, batch `write_json_line`, chat REPL)
-// share one definition and one retry pattern. D.1 audit fix.
+// share one definition and one retry pattern.
 use crate::cli::json_envelope::sanitize_json_floats;
 
 /// Wrap a payload in the standard envelope and serialize to a JSONL record on
@@ -2197,15 +2140,15 @@ use crate::cli::json_envelope::sanitize_json_floats;
 /// version}` so every batch / daemon-socket line shares one shape. See
 /// [`crate::cli::json_envelope`].
 ///
-/// P2 #28: streams the envelope directly to `out` via a `Vec<u8>` buffer
-/// + `serde_json::to_writer` instead of allocating a full intermediate
-/// `serde_json::Value` for the wrap. Steady-state hot path is now
-/// `to_writer(payload)` (no payload clone) plus three small literal writes
-/// for the `{"data":..."error":null,"version":N}` shell. The retry-on-NaN
-/// path falls back to the legacy `wrap_value` + sanitize pattern with one
-/// clone — that's a rare failure mode (typed serde struct emitting NaN),
-/// so the clone stays bounded to the recovery path. Saves multi-MB of
-/// allocator churn per dispatched daemon query at scale.
+/// Streams the envelope directly to `out` via a `Vec<u8>` buffer +
+/// `serde_json::to_writer` instead of allocating a full intermediate
+/// `serde_json::Value` for the wrap. Steady-state hot path is
+/// `to_writer(payload)` (no payload clone) plus three small literal writes for
+/// the `{"data":..."error":null,"version":N}` shell. The retry-on-NaN path
+/// falls back to a `wrap_value` + sanitize pattern with one clone — a rare
+/// failure mode (typed serde struct emitting NaN), so the clone stays bounded
+/// to the recovery path. Saves multi-MB of allocator churn per dispatched
+/// daemon query at scale.
 fn write_json_line(
     out: &mut impl std::io::Write,
     value: &serde_json::Value,
@@ -2218,11 +2161,11 @@ fn write_json_line(
     // The envelope is opened by hand and the payload is streamed via
     // `to_writer` — no intermediate `Value` allocation.
     //
-    // **SNR Phase 3:** under [`Posture::Friendly`], drop `error: null`
-    // and `version` (always-redundant on the success path) and skip
-    // `_meta` when empty — the hot-path `meta_json_fragment_for_posture`
-    // returns "" in that case so the splice is a no-op. Under
-    // [`Posture::Adversarial`], emit the verbose envelope unchanged.
+    // Under [`Posture::Friendly`], drop `error: null` and `version`
+    // (always-redundant on the success path) and skip `_meta` when empty —
+    // the hot-path `meta_json_fragment_for_posture` returns "" in that case
+    // so the splice is a no-op. Under [`Posture::Adversarial`], emit the
+    // verbose envelope unchanged.
     use cqs::posture::Posture;
     let posture = Posture::current();
     let mut buf: Vec<u8> = Vec::with_capacity(256);
@@ -2252,11 +2195,11 @@ fn write_json_line(
             // and-retry path that the CLI / chat surfaces share.
             // Mirrors `format_envelope_to_string`'s recovery semantics.
             //
-            // EH-V1.38-9 (#1463): preserve the first error. NaN is the
-            // typical cause but `to_writer` can also fail on a downstream
-            // `io::Write` error (broken socket, full disk) or on serde
-            // custom Serialize errors — a sanitize-retry doesn't fix
-            // those, and the operator needs the first error to diagnose.
+            // Preserve the first error. NaN is the typical cause but
+            // `to_writer` can also fail on a downstream `io::Write` error
+            // (broken socket, full disk) or on serde custom Serialize errors —
+            // a sanitize-retry doesn't fix those, and the operator needs the
+            // first error to diagnose.
             tracing::debug!(
                 error = %first,
                 "to_writer failed; retrying after float-sanitize"
@@ -2303,15 +2246,13 @@ fn write_envelope_error(
     }
 }
 
-/// RT-INJ-2: Reject token sequences containing NUL bytes. Returns the
-/// canonical error string (caller passes to [`write_envelope_error`] with
+/// Reject token sequences containing NUL bytes. Returns the canonical error
+/// string (caller passes to [`write_envelope_error`] with
 /// `error_codes::INVALID_INPUT`) on rejection, `Ok(())` otherwise.
 ///
-/// D.2 audit fix: the daemon socket loop (`cmd_batch` stdin path at
-/// `cmd_batch`) and the daemon socket handler (`BatchContext::dispatch_line`)
-/// share the same downstream handlers but had divergent input validation —
-/// the CLI dispatch_line path missed the NUL check. Centralizing here
-/// keeps both call sites in lock-step on the rejection contract.
+/// The daemon socket loop (`cmd_batch` stdin path) and the daemon socket
+/// handler (`BatchContext::dispatch_line`) share the same downstream handlers,
+/// so they share this NUL check to stay in lock-step on the rejection contract.
 fn reject_null_tokens(tokens: &[String]) -> Result<(), &'static str> {
     if tokens.iter().any(|t| t.contains('\0')) {
         Err("Input contains null bytes")
@@ -2329,14 +2270,13 @@ pub(crate) fn create_context() -> Result<BatchContext> {
     create_context_with_runtime(None)
 }
 
-/// #968: Variant that reuses a caller-supplied tokio runtime so the daemon
-/// (`watch_and_serve`) can build one `Arc<Runtime>` at process start and
-/// hand the same handle to both its outer read-write Store and the batch
-/// context's read-only Store. Subsequent `EmbeddingCache` / `QueryCache`
-/// opens through [`BatchContext::warm`] pick up the same runtime via
-/// [`cqs::Store::runtime`]. When `runtime` is `None`, behaves exactly as
-/// the pre-968 `create_context` and constructs its own current-thread
-/// runtime for the read-only Store.
+/// Variant that reuses a caller-supplied tokio runtime so the daemon
+/// (`watch_and_serve`) can build one `Arc<Runtime>` at process start and hand
+/// the same handle to both its outer read-write Store and the batch context's
+/// read-only Store. Subsequent `EmbeddingCache` / `QueryCache` opens through
+/// [`BatchContext::warm`] pick up the same runtime via [`cqs::Store::runtime`].
+/// When `runtime` is `None`, constructs its own current-thread runtime for the
+/// read-only Store.
 pub(crate) fn create_context_with_runtime(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<BatchContext> {
@@ -2354,21 +2294,18 @@ pub(crate) fn create_context_with_runtime(
         let (s, _root, _cqs_dir) = open_project_store_readonly()?;
         s
     };
-    // #968: cache the store's runtime Arc so subsequent re-opens and
-    // lazily-opened caches stay on the same pool.
+    // Cache the store's runtime Arc so subsequent re-opens and lazily-opened
+    // caches stay on the same pool.
     let runtime = std::sync::Arc::clone(store.runtime());
 
     // Capture initial index.db identity (inode/size/mtime on unix).
-    // DS-V1.25-6: previously this was mtime alone, which sub-second
-    // replacements on WSL NTFS could miss.
-    // DS-V1.38-3 (#1463): stat the slot-aware index path, not
-    // `cqs_dir/index.db` directly. After PR #1105 a slot-migrated
-    // project keeps the live DB at `.cqs/slots/<active>/index.db`;
-    // a literal `cqs_dir/index.db` join points at a path that
-    // doesn't exist, `from_path` returns None, and the daemon's
-    // mutable caches never invalidate when the operator runs
-    // `cqs index`. `resolve_index_db` honors slot resolution and
-    // falls back cleanly on legacy projects.
+    // Stat the slot-aware index path, not `cqs_dir/index.db` directly: a
+    // slot-migrated project keeps the live DB at
+    // `.cqs/slots/<active>/index.db`, where a literal `cqs_dir/index.db` join
+    // points at a path that doesn't exist, `from_path` returns None, and the
+    // daemon's mutable caches never invalidate when the operator runs
+    // `cqs index`. `resolve_index_db` honors slot resolution and falls back
+    // cleanly on legacy projects.
     let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db(&cqs_dir));
     if index_id.is_none() {
         tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
@@ -2390,15 +2327,12 @@ pub(crate) fn create_context_with_runtime(
     .apply_env_overrides();
 
     Ok(BatchContext {
-        // #1127: Mutex<Arc<Store>> instead of RefCell<Store> so `checkout_view`
-        // can clone the Arc out cheaply.
+        // Mutex<Arc<Store>> so `checkout_view` can clone the Arc out cheaply.
         store: Mutex::new(Arc::new(store)),
         runtime,
         embedder: Arc::new(OnceLock::new()),
-        // P2 #69: was OnceLock — see field doc.
         config: RefCell::new(None),
         reranker: Arc::new(OnceLock::new()),
-        // P2 #69: was OnceLock — see field doc.
         audit_state: RefCell::new(None),
         hnsw: RefCell::new(None),
         base_hnsw: RefCell::new(None),
@@ -2413,29 +2347,28 @@ pub(crate) fn create_context_with_runtime(
         cqs_dir,
         model_config,
         index_id: Cell::new(index_id),
-        // PF-V1.25-10: None means the first check runs unconditionally; the
-        // 100ms rate-limit kicks in only after the first successful stat.
+        // None means the first check runs unconditionally; the 100ms
+        // rate-limit kicks in only after the first successful stat.
         last_staleness_check: Cell::new(None),
         error_count: Arc::new(AtomicU64::new(0)),
         last_command_time: Cell::new(Instant::now()),
-        // Task B2: `started_at` is captured here so `uptime_secs` in the
-        // ping response measures from BatchContext creation — which is the
-        // meaningful event for the daemon (the embedder load may be later).
+        // `started_at` is captured here so `uptime_secs` in the ping response
+        // measures from BatchContext creation — the meaningful event for the
+        // daemon (the embedder load may be later).
         started_at: Instant::now(),
         query_count: Arc::new(AtomicU64::new(0)),
-        // #1182: `cmd_batch` and one-shot `create_context` callers don't run
-        // a watch loop, so the snapshot stays at `unknown` for their whole
-        // lifetime. `watch_and_serve` clones this Arc into the watch loop
-        // and overwrites it on every tick.
+        // `cmd_batch` and one-shot `create_context` callers don't run a watch
+        // loop, so the snapshot stays at `unknown` for their whole lifetime.
+        // `watch_and_serve` clones this Arc into the watch loop and overwrites
+        // it on every tick.
         watch_snapshot: cqs::watch_status::shared_unknown(),
-        // #1182 — Layer 1: same model. Outside `cqs watch --serve` no
-        // listener is plugged in, so flipping this from a stray client
-        // is harmless (the watch loop that would consume the signal
-        // simply isn't running).
+        // Outside `cqs watch --serve` no listener is plugged in, so flipping
+        // this from a stray client is harmless (the watch loop that would
+        // consume the signal simply isn't running).
         reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
-        // #1228 (RM-2): default no-op notifier. Outside `cqs watch
-        // --serve` the watch loop never calls `set_fresh`, so a stray
-        // `wait_fresh` request hits the caller's deadline naturally.
+        // Default no-op notifier. Outside `cqs watch --serve` the watch loop
+        // never calls `set_fresh`, so a stray `wait_fresh` request hits the
+        // caller's deadline naturally.
         fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
     })
 }
@@ -2445,32 +2378,28 @@ pub(crate) fn create_context_with_runtime(
 /// Visibility: `pub(in crate::cli)` under `#[cfg(test)]` so both
 /// `batch::handlers::*` tests (search.rs / dispatch_tests.rs) and
 /// `cli::watch` adversarial tests can reuse the same fixture wiring.
-/// Previously `pub(in crate::cli::batch)` — relaxed for TC-ADV-1.29-3.
 ///
 /// The store is opened RO at the SQLite connection level via
-/// [`Store::open_readonly_after_init`] (#986) — the DB is expected to be
+/// [`Store::open_readonly_after_init`] — the DB is expected to be
 /// pre-initialized by `setup_test_store` so the closure is a no-op, but
 /// the constructor path matches production code that may need fixture setup.
 #[cfg(test)]
 pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
-    // #986: open_readonly_after_init returns Store<ReadOnly> directly —
-    // the unsafe into_readonly() type-erasure is gone.
+    // open_readonly_after_init returns Store<ReadOnly> directly.
     let store = Store::<ReadOnly>::open_readonly_after_init(&index_path, |_| Ok(()))
         .map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
     let index_id = DbFileIdentity::from_path(&index_path);
-    // #968: cache the runtime Arc so test contexts re-open on the same pool.
+    // Cache the runtime Arc so test contexts re-open on the same pool.
     let runtime = std::sync::Arc::clone(store.runtime());
 
     Ok(BatchContext {
         store: Mutex::new(Arc::new(store)),
         runtime,
         embedder: Arc::new(OnceLock::new()),
-        // P2 #69: was OnceLock — see field doc.
         config: RefCell::new(None),
         reranker: Arc::new(OnceLock::new()),
-        // P2 #69: was OnceLock — see field doc.
         audit_state: RefCell::new(None),
         hnsw: RefCell::new(None),
         base_hnsw: RefCell::new(None),
@@ -2488,20 +2417,19 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         last_staleness_check: Cell::new(None),
         error_count: Arc::new(AtomicU64::new(0)),
         last_command_time: Cell::new(Instant::now()),
-        // Task B2: same fields as production constructor — keep parity so
-        // ping-handler tests against `create_test_context` see realistic
-        // counter / uptime values.
+        // Same fields as production constructor — keep parity so ping-handler
+        // tests against `create_test_context` see realistic counter / uptime
+        // values.
         started_at: Instant::now(),
         query_count: Arc::new(AtomicU64::new(0)),
-        // #1182: tests get the same `unknown` initial snapshot. Tests that
-        // exercise the freshness API replace it via the field directly.
+        // Tests get the same `unknown` initial snapshot. Tests that exercise
+        // the freshness API replace it via the field directly.
         watch_snapshot: cqs::watch_status::shared_unknown(),
-        // #1182 — Layer 1: tests get an unwired reconcile signal too.
-        // Tests that need to assert the daemon flipped it pull the
-        // field clone before invoking dispatch.
+        // Tests get an unwired reconcile signal too. Tests that need to assert
+        // the daemon flipped it pull the field clone before invoking dispatch.
         reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
-        // #1228 (RM-2): tests get a fresh notifier; freshness-API tests
-        // pull the field clone and call `set_fresh` directly.
+        // Tests get a fresh notifier; freshness-API tests pull the field clone
+        // and call `set_fresh` directly.
         fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
     })
 }
@@ -2512,7 +2440,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
 
     let ctx = create_context()?;
     ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
-                // #1127: clone the error-count Arc out before wrapping ctx in
+                // Clone the error-count Arc out before wrapping ctx in
                 // `Arc<Mutex<...>>`. The pre-dispatch error paths (line-too-long,
                 // tokenize-fail, NUL-byte) bump it without holding the mutex.
     let error_count = Arc::clone(&ctx.error_count);
@@ -2526,13 +2454,13 @@ pub(crate) fn cmd_batch() -> Result<()> {
     let mut stdout = std::io::stdout();
     let mut reader = std::io::BufReader::new(stdin.lock());
 
-    // SEC-1: read_line allocates incrementally (8KB chunks) until newline or EOF.
+    // read_line allocates incrementally (8KB chunks) until newline or EOF.
     // A multi-GB line without newlines could OOM before the post-hoc check below.
     // Accepted risk: batch input is from a controlling process (AI agent or pipe),
     // not from untrusted network input. The post-hoc cap prevents processing, not
-    // allocation. SHL-V1.29-2: the cap matches `MAX_DIFF_BYTES` (50 MiB) so piped
-    // `--stdin` diffs that clear the CLI path aren't silently rejected by the
-    // batch/daemon path. Override via `CQS_BATCH_MAX_LINE_LEN`.
+    // allocation. The cap matches `MAX_DIFF_BYTES` (50 MiB) so piped `--stdin`
+    // diffs that clear the CLI path aren't silently rejected by the batch/daemon
+    // path. Override via `CQS_BATCH_MAX_LINE_LEN`.
     let max_line_len = crate::cli::limits::batch_max_line_len();
     let mut line = String::new();
     loop {
@@ -2607,10 +2535,9 @@ pub(crate) fn cmd_batch() -> Result<()> {
             continue;
         }
 
-        // D.2: NUL byte rejection via shared helper. Both this stdin loop
-        // and `BatchContext::dispatch_line` (daemon socket handler) share
-        // the same downstream commands and must share the same input
-        // validation. RT-INJ-2.
+        // NUL byte rejection via shared helper. Both this stdin loop and
+        // `BatchContext::dispatch_line` (daemon socket handler) share the same
+        // downstream commands and must share the same input validation.
         if let Err(msg) = reject_null_tokens(&tokens) {
             error_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
@@ -2630,10 +2557,10 @@ pub(crate) fn cmd_batch() -> Result<()> {
             continue;
         }
 
-        // #1127: build a snapshot view (briefly locks ctx, runs idle sweep
-        // and clones the snapshot Arcs). The shell loop is single-threaded
-        // so the lock is uncontended; we still go through the same path as
-        // the daemon to keep one dispatch shape across surfaces.
+        // Build a snapshot view (briefly locks ctx, runs idle sweep and clones
+        // the snapshot Arcs). The shell loop is single-threaded so the lock is
+        // uncontended; we still go through the same path as the daemon to keep
+        // one dispatch shape across surfaces.
         let view = checkout_view_from_arc(&ctx);
 
         // Refresh shortcut — same shape as the daemon path. Need to do this
@@ -2693,11 +2620,11 @@ pub(crate) fn cmd_batch() -> Result<()> {
                     }
                     Err(e) => {
                         error_count.fetch_add(1, Ordering::Relaxed);
-                        // P2 #33: redact_error walks the source chain and
-                        // emits a stable (code, message) pair instead of
-                        // echoing the raw anyhow chain. Full unredacted
-                        // chain is logged via tracing::warn! inside
-                        // redact_error for operator correlation.
+                        // redact_error walks the source chain and emits a stable
+                        // (code, message) pair instead of echoing the raw anyhow
+                        // chain. Full unredacted chain is logged via
+                        // tracing::warn! inside redact_error for operator
+                        // correlation.
                         let (code, msg) = crate::cli::json_envelope::redact_error(&e);
                         if write_envelope_error(&mut stdout, code.as_str(), &msg).is_err() {
                             break;
@@ -2821,12 +2748,11 @@ mod tests {
         );
     }
 
-    /// DS-V1.25-6: BatchContext freshness detection must catch a rename-over
-    /// replacement even if the new file's mtime happens to match the old one.
-    /// Previously the check used `SystemTime` alone, so on WSL NTFS (1-s mtime
-    /// resolution) a tight `cqs index --force` + query burst could re-use a
-    /// stale pool against the orphaned inode. The fix mixes inode + size
-    /// into the identity so the rename-over is detected immediately.
+    /// BatchContext freshness detection must catch a rename-over replacement
+    /// even if the new file's mtime happens to match the old one. On WSL NTFS
+    /// (1-s mtime resolution) a tight `cqs index --force` + query burst can
+    /// share an mtime bucket; mixing inode + size into the identity detects the
+    /// rename-over immediately.
     #[cfg(unix)]
     #[test]
     fn test_sub_second_rename_replacement_invalidates_cache() {
@@ -2878,14 +2804,13 @@ mod tests {
             "Test precondition: mtime matches — this is the sub-second race",
         );
 
-        // PF-V1.25-10 added a 100ms rate-limit on staleness checks. The setup
-        // above (create replacement Store + init + drop + rename) is faster
-        // than that on modern disks, so clear the throttle so the check runs.
+        // Staleness checks are rate-limited to 100ms. The setup above (create
+        // replacement Store + init + drop + rename) is faster than that on
+        // modern disks, so clear the throttle so the check runs.
         ctx.last_staleness_check.set(None);
 
         // The staleness check should now invalidate even though mtime is
-        // identical. Without the DS-V1.25-6 fix this would silently pass
-        // through and keep the stale cache.
+        // identical (rename-over with same mtime, new inode).
         ctx.check_index_staleness();
         assert!(
             ctx.notes_cache.borrow().is_none(),
@@ -2898,9 +2823,9 @@ mod tests {
         let (_dir, cqs_dir) = setup_test_store();
         let ctx = create_test_context(&cqs_dir).unwrap();
 
-        // P2 #69: audit_state moved from OnceLock to RefCell<Option<CachedReload>>
-        // for time-bounded reload. Populate the slot directly so the test does
-        // not depend on a real .cqs/audit-mode.json being present.
+        // audit_state is `RefCell<Option<CachedReload>>` for time-bounded
+        // reload. Populate the slot directly so the test does not depend on a
+        // real .cqs/audit-mode.json being present.
         *ctx.audit_state.borrow_mut() = Some(CachedReload {
             value: cqs::audit::AuditMode {
                 enabled: false,
@@ -2946,10 +2871,10 @@ mod tests {
         assert!(stats.is_ok(), "Store should be usable via store() accessor");
     }
 
-    // Task B2: dispatch_line bumps query_count once per non-empty line and
-    // bumps error_count when the parser rejects the input. The two are
-    // independent so a `cqs ping` reading both at once gets a consistent
-    // pair (parse-error queries are still queries).
+    // dispatch_line bumps query_count once per non-empty line and bumps
+    // error_count when the parser rejects the input. The two are independent
+    // so a `cqs ping` reading both at once gets a consistent pair (parse-error
+    // queries are still queries).
     #[test]
     fn test_dispatch_line_bumps_query_counter() {
         let (_dir, cqs_dir) = setup_test_store();
@@ -2985,17 +2910,17 @@ mod tests {
             "second call bumps to 2 regardless of dispatch outcome"
         );
 
-        // Empty / whitespace lines must NOT bump either counter — they
-        // never reached the dispatcher in pre-B2 behaviour either.
+        // Empty / whitespace lines must NOT bump either counter — they never
+        // reach the dispatcher.
         sink.clear();
         ctx.dispatch_line("", &mut sink);
         ctx.dispatch_line("   ", &mut sink);
         assert_eq!(ctx.query_count.load(Ordering::Relaxed), 2);
     }
 
-    // Task B2: ping_snapshot returns a coherent picture even on an empty
-    // BatchContext (no commands run yet, no embedder warmed). Pins the
-    // initial values so the CLI can rely on the field shape.
+    // ping_snapshot returns a coherent picture even on an empty BatchContext
+    // (no commands run yet, no embedder warmed). Pins the initial values so the
+    // CLI can rely on the field shape.
     #[test]
     fn test_ping_snapshot_initial_state() {
         let (_dir, cqs_dir) = setup_test_store();
@@ -3020,8 +2945,8 @@ mod tests {
         );
     }
 
-    // Task B2: ping_snapshot reflects counter bumps from dispatch_line
-    // — the integration that gives `cqs ping` its value.
+    // ping_snapshot reflects counter bumps from dispatch_line — the
+    // integration that gives `cqs ping` its value.
     #[test]
     fn test_ping_snapshot_reflects_counters() {
         let (_dir, cqs_dir) = setup_test_store();
@@ -3047,7 +2972,7 @@ mod tests {
         );
     }
 
-    // TC-7: sanitize_json_floats replaces NaN in nested objects
+    // sanitize_json_floats replaces NaN in nested objects
     #[test]
     fn test_sanitize_json_floats_nan_in_object() {
         let mut val = serde_json::json!({
@@ -3062,7 +2987,7 @@ mod tests {
         assert_eq!(val["name"], "foo");
     }
 
-    // TC-7: sanitize_json_floats replaces NaN in nested arrays
+    // sanitize_json_floats replaces NaN in nested arrays
     #[test]
     fn test_sanitize_json_floats_nan_in_array() {
         let mut val = serde_json::json!([1.0, f64::NAN, [f64::INFINITY, 2.0]]);
@@ -3073,7 +2998,7 @@ mod tests {
         assert_eq!(val[2][1], 2.0);
     }
 
-    // TC-7: sanitize_json_floats is no-op on clean values
+    // sanitize_json_floats is no-op on clean values
     #[test]
     fn test_sanitize_json_floats_clean_passthrough() {
         let mut val = serde_json::json!({"a": 1, "b": "text", "c": [true, null, 2.5]});
@@ -3082,11 +3007,10 @@ mod tests {
         assert_eq!(val, expected);
     }
 
-    // SNR Phase 3: write_json_line emits the slim envelope under
-    // Posture::Friendly (default deployment). The `data` payload is
-    // present; `error` and `version` keys are absent (always-redundant
-    // on the success path). Adversarial mode is covered by the
-    // adversarial wrapper tests in json_envelope.rs.
+    // write_json_line emits the slim envelope under Posture::Friendly (default
+    // deployment). The `data` payload is present; `error` and `version` keys
+    // are absent (always-redundant on the success path). Adversarial mode is
+    // covered by the adversarial wrapper tests in json_envelope.rs.
     #[test]
     fn test_write_json_line_clean() {
         let val = serde_json::json!({"name": "foo", "score": 0.95});
@@ -3106,7 +3030,7 @@ mod tests {
         );
     }
 
-    // TC-7: write_json_line sanitizes NaN via retry path and produces valid JSON.
+    // write_json_line sanitizes NaN via retry path and produces valid JSON.
     // The wrapped payload still wraps in the envelope; sanitization runs on the wrap.
     #[test]
     fn test_write_json_line_nan_retry() {
@@ -3123,8 +3047,8 @@ mod tests {
         assert_eq!(parsed["data"]["name"], "bar");
     }
 
-    // SNR Phase 3: write_json_line (Friendly slim) and the typed
-    // Envelope::ok path (always full) intentionally diverge. Pin the
+    // write_json_line (Friendly slim) and the typed Envelope::ok path
+    // (always full) intentionally diverge. Pin the
     // post-Phase-3 contract: streamed Friendly output is `{"data": ...}`
     // (no error, version, or empty _meta), and the typed full envelope
     // adds the verbose keys. Tests that need to cross-check a full
@@ -3168,10 +3092,9 @@ mod tests {
         assert!(reject_null_tokens(&tokens).is_err());
     }
 
-    // D.2: dispatch_line (daemon socket path) must reject NUL-byte tokens
-    // with the same envelope error code (`invalid_input`) as the cmd_batch
-    // stdin loop. Previously dispatch_line skipped this check entirely —
-    // the daemon socket handler would forward NUL-tainted tokens to
+    // dispatch_line (daemon socket path) must reject NUL-byte tokens with the
+    // same envelope error code (`invalid_input`) as the cmd_batch stdin loop,
+    // so the daemon socket handler doesn't forward NUL-tainted tokens to
     // commands::dispatch downstream.
     #[test]
     fn test_dispatch_line_rejects_null_byte_tokens() {
@@ -3208,8 +3131,8 @@ mod tests {
         );
     }
 
-    // P2 #51: alias for the rename suggested in the audit findings — keeps
-    // the contract grep-discoverable under the new name as well.
+    // Alias kept so the contract stays grep-discoverable under the other
+    // name as well.
     #[test]
     fn test_dispatch_line_handles_embedded_null_byte() {
         let (_dir, cqs_dir) = setup_test_store();
@@ -3244,8 +3167,8 @@ mod tests {
         );
     }
 
-    // P2 #51: shell_words::split fails on unbalanced quotes; the dispatcher
-    // must surface a parse_error envelope (no panic, no half-tokenized
+    // shell_words::split fails on unbalanced quotes; the dispatcher must
+    // surface a parse_error envelope (no panic, no half-tokenized
     // command leaking downstream).
     #[test]
     fn test_dispatch_line_handles_unbalanced_quote() {
@@ -3281,13 +3204,13 @@ mod tests {
         );
     }
 
-    // ===== TC-ADV-1.29-8: shell_words with control sequences =====
+    // ===== shell_words with control sequences =====
     //
     // `dispatch_line` runs the caller's raw line through `shell_words::split`
     // which is a POSIX-sh tokenizer, NOT a sanitizer. ANSI escape sequences,
     // BEL (0x07), and CR (0x0D) all survive tokenization and reach
-    // `dispatch_parsed_tokens`. The NUL path is already covered upstream;
-    // these pin the other control-byte classes that were previously untested.
+    // `dispatch_parsed_tokens`. The NUL path is covered upstream; these pin
+    // the other control-byte classes.
 
     /// An ANSI colour-escape sequence embedded in an argument survives
     /// tokenization and reaches the parser. What shell_words does with it
@@ -3309,8 +3232,8 @@ mod tests {
         let output = String::from_utf8(sink).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(output.trim()).expect("must produce parseable envelope");
-        // SNR Phase 3: Friendly slim shape skips `version` on success;
-        // pin "envelope produced and parseable" via the `data` key instead.
+        // Friendly slim shape skips `version` on success; pin "envelope
+        // produced and parseable" via the `data` key instead.
         assert!(
             parsed.get("data").is_some() || parsed.get("error").is_some(),
             "envelope must carry data or error, got {output}"
@@ -3374,7 +3297,7 @@ mod tests {
         );
     }
 
-    // ===== TC-HAP-1.29-10: dispatch_line happy-path envelope =====
+    // ===== dispatch_line happy-path envelope =====
     //
     // The existing dispatch_line tests pin error shapes (NUL, unbalanced
     // quote, bogus command, empty input). There was no positive test that
@@ -3396,9 +3319,9 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(output.trim())
             .unwrap_or_else(|e| panic!("ping envelope must parse as JSON ({e}): {output}"));
 
-        // SNR Phase 3 Friendly slim shape: `data` populated, no
-        // `error` / `version` keys (those only appear under
-        // CQS_ULTRASECURITY=1 or in the error envelope).
+        // Friendly slim shape: `data` populated, no `error` / `version` keys
+        // (those only appear under CQS_ULTRASECURITY=1 or in the error
+        // envelope).
         assert!(
             parsed.get("error").is_none(),
             "ping success Friendly envelope drops error key, got {output}"
@@ -3481,8 +3404,8 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("stats envelope must parse as JSON ({e}): {output}"));
 
-        // SNR Phase 3 Friendly slim shape: `data` populated, no
-        // `error` / `version` keys on success.
+        // Friendly slim shape: `data` populated, no `error` / `version` keys
+        // on success.
         assert!(
             parsed.get("error").is_none(),
             "stats success Friendly envelope drops error key, got {output}"

@@ -42,10 +42,10 @@ use anyhow::Context;
 /// Tries `python3`, `python`, `py` in order. Validates that the candidate
 /// exits cleanly with `--version` to avoid running unrelated binaries.
 ///
-/// Shared by PDF conversion and model export (PB-4).
+/// Shared by PDF conversion and model export.
 ///
-/// SEC-V1.25-10: Rejects any binary whose resolved location is in a
-/// user-writable directory (e.g. /tmp, /var/tmp, or a world-writable dir).
+/// Rejects any binary whose resolved location is in a user-writable directory
+/// (e.g. /tmp, /var/tmp, or a world-writable dir).
 /// This blocks PATH injection where an attacker drops `python3` in a
 /// writable directory earlier in PATH. Callers on systems without a
 /// suitable binary get a clear error.
@@ -140,7 +140,7 @@ fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
 
 /// Reject a resolved binary path if it is in a user-writable directory.
 ///
-/// SEC-V1.25-10 + audit P2 #35 (cross-platform):
+/// Cross-platform:
 ///   * Paths under `/tmp/`, `/var/tmp/`, the OS temp dir (`std::env::temp_dir()`),
 ///     or the user cache dir (`dirs::cache_dir()`) are rejected outright. The
 ///     comparison uses `Path::starts_with()` (component-wise) so Windows paths
@@ -358,9 +358,8 @@ static FORMAT_TABLE: &[FormatEntry] = &[
 
 /// Passthrough converter for Markdown files — reads as-is, no transformation.
 ///
-/// SHL-V1.29-10: size cap shared with `html::html_file_to_markdown` via
-/// `crate::limits::convert_file_size()` (env `CQS_CONVERT_MAX_FILE_SIZE`)
-/// instead of the prior local `MAX_FILE_SIZE = 100 MB` constant.
+/// Size cap shared with `html::html_file_to_markdown` via
+/// `crate::limits::convert_file_size()` (env `CQS_CONVERT_MAX_FILE_SIZE`).
 #[cfg(feature = "convert")]
 fn markdown_passthrough(path: &Path) -> anyhow::Result<String> {
     let _span = tracing::info_span!("markdown_passthrough", path = %path.display()).entered();
@@ -618,7 +617,7 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         }
     }
 
-    // P3 #108: env-overridable walkdir depth cap (CQS_CONVERT_MAX_WALK_DEPTH).
+    // Env-overridable walkdir depth cap (CQS_CONVERT_MAX_WALK_DEPTH).
     let max_walk_depth = crate::limits::doc_max_walk_depth();
     let mut depth_cap_hit = false;
     for entry in walkdir::WalkDir::new(dir)
@@ -636,8 +635,8 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         .filter(|e| detect_format(e.path()).is_some())
         .filter(|e| !webhelp_dirs.iter().any(|wh| e.path().starts_with(wh)))
     {
-        // P3 #108: any entry exactly at the depth cap means deeper
-        // descendants were silently dropped — surface it once.
+        // Any entry exactly at the depth cap means deeper descendants were
+        // silently dropped — surface it once.
         if entry.depth() >= max_walk_depth {
             depth_cap_hit = true;
         }
@@ -766,7 +765,7 @@ mod tests {
         );
     }
 
-    // SEC-V1.25-10: is_safe_executable_path rejects /tmp and world-writable parents.
+    // is_safe_executable_path rejects /tmp and world-writable parents.
     #[test]
     #[cfg(all(feature = "convert", unix))]
     fn is_safe_executable_path_rejects_tmp() {
@@ -805,11 +804,10 @@ mod tests {
         );
     }
 
-    /// Audit P2 #35: a binary dropped into the OS temp dir must be rejected
-    /// regardless of platform — the prior code only rejected hard-coded
-    /// `/tmp/` and `/var/tmp/`. `std::env::temp_dir()` covers the platform
-    /// convention (`%TEMP%` on Windows, `$TMPDIR` on macOS, `/tmp` on Linux),
-    /// so the test runs on every host.
+    /// A binary dropped into the OS temp dir must be rejected regardless of
+    /// platform. `std::env::temp_dir()` covers the platform convention
+    /// (`%TEMP%` on Windows, `$TMPDIR` on macOS, `/tmp` on Linux), so the test
+    /// runs on every host.
     #[test]
     fn is_safe_executable_path_rejects_runtime_temp_dir() {
         let dir = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
@@ -822,8 +820,8 @@ mod tests {
         );
     }
 
-    /// Audit P2 #35: same as above but specifically gated on Windows so the
-    /// test name pins the threat model (`%TEMP%\python.exe` PATH injection).
+    /// Same as above but gated on Windows so the test name pins the threat
+    /// model (`%TEMP%\python.exe` PATH injection).
     #[test]
     #[cfg(windows)]
     fn is_safe_executable_path_rejects_windows_temp_python() {
@@ -837,8 +835,8 @@ mod tests {
         );
     }
 
-    /// Audit P2 #35: the python-basename helper recognizes the documented
-    /// interpreter names so the Windows allowlist can be applied.
+    /// The python-basename helper recognizes the documented interpreter names
+    /// so the Windows allowlist can be applied.
     #[test]
     #[cfg(not(unix))]
     fn is_python_basename_matches_documented_names() {
@@ -866,8 +864,8 @@ mod tests {
         }
     }
 
-    /// Audit P2 #35: the Windows allowlist for python interpreters must
-    /// reject anything that doesn't live under the documented install roots.
+    /// The Windows allowlist for python interpreters must reject anything that
+    /// doesn't live under the documented install roots.
     #[test]
     #[cfg(not(unix))]
     fn is_safe_python_path_windows_allowlist() {

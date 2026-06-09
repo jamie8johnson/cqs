@@ -1,7 +1,4 @@
 //! Watch module unit tests.
-//!
-//! Lifted out of the inline `mod tests` in `mod.rs` (PR #1147) so the
-//! production code reads as a module surface rather than 60% test bench.
 
 use super::*;
 use notify::EventKind;
@@ -9,14 +6,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-// RM-V1.29-8: shared test fixtures. Previously each call to
-// `test_watch_config*` leaked a fresh `Parser` / `OnceLock` /
-// `ModelConfig` / `RwLock<None>` on the heap, which piled up across
-// the ~two dozen watch tests. Every one of these is identical across
-// calls, so we keep exactly one `&'static` copy per type. The
-// `test_watch_config_with_gitignore` helper still has to leak its
-// per-call matcher (each caller passes a distinct `Gitignore`) — but
-// the shared four fields no longer leak on every call.
+// Shared test fixtures. These four fields are identical across every
+// `test_watch_config*` call, so we keep exactly one `&'static` copy per type
+// instead of leaking a fresh heap allocation on each call. The
+// `test_watch_config_with_gitignore` helper still leaks its per-call matcher
+// (each caller passes a distinct `Gitignore`).
 static TEST_PARSER: LazyLock<CqParser> = LazyLock::new(|| CqParser::new().unwrap());
 static TEST_EMBEDDER: LazyLock<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
     LazyLock::new(std::sync::OnceLock::new);
@@ -96,10 +90,10 @@ fn test_watch_state() -> WatchState {
         incremental_count: 0,
         dropped_this_cycle: 0,
         pending_rebuild: None,
-        // PF-V1.30.1-1: throttle seed — tests that drive
-        // `publish_watch_snapshot` directly want the very first call to
-        // re-stat (the cache starts empty). Tests that don't touch the
-        // publish path don't care about these fields' specific values.
+        // Throttle seed — tests that drive `publish_watch_snapshot` directly
+        // want the very first call to re-stat (the cache starts empty). Tests
+        // that don't touch the publish path don't care about these fields'
+        // specific values.
         last_metadata_check: std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(60))
             .unwrap_or_else(std::time::Instant::now),
@@ -220,9 +214,9 @@ fn gitignore_from_lines(root: &Path, lines: &[&str]) -> ignore::gitignore::Gitig
 
 #[test]
 fn collect_events_skips_gitignore_matched_paths() {
-    // #1002: `.claude/worktrees/` is a representative pollution case
-    // from parallel-agent work. Verify that a path matched by
-    // .gitignore is skipped.
+    // `.claude/worktrees/` is a representative pollution case from
+    // parallel-agent work. Verify that a path matched by .gitignore is
+    // skipped.
     let root = PathBuf::from("/tmp/test_project");
     let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
     let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
@@ -473,7 +467,7 @@ fn build_gitignore_matcher_cqsignore_only() {
     assert!(hit, "cqsignore-only rule should match");
 }
 
-// ===== #1004 SPLADE builder / batch-size tests =====
+// ===== SPLADE builder / batch-size tests =====
 
 #[test]
 fn splade_batch_size_env_override() {
@@ -522,17 +516,15 @@ fn splade_batch_size_zero_falls_back_to_default() {
     assert_eq!(got, 32, "0 is not a valid batch size, falls back");
 }
 
-// ===== SHL-V1.36-6 — splade_batch_size_for(hidden, max_length) =====
+// ===== splade_batch_size_for(hidden, max_length) =====
 //
-// Mirrors the reranker test pattern: pin the baseline shape's batch
-// (no behavior change for ensembledistil), then verify scaling cases
-// for wider hidden / longer seq / compound / env-override.
+// Pin the baseline shape's batch, then verify scaling cases for wider
+// hidden / longer seq / compound / env-override.
 
 use super::reindex::splade_batch_size_for;
 
 /// Reference shape (hidden=768, max_length=256, the SPLADE-base /
-/// ensembledistil values) reproduces baseline 32 — existing operator
-/// setups see no change.
+/// ensembledistil values) reproduces baseline 32.
 #[test]
 fn splade_batch_size_for_baseline_returns_default() {
     let prev = std::env::var("CQS_SPLADE_BATCH").ok();
@@ -633,8 +625,8 @@ fn build_splade_encoder_env_kill_switch_returns_none() {
 
 #[test]
 fn splade_origin_key_normalizes_backslashes() {
-    // PB-V1.29-2 regression. `encode_splade_for_changed_files` builds
-    // the DB lookup key via `cqs::normalize_path(file)`. A `PathBuf`
+    // `encode_splade_for_changed_files` builds the DB lookup key via
+    // `cqs::normalize_path(file)`. A `PathBuf`
     // carrying backslashes (as any Windows-canonicalized path does)
     // must normalize to the forward-slash form stored at ingest, or
     // `get_chunks_by_origin` returns Ok(vec![]) and SPLADE silently
@@ -758,10 +750,9 @@ fn collect_events_skips_unchanged_mtime() {
 
 // ===== last_indexed_mtime prune tests =====
 
-/// #969: recency prune drops entries older than `LAST_INDEXED_PRUNE_AGE_SECS`,
+/// Recency prune drops entries older than `LAST_INDEXED_PRUNE_AGE_SECS`,
 /// keeps fresh entries, and only triggers once the map exceeds
-/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT`. This replaces the old per-entry
-/// `Path::exists()` loop that stalled the watch thread on WSL 9P mounts.
+/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT`.
 #[test]
 fn test_last_indexed_mtime_recency_prune() {
     let now = SystemTime::now();
@@ -847,8 +838,8 @@ fn test_last_indexed_mtime_recency_prune() {
 
 #[test]
 fn prune_last_indexed_mtime_by_age_ignores_size_threshold() {
-    // RM-V1.38-7 (#1463): age-only prune fires regardless of map size,
-    // so a daemon below the threshold still ages out stale entries.
+    // Age-only prune fires regardless of map size, so a daemon below the
+    // threshold still ages out stale entries.
     let now = SystemTime::now();
     let two_days = Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS + 86_400);
     let one_minute = Duration::from_secs(60);
@@ -882,7 +873,7 @@ fn max_pending_files_is_bounded() {
     assert!(max_pending_files() <= 100_000);
 }
 
-// ===== P2 #62 trim_trailing_newline tests =====
+// ===== trim_trailing_newline tests =====
 
 #[cfg(unix)]
 #[test]
@@ -917,13 +908,13 @@ fn trim_newline_only_strips_one_lf() {
     assert_eq!(socket::trim_trailing_newline(b"hello\n\n"), b"hello\n");
 }
 
-// ===== PB-V1.29-3: chunk.id prefix-strip uses normalize_path =====
+// ===== chunk.id prefix-strip uses normalize_path =====
 
-/// Exercises the same strip-and-rewrite shape used by `reindex_files`
-/// at watch.rs :~2436 after the PB-V1.29-3 fix. The direct function
-/// isn't extracted, but the logic is small and identical — this test
-/// documents the contract so a regression back to `abs_path.display()`
-/// is caught by a targeted unit test instead of the next Windows CI run.
+/// Exercises the same strip-and-rewrite shape used by `reindex_files`. The
+/// direct function isn't extracted, but the logic is small and identical —
+/// this test documents the contract so a regression back to
+/// `abs_path.display()` is caught by a targeted unit test instead of the
+/// next Windows CI run.
 fn normalize_strip_and_rewrite(abs_path: &Path, rel_path: &Path, chunk_id: &str) -> Option<String> {
     let abs_norm = cqs::normalize_path(abs_path);
     let rel_norm = cqs::normalize_path(rel_path);
@@ -964,15 +955,14 @@ fn prefix_strip_unix_path_round_trip() {
     assert_eq!(rewritten, "src/foo.rs:42:deadbeef");
 }
 
-// ===== EH-V1.29-8: gitignore RwLock poison recovery =====
+// ===== gitignore RwLock poison recovery =====
 
 #[test]
 fn gitignore_rwlock_poison_still_yields_matcher() {
-    // Simulates the recovery arm at watch.rs :~1741 / :~1963. A writer
-    // that panics while holding the write lock leaves the inner value
-    // valid but the lock poisoned; the `match gitignore.read()` arm
-    // must recover via `poisoned.into_inner()` instead of silently
-    // dropping to "no matcher".
+    // A writer that panics while holding the write lock leaves the inner
+    // value valid but the lock poisoned; the `match gitignore.read()` arm
+    // must recover via `poisoned.into_inner()` instead of silently dropping
+    // to "no matcher".
     use std::sync::{Arc, RwLock};
 
     let matcher_builder = ignore::gitignore::GitignoreBuilder::new(std::path::Path::new("."));
@@ -990,9 +980,8 @@ fn gitignore_rwlock_poison_still_yields_matcher() {
     })
     .join();
 
-    // Post-poison: the bug was `gitignore.read().ok()` silently
-    // returning `None`. The fixed code must still yield `Some(_)` by
-    // recovering the inner value via `into_inner()`.
+    // Post-poison: the read must still yield `Some(_)` by recovering the
+    // inner value via `into_inner()`, not silently return `None`.
     let matcher_guard = match lock.read() {
         Ok(g) => Some(g),
         Err(poisoned) => Some(poisoned.into_inner()),
@@ -1007,7 +996,7 @@ fn gitignore_rwlock_poison_still_yields_matcher() {
     );
 }
 
-// ── #1090 background rebuild + atomic swap ──────────────────────────────
+// ── background rebuild + atomic swap ──────────────────────────────
 
 /// Build a tiny `Owned` HnswIndex from N synthetic vectors. Stand-in for a
 /// thread-built index in the `drain_pending_rebuild` tests below.
@@ -1063,7 +1052,7 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
     tx.send(Ok(Some(RebuildResult {
         index: new_idx,
         // No overlap between delta ids and snapshot — all replay.
-        // #1244: HashSet<u64> of (id, hash) fingerprints, not HashMap.
+        // HashSet<u64> of (id, hash) fingerprints.
         snapshot_keys: std::collections::HashSet::new(),
     })))
     .unwrap();
@@ -1102,19 +1091,19 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
 
     let idx = state.hnsw_index.expect("rebuild was swapped in");
     assert_eq!(idx.len(), 5, "3 from new_idx + 2 from delta");
-    // P4-11 follow-up: id_map is `Vec<Box<str>>`; comparing `Box<str>`
-    // against `&str` requires deref both sides via `&**id == "..."`.
+    // id_map is `Vec<Box<str>>`; comparing `Box<str>` against `&str`
+    // requires deref both sides via `&**id == "..."`.
     assert!(idx.ids().iter().any(|id| &**id == "delta_a"));
     assert!(idx.ids().iter().any(|id| &**id == "delta_b"));
     assert_eq!(state.incremental_count, 0);
     assert!(state.pending_rebuild.is_none());
 }
 
-/// P1.17 / #1124: when a chunk is re-embedded mid-rebuild, the snapshot
-/// has the OLD vector under the same id while delta has the NEW vector
-/// + new content_hash. The drain must REPLAY the delta entry so the
-/// fresh embedding lands in the swapped HNSW. The pre-fix code dedup'd
-/// by id-only and silently dropped these updates.
+/// When a chunk is re-embedded mid-rebuild, the snapshot has the OLD vector
+/// under the same id while delta has the NEW vector + new content_hash. The
+/// drain must REPLAY the delta entry so the fresh embedding lands in the
+/// swapped HNSW. Dedup is (id, content_hash)-aware, so a same-id-new-hash
+/// entry is not dropped.
 ///
 /// We can't query hnsw_rs for "give me the embedding stored under id X"
 /// (it's a graph, not a kv store) and there's no deletion API, so we
@@ -1142,7 +1131,7 @@ fn test_rebuild_window_re_embedding_replays_fresh_vector() {
         .expect("build snapshot index");
     assert_eq!(new_idx.len(), 2, "snapshot starts with 2 entries");
 
-    // #1244: HashSet<u64> of (id, hash) fingerprints, not HashMap.
+    // HashSet<u64> of (id, hash) fingerprints.
     let mut snapshot_keys = std::collections::HashSet::new();
     snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("a", "h_v1"));
     snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("z", "h_z"));
@@ -1197,11 +1186,9 @@ fn test_rebuild_window_re_embedding_replays_fresh_vector() {
         "fresh re-embedding must be replayed (snapshot 2 + 1 replay)"
     );
 
-    // Crucial assertion: searching by the FRESH embedding returns id "a".
-    // Pre-fix, the replay was skipped, so the only "a" in the index was
-    // the snapshot's axis-0 vector, and querying the axis-1 fresh vector
-    // would surface "z" or "a" with poor cosine. After the fix, the
-    // axis-1 vector is in the index under "a" with cosine ≈ 1.0.
+    // Crucial assertion: searching by the FRESH embedding returns id "a"
+    // with cosine ≈ 1.0 — the axis-1 vector is in the index under "a"
+    // because the replay landed it there.
     let hits = idx.search(&fresh_embedding, 1);
     assert!(!hits.is_empty(), "search must return at least one hit");
     let top = &hits[0];
@@ -1220,17 +1207,15 @@ fn test_rebuild_window_re_embedding_replays_fresh_vector() {
 
 #[test]
 fn drain_pending_rebuild_dedups_against_known_ids() {
-    // P1.17 / #1124: dedup is now (id, content_hash)-aware, not id-only.
-    // The rebuild thread snapshotted c0/c1/c2 with hashes h0/h1/h2.
-    // Delta replays c0 with the SAME hash h0 (true duplicate — must be
-    // skipped), c1 with the same hash h1 (skipped), and c_new with a
-    // brand-new id (must replay). c0/c1 with matching hashes would
-    // double-insert under the pre-fix code; the new dedup uses the
+    // Dedup is (id, content_hash)-aware. The rebuild thread snapshotted
+    // c0/c1/c2 with hashes h0/h1/h2. Delta replays c0 with the SAME hash h0
+    // (true duplicate — must be skipped), c1 with the same hash h1 (skipped),
+    // and c_new with a brand-new id (must replay). The dedup uses the
     // snapshot hashes the rebuild produced.
     let dim = 4;
     let new_idx = synthetic_owned_index(3, dim); // ids: c0, c1, c2
 
-    // #1244: HashSet<u64> of (id, hash) fingerprints, not HashMap.
+    // HashSet<u64> of (id, hash) fingerprints.
     let mut snapshot_keys = std::collections::HashSet::new();
     snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("c0", "h0"));
     snapshot_keys.insert(crate::cli::commands::snapshot_fingerprint("c1", "h1"));
@@ -1288,7 +1273,7 @@ fn drain_pending_rebuild_dedups_against_known_ids() {
         4,
         "3 from new_idx + 1 genuinely-new delta entry — same-hash duplicates skipped"
     );
-    // P4-11 follow-up: id_map is `Vec<Box<str>>`; deref both sides.
+    // id_map is `Vec<Box<str>>`; deref both sides.
     assert!(idx.ids().iter().any(|id| &**id == "c_new"));
 }
 
@@ -1322,10 +1307,9 @@ fn drain_pending_rebuild_clears_pending_on_thread_error() {
     assert!(state.hnsw_index.is_none());
 }
 
-// P2.29: spawn_hnsw_rebuild adversarial coverage — the original
-// production code shipped without tests for the dim-mismatch and
-// store-open-fail paths even though both are realistic failure modes
-// (model-swap mid-flight, slot dir deleted under the daemon).
+// spawn_hnsw_rebuild adversarial coverage for the dim-mismatch and
+// store-open-fail paths — both realistic failure modes (model-swap
+// mid-flight, slot dir deleted under the daemon).
 //
 // We invoke `spawn_hnsw_rebuild` directly, then join the worker thread
 // and inspect what landed on the receive channel. The contract is:
@@ -1333,9 +1317,9 @@ fn drain_pending_rebuild_clears_pending_on_thread_error() {
 //   - missing index → channel carries Err, ditto
 // Both paths must NOT panic and must NOT leak the pending entry forever.
 
-/// P2.29: a dim mismatch between the store and the caller's
-/// `expected_dim` must surface as `Err` on the channel, not a panic.
-/// The on-disk store is dim=4; we ask for dim=8.
+/// A dim mismatch between the store and the caller's `expected_dim` must
+/// surface as `Err` on the channel, not a panic. The on-disk store is
+/// dim=4; we ask for dim=8.
 #[test]
 fn spawn_hnsw_rebuild_dim_mismatch_returns_error_outcome() {
     let dim = 4;
@@ -1368,10 +1352,10 @@ fn spawn_hnsw_rebuild_dim_mismatch_returns_error_outcome() {
     }
 }
 
-/// P2.29: pointing at a non-existent index path (e.g. slot dir
-/// removed mid-flight) must surface as `Err` on the channel — never
-/// panic, never hang. `Store::open_readonly_pooled` returns an Err
-/// immediately and the closure propagates it via `?`.
+/// Pointing at a non-existent index path (e.g. slot dir removed mid-flight)
+/// must surface as `Err` on the channel — never panic, never hang.
+/// `Store::open_readonly_pooled` returns an Err immediately and the closure
+/// propagates it via `?`.
 #[test]
 fn spawn_hnsw_rebuild_missing_index_path_returns_error_outcome() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1392,12 +1376,11 @@ fn spawn_hnsw_rebuild_missing_index_path_returns_error_outcome() {
     }
 }
 
-/// P2.29: drain path must clear `pending_rebuild` when the worker
-/// thread reported an error. Today the rebuild thread can fail for
-/// many reasons (dim mismatch, store gone, save failure); the drain
-/// must always reset state so the next threshold trigger can retry —
-/// otherwise the pending slot leaks forever and no further rebuilds
-/// run.
+/// Drain path must clear `pending_rebuild` when the worker thread reported
+/// an error. The rebuild thread can fail for many reasons (dim mismatch,
+/// store gone, save failure); the drain must always reset state so the next
+/// threshold trigger can retry — otherwise the pending slot leaks forever
+/// and no further rebuilds run.
 #[test]
 fn drain_clears_pending_when_spawned_rebuild_errors() {
     // Drive the full spawn+drain cycle through a guaranteed-failing
@@ -1474,7 +1457,7 @@ fn drain_pending_rebuild_leaves_pending_when_still_running() {
     );
 }
 
-// ── #1129: reindex_files consults the global EmbeddingCache ─────────────
+// ── reindex_files consults the global EmbeddingCache ─────────────
 
 /// `reindex_files` must read from `global_cache` before calling the
 /// embedder. We prime the cache with a known embedding for the chunk's
@@ -1574,10 +1557,10 @@ fn test_reindex_files_hits_global_cache_skipping_embedder() {
     }
 }
 
-/// `reindex_files` with `global_cache: None` falls back to the prior
-/// store-only path. Lighter assertion: just confirm the function runs
-/// to completion and writes chunks. Pins the legacy degrade path so
-/// `CQS_CACHE_ENABLED=0` doesn't break watch.
+/// `reindex_files` with `global_cache: None` uses the store-only path.
+/// Lighter assertion: just confirm the function runs to completion and
+/// writes chunks. Pins the degrade path so `CQS_CACHE_ENABLED=0` doesn't
+/// break watch.
 #[test]
 #[ignore = "Requires loading the BGE-large model (heavy)"]
 fn test_reindex_files_no_global_cache_still_works() {
@@ -1616,10 +1599,10 @@ fn test_reindex_files_no_global_cache_still_works() {
 
 #[test]
 fn env_snapshot_redacts_api_key() {
-    // SEC-V1.30.1-8 / P1.10: CQS_LLM_API_KEY mustn't land in journald.
-    // The daemon-startup snapshot in `mod.rs` builds the same redaction
-    // logic; this test pins the redaction shape against a fixture so a
-    // regression that drops the suffix list flips this assertion.
+    // CQS_LLM_API_KEY mustn't land in journald. The daemon-startup snapshot
+    // in `mod.rs` builds the same redaction logic; this test pins the
+    // redaction shape against a fixture so a regression that drops the suffix
+    // list flips this assertion.
     const SECRET_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"];
     let pairs = vec![
         ("CQS_LLM_API_KEY".to_string(), "sk-real-secret".to_string()),
@@ -1647,15 +1630,14 @@ fn env_snapshot_redacts_api_key() {
     );
 }
 
-// ===== process_file_changes ordering tests (P1.2) =====
+// ===== process_file_changes ordering tests =====
 
-/// CQ-V1.30.1-1 / AC-V1.30.1-4 / DS-V1.30.1-D8: `dropped_this_cycle` must
-/// NOT be reset before the embedder-init check. When `try_init_embedder`
-/// early-returns (init failure or backoff), the counter must survive so
-/// the outer loop's `publish_watch_snapshot` can observe it as a Stale
-/// signal. Pre-fix, the counter was zeroed at the top of the function
-/// regardless of which path ran, so `cqs eval --require-fresh` accepted
-/// indexes whose only-witness drops had been wiped.
+/// `dropped_this_cycle` must NOT be reset before the embedder-init check.
+/// When `try_init_embedder` early-returns (init failure or backoff), the
+/// counter must survive so the outer loop's `publish_watch_snapshot` can
+/// observe it as a Stale signal. Zeroing it on every path would let
+/// `cqs eval --require-fresh` accept indexes whose only-witness drops had
+/// been wiped.
 ///
 /// We force the embedder-init early-return by recording an
 /// `EmbedderBackoff` failure (so `should_retry()` blocks for ~2 s) on a
@@ -1700,12 +1682,11 @@ fn dropped_this_cycle_survives_embedder_init_early_return() {
     assert!(state.pending_files.is_empty(), "pending_files drains first");
 }
 
-/// CQ-V1.30.1-1 ordering complement: a *successful* drain must reset
-/// `dropped_this_cycle` to 0. The reset moved to after `Ok((count, ...))`
-/// so this exercises the post-drain branch and pins the contract for
-/// future refactors. Uses `drain_test_fixture` (no embedder needed) and
-/// confirms the function reaches the success arm by passing an empty
-/// `pending_files` set after seeding the dropped counter — the function
+/// A *successful* drain must reset `dropped_this_cycle` to 0. The reset runs
+/// after `Ok((count, ...))`, so this exercises the post-drain branch and pins
+/// the contract for future refactors. Uses `drain_test_fixture` (no embedder
+/// needed) and confirms the function reaches the success arm by passing an
+/// empty `pending_files` set after seeding the dropped counter — the function
 /// processes "0 files changed" as a successful (count=0) drain.
 ///
 /// Implementation note: even with no files, `reindex_files` returns
@@ -1777,8 +1758,8 @@ fn dropped_this_cycle_resets_after_successful_drain() {
     );
 }
 
-/// TC-HAP-1.30.1-6 (#1230): empty `pending_files` plus a blocked embedder
-/// backoff is a no-op — no panic, no state mutation, no embedder init.
+/// Empty `pending_files` plus a blocked embedder backoff is a no-op — no
+/// panic, no state mutation, no embedder init.
 /// This is the smallest possible exercise of `process_file_changes` and
 /// pins the contract that the function tolerates the "nothing to do"
 /// case even when the embedder is currently unavailable. Companion to
@@ -1818,15 +1799,13 @@ fn process_file_changes_zero_files_is_noop_when_embedder_blocked() {
     );
 }
 
-// ===== EH-V1.33-8 (#1290): touch_mtime_or_warn fail-loud helper =====
+// ===== touch_mtime_or_warn fail-loud helper =====
 
-/// EH-V1.33-8 (#1290): the parse-failure mtime-touch chain previously
-/// nested four `if let Ok(...)` checks. Any one failing silently
-/// abandoned the touch, leaving `cqs status --watch-fresh` reporting
-/// fresh while the touch never landed. The helper now returns false
-/// and logs a distinct warn at each failure step. This test exercises
-/// the metadata() failure branch (most common — file was deleted between
-/// the parse attempt and the touch).
+/// The parse-failure mtime-touch chain returns false and logs a distinct
+/// warn at each failure step rather than silently abandoning the touch
+/// (which would leave `cqs status --watch-fresh` reporting fresh while the
+/// touch never landed). This test exercises the metadata() failure branch
+/// (most common — file was deleted between the parse attempt and the touch).
 #[test]
 fn touch_mtime_or_warn_returns_false_on_missing_file() {
     use super::reindex::touch_mtime_or_warn;
@@ -1844,12 +1823,11 @@ fn touch_mtime_or_warn_returns_false_on_missing_file() {
     );
 }
 
-/// EH-V1.33-8 (#1290): the success path — when the file exists, the
-/// helper must read its mtime and call `touch_source_mtime` on the
-/// store. Returns true even if no rows were affected (origin format
-/// mismatch with stored chunks would produce 0 rows but still indicate
-/// the FS chain succeeded). Pins the happy path so a future refactor
-/// that breaks the success branch is caught.
+/// The success path — when the file exists, the helper reads its mtime and
+/// calls `touch_source_mtime` on the store. Returns true even if no rows were
+/// affected (origin format mismatch with stored chunks would produce 0 rows
+/// but still indicate the FS chain succeeded). Pins the happy path so a
+/// future refactor that breaks the success branch is caught.
 #[test]
 fn touch_mtime_or_warn_returns_true_on_extant_file() {
     use super::reindex::touch_mtime_or_warn;
@@ -1870,7 +1848,7 @@ fn touch_mtime_or_warn_returns_true_on_extant_file() {
 }
 
 // ============================================================================
-// TC-HAP-V1.36-9 — daemon GC happy-path tests
+// daemon GC happy-path tests
 //
 // `run_daemon_startup_gc` and `run_daemon_periodic_gc` are pub(super) helpers
 // in `super::gc`. These tests exercise the missing-file prune branch end-to-
@@ -1901,7 +1879,7 @@ fn make_gc_test_chunk(file: &Path, name: &str, line_start: u32) -> cqs::parser::
     }
 }
 
-/// TC-HAP-V1.36-9: startup GC prunes phantom chunks for files no longer on disk.
+/// Startup GC prunes phantom chunks for files no longer on disk.
 #[test]
 fn run_daemon_startup_gc_prunes_phantom_chunks() {
     use super::gc::run_daemon_startup_gc;
@@ -1961,8 +1939,7 @@ fn run_daemon_startup_gc_prunes_phantom_chunks() {
     assert_eq!(live_chunks[0].name, "live_fn");
 }
 
-/// TC-HAP-V1.36-9: `CQS_DAEMON_STARTUP_GC=0` short-circuits the prune.
-/// Pre-fix this was an unobservable behavior — pinning it keeps the
+/// `CQS_DAEMON_STARTUP_GC=0` short-circuits the prune. Pinning it keeps the
 /// operator-visible escape hatch honest.
 #[test]
 fn run_daemon_startup_gc_disabled_by_env_keeps_phantoms() {
@@ -1999,9 +1976,9 @@ fn run_daemon_startup_gc_disabled_by_env_keeps_phantoms() {
     );
 }
 
-/// TC-HAP-V1.36-9: periodic GC also prunes missing-file chunks.
-/// The bounded version paths through `prune_missing` the same way startup
-/// does; this test pins the missing-file branch (gitignore branch is `None`).
+/// Periodic GC also prunes missing-file chunks. The bounded version paths
+/// through `prune_missing` the same way startup does; this test pins the
+/// missing-file branch (gitignore branch is `None`).
 #[test]
 fn run_daemon_periodic_gc_prunes_missing_files() {
     use super::gc::run_daemon_periodic_gc;

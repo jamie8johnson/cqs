@@ -14,9 +14,8 @@ use std::path::Path;
 /// Audit mode state - excludes notes from search/read during audits.
 ///
 /// `Clone` is derived so the daemon's `BatchContext` can return an owned
-/// snapshot of the cached state (P2 #69 — the cached reload pattern needs
-/// an owned `T` to return through the `RefCell<Option<CachedReload<T>>>`
-/// accessor).
+/// snapshot of the cached state — the cached reload pattern needs an owned
+/// `T` to return through the `RefCell<Option<CachedReload<T>>>` accessor.
 #[derive(Default, Clone)]
 pub struct AuditMode {
     pub enabled: bool,
@@ -75,10 +74,10 @@ struct AuditModeFile {
 pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
     let _span = tracing::info_span!("load_audit_state", dir = %cqs_dir.display()).entered();
     let path = cqs_dir.join("audit-mode.json");
-    // SEC-V1.33-6: cap file size before reading. `load_audit_state` runs on
-    // most CLI paths, so a `.cqs/`-write attacker could OOM cqs by planting a
-    // 1 GiB JSON file here. Real audit-mode JSON is ~80 bytes; 4 KiB is
-    // ample headroom. Mirrors the project registry's 1 MiB cap pattern.
+    // Cap file size before reading. `load_audit_state` runs on most CLI
+    // paths, so a `.cqs/`-write attacker could OOM cqs by planting a 1 GiB
+    // JSON file here. Real audit-mode JSON is ~80 bytes; 4 KiB is ample
+    // headroom. Mirrors the project registry's 1 MiB cap pattern.
     const MAX_AUDIT_MODE_SIZE: u64 = 4096;
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > MAX_AUDIT_MODE_SIZE {
@@ -137,7 +136,7 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     // Atomic write: temp file + rename
     let suffix = crate::temp_suffix();
     let tmp_path = path.with_extension(format!("json.{:016x}.tmp", suffix));
-    // SEC-1: Write with mode 0o600 from creation so file is never world-readable
+    // Write with mode 0o600 from creation so file is never world-readable
     {
         #[cfg(unix)]
         {
@@ -160,7 +159,7 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     }
 
     // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
-    // SEC-1 perms preserved: tmp was opened with mode(0o600).
+    // Perms preserved: tmp was opened with mode(0o600).
     crate::fs::atomic_replace(&tmp_path, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
         anyhow::anyhow!("Failed to persist audit-mode file: {}", e)
@@ -312,9 +311,9 @@ mod tests {
 
     #[test]
     fn test_load_oversized_file_returns_default() {
-        // SEC-V1.33-6: a `.cqs/`-write attacker who plants a giant
-        // audit-mode.json must not be able to OOM cqs. The size cap is 4 KiB;
-        // anything larger is ignored and the default (inactive) returned.
+        // A `.cqs/`-write attacker who plants a giant audit-mode.json must not
+        // be able to OOM cqs. The size cap is 4 KiB; anything larger is
+        // ignored and the default (inactive) returned.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit-mode.json");
         // 8 KiB of valid JSON-ish padding > 4 KiB cap.

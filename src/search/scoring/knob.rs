@@ -1,4 +1,4 @@
-//! Shared resolver for f32 scoring knobs (audit P2.90 — issue #1132).
+//! Shared resolver for f32 scoring knobs.
 //!
 //! Single source of truth for every scoring knob: name, env var,
 //! default, valid range, cache contract. Adding a new knob is one row
@@ -75,7 +75,7 @@ pub static SCORING_KNOBS: &[ScoringKnob] = &[
     },
     // Score-tier knobs (mirror the `ScoringConfig::DEFAULT` consts in
     // `src/search/scoring/config.rs`). Consumed via
-    // `ScoringConfig::current()` — the override path now flows from
+    // `ScoringConfig::current()` — the override path flows from
     // `[scoring]` config → `resolve_knob` → live ScoringConfig snapshot.
     ScoringKnob {
         name: "name_exact",
@@ -193,7 +193,7 @@ pub fn resolve_knob(name: &str) -> f32 {
 
 fn resolve_uncached(knob: &ScoringKnob) -> f32 {
     if let Some(&v) = CONFIG_OVERRIDES.get().and_then(|m| m.get(knob.name)) {
-        // AC-V1.33-4: match env-path validation — reject NaN/Inf and out-of-range
+        // Match env-path validation — reject NaN/Inf and out-of-range
         // before the value can flow into BM25/RRF math (`f32::clamp` propagates NaN).
         if v.is_finite() && v >= knob.min && v <= knob.max {
             return v;

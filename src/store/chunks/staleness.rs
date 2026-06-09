@@ -1,5 +1,5 @@
-// DS-5: WRITE_LOCK guard is held across .await inside block_on().
-// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+// WRITE_LOCK guard is held across .await inside block_on(). Safe because
+// block_on runs single-threaded — no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! Staleness checks and pruning for missing/stale files.
 
@@ -10,14 +10,11 @@ use crate::store::helpers::sql::max_rows_per_statement;
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::{ReadWrite, Store};
 
-/// Per-file fingerprint stored alongside each chunk for the reconcile path
-/// (issue #1219 / EX-V1.30.1-6).
+/// Per-file fingerprint stored alongside each chunk for the reconcile path.
 ///
-/// All three fields are nullable for back-compat with pre-schema-v23 rows
-/// whose `source_size` and `source_content_hash` columns are `NULL` until
-/// first re-embed populates them. `mtime` may also be `None` for legacy
-/// rows where `source_mtime` was stored as `NULL` (FS without modification
-/// time).
+/// All three fields are nullable: `source_size` and `source_content_hash`
+/// are `NULL` until first re-embed populates them. `mtime` is `None` when
+/// `source_mtime` is `NULL` (FS without modification time).
 ///
 /// Comparison policy lives in [`FingerprintPolicy`]; see [`Self::matches`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -36,7 +33,7 @@ pub struct FileFingerprint {
 /// Default for the watch-loop reconcile path is [`Self::MtimeOrHash`]: stay
 /// fast on the common case (mtime+size both match → file unchanged) but
 /// fall through to `content_hash` when mtime/size disagrees. This catches
-/// the two well-known reconcile bugs (issue #1219):
+/// two reconcile hazards:
 ///
 /// - **Content-identical-mtime-bumped.** `git checkout`, formatter passes,
 ///   and `touch` all bump mtime without changing content. A pure mtime
@@ -47,10 +44,9 @@ pub struct FileFingerprint {
 ///   collide on identical mtimes; size+hash detect the divergence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FingerprintPolicy {
-    /// Compare mtime only — pre-v23 behavior. Cheap; misses both bug
-    /// classes above. Useful for tests that explicitly want the legacy
-    /// shape and for environments where reading every divergent file is
-    /// prohibitive.
+    /// Compare mtime only. Cheap; misses both hazards above. Useful for
+    /// tests that want the mtime-only shape and for environments where
+    /// reading every divergent file is prohibitive.
     MtimeOnly,
     /// Default. mtime+size for the fast path; hash on tiebreak. Disk-side
     /// hash is only computed when mtime/size disagree, so the hot path
@@ -77,7 +73,7 @@ impl FileFingerprint {
             FingerprintPolicy::MtimeOnly => self.mtime == disk.mtime,
             FingerprintPolicy::HashOnly => {
                 // Both sides need a hash to make a strict-content decision.
-                // Pre-v23 rows have `content_hash = None`; treat as "no
+                // Rows with `content_hash = None` are treated as "no
                 // information, assume divergent" — the next reindex will
                 // populate the hash and subsequent walks will be quick.
                 match (&self.content_hash, &disk.content_hash) {
@@ -86,14 +82,13 @@ impl FileFingerprint {
                 }
             }
             FingerprintPolicy::MtimeOrHash => {
-                // Pre-v23 fallback: if the stored fingerprint has only
-                // mtime — `source_size` and `source_content_hash` were not
-                // recorded yet — fall back to mtime equality. Without this,
-                // every legacy chunk row would be classified divergent on
-                // every reconcile pass until first re-embed populated the
-                // new columns, drowning the watch queue. Once the row has
-                // a fingerprint (even one field populated), we use the
-                // strict comparison below.
+                // If the stored fingerprint has only mtime — `source_size`
+                // and `source_content_hash` are NULL — fall back to mtime
+                // equality. Without this, every such chunk row would be
+                // classified divergent on every reconcile pass until first
+                // re-embed populated the new columns, drowning the watch
+                // queue. Once the row has any fingerprint field populated,
+                // we use the strict comparison below.
                 if self.size.is_none() && self.content_hash.is_none() {
                     return self.mtime == disk.mtime;
                 }
@@ -143,12 +138,11 @@ impl FileFingerprint {
             FingerprintPolicy::MtimeOnly => false,
             FingerprintPolicy::HashOnly => true,
             FingerprintPolicy::MtimeOrHash => {
-                // Legacy row (pre-v23): stored has only mtime, so `matches`
-                // uses mtime equality — no hash needed. Skipping the hash
-                // here matters: every reconcile walk for a legacy index
-                // would otherwise BLAKE3 the entire tree on the first
-                // size-mismatch (stored=None vs disk=Some(N)) until first
-                // re-embed.
+                // Stored has only mtime, so `matches` uses mtime equality —
+                // no hash needed. Skipping the hash here matters: every
+                // reconcile walk would otherwise BLAKE3 the entire tree on
+                // the first size-mismatch (stored=None vs disk=Some(N))
+                // until first re-embed.
                 if stored.size.is_none() && stored.content_hash.is_none() {
                     false
                 } else {
@@ -157,10 +151,9 @@ impl FileFingerprint {
             }
         };
 
-        // RB-V1.36-5 / P2-7: streaming blake3 with bounded RSS. Pre-fix
-        // slurped the whole file into memory before hashing — a 5 GB SQL
-        // dump that grew between index and watch tried to fingerprint
-        // whole. Hasher::update_reader keeps the working set at ~64 KiB.
+        // Streaming blake3 with bounded RSS: Hasher::update_reader keeps the
+        // working set at ~64 KiB, so a large file (e.g. a multi-GB SQL dump)
+        // is hashed without slurping it into memory.
         let content_hash = if needs_hash {
             std::fs::File::open(path).ok().and_then(|f| {
                 let mut hasher = blake3::Hasher::new();
@@ -191,30 +184,27 @@ impl FileFingerprint {
 ///
 /// **No `exists()` fallback.** A bare `Path::exists()` probe would keep
 /// any file that is on disk regardless of whether the indexer should own
-/// it — that's how `.claude/worktrees/agent-X/...` chunks survived GC even
-/// though `enumerate_files` correctly skipped them. The fallback was
-/// originally added to compensate for a path-form mismatch (chunks store
-/// origin relative; `existing_files` may hold canonicalized absolutes).
-/// Canonicalizing both sides removes the form mismatch, which is the only
-/// reason the fallback existed.
+/// it — that's how `.claude/worktrees/agent-X/...` chunks would survive GC
+/// even though `enumerate_files` correctly skips them. Canonicalizing both
+/// sides removes the path-form mismatch that a fallback would otherwise
+/// compensate for.
 ///
-/// PF-V1.29-8: origins are stored as slash-normalized absolute paths (via
+/// Origins are stored as slash-normalized absolute paths (via
 /// `normalize_path`), while `existing_files` holds OS-native `PathBuf`s
-/// (backslashes on Windows). That form mismatch forced every origin
-/// through the slow `dunce::canonicalize` path on Windows. Callers now
-/// pre-compute a parallel `HashSet<String>` of slash-normalized entries
-/// once per prune and pass it in — the fast string hash probe always
-/// hits for real matches, and `dunce::canonicalize` only fires for true
-/// misses (e.g. stale relative origins from old schema versions).
+/// (backslashes on Windows). Callers pre-compute a parallel
+/// `HashSet<String>` of slash-normalized entries once per prune and pass
+/// it in — the fast string hash probe hits for real matches, and
+/// `dunce::canonicalize` only fires for true misses (e.g. stale relative
+/// origins).
 fn origin_exists(
     origin: &str,
     existing_files: &HashSet<PathBuf>,
     existing_normalized: Option<&HashSet<String>>,
     root: &Path,
 ) -> bool {
-    // Fast string path (PF-V1.29-8): origins and the pre-normalized set
-    // are both in slash form, so on Windows this replaces the former
-    // "miss → dunce::canonicalize(absolute)" path with a hash probe.
+    // Fast string path: origins and the pre-normalized set are both in
+    // slash form, so on Windows the common case is a hash probe rather than
+    // a dunce::canonicalize syscall.
     if let Some(set) = existing_normalized {
         if set.contains(origin) {
             return true;
@@ -222,9 +212,8 @@ fn origin_exists(
     }
 
     let origin_path = PathBuf::from(origin);
-    // Legacy cheap path: exact PathBuf match as stored. Retained as a
-    // no-cost fallback for callers that pass an already-matching HashSet
-    // without pre-normalizing.
+    // Cheap path: exact PathBuf match as stored. No-cost fallback for
+    // callers that pass an already-matching HashSet without pre-normalizing.
     if existing_files.contains(&origin_path) {
         return true;
     }
@@ -281,15 +270,14 @@ impl Store<ReadWrite> {
     ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_missing", existing = existing_files.len()).entered();
         self.rt.block_on(async {
-            // DS2-1: acquire the write transaction BEFORE reading origins.
-            // Reading outside the tx creates a TOCTOU window where a
-            // concurrent `cqs watch` upsert adds a chunk for a file between
-            // the SELECT and the DELETE. Because that file also isn't in
-            // the caller's `existing_files` snapshot (gathered before this
-            // call), our stale origin list would flag it as missing and
-            // wipe the just-added row on DELETE. Serialising the read
-            // under the write lock closes it — same fix class as P2 #32
-            // that hardened `prune_all`.
+            // Acquire the write transaction BEFORE reading origins. Reading
+            // outside the tx creates a TOCTOU window where a concurrent
+            // `cqs watch` upsert adds a chunk for a file between the SELECT
+            // and the DELETE. Because that file also isn't in the caller's
+            // `existing_files` snapshot (gathered before this call), our
+            // stale origin list would flag it as missing and wipe the
+            // just-added row on DELETE. Serialising the read under the write
+            // lock closes it.
             let (_guard, mut tx) = self.begin_write().await?;
 
             let rows: Vec<(String,)> = sqlx::query_as(
@@ -298,14 +286,10 @@ impl Store<ReadWrite> {
             .fetch_all(&mut *tx)
             .await?;
 
-            // AC / CQ-V1.25-4 / CQ-V1.25-6 / PB-V1.25-7: reconcile stored origins
-            // against current filesystem state via `origin_exists`. The previous
-            // `ends_with` heuristic retained 81% of chunks as orphans whenever a
-            // worktree or subdirectory tail-matched a root file name.
-            //
-            // PF-V1.29-8: pre-compute the slash-normalized string set once so
-            // `origin_exists` hits the cheap string path for Windows origins
-            // (which are stored with `/` while `existing_files` holds `\`).
+            // Reconcile stored origins against current filesystem state via
+            // `origin_exists`. Pre-compute the slash-normalized string set
+            // once so `origin_exists` hits the cheap string path for Windows
+            // origins (stored with `/` while `existing_files` holds `\`).
             let existing_normalized = build_normalized_set(existing_files);
             let missing: Vec<String> = rows
                 .into_iter()
@@ -349,10 +333,10 @@ impl Store<ReadWrite> {
                 let result = chunks_stmt.execute(&mut *tx).await?;
                 deleted += result.rows_affected() as u32;
 
-                // E.2 (P1 #17): `function_calls` has no FK to `chunks` (it is
-                // keyed by `file`, not chunk ID), so deleting chunks does not
-                // cascade. Without this DELETE, prune leaves orphan call-graph
-                // rows that surface as ghost callers in
+                // `function_calls` has no FK to `chunks` (it is keyed by
+                // `file`, not chunk ID), so deleting chunks does not cascade.
+                // Without this DELETE, prune leaves orphan call-graph rows
+                // that surface as ghost callers in
                 // `cqs callers`/`callees`/`dead`. Use the same chunked-IN
                 // pattern over `file` values so we stay under the SQLite
                 // parameter limit.
@@ -367,7 +351,7 @@ impl Store<ReadWrite> {
                 calls_stmt.execute(&mut *tx).await?;
             }
 
-            // DS-1/DS-6: Delete orphan sparse_vectors inside the same transaction.
+            // Delete orphan sparse_vectors inside the same transaction.
             if deleted > 0 {
                 let sparse_result = sqlx::query(
                     "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
@@ -394,17 +378,14 @@ impl Store<ReadWrite> {
     /// Run all prune operations in a single SQLite transaction.
     /// Ensures concurrent readers never see an inconsistent state where chunks
     /// are deleted but orphan call graph / type edge / summary entries remain.
-    /// Without this, the window between `prune_missing` and `prune_stale_calls`
-    /// exposes stale `function_calls` rows referencing deleted chunks.
     //
-    // P2 #32 (recovery wave): the previous Phase 1 ran the SELECT DISTINCT
-    // outside the write transaction. If `cqs watch` (which only takes
-    // `try_acquire_index_lock`) interleaved an `upsert_chunks_and_calls` call
-    // for a freshly-added file between Phase 1 and Phase 2, that file's origin
-    // was missing from `existing_files` (caller-passed snapshot) yet present in
-    // `chunks` — the Phase 2 DELETE would wipe the just-added rows. Closed by
-    // snapshotting inside the write transaction so we observe a post-watch-
-    // reindex-consistent view.
+    // The SELECT DISTINCT runs inside the write transaction. If `cqs watch`
+    // (which only takes `try_acquire_index_lock`) interleaves an
+    // `upsert_chunks_and_calls` call for a freshly-added file, that file's
+    // origin is missing from `existing_files` (caller-passed snapshot) yet
+    // present in `chunks`; snapshotting inside the write transaction so we
+    // observe a post-watch-reindex-consistent view prevents the DELETE from
+    // wiping the just-added rows.
     pub fn prune_all(
         &self,
         existing_files: &HashSet<PathBuf>,
@@ -412,16 +393,15 @@ impl Store<ReadWrite> {
     ) -> Result<PruneAllResult, StoreError> {
         let _span = tracing::info_span!("prune_all", existing = existing_files.len()).entered();
         self.rt.block_on(async {
-            // Phase 2 begins immediately: take the write lock first so the
-            // distinct-origin scan happens against the same snapshot the
-            // DELETEs will operate on (P2 #32 TOCTOU close).
+            // Take the write lock first so the distinct-origin scan happens
+            // against the same snapshot the DELETEs will operate on.
             let (_guard, mut tx) = self.begin_write().await?;
 
-            // Phase 1 (now inside the tx): identify missing origins via the
-            // tx's read snapshot. Any concurrent watch reindex that committed
-            // *before* our begin_write is reflected here; any reindex that
-            // committed *after* will be queued behind our write lock. Either
-            // way the missing-set lines up with what's actually deletable.
+            // Identify missing origins via the tx's read snapshot. Any
+            // concurrent watch reindex that committed *before* our
+            // begin_write is reflected here; any reindex that committed
+            // *after* will be queued behind our write lock. Either way the
+            // missing-set lines up with what's actually deletable.
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
@@ -429,8 +409,8 @@ impl Store<ReadWrite> {
             .await?;
 
             // Same filesystem-existence reconciliation as `prune_missing`.
-            // PF-V1.29-8: pre-compute the slash-normalized string set once
-            // so the per-origin check hits the cheap string path.
+            // Pre-compute the slash-normalized string set once so the
+            // per-origin check hits the cheap string path.
             let existing_normalized = build_normalized_set(existing_files);
             let missing: Vec<String> = rows
                 .into_iter()
@@ -495,9 +475,9 @@ impl Store<ReadWrite> {
             .await?;
             let pruned_summaries = summaries_result.rows_affected() as usize;
 
-            // 2e. DS-1/DS-6: Delete orphan sparse_vectors inside the same transaction.
-            // Previously these were pruned in a separate call after commit, leaving a
-            // window where stale sparse vectors could inflate the SPLADE index.
+            // 2e. Delete orphan sparse_vectors inside the same transaction so
+            // no window exists where stale sparse vectors inflate the SPLADE
+            // index.
             let sparse_result = sqlx::query(
                 "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
                  (SELECT id FROM chunks)",
@@ -534,9 +514,8 @@ impl Store<ReadWrite> {
     }
 
     /// Delete chunks for files whose path is now matched by a `.gitignore`
-    /// matcher. Used by the daemon's startup GC pass to clean up rows that
-    /// were indexed before v1.26.0 added gitignore-respect to `cqs watch`,
-    /// or that pre-date a `.gitignore` change.
+    /// matcher. Used by the daemon's startup GC pass to clean up rows for
+    /// paths a `.gitignore` change has since started ignoring.
     ///
     /// Walks each distinct origin in `chunks` (with `source_type='file'`),
     /// resolves it against `root` to obtain an absolute path, and asks the
@@ -558,18 +537,18 @@ impl Store<ReadWrite> {
     ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_gitignored", max_paths = ?max_paths).entered();
         self.rt.block_on(async {
-            // DS2-2: acquire the write transaction BEFORE reading origins.
-            // Same TOCTOU fix as DS2-1 / P2 #32: a concurrent `cqs watch`
-            // upsert landing between the SELECT and the DELETE creates a
-            // chunk for a path the matcher will flag as ignored; the stale
-            // origin list then points DELETE at a just-inserted row. The
-            // matcher walk below is pure CPU over the already-fetched
-            // `rows` Vec (microseconds on ~10k origins) and is safe to
-            // hold the write lock across — single writer, no re-entry.
+            // Acquire the write transaction BEFORE reading origins. A
+            // concurrent `cqs watch` upsert landing between the SELECT and
+            // the DELETE creates a chunk for a path the matcher will flag as
+            // ignored; the stale origin list would then point DELETE at a
+            // just-inserted row. The matcher walk below is pure CPU over the
+            // already-fetched `rows` Vec (microseconds on ~10k origins) and
+            // is safe to hold the write lock across — single writer, no
+            // re-entry.
             let (_guard, mut tx) = self.begin_write().await?;
 
-            // Phase 1 (now inside the tx): collect distinct origins via the
-            // tx's read snapshot so reads and deletes serialise as one unit.
+            // Collect distinct origins via the tx's read snapshot so reads
+            // and deletes serialise as one unit.
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
@@ -605,9 +584,9 @@ impl Store<ReadWrite> {
                 return Ok(0);
             }
 
-            // Phase 2: batched delete in the SAME transaction started above.
-            // Same shape as `prune_missing` so a partial prune on crash
-            // leaves the index consistent with the remaining rows in `chunks`.
+            // Batched delete in the SAME transaction started above. Same
+            // shape as `prune_missing` so a partial prune on crash leaves
+            // the index consistent with the remaining rows in `chunks`.
             const BATCH_SIZE: usize = max_rows_per_statement(1);
             let mut deleted = 0u32;
 
@@ -638,8 +617,7 @@ impl Store<ReadWrite> {
 
             // Sweep orphan sparse_vectors inside the same transaction so a
             // crash between DELETE chunks and DELETE sparse_vectors doesn't
-            // leave the SPLADE index over-counted (same fix as DS-1/DS-6 in
-            // `prune_missing`).
+            // leave the SPLADE index over-counted.
             if deleted > 0 {
                 let sparse_result = sqlx::query(
                     "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
@@ -709,8 +687,7 @@ impl<Mode> Store<Mode> {
             for (origin, stored_mtime) in rows {
                 let path = PathBuf::from(&origin);
 
-                // Filesystem existence check — same logic as prune_*. Replaces
-                // the previous macOS case-fold + set-contains special case.
+                // Filesystem existence check — same logic as prune_*.
                 if !origin_exists(&origin, existing_files, None, root) {
                     missing.push(path);
                     continue;
@@ -736,12 +713,11 @@ impl<Mode> Store<Mode> {
                 } else {
                     root.join(&path)
                 };
-                // P3 #135: previously this code threaded `metadata()` errors
-                // through `.ok()`, so a permission-denied or busy-file failure
-                // yielded `None` and the file was silently treated as fresh.
-                // Surface the failure and treat the file as stale with a
-                // sentinel `current_mtime = -1` so an operator can spot the
-                // unreadable origin in `cqs stats --json`.
+                // Surface a `metadata()` failure (permission-denied,
+                // busy-file) and treat the file as stale with a sentinel
+                // `current_mtime = -1` so an operator can spot the unreadable
+                // origin in `cqs stats --json` rather than having it silently
+                // treated as fresh.
                 let current_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
                     Ok(t) => t
                         .duration_since(std::time::UNIX_EPOCH)
@@ -781,18 +757,18 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// #1182 (Layer 2): list every indexed source-file origin paired with
-    /// its stored `source_mtime`. Returned as a map keyed by origin string
-    /// so a watch-loop reconciler can:
+    /// List every indexed source-file origin paired with its stored
+    /// `source_mtime`. Returned as a map keyed by origin string so a
+    /// watch-loop reconciler can:
     ///   1. Walk the disk → set of current files
     ///   2. Look up each disk file in this map
     ///   3. Queue for reindex when missing (added) OR `disk_mtime > stored`
     ///      (modified). Files in this map but not on disk are handled by
     ///      `prune_missing` in the existing GC pass.
     ///
-    /// `source_mtime` may be `None` (legacy rows pre-v18 schema). Treat
-    /// those as needing reindex — same posture as `list_stale_files`,
-    /// which surfaces them as stale-with-mtime=0.
+    /// `source_mtime` may be `None`. Treat those as needing reindex — same
+    /// posture as `list_stale_files`, which surfaces them as
+    /// stale-with-mtime=0.
     ///
     /// One SELECT, returns ~one row per source file. On a 17k-chunk corpus
     /// with ~3k unique source files this is sub-50 ms. Filter
@@ -801,21 +777,18 @@ impl<Mode> Store<Mode> {
     pub fn indexed_file_origins(&self) -> Result<HashMap<String, FileFingerprint>, StoreError> {
         let _span = tracing::debug_span!("indexed_file_origins").entered();
         self.rt.block_on(async {
-            // GROUP BY origin (one row per file). PF-V1.30.1-8 / #1227: the
-            // previous `SELECT DISTINCT origin, source_mtime` returned one
-            // row per *distinct (origin, mtime) pair*, which over-counted
-            // when an in-flight reindex briefly held two mtimes for the
-            // same file. `MAX(source_mtime)` deterministically picks the
-            // newer fingerprint; ties are deduped to one row per origin.
+            // GROUP BY origin (one row per file). `MAX(source_mtime)`
+            // deterministically picks the newer fingerprint when an
+            // in-flight reindex briefly holds two mtimes for the same file;
+            // ties dedupe to one row per origin.
             //
             // The fingerprint columns (`source_size`, `source_content_hash`)
-            // were added in schema v23 (#1219) and are nullable on
-            // pre-migration rows. `MAX` over a NULL column yields NULL,
-            // which `read_disk` and `matches` already treat as "no
-            // information, assume divergent" — first re-embed populates
-            // them and subsequent walks short-circuit on size match.
+            // are nullable. `MAX` over a NULL column yields NULL, which
+            // `read_disk` and `matches` treat as "no information, assume
+            // divergent" — first re-embed populates them and subsequent
+            // walks short-circuit on size match.
             // Tuple shape: (origin, mtime, size, content_hash) — all nullable
-            // except origin since v23 columns lag pre-migration rows.
+            // except origin.
             type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
             let rows: Vec<FpRow> = sqlx::query_as(
                 "SELECT origin, \
@@ -832,10 +805,10 @@ impl<Mode> Store<Mode> {
                 .into_iter()
                 .map(|(origin, mtime, size, hash)| {
                     let content_hash = hash.and_then(|bytes| {
-                        // Defensive: any pre-migration row with a non-32-byte
-                        // BLOB drops to None rather than truncating silently.
-                        // Should never happen — we only ever insert 32-byte
-                        // BLAKE3 — but the schema declares BLOB so be strict.
+                        // Defensive: any row with a non-32-byte BLOB drops to
+                        // None rather than truncating silently. Should never
+                        // happen — we only ever insert 32-byte BLAKE3 — but
+                        // the schema declares BLOB so be strict.
                         <[u8; 32]>::try_from(bytes.as_slice()).ok()
                     });
                     let fingerprint = FileFingerprint {
@@ -849,18 +822,18 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// #1229: batched per-origin fingerprint lookup. Mirror of
+    /// Batched per-origin fingerprint lookup. Mirror of
     /// [`indexed_file_origins`] but bounded by the supplied `origins`
     /// list rather than the full file table — lets `run_daemon_reconcile`
     /// stream a 1M-file walk in 1k-row batches without materializing the
-    /// whole-tree origin map (`Vec<PathBuf>` + `HashMap<String,
-    /// FileFingerprint>` was ~12 MB transient on a 100k-file repo,
-    /// scaling linearly to ~120 MB on 1M-file).
+    /// whole-tree origin map (the eager `Vec<PathBuf>` + `HashMap<String,
+    /// FileFingerprint>` is ~12 MB transient on a 100k-file repo, scaling
+    /// linearly to ~120 MB on 1M files).
     ///
     /// Same `MAX(...)` deduplication semantics as `indexed_file_origins`:
     /// if a row briefly carries two mtimes for the same origin during an
-    /// in-flight reindex (RM-17 / #1227), `MAX` picks the newer one and
-    /// dedupes to one entry per origin.
+    /// in-flight reindex, `MAX` picks the newer one and dedupes to one
+    /// entry per origin.
     ///
     /// Origins not present in the index are simply absent from the map —
     /// the caller treats those as `Added` (no stored fingerprint) just as
@@ -957,13 +930,13 @@ impl<Mode> Store<Mode> {
                         }
                     };
 
-                    // PB-17: Origins in DB always use forward slashes (via normalize_path).
+                    // Origins in DB always use forward slashes (via normalize_path).
                     debug_assert!(
                         !origin.contains('\\'),
                         "DB origin contains backslash: {origin}"
                     );
-                    // PB-23: Normalize the joined path to handle OS-native root
-                    // with forward-slash origin (e.g., `C:\proj` + `src/lib.rs`).
+                    // Normalize the joined path to handle OS-native root with
+                    // forward-slash origin (e.g., `C:\proj` + `src/lib.rs`).
                     let path = PathBuf::from(crate::normalize_path(&root.join(&origin)));
                     let current_mtime = path
                         .metadata()
@@ -1304,7 +1277,7 @@ mod tests {
         );
     }
 
-    /// #1182 (Layer 2): empty index returns empty origin map.
+    /// Empty index returns empty origin map.
     #[test]
     fn test_indexed_file_origins_empty_store() {
         let (store, _dir) = setup_store();
@@ -1312,8 +1285,8 @@ mod tests {
         assert!(map.is_empty());
     }
 
-    /// #1182 (Layer 2): inserted file chunks surface as origin → mtime
-    /// entries. Pinned mtime so the test isn't sensitive to clock.
+    /// Inserted file chunks surface as origin → mtime entries. Pinned mtime
+    /// so the test isn't sensitive to clock.
     #[test]
     fn test_indexed_file_origins_returns_origin_mtime_pairs() {
         let (store, dir) = setup_store();
@@ -1344,11 +1317,10 @@ mod tests {
         }
     }
 
-    /// #1182 (Layer 2): rows without `source_type='file'` are filtered
-    /// out. The current store schema only emits `source_type='file'` for
-    /// indexed code chunks, but the explicit WHERE clause guards against
-    /// future schemas (e.g. test fixtures or synthetic origins) leaking
-    /// into the reconcile loop.
+    /// Rows without `source_type='file'` are filtered out. The store schema
+    /// only emits `source_type='file'` for indexed code chunks, but the
+    /// explicit WHERE clause guards against test fixtures or synthetic
+    /// origins leaking into the reconcile loop.
     #[test]
     fn test_indexed_file_origins_only_returns_one_per_source_file() {
         let (store, dir) = setup_store();
@@ -1369,7 +1341,7 @@ mod tests {
         assert!(map.keys().any(|k| k.ends_with("src/main.rs")));
     }
 
-    // ===== prune_all tests (TC-HP-3) =====
+    // ===== prune_all tests =====
 
     /// Helper: build a Chunk rooted at `dir` with the given relative path.
     fn chunk_at(dir: &std::path::Path, rel: &str, name: &str) -> Chunk {
@@ -1399,8 +1371,8 @@ mod tests {
         }
     }
 
-    /// TC-HP-3 (happy path): `prune_all` removes chunks for files deleted
-    /// from disk, counts reflect the prune, remaining chunks intact.
+    /// Happy path: `prune_all` removes chunks for files deleted from disk,
+    /// counts reflect the prune, remaining chunks intact.
     #[test]
     fn test_prune_all_happy_path() {
         let (store, dir) = setup_store();
@@ -1442,11 +1414,10 @@ mod tests {
         assert_eq!(stats.total_chunks, 2);
     }
 
-    /// Regression: the old `ends_with` heuristic treated chunk origin
-    /// `cuvs-fork-push/CHANGELOG.md` as matching the root file
-    /// `CHANGELOG.md`, leaving the orphan in the DB. With the filesystem
-    /// existence check, the nested origin is correctly pruned when the
-    /// nested directory does not exist on disk.
+    /// A nested origin like `cuvs-fork-push/CHANGELOG.md` whose directory
+    /// does not exist on disk must be pruned, even though its tail matches
+    /// the root file `CHANGELOG.md`. The filesystem existence check, not a
+    /// suffix match, decides ownership.
     #[test]
     fn test_prune_all_suffix_match_regression() {
         let (store, dir) = setup_store();
@@ -1484,9 +1455,9 @@ mod tests {
         assert_eq!(stats.total_chunks, 1);
     }
 
-    /// Regression: `.claude/worktrees/agent-X/src/foo.rs` must be pruned
-    /// when only `src/foo.rs` is on disk. The suffix match retained these
-    /// as "not missing" because the worktree tail matched the real path.
+    /// `.claude/worktrees/agent-X/src/foo.rs` must be pruned when only
+    /// `src/foo.rs` is on disk, even though the worktree tail matches the
+    /// real path.
     #[test]
     fn test_prune_all_worktree_regression() {
         let (store, dir) = setup_store();
@@ -1520,16 +1491,13 @@ mod tests {
         assert_eq!(stats.total_chunks, 1);
     }
 
-    /// Regression for the production bug surfaced by the R@5 audit:
-    /// `enumerate_files` correctly skips nested git worktrees (the
-    /// directory-with-`.git`-as-file filter at `lib.rs:480-486`), so
-    /// worktree-prefixed origins do NOT appear in `existing_files`. But
-    /// the worktree files DO exist on disk while the agent runs, and the
-    /// old `origin_exists` had a `Path::exists()` fallback that returned
-    /// `true` for any extant file regardless of indexer ownership. Result:
-    /// chunks for `.claude/worktrees/agent-X/...` survived GC and polluted
-    /// search results. Fix: drop the `exists()` fallback; canonicalize on
-    /// both sides and require strict membership in `existing_files`.
+    /// `enumerate_files` skips nested git worktrees (the
+    /// directory-with-`.git`-as-file filter), so worktree-prefixed origins
+    /// do NOT appear in `existing_files`. The worktree files DO exist on
+    /// disk while the agent runs, so a `Path::exists()` fallback would
+    /// retain `.claude/worktrees/agent-X/...` chunks and pollute search
+    /// results. `origin_exists` canonicalizes both sides and requires
+    /// strict membership in `existing_files` instead.
     #[test]
     fn test_prune_all_drops_worktree_chunks_when_files_exist_on_disk() {
         let (store, dir) = setup_store();
@@ -1574,12 +1542,12 @@ mod tests {
         assert_eq!(stats.total_chunks, 1);
     }
 
-    /// TC-HP-3 gap-fill: the happy-path test above asserts
+    /// The happy-path test above asserts
     /// `pruned_calls/type_edges/summaries == 0` because nothing was inserted
-    /// into those tables. This test actually populates each of the four
-    /// cascade tables and verifies that deleting the source file propagates
-    /// through every counter. A refactor that short-circuits any of steps
-    /// 2b / 2c / 2d would survive the happy-path test — this one catches it.
+    /// into those tables. This test populates each of the four cascade tables
+    /// and verifies that deleting the source file propagates through every
+    /// counter. A refactor that short-circuits any of steps 2b / 2c / 2d
+    /// would survive the happy-path test — this one catches it.
     #[test]
     fn test_prune_all_cascade_populates_all_counters() {
         use crate::parser::{CallSite, FunctionCalls, TypeRef};
@@ -1690,8 +1658,8 @@ mod tests {
         assert_eq!(stats.total_chunks, 1);
     }
 
-    /// TC-HP-3 gap-fill: baseline "nothing to prune". When every file still
-    /// exists on disk, prune_all must return an all-zero `PruneAllResult`.
+    /// Baseline "nothing to prune". When every file still exists on disk,
+    /// prune_all must return an all-zero `PruneAllResult`.
     /// Regression guard for refactors that change the default branch to
     /// unconditionally prune orphans when there are none.
     #[test]
@@ -1720,7 +1688,7 @@ mod tests {
         assert_eq!(stats.total_chunks, 2);
     }
 
-    // ===== mtime semantics tests (issue #975) =====
+    // ===== mtime semantics tests =====
     //
     // The staleness predicate in `list_stale_files` is `current > stored`,
     // strict-greater-than. Two tests pin the boundary behaviour so any
@@ -1853,7 +1821,7 @@ mod tests {
         assert_eq!(report.total_indexed, 1);
     }
 
-    // ===== Daemon startup GC tests (#1024) =====
+    // ===== Daemon startup GC tests =====
     //
     // These four tests pin the contract for the two prune passes the
     // `cqs watch --serve` startup hook calls:
@@ -1861,9 +1829,8 @@ mod tests {
     //   1. `prune_missing` — drop chunks whose origin no longer exists on
     //      disk (e.g. file deleted while the daemon was down).
     //   2. `prune_gitignored` — drop chunks whose path is now matched by
-    //      `.gitignore` (retroactive cleanup of pre-v1.26.0 pollution
-    //      that accumulated before `cqs watch` started honoring
-    //      `.gitignore`).
+    //      `.gitignore` (cleanup of rows for paths a `.gitignore` change
+    //      has since started ignoring).
     //
     // Together they let the daemon idempotently reach the same chunk-count
     // a fresh `cqs index --force` would produce, without rebuilding from
@@ -1996,8 +1963,8 @@ mod tests {
     }
 
     /// Pass 2 — when `.gitignore` ignores `target/`, a chunk whose origin
-    /// is `target/cache.rs` must be pruned. Models the canonical
-    /// pre-v1.26.0 pollution case (worktrees, build artifacts, etc.).
+    /// is `target/cache.rs` must be pruned. Models the canonical ignored-path
+    /// case (worktrees, build artifacts, etc.).
     #[test]
     fn test_prune_gitignored_drops_chunks_in_ignored_paths() {
         let (store, dir) = setup_store();
@@ -2093,9 +2060,9 @@ mod tests {
         assert_eq!(stats.total_chunks, 1);
     }
 
-    /// TC-ADV-1.30.1-6 / #1243: `FileFingerprint::read_disk` returns
-    /// `None` when `metadata()` fails. The `reconcile.rs:188` "leave
-    /// to GC" branch is keyed on this contract: if `metadata()` errs
+    /// `FileFingerprint::read_disk` returns `None` when `metadata()` fails.
+    /// The reconcile "leave to GC" branch is keyed on this contract: if
+    /// `metadata()` errs
     /// (deleted-since-walk, permission flip on the parent dir,
     /// transient AV scan), reconcile must skip the file rather than
     /// queue it for reindex — otherwise every unreadable file would

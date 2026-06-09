@@ -32,9 +32,8 @@ fn test_allowed_hosts() -> AllowedHosts {
 }
 
 /// Build a router wired up for tests — same production config, but with
-/// the fixed test allowlist and auth disabled. Existing handler tests
-/// pre-date the auth layer (#1096) and assume routes return 200; new
-/// auth-specific tests use [`test_router_with_auth`].
+/// the fixed test allowlist and auth disabled. Handler tests assume routes
+/// return 200; auth-specific tests use [`test_router_with_auth`].
 fn test_router(state: AppState) -> axum::Router {
     build_router(
         state,
@@ -45,15 +44,14 @@ fn test_router(state: AppState) -> axum::Router {
 
 /// Build a router with auth enabled. Used by auth-specific tests that
 /// pin 401 / cookie-handoff / cross-instance-rejection behavior. The
-/// cookie port defaults to 8080 — the production default — so existing
-/// tests that pin "Set-Cookie: cqs_token_8080=..." don't have to know
-/// about #1135.
+/// cookie port defaults to 8080 — the production default — so tests that
+/// pin "Set-Cookie: cqs_token_8080=..." can stay port-agnostic.
 fn test_router_with_auth(state: AppState, token: super::AuthToken) -> axum::Router {
     test_router_with_auth_on_port(state, token, 8080)
 }
 
 /// Build a router with auth enabled on a specific cookie port. Used by
-/// the multi-instance / port-collision tests added for #1135.
+/// the multi-instance / port-collision tests.
 fn test_router_with_auth_on_port(
     state: AppState,
     token: super::AuthToken,
@@ -87,15 +85,15 @@ fn fixture_state() -> Fixture {
     Fixture {
         state: Some(AppState {
             store: Arc::new(ro),
-            // P2.76: tests use the same env-overridable cap so a future
+            // Tests use the same env-overridable cap so a
             // CQS_SERVE_BLOCKING_PERMITS regression is exercised by the
-            // existing handler-tree tests.
+            // handler-tree tests.
             blocking_permits: Arc::new(tokio::sync::Semaphore::new(
                 crate::limits::serve_blocking_permits(),
             )),
-            // #1345: idle clock is just an `Arc<AtomicU64>` — the tests
-            // exercise handler shape, not the wall-clock-driven eviction
-            // future, so any starting value is fine.
+            // Idle clock is just an `Arc<AtomicU64>` — the tests exercise
+            // handler shape, not the wall-clock-driven eviction future, so
+            // any starting value is fine.
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }),
         _dir: Some(dir),
@@ -137,9 +135,8 @@ impl Drop for Fixture {
 /// Returns a [`Fixture`] following the same drop-on-OS-thread discipline
 /// as [`fixture_state`].
 ///
-/// Used by the SEC-3 DoS-cap regression tests — needs enough rows for
-/// the `LIMIT ?` binding to actually cap, but small enough that the test
-/// runs in milliseconds.
+/// Used by the DoS-cap tests — needs enough rows for the `LIMIT ?` binding
+/// to actually cap, but small enough that the test runs in milliseconds.
 fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
     let dir = TempDir::new().expect("tempdir");
     let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
@@ -226,15 +223,15 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
     Fixture {
         state: Some(AppState {
             store: Arc::new(ro),
-            // P2.76: tests use the same env-overridable cap so a future
+            // Tests use the same env-overridable cap so a
             // CQS_SERVE_BLOCKING_PERMITS regression is exercised by the
-            // existing handler-tree tests.
+            // handler-tree tests.
             blocking_permits: Arc::new(tokio::sync::Semaphore::new(
                 crate::limits::serve_blocking_permits(),
             )),
-            // #1345: idle clock is just an `Arc<AtomicU64>` — the tests
-            // exercise handler shape, not the wall-clock-driven eviction
-            // future, so any starting value is fine.
+            // Idle clock is just an `Arc<AtomicU64>` — the tests exercise
+            // handler shape, not the wall-clock-driven eviction future, so
+            // any starting value is fine.
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }),
         _dir: Some(dir),
@@ -706,11 +703,11 @@ async fn chunk_detail_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// TC-V1.36-5 / P2-6: adversarial chunk_id path parameters. axum/tower
-/// percent-decode the path before it reaches the handler; pin behavior
-/// (404 / 400 + no panic + bounded log line) for adversarial unicode and
-/// oversized ids so a future axum upgrade or post-decode normalization
-/// surfaces here instead of in production.
+/// Adversarial chunk_id path parameters. axum/tower percent-decode the path
+/// before it reaches the handler; pin behavior (404 / 400 + no panic +
+/// bounded log line) for adversarial unicode and oversized ids so a future
+/// axum upgrade or post-decode normalization surfaces here instead of in
+/// production.
 #[tokio::test(flavor = "multi_thread")]
 async fn chunk_detail_handles_adversarial_unicode_id() {
     let fixture = fixture_state();
@@ -917,13 +914,12 @@ async fn cluster_accepts_max_nodes_filter() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ===== SEC-3: DoS-cap regression tests =====
+// ===== DoS-cap tests =====
 
-/// SEC-3: when `max_nodes` is omitted, `build_graph` must still return at
-/// most `serve_graph_max_nodes()` rows (P2.40 made this env-tunable from
-/// the formerly hardcoded `ABS_MAX_GRAPH_NODES`). On a populated corpus
-/// this is the behavior that prevents a single unauth GET `/api/graph`
-/// from materialising the full chunks table.
+/// When `max_nodes` is omitted, `build_graph` must still return at most
+/// `serve_graph_max_nodes()` rows (env-tunable). On a populated corpus this
+/// is the behavior that prevents a single unauth GET `/api/graph` from
+/// materialising the full chunks table.
 ///
 /// Cheap sanity variant: 150 chunks, verify the response matches the
 /// corpus size (150 ≤ 50k cap, so nothing is actually truncated). The
@@ -950,10 +946,10 @@ fn sec3_build_graph_applies_default_cap_when_max_nodes_omitted() {
     );
 }
 
-/// SEC-3: an attacker-chosen `max_nodes` that blows past the hard ceiling
-/// must be clamped to `serve_graph_max_nodes()`. `build_graph` translates
-/// this clamp into the SQL `LIMIT` so the over-quota value never reaches
-/// the database as-is.
+/// An attacker-chosen `max_nodes` that blows past the hard ceiling must be
+/// clamped to `serve_graph_max_nodes()`. `build_graph` translates this clamp
+/// into the SQL `LIMIT` so the over-quota value never reaches the database
+/// as-is.
 #[test]
 fn sec3_build_graph_clamps_excessive_max_nodes() {
     let fixture = populated_fixture(150, false);
@@ -979,10 +975,9 @@ fn sec3_build_graph_clamps_excessive_max_nodes() {
     );
 }
 
-/// SEC-3: a modest client-supplied `max_nodes` must still clamp the
-/// response even when the corpus is larger. Proves the effective_cap /
-/// SQL-LIMIT path works end-to-end for the legitimate UI path
-/// (`?max_nodes=50`).
+/// A modest client-supplied `max_nodes` must still clamp the response even
+/// when the corpus is larger. Proves the effective_cap / SQL-LIMIT path works
+/// end-to-end for the legitimate UI path (`?max_nodes=50`).
 #[test]
 fn sec3_build_graph_honors_client_cap_under_hard_limit() {
     let fixture = populated_fixture(150, false);
@@ -1000,10 +995,9 @@ fn sec3_build_graph_honors_client_cap_under_hard_limit() {
     );
 }
 
-/// SEC-3: same contract as `build_graph`, applied to `build_cluster`. The
-/// cluster endpoint selects from `chunks` WHERE umap_x IS NOT NULL — so
-/// the fixture pre-populates UMAP coords to keep every seeded chunk
-/// visible to the query.
+/// Same contract as `build_graph`, applied to `build_cluster`. The cluster
+/// endpoint selects from `chunks` WHERE umap_x IS NOT NULL — so the fixture
+/// pre-populates UMAP coords to keep every seeded chunk visible to the query.
 #[test]
 fn sec3_build_cluster_applies_default_cap_when_max_nodes_omitted() {
     let fixture = populated_fixture(120, true);
@@ -1025,8 +1019,8 @@ fn sec3_build_cluster_applies_default_cap_when_max_nodes_omitted() {
     );
 }
 
-/// SEC-3: an attacker-chosen `max_nodes` that blows past the hard ceiling
-/// must be clamped on the cluster endpoint too.
+/// An attacker-chosen `max_nodes` that blows past the hard ceiling must be
+/// clamped on the cluster endpoint too.
 #[test]
 fn sec3_build_cluster_clamps_excessive_max_nodes() {
     let fixture = populated_fixture(120, true);
@@ -1049,9 +1043,9 @@ fn sec3_build_cluster_clamps_excessive_max_nodes() {
     );
 }
 
-/// SEC-3: modest client-supplied cap on cluster endpoint. Drives the
-/// post-fetch Rust truncate (since the SQL limit is the default cap,
-/// not the client's 40).
+/// Modest client-supplied cap on cluster endpoint. Drives the post-fetch
+/// Rust truncate (since the SQL limit is the default cap, not the client's
+/// 40).
 #[test]
 fn sec3_build_cluster_honors_client_cap_under_hard_limit() {
     let fixture = populated_fixture(120, true);
@@ -1069,10 +1063,10 @@ fn sec3_build_cluster_honors_client_cap_under_hard_limit() {
     );
 }
 
-// TC-HAP-1.29-1: positive tests for build_graph / build_chunk_detail /
-// build_hierarchy / build_cluster against a populated store. The existing
-// SEC-3 cases only prove the cap clamps; these prove the functions return
-// expected shapes when there's actually data in the store.
+// Positive tests for build_graph / build_chunk_detail / build_hierarchy /
+// build_cluster against a populated store. The DoS-cap cases only prove the
+// cap clamps; these prove the functions return expected shapes when there's
+// actually data in the store.
 //
 // `populated_fixture(n, _)` seeds a *ring* of call edges (func_0 → func_1
 // → ... → func_{n-1} → func_0), so edge count == node count for every n.
@@ -1152,10 +1146,9 @@ fn build_chunk_detail_returns_callers_callees_tests() {
     assert_eq!(detail.tests.len(), 0, "no test chunks seeded");
 }
 
-/// TC-HAP-V1.36-1 / P3: positive test for `build_stats`. Pre-existing
-/// coverage was indirect through the `/api/stats` HTTP layer. A schema
-/// regression (column rename, count miscount) would slip through the
-/// existing fixture; this asserts the four numeric fields directly.
+/// Positive test for `build_stats`. The `/api/stats` HTTP layer covers it
+/// only indirectly; a schema regression (column rename, count miscount) would
+/// slip through that fixture. This asserts the four numeric fields directly.
 #[test]
 fn build_stats_returns_correct_counts_for_populated_store() {
     // populated_fixture(3, false) seeds 3 chunks across 1 origin file with
@@ -1277,7 +1270,7 @@ fn build_cluster_returns_chunks_with_umap_coords() {
     }
 }
 
-// SEC-1: DNS-rebinding host-header allowlist tests.
+// DNS-rebinding host-header allowlist tests.
 //
 // The attack: a page at evil.example.com (DNS-rebound to 127.0.0.1,
 // TTL 0) fetches http://evil.example.com:<port>/api/... The browser's
@@ -1417,11 +1410,10 @@ async fn host_allowlist_includes_explicit_lan_bind() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn host_allowlist_rejects_missing_host_header() {
-    // P1.12: HTTP/1.1 requires a Host header; HTTP/1.0 does not, but a
-    // no-Host request bypasses DNS-rebinding protection (the allowlist
-    // has nothing to compare against) so we treat it as malformed and
-    // 400. Test fixtures must build requests with an explicit Host
-    // header to traverse the router.
+    // HTTP/1.1 requires a Host header; HTTP/1.0 does not, but a no-Host
+    // request bypasses DNS-rebinding protection (the allowlist has nothing to
+    // compare against) so we treat it as malformed and 400. Test fixtures
+    // must build requests with an explicit Host header to traverse the router.
     let fixture = fixture_state();
     let app = test_router(fixture.state());
 
@@ -1444,7 +1436,7 @@ async fn host_allowlist_rejects_missing_host_header() {
     );
 }
 
-// ===== #1096 SEC-7: per-launch auth token integration tests =====
+// ===== per-launch auth token integration tests =====
 //
 // Pins the auth middleware behavior end-to-end through the same
 // `build_router` path used in production:
@@ -1692,7 +1684,7 @@ mod auth_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_token_from_a_is_rejected_by_b() {
         // Two parallel serve instances — token from A must never
-        // authenticate against B. AC for #1096.
+        // authenticate against B.
         let fixture_a = fixture_state();
         let fixture_b = fixture_state();
         let token_a = super::super::AuthToken::try_from_string("token-instance-a")
@@ -1733,9 +1725,9 @@ mod auth_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_disabled_when_token_is_none() {
-        // Back-compat: `--no-auth` builds the router with `None` and
-        // every route works without credentials. The CLI emits a loud
-        // warning banner — here we just verify the wire behavior.
+        // `--no-auth` builds the router with `None` and every route works
+        // without credentials. The CLI emits a loud warning banner — here we
+        // just verify the wire behavior.
         let fixture = fixture_state();
         let app = test_router(fixture.state()); // None auth
 
@@ -1753,15 +1745,11 @@ mod auth_tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// #1135: instance A on `:8080` sets cookie `cqs_token_8080=A`. The
-    /// browser sends that cookie to instance B on `:8081`, but B's
-    /// middleware only reads `cqs_token_8081=…`, so the wrong-port
-    /// cookie is invisible to B and the request 401s. Without #1135 the
-    /// cookie would have name-collided in the browser jar and B would
-    /// have seen the (non-matching) value, yielding the same 401 — but
-    /// also clobbering A's session on the next redirect. The fix means
-    /// neither side sees the other's cookie and neither session is
-    /// affected.
+    /// Instance A on `:8080` sets cookie `cqs_token_8080=A`. The browser sends
+    /// that cookie to instance B on `:8081`, but B's middleware only reads
+    /// `cqs_token_8081=…`, so the wrong-port cookie is invisible to B and the
+    /// request 401s. Per-port cookie names keep the two sessions from
+    /// colliding in the browser jar.
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_cookie_is_scoped_per_port() {
         let fixture = fixture_state();
@@ -1793,10 +1781,9 @@ mod auth_tests {
         );
     }
 
-    /// #1135: same instance, the *correct* per-port cookie still works.
-    /// Pin the positive case alongside the negative so a future
-    /// regression in the cookie-name function fails one of the pair
-    /// loudly.
+    /// Same instance, the *correct* per-port cookie still works. Pins the
+    /// positive case alongside the negative so a regression in the cookie-name
+    /// function fails one of the pair loudly.
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_cookie_works_with_correct_port() {
         let fixture = fixture_state();
@@ -1821,10 +1808,9 @@ mod auth_tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// #1135: the redirect-handoff Set-Cookie carries the per-port
-    /// name. A future regression that drops the port suffix would
-    /// reintroduce the cross-instance collision; this test catches it
-    /// at the wire level.
+    /// The redirect-handoff Set-Cookie carries the per-port name. A regression
+    /// that dropped the port suffix would reintroduce the cross-instance
+    /// collision; this test catches it at the wire level.
     #[tokio::test(flavor = "multi_thread")]
     async fn auth_redirect_set_cookie_includes_port() {
         let fixture = fixture_state();
@@ -1864,22 +1850,19 @@ mod auth_tests {
         );
     }
 
-    // ─── SEC-V1.36-6 regression: extractor 400 doesn't echo URI ─────────
+    // ─── extractor 400 doesn't echo URI ─────────
     //
     // Pin axum 0.8 + tower-http 0.6 behavior: when `Query<T>` rejects a
     // malformed query string, the 400 body is the serde error
     // ("Failed to deserialize query string: <field>: <error>") — the
     // URI itself (and the values inside `?token=...&...`) is NEVER
-    // echoed. Combined with P1.11's TraceLayer span (`path = %req.uri().path()`,
+    // echoed. Combined with the TraceLayer span (`path = %req.uri().path()`,
     // not full URI) and the auth middleware's `needs_url_strip`
-    // 302-redirect on any `?token=...` URL, an extractor failure
-    // cannot leak a token.
+    // 302-redirect on any `?token=...` URL, an extractor failure cannot leak a
+    // token.
     //
-    // The audit-finding SEC-V1.36-6 (#1461 sub-item) speculated that
-    // tower-http's debug log echoes the URI — it does not for the
-    // P1.11-modified make_span_with we actually deploy. The test
-    // below regression-guards both the body shape and the absence
-    // of token-shaped values across the four `Query<T>` handlers.
+    // The test below regression-guards both the body shape and the absence of
+    // token-shaped values across the four `Query<T>` handlers.
 
     #[tokio::test(flavor = "multi_thread")]
     async fn sec_v136_6_extractor_400_body_does_not_echo_query_string() {
@@ -1923,7 +1906,7 @@ mod auth_tests {
         );
     }
 
-    // ─── SEC-V1.36-9 concurrent-request cap ────────────────────────────
+    // ─── concurrent-request cap ────────────────────────────
     //
     // Outermost middleware caps in-flight requests so an attacker on
     // `--bind 0.0.0.0` can't fan out N connections each holding a 64 KiB
@@ -2010,7 +1993,7 @@ mod auth_tests {
         );
     }
 
-    // ─── #1345 idle eviction ──────────────────────────────────────────────
+    // ─── idle eviction ──────────────────────────────────────────────
 
     /// `wait_for_idle` returns when the gap between "now" and the
     /// last-request timestamp meets `idle_secs`. Drives the loop with a

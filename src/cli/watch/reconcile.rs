@@ -1,4 +1,4 @@
-//! Periodic full-tree reconciliation. (#1182 — Layer 2)
+//! Periodic full-tree reconciliation.
 //!
 //! `cqs watch` keeps the index live by reacting to filesystem events from
 //! `notify::Watcher` (inotify on Linux, poll on WSL). Three classes of
@@ -49,7 +49,7 @@ use cqs::parser::Parser as CqParser;
 use cqs::store::{FileFingerprint, FingerprintPolicy, Store};
 
 /// Normalize a relative path to forward slashes before insertion into the
-/// `pending_files` queue (#1245). The chunks table stores origins via
+/// `pending_files` queue. The chunks table stores origins via
 /// `crate::normalize_path` (slash-only), and the inotify path emits
 /// `PathBuf` with whatever separators the OS produces — Windows file
 /// events come back with `\\`. Without this normalization a single file
@@ -64,10 +64,10 @@ pub(super) fn normalize_pending_path(p: &Path) -> PathBuf {
     }
 }
 
-/// #1229 (RM-5): per-batch fingerprint lookup + queue-divergent helper
-/// for the streaming reconcile path. Mirrors the per-file body of the
-/// pre-walked path but consumes its origin map from a 1k-wide batch
-/// rather than the full-tree `indexed_file_origins` HashMap.
+/// Per-batch fingerprint lookup + queue-divergent helper for the streaming
+/// reconcile path. Mirrors the per-file body of the pre-walked path but
+/// consumes its origin map from a 1k-wide batch rather than the full-tree
+/// `indexed_file_origins` HashMap.
 #[allow(clippy::too_many_arguments)]
 fn process_batch(
     store: &Store,
@@ -81,7 +81,7 @@ fn process_batch(
     skipped_at_cap: &mut usize,
 ) {
     // Build the origin string set the SQL helper expects. `Cow` saves
-    // the `replace('\\', "/")` allocation on POSIX paths (PF-V1.30.1-4).
+    // the `replace('\\', "/")` allocation on POSIX paths.
     let mut origins_strs: Vec<std::borrow::Cow<'_, str>> = Vec::with_capacity(batch.len());
     let mut origins_for_sql: Vec<&str> = Vec::with_capacity(batch.len());
     for rel in batch {
@@ -173,11 +173,10 @@ fn process_batch(
 /// driven change. The watch loop's existing dedup (`HashSet`) means
 /// queueing a file already in `pending_files` is free.
 ///
-/// `max_pending` caps the total queue size — DS-V1.30.1-D2: respect the
-/// same backpressure ceiling the inotify path enforces (events.rs:108)
-/// so a bulk `git checkout` of 50k files doesn't drown the next
-/// `process_file_changes` cycle. Files skipped at the cap are picked up
-/// by the next reconcile pass — the walk is idempotent.
+/// `max_pending` caps the total queue size — the same backpressure ceiling
+/// the inotify path enforces (events.rs:108) so a bulk `git checkout` of 50k
+/// files doesn't drown the next `process_file_changes` cycle. Files skipped at
+/// the cap are picked up by the next reconcile pass — the walk is idempotent.
 pub(super) fn run_daemon_reconcile(
     store: &Store,
     root: &Path,
@@ -197,14 +196,12 @@ pub(super) fn run_daemon_reconcile(
     )
 }
 
-/// PF-V1.30.1-3 (#1226): reconcile variant that accepts a pre-computed
-/// disk walk. When the caller has already enumerated the tree (e.g.
-/// because periodic GC is also firing on the same idle tick),
-/// `disk_files: Some(&shared_set)` skips the internal walk.
-/// `disk_files: None` falls back to the original `enumerate_files`
-/// call. The legacy [`run_daemon_reconcile`] entry point delegates here
-/// with `None` for backward compatibility with existing call sites
-/// (the daemon idle-tick path is the one site that pre-walks).
+/// Reconcile variant that accepts a pre-computed disk walk. When the caller
+/// has already enumerated the tree (e.g. because periodic GC is also firing
+/// on the same idle tick), `disk_files: Some(&shared_set)` skips the internal
+/// walk. `disk_files: None` runs the `enumerate_files` call. The
+/// [`run_daemon_reconcile`] entry point delegates here with `None` (the daemon
+/// idle-tick path is the one site that pre-walks).
 pub(super) fn run_daemon_reconcile_with_walk(
     store: &Store,
     root: &Path,
@@ -215,27 +212,25 @@ pub(super) fn run_daemon_reconcile_with_walk(
     disk_files: Option<&HashSet<PathBuf>>,
 ) -> usize {
     let _span = tracing::info_span!("daemon_reconcile", max_pending).entered();
-    // OB-V1.30.1-7: capture elapsed time for the terminal log lines so
-    // operators can correlate reconcile cadence with GC overhead in
-    // journalctl. Pattern matches the HNSW build sites already in tree.
+    // Capture elapsed time for the terminal log lines so operators can
+    // correlate reconcile cadence with GC overhead in journalctl.
     let start = std::time::Instant::now();
 
     let exts = parser.supported_extensions();
 
-    // #1229 (RM-5): two-mode dispatch. The pre-walked path retains the
-    // legacy "fully-materialized HashSet + full-tree fingerprint map"
-    // shape because the caller (idle-tick GC + reconcile share-a-walk)
-    // already paid the materialization cost. The streaming path
-    // consumes `enumerate_files_iter` in 1k-file batches so peak heap
-    // is `O(batch_size)`, independent of tree size.
+    // Two-mode dispatch. The pre-walked path uses a fully-materialized HashSet
+    // + full-tree fingerprint map because the caller (idle-tick GC + reconcile
+    // share-a-walk) already paid the materialization cost. The streaming path
+    // consumes `enumerate_files_iter` in 1k-file batches so peak heap is
+    // `O(batch_size)`, independent of tree size.
     let mut added = 0usize;
     let mut modified = 0usize;
     let mut queued = 0usize;
     let mut skipped_at_cap = 0usize;
 
     if let Some(disk_files) = disk_files {
-        // PF-V1.30.1-3: caller pre-walked. Reuse the materialized
-        // origins-map approach since the HashSet is already in memory.
+        // Caller pre-walked. Reuse the materialized origins-map approach since
+        // the HashSet is already in memory.
         let indexed = match store.indexed_file_origins() {
             Ok(m) => m,
             Err(e) => {
@@ -244,10 +239,10 @@ pub(super) fn run_daemon_reconcile_with_walk(
             }
         };
         for rel in disk_files {
-            // DS-V1.30.1-D2: respect the same cap as the inotify path so a
-            // bulk branch switch (50k files) doesn't drown the next
-            // `process_file_changes` cycle. Files we skip here are picked
-            // up by the next reconcile pass — the walk is idempotent.
+            // Respect the same cap as the inotify path so a bulk branch switch
+            // (50k files) doesn't drown the next `process_file_changes` cycle.
+            // Files we skip here are picked up by the next reconcile pass —
+            // the walk is idempotent.
             if pending_files.len() >= max_pending {
                 skipped_at_cap += 1;
                 continue;
@@ -256,7 +251,7 @@ pub(super) fn run_daemon_reconcile_with_walk(
             // slashes for cross-platform matching parity with the rest of the
             // store layer.
             //
-            // RB-1: explicit `to_str()` instead of `to_string_lossy()`. Non-UTF-8
+            // Explicit `to_str()` instead of `to_string_lossy()`. Non-UTF-8
             // path bytes get U+FFFD substitution under `to_string_lossy`, and the
             // indexer's own lossy conversion may emit a different replacement
             // (or skip the file entirely), so the lookup-key never matches the
@@ -265,10 +260,10 @@ pub(super) fn run_daemon_reconcile_with_walk(
             // mounts where filenames can carry stray bytes from Windows tools.
             // Skipping with a warn is strictly better than re-queuing.
             //
-            // PF-V1.30.1-4: skip the `replace('\\', "/")` allocation on POSIX
-            // paths (the common case on Linux/WSL/macOS). Backslashes only
-            // appear on native Windows; on Linux the path is already clean.
-            // Use `Cow::Borrowed` to reuse `&str` for the `HashMap` lookup.
+            // Skip the `replace('\\', "/")` allocation on POSIX paths (the
+            // common case on Linux/WSL/macOS). Backslashes only appear on
+            // native Windows; on Linux the path is already clean. Use
+            // `Cow::Borrowed` to reuse `&str` for the `HashMap` lookup.
             let origin: std::borrow::Cow<'_, str> = match rel.to_str() {
                 Some(s) if s.contains('\\') => std::borrow::Cow::Owned(s.replace('\\', "/")),
                 Some(s) => std::borrow::Cow::Borrowed(s),
@@ -283,10 +278,10 @@ pub(super) fn run_daemon_reconcile_with_walk(
             match indexed.get(origin.as_ref()) {
                 None => {
                     // ADDED: no chunks for this file in the index. Queue.
-                    // PF-V1.30.1-9 / #1245: keep the queue keyed by the same
-                    // slash-normalized form the chunks table uses, so a
-                    // Windows-side reconcile and a WSL-side watcher don't
-                    // double-queue the same file under both separators.
+                    // Keep the queue keyed by the same slash-normalized form
+                    // the chunks table uses, so a Windows-side reconcile and a
+                    // WSL-side watcher don't double-queue the same file under
+                    // both separators.
                     let normalized = normalize_pending_path(rel);
                     if pending_files.insert(normalized) {
                         added += 1;
@@ -295,9 +290,9 @@ pub(super) fn run_daemon_reconcile_with_walk(
                 }
                 Some(stored_fp) => {
                     // MODIFIED: same path indexed, but disk content may have
-                    // diverged. Use the v23 reconcile fingerprint (mtime+size
-                    // fast path; BLAKE3 tiebreak on coarse-mtime FSes or
-                    // content-identical-mtime-bumped flips). #1219.
+                    // diverged. Use the reconcile fingerprint (mtime+size fast
+                    // path; BLAKE3 tiebreak on coarse-mtime FSes or
+                    // content-identical-mtime-bumped flips).
                     let lookup_path: PathBuf = if rel.is_absolute() {
                         rel.clone()
                     } else {
@@ -308,11 +303,10 @@ pub(super) fn run_daemon_reconcile_with_walk(
                         stored_fp,
                         FingerprintPolicy::MtimeOrHash,
                     ) {
-                        // EH-V1.30.1-7 / TC-ADV-1.30.1-6: stat failures
-                        // (permission flip, transient AV scan, deleted-since-
-                        // walk) leave the file to the GC pass — we don't want
-                        // to trigger a reindex burst on a file we can't even
-                        // read.
+                        // Stat failures (permission flip, transient AV scan,
+                        // deleted-since-walk) leave the file to the GC pass —
+                        // we don't want to trigger a reindex burst on a file we
+                        // can't even read.
                         None => {
                             tracing::debug!(
                                 path = %lookup_path.display(),
@@ -335,16 +329,14 @@ pub(super) fn run_daemon_reconcile_with_walk(
             }
         }
     } else {
-        // #1229 (RM-5): streaming path. Walk the tree, buffer paths
-        // in batches, query the store for that batch's fingerprints,
-        // compare disk vs stored per-file. Peak heap is `O(BATCH)` —
-        // independent of tree size.
+        // Streaming path. Walk the tree, buffer paths in batches, query the
+        // store for that batch's fingerprints, compare disk vs stored
+        // per-file. Peak heap is `O(BATCH)` — independent of tree size.
         //
-        // SHL-V1.38-8 (#1463): operator-tunable via `CQS_RECONCILE_BATCH`,
-        // clamped `[100, 32_000]`. Default 1000 picks the sweet spot
-        // between SQL round-trip count and memory footprint; small repos
-        // can drop to 100 and monorepo operators can lift to 32k for
-        // fewer SQL round-trips per reconcile.
+        // Operator-tunable via `CQS_RECONCILE_BATCH`, clamped `[100, 32_000]`.
+        // Default 1000 balances SQL round-trip count against memory footprint;
+        // small repos can drop to 100 and monorepo operators can lift to 32k
+        // for fewer SQL round-trips per reconcile.
         let batch_cap: usize =
             cqs::limits::parse_env_usize_clamped("CQS_RECONCILE_BATCH", 1000, 100, 32_000);
         let iter = match cqs::enumerate_files_iter(root, &exts, no_ignore) {
@@ -566,8 +558,8 @@ mod tests {
         cqs::embedder::Embedding::new(v)
     }
 
-    /// PR 6 of #1182: bulk-delta reconcile pass — the issue's "47-file
-    /// `git checkout` diff" acceptance check.
+    /// Bulk-delta reconcile pass — the "47-file `git checkout` diff"
+    /// acceptance check.
     ///
     /// Models a `git checkout` of a sibling branch under WSL `/mnt/c/`,
     /// where the 9P bridge silently drops every inotify event for the
@@ -593,9 +585,9 @@ mod tests {
         use cqs::watch_status::{FreshnessState, WatchSnapshot, WatchSnapshotInput};
         use std::marker::PhantomData;
 
-        // 47 files mirrors the issue's acceptance test scenario.
-        // Big enough to model a real branch switch; small enough to
-        // run in milliseconds on every CI cycle.
+        // 47 files mirrors the acceptance test scenario. Big enough to
+        // model a real branch switch; small enough to run in milliseconds
+        // on every CI cycle.
         const N: usize = 47;
         let dir = TempDir::new().unwrap();
         let cqs_dir = dir.path().join(".cqs");
@@ -682,9 +674,9 @@ mod tests {
         assert!(!snap.is_fresh());
     }
 
-    /// PR 6 of #1182: complement to `reconcile_detects_bulk_modify_burst`
-    /// — when disk mtimes are *not* newer than what was indexed, reconcile
-    /// must keep the state Fresh. This pins the false-positive case the
+    /// Complement to `reconcile_detects_bulk_modify_burst` — when disk mtimes
+    /// are *not* newer than what was indexed, reconcile must keep the state
+    /// Fresh. This pins the false-positive case the
     /// `git checkout` workflow depends on: just opening files in an editor
     /// without saving must not trigger a 47-file rebuild burst.
     #[test]
@@ -699,9 +691,8 @@ mod tests {
 
         // Write a single file, then store its current disk mtime as the
         // index's `source_mtime` so reconcile sees `disk_mtime ==
-        // stored_mtime`. After AC-V1.30.1-1 the predicate is `disk !=
-        // stored`, so equality (the unchanged-file case) keeps the file
-        // out of the queue.
+        // stored_mtime`. The predicate is `disk != stored`, so equality
+        // (the unchanged-file case) keeps the file out of the queue.
         let rel = "src/quiet.rs";
         let abs = dir.path().join(rel);
         fs::write(&abs, b"fn quiet() {}").unwrap();
@@ -758,12 +749,8 @@ mod tests {
         assert!(pending.is_empty());
     }
 
-    /// DS-V1.30.1-D2: cap shared with the inotify path so a bulk
-    /// git-checkout doesn't drown the next process_file_changes
-    /// cycle. Tests the strict pre-queue clamp: files we'd otherwise
-    /// queue are skipped once `pending_files.len() >= max_pending`.
-    /// PF-V1.30.1-3 (#1226): when the caller supplies `disk_files`,
-    /// reconcile uses that set verbatim instead of walking the tree.
+    /// When the caller supplies `disk_files`, reconcile uses that set verbatim
+    /// instead of walking the tree.
     /// Verify by passing a `disk_files` that doesn't match what's on
     /// disk: a non-existent path. If reconcile honored the supplied
     /// set, it queues that path (the index doesn't have it). If it
@@ -843,11 +830,11 @@ mod tests {
         assert_eq!(pending.len(), 5, "pending must not exceed cap");
     }
 
-    /// AC-V1.30.1-1: `git checkout HEAD~5 -- foo.rs` restores the file
-    /// with its commit-time mtime, which is *older* than the indexed
-    /// `source_mtime`. The strict `disk > stored` predicate would skip
-    /// this file silently. Reconcile must use `disk != stored` so any
-    /// divergence — forward or backward in time — queues a reindex.
+    /// `git checkout HEAD~5 -- foo.rs` restores the file with its commit-time
+    /// mtime, which is *older* than the indexed `source_mtime`. A strict
+    /// `disk > stored` predicate would skip this file silently. Reconcile uses
+    /// `disk != stored` so any divergence — forward or backward in time —
+    /// queues a reindex.
     #[test]
     fn run_daemon_reconcile_queues_older_disk_mtime() {
         use cqs::parser::{Chunk, ChunkType, Language};
@@ -866,9 +853,7 @@ mod tests {
 
         // Rewind the disk mtime to a week ago to simulate `git checkout`
         // restoring a commit-time mtime older than what we'll seed as
-        // the stored mtime. `set_modified` is stable since Rust 1.75
-        // (cqs MSRV is 1.95) — same pattern used in
-        // `src/store/migrations.rs` and `src/cli/batch/mod.rs`.
+        // the stored mtime.
         let week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 60 * 60);
         let f = std::fs::OpenOptions::new().write(true).open(&abs).unwrap();
         f.set_modified(week_ago).unwrap();
@@ -926,19 +911,16 @@ mod tests {
         assert!(pending.contains(&PathBuf::from(rel)));
     }
 
-    /// #1219: BLAKE3 tiebreak avoids unnecessary re-embed when mtime
-    /// bumped but content is identical — `git checkout`, formatter
-    /// passes, and `touch` all push mtime forward without changing
-    /// bytes. Pre-v23 reconcile saw `disk_mtime != stored_mtime` and
-    /// re-queued every chunk in the file (3-5k chunks per branch flip).
-    /// The v23 fingerprint reads `source_size` and `source_content_hash`
-    /// and the MtimeOrHash policy falls through to BLAKE3 when
-    /// mtime/size disagrees; matching hashes keep the file out of the
-    /// queue.
+    /// BLAKE3 tiebreak avoids unnecessary re-embed when mtime bumped but
+    /// content is identical — `git checkout`, formatter passes, and `touch`
+    /// all push mtime forward without changing bytes. The fingerprint reads
+    /// `source_size` and `source_content_hash`, and the MtimeOrHash policy
+    /// falls through to BLAKE3 when mtime/size disagrees; matching hashes keep
+    /// the file out of the queue.
     ///
     /// This is the load-bearing optimization case: the test pins that a
-    /// formatter-pass-style mtime bump on otherwise-identical content
-    /// does NOT requeue the file once v23 fingerprints are stamped.
+    /// formatter-pass-style mtime bump on otherwise-identical content does NOT
+    /// requeue the file.
     #[test]
     fn run_daemon_reconcile_blake3_skips_mtime_only_bump_with_identical_content() {
         use cqs::parser::{Chunk, ChunkType, Language};
@@ -992,7 +974,7 @@ mod tests {
                 Some(stored_mtime_ms),
             )
             .expect("seed chunk at older stored mtime");
-        // Stamp v23 fingerprint with the same content the file currently
+        // Stamp the fingerprint with the same content the file currently
         // holds — the mtime is older, but size + hash match disk.
         let content_hash_bytes = *blake3::hash(bytes).as_bytes();
         let stored_fp = FileFingerprint {
@@ -1020,10 +1002,10 @@ mod tests {
         assert!(pending.is_empty());
     }
 
-    /// #1219: BLAKE3 tiebreak catches genuine divergence when mtime
-    /// disagrees AND content differs. Mirror of the mtime-only-bump
-    /// optimization above: same mtime+size match short-circuit avoidance,
-    /// but disk content actually differs from stored hash → must queue.
+    /// BLAKE3 tiebreak catches genuine divergence when mtime disagrees AND
+    /// content differs. Mirror of the mtime-only-bump optimization above: same
+    /// mtime+size match short-circuit avoidance, but disk content actually
+    /// differs from stored hash → must queue.
     #[test]
     fn run_daemon_reconcile_blake3_queues_when_hash_diverges() {
         use cqs::parser::{Chunk, ChunkType, Language};
@@ -1102,10 +1084,10 @@ mod tests {
         assert!(pending.contains(&PathBuf::from(rel)));
     }
 
-    /// #1219: identical mtime+size+hash → reconcile must keep the file
-    /// out of the queue. The fast-path short-circuit (mtime+size both
-    /// match → unchanged, no hash read needed) is the steady-state
-    /// optimization that keeps reconcile near-free on quiet repos.
+    /// Identical mtime+size+hash → reconcile must keep the file out of the
+    /// queue. The fast-path short-circuit (mtime+size both match → unchanged,
+    /// no hash read needed) is the steady-state optimization that keeps
+    /// reconcile near-free on quiet repos.
     #[test]
     fn run_daemon_reconcile_blake3_match_skips_unchanged() {
         use cqs::parser::{Chunk, ChunkType, Language};
@@ -1179,12 +1161,11 @@ mod tests {
         assert!(pending.is_empty());
     }
 
-    /// #1245: separator dedup. Pre-seeding the queue with a backslash
-    /// path (simulating a Windows event source) must NOT cause reconcile
-    /// to insert the slash-form sibling as a separate entry on the same
-    /// pass. The chunks table stores origins via `normalize_path`
-    /// (slash-only), so reconcile must key its queue insertions on the
-    /// same form.
+    /// Separator dedup. Pre-seeding the queue with a backslash path
+    /// (simulating a Windows event source) must NOT cause reconcile to insert
+    /// the slash-form sibling as a separate entry on the same pass. The chunks
+    /// table stores origins via `normalize_path` (slash-only), so reconcile
+    /// must key its queue insertions on the same form.
     #[test]
     fn run_daemon_reconcile_dedups_against_backslash_pending_entry() {
         let dir = TempDir::new().unwrap();
@@ -1197,7 +1178,7 @@ mod tests {
         let store = open_store(&cqs_dir);
         let mut pending = HashSet::new();
         // Pre-seed with the slash form already normalized — what a Windows
-        // event source would push after #1245's events.rs change.
+        // event source pushes.
         pending.insert(PathBuf::from("src/dup.rs"));
 
         let queued = run_daemon_reconcile(
@@ -1215,15 +1196,12 @@ mod tests {
         assert_eq!(pending.len(), 1, "queue must contain exactly one entry");
     }
 
-    /// TC-ADV-1.30.1-5 / #1242: clock skew that lands `stored_mtime`
-    /// ahead of disk mtime (NTP step backward, system-clock change, VM
-    /// drift, file restored from a backup taken on a host with a
-    /// different clock) must NOT trigger a reindex storm when content
-    /// is unchanged. Pre-v23, the `disk_mtime != stored_mtime`
-    /// predicate would re-queue every file in the index until disk
-    /// caught up. The v23 BLAKE3 tiebreak under `MtimeOrHash` policy
-    /// short-circuits when the hash matches — regardless of which
-    /// side of the tie the mtime is on.
+    /// Clock skew that lands `stored_mtime` ahead of disk mtime (NTP step
+    /// backward, system-clock change, VM drift, file restored from a backup
+    /// taken on a host with a different clock) must NOT trigger a reindex storm
+    /// when content is unchanged. The BLAKE3 tiebreak under `MtimeOrHash`
+    /// policy short-circuits when the hash matches — regardless of which side
+    /// of the tie the mtime is on.
     ///
     /// Pinning this case alongside
     /// `run_daemon_reconcile_blake3_skips_mtime_only_bump_with_identical_content`
@@ -1311,7 +1289,7 @@ mod tests {
         assert!(pending.is_empty());
     }
 
-    /// #1245: `normalize_pending_path` directly — backslashes get rewritten,
+    /// `normalize_pending_path` directly — backslashes get rewritten,
     /// already-clean paths pass through. Pin the path-mangling rules so a
     /// future tweak doesn't silently change behavior.
     #[test]

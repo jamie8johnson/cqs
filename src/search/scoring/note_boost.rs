@@ -92,7 +92,7 @@ impl<'a> NoteBoostIndex<'a> {
             }
         }
 
-        // AC-11: Deduplicate path mentions — keep strongest sentiment per mention string
+        // Deduplicate path mentions — keep strongest sentiment per mention string
         let mut deduped_paths: HashMap<&'a str, f32> = HashMap::new();
         for (mention, sentiment) in &path_mentions {
             let entry = deduped_paths.entry(mention).or_insert(0.0);
@@ -140,10 +140,10 @@ impl<'a> NoteBoostIndex<'a> {
         match strongest {
             // Clamp sentiment to [-1.0, 1.0] before applying — defense against
             // NaN/±Inf round-tripping through SQLite (see test_upsert_notes_infinity_sentiment_roundtrips).
-            // Without this, +Inf sentiment produced an Inf multiplier that
-            // BoundedScoreHeap dropped via is_finite — the chunk it was meant to
-            // boost was hidden from results entirely. f32::clamp panics on NaN,
-            // so handle non-finite up front.
+            // Without this, +Inf sentiment yields an Inf multiplier that
+            // BoundedScoreHeap drops via is_finite — hiding the chunk it was
+            // meant to boost entirely. f32::clamp panics on NaN, so handle
+            // non-finite up front.
             Some(s) => {
                 let s = if s.is_finite() {
                     s.clamp(-1.0, 1.0)
@@ -159,10 +159,10 @@ impl<'a> NoteBoostIndex<'a> {
 
 /// Owned, shareable counterpart to [`NoteBoostIndex`].
 ///
-/// PF-V1.25-4: `NoteBoostIndex<'a>` holds `&'a str` borrows into the
-/// caller-supplied `&[NoteSummary]`, which means it cannot be stored on a
-/// long-lived cache (e.g. `Store::note_boost_cache`) without fighting the
-/// borrow checker. `OwnedNoteBoostIndex` copies the mention strings into
+/// `NoteBoostIndex<'a>` holds `&'a str` borrows into the caller-supplied
+/// `&[NoteSummary]`, so it cannot be stored on a long-lived cache (e.g.
+/// `Store::note_boost_cache`) without fighting the borrow checker.
+/// `OwnedNoteBoostIndex` copies the mention strings into
 /// its own maps so the index is self-contained and can be shared as
 /// `Arc<OwnedNoteBoostIndex>` across search calls.
 ///
@@ -203,7 +203,7 @@ impl OwnedNoteBoostIndex {
         }
 
         // Deduplicate path mentions — keep strongest sentiment per mention.
-        // (Mirrors `NoteBoostIndex::new`'s AC-11 logic.)
+        // (Mirrors `NoteBoostIndex::new`.)
         let mut deduped: HashMap<String, f32> = HashMap::new();
         for (mention, sentiment) in raw_paths {
             let entry = deduped.entry(mention).or_insert(0.0);
@@ -247,10 +247,10 @@ impl OwnedNoteBoostIndex {
         match strongest {
             // Clamp sentiment to [-1.0, 1.0] before applying — defense against
             // NaN/±Inf round-tripping through SQLite (see test_upsert_notes_infinity_sentiment_roundtrips).
-            // Without this, +Inf sentiment produced an Inf multiplier that
-            // BoundedScoreHeap dropped via is_finite — the chunk it was meant to
-            // boost was hidden from results entirely. f32::clamp panics on NaN,
-            // so handle non-finite up front.
+            // Without this, +Inf sentiment yields an Inf multiplier that
+            // BoundedScoreHeap drops via is_finite — hiding the chunk it was
+            // meant to boost entirely. f32::clamp panics on NaN, so handle
+            // non-finite up front.
             Some(s) => {
                 let s = if s.is_finite() {
                     s.clamp(-1.0, 1.0)
@@ -369,7 +369,7 @@ mod tests {
         );
     }
 
-    // ===== NoteBoostIndex tests (TC-2) =====
+    // ===== NoteBoostIndex tests =====
 
     #[test]
     fn test_note_boost_index_empty_notes() {
@@ -497,13 +497,10 @@ mod tests {
         assert_eq!(index.boost("src/lib.rs", "my_fn"), 1.0);
     }
 
-    /// TC-ADV-V1.38-2 (#1463): the consumer-side NaN/±Inf clamp at the
-    /// `boost` call site has only been protected by the test pinning the
-    /// SQLite round-trip (`test_upsert_notes_infinity_sentiment_roundtrips`).
-    /// A future refactor that inlined the clamp into the producer would
-    /// silently revert P1-36's BoundedScoreHeap drop fix. These tests
-    /// pin the boost-side contract directly: regardless of how a NaN or
-    /// ±Inf sentiment lands in the index, the multiplier is finite.
+    /// Pin the boost-side NaN/±Inf clamp contract directly: regardless of how
+    /// a NaN or ±Inf sentiment lands in the index, the multiplier is finite.
+    /// Without this, inlining the clamp into the producer would silently
+    /// reintroduce the Inf-multiplier BoundedScoreHeap drop.
     #[test]
     fn boost_clamps_inf_sentiment_to_finite_multiplier() {
         let pos_inf = make_note(f32::INFINITY, &["my_fn"]);
@@ -542,9 +539,9 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.38-2 follow-up: NaN sentiment must produce a finite
-    /// multiplier (the comment says "f32::clamp panics on NaN, so handle
-    /// non-finite up front" — this pins that path).
+    /// NaN sentiment must produce a finite multiplier (the comment says
+    /// "f32::clamp panics on NaN, so handle non-finite up front" — this pins
+    /// that path).
     #[test]
     fn boost_treats_nan_sentiment_as_finite_multiplier() {
         let nan_note = make_note(f32::NAN, &["my_fn"]);

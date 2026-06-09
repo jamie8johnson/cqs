@@ -1,10 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// TC-ADV-1.29-3: adversarial coverage for the daemon socket handler.
+// Adversarial coverage for the daemon socket handler.
 //
-// `handle_socket_client` (above, line 160) is the first thing every daemon
-// query touches. It does the line read, size cap, JSON parse, command-field
-// validation, and non-string-arg rejection *before* ever acquiring the
-// BatchContext mutex. Zero tests previously exercised those rejection paths.
+// `handle_socket_client` is the first thing every daemon query touches. It
+// does the line read, size cap, JSON parse, command-field validation, and
+// non-string-arg rejection *before* ever acquiring the BatchContext mutex.
+// These tests exercise those rejection paths.
 //
 // These tests use `UnixStream::pair()` to build a connected stream pair
 // in-process — we hand the `server` end to `handle_socket_client` on a worker
@@ -146,10 +146,10 @@ fn join_worker(client: UnixStream, handle: thread::JoinHandle<()>) {
 #[test]
 #[serial_test::serial(daemon_socket_env)]
 fn daemon_rejects_oversize_request_boundary() {
-    // SHL-V1.38-4 (#1463): the cap is now `max_diff_bytes() + 4 KiB`
-    // (default 50 MiB + 4 KiB) so multi-MB diffs from `cqs review
-    // --stdin` and `cqs impact --diff` route through the daemon at
-    // parity with the CLI path. Lower the cap via `CQS_MAX_DIFF_BYTES`
+    // The cap is `max_diff_bytes() + 4 KiB` (default 50 MiB + 4 KiB) so
+    // multi-MB diffs from `cqs review --stdin` and `cqs impact --diff`
+    // route through the daemon at parity with the CLI path. Lower the cap
+    // via `CQS_MAX_DIFF_BYTES`
     // so this test stays cheap (a 50 MB write blocks the harness on
     // slow CI runners) and still exercises the boundary structurally.
     //
@@ -326,8 +326,8 @@ fn daemon_rejects_missing_command_field() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Test: non-string args (objects, nulls, numbers) — P3 #86 hardened
-// this path; ensure it's still rejected instead of silently filtered.
+// Test: non-string args (objects, nulls, numbers) — these must be rejected
+// instead of silently filtered.
 //
 // The fixture sends three bad elements (`{}, null, 42`) so the handler's
 // `bad_arg_indices` vec has `[0, 1, 2]`. The rejection response is a
@@ -451,10 +451,10 @@ fn daemon_rejects_nul_byte_in_args_downstream() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// TC-HAP-1.29-6: happy-path round-trip. Every existing socket test pins
-// an *error* shape — trailing garbage, NUL bytes, missing command,
-// oversized request. None pins the *success* path: agent sends a valid
-// command, daemon runs it, envelope comes back with `status:"ok"` and a
+// Happy-path round-trip. The other socket tests pin *error* shapes —
+// trailing garbage, NUL bytes, missing command, oversized request. This
+// pins the *success* path: agent sends a valid command, daemon runs it,
+// envelope comes back with `status:"ok"` and a
 // well-formed `output` payload.
 //
 // This is the complement to the 8 adversarial tests above. `stats` is
@@ -567,14 +567,13 @@ fn daemon_stats_happy_path_roundtrip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// #1127 — daemon parallelism regression tests
+// daemon parallelism regression tests
 //
-// These tests pin the lock-topology contract introduced by #1127
-// (post-#1145): the daemon's `handle_socket_client` path must hold the
-// BatchContext mutex only across `checkout_view_from_arc` (a few
-// microseconds), never across the handler body. Two slow handlers must
-// run in parallel; a fast handler issued mid-flight must not block on
-// a slow one.
+// These tests pin the lock-topology contract: the daemon's
+// `handle_socket_client` path must hold the BatchContext mutex only across
+// `checkout_view_from_arc` (a few microseconds), never across the handler
+// body. Two slow handlers must run in parallel; a fast handler issued
+// mid-flight must not block on a slow one.
 //
 // The handlers used here are `test-sleep` (a `#[cfg(test)]`-gated
 // BatchCmd variant in `cli::batch::commands`) and `notes list`
@@ -582,13 +581,12 @@ fn daemon_stats_happy_path_roundtrip() {
 // intentionally embedder-free so the tests stay fast in CI.
 // ─────────────────────────────────────────────────────────────────────
 
-/// Issue two `test-sleep --ms 300` calls concurrently. The new lock
-/// topology should let them overlap so wall-clock ≈ max(t1, t2) ≈ 300 ms.
-/// Pre-fix (single mutex held across dispatch) they would serialize,
-/// blowing past 600 ms.
+/// Issue two `test-sleep --ms 300` calls concurrently. The lock topology
+/// lets them overlap so wall-clock ≈ max(t1, t2) ≈ 300 ms; a single mutex
+/// held across dispatch would serialize them past 600 ms.
 ///
 /// Threshold of 1.5× single-handler time gives generous headroom for
-/// thread scheduling jitter on busy CI hosts; pre-fix behavior was
+/// thread scheduling jitter on busy CI hosts; the serialized path is
 /// deterministically 2.0× and the gap is wide enough to be reliable.
 #[test]
 fn daemon_two_slow_handlers_run_in_parallel() {
@@ -628,7 +626,7 @@ fn daemon_two_slow_handlers_run_in_parallel() {
     );
 
     // The load-bearing assertion: two SLEEP_MS handlers must overlap.
-    // 1.5× headroom for scheduling; pre-fix behavior is deterministically
+    // 1.5× headroom for scheduling; the serialized path is deterministically
     // 2× so the gap is wide enough to avoid flake.
     let max_allowed_ms = (SLEEP_MS as f64 * 1.5) as u128;
     assert!(
@@ -646,9 +644,9 @@ fn daemon_two_slow_handlers_run_in_parallel() {
 }
 
 /// While a slow `test-sleep` is in flight, an inbound `notes list` query
-/// must complete promptly. Pre-fix the second connection's
-/// `batch_ctx.lock()` would block on the first connection's
-/// dispatch-spanning lock for the full sleep duration.
+/// must complete promptly. With a dispatch-spanning lock, the second
+/// connection's `batch_ctx.lock()` would block on the first connection for
+/// the full sleep duration.
 ///
 /// Bounded at 200 ms which is generous: `notes list` against an empty
 /// store does a single `notes_cache` build (~µs to ms) plus the
@@ -762,13 +760,12 @@ fn handle_socket_client_round_trips_stats() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// TC-V1.36-4 / P2-4: lone surrogate halves and deeply-nested JSON
-// adversarial coverage. serde_json by default accepts lone surrogates
-// (RFC 8259 ambiguity) and has no recursion limit on object nesting,
-// so a malicious client could deliver either shape and reach handler
-// dispatch (or stack-overflow the parser thread). Pin both rejection
-// paths so a future serde_json upgrade or parser swap surfaces here
-// instead of in production.
+// Lone surrogate halves and deeply-nested JSON adversarial coverage.
+// serde_json by default accepts lone surrogates (RFC 8259 ambiguity) and
+// has no recursion limit on object nesting, so a malicious client could
+// deliver either shape and reach handler dispatch (or stack-overflow the
+// parser thread). Pin both rejection paths so a serde_json upgrade or
+// parser swap surfaces here instead of in production.
 // ─────────────────────────────────────────────────────────────────────
 #[test]
 fn daemon_handles_lone_surrogate_in_string_arg() {
@@ -792,11 +789,10 @@ fn daemon_handles_lone_surrogate_in_string_arg() {
     join_worker(client, handle);
 }
 
-/// TC-V1.36-6 / P2-5 (per-handler slice): N concurrent clients each
-/// holding a slow/partial connection don't pin the BatchContext mutex
-/// or starve a fast valid request. Real accept-loop saturation needs an
-/// actual UnixListener, deferred to integration; this exercises the
-/// handler-thread isolation contract.
+/// N concurrent clients each holding a slow/partial connection don't pin
+/// the BatchContext mutex or starve a fast valid request. Real accept-loop
+/// saturation needs an actual UnixListener (covered by integration tests);
+/// this exercises the handler-thread isolation contract.
 #[test]
 fn daemon_concurrent_handlers_dont_starve() {
     let (_dir, ctx) = test_ctx();

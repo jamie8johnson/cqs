@@ -1,5 +1,5 @@
-// DS-5 / DS-V1.25-3: WRITE_LOCK guard is held across .await inside block_on().
-// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+// WRITE_LOCK guard is held across .await inside block_on(). This is safe —
+// block_on runs single-threaded, no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! Metadata get/set and version validation for the Store.
 
@@ -16,9 +16,9 @@ use super::{NoteSummary, ReadWrite, Store, StoreError};
 /// Which HNSW index a dirty-flag operation applies to.
 ///
 /// The enriched and base indexes have independent save lifecycles: rebuilding
-/// one does not imply the other is clean. Tracking a single shared flag meant
-/// a successful enriched rebuild would clear the base's dirty flag even if
-/// base still held stale data. AC-V1.25-8 — keep the two flags independent.
+/// one does not imply the other is clean. The two flags are independent so a
+/// successful enriched rebuild doesn't clear the base's dirty flag while base
+/// still holds stale data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HnswKind {
     /// Enriched HNSW index (stored as `index.hnsw.*`).
@@ -80,7 +80,7 @@ impl<Mode> Store<Mode> {
                         s, e
                     ))
                 })?,
-                // EH-22: Missing key is OK — init() hasn't been called yet on a fresh DB.
+                // Missing key is OK — init() hasn't been called yet on a fresh DB.
                 // After init(), schema_version is guaranteed present.
                 None => 0,
             };
@@ -90,8 +90,8 @@ impl<Mode> Store<Mode> {
             }
             if version < CURRENT_SCHEMA_VERSION && version > 0 {
                 // Migration runs in `open_with_config_impl` before `Store` is
-                // constructed (P2.59). Reaching this branch on a live store
-                // means something bypassed open() and stamped a stale
+                // constructed. Reaching this branch on a live store means
+                // something bypassed open() and stamped a stale
                 // `schema_version` after migration completed — surface that
                 // as a SchemaMismatch instead of trying to re-migrate.
                 return Err(StoreError::SchemaMismatch {
@@ -151,13 +151,13 @@ impl<Mode> Store<Mode> {
     /// Read the stored model name from metadata, if set.
     /// Returns `None` for fresh databases or pre-model indexes.
     ///
-    /// EH-V1.36-6: this lossy form swallows real SQLite errors as `None`,
-    /// which every caller interprets as "fresh DB, no model recorded — treat
-    /// as new". For decision sites that care about distinguishing "metadata
-    /// row absent" from "metadata table unreadable", call
+    /// This lossy form swallows real SQLite errors as `None`, which every
+    /// caller interprets as "fresh DB, no model recorded — treat as new".
+    /// For decision sites that care about distinguishing "metadata row
+    /// absent" from "metadata table unreadable", call
     /// [`Self::try_stored_model_name`] and branch on the `Result`. Failures
-    /// here now log at `error!` (not `warn!`) so a corrupted index surfaces
-    /// in journald instead of being absorbed silently.
+    /// here log at `error!` so a corrupted index surfaces in journald
+    /// instead of being absorbed silently.
     pub fn stored_model_name(&self) -> Option<String> {
         match self.try_stored_model_name() {
             Ok(val) => val,
@@ -225,7 +225,7 @@ impl<Mode> Store<Mode> {
     ///
     /// Each row is a `(content_hash, purpose)` pair, so the count includes
     /// every cached summary regardless of purpose (`summary`, `doc-comment`,
-    /// `hyde`, etc.). Returns 0 when no SQ-6/SQ-8/SQ-10b pass has run yet.
+    /// `hyde`, etc.). Returns 0 when no summary pass has run yet.
     ///
     /// **Includes orphans**: rows whose `content_hash` no longer matches any
     /// chunk are counted here. For per-chunk coverage that ignores orphans,
@@ -247,7 +247,7 @@ impl<Mode> Store<Mode> {
     /// summary" metric — orphan rows (content_hash no longer in `chunks`) do
     /// not inflate this number, unlike [`llm_summary_count`](Self::llm_summary_count).
     /// `cqs stats` exposes both so operators can see when orphan accumulation
-    /// is overstating the row-count metric (issue #1587).
+    /// is overstating the row-count metric.
     pub fn llm_summary_chunk_coverage(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("llm_summary_chunk_coverage").entered();
         self.rt.block_on(async {
@@ -299,10 +299,10 @@ impl<Mode> Store<Mode> {
 
     /// Check if the given HNSW index is marked as dirty (potentially stale).
     ///
-    /// Returns `false` when the per-kind key doesn't exist. For backward
-    /// compatibility with pre-AC-V1.25-8 databases that used a single
-    /// `hnsw_dirty` key, we fall back to reading that key when the per-kind
-    /// key is absent — the old flag logically applied to both indexes.
+    /// Returns `false` when the per-kind key doesn't exist. For databases
+    /// that use a single legacy `hnsw_dirty` key, we fall back to reading
+    /// that key when the per-kind key is absent — the legacy flag logically
+    /// applied to both indexes.
     pub fn is_hnsw_dirty(&self, kind: HnswKind) -> Result<bool, StoreError> {
         let key = kind.metadata_key();
         self.rt.block_on(async {
@@ -358,7 +358,7 @@ impl<Mode> Store<Mode> {
     /// during search, so shared ownership is safe and avoids O(notes * string_len)
     /// cloning on every search call.
     ///
-    /// PF-7: Uses RwLock — read() for the warm path (concurrent readers OK),
+    /// Uses RwLock — read() for the warm path (concurrent readers OK),
     /// write() only on cache miss or invalidation.
     pub fn cached_notes_summaries(&self) -> Result<Arc<Vec<NoteSummary>>, StoreError> {
         // Fast path: read lock, check if populated
@@ -389,8 +389,8 @@ impl<Mode> Store<Mode> {
     /// Must be called after any operation that modifies notes (upsert, replace, delete)
     /// so subsequent reads see fresh data.
     ///
-    /// PF-V1.25-4: also invalidates the derived `note_boost_cache` so the
-    /// next scoring path rebuilds the lookup from fresh notes.
+    /// Also invalidates the derived `note_boost_cache` so the next scoring
+    /// path rebuilds the lookup from fresh notes.
     pub(crate) fn invalidate_notes_cache(&self) {
         match self.notes_summaries_cache.write() {
             Ok(mut guard) => *guard = None,
@@ -413,11 +413,10 @@ impl<Mode> Store<Mode> {
     /// Get the cached `OwnedNoteBoostIndex`, building from
     /// [`Store::cached_notes_summaries`] on first access or after invalidation.
     ///
-    /// PF-V1.25-4: previously every search rebuilt a fresh
-    /// `NoteBoostIndex::new(&notes)` per call, which reran the
-    /// O(notes × mentions) HashMap fill even though notes change far less
-    /// often than searches fire. Now the owned index is computed once per
-    /// notes-table revision and shared via `Arc` across all search paths.
+    /// The owned index is computed once per notes-table revision and shared
+    /// via `Arc` across all search paths, avoiding an O(notes × mentions)
+    /// HashMap rebuild on every search (notes change far less often than
+    /// searches fire).
     ///
     /// Returns `Arc` of a `pub(crate)` type — callers outside the crate
     /// cannot access the type directly, hence `pub(crate)` on this accessor.
@@ -451,7 +450,7 @@ impl<Mode> Store<Mode> {
 }
 
 // Write methods live on `impl Store<ReadWrite>` — the compiler refuses to
-// call them on a `Store<ReadOnly>`. Closes the bug class in GitHub #946.
+// call them on a `Store<ReadOnly>`.
 impl Store<ReadWrite> {
     /// Update the `updated_at` metadata timestamp to now.
     /// Call after indexing operations complete (pipeline, watch reindex, note sync)
@@ -472,17 +471,15 @@ impl Store<ReadWrite> {
     /// On load, a dirty flag means a crash occurred between SQLite commit and
     /// HNSW save — the affected HNSW index should not be trusted.
     ///
-    /// AC-V1.25-8: tracked per-kind so that clearing after an enriched rebuild
-    /// does not mask a still-stale base index.
+    /// Tracked per-kind so that clearing after an enriched rebuild does not
+    /// mask a still-stale base index.
     ///
-    /// DS-V1.25-3: the flag update goes through `begin_write`, which acquires
-    /// `WRITE_LOCK` before opening the SQLite transaction. Previously this
-    /// ran as a bare pool write and could race with a concurrent chunks
-    /// mutation: if thread A was mid-write of new chunks while thread B
-    /// cleared the dirty flag, the on-disk state could briefly advertise a
-    /// clean HNSW that didn't yet reflect the in-flight chunks. The daemon
-    /// is read-only today so the hazard isn't exploited in practice, but
-    /// the invariant is now enforced instead of documented.
+    /// The flag update goes through `begin_write`, which acquires
+    /// `WRITE_LOCK` before opening the SQLite transaction. A bare pool write
+    /// could race with a concurrent chunks mutation: if thread A is mid-write
+    /// of new chunks while thread B clears the dirty flag, the on-disk state
+    /// could briefly advertise a clean HNSW that doesn't yet reflect the
+    /// in-flight chunks.
     pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
         let val = if dirty { "1" } else { "0" };
         let key = kind.metadata_key();
@@ -497,13 +494,11 @@ impl Store<ReadWrite> {
                 .bind(val)
                 .execute(&mut *tx)
                 .await?;
-            // DS-V1.36-3: split the legacy single `hnsw_dirty` key into per-kind
-            // keys atomically. If a legacy value exists and the other kind has
-            // no per-kind key yet, seed the other per-kind from legacy so the
+            // Split the legacy single `hnsw_dirty` key into per-kind keys
+            // atomically. If a legacy value exists and the other kind has no
+            // per-kind key yet, seed the other per-kind from legacy so the
             // un-touched kind keeps its prior dirty state. Then drop legacy so
-            // future is_hnsw_dirty calls don't fall back to stale data. The
-            // doc on is_hnsw_dirty had promised this split since v1.20; only
-            // set_hnsw_dirty had drifted from doing it.
+            // future is_hnsw_dirty calls don't fall back to stale data.
             let legacy: Option<String> = sqlx::query_scalar::<_, String>(
                 "SELECT value FROM metadata WHERE key = 'hnsw_dirty'",
             )
@@ -573,7 +568,7 @@ impl Store<ReadWrite> {
     }
 
     /// Delete `llm_summaries` rows whose `content_hash` no longer matches any
-    /// chunk in the index. Returns the number of rows deleted (#1587).
+    /// chunk in the index. Returns the number of rows deleted.
     ///
     /// Why it's needed: `llm_summaries` is keyed by `(content_hash, purpose)`,
     /// so when a chunk's content changes (refactor, audit-cycle line shift,
@@ -616,7 +611,7 @@ mod tests {
     use crate::store::helpers::ModelInfo;
     use crate::test_helpers::setup_store;
 
-    // ===== TC-8: pending batch ID =====
+    // ===== pending batch ID =====
 
     #[test]
     fn test_pending_batch_roundtrip() {
@@ -651,7 +646,7 @@ mod tests {
         assert_eq!(result, Some("b".to_string()));
     }
 
-    // ===== TC-10: HNSW dirty flag =====
+    // ===== HNSW dirty flag =====
 
     #[test]
     fn test_hnsw_dirty_roundtrip() {
@@ -680,8 +675,8 @@ mod tests {
         assert!(store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
     }
 
-    /// AC-V1.25-8: the two kinds must track independently. Clearing one
-    /// must not clear the other — that was the bug before the split.
+    /// The two kinds must track independently. Clearing one must not clear
+    /// the other.
     #[test]
     fn test_hnsw_dirty_per_kind_independent() {
         let (store, _dir) = setup_store();
@@ -704,9 +699,8 @@ mod tests {
         assert!(!store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
     }
 
-    /// Backward compatibility: databases written before the split used a
-    /// single `hnsw_dirty` key. When the per-kind key is absent, fall back
-    /// to that legacy value for both kinds.
+    /// Databases with only the legacy single `hnsw_dirty` key: when the
+    /// per-kind key is absent, fall back to that legacy value for both kinds.
     #[test]
     fn test_hnsw_dirty_legacy_fallback() {
         let (store, _dir) = setup_store();
@@ -730,7 +724,7 @@ mod tests {
         );
     }
 
-    // ===== TC-16: cache invalidation =====
+    // ===== cache invalidation =====
 
     #[test]
     fn test_cached_notes_empty() {
@@ -779,7 +773,7 @@ mod tests {
         assert_eq!(cached[0].text, "replaced note");
     }
 
-    // ===== TC-17: check_model_version tests =====
+    // ===== check_model_version tests =====
 
     fn make_test_store_initialized() -> (Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -805,8 +799,8 @@ mod tests {
 
     #[test]
     fn tc17_dimension_read_into_store_dim() {
-        // Dimensions are no longer checked by check_model_version().
-        // Instead, Store::dim is populated from metadata at open time.
+        // check_model_version() does not check dimensions.
+        // Store::dim is populated from metadata at open time.
         let (store, _dir) = make_test_store_initialized();
         // Default ModelInfo::default() stores EMBEDDING_DIM
         assert_eq!(store.dim, crate::EMBEDDING_DIM);
@@ -836,7 +830,7 @@ mod tests {
         assert!(store.check_model_version().is_ok());
     }
 
-    // ===== TC-18: check_schema_version tests =====
+    // ===== check_schema_version tests =====
 
     #[test]
     fn tc18_schema_newer_returns_error() {
@@ -938,11 +932,11 @@ mod tests {
         assert_eq!(store.dim, crate::EMBEDDING_DIM);
     }
 
-    // ===== TC-31: multi-model dim-threading =====
+    // ===== multi-model dim-threading =====
 
     #[test]
     fn tc31_store_with_non_default_dim() {
-        // TC-31.1: init writes dim to metadata, verifiable via get_metadata_opt.
+        // init writes dim to metadata, verifiable via get_metadata_opt.
         // Note: store.dim() reflects the value read at open() time, not post-init.
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
@@ -960,7 +954,7 @@ mod tests {
 
     #[test]
     fn tc31_init_writes_dim_to_metadata() {
-        // TC-31.2: Verify init() stores the dimension in metadata correctly.
+        // Verify init() stores the dimension in metadata correctly.
         // Note: Store::dim is set at open() time, not updated by init().
         // The metadata write is what matters for future reopens.
         let dir = tempfile::TempDir::new().unwrap();
@@ -979,10 +973,9 @@ mod tests {
 
     #[test]
     fn tc31_store_reopen_non_default_model_no_mismatch() {
-        // TC-31.3: Create store with a non-default model name and dim=1024,
-        // close and reopen — should NOT return ModelMismatch error.
-        // (This was the AD-43/DS-30 bug: model validation on open rejected
-        // non-default models. Fixed by skipping model validation on open.)
+        // Create store with a non-default model name and dim=1024, close and
+        // reopen — should NOT return ModelMismatch error. Model validation
+        // is skipped on open, so non-default models are accepted.
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         {
@@ -1003,7 +996,7 @@ mod tests {
 
     #[test]
     fn tc31_store_dim_zero_defaults_to_embedding_dim() {
-        // TC-31.7: Set dimensions metadata to "0", reopen — should default to EMBEDDING_DIM.
+        // Set dimensions metadata to "0", reopen — should default to EMBEDDING_DIM.
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         {
@@ -1021,7 +1014,7 @@ mod tests {
         );
     }
 
-    // ===== A2: stats-introspection accessors =====
+    // ===== stats-introspection accessors =====
 
     #[test]
     fn test_stored_splade_model_default_none() {
@@ -1158,7 +1151,7 @@ mod tests {
         assert_eq!(store.llm_summary_count().unwrap(), 3);
     }
 
-    /// #1587: orphan summaries (content_hash not in chunks) must be deletable
+    /// Orphan summaries (content_hash not in chunks) must be deletable
     /// without touching live rows. Each `cqs index --llm-summaries` pass
     /// folds this into the enrichment phase.
     #[test]

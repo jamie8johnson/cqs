@@ -10,12 +10,11 @@
 //! (one `getenv` syscall per check) and lets tests flip values inside a
 //! single process without rebuilding.
 
-// ============ P3 #102: FTS normalization cap ============
+// ============ FTS normalization cap ============
 
 /// Default upper bound on `normalize_for_fts` output bytes. Pathological
 /// inputs (multi-MB SQL builders, generated parser code, single huge
-/// chunks) can otherwise blow the FTS5 indexer's memory budget. See P3
-/// #102 in `docs/audit-findings.md`.
+/// chunks) can otherwise blow the FTS5 indexer's memory budget.
 pub(crate) const FTS_NORMALIZE_MAX: usize = 16384;
 
 /// Resolve the FTS cap honoring `CQS_FTS_NORMALIZE_MAX`.
@@ -23,11 +22,11 @@ pub(crate) fn fts_normalize_max() -> usize {
     parse_env_usize("CQS_FTS_NORMALIZE_MAX", FTS_NORMALIZE_MAX)
 }
 
-// ============ P3 #103: graph edge caps ============
+// ============ graph edge caps ============
 
 /// Default cap on edges loaded into [`crate::store::Store::get_call_graph`].
 /// Protects `cqs impact`, `cqs trace`, and `cqs related` from OOM on
-/// adversarially-large `function_calls` tables. See P3 #103.
+/// adversarially-large `function_calls` tables.
 pub(crate) const CALL_GRAPH_MAX_EDGES: usize = 500_000;
 
 /// Default cap on edges loaded into `Store::get_type_graph`.
@@ -43,15 +42,15 @@ pub(crate) fn type_graph_max_edges() -> usize {
     parse_env_usize("CQS_TYPE_GRAPH_MAX_EDGES", TYPE_GRAPH_MAX_EDGES)
 }
 
-// ============ P3 #104, #105: parser size caps ============
+// ============ parser size caps ============
 
 /// Default per-file size cap for tree-sitter parsing (50 MiB). Distinct
 /// from `CQS_MAX_FILE_SIZE` (file-discovery gate in `lib.rs::max_file_size`)
-/// so per-stage knobs stay independent. See P3 #104.
+/// so per-stage knobs stay independent.
 pub(crate) const PARSER_MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
 
 /// Default per-chunk byte cap (100 KiB). Chunks larger than this are
-/// dropped at parse time before windowing sees them. See P3 #105.
+/// dropped at parse time before windowing sees them.
 pub(crate) const PARSER_MAX_CHUNK_BYTES: usize = 100_000;
 
 /// Resolve the parser per-file size cap honoring `CQS_PARSER_MAX_FILE_SIZE`.
@@ -64,17 +63,16 @@ pub(crate) fn parser_max_chunk_bytes() -> usize {
     parse_env_usize("CQS_PARSER_MAX_CHUNK_BYTES", PARSER_MAX_CHUNK_BYTES)
 }
 
-// ============ P3 #106, #108: doc converter caps ============
+// ============ doc converter caps ============
 
 /// Default ceiling on per-archive page count for CHM, web help, and any
-/// future multi-page converter. See P3 #106.
+/// future multi-page converter.
 pub(crate) const DEFAULT_DOC_MAX_PAGES: usize = 1000;
 
 /// Default `walkdir` depth cap for `convert/mod.rs::convert_directory`.
-/// See P3 #108.
 pub(crate) const DEFAULT_DOC_MAX_WALK_DEPTH: usize = 50;
 
-/// RM-V1.29-5: per-page byte cap for multi-page converters (CHM, WebHelp).
+/// Per-page byte cap for multi-page converters (CHM, WebHelp).
 /// A malicious or pathological archive can ship a single 500MB "page"; the
 /// outer `MAX_FILE_SIZE` check only gates the archive, not the extracted
 /// pages. Default 10 MiB covers every real-world help page with margin.
@@ -90,20 +88,20 @@ pub(crate) fn doc_max_walk_depth() -> usize {
     parse_env_usize("CQS_CONVERT_MAX_WALK_DEPTH", DEFAULT_DOC_MAX_WALK_DEPTH)
 }
 
-/// RM-V1.29-5: per-page byte cap for CHM / WebHelp page readers, honoring
+/// Per-page byte cap for CHM / WebHelp page readers, honoring
 /// `CQS_CONVERT_PAGE_BYTES`.
 pub(crate) fn convert_page_bytes() -> u64 {
     parse_env_u64("CQS_CONVERT_PAGE_BYTES", DEFAULT_CONVERT_PAGE_BYTES)
 }
 
-/// SHL-V1.29-10: per-file byte cap for HTML / Markdown converters, honoring
+/// Per-file byte cap for HTML / Markdown converters, honoring
 /// `CQS_CONVERT_MAX_FILE_SIZE`. Defaults to 100 MB.
 pub(crate) fn convert_file_size() -> u64 {
     const DEFAULT_CONVERT_MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
     parse_env_u64("CQS_CONVERT_MAX_FILE_SIZE", DEFAULT_CONVERT_MAX_FILE_SIZE)
 }
 
-/// RB-V1.36-1/3/4: small-file byte cap for ad-hoc reads of config-shaped files
+/// Small-file byte cap for ad-hoc reads of config-shaped files
 /// (slot.toml, git hooks, parent-context fallbacks, doc-rewriter sources).
 /// Defaults to 4 MiB. Honored via `CQS_SMALL_FILE_MAX_BYTES`. Source files for
 /// the doc rewriter and parent-context lookups can legitimately exceed 1 MiB
@@ -113,11 +111,10 @@ pub fn small_file_max_bytes() -> u64 {
     parse_env_u64("CQS_SMALL_FILE_MAX_BYTES", DEFAULT_SMALL_FILE_MAX)
 }
 
-/// SHL-V1.36 / dim-blind batch sizes — scale a baseline batch size by
-/// embedding dim. The baseline is assumed to have been picked when the
-/// default model was 1024-dim (BGE-large era), so divide by `dim/1024`
-/// to keep the per-batch heap footprint roughly constant as the user
-/// opts into 2560-dim or 4096-dim presets (qwen3-embedding-{4b,8b}).
+/// Scale a baseline batch size by embedding dim. The baseline is calibrated
+/// for a 1024-dim model, so divide by `dim/1024` to keep the per-batch heap
+/// footprint roughly constant as the user opts into 2560-dim or 4096-dim
+/// presets (qwen3-embedding-{4b,8b}).
 ///
 /// Returns `baseline.clamp(min, max)` if `dim == 0` so callers don't
 /// need to special-case zero or unwrap.
@@ -143,18 +140,14 @@ pub fn dim_scaled_batch(baseline: usize, dim: usize, min: usize, max: usize) -> 
 /// reranker; it caps the recall ceiling regardless of how many results
 /// the operator finally asks for.
 ///
-/// Pre-#1583 the formula was `limit.saturating_mul(5).max(100)`, with a
-/// hardcoded floor of 100. Empirically that floor was leaving R@5 +0.9pp
-/// and R@20 +3.7pp on the table on cqs's own v3.v2 218q eval — gold for
-/// the harder queries genuinely sits deeper in the dense ranking than
-/// 100 candidates allows. The default floor is now 500; `CQS_SEARCH_CANDIDATE_FLOOR`
-/// is an env override for operators who want to push it further (or
-/// lower it on memory-constrained boxes where the 5× HNSW work isn't
-/// worth the recall lift).
+/// The pool is `limit * 5` with a floor of 500 — gold for the harder
+/// queries sits deeper in the dense ranking than 100 candidates allows.
+/// `CQS_SEARCH_CANDIDATE_FLOOR` overrides the floor for operators who want
+/// to push it further (or lower it on memory-constrained boxes where the
+/// 5× HNSW work isn't worth the recall lift).
 ///
-/// `saturating_mul` guards against pathological `limit` (audit
-/// TC-ADV-5: `limit >= usize::MAX / 5` would panic with naive
-/// `limit * 5`).
+/// `saturating_mul` guards against pathological `limit`: `limit >= usize::MAX / 5`
+/// would panic with naive `limit * 5`.
 pub fn candidate_count_for(limit: usize) -> usize {
     use std::sync::OnceLock;
     static FLOOR: OnceLock<usize> = OnceLock::new();
@@ -162,15 +155,12 @@ pub fn candidate_count_for(limit: usize) -> usize {
     limit.saturating_mul(5).max(floor)
 }
 
-// ============ SHL-V1.29-7: hotspot / dead-cluster thresholds ============
+// ============ hotspot / dead-cluster thresholds ============
 //
-// `HOTSPOT_MIN_CALLERS`, `DEAD_CLUSTER_MIN_SIZE`, `SUGGEST_HOTSPOT_POOL`
-// (`suggest.rs`) and `HEALTH_HOTSPOT_COUNT` (`health.rs`) were hardcoded
-// to 5 / 5 / 20 / 5. The same threshold that sensibly flags a 2k-chunk
-// hobby project as a "hotspot" is noise on a 500k-chunk monorepo where
-// 5-caller functions are everywhere. These helpers scale the defaults
-// logarithmically on corpus size (matching the `cagra_itopk_max_default`
-// pattern) and accept env overrides that, when set, are taken verbatim.
+// The same caller threshold that sensibly flags a 2k-chunk hobby project
+// as a "hotspot" is noise on a 500k-chunk monorepo where 5-caller functions
+// are everywhere. These helpers scale the defaults logarithmically on corpus
+// size and accept env overrides that, when set, are taken verbatim.
 //
 // Formula (chosen so small projects see `5` and big ones see `~20-30`):
 //   caller_threshold  = (log₂(n) * 0.7).clamp(5, 50)
@@ -242,12 +232,12 @@ pub fn suggest_hotspot_pool(chunk_count: usize) -> usize {
     parse_env_usize("CQS_SUGGEST_HOTSPOT_POOL", default)
 }
 
-// ============ SHL-V1.29-8: risk score + blast-radius thresholds ============
+// ============ risk score + blast-radius thresholds ============
 //
-// `RISK_THRESHOLD_HIGH=5.0`, `RISK_THRESHOLD_MEDIUM=2.0` (`impact/hints.rs`)
-// and the blast-radius buckets (`0..=2` Low, `3..=10` Medium, `11+` High)
-// drive `cqs review` CI gating. Wrong defaults silently alter classification
-// on monorepos, so each is env-overridable.
+// The risk thresholds (High 5.0, Medium 2.0) and the blast-radius buckets
+// (`0..=2` Low, `3..=10` Medium, `11+` High) drive `cqs review` CI gating.
+// Wrong defaults silently alter classification on monorepos, so each is
+// env-overridable.
 
 /// Default risk score above which a function is "High" risk.
 pub(crate) const RISK_THRESHOLD_HIGH_DEFAULT: f32 = 5.0;
@@ -282,16 +272,10 @@ pub fn blast_high_min() -> usize {
 
 // ============ shared parsing helpers ============
 //
-// P2.4: these helpers were previously module-private. The same
-// `env::var(...).parse().ok().filter(...).unwrap_or(default)` pattern was
-// duplicated across 25+ sites (`watch.rs`, `llm/mod.rs`, `pipeline/types.rs`,
-// `hnsw/persist.rs`, `embedder/`, `cache.rs`, `gather.rs`,
-// `commands/graph/trace.rs`, `impact/bfs.rs`, `reranker.rs`) with subtle
-// drift in zero-handling. They are now `pub` so any module can route through
-// a single contract: missing/empty/garbage/zero -> default, otherwise the
-// parsed value. Behavioral note: zero is treated as invalid by all three
-// helpers — call sites that *want* zero to mean "disabled" need to spell it
-// (`if value == 0 { return default; }` after a custom parse).
+// A single contract for env-driven size limits: missing/empty/garbage/zero
+// -> default, otherwise the parsed value. Zero is treated as invalid by all
+// three helpers — call sites that *want* zero to mean "disabled" need to
+// spell it (`if value == 0 { return default; }` after a custom parse).
 
 /// Parse a finite positive `f32`-shaped env var, falling back to
 /// `default` on missing/empty/garbage/non-finite/non-positive values.
@@ -326,9 +310,9 @@ pub fn parse_env_usize(key: &str, default: usize) -> usize {
 /// yields a usable value rather than the unclamped default. Missing/zero/
 /// garbage falls back to `default` (also clamped to the range).
 ///
-/// SEC-V1.38-9 (#1463): an operator setting an unrealistically large
-/// value (e.g. `CQS_SERVE_MAX_CONCURRENT_REQUESTS=4294967295` to try to
-/// "disable" the cap) sees a structured warn so the clamp isn't silent.
+/// An operator setting an unrealistically large value (e.g.
+/// `CQS_SERVE_MAX_CONCURRENT_REQUESTS=4294967295` to try to "disable" the
+/// cap) sees a structured warn so the clamp isn't silent.
 /// The value still clamps to `max` — operator gets a usable value plus
 /// an audit trail.
 pub fn parse_env_usize_clamped(key: &str, default: usize, min: usize, max: usize) -> usize {
@@ -356,34 +340,31 @@ pub fn parse_env_usize_clamped(key: &str, default: usize, min: usize, max: usize
     }
 }
 
-/// P2.39 — Resolve the LLM batch-submit cap (Anthropic Batches API tops out
-/// at 100,000 items per submission; default 10,000 is a safety margin). Env
+/// Resolve the LLM batch-submit cap (Anthropic Batches API tops out at
+/// 100,000 items per submission; default 10,000 is a safety margin). Env
 /// override `CQS_LLM_MAX_BATCH_SIZE` clamped to `[1, 100_000]`.
 pub fn llm_max_batch_size() -> usize {
     parse_env_usize_clamped("CQS_LLM_MAX_BATCH_SIZE", 10_000, 1, 100_000)
 }
 
-// ============ P2.40 — serve graph/chunk-detail caps ============
+// ============ serve graph/chunk-detail caps ============
 //
-// `cqs serve` previously hardcoded its DoS-prevention caps in `serve/data.rs`
-// (`ABS_MAX_GRAPH_NODES=50_000`, `ABS_MAX_GRAPH_EDGES=500_000`,
-// `ABS_MAX_CLUSTER_NODES=50_000`, plus per-list `LIMIT 50/50/20` inside
-// `build_chunk_detail`). Cytoscape stalls past ~5-10k nodes so the
-// default is too high for the UI; power-user queries on a monorepo
-// occasionally need more than 50k. Each is now env-overridable with a
-// hard ceiling so a misconfiguration can't unbound the response.
+// `cqs serve`'s DoS-prevention caps. Cytoscape stalls past ~5-10k nodes so
+// the default is too high for the UI; power-user queries on a monorepo
+// occasionally need more than 50k. Each is env-overridable with a hard
+// ceiling so a misconfiguration can't unbound the response.
 
-/// SEC-3 cap on `/api/graph` nodes. Default 50k. Env: `CQS_SERVE_GRAPH_MAX_NODES`.
+/// Cap on `/api/graph` nodes. Default 50k. Env: `CQS_SERVE_GRAPH_MAX_NODES`.
 pub fn serve_graph_max_nodes() -> usize {
     parse_env_usize_clamped("CQS_SERVE_GRAPH_MAX_NODES", 50_000, 1, 1_000_000)
 }
 
-/// SEC-3 cap on `/api/graph` edges. Default 500k. Env: `CQS_SERVE_GRAPH_MAX_EDGES`.
+/// Cap on `/api/graph` edges. Default 500k. Env: `CQS_SERVE_GRAPH_MAX_EDGES`.
 pub fn serve_graph_max_edges() -> usize {
     parse_env_usize_clamped("CQS_SERVE_GRAPH_MAX_EDGES", 500_000, 1, 10_000_000)
 }
 
-/// SEC-3 cap on `/api/embed/2d` nodes. Default 50k. Env: `CQS_SERVE_CLUSTER_MAX_NODES`.
+/// Cap on `/api/embed/2d` nodes. Default 50k. Env: `CQS_SERVE_CLUSTER_MAX_NODES`.
 pub fn serve_cluster_max_nodes() -> usize {
     parse_env_usize_clamped("CQS_SERVE_CLUSTER_MAX_NODES", 50_000, 1, 1_000_000)
 }
@@ -406,8 +387,8 @@ pub fn serve_chunk_detail_tests_limit() -> usize {
     parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_TESTS", 20, 1, 1_000)
 }
 
-/// P2.76 / RM-V1.33-10 (#1346) — cap on concurrent `spawn_blocking` jobs
-/// in `cqs serve`. Default tracks the SQLite connection pool size (default
+/// Cap on concurrent `spawn_blocking` jobs in `cqs serve`. Default tracks
+/// the SQLite connection pool size (default
 /// 4 from `CQS_MAX_CONNECTIONS`) so the permit budget can't outrun the pool
 /// budget. Env: `CQS_SERVE_BLOCKING_PERMITS`. Bounded to `[1, 1024]` and
 /// then clamped at runtime to `<= CQS_MAX_CONNECTIONS`.
@@ -453,18 +434,7 @@ pub fn parse_env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
-// Removed in #1228 (RM-2): `wait_for_fresh` is now a single
-// server-parked round-trip, so the poll-cadence knob (formerly
-// `freshness_poll_ms_initial` + matching env override) has no
-// semantic in the new architecture.
-
-// CQ-V1.38-1 (#1463): `parse_env_duration_secs` previously parked here
-// `#[allow(dead_code)]` for callers in `serve`/`watch` follow-up work
-// that never materialised — those sites use `parse_env_u64` directly.
-// Removed; if a future caller wants the duration wrapper, re-add it
-// then with the call site in the same PR.
-
-// ============ #1345 cqs serve idle eviction ============
+// ============ cqs serve idle eviction ============
 
 /// Default idle-shutdown threshold for `cqs serve` in minutes. After this
 /// many minutes of no incoming requests, the server shuts down gracefully
@@ -472,7 +442,7 @@ pub fn parse_env_u64(key: &str, default: u64) -> u64 {
 /// and the tokio runtime. `0` disables the idle shutdown entirely.
 pub const SERVE_IDLE_MINUTES_DEFAULT: u64 = 30;
 
-// ============ SEC-V1.36-9 cqs serve concurrent-request cap ============
+// ============ cqs serve concurrent-request cap ============
 
 /// Default ceiling on concurrent in-flight requests in `cqs serve`. Sized
 /// for an interactive single-user UI plus a generous buffer for fan-out
@@ -484,8 +454,8 @@ pub const SERVE_MAX_CONCURRENT_REQUESTS_DEFAULT: usize = 256;
 
 /// Resolve the in-flight request cap for `cqs serve`.
 ///
-/// SEC-V1.36-9 (#1461): the request body limit is per-request; without an
-/// outer cap, an attacker on `--bind 0.0.0.0` (or any LAN/--no-auth bind)
+/// The request body limit is per-request; without an outer cap, an attacker
+/// on `--bind 0.0.0.0` (or any LAN/--no-auth bind)
 /// can fan out N concurrent connections, each holding a 64 KiB pre-auth
 /// buffer. Bounded only by FD limit. The cap below sits on the outermost
 /// middleware layer (`enforce_concurrency_cap` in `src/serve/mod.rs`) and
@@ -545,13 +515,9 @@ mod tests {
 
     /// All four `serve_blocking_permits_*` tests mutate the same process-global
     /// `CQS_SERVE_BLOCKING_PERMITS` / `CQS_MAX_CONNECTIONS` env vars. cqs CI
-    /// (`cargo test --verbose` without `--test-threads=1`) runs lib tests in
-    /// parallel — the previous comment that claimed "lib tests already run
-    /// --test-threads=1" was wrong, and the resulting env race produced a
-    /// flaky failure on the v1.36.0 release branch (test got `permits=2`,
-    /// expected 8 — meaning a sibling test's `CQS_SERVE_BLOCKING_PERMITS=2`
-    /// leaked between this test's `remove_var` and `serve_blocking_permits()`
-    /// call). `#[serial]` from the `serial_test` crate forces a process-wide
+    /// runs lib tests in parallel, so a sibling test's env value can leak
+    /// between this test's `remove_var` and its `serve_blocking_permits()`
+    /// call. `#[serial]` from the `serial_test` crate forces a process-wide
     /// mutex around the cohort.
     #[test]
     #[serial]
@@ -585,8 +551,7 @@ mod tests {
         clear_serve_blocking_env();
         std::env::set_var("CQS_SERVE_BLOCKING_PERMITS", "32");
         std::env::set_var("CQS_MAX_CONNECTIONS", "4");
-        // Pre-fix this returned 32 (the requested value); post-fix it
-        // clamps to max_connections so the permit budget can't outrun the
+        // Clamps to max_connections so the permit budget can't outrun the
         // SQLite pool budget.
         assert_eq!(serve_blocking_permits(), 4);
         clear_serve_blocking_env();
@@ -605,9 +570,9 @@ mod tests {
         std::env::remove_var("CQS_TEST_LIMITS_U64");
     }
 
-    // ============ TC-ADV-V1.33-7: parse_env_usize_clamped + parse_env_f32 ====
+    // ============ parse_env_usize_clamped + parse_env_f32 ====
 
-    /// TC-ADV-V1.33-7: above-max value clamps to max (not "use default").
+    /// Above-max value clamps to max (not "use default").
     #[test]
     fn parse_env_usize_clamped_clamps_above_max() {
         let key = "CQS_TEST_CLAMP_ABOVE_MAX";
@@ -617,7 +582,7 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// TC-ADV-V1.33-7: below-min value clamps to min.
+    /// Below-min value clamps to min.
     #[test]
     fn parse_env_usize_clamped_clamps_below_min() {
         let key = "CQS_TEST_CLAMP_BELOW_MIN";
@@ -628,7 +593,7 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// TC-ADV-V1.33-7: garbage value triggers fallback to (clamped) default.
+    /// Garbage value triggers fallback to (clamped) default.
     /// Out-of-range default also gets clamped — pin the "default also
     /// passes through clamp()" path documented in the helper.
     #[test]
@@ -641,7 +606,7 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// TC-ADV-V1.33-7: NaN string for `parse_env_f32` falls back to default
+    /// NaN string for `parse_env_f32` falls back to default
     /// (`is_finite` filter rejects NaN before the unwrap_or).
     #[test]
     fn parse_env_f32_rejects_nan() {
@@ -651,7 +616,7 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// TC-ADV-V1.33-7: `parse_env_f32` rejects negative and zero — the
+    /// `parse_env_f32` rejects negative and zero — the
     /// helper's `*n > 0.0` filter is load-bearing for risk thresholds
     /// (a 0.0 threshold would silently collapse the classification).
     #[test]
@@ -666,8 +631,8 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// TC-V1.36-8 / P3: pin that `parse_env_usize_clamped` zero-input
-    /// falls back to `clamp(default)` rather than `0`. The helper's
+    /// Pin that `parse_env_usize_clamped` zero-input falls back to
+    /// `clamp(default)` rather than `0`. The helper's
     /// `n > 0` filter is load-bearing — a future refactor moving the
     /// check would silently produce 0, which would cause divide-by-zero
     /// in callers like embed_batch_size. Also covers the
@@ -698,7 +663,7 @@ mod tests {
         );
     }
 
-    // ===== #1583: candidate_count_for tests =====
+    // ===== candidate_count_for tests =====
 
     /// `candidate_count_for` must respect the floor when the linear ramp
     /// (`limit * 5`) is below it. Default floor is 500.
@@ -727,16 +692,15 @@ mod tests {
         assert_eq!(candidate_count_for(500), 2500);
     }
 
-    /// TC-ADV-5 saturating-multiply guard preserved: `limit >= usize::MAX/5`
-    /// must NOT panic.
+    /// Saturating-multiply guard: `limit >= usize::MAX/5` must NOT panic.
     #[test]
     fn candidate_count_saturating_does_not_panic_on_huge_limit() {
         let pool = candidate_count_for(usize::MAX / 4);
         assert_eq!(pool, usize::MAX, "saturating_mul must clamp at usize::MAX");
     }
 
-    /// SHL-V1.36 / dim_scaled_batch — pin the formula at the dim values we
-    /// actually ship presets for. Regressions surface here, not at runtime.
+    /// Pin the `dim_scaled_batch` formula at the dim values we actually ship
+    /// presets for. Regressions surface here, not at runtime.
     #[test]
     fn dim_scaled_batch_at_baseline_dim_returns_baseline() {
         // dim == 1024 = baseline assumption → baseline unchanged.
@@ -752,7 +716,7 @@ mod tests {
 
     #[test]
     fn dim_scaled_batch_quarters_at_4096_dim() {
-        // qwen3-embedding-8b is 4096-dim — was the motivating preset.
+        // qwen3-embedding-8b is 4096-dim.
         assert_eq!(dim_scaled_batch(10_000, 4096, 500, 50_000), 2_500);
     }
 

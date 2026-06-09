@@ -2,9 +2,9 @@
 //!
 //! `serde(skip_serializing_if)` requires a free function with the signature
 //! `fn(&T) -> bool`; closures and trait methods don't qualify. Rather than
-//! redeclare these one-line helpers in every envelope-shaped module
-//! (P3-11 from the v1.33.0 audit cataloged six copies), centralize them
-//! here so new envelope additions are a single attribute import.
+//! redeclare these one-line helpers in every envelope-shaped module,
+//! centralize them here so new envelope additions are a single attribute
+//! import.
 //!
 //! Use as:
 //! ```text

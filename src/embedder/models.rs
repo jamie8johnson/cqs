@@ -47,7 +47,7 @@ pub struct InputNames {
     /// position-ids input or generates positions internally
     /// (`onnx-community/Qwen3-Embedding-8B-ONNX` is the latter case).
     /// When set, the embed loop materializes `[[0, 1, ..., seq_len-1]]
-    /// × batch_size` and binds it under this tensor name. (#1442)
+    /// × batch_size` and binds it under this tensor name.
     #[serde(default)]
     pub position_ids: Option<String>,
 }
@@ -90,7 +90,7 @@ impl InputNames {
     /// Decoder-only embedder inputs: `input_ids`, `attention_mask`,
     /// `position_ids`. No `token_type_ids`. Used by third-party
     /// `Qwen3-Embedding-{4B,8B}` ONNX exports that expose `position_ids`
-    /// as an explicit input rather than generating it internally. (#1442)
+    /// as an explicit input rather than generating it internally.
     pub fn decoder_only_with_position_ids() -> Self {
         Self {
             ids: default_ids_name(),
@@ -109,7 +109,7 @@ impl InputNames {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PoolingStrategy {
-    /// Mean-pool the masked token positions. **Current default** — BGE, E5, v9-200k.
+    /// Mean-pool the masked token positions. Default — BGE, E5, v9-200k.
     #[default]
     Mean,
     /// Use the first-token (`[CLS]`) embedding directly.
@@ -172,28 +172,24 @@ pub struct ModelConfig {
     ///
     /// Defaults to [`PoolingStrategy::Mean`] (BGE, E5, v9-200k).
     pub pooling: PoolingStrategy,
-    /// EX-V1.29-6: Approximate download size of the ONNX bundle in bytes.
+    /// Approximate download size of the ONNX bundle in bytes.
     ///
-    /// Populated for shipped presets so `cqs init` can report a concrete size
-    /// instead of the old `dim >= 1024 ? "~1.3GB" : "~547MB"` heuristic
-    /// (which silently misreported custom models and smaller-dim BGE variants).
+    /// Populated for shipped presets so `cqs init` can report a concrete size.
     /// `None` when unknown — the init command falls back to "(size unknown)"
     /// rather than guessing. Custom models from `EmbeddingConfig` leave this
     /// unset; operators supplying a custom repo know their own sizes.
     pub approx_download_bytes: Option<u64>,
-    /// SHL-V1.29-1: Token id used to pad `input_ids` / `attention_mask` tensors
-    /// below `max_length`.
+    /// Token id used to pad `input_ids` / `attention_mask` tensors below
+    /// `max_length`.
     ///
-    /// Every BERT/E5/BGE variant cqs ships today uses `0` (the `[PAD]` token);
-    /// this has been hardcoded at `pad_2d_i64(..., 0)` call sites since the
-    /// encoder's first draft. A custom ONNX export with a different pad id
-    /// silently gets wrong padding — the model still runs (the attention
-    /// mask zeros the positions) but the pre-mask hidden states are
-    /// unambiguously different, which leaks into mean-pooled embeddings when
-    /// the mask shape leaves a spurious `1`. The encoder now reads the
-    /// tokenizer's declared pad id at session init (see `Embedder::pad_id`)
-    /// with this field as the fallback when the tokenizer omits a pad
-    /// configuration.
+    /// Every BERT/E5/BGE variant cqs ships uses `0` (the `[PAD]` token). A
+    /// custom ONNX export with a different pad id silently gets wrong padding
+    /// — the model still runs (the attention mask zeros the positions) but the
+    /// pre-mask hidden states are unambiguously different, which leaks into
+    /// mean-pooled embeddings when the mask shape leaves a spurious `1`. The
+    /// encoder reads the tokenizer's declared pad id at session init (see
+    /// `Embedder::pad_id`), falling back to this field when the tokenizer omits
+    /// a pad configuration.
     pub pad_id: i64,
 }
 
@@ -207,9 +203,8 @@ pub struct ModelConfig {
 //   - `ModelConfig::from_preset(name)` matching short-name OR repo ID
 //   - `ModelConfig::default_model()` returning the row marked `default = true`
 //
-// Adding a preset = one new line here. The standalone `DEFAULT_MODEL_REPO`
-// and `DEFAULT_DIM` constants disappear — `ModelInfo::default()` and
-// `with_dim()` derive from `default_model()` directly.
+// Adding a preset = one new line here. `ModelInfo::default()` and `with_dim()`
+// derive from `default_model()` directly.
 // ---------------------------------------------------------------------------
 /// Defines the embedder-preset table.
 ///
@@ -358,9 +353,9 @@ define_embedder_presets! {
         dim = 768, max_seq_length = 512,
         query_prefix = "query: ", doc_prefix = "passage: ",
         input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
-        // EX-V1.29-6: ONNX bundle (model.onnx + tokenizer.json). ~547 MiB real.
+        // ONNX bundle (model.onnx + tokenizer.json). ~547 MiB.
         approx_download_bytes = Some(547 * 1024 * 1024),
-        // SHL-V1.29-1: BERT [PAD] token = id 0.
+        // BERT [PAD] token = id 0.
         pad_id = 0;
 
     /// v9-200k LoRA: E5-base fine-tuned with call-graph false-negative filtering.
@@ -372,14 +367,12 @@ define_embedder_presets! {
         dim = 768, max_seq_length = 512,
         query_prefix = "query: ", doc_prefix = "passage: ",
         input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
-        // EX-V1.29-6: same base architecture as e5-base; ONNX bundle ~440 MiB.
+        // Same base architecture as e5-base; ONNX bundle ~440 MiB.
         approx_download_bytes = Some(440 * 1024 * 1024),
         pad_id = 0;
 
     /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Strong general-purpose
-    /// retriever; was the cqs default through v1.34.x. Replaced as default
-    /// by `embeddinggemma-300m` in v1.35.0 (R@1 +1.9pp on v3.v2 dual-judge,
-    /// half the params, 4× context window).
+    /// retriever.
     ///
     /// Standard BERT I/O, mean pooling (matches the BGE-reference implementation
     /// used in HuggingFace `sentence-transformers`).
@@ -388,7 +381,7 @@ define_embedder_presets! {
         dim = 1024, max_seq_length = 512,
         query_prefix = "Represent this sentence for searching relevant passages: ", doc_prefix = "",
         input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
-        // EX-V1.29-6: full BGE-large ONNX bundle ~1.3 GiB.
+        // Full BGE-large ONNX bundle ~1.3 GiB.
         approx_download_bytes = Some(1_300 * 1024 * 1024),
         pad_id = 0;
 
@@ -494,8 +487,8 @@ define_embedder_presets! {
     ///
     /// Tokenizer: Qwen3 BPE, 151,665-token vocab, no `add_bos_token` and
     /// `add_eos_token` is handled by the export — cqs's preset doesn't
-    /// need to splice EOS itself. Truncation: None (clean, no #1384-style
-    /// silent-cap bug). `pad_token = <|endoftext|>` = id 151643.
+    /// need to splice EOS itself. Truncation: None. `pad_token =
+    /// <|endoftext|>` = id 151643.
     ///
     /// Query prompt convention: Qwen3-Embedding uses natural-language
     /// instructions (`Instruct: ...\nQuery: ...`) rather than the BGE
@@ -510,14 +503,13 @@ define_embedder_presets! {
     /// dim. MRL (Matryoshka Representation Learning) truncation to 1024-dim
     /// for storage parity is a future option but cqs's current pipeline
     /// returns whatever the model produces.
-    // max_seq_length=4096 (vs 8192 historical): same rationale as the
-    // 4B preset below — at seq=8192 the attention quadratic
-    // [batch, heads, seq, seq] requested 15-55 GB allocations on
-    // long-doc batches, far past the A6000's 49 GB. Each OOM cascaded
-    // to a 95 s/batch CPU fallback that dominated ETA. seq=4096 cuts
-    // attention buffers 4× and keeps allocations in the 4-15 GB range
-    // (still tight on 8B but feasible). Content windowing splits any
-    // longer chunks across multiple windows automatically. (#1442)
+    // max_seq_length capped at 4096: at seq=8192 the attention quadratic
+    // [batch, heads, seq, seq] requests 15-55 GB allocations on long-doc
+    // batches, far past the A6000's 49 GB. Each OOM cascades to a 95 s/batch
+    // CPU fallback that dominates ETA. seq=4096 cuts attention buffers 4× and
+    // keeps allocations in the 4-15 GB range (still tight on 8B but feasible).
+    // Content windowing splits any longer chunks across multiple windows
+    // automatically.
     qwen3_embedding_8b => name = "qwen3-embedding-8b", repo = "onnx-community/Qwen3-Embedding-8B-ONNX",
         onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
         dim = 4096, max_seq_length = 4096,
@@ -528,8 +520,7 @@ define_embedder_presets! {
         // FP32 ONNX bundle: ~2 MB graph + ~30.27 GB external-data
         // weights file at `model.onnx_data`. Plus ~14 MB tokenizer/vocab.
         // External-data sidecar download is handled by the
-        // `<onnx_path>_data` fetch in `download_model_files` (added in
-        // PR #1385 alongside the gemma swap).
+        // `<onnx_path>_data` fetch in `download_model_files`.
         approx_download_bytes = Some(30_300 * 1024 * 1024),
         pad_id = 151643;
 
@@ -558,10 +549,10 @@ define_embedder_presets! {
     ///
     /// FP16 export note: `zhiqing/Qwen3-Embedding-4B-ONNX` ships an
     /// 8 GB FP16 sidecar — half the size of the equivalent FP32 export
-    /// `sigalr/Qwen3-Embedding-4B-ONNX-ST`. cqs's embed loop now
-    /// dispatches on output dtype (#1442 follow-up): tries f32 first
-    /// (zero-copy), falls back to f16 / bf16 with software conversion
-    /// to f32 on extract. The 8 GB mmap is the deciding factor on
+    /// `sigalr/Qwen3-Embedding-4B-ONNX-ST`. cqs's embed loop dispatches
+    /// on output dtype: tries f32 first (zero-copy), falls back to
+    /// f16 / bf16 with software conversion to f32 on extract. The 8 GB
+    /// mmap is the deciding factor on
     /// memory-tight rigs (WSL2 + 49 GB GPU, where the 16 GB FP32 sidecar
     /// crashed the VM repeatedly during model load). FP16 inference
     /// quality is empirically indistinguishable from FP32 on Qwen3
@@ -575,7 +566,7 @@ define_embedder_presets! {
     ///
     /// Position-ids note: the export exposes `position_ids` as an
     /// explicit ONNX input. cqs's `decoder_only_with_position_ids` shape
-    /// materialises `[[0, 1, …, seq_len-1]] × batch` per call. (#1442)
+    /// materialises `[[0, 1, …, seq_len-1]] × batch` per call.
     qwen3_embedding_4b => name = "qwen3-embedding-4b", repo = "zhiqing/Qwen3-Embedding-4B-ONNX",
         onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
         dim = 2560, max_seq_length = 4096,
@@ -600,7 +591,7 @@ impl ModelConfig {
     /// embedder for querying it is the one whose dim matches. Honouring a CLI
     /// flag or `CQS_EMBEDDING_MODEL` that points at a different model leads to
     /// the silent "0 results, only a tracing::warn!" failure mode this method
-    /// was added to prevent (see ROADMAP.md "Embedder swap workflow").
+    /// prevents (see ROADMAP.md "Embedder swap workflow").
     ///
     /// Index time (`cqs index --force`) must keep using [`resolve`] — there
     /// the user's intent is precisely to install a new embedder, and the
@@ -677,12 +668,11 @@ impl ModelConfig {
                 tracing::info!(model = %cfg.name, source = "config", "Resolved model config");
                 return cfg;
             }
-            // RB-V1.38-8 (#1463): bind once via let-else so the guard +
-            // unwrap pattern doesn't drift on refactor. Custom-model TOML
-            // is user input — a future validation block that mutates
-            // `dim` to None on the way through could silently turn the
-            // old `expect("guarded by has_dim")` into a panic. Type-level
-            // invariant > runtime guard.
+            // Bind once via let-else so the guard + unwrap pattern doesn't
+            // drift on refactor. Custom-model TOML is user input — a future
+            // validation block that mutates `dim` to None on the way through
+            // could silently turn an unwrap into a panic. Type-level invariant
+            // > runtime guard.
             let (Some(repo_owned), Some(dim)) = (embedding_cfg.repo.as_ref(), embedding_cfg.dim)
             else {
                 tracing::warn!(
@@ -699,7 +689,7 @@ impl ModelConfig {
                     return Self::default_model();
                 }
 
-                // SEC-28: Validate repo format — must be "org/model" without injection chars
+                // Validate repo format — must be "org/model" without injection chars
                 let repo = repo_owned;
                 if !repo.contains('/')
                     || repo.contains('"')
@@ -716,7 +706,7 @@ impl ModelConfig {
                     return Self::default_model();
                 }
 
-                // SEC-20: Validate custom paths don't contain traversal
+                // Validate custom paths don't contain traversal
                 let onnx_path = embedding_cfg
                     .onnx_path
                     .clone()
@@ -750,8 +740,8 @@ impl ModelConfig {
 
                 let cfg = Self {
                     name: embedding_cfg.model.clone(),
-                    // RB-V1.38-8: `repo_owned` was bound by the let-else
-                    // above; clone here because the struct owns a String.
+                    // `repo_owned` was bound by the let-else above; clone here
+                    // because the struct owns a String.
                     repo: repo_owned.clone(),
                     onnx_path,
                     tokenizer_path,
@@ -763,24 +753,18 @@ impl ModelConfig {
                     output_name,
                     pooling,
                     approx_download_bytes: None,
-                    // SHL-V1.29-1: custom model — fall back to `0` and let
-                    // the encoder's session-init probe the tokenizer for a
-                    // declared pad id. `0` matches every BERT-family model.
+                    // Custom model — fall back to `0` and let the encoder's
+                    // session-init probe the tokenizer for a declared pad id.
+                    // `0` matches every BERT-family model.
                     pad_id: embedding_cfg.pad_id.unwrap_or(0),
                 };
                 tracing::info!(model = %cfg.name, source = "config-custom", "Resolved custom model config");
                 return cfg;
             }
-            // RB-V1.38-8 (#1463): the warn for "missing repo/dim" moved
-            // up into the let-else above so the type-level invariant is
-            // explicit. This block is unreachable code after the early
-            // return; intentional empty trailing arm to mirror the old
-            // structure for git-blame readability.
         }
 
         // 4. Default — see `define_embedder_presets!` for the row marked
-        // `default = true`. EmbeddingGemma-300m since v1.35.0; BGE-large
-        // before that.
+        // `default = true`.
         let dm = Self::default_model();
         tracing::info!(
             model = %dm.name,
@@ -790,8 +774,8 @@ impl ModelConfig {
         dm
     }
 
-    /// SHL-V1.30-1 / P2.41 — scale the embed batch size with this model's
-    /// dim & seq, holding the per-tensor footprint roughly constant.
+    /// Scale the embed batch size with this model's dim & seq, holding the
+    /// per-tensor footprint roughly constant.
     ///
     /// BGE-large (1024 dim, 512 seq) at batch=64 ≈ 130 MB per forward-pass
     /// tensor — the empirical sweet spot on RTX 4060 8 GB. Nomic-coderank
@@ -863,7 +847,7 @@ impl ModelConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingConfig {
     /// Model name or preset (defaults to the row marked `default = true` in
-    /// `define_embedder_presets!` — `embeddinggemma-300m` since v1.35.0).
+    /// `define_embedder_presets!`).
     #[serde(default = "default_model_name")]
     pub model: String,
     /// HuggingFace repo ID (required for custom models)
@@ -890,7 +874,7 @@ pub struct EmbeddingConfig {
     /// Pooling strategy (`mean`, `cls`, or `lasttoken`; default `mean`).
     #[serde(default)]
     pub pooling: Option<PoolingStrategy>,
-    /// SHL-V1.29-1: Pad token id for `input_ids` padding (default `0`).
+    /// Pad token id for `input_ids` padding (default `0`).
     ///
     /// Override only when the custom tokenizer declares a non-zero pad id
     /// and `tokenizer.json` doesn't carry a usable `padding` section for
@@ -1063,8 +1047,8 @@ mod tests {
         assert_eq!(InputNames::default(), InputNames::bert());
     }
 
-    /// #1442: decoder-only embedders (third-party Qwen3-Embedding-4B
-    /// ONNX exports) need `position_ids` as an explicit input.
+    /// Decoder-only embedders (third-party Qwen3-Embedding-4B ONNX exports)
+    /// need `position_ids` as an explicit input.
     #[test]
     fn input_names_decoder_only_with_position_ids() {
         let n = InputNames::decoder_only_with_position_ids();
@@ -1074,9 +1058,7 @@ mod tests {
         assert_eq!(n.position_ids.as_deref(), Some("position_ids"));
     }
 
-    /// `bert()` and `bert_no_token_types()` must NOT bind `position_ids`
-    /// — adding the field broke the existing constructors silently
-    /// before the explicit assertion below.
+    /// `bert()` and `bert_no_token_types()` must NOT bind `position_ids`.
     #[test]
     fn input_names_bert_constructors_have_no_position_ids() {
         assert!(InputNames::bert().position_ids.is_none());
@@ -1092,10 +1074,9 @@ mod tests {
         let cfg = ModelConfig::from_preset("qwen3-embedding-4b")
             .expect("qwen3-embedding-4b preset must be registered");
         assert_eq!(cfg.dim, 2560);
-        // #1442: 4096 (not the 8B's 8192) — Qwen3-4B FP32 attention
-        // [batch, heads, seq, seq] at seq=8192 OOMs the 49 GB GPU on
-        // long-doc batches; cutting to 4096 keeps allocations inside
-        // the envelope. cqs's content windowing handles longer chunks.
+        // 4096: Qwen3-4B FP32 attention [batch, heads, seq, seq] at seq=8192
+        // OOMs the 49 GB GPU on long-doc batches; 4096 keeps allocations
+        // inside the envelope. cqs's content windowing handles longer chunks.
         assert_eq!(cfg.max_seq_length, 4096);
         assert_eq!(cfg.output_name, "last_hidden_state");
         assert_eq!(cfg.pooling, PoolingStrategy::LastToken);
@@ -1176,8 +1157,7 @@ mod tests {
     }
 
     // If architecture fields are absent from a custom config, resolve() must
-    // default to BERT + last_hidden_state + mean — i.e. existing custom configs
-    // (pre-949) keep working unchanged.
+    // default to BERT + last_hidden_state + mean.
     #[test]
     fn resolve_custom_without_architecture_uses_bert_defaults() {
         let _lock = ENV_MUTEX.lock().unwrap();
@@ -1445,7 +1425,7 @@ mod tests {
         assert_eq!(cfg.name, "e5-base");
     }
 
-    // ===== CQ-V1.33.0-2: embed_batch_size scales with model dim/seq =====
+    // ===== embed_batch_size scales with model dim/seq =====
 
     /// BGE-large (1024 dim, 512 seq) — the calibration baseline. Scales to 64.
     #[test]
@@ -1553,12 +1533,12 @@ mod tests {
         );
     }
 
-    // ===== TC-31: multi-model dim-threading (ModelConfig) =====
+    // ===== multi-model dim-threading (ModelConfig) =====
 
     #[test]
     fn tc31_resolve_config_dim_zero_falls_back_to_default() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        // TC-31.8: Custom config with dim=0 should be rejected and fall back to e5_base.
+        // Custom config with dim=0 should be rejected and fall back to default.
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = EmbeddingConfig {
             model: "zero-dim-model".to_string(),
@@ -1580,7 +1560,7 @@ mod tests {
         assert_eq!(cfg.dim, dm.dim, "Fallback should have default model's dim");
     }
 
-    // ===== TC-43: SEC-20 path traversal rejection tests =====
+    // ===== path traversal rejection tests =====
 
     #[test]
     fn test_sec20_onnx_path_traversal_rejected() {

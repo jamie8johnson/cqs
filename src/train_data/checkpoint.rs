@@ -40,10 +40,9 @@ pub fn write_checkpoint(path: &Path, repo: &str, sha: &str) -> Result<(), TrainD
         content.push('\n');
     }
     fs::write(&tmp, &content)?;
-    // atomic_replace: picks up fsync-tmp + EXDEV fallback + fsync-parent
-    // that the previous bare `fs::rename` skipped. Checkpoints drive
-    // training-data resumption, so lost checkpoint writes = re-traversing
-    // thousands of commits on the next run.
+    // atomic_replace provides fsync-tmp + EXDEV fallback + fsync-parent.
+    // Checkpoints drive training-data resumption, so lost checkpoint writes =
+    // re-traversing thousands of commits on the next run.
     crate::fs::atomic_replace(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         TrainDataError::Io(e)
@@ -54,11 +53,11 @@ pub fn write_checkpoint(path: &Path, repo: &str, sha: &str) -> Result<(), TrainD
 /// If a file doesn't end with `\n`, truncate to the last `\n`.
 /// Used for crash recovery: partial JSONL lines from interrupted writes.
 ///
-/// RM-V1.36-1: previously read the whole file into memory, then scanned for
-/// the last newline. Training-data JSONL files routinely run multi-GB; the
-/// in-memory scan allocated 2× file size at peak. Replaced with a tail-seek
-/// scan of the last 64 KiB (chosen to comfortably cover any realistic JSONL
-/// line; we widen iteratively for the long-line edge case).
+/// Tail-seek scan of the last 64 KiB (chosen to comfortably cover any
+/// realistic JSONL line; widens iteratively for the long-line edge case).
+/// Training-data JSONL files routinely run multi-GB, so reading the whole
+/// file into memory to find the last newline would allocate 2× file size at
+/// peak.
 pub fn truncate_incomplete_line(path: &Path) -> Result<(), TrainDataError> {
     use io::{Read, Seek, SeekFrom};
     let _span = tracing::info_span!("truncate_incomplete_line", path = %path.display()).entered();

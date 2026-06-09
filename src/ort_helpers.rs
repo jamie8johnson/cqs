@@ -1,11 +1,8 @@
 //! Shared ORT error mapping for the embedder, reranker, and SPLADE backends.
 //!
-//! Three near-identical `fn ort_err` helpers used to live in
-//! [`crate::embedder::provider`], [`crate::reranker`], and
-//! [`crate::splade`]; each wrapped `ort::Error` into the calling module's
-//! `*Error::Inference{,Failed}` variant via `.to_string()`. Audit finding
-//! CQ-V1.30.1-5 (P3-CQ-2): consolidated here as a single helper backed by
-//! a private trait.
+//! A single `ort_err` helper, backed by a private trait, wraps `ort::Error`
+//! into the calling module's `*Error::Inference{,Failed}` variant via
+//! `.to_string()`.
 //!
 //! The trait approach (rather than `E: From<String>`) avoids the
 //! reflexive `From<T> for T` ambiguity that breaks `.map_err(ort_err)`

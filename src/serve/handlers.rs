@@ -21,8 +21,8 @@ use super::data::{
 use super::error::ServeError;
 use super::AppState;
 
-/// #1376 / CQ-V1.33.0-5: shared scaffolding for every async handler that
-/// runs a sync `Store` call inside `spawn_blocking`. Centralizes the
+/// Shared scaffolding for every async handler that runs a sync `Store` call
+/// inside `spawn_blocking`. Centralizes the
 /// `Span::current()` capture, `state.blocking_permits` acquire (with the
 /// canonical `"blocking permit: {e}"` error string), `spawn_blocking`
 /// dispatch, span re-entry inside the closure, permit-hold-via-move,
@@ -31,8 +31,8 @@ use super::AppState;
 /// per-handler arg shaping.
 ///
 /// `label` is used in the join-error string only (`"{label} join: ..."`).
-/// Pre-fix the per-handler labels were `"stats join"` / `"graph join"` /
-/// etc. — kept stable so existing log greps still match.
+/// Labels are `"stats join"` / `"graph join"` / etc. — kept stable so log
+/// greps match.
 ///
 /// The closure receives `&Store<ReadOnly>` and returns
 /// `Result<T, E: Into<ServeError>>` so callers can pass either
@@ -49,16 +49,16 @@ where
     T: Send + 'static,
     E: Into<ServeError> + Send + 'static,
 {
-    // P2.25: capture the per-request span (TraceLayer assigns one) and
-    // re-enter it inside the blocking closure so the inner `build_*`
+    // Capture the per-request span (TraceLayer assigns one) and re-enter it
+    // inside the blocking closure so the inner `build_*`
     // span lands as a child of the http_request span. Without this,
     // `RUST_LOG=info` shows `build_*` orphaned from the request and
     // operators can't correlate slow handler latency.
     let span = tracing::Span::current();
     let store = state.store.clone();
 
-    // P2.76: acquire a semaphore permit before queueing the blocking
-    // job. Caps concurrent SQL-bound work at `serve_blocking_permits()`
+    // Acquire a semaphore permit before queueing the blocking job. Caps
+    // concurrent SQL-bound work at `serve_blocking_permits()`
     // so a fan-out client can't pin the full 512-thread axum default
     // blocking pool with idle SQLite handles. Permit is held for the
     // life of the spawned closure via `acquire_owned()` + closure move.
@@ -82,7 +82,7 @@ where
     .map_err(Into::into)
 }
 
-// ─── SEC-V1.36-6 / token-leak posture ──────────────────────────────
+// ─── token-leak posture ─────────────────────────────────────────────
 //
 // The `Query<T>` extractors below participate in a defense-in-depth
 // chain that prevents `?token=…` URLs from leaking into either response
@@ -91,16 +91,14 @@ where
 //      `"Failed to deserialize query string: <field>: <serde error>"` —
 //      the URI itself is never placed in the body. Confirmed against
 //      axum-core 0.5 / serde_path_to_error 0.1.
-//   2. **Trace span**: P1.11 replaced the default TraceLayer
-//      `make_span_with` with one recording `path = %req.uri().path()`
-//      only — query string excluded from spans.
+//   2. **Trace span**: the TraceLayer `make_span_with` records
+//      `path = %req.uri().path()` only — query string excluded from spans.
 //   3. **Auth redirect**: when auth is on, `needs_url_strip` (auth.rs)
 //      302-redirects any `?token=…` URL before the extractor fires.
 //
-// The audit-finding SEC-V1.36-6 (#1461 sub-item) speculated that
-// tower-http's debug log path echoed the URI; verified against
-// tower-http 0.6 source that this is not the case under our config.
-// Regression-guarded by `serve::tests::auth_tests::sec_v136_6_*`.
+// tower-http's debug log path does not echo the URI under our config
+// (verified against tower-http 0.6 source). Regression-guarded by
+// `serve::tests::auth_tests::sec_v136_6_*`.
 //
 // Adding a new `Query<T>` extractor? You inherit this posture for
 // free — no per-handler scrub needed. Don't add fields whose `Display`
@@ -199,11 +197,9 @@ pub(crate) async fn chunk_detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ChunkDetail>, ServeError> {
-    // SEC-V1.38-5 (#1463): cap user-controlled path string at 256 chars
-    // before logging at info to limit journald inflation. The full id is
-    // still passed downstream for the lookup; this only bounds the log
-    // event field. Mirrors the SEC-V1.30.1-2 / OB-V1.30.1-10 pattern that
-    // demoted `serve::search` query-text logging.
+    // Cap user-controlled path string at 256 chars before logging at info to
+    // limit journald inflation. The full id is still passed downstream for
+    // the lookup; this only bounds the log event field.
     tracing::info!(
         chunk_id = %id.chars().take(256).collect::<String>(),
         id_len = id.len(),
@@ -229,11 +225,10 @@ pub(crate) async fn search(
     State(state): State<AppState>,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, ServeError> {
-    // OB-V1.30.1-10: log only metadata at info; full query at debug
-    // so it's available for local debugging but not journal-retained
-    // by default. The TraceLayer span already has the redacted URI;
-    // this used to emit `query = <full text>` at info, which bypassed
-    // that redaction and would persist a credential pasted as a
+    // Log only metadata at info; full query at debug so it's available for
+    // local debugging but not journal-retained by default. The TraceLayer
+    // span already has the redacted URI; emitting `query = <full text>` at
+    // info would bypass that redaction and persist a credential pasted as a
     // search query straight into the journal.
     tracing::debug!(query = %params.q, "serve::search query received");
     tracing::info!(

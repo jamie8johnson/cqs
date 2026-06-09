@@ -36,10 +36,9 @@ pub(super) fn prepare_for_embedding(
     // Step 1: Apply windowing to split long chunks into overlapping windows
     let windowed_chunks = apply_windowing(batch.chunks, embedder);
 
-    // P2.38 (CQ-V1.33.0-1): use the model-aware NL variant so the section-chunk
-    // content budget scales with `model.max_seq_length`. The legacy 1-arg form
-    // hardcodes 512 via the `CQS_MAX_SEQ_LENGTH` env path; nomic-coderank
-    // (2048 seq) was silently capped at 25% capacity.
+    // Use the model-aware NL variant so the section-chunk content budget
+    // scales with `model.max_seq_length` — a fixed 512 cap would limit
+    // nomic-coderank (2048 seq) to 25% capacity.
     let model_max_seq_len = embedder.model_config().max_seq_length;
 
     // Step 2a: Check global embedding cache first (fastest path)
@@ -50,7 +49,7 @@ pub(super) fn prepare_for_embedding(
         .collect();
     let mut global_hits: HashMap<String, Embedding> = HashMap::new();
     if let Some(cache) = global_cache {
-        // #1128: pre-enrichment helper writes/reads the post-enrichment
+        // Pre-enrichment helper writes/reads the post-enrichment
         // `Embedding` purpose. EmbeddingBase has no producer here yet —
         // when enrichment caching lands it will own its own purpose.
         match cache.read_batch(
@@ -79,11 +78,10 @@ pub(super) fn prepare_for_embedding(
     // Skip when the embedder dim differs from store dim — prevents reusing
     // embeddings from a different model after model switching.
     //
-    // P3.42: only issue the store SELECT for hashes the global cache didn't
-    // already satisfy. On a warm rebuild where every chunk hits the global
-    // cache, the previous shape did one bind-heavy SELECT for the full
-    // hash list and threw the result away. The `missed` filter is a free
-    // cost in that case and saves a non-trivial round trip when it bites.
+    // Only issue the store SELECT for hashes the global cache didn't already
+    // satisfy. On a warm rebuild where every chunk hits the global cache, the
+    // `missed` filter avoids a bind-heavy SELECT whose result would be thrown
+    // away, and saves a round trip when it bites.
     let mut existing = if dim == store.dim() {
         let missed: Vec<&str> = hashes
             .iter()
@@ -112,9 +110,9 @@ pub(super) fn prepare_for_embedding(
 
     // Step 3: Separate into cached vs to_embed (global cache > store cache > embed).
     //
-    // P3 #126: take ownership via `.remove()` so we don't `.clone()` every
-    // cached embedding twice — once when collecting from `read_batch` and
-    // again into `cached`. Duplicate content_hashes within a single batch
+    // Take ownership via `.remove()` so we don't `.clone()` every cached
+    // embedding twice — once when collecting from `read_batch` and again into
+    // `cached`. Duplicate content_hashes within a single batch
     // (rare — implies identical chunks across files) fall through to the
     // store cache or `to_embed` on the second hit, which is correct
     // behaviour: one cached embedding can only satisfy one slot.
@@ -173,7 +171,7 @@ pub(super) fn create_embedded_batch(
         file_mtimes,
         // Default: real embeddings throughout. The skip-first-pass path
         // builds EmbeddedBatch directly with `uncached_need_embedding: true`
-        // (see #1452 paths in `gpu_embed_stage` / `cpu_embed_stage`).
+        // (see `gpu_embed_stage` / `cpu_embed_stage`).
         uncached_need_embedding: false,
     }
 }
@@ -277,12 +275,12 @@ pub(super) fn gpu_embed_stage(
             continue;
         }
 
-        // #1452: skip-first-pass-embed short-circuit. When set, we do NOT
-        // call `embed_documents()` for cache-miss chunks — instead we
-        // emit zero-vec sentinels stamped `needs_embedding=1` so the
-        // post-summary `enrichment_pass` can land their real vectors
-        // without the wasted GPU time of a discarded first pass.
-        // Cache hits still pass through with their real embeddings.
+        // Skip-first-pass-embed short-circuit. When set, we do NOT call
+        // `embed_documents()` for cache-miss chunks — instead we emit zero-vec
+        // sentinels stamped `needs_embedding=1` so the post-summary
+        // `enrichment_pass` can land their real vectors without the wasted GPU
+        // time of a discarded first pass. Cache hits still pass through with
+        // their real embeddings.
         if ctx.skip_first_pass_embed {
             let dim = embedder.embedding_dim();
             let zero_vec_count = prepared.to_embed.len();
@@ -331,17 +329,15 @@ pub(super) fn gpu_embed_stage(
             "embed_batch start"
         );
 
-        // Note: the previous "Pre-filter long batches to CPU (GPU CUDNN
-        // limit)" pre-flight check was removed in #1395. Both
+        // No pre-flight "filter long batches to CPU" check: both
         // `apply_windowing` (`src/cli/pipeline/windowing.rs`) and
-        // `generate_nl_description_with_seq_len` already bound chunk text
-        // to `model_max_seq_length` tokens, so the pre-filter was firing
-        // on inputs the model could correctly handle — calibrated for
-        // BERT-class 512-token models, it false-positive'd nearly every
-        // windowed chunk on Gemma 2K and Qwen3-8B 8K presets and
-        // defeated `CQS_DISABLE_CPU_WARM` (#1392). Genuine GPU failures
-        // (CUDNN seq-len limits, OOM, etc.) still route to CPU via the
-        // existing `fail_tx` path inside `embed_documents` below.
+        // `generate_nl_description_with_seq_len` already bound chunk text to
+        // `model_max_seq_length` tokens, so such a filter (calibrated for
+        // BERT-class 512-token models) would false-positive nearly every
+        // windowed chunk on Gemma 2K and Qwen3-8B 8K presets and defeat
+        // `CQS_DISABLE_CPU_WARM`. Genuine GPU failures (CUDNN seq-len limits,
+        // OOM, etc.) still route to CPU via the `fail_tx` path inside
+        // `embed_documents` below.
 
         let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
         let embed_start = std::time::Instant::now();
@@ -356,10 +352,10 @@ pub(super) fn gpu_embed_stage(
 
                 // Write new embeddings to global cache (best-effort).
                 //
-                // P3 #127: build with borrows so we don't clone every
-                // `content_hash` and embedding vec into an owned tuple per
-                // batch. The borrowed slices live until `write_batch`
-                // returns, well within the chunk/embedding lifetimes here.
+                // Build with borrows so we don't clone every `content_hash`
+                // and embedding vec into an owned tuple per batch. The borrowed
+                // slices live until `write_batch` returns, well within the
+                // chunk/embedding lifetimes here.
                 if let Some(ref cache) = ctx.global_cache {
                     let entries: Vec<(&str, &[f32])> = prepared
                         .to_embed
@@ -437,12 +433,11 @@ pub(super) fn cpu_embed_stage(
     // CQS_DISABLE_CPU_WARM=1: don't compete with GPU for parse_rx batches.
     // CPU still drains fail_rx for fault tolerance (GPU-failed chunks),
     // but if GPU handles every batch successfully the CPU embedder never
-    // lazy-inits, saving the ONNX-mmap RSS. The motivating case is the
-    // 2026-05-03 Qwen3-Embedding-8B ceiling probe (#1392): each session
-    // mmaps the 30 GB FP32 weights file, so racing on parse_rx caused
-    // both CPU and GPU sessions to exist simultaneously — RSS climbed
-    // to 91 GB / 94 GB usable inside WSL2 and forced an early kill.
-    // Default (env unset) preserves the historical race / overflow path.
+    // lazy-inits, saving the ONNX-mmap RSS. The motivating case is a large
+    // embedder (e.g. Qwen3-Embedding-8B) whose session mmaps a 30 GB FP32
+    // weights file: racing on parse_rx would keep both CPU and GPU sessions
+    // alive at once, climbing to ~91 GB RSS inside WSL2 and forcing an early
+    // kill. Default (env unset) takes the race / overflow path.
     let disable_cpu_warm = std::env::var("CQS_DISABLE_CPU_WARM")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
@@ -506,10 +501,10 @@ pub(super) fn cpu_embed_stage(
         let prepared =
             prepare_for_embedding(batch, emb, &ctx.store, ctx.global_cache.as_deref(), fp);
 
-        // #1452: skip-first-pass-embed short-circuit (CPU side). Mirrors the
-        // GPU stage above — emit zero-vec sentinels for to_embed chunks
-        // stamped `needs_embedding=1`. Cache hits still pass through with
-        // their real embeddings.
+        // Skip-first-pass-embed short-circuit (CPU side). Mirrors the GPU
+        // stage above — emit zero-vec sentinels for to_embed chunks stamped
+        // `needs_embedding=1`. Cache hits still pass through with their real
+        // embeddings.
         if ctx.skip_first_pass_embed && !prepared.to_embed.is_empty() {
             let dim = emb.embedding_dim();
             let zero_vec_count = prepared.to_embed.len();
@@ -557,8 +552,8 @@ pub(super) fn cpu_embed_stage(
 
             // Write new embeddings to global cache (best-effort).
             //
-            // P3 #127: build with borrows so we don't clone every
-            // `content_hash` and embedding vec into an owned tuple per batch.
+            // Build with borrows so we don't clone every `content_hash` and
+            // embedding vec into an owned tuple per batch.
             if let Some(ref cache) = ctx.global_cache {
                 let entries: Vec<(&str, &[f32])> = prepared
                     .to_embed

@@ -49,12 +49,11 @@ pub struct BatchSubmitItem {
     pub content: String,
     /// Stringly-typed context bag whose meaning depends on which prompt
     /// builder (`build_summary_prompt` / `build_doc_prompt` /
-    /// `build_hyde_prompt` / pre-built path) consumes the item. P3-47:
-    /// upgrading to a `PromptContext` enum touches every reader and
-    /// every construction site (see `llm/batch.rs:874,993`,
-    /// `llm/doc_comments.rs:266`, `llm/summary.rs:86`,
-    /// `llm/hyde.rs:57`, `llm/local.rs:739`) so the enum migration is
-    /// scoped to a separate change. Until then, the field's payload is:
+    /// `build_hyde_prompt` / pre-built path) consumes the item. A typed
+    /// `PromptContext` enum would touch every reader and construction site
+    /// (`llm/batch.rs:874,993`, `llm/doc_comments.rs:266`,
+    /// `llm/summary.rs:86`, `llm/hyde.rs:57`, `llm/local.rs:739`). The
+    /// field's payload is:
     ///
     /// | Submission path                          | Field carries           |
     /// |------------------------------------------|-------------------------|
@@ -74,13 +73,11 @@ pub struct BatchSubmitItem {
 
 /// Which prompt builder a batch submission uses.
 ///
-/// #1347 / EX-V1.33-1: replaces the three `submit_*_batch` trait methods
-/// (`Prebuilt` / `DocComment` / `Hyde`) that differed only in which
-/// `build_*_prompt` closure was passed to `submit_batch_inner` /
-/// `submit_via_chat_completions`. Adding a fourth purpose (e.g.
-/// `Classification`, `ContrastiveRepair`, `CodeReview`) is now a single new
-/// variant + the impl's `match` arm — instead of: a new trait method × a
-/// new impl on every `BatchProvider` (4 sites: `LlmClient`, `LocalProvider`,
+/// The variant selects which `build_*_prompt` closure `submit_batch_inner` /
+/// `submit_via_chat_completions` runs. Adding a fourth purpose (e.g.
+/// `Classification`, `ContrastiveRepair`, `CodeReview`) is a single new
+/// variant + the impl's `match` arm — no new trait method × impl on every
+/// `BatchProvider` (4 sites: `LlmClient`, `LocalProvider`,
 /// `MockBatchProvider`, `DefaultValidationProvider`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchKind {
@@ -113,19 +110,16 @@ impl BatchKind {
 /// Abstracts the batch submission, polling, and result fetching lifecycle.
 /// Currently implemented for Anthropic's Messages Batches API.
 ///
-/// API-V1.38-3 (#1463): `Send + Sync` matches the sibling traits
-/// `VectorIndex`, `IndexBackend`, `Reranker`. Both shipping impls
-/// (`LlmClient` in `llm/batch.rs`, `LocalProvider` in `llm/local.rs`)
-/// already satisfy it; making it explicit means the next async-batch
-/// refactor doesn't surface as a confusing object-safety error.
+/// `Send + Sync` matches the sibling traits `VectorIndex`, `IndexBackend`,
+/// `Reranker`. Both shipping impls (`LlmClient` in `llm/batch.rs`,
+/// `LocalProvider` in `llm/local.rs`) satisfy it; making it explicit keeps a
+/// future async-batch refactor from surfacing as a confusing object-safety
+/// error.
 pub trait BatchProvider: Send + Sync {
     /// Submit a batch under the given `kind`. The kind selects which prompt
     /// builder constructs the user message from each `BatchSubmitItem`'s
     /// `(content, context, language)` triple (or, for [`BatchKind::Prebuilt`],
     /// uses `content` directly).
-    ///
-    /// #1347 / EX-V1.33-1: collapses the previous trio of `submit_batch_prebuilt`
-    /// / `submit_doc_batch` / `submit_hyde_batch` methods into one.
     fn submit_batch(
         &self,
         kind: BatchKind,
@@ -154,9 +148,9 @@ pub trait BatchProvider: Send + Sync {
     /// Get the model name for this provider.
     fn model_name(&self) -> &str;
 
-    /// EXT-V1.36-1 / P3: validate that the model name configured for this
-    /// provider matches the provider's expected naming convention. Default
-    /// accepts any non-empty model so impls can opt in incrementally.
+    /// Validate that the model name configured for this provider matches the
+    /// provider's expected naming convention. Default accepts any non-empty
+    /// model so impls can opt in incrementally.
     ///
     /// Anthropic: should override and reject names that don't start with
     /// `claude-`. Local OpenAI-compat: any non-empty name is fine because
@@ -176,12 +170,12 @@ pub trait BatchProvider: Send + Sync {
         Ok(())
     }
 
-    // API-V1.36-7 / #1459 sub-7: the optional streaming per-item callback
-    // is now passed at construction (via [`crate::llm::create_client`]'s
-    // `on_item` arg, or [`LocalProvider::with_on_item_complete`] for direct
-    // construction in tests). Removing it from the trait keeps every method
-    // `&self` and lets callers hold `&dyn BatchProvider` without wrapping in
-    // a `Mutex` just to register the callback.
+    // The optional streaming per-item callback is passed at construction
+    // (via [`crate::llm::create_client`]'s `on_item` arg, or
+    // [`LocalProvider::with_on_item_complete`] for direct construction in
+    // tests). Keeping it off the trait keeps every method `&self` and lets
+    // callers hold `&dyn BatchProvider` without wrapping in a `Mutex` just to
+    // register the callback.
     //
     // The Anthropic provider ignores the callback (fetch-at-end semantics).
     // The Local provider stores it under interior mutability.

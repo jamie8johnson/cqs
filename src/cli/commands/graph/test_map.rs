@@ -2,13 +2,12 @@
 //!
 //! Core BFS logic is in `build_test_map()` so batch mode can reuse it.
 //!
-//! ## Polymorphic routing (Phase 1)
+//! ## Polymorphic routing
 //!
-//! `cqs test-map <name>` historically required a function-or-method name
-//! and returned an empty match list for any other chunk kind. This module
-//! now consults `cqs::kind::classify_hits` against an exact-name lookup
-//! before the BFS query — kind-mismatch fallbacks emit a kind-labeled
-//! definition list with a redirect note.
+//! `cqs test-map <name>` consults `cqs::kind::classify_hits` against an
+//! exact-name lookup before the BFS query. For a name that isn't a
+//! function-or-method, the kind-mismatch fallback emits a kind-labeled
+//! definition list with a redirect note instead of an empty match list.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -38,14 +37,14 @@ pub(crate) struct TestMatch {
 pub(crate) struct TestMapEntry {
     pub name: String,
     pub file: String,
-    pub line_start: u32, // was "line"
+    pub line_start: u32,
     pub call_depth: usize,
     pub call_chain: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct TestMapOutput {
-    pub name: String, // was "function"
+    pub name: String,
     pub tests: Vec<TestMapEntry>,
     pub count: usize,
 }
@@ -98,14 +97,11 @@ pub(crate) fn build_test_map(
     let max_nodes = test_map_max_nodes();
 
     // Reverse BFS from target.
-    // PERF-V1.33-1 / #1377 / P3-55: keys + parent-pointers are `Arc<str>`
-    // so the BFS reuses the already-interned names from `graph.reverse`
-    // instead of allocating a fresh `String` per visit. The chain walk
-    // also clones via `Arc::clone` (RC bump) instead of full `String`
-    // duplication. Pre-fix: ~10k `caller.to_string()` + `current.clone()`
-    // allocations per call on hub functions; post-fix: `Arc::clone`.
-    // `None` parent encodes "this is the target" — replaces the
-    // `String::new()` sentinel.
+    // Keys + parent-pointers are `Arc<str>` so the BFS reuses the
+    // already-interned names from `graph.reverse` instead of allocating a
+    // fresh `String` per visit (~10k `to_string()` + `clone()` allocations
+    // per call on hub functions otherwise). The chain walk clones via
+    // `Arc::clone` (RC bump). A `None` parent encodes "this is the target".
     let mut ancestors: HashMap<Arc<str>, (usize, Option<Arc<str>>)> = HashMap::new();
     let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
     let target_arc: Arc<str> = Arc::from(target_name);
@@ -148,11 +144,11 @@ pub(crate) fn build_test_map(
                 // bump only); the rendered chain entries are `String` for
                 // the public TestMatch API.
                 let mut cursor: Arc<str> = Arc::from(test.name.as_str());
-                // RB-V1.40-1: `saturating_add` keeps `chain_limit`
-                // bounded under any future caller-supplied `max_depth`.
-                // The clap range bound on `TestMapArgs::depth` already
-                // caps this in practice (1..=50); the saturating arithmetic
-                // is defensive against direct lib callers bypassing clap.
+                // `saturating_add` keeps `chain_limit` bounded under any
+                // caller-supplied `max_depth`. The clap range bound on
+                // `TestMapArgs::depth` already caps this in practice
+                // (1..=50); the saturating arithmetic is defensive against
+                // direct lib callers bypassing clap.
                 let chain_limit = max_depth.saturating_add(1);
                 while chain.len() < chain_limit {
                     chain.push(cursor.as_ref().to_string());
@@ -214,7 +210,7 @@ pub(crate) fn cmd_test_map(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_test_map", name, limit, cross_project).entered();
-    // Task A3: cap on rendered matches. Default is 5 (LimitArg). Truncates the
+    // Cap on rendered matches. Default is 5 (LimitArg). Truncates the
     // BFS-derived matches AFTER sorting so the "closest" tests rank first.
     let limit = limit.clamp(1, 100);
 
@@ -254,8 +250,8 @@ pub(crate) fn cmd_test_map(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // Polymorphic-routing kind detection (Phase 1). Same dispatch
-    // pattern as cmd_impact / cmd_callers / cmd_callees.
+    // Polymorphic-routing kind detection. Same dispatch pattern as
+    // cmd_impact / cmd_callers / cmd_callees.
     let chunks = store.lookup_by_name(name)?;
     let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
     let kind = classify_hits(&hits);
@@ -415,9 +411,9 @@ mod output_tests {
             count: 1,
         };
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["name"], "my_func"); // was "function"
+        assert_eq!(json["name"], "my_func");
         assert!(json.get("function").is_none());
-        assert_eq!(json["tests"][0]["line_start"], 10); // was "line"
+        assert_eq!(json["tests"][0]["line_start"], 10);
     }
 
     #[test]
@@ -427,7 +423,7 @@ mod output_tests {
         assert!(output.tests.is_empty());
     }
 
-    // Polymorphic-routing Phase 1: test-map kind-mismatch fallback shape.
+    // test-map kind-mismatch fallback shape.
     fn make_chunk(
         chunk_type: cqs::parser::ChunkType,
         name: &str,

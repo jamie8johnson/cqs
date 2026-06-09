@@ -17,7 +17,8 @@
 //! (`pub(crate)` / `pub(in crate::cli)`), and integration tests in `tests/`
 //! link against the *library* only — the `cli` module lives under
 //! `src/main.rs` and isn't reachable from there. Co-locating with
-//! `handlers/search.rs::tests` matches the precedent set by TC-HP-7.
+//! `handlers/search.rs::tests` matches the precedent for content-asserting
+//! dispatch tests.
 //!
 //! ## Envelope shape assertions
 //!

@@ -1,13 +1,12 @@
-//! Per-launch authentication token for `cqs serve` (#1096, SEC-7).
+//! Per-launch authentication token for `cqs serve`.
 //!
-//! `cqs serve` previously had no authentication — anyone able to reach
-//! the bind address got full read access to the project (source, notes,
-//! graph, embeddings). The host-header allowlist (#1094 SEC-1) and SQL
-//! caps (SEC-3) closed the most acute exploit paths, but on a multi-user
-//! box or after a container escape the server was still fully open.
+//! Without auth, anyone able to reach the bind address gets full read access
+//! to the project (source, notes, graph, embeddings) — the host-header
+//! allowlist and SQL caps don't help on a multi-user box or after a container
+//! escape.
 //!
-//! This module adds a per-launch token, generated once at startup and
-//! checked on every request via three accepted channels:
+//! A per-launch token is generated once at startup and checked on every
+//! request via three accepted channels:
 //!
 //! 1. **`Authorization: Bearer <token>` header** — for API clients and
 //!    `fetch()` callers that can set headers.
@@ -19,15 +18,15 @@
 //! 3. **`cqs_token_<port>` cookie** — used after the redirect handoff
 //!    above, for every subsequent request. Cookie name is per-port so
 //!    two `cqs serve` instances on the same host don't collide in the
-//!    browser jar (#1135).
+//!    browser jar.
 //!
 //! The compare is constant-time via [`subtle::ConstantTimeEq`] so a
 //! timing oracle can't recover the token byte-by-byte. The token is 32
 //! random bytes URL-safe base64-encoded (no padding) — 256 bits of
 //! entropy in a paste-friendly 43-character string.
 //!
-//! `--no-auth` opts out for back-compat with scripted automation; the
-//! caller is responsible for emitting the loud-warning banner.
+//! `--no-auth` opts out for scripted automation; the caller is responsible for
+//! emitting the loud-warning banner.
 
 use std::sync::Arc;
 
@@ -52,13 +51,12 @@ use subtle::ConstantTimeEq;
 /// the same `(host, path)` pair — the second redirect overwrites the
 /// first, silently logging the user out of the original tab and
 /// (worse) sending B's token to A on every subsequent request.
-/// Closes #1135.
 const COOKIE_NAME_PREFIX: &str = "cqs_token";
 
 /// Compute the per-launch cookie name from the bind port. Two
 /// instances on the same host but different ports get distinct
 /// cookies, so the browser cookie jar can hold both without
-/// collision. (#1135.)
+/// collision.
 pub(crate) fn cookie_name_for_port(port: u16) -> String {
     format!("{COOKIE_NAME_PREFIX}_{port}")
 }
@@ -73,7 +71,7 @@ pub(crate) fn cookie_name_for_port(port: u16) -> String {
 /// the byte sequence is always valid in an HTTP header value and a
 /// cookie value, so the `HeaderValue::from_str(...).expect(...)` at
 /// the cookie-set callsite is a structural guarantee rather than a
-/// docstring promise. Closes #1134.
+/// docstring promise.
 ///
 /// Public so `bin/cqs` can construct one in `cmd_serve` and hand it to
 /// [`super::run_server`]; the token string itself is private and only
@@ -113,13 +111,13 @@ impl AuthToken {
     /// Construct from a known string. Validates the alphabet at
     /// construction so the type-level invariant on [`AuthToken`] holds
     /// for every constructed value — there is no path that produces
-    /// an `AuthToken` with bytes outside `[A-Za-z0-9_-]`. (#1134.)
+    /// an `AuthToken` with bytes outside `[A-Za-z0-9_-]`.
     ///
-    /// Used by tests pinning a deterministic token, and by future
-    /// production callers (e.g. a stable-token-from-env feature for
-    /// scripted automation). Reject CR/LF, semicolons, commas, and
-    /// every other byte that would let an attacker inject cookie or
-    /// header syntax through a configured token value.
+    /// Used by tests pinning a deterministic token, and by production callers
+    /// supplying a stable token (e.g. from env for scripted automation).
+    /// Rejects CR/LF, semicolons, commas, and every other byte that would let
+    /// an attacker inject cookie or header syntax through a configured token
+    /// value.
     pub fn try_from_string(s: impl Into<String>) -> Result<Self, InvalidTokenAlphabet> {
         let s = s.into();
         if !is_valid_token_alphabet(&s) {
@@ -140,10 +138,9 @@ impl AuthToken {
 /// must be `[A-Za-z0-9_-]`. Pulled out so [`AuthToken::random`] and
 /// [`AuthToken::try_from_string`] share the same predicate.
 ///
-/// We do not require the length be exactly 43 (the natural
-/// `random()` output) because future deterministic tokens (env-var
-/// stable IDs) may be shorter — the invariant the type guarantees
-/// is "valid in an HTTP header / cookie / URL query without
+/// The length need not be exactly 43 (the natural `random()` output) because
+/// deterministic tokens (env-var stable IDs) may be shorter — the invariant
+/// the type guarantees is "valid in an HTTP header / cookie / URL query without
 /// escaping", not "exactly 256 bits of entropy".
 fn is_valid_token_alphabet(s: &str) -> bool {
     if s.is_empty() {
@@ -153,14 +150,11 @@ fn is_valid_token_alphabet(s: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Authentication mode for `cqs serve`. (#1136.)
+/// Authentication mode for `cqs serve`.
 ///
-/// Replaces the previous `Option<AuthToken>` API on
-/// [`super::run_server`] / [`super::build_router`]. The point of the
-/// enum is to make "auth disabled" *physically* impossible without
-/// importing [`NoAuthAcknowledgement`] — a future internal caller
-/// passing the wrong default no longer ships a fully-open server with
-/// no compile-time signal.
+/// The enum makes "auth disabled" *physically* impossible without importing
+/// [`NoAuthAcknowledgement`] — an internal caller passing the wrong default
+/// can't ship a fully-open server with no compile-time signal.
 ///
 /// Construct via [`AuthMode::required`] or [`AuthMode::disabled`].
 #[derive(Clone, Debug)]
@@ -186,7 +180,7 @@ impl AuthMode {
     /// Build an auth-disabled mode. Requires the caller to supply a
     /// [`NoAuthAcknowledgement`] proof token, which can only be
     /// constructed inside the `--no-auth` CLI parsing path or
-    /// via the test constructor. Closes #1136.
+    /// via the test constructor.
     pub fn disabled(ack: NoAuthAcknowledgement) -> Self {
         Self::Disabled(ack)
     }
@@ -205,9 +199,9 @@ impl AuthMode {
 /// Proof token: `AuthMode::Disabled` requires you to construct one
 /// of these. The struct is `pub` so callers can use the type, but
 /// the inner zero-sized field is private — the only paths that can
-/// produce a value are the explicit constructors below. A future
-/// internal caller cannot disable auth without intentionally
-/// importing one of these methods. Closes #1136.
+/// produce a value are the explicit constructors below. An internal
+/// caller cannot disable auth without intentionally importing one of
+/// these methods.
 #[derive(Clone, Debug)]
 pub struct NoAuthAcknowledgement(());
 
@@ -222,8 +216,8 @@ impl NoAuthAcknowledgement {
 
     /// Construct for tests only. Gated to `#[cfg(test)]` so the
     /// production binary cannot reach this constructor at all. The
-    /// test routers in `serve::tests` use this to build the
-    /// pre-#1096 handler tree without the auth layer.
+    /// test routers in `serve::tests` use this to build the handler
+    /// tree without the auth layer.
     #[cfg(test)]
     pub fn for_test() -> Self {
         Self(())
@@ -241,8 +235,8 @@ fn ct_eq(a: &str, b: &str) -> bool {
 }
 
 /// Case-fold + percent-decode a query-pair key for comparison.
-/// SEC-7 leakage fix (CQ-V1.30.1-4): `?Token=…` and `?%74oken=…` must be
-/// recognised as `token=` so the redirect strips them.
+/// `?Token=…` and `?%74oken=…` are recognised as `token=` so the redirect
+/// strips them (URL-bar leakage scrub).
 fn pair_key_is_token(pair: &str) -> bool {
     let Some(eq_idx) = pair.find('=') else {
         return pair.eq_ignore_ascii_case("token");
@@ -276,9 +270,9 @@ fn strip_token_param(uri: &Uri) -> String {
 }
 
 /// Low-cardinality classification for a 401 rejection. Surfaced on the
-/// `enforce_auth` rejection warn (OB-V1.30.1-5) so operators can
-/// distinguish "client sent nothing" from "client sent a stale or
-/// wrong-channel credential" without logging the actual material.
+/// `enforce_auth` rejection warn so operators can distinguish "client sent
+/// nothing" from "client sent a stale or wrong-channel credential" without
+/// logging the actual material.
 ///
 /// Cardinality is fixed at four — the variants cover every channel
 /// `check_request` inspects, so the journal's reason-cardinality stays
@@ -318,21 +312,21 @@ enum ChannelOutcome {
     NotPresent,
 }
 
-/// EX-V1.30.1-5 (#1218): one auth channel — Bearer header, cookie, query
-/// param, or any future addition (mTLS client cert, API key, JWT, SSO).
+/// One auth channel — Bearer header, cookie, query param, or any future
+/// addition (mTLS client cert, API key, JWT, SSO).
 ///
-/// Adding a new channel becomes:
+/// Adding a new channel is:
 /// 1. New `impl AuthChannel for MyChannel` block.
 /// 2. New row in [`UnauthorizedReason`] (so 401 telemetry stays specific).
 /// 3. One line in [`check_request`]'s channel array, in the desired
 ///    priority position.
 ///
 /// `check_request` walks the channels in priority order on every request.
-/// Priority is (header > cookie > query) today and is documented at the
-/// channel array's construction site, not implicit in the trait.
+/// Priority is (header > cookie > query), documented at the channel array's
+/// construction site, not implicit in the trait.
 trait AuthChannel {
-    /// Stable short name. Used only for tracing today; an
-    /// observability follow-up could log the matched channel here.
+    /// Stable short name. Used only for tracing; an observability follow-up
+    /// could log the matched channel here.
     #[allow(
         dead_code,
         reason = "reserved for the audit-logging follow-up flagged in #1218"
@@ -350,15 +344,14 @@ trait AuthChannel {
     /// channel that returned `Mismatch`, then asks it for this reason.
     fn unauthorized_reason(&self) -> UnauthorizedReason;
 
-    /// AC-V1.30.1-5: whether the request shape this channel sees
-    /// requires post-auth URL strip + redirect (the SEC-7 leakage
-    /// scrub for `?token=…` even when another channel matched). Default
-    /// is `false` for channels that don't carry leakable state in the
-    /// URL; `QueryParamChannel` overrides to `true` when the URL has
-    /// any `?token=` shape (case-folded, percent-decoded). The
-    /// aggregator ORs across channels, so the redirect fires whenever
-    /// *any* channel sees a leaky URL — even when the cookie/header
-    /// is what authenticated.
+    /// Whether the request shape this channel sees requires post-auth URL
+    /// strip + redirect (the leakage scrub for `?token=…` even when another
+    /// channel matched). Default is `false` for channels that don't carry
+    /// leakable state in the URL; `QueryParamChannel` overrides to `true` when
+    /// the URL has any `?token=` shape (case-folded, percent-decoded). The
+    /// aggregator ORs across channels, so the redirect fires whenever *any*
+    /// channel sees a leaky URL — even when the cookie/header is what
+    /// authenticated.
     fn needs_url_strip(&self, _req: &Request) -> bool {
         false
     }
@@ -398,12 +391,11 @@ impl AuthChannel for BearerHeaderChannel {
 }
 
 /// `cqs_token_<port>` cookie channel. Lifetime ties to the per-server
-/// `AuthMiddlewareState` that owns the lookup needle string — see
-/// PF-V1.30.1-6 for the pre-built-needle rationale.
+/// `AuthMiddlewareState` that owns the pre-built lookup needle string.
 ///
-/// Cookie name is per-port (#1135) so two `cqs serve` instances on the
-/// same host don't collide in the browser jar. RFC 6265 syntax: name=value
-/// pairs separated by `; `; quoted values are not used by this server.
+/// Cookie name is per-port so two `cqs serve` instances on the same host don't
+/// collide in the browser jar. RFC 6265 syntax: name=value pairs separated by
+/// `; `; quoted values are not used by this server.
 struct CookieChannel<'a> {
     needle: &'a str,
 }
@@ -444,9 +436,8 @@ impl AuthChannel for CookieChannel<'_> {
 
 /// `?token=<token>` query-param channel. Lowest priority of the three;
 /// always pairs with [`needs_url_strip`](AuthChannel::needs_url_strip)
-/// to scrub the URL bar after the handoff (SEC-7 leakage closure,
-/// CQ-V1.30.1-4: case-folded `Token=` and percent-decoded `%74oken=`
-/// both count as `?token=` for the strip test).
+/// to scrub the URL bar after the handoff. Case-folded `Token=` and
+/// percent-decoded `%74oken=` both count as `?token=` for the strip test.
 struct QueryParamChannel;
 
 impl AuthChannel for QueryParamChannel {
@@ -478,12 +469,11 @@ impl AuthChannel for QueryParamChannel {
     }
 
     fn needs_url_strip(&self, req: &Request) -> bool {
-        // AC-V1.30.1-5: any case-folded `?token=…` form needs the
-        // post-auth scrub, even when authentication came from another
-        // channel. The check here is intentionally `Token=` /
-        // `%74oken=` aware (via `pair_key_is_token`) because the
-        // strip uses the same predicate; mismatches between detection
-        // and stripping would re-introduce the SEC-7 leakage.
+        // Any case-folded `?token=…` form needs the post-auth scrub, even when
+        // authentication came from another channel. The check is `Token=` /
+        // `%74oken=` aware (via `pair_key_is_token`) because the strip uses the
+        // same predicate; a mismatch between detection and stripping would
+        // re-introduce the URL-bar leakage.
         req.uri()
             .query()
             .is_some_and(|q| q.split('&').any(pair_key_is_token))
@@ -492,22 +482,22 @@ impl AuthChannel for QueryParamChannel {
 
 /// Walk the auth-channel registry in priority order and combine outcomes.
 ///
-/// Priority today: header > cookie > query. The order is encoded at the
+/// Priority: header > cookie > query. The order is encoded at the
 /// channels-array construction below; rearranging is the supported way to
-/// change priority. EX-V1.30.1-5 (#1218): each channel is a trait impl
-/// (`BearerHeaderChannel`, `CookieChannel`, `QueryParamChannel`) so adding
-/// a fourth (mTLS, API key, JWT, SSO) is a new impl plus one line here.
+/// change priority. Each channel is a trait impl (`BearerHeaderChannel`,
+/// `CookieChannel`, `QueryParamChannel`) so adding a fourth (mTLS, API key,
+/// JWT, SSO) is a new impl plus one line here.
 ///
-/// AC-V1.30.1-5: even when a higher-priority channel matches, a `?token=…`
-/// in the URL must trigger the redirect so the URL bar is scrubbed —
-/// `needs_url_strip` is OR'd across channels for that reason.
+/// Even when a higher-priority channel matches, a `?token=…` in the URL must
+/// trigger the redirect so the URL bar is scrubbed — `needs_url_strip` is OR'd
+/// across channels for that reason.
 ///
-/// PF-V1.30.1-6: `cookie_lookup_needle` is the pre-built `cqs_token_<port>=`
-/// string from [`AuthMiddlewareState`]. Passed in by reference so the
-/// happy path doesn't `format!()` per request.
+/// `cookie_lookup_needle` is the pre-built `cqs_token_<port>=` string from
+/// [`AuthMiddlewareState`]. Passed by reference so the happy path doesn't
+/// `format!()` per request.
 fn check_request(req: &Request, expected: &AuthToken, cookie_lookup_needle: &str) -> AuthOutcome {
-    // Priority order: header > cookie > query. Documented + asserted
-    // by `test_channel_priority_is_header_cookie_query` below.
+    // Priority order: header > cookie > query. Asserted by
+    // `channel_priority_is_bearer_cookie_query` below.
     let bearer = BearerHeaderChannel;
     let cookie = CookieChannel {
         needle: cookie_lookup_needle,
@@ -516,9 +506,9 @@ fn check_request(req: &Request, expected: &AuthToken, cookie_lookup_needle: &str
     let channels: [&dyn AuthChannel; 3] = [&bearer, &cookie, &query];
 
     let mut authenticated = false;
-    // OB-V1.30.1-5: pick the highest-priority channel that *attempted*
-    // (returned `Mismatch`). Walking in priority order means the first
-    // mismatch we hit is the most-specific reason.
+    // Pick the highest-priority channel that *attempted* (returned
+    // `Mismatch`). Walking in priority order means the first mismatch we hit is
+    // the most-specific reason.
     let mut first_mismatch: Option<UnauthorizedReason> = None;
     let mut needs_url_strip = false;
     for ch in &channels {
@@ -556,10 +546,9 @@ enum AuthOutcome {
     /// Token matched via `?token=<…>` query param — set the cookie and
     /// 302-redirect to the same URL with the token stripped.
     OkViaQueryParam,
-    /// No token matched. Reject with 401.
-    /// OB-V1.30.1-5: carries a reason classification so the rejection
-    /// warn can distinguish "no auth at all" from "stale credential" /
-    /// "wrong channel" without logging the material itself.
+    /// No token matched. Reject with 401. Carries a reason classification so
+    /// the rejection warn can distinguish "no auth at all" from "stale
+    /// credential" / "wrong channel" without logging the material itself.
     Unauthorized(UnauthorizedReason),
 }
 
@@ -568,13 +557,10 @@ enum AuthOutcome {
 /// every request — `AuthToken` is `Arc<String>` and the cookie strings
 /// are `Arc<str>`.
 ///
-/// PF-V1.30.1-6 (subsumes RM-6, RM-7): pre-build the cookie name
-/// (`cqs_token_<port>`) and the lookup needle (`cqs_token_<port>=`)
-/// at construction time. The auth happy path on every request is
-/// then zero-allocation — both forms are borrowed out of the state.
-/// `cookie_port` was dropped from the struct because it's only needed
-/// at construction time; persisting it forced [`enforce_auth`] to
-/// re-derive the cookie name on every request.
+/// The cookie name (`cqs_token_<port>`) and the lookup needle
+/// (`cqs_token_<port>=`) are pre-built at construction time, so the auth happy
+/// path on every request is zero-allocation — both forms are borrowed out of
+/// the state. `cookie_port` is not stored: it's only needed at construction.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthMiddlewareState {
     pub(crate) token: AuthToken,
@@ -627,20 +613,19 @@ pub(crate) async fn enforce_auth(
             // free to set). No `Secure` — we're on plain HTTP for
             // localhost; setting Secure here would forbid the cookie
             // from sticking, defeating the handoff. Cookie name is
-            // per-port (#1135) so concurrent instances don't collide.
+            // per-port so concurrent instances don't collide.
             let cookie = format!(
                 "{}={}; Path=/; HttpOnly; SameSite=Strict",
                 state.cookie_name,
                 state.token.as_str()
             );
             // The token alphabet is enforced at construction time
-            // (`AuthToken::try_from_string` / `random()` — see #1134),
-            // and the cookie name is `cqs_token_<port>` (digits + ASCII
-            // letters + underscore). Both fall inside the
-            // HTTP-header-byte set, so `HeaderValue::from_str`
-            // succeeds by structural guarantee. (.expect retained
-            // for runtime evidence that the type contract holds —
-            // any panic here means the type system was bypassed.)
+            // (`AuthToken::try_from_string` / `random()`), and the cookie name
+            // is `cqs_token_<port>` (digits + ASCII letters + underscore). Both
+            // fall inside the HTTP-header-byte set, so `HeaderValue::from_str`
+            // succeeds by structural guarantee. The `.expect` is runtime
+            // evidence that the type contract holds — a panic here means the
+            // type system was bypassed.
             let value = HeaderValue::from_str(&cookie).expect(
                 "AuthToken alphabet + cookie-name byte set are HTTP-header-safe by construction",
             );
@@ -648,12 +633,11 @@ pub(crate) async fn enforce_auth(
             resp
         }
         AuthOutcome::Unauthorized(reason) => {
-            // Body intentionally minimal: no debug data, no token-
-            // length leak. Tracing emits method + path (NOT query
-            // string — that may carry `?token=` candidates) plus the
-            // low-cardinality `reason` (OB-V1.30.1-5) so operators get
-            // a journal trail for 401s without logging token material.
-            // (P1.21 / OB-V1.30-2.)
+            // Body intentionally minimal: no debug data, no token-length leak.
+            // Tracing emits method + path (NOT query string — that may carry
+            // `?token=` candidates) plus the low-cardinality `reason` so
+            // operators get a journal trail for 401s without logging token
+            // material.
             tracing::warn!(
                 method = %req.method(),
                 path = %req.uri().path(),
@@ -690,7 +674,7 @@ mod tests {
         assert_ne!(a.as_str(), b.as_str(), "two random tokens collided");
     }
 
-    /// #1134: `try_from_string` accepts the URL-safe base64 alphabet.
+    /// `try_from_string` accepts the URL-safe base64 alphabet.
     #[test]
     fn try_from_string_accepts_alphabet() {
         for input in [
@@ -707,9 +691,9 @@ mod tests {
         }
     }
 
-    /// #1134: `try_from_string` rejects every byte outside `[A-Za-z0-9_-]`,
-    /// including the bytes that motivated the audit finding (CR/LF crash
-    /// the worker on `HeaderValue::from_str`; `;`/`,` split cookie syntax).
+    /// `try_from_string` rejects every byte outside `[A-Za-z0-9_-]`, including
+    /// the dangerous ones (CR/LF crash the worker on `HeaderValue::from_str`;
+    /// `;`/`,` split cookie syntax).
     #[test]
     fn try_from_string_rejects_invalid_alphabet() {
         for input in [
@@ -735,7 +719,7 @@ mod tests {
         }
     }
 
-    /// #1135: `cookie_name_for_port` includes the port — two instances on
+    /// `cookie_name_for_port` includes the port — two instances on
     /// different ports get different cookie names.
     #[test]
     fn cookie_name_includes_port() {
@@ -746,11 +730,10 @@ mod tests {
         assert_ne!(a, b, "cookie names must differ across ports");
     }
 
-    /// #1136: `AuthMode::Disabled` requires a `NoAuthAcknowledgement`,
-    /// which can only be constructed via the named factory functions.
-    /// This test pins the API shape — a future internal caller cannot
-    /// `AuthMode::Disabled(NoAuthAcknowledgement(()))` without a
-    /// privacy-violation compile error.
+    /// `AuthMode::Disabled` requires a `NoAuthAcknowledgement`, which can only
+    /// be constructed via the named factory functions. Pins the API shape — an
+    /// internal caller cannot `AuthMode::Disabled(NoAuthAcknowledgement(()))`
+    /// without a privacy-violation compile error.
     #[test]
     fn no_auth_requires_explicit_acknowledgement() {
         let ack = NoAuthAcknowledgement::for_test();
@@ -766,9 +749,9 @@ mod tests {
         let _mode2 = AuthMode::disabled(cli_ack);
     }
 
-    /// #1136: `AuthMode::token()` returns `Some` for `Required`, `None`
-    /// for `Disabled` — used by the listening banner code to decide
-    /// whether to embed the token in the paste-ready URL.
+    /// `AuthMode::token()` returns `Some` for `Required`, `None` for
+    /// `Disabled` — used by the listening banner code to decide whether to
+    /// embed the token in the paste-ready URL.
     #[test]
     fn auth_mode_token_accessor() {
         let token = AuthToken::random();
@@ -817,26 +800,19 @@ mod tests {
         assert_eq!(strip_token_param(&uri), "/api/graph?depth=3&limit=5");
     }
 
-    // ===== P2.30: adversarial tests for strip_token_param + check_request =====
+    // ===== adversarial tests for strip_token_param + check_request =====
     //
-    // These pin the CURRENT (intentionally minimal) behavior so a future
-    // regression — either tightening or loosening — surfaces loudly.
-    // The audit calls out four gaps:
-    //   (1) Case-sensitivity: `?Token=…` is kept verbatim.
-    //   (2) Percent-encoded key (`?%74oken=…`): not recognised.
+    // These pin the current (intentionally minimal) behavior so a regression —
+    // either tightening or loosening — surfaces loudly. Covered cases:
+    //   (1) Case-sensitivity: `?Token=…` is case-folded and stripped.
+    //   (2) Percent-encoded key (`?%74oken=…`): percent-decoded and stripped.
     //   (3) Double `&&` between params: empty pair ignored cleanly.
     //   (4) Multiple `token=` params: every one is stripped.
-    //
-    // Items (1) and (2) leave the token in the post-redirect URL bar
-    // (an SEC-7 leakage path). Production fix lands separately —
-    // these tests pin the gap so the eventual PR has a clear failure
-    // signal to invert.
 
     #[test]
     #[allow(non_snake_case)]
     fn p2_30_strip_token_param_capital_T_token_IS_stripped() {
-        // CQ-V1.30.1-4: capital `Token=` is case-folded and stripped.
-        // The SEC-7 leakage gap pinned by the previous test is closed.
+        // Capital `Token=` is case-folded and stripped.
         let uri: Uri = "/api/graph?Token=abc&depth=3".parse().unwrap();
         let stripped = strip_token_param(&uri);
         assert_eq!(stripped, "/api/graph?depth=3");
@@ -845,7 +821,7 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn p2_30_strip_token_param_percent_encoded_key_IS_stripped() {
-        // CQ-V1.30.1-4: `%74oken=` is percent-decoded and stripped.
+        // `%74oken=` is percent-decoded and stripped.
         let uri: Uri = "/api/graph?%74oken=abc&depth=3".parse().unwrap();
         let stripped = strip_token_param(&uri);
         assert_eq!(stripped, "/api/graph?depth=3");
@@ -871,9 +847,8 @@ mod tests {
 
     #[test]
     fn p2_30_strip_token_param_strips_multiple_token_params() {
-        // `?token=a&token=b` — both should be stripped. Pin behavior so
-        // a future regression that strips only the first leaves an
-        // SEC-7 leak.
+        // `?token=a&token=b` — both must be stripped. Pin behavior so a
+        // regression that strips only the first doesn't leave a token in the URL.
         let uri: Uri = "/api/graph?token=a&depth=3&token=b".parse().unwrap();
         let stripped = strip_token_param(&uri);
         assert!(
@@ -894,14 +869,14 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn p2_30_check_request_capital_T_token_IS_recognised() {
-        // CQ-V1.30.1-4: capital `Token=` is case-folded; the request
-        // authenticates via the query channel and triggers the redirect.
+        // Capital `Token=` is case-folded; the request authenticates via the
+        // query channel and triggers the redirect.
         let token = AuthToken::try_from_string("secretvalue").expect("test token alphabet");
         let req = Request::builder()
             .uri("/api/graph?Token=secretvalue")
             .body(axum::body::Body::empty())
             .unwrap();
-        // PF-V1.30.1-6: tests pass the pre-built lookup needle directly.
+        // Tests pass the pre-built lookup needle directly.
         let needle = format!("{}=", cookie_name_for_port(8080));
         match check_request(&req, &token, &needle) {
             AuthOutcome::OkViaQueryParam => {}
@@ -915,8 +890,8 @@ mod tests {
 
     #[test]
     fn check_request_cookie_with_redundant_query_token_redirects() {
-        // AC-V1.30.1-5: even when the cookie matches, a `?token=` query
-        // param must trigger the redirect so the URL bar is scrubbed.
+        // Even when the cookie matches, a `?token=` query param must trigger
+        // the redirect so the URL bar is scrubbed.
         let token = AuthToken::random();
         let cookie_name = "cqs_token_8080";
         let req = Request::builder()
@@ -924,22 +899,21 @@ mod tests {
             .header(header::COOKIE, format!("{cookie_name}={}", token.as_str()))
             .body(axum::body::Body::empty())
             .unwrap();
-        // PF-V1.30.1-6: `check_request` takes the pre-built lookup needle
-        // (`<cookie_name>=`) instead of `cookie_name` itself.
+        // `check_request` takes the pre-built lookup needle (`<cookie_name>=`)
+        // instead of `cookie_name` itself.
         let needle = format!("{cookie_name}=");
         let outcome = check_request(&req, &token, &needle);
         assert!(matches!(outcome, AuthOutcome::OkViaQueryParam));
     }
 
-    // ===== TC-ADV-1.30.1: adversarial pins for `try_from_string` length,
-    // cookie/query interaction, duplicate-cookie handling, and Bearer
-    // grammar strictness. Each test pins CURRENT behavior — the
-    // `*_today` suffix marks tests that should invert when the audit
-    // finding is closed.
+    // ===== adversarial pins for `try_from_string` length, cookie/query
+    // interaction, duplicate-cookie handling, and Bearer grammar strictness.
+    // Each test pins current behavior — the `*_today` suffix marks tests that
+    // should invert if the corresponding grammar is later relaxed.
 
-    /// TC-ADV-1.30.1-1: `try_from_string` accepts a 10K-char alphabet input
-    /// today. No `MAX_TOKEN_LEN` cap exists. Pin so a future cap addition
-    /// trips the test (then invert to expect `Err`).
+    /// `try_from_string` accepts a 10K-char alphabet input — no
+    /// `MAX_TOKEN_LEN` cap exists. Pin so a future cap addition trips the test
+    /// (then invert to expect `Err`).
     #[test]
     fn try_from_string_accepts_long_alphabet_input_today() {
         let long = "a".repeat(10_240);
@@ -949,12 +923,9 @@ mod tests {
         );
     }
 
-    /// TC-ADV-1.30.1-2: when a `?token=…` query param is present alongside
-    /// a valid cookie, AC-V1.30.1-5 forces the redirect path (cookie does
-    /// NOT win — the redirect's job is to scrub the URL bar). Pin current
-    /// behavior. The prompt name in the audit fixture asserted the OLD
-    /// "cookie wins" semantics; the actual landed fix is "any `?token=`
-    /// triggers redirect", so the test name reflects the real shape.
+    /// When a `?token=…` query param is present alongside a valid cookie, the
+    /// redirect path wins (cookie does NOT win — the redirect's job is to scrub
+    /// the URL bar).
     #[test]
     fn auth_query_present_cookie_right_redirects_to_scrub_url_bar() {
         // Right cookie value, garbage `?token=…` value: still redirects.
@@ -979,12 +950,9 @@ mod tests {
         }
     }
 
-    /// TC-ADV-1.30.1-3: wrong cookie value + right query token → redirect
-    /// (cookie value mismatch is irrelevant — the query channel
-    /// authenticates and the redirect overwrites the cookie). Pins
-    /// current behavior; if a future fix routes wrong-cookie+right-query
-    /// to a 401 (e.g. fail-closed instead of fail-into-redirect), this
-    /// test inverts.
+    /// Wrong cookie value + right query token → redirect (the cookie mismatch
+    /// is irrelevant — the query channel authenticates and the redirect
+    /// overwrites the cookie).
     #[test]
     fn auth_query_right_cookie_wrong_redirects_and_overwrites_cookie() {
         let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
@@ -1002,11 +970,9 @@ mod tests {
         );
     }
 
-    /// TC-ADV-1.30.1-4: two cookies with the same name in one `Cookie:`
-    /// header. RFC 6265 says order is arbitrary; current code uses
-    /// `.any(...)`, so ANY matching pair authenticates regardless of
-    /// position. Pin actual behavior — the prompt's "first-wins"
-    /// framing was inverted.
+    /// Two cookies with the same name in one `Cookie:` header. RFC 6265 says
+    /// order is arbitrary; the code uses `.any(...)`, so ANY matching pair
+    /// authenticates regardless of position.
     #[test]
     fn auth_two_cookies_with_same_name_any_match_authenticates() {
         let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
@@ -1046,10 +1012,9 @@ mod tests {
         );
     }
 
-    /// TC-ADV-1.30.1-5: lowercase `bearer` scheme returns 401 today.
-    /// RFC 6750 §2.1 says the scheme is case-insensitive; current code
-    /// is strict (`strip_prefix("Bearer ")`). Pin current 401 behavior;
-    /// invert when the grammar is relaxed.
+    /// Lowercase `bearer` scheme returns 401. RFC 6750 §2.1 says the scheme is
+    /// case-insensitive, but the code is strict (`strip_prefix("Bearer ")`).
+    /// Pin current 401 behavior; invert if the grammar is relaxed.
     #[test]
     fn bearer_lowercase_scheme_returns_401_today() {
         let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
@@ -1062,9 +1027,8 @@ mod tests {
             .unwrap();
         match check_request(&req, &token, &needle) {
             AuthOutcome::Unauthorized(reason) => {
-                // OB-V1.30.1-5: lowercase scheme means `starts_with("Bearer ")`
-                // is false, so `bearer_attempted` is false too — falls
-                // through to MissingAll. Pin that.
+                // Lowercase scheme means `starts_with("Bearer ")` is false, so
+                // no channel attempts — falls through to MissingAll.
                 assert_eq!(
                     reason,
                     UnauthorizedReason::MissingAll,
@@ -1080,11 +1044,10 @@ mod tests {
         }
     }
 
-    /// TC-ADV-1.30.1-6: `Authorization: Bearer  <token>` (double space)
-    /// returns 401 today. Strict separator check; the second space gets
-    /// included as the leading byte of the value, breaking ct_eq. Pin
-    /// current behavior so a future grammar relaxation has a clear
-    /// inversion target.
+    /// `Authorization: Bearer  <token>` (double space) returns 401. Strict
+    /// separator check; the second space is included as the leading byte of the
+    /// value, breaking ct_eq. Pin so a grammar relaxation has a clear inversion
+    /// target.
     #[test]
     fn bearer_double_space_returns_401_today() {
         let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
@@ -1113,10 +1076,9 @@ mod tests {
         }
     }
 
-    /// TC-ADV-1.30.1-7: `Authorization: Bearer<token>` (no separator)
-    /// returns 401 today. `starts_with("Bearer ")` requires the trailing
-    /// space; without it the prefix check fails and `bearer_attempted`
-    /// is false → MissingAll. Pin current behavior.
+    /// `Authorization: Bearer<token>` (no separator) returns 401.
+    /// `starts_with("Bearer ")` requires the trailing space; without it the
+    /// prefix check fails and no channel attempts → MissingAll.
     #[test]
     fn bearer_no_separator_returns_401_today() {
         let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");
@@ -1143,15 +1105,13 @@ mod tests {
         }
     }
 
-    /// EX-V1.30.1-5 (#1218): pin the channel priority order as
-    /// `Bearer > Cookie > QueryParam`. With ALL three channels
-    /// presenting mismatching credentials simultaneously, the 401's
-    /// `UnauthorizedReason` must be `BearerMismatch` — the
-    /// highest-priority channel that attempted. If a future refactor
-    /// reorders the channels array in `check_request` (or routes via a
-    /// config-driven registry), this test flips loudly so the
-    /// telemetry-cardinality contract documented in
-    /// [`UnauthorizedReason`] doesn't drift silently.
+    /// Pin the channel priority order as `Bearer > Cookie > QueryParam`. With
+    /// ALL three channels presenting mismatching credentials simultaneously,
+    /// the 401's `UnauthorizedReason` must be `BearerMismatch` — the
+    /// highest-priority channel that attempted. A refactor that reorders the
+    /// channels array in `check_request` flips this test, so the
+    /// telemetry-cardinality contract on [`UnauthorizedReason`] can't drift
+    /// silently.
     #[test]
     fn channel_priority_is_bearer_cookie_query() {
         let token = AuthToken::try_from_string("rightvalue").expect("test alphabet");

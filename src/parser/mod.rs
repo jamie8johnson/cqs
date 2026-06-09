@@ -28,13 +28,13 @@ use tree_sitter::StreamingIterator;
 
 /// Default per-file size cap for parsing (50 MiB). Files larger than this
 /// are skipped at parse time. Override at runtime via
-/// `CQS_PARSER_MAX_FILE_SIZE`. P3 #104: distinct from `CQS_MAX_FILE_SIZE`
+/// `CQS_PARSER_MAX_FILE_SIZE`. Distinct from `CQS_MAX_FILE_SIZE`
 /// (the file-discovery gate in `lib.rs::max_file_size`) so per-stage
 /// knobs stay independent — bumping one doesn't silently bump the other.
 ///
 /// Production paths read [`crate::limits::parser_max_file_size`]; this
-/// constant exists for the legacy `tc35_max_file_size_is_50mb` test pin
-/// and for downstream crates that still re-export it.
+/// constant exists for the `tc35_max_file_size_is_50mb` test pin
+/// and for downstream crates that re-export it.
 #[allow(dead_code)]
 pub(crate) const MAX_FILE_SIZE: u64 = crate::limits::PARSER_MAX_FILE_SIZE;
 
@@ -49,8 +49,7 @@ pub type ParseAllResult = (Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>);
 /// `calls` table without re-parsing each chunk's body. The fourth element
 /// pairs each extracted [`CallSite`] with the originating chunk's id (using
 /// the path-based id format produced by `extract_chunk`; the pipeline rewrites
-/// these to relative-path ids before persisting). See P2 #63 in
-/// `docs/audit-findings.md`.
+/// these to relative-path ids before persisting).
 pub type ParseAllWithChunkCallsResult = (
     Vec<Chunk>,
     Vec<FunctionCalls>,
@@ -60,11 +59,10 @@ pub type ParseAllWithChunkCallsResult = (
 
 /// Default per-chunk byte cap (100 KiB). Larger chunks are dropped at
 /// parse time before windowing sees them. Override at runtime via
-/// `CQS_PARSER_MAX_CHUNK_BYTES`. P3 #105.
+/// `CQS_PARSER_MAX_CHUNK_BYTES`.
 ///
 /// Production paths read [`crate::limits::parser_max_chunk_bytes`]; this
-/// constant is kept for crate-external references and any future test
-/// pins.
+/// constant is kept for crate-external references and test pins.
 #[allow(dead_code)]
 pub(crate) const MAX_CHUNK_BYTES: usize = crate::limits::PARSER_MAX_CHUNK_BYTES;
 
@@ -203,7 +201,7 @@ impl Parser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
         let _span = tracing::info_span!("parse_file", path = %path.display()).entered();
 
-        // P3 #104: cap is env-overridable (CQS_PARSER_MAX_FILE_SIZE).
+        // Cap is env-overridable (CQS_PARSER_MAX_FILE_SIZE).
         let max_file_size = crate::limits::parser_max_file_size();
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > max_file_size => {
@@ -230,10 +228,9 @@ impl Parser {
         };
 
         // Normalize line endings (CRLF -> LF) for consistent hashing across
-        // platforms. PF-V1.29-5: the unconditional `replace` allocated a full
-        // copy of every source file even on Unix-native repos that never had
-        // CRLF. The `contains` probe keeps the Windows-origin path correct
-        // while saving one string allocation per file in the common case.
+        // platforms. The `contains` probe skips the allocating `replace` on
+        // Unix-native repos that never had CRLF, saving one string allocation
+        // per file in the common case.
         let source = if source.contains("\r\n") {
             source.replace("\r\n", "\n")
         } else {
@@ -270,11 +267,10 @@ impl Parser {
     ) -> Result<Vec<Chunk>, ParserError> {
         let _span = tracing::info_span!("parse_source", path = %path.display()).entered();
 
-        // Grammar-less languages use custom parsers (issue #954):
-        // route via LanguageDef function pointers, not match arms. Adding
-        // a new grammar-less language without setting `custom_chunk_parser`
-        // falls through to the markdown default — same as before, but now
-        // the routing is declarative and centralized in the language row.
+        // Grammar-less languages use custom parsers: route via LanguageDef
+        // function pointers, not match arms. A new grammar-less language
+        // without `custom_chunk_parser` falls through to the markdown
+        // default. Routing is declarative and centralized in the language row.
         if language.def().grammar.is_none() {
             return match language.def().custom_chunk_parser {
                 Some(f) => f(source, path, self),
@@ -308,20 +304,19 @@ impl Parser {
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
 
         let mut chunks = Vec::new();
-        // P3 #105: env-overridable per-chunk byte cap. Track drops so we
-        // can emit a single summary warn at end-of-file rather than one
-        // log line per skipped chunk.
+        // Env-overridable per-chunk byte cap. Track drops so we can emit a
+        // single summary warn at end-of-file rather than one log line per
+        // skipped chunk.
         let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
         let mut dropped_oversized = 0usize;
 
         while let Some(m) = matches.next() {
             match self.extract_chunk(source, m, query, language, path) {
                 Ok(mut chunk) => {
-                    // P3 #105: chunks above the cap are dropped. The
-                    // pipeline's windowing stage only sees chunks that pass
-                    // here — windowing is downstream of this gate, not a
-                    // mitigation for it (the previous "handled by windowing"
-                    // comment was wrong).
+                    // Chunks above the cap are dropped. The pipeline's
+                    // windowing stage only sees chunks that pass here —
+                    // windowing is downstream of this gate, not a mitigation
+                    // for it.
                     if chunk.content.len() > max_chunk_bytes {
                         tracing::debug!(
                             "Skipping {} ({} bytes > {} max)",
@@ -401,9 +396,9 @@ impl Parser {
             }
         }
 
-        // P3 #105: per-file summary of oversized-chunk drops, surfaced at
-        // warn level so users discover CQS_PARSER_MAX_CHUNK_BYTES instead of
-        // wondering why their indexed corpus has gaps.
+        // Per-file summary of oversized-chunk drops, surfaced at warn level
+        // so users discover CQS_PARSER_MAX_CHUNK_BYTES instead of wondering
+        // why their indexed corpus has gaps.
         if dropped_oversized > 0 {
             tracing::warn!(
                 path = %path.display(),
@@ -423,32 +418,29 @@ impl Parser {
     /// Returns `(chunks, function_calls, chunk_type_refs)`.
     /// Used by `watch::reindex_files()` for incremental updates. The indexing
     /// pipeline calls [`Self::parse_file_all_with_chunk_calls`] instead so it
-    /// can populate the per-chunk `calls` table from the same Pass 2 walk.
+    /// populates the per-chunk `calls` table from the same Pass 2 walk.
     pub fn parse_file_all(&self, path: &Path) -> Result<ParseAllResult, ParserError> {
         let (chunks, calls, types, _chunk_calls) = self.parse_file_all_inner(path, false)?;
         Ok((chunks, calls, types))
     }
 
     /// Like [`Self::parse_file_all`], but also returns one
-    /// `(chunk_id, CallSite)` pair for every call extracted during Pass 2.
-    /// Eliminates the redundant `extract_calls_from_chunk(chunk)` loop the
-    /// indexing pipeline used to run after `parse_file_all` (one extra
-    /// tree-sitter parse per chunk; ~14k extra parses per cqs reindex). See
-    /// P2 #63 in `docs/audit-findings.md`.
+    /// `(chunk_id, CallSite)` pair for every call extracted during Pass 2,
+    /// so the indexing pipeline avoids a separate `extract_calls_from_chunk`
+    /// pass (one extra tree-sitter parse per chunk; ~14k extra parses per
+    /// cqs reindex).
     ///
     /// The chunk ids returned here use the absolute-path format produced by
     /// `extract_chunk` (`{path}:{line_start}:{hash_prefix}`). The indexing
     /// pipeline rewrites these to relative-path ids via the same id_map it
-    /// already builds for the chunks themselves, so the chunk_calls list and
+    /// builds for the chunks themselves, so the chunk_calls list and
     /// the chunks list stay in sync.
     ///
-    /// **Duplication note (P2 #63):** the body delegates to
-    /// `parse_file_all_inner` with `want_chunk_calls = true`, which also
-    /// powers `parse_file_all`. Watch (`src/cli/watch.rs`) still uses
-    /// `parse_file_all` and runs its own `extract_calls_from_chunk` per chunk;
-    /// collapsing that into this method is a separate refactor — Watch's
-    /// parser stage is rayon-parallel and changing its call shape requires
-    /// more work than the indexing-pipeline path.
+    /// The body delegates to `parse_file_all_inner` with
+    /// `want_chunk_calls = true`, which also powers `parse_file_all`. Watch
+    /// (`src/cli/watch.rs`) uses `parse_file_all` and runs its own
+    /// `extract_calls_from_chunk` per chunk — its parser stage is
+    /// rayon-parallel, so it doesn't share this Pass-2 emit path.
     pub fn parse_file_all_with_chunk_calls(
         &self,
         path: &Path,
@@ -469,7 +461,7 @@ impl Parser {
     ) -> Result<ParseAllWithChunkCallsResult, ParserError> {
         let _span = tracing::info_span!("parse_file_all", path = %path.display()).entered();
 
-        // P3 #104: env-overridable cap (CQS_PARSER_MAX_FILE_SIZE).
+        // Env-overridable cap (CQS_PARSER_MAX_FILE_SIZE).
         let max_file_size = crate::limits::parser_max_file_size();
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > max_file_size => {
@@ -496,10 +488,9 @@ impl Parser {
         };
 
         // Normalize line endings (CRLF -> LF) for consistent hashing across
-        // platforms. PF-V1.29-5: the unconditional `replace` allocated a full
-        // copy of every source file even on Unix-native repos that never had
-        // CRLF. The `contains` probe keeps the Windows-origin path correct
-        // while saving one string allocation per file in the common case.
+        // platforms. The `contains` probe skips the allocating `replace` on
+        // Unix-native repos that never had CRLF, saving one string allocation
+        // per file in the common case.
         let source = if source.contains("\r\n") {
             source.replace("\r\n", "\n")
         } else {
@@ -512,14 +503,12 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages use custom parsers (issue #954):
-        // routing is declarative via `custom_all_parser`, not a match arm.
-        // For these the chunk_calls path falls back to per-chunk
-        // `extract_calls_from_chunk` because Markdown's per-chunk reference
-        // scan is line-based (no tree-sitter cost) and custom parsers like
-        // ASPX delegate to inner-language tree-sitter parsers anyway —
-        // collapsing those into the chunked walk would require refactoring
-        // each custom parser. Same audit gap as Watch (`P2 #63`).
+        // Grammar-less languages use custom parsers: routing is declarative
+        // via `custom_all_parser`, not a match arm. For these the chunk_calls
+        // path uses per-chunk `extract_calls_from_chunk` because Markdown's
+        // per-chunk reference scan is line-based (no tree-sitter cost) and
+        // custom parsers like ASPX delegate to inner-language tree-sitter
+        // parsers anyway.
         if language.def().grammar.is_none() {
             let (chunks, calls, types) = match language.def().custom_all_parser {
                 Some(f) => f(&source, path, self)?,
@@ -572,11 +561,11 @@ impl Parser {
         // Built only when chunk_calls are requested so the no-chunk-calls
         // path (Watch) pays nothing. Pass 2 looks up the chunk id by the
         // func_node's byte_range and emits (chunk_id, CallSite) pairs
-        // without re-parsing the chunk body — eliminating the per-chunk
-        // tree-sitter re-parse the indexing pipeline used to run.
+        // without re-parsing the chunk body — sparing the indexing pipeline
+        // a per-chunk tree-sitter re-parse.
         let mut byte_range_to_chunk_id: HashMap<(usize, usize), String> = HashMap::new();
-        // P3 #105: env-overridable per-chunk byte cap; track drops for a
-        // single warn at end-of-file.
+        // Env-overridable per-chunk byte cap; track drops for a single warn
+        // at end-of-file.
         let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
         let mut dropped_oversized = 0usize;
 
@@ -637,9 +626,9 @@ impl Parser {
 
         let mut call_results = Vec::new();
         let mut type_results = Vec::new();
-        // PERF P2 #63: emit (chunk_id, CallSite) pairs from the same Pass 2
-        // walk that builds `call_results`. The indexing pipeline used to
-        // re-parse every chunk body afterwards just to populate this list.
+        // Emit (chunk_id, CallSite) pairs from the same Pass 2 walk that
+        // builds `call_results`, so the indexing pipeline doesn't re-parse
+        // every chunk body afterwards just to populate this list.
         let mut chunk_calls: Vec<(String, CallSite)> = Vec::new();
         let mut call_cursor = tree_sitter::QueryCursor::new();
         let mut calls = Vec::new();
@@ -708,15 +697,13 @@ impl Parser {
                     if let Some(chunk_id) =
                         byte_range_to_chunk_id.get(&(byte_range.start, byte_range.end))
                     {
-                        // Match the legacy `extract_calls_from_chunk(chunk)`
-                        // behavior: per-chunk extraction passed line_offset=0
-                        // against the chunk content alone, so chunk_calls
-                        // line numbers were 1-indexed RELATIVE to the chunk.
-                        // Pass-2 here scans the whole file and produces
-                        // ABSOLUTE line numbers, so we subtract `line_start`
-                        // (saturating, .max(1)) to get the same relative
-                        // numbering downstream consumers (the `calls`
-                        // SQLite table) already expect.
+                        // chunk_calls line numbers are 1-indexed RELATIVE to
+                        // the chunk (the `calls` SQLite table expects this).
+                        // Pass-2 scans the whole file and produces ABSOLUTE
+                        // line numbers, so subtract `line_start` (saturating,
+                        // .max(1)) to recover the relative numbering. This
+                        // matches `extract_calls_from_chunk`, which extracts
+                        // against the chunk content alone with line_offset=0.
                         for call in &calls {
                             let rel_line = call
                                 .line_number
@@ -732,8 +719,7 @@ impl Parser {
                         }
                     }
                     // No matching chunk id ⇒ Pass 1 discarded the chunk
-                    // (oversize / post_process). The previous pipeline loop
-                    // also skipped these because it iterated `&chunks`.
+                    // (oversize / post_process), so it has no calls to emit.
                 }
                 call_results.push(FunctionCalls {
                     name: name.clone(),
@@ -863,8 +849,8 @@ impl Parser {
             }
         }
 
-        // P3 #105: per-file summary of oversized-chunk drops, surfaced at
-        // warn level so users discover CQS_PARSER_MAX_CHUNK_BYTES.
+        // Per-file summary of oversized-chunk drops, surfaced at warn level
+        // so users discover CQS_PARSER_MAX_CHUNK_BYTES.
         if dropped_oversized > 0 {
             tracing::warn!(
                 path = %path.display(),
@@ -939,7 +925,7 @@ impl Parser {
             // Line offset: fenced block content starts on the line after the opening fence
             let line_offset = block.line_start; // fence is at line_start, content starts at line_start+1
 
-            // P3 #105: env-overridable per-chunk byte cap.
+            // Env-overridable per-chunk byte cap.
             let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
 
             while let Some(m) = matches.next() {
@@ -1135,7 +1121,7 @@ mod tests {
         assert!(type_refs.is_empty());
     }
 
-    // TC-35: Verify the oversized file guard constant and behavior
+    // Verify the oversized file guard constant.
     #[test]
     fn tc35_max_file_size_is_50mb() {
         assert_eq!(MAX_FILE_SIZE, 50 * 1024 * 1024);
@@ -1151,10 +1137,10 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.33-8: oversized files are silently skipped (Ok(vec![])),
-    /// not surfaced as an error. This is the documented contract — a
-    /// future refactor that surfaced the size cap as Err would break the
-    /// watch loop's "parse failures are recoverable" invariant.
+    /// Oversized files are silently skipped (Ok(vec![])), not surfaced as
+    /// an error. This is the documented contract — surfacing the size cap as
+    /// Err would break the watch loop's "parse failures are recoverable"
+    /// invariant.
     #[test]
     fn parse_file_returns_empty_vec_for_oversized_file() {
         use std::sync::Mutex;
@@ -1185,10 +1171,10 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.33-8: non-UTF8 file content is silently skipped
-    /// (Ok(vec![])). Documented behaviour ("Returns an empty Vec for
-    /// non-UTF8 files (with a warning logged)") — pinning so a future
-    /// refactor that surfaced this as an error doesn't break the indexer.
+    /// Non-UTF8 file content is silently skipped (Ok(vec![])). Documented
+    /// behaviour ("Returns an empty Vec for non-UTF8 files (with a warning
+    /// logged)") — pinning so surfacing this as an error doesn't break the
+    /// indexer.
     #[test]
     fn parse_file_returns_empty_vec_for_non_utf8_content() {
         let parser = Parser::new().unwrap();
@@ -1207,13 +1193,12 @@ mod tests {
         );
     }
 
-    /// P2 #63: property test pinning the equivalence between
-    /// `parse_file_all_with_chunk_calls` (Pass-2 emit) and the previous
-    /// per-chunk `extract_calls_from_chunk` loop the indexing pipeline used
-    /// to run. For every (chunk_id, callee_name, line_number) triple the new
-    /// method emits, the old per-chunk extractor must emit the same triple
-    /// against the same chunk — and vice versa. Run on a small Rust fixture
-    /// covering multiple chunks, dedup boundaries, and the
+    /// Property test pinning the equivalence between
+    /// `parse_file_all_with_chunk_calls` (Pass-2 emit) and the per-chunk
+    /// `extract_calls_from_chunk` extractor. For every
+    /// (chunk_id, callee_name, line_number) triple one path emits, the other
+    /// must emit the same triple against the same chunk. Run on a small Rust
+    /// fixture covering multiple chunks, dedup boundaries, and the
     /// `should_skip_callee` filter.
     #[test]
     fn p2_63_chunk_calls_match_per_chunk_extraction() {
@@ -1247,11 +1232,11 @@ impl Holder {
 ";
         std::fs::write(&path, source).unwrap();
 
-        // New path
+        // Pass-2 emit path
         let (chunks_new, _calls, _types, chunk_calls_new) =
             parser.parse_file_all_with_chunk_calls(&path).unwrap();
 
-        // Old path: parse_file_all (no chunk_calls) + per-chunk extraction
+        // Per-chunk extraction path: parse_file_all + extract_calls_from_chunk
         let (chunks_old, _calls_old, _types_old) = parser.parse_file_all(&path).unwrap();
 
         // Chunks themselves must match exactly (same Pass 1 walk)
@@ -1264,7 +1249,7 @@ impl Holder {
             assert_eq!(n.id, o.id, "chunk id mismatch");
         }
 
-        // Build the legacy per-chunk shape for comparison.
+        // Build the per-chunk shape for comparison.
         let mut chunk_calls_old: Vec<(String, String, u32)> = Vec::new();
         for chunk in &chunks_old {
             for call in parser.extract_calls_from_chunk(chunk) {

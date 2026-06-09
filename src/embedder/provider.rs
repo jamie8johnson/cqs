@@ -19,14 +19,13 @@ use crate::ort_helpers::ort_err;
 /// Strategy: compute the same directory ORT will search (from argv[0]),
 /// and create symlinks from the ORT cache there.
 ///
-/// PB-5 / #856: we previously registered a libc::atexit handler to
-/// unlink the symlinks here, but that function called Mutex::lock()
-/// which is UB after the Rust allocator has been torn down (and panics
-/// on poisoned mutex → unwinding into C is also UB). The symlinks are
-/// now left in place on process exit; they get overwritten on the
-/// next run (ORT provider resolution is deterministic per cqs version).
-/// If stale-file accumulation becomes a concern, add a startup-time
-/// GC pass instead of a shutdown-time one.
+/// The symlinks are left in place on process exit; they get overwritten on
+/// the next run (ORT provider resolution is deterministic per cqs version).
+/// An atexit handler to unlink them is not viable — it would need
+/// Mutex::lock(), which is UB after the Rust allocator has been torn down (and
+/// a panic on a poisoned mutex unwinding into C is also UB). If stale-file
+/// accumulation becomes a concern, add a startup-time GC pass instead of a
+/// shutdown-time one.
 #[cfg(target_os = "linux")]
 fn ensure_ort_provider_libs() {
     let ort_lib_dir = match find_ort_provider_dir() {
@@ -91,7 +90,7 @@ fn find_ort_provider_dir() -> Option<PathBuf> {
 
     match std::fs::read_dir(&ort_cache) {
         Ok(entries) => {
-            // PB-31: Sort descending by name to pick the latest version deterministically
+            // Sort descending by name to pick the latest version deterministically
             let mut dirs: Vec<PathBuf> = entries
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().is_dir())
@@ -109,7 +108,7 @@ fn find_ort_provider_dir() -> Option<PathBuf> {
 
 /// Find a writable directory from LD_LIBRARY_PATH (excluding the ORT cache)
 ///
-/// P3.34 — Platform scope:
+/// Platform scope:
 /// On Linux this walks `LD_LIBRARY_PATH` (`:`-separated) and symlinks ORT
 /// provider `.so` files into the runtime's search dir. On Windows and macOS
 /// provider DLL/dylib resolution is delegated entirely to ORT's loader
@@ -124,9 +123,9 @@ fn find_ld_library_dir(ort_lib_dir: &Path) -> Option<PathBuf> {
         .split(':')
         .find(|p| !p.is_empty() && Path::new(p).is_dir() && !ort_cache_str.starts_with(p))
         .map(PathBuf::from);
-    // OB-V1.36-6 / P3: log both branches at debug. CUDA-detection failures
-    // downstream report "no GPU detected" with no breadcrumb of whether the
-    // LD-resolve step ran or what it saw — these debug lines close that gap.
+    // Log both branches at debug. CUDA-detection failures downstream report
+    // "no GPU detected" with no breadcrumb of whether the LD-resolve step ran
+    // or what it saw — these debug lines close that gap.
     match &result {
         Some(dir) => tracing::debug!(
             ld_path = %ld_path,
@@ -156,7 +155,7 @@ fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
 
         // Skip if symlink already points to the right place.
         // Canonicalize both paths so relative vs absolute and symlink chains
-        // don't cause false mismatches (PB-10).
+        // don't cause false mismatches.
         if let Ok(existing) = std::fs::read_link(&dst) {
             let existing_canon = dunce::canonicalize(&existing).unwrap_or(existing);
             let src_canon = dunce::canonicalize(&src).unwrap_or_else(|_| src.clone());
@@ -183,11 +182,11 @@ fn ensure_ort_provider_libs() {
     );
 }
 
-/// #1576: detect models that use ONNX op_types TensorRT 10 cannot parse,
-/// in which case `create_session` segfaults / SIGFPEs partway through
-/// engine compilation rather than returning a clean error.
+/// Detect models that use ONNX op_types TensorRT 10 cannot parse, in which
+/// case `create_session` segfaults / SIGFPEs partway through engine
+/// compilation rather than returning a clean error.
 ///
-/// The two markers we've seen take down the daemon are
+/// The two markers that take down the daemon are
 /// `SimplifiedLayerNormalization` and `MultiHeadAttention` (both in the
 /// `com.microsoft` contrib-op namespace). Both are emitted by the
 /// embeddinggemma-300m ONNX export and similar Gemma-family models.
@@ -258,11 +257,10 @@ pub(crate) fn select_provider() -> ExecutionProvider {
 
 /// Detect the best available execution provider.
 ///
-/// Issue #956 (Phase A): probe order moves into a series of cfg-gated
-/// blocks rather than a single hardcoded CUDA → TensorRT → CPU chain.
-/// Each block is compiled out entirely when its `ep-*` cargo feature
-/// is off, so a build with `ep-coreml` disabled has no CoreML branch
-/// in the binary at all. CUDA + TensorRT are always-on today because
+/// Probe order is a series of cfg-gated blocks rather than a single hardcoded
+/// CUDA → TensorRT → CPU chain. Each block is compiled out entirely when its
+/// `ep-*` cargo feature is off, so a build with `ep-coreml` disabled has no
+/// CoreML branch in the binary at all. CUDA + TensorRT are always-on because
 /// the `ort` dep enables them unconditionally on Linux/Windows.
 ///
 /// Probe order: TensorRT → CUDA → CoreML → ROCm → CPU. TensorRT goes
@@ -344,10 +342,10 @@ fn detect_provider() -> ExecutionProvider {
 
 /// Create an ort session with the specified provider.
 ///
-/// Issue #956 (Phase A): non-NVIDIA arms are cfg-gated to mirror the
-/// `ExecutionProvider` enum. CUDA and TensorRT are always compiled in;
-/// CoreML and ROCm arms exist only when their `ep-*` features are on,
-/// which is the same condition under which their enum variants exist.
+/// Non-NVIDIA arms are cfg-gated to mirror the `ExecutionProvider` enum.
+/// CUDA and TensorRT are always compiled in; CoreML and ROCm arms exist only
+/// when their `ep-*` features are on, the same condition under which their
+/// enum variants exist.
 pub(crate) fn create_session(
     model_path: &Path,
     provider: ExecutionProvider,
@@ -359,21 +357,18 @@ pub(crate) fn create_session(
 
     let mut builder = Session::builder().map_err(ort_err)?;
 
-    // #1576: pre-flight model-incompatibility check for TensorRT.
+    // Pre-flight model-incompatibility check for TensorRT.
     //
     // Some models use Microsoft Contrib Ops (`SimplifiedLayerNormalization`,
     // `MultiHeadAttention` in `com.microsoft` namespace, etc.) that
-    // TensorRT 10's ONNX parser cannot handle. Per the existing comment
-    // at `detect_provider`, the documented workaround is
-    // `CQS_DISABLE_TENSORRT=1`. But the failure mode isn't a clean error
-    // — TRT engine compilation segfaults / SIGFPEs partway through,
-    // taking the daemon down. We observed this in production with
-    // `embeddinggemma-300m`: 4 daemon SIGFPE crashes in one session.
+    // TensorRT 10's ONNX parser cannot handle. The `CQS_DISABLE_TENSORRT=1`
+    // workaround exists, but the failure mode isn't a clean error — TRT engine
+    // compilation segfaults / SIGFPEs partway through, taking the daemon down
+    // (observed with `embeddinggemma-300m`).
     //
-    // Auto-skip TRT for model paths that match the known-incompatible
-    // pattern. CUDA is the next provider in line and handles these ops
-    // gracefully (it falls back to ORT's reference kernel for unknown
-    // contrib ops).
+    // Auto-skip TRT for model paths that match the known-incompatible pattern.
+    // CUDA is the next provider in line and handles these ops gracefully (it
+    // falls back to ORT's reference kernel for unknown contrib ops).
     let provider = if matches!(provider, ExecutionProvider::TensorRT { .. })
         && model_uses_trt_incompatible_ops(model_path)
     {
@@ -453,13 +448,11 @@ pub(crate) fn create_session(
 
 #[cfg(test)]
 mod tests {
-    //! P3.53 — direct coverage for the post-#1120 provider split.
+    //! Direct coverage for the provider split.
     //!
-    //! `select_provider` and `detect_provider` were added by the
-    //! ExecutionProvider feature split (issue #956 Phase A) but never
-    //! gained dedicated tests. The cache-on-first-call invariant
-    //! (`OnceCell` semantics) and the cfg-gated probe order are the
-    //! contracts most likely to silently regress under future feature
+    //! The cache-on-first-call invariant (`OnceCell` semantics) of
+    //! `select_provider` and the cfg-gated probe order in `detect_provider`
+    //! are the contracts most likely to silently regress under future feature
     //! splits — pin them here.
     use super::*;
 
@@ -486,7 +479,7 @@ mod tests {
         );
     }
 
-    /// P3.16: `find_ld_library_dir` must skip empty entries (`::` and
+    /// `find_ld_library_dir` must skip empty entries (`::` and
     /// trailing `:`), reject paths whose first component matches the ORT
     /// cache, and only return entries that exist on disk. Pinned via
     /// `LD_LIBRARY_PATH = ":/tmp:"` — `/tmp` is the only non-empty,
@@ -515,7 +508,7 @@ mod tests {
         }
     }
 
-    /// P3.16: `find_ld_library_dir` must return `None` cleanly when
+    /// `find_ld_library_dir` must return `None` cleanly when
     /// `LD_LIBRARY_PATH` is empty / unset — silent CPU fallback is the
     /// production failure mode if this panics.
     #[cfg(target_os = "linux")]
@@ -536,7 +529,7 @@ mod tests {
         }
     }
 
-    /// P3.16: `ort_runtime_search_dir` must succeed on a normal Unix
+    /// `ort_runtime_search_dir` must succeed on a normal Unix
     /// process — `/proc/self/cmdline` is always populated. Pins that the
     /// helper doesn't crash on a malformed cmdline (no NUL terminator
     /// triggers the `position` early-return path); we can't induce that
@@ -568,9 +561,9 @@ mod tests {
         let _ = format!("{p:?}");
     }
 
-    /// Issue #956 Phase A enum: the always-on CPU variant must be `Copy`
-    /// (the cache hands out values by reading the OnceCell), and `Debug`
-    /// (every tracing event includes `provider = ?provider`).
+    /// The always-on CPU variant must be `Copy` (the cache hands out values by
+    /// reading the OnceCell), and `Debug` (every tracing event includes
+    /// `provider = ?provider`).
     #[test]
     fn execution_provider_is_debug_and_copy() {
         let p = ExecutionProvider::CPU;

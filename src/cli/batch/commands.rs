@@ -31,11 +31,10 @@ pub(crate) struct BatchInput {
 /// BatchCmd variants flatten an output struct (`TextJsonArgs` for text/json
 /// commands, `OutputArgs` for the impact/trace pair that supports `--format
 /// mermaid`) so callers can pass `--json` for parity with the CLI even though
-/// batch *always* serializes to JSON. Task #8: previously
-/// `echo 'callers Foo --json' | cqs batch` errored with "unexpected argument
-/// --json"; now the flag is accepted and silently a no-op (the handler
-/// ignores `output.json`/`output.format` because the batch transport itself
-/// frames the response as JSONL on the daemon socket and as JSONL on stdout).
+/// batch *always* serializes to JSON. The flag is accepted and silently a
+/// no-op (the handler ignores `output.json`/`output.format` because the batch
+/// transport itself frames the response as JSONL on the daemon socket and on
+/// stdout).
 ///
 /// We *intentionally* do not delete the `output` field — clap requires the
 /// flatten target to back the `--json` flag, and removing the field would
@@ -47,9 +46,8 @@ pub(crate) struct BatchInput {
 pub(crate) enum BatchCmd {
     /// Semantic search
     ///
-    /// #947: embeds shared `SearchArgs` so both CLI and batch share one
-    /// source of truth for search flags. Previously 21 fields were
-    /// inline-duplicated here and drift was the default outcome.
+    /// Embeds shared `SearchArgs` so CLI and batch share one source of truth
+    /// for search flags.
     Search {
         #[command(flatten)]
         args: SearchArgs,
@@ -117,10 +115,10 @@ pub(crate) enum BatchCmd {
     Impact {
         #[command(flatten)]
         args: ImpactArgs,
-        /// Task #8: `OutputArgs` here matches the CLI side (text/json/mermaid).
+        /// `OutputArgs` here matches the CLI side (text/json/mermaid).
         /// Mermaid is silently downgraded to JSON in batch because the daemon
         /// socket framer assumes JSONL. Adding a non-JSON wire format would
-        /// require re-shaping `dispatch_line` — out of scope.
+        /// require re-shaping `dispatch_line`.
         #[command(flatten)]
         #[allow(dead_code, reason = "Task #8: --json/--format accepted for CLI parity")]
         output: OutputArgs,
@@ -138,7 +136,7 @@ pub(crate) enum BatchCmd {
     Trace {
         #[command(flatten)]
         args: TraceArgs,
-        /// Task #8: see the `Impact` variant — `OutputArgs` mirrors the CLI's
+        /// See the `Impact` variant — `OutputArgs` mirrors the CLI's
         /// `--format mermaid` flag for parity even though batch downgrades it.
         #[command(flatten)]
         #[allow(dead_code, reason = "Task #8: --json/--format accepted for CLI parity")]
@@ -310,12 +308,12 @@ pub(crate) enum BatchCmd {
     Ping,
     /// Watch-mode freshness snapshot — returns the latest `WatchSnapshot`.
     ///
-    /// #1182: zero-arg command served by `cqs watch --serve`. The CLI
+    /// Zero-arg command served by `cqs watch --serve`. The CLI
     /// `cqs status --watch-fresh [--json]` is the user-facing surface;
     /// the daemon returns the JSON payload of `cqs::watch_status::WatchSnapshot`.
     /// `cqs batch` (no watch loop) returns the default `unknown` snapshot.
     Status,
-    /// Request an out-of-band reconciliation pass. (#1182 — Layer 1.)
+    /// Request an out-of-band reconciliation pass.
     ///
     /// Used by the git-hook scripts (`cqs hook fire post-checkout ...`)
     /// to tell the watch loop the working tree just shifted. Flips the
@@ -334,7 +332,7 @@ pub(crate) enum BatchCmd {
         args: ReconcileArgs,
     },
     /// Block until the watch loop transitions to Fresh, or `wait_secs`
-    /// elapses. (#1228 — RM-2: server-side wait, no client-side polling.)
+    /// elapses. Server-side wait, no client-side polling.
     ///
     /// One round-trip total — the daemon parks the request on a
     /// `FreshNotifier` shared with the watch loop. When `publish_watch_snapshot`
@@ -342,8 +340,6 @@ pub(crate) enum BatchCmd {
     /// the parked handler wakes, and replies with the latest snapshot.
     /// On deadline the handler replies with the still-stale snapshot.
     ///
-    /// Replaces the prior 250 ms-poll loop in `wait_for_fresh` (4-5k
-    /// connect/parse round-trips per 60 s wait at the default budget).
     /// `cqs status --watch-fresh --wait` and `cqs eval --require-fresh`
     /// route through this when talking to a daemon. Outside `cqs watch
     /// --serve` the notifier never flips and the call hits the deadline
@@ -355,10 +351,10 @@ pub(crate) enum BatchCmd {
     },
     /// Show help
     Help,
-    /// #1127 (test-only): sleep `--ms` milliseconds before returning. Used by
-    /// the daemon-parallelism regression tests to force two concurrent
-    /// handlers to overlap on wall-clock; the variant is `#[cfg(test)]`-gated
-    /// so it never reaches a release binary.
+    /// Test-only: sleep `--ms` milliseconds before returning. Used by the
+    /// daemon-parallelism regression tests to force two concurrent handlers to
+    /// overlap on wall-clock; the variant is `#[cfg(test)]`-gated so it never
+    /// reaches a release binary.
     #[cfg(test)]
     #[command(name = "test-sleep")]
     TestSleep {
@@ -368,7 +364,7 @@ pub(crate) enum BatchCmd {
 }
 
 /// Per-variant dispatch table — single source of truth for both
-/// `BatchCmd::is_pipeable` and `dispatch()`. (#1216, EX-V1.30.1-2.)
+/// `BatchCmd::is_pipeable` and `dispatch()`.
 ///
 /// Each row carries `(Variant, handler_fn, pipeable)`. Three buckets:
 /// - `args_variants`: struct variants with `args: XArgs`. Handler signature
@@ -385,16 +381,8 @@ pub(crate) enum BatchCmd {
 ///
 /// All three steps are compile-enforced by the exhaustive match the macro
 /// emits — a missing row produces a `non-exhaustive patterns` error, not a
-/// silent drop. The previous design had three coordinated edits + zero
-/// compile-time check that the dispatch arm matched the pipeability row.
-///
-/// Issue #1137 (audit finding EX-V1.30-1): the pipeability classification used
-/// to live in a hand-maintained match arm, decoupled from the variant declaration.
-/// Adding a new `BatchCmd` variant required a coordinated edit in two places.
-/// This macro folds the classification into the variant list itself: each row is
-/// `(variant_name, is_pipeable)`. The `gen_is_pipeable_impl` emitter expands the
-/// table into an exhaustive match — adding a new variant without a row is a
-/// compile-time error (the match is non-exhaustive).
+/// silent drop. The classification lives in the variant list itself: each row
+/// is `(variant_name, is_pipeable)`, expanded into an exhaustive match.
 ///
 /// Struct variants and unit variants are listed in two named blocks so the
 /// macro emitter can build the right pattern shape (`Variant { .. }` vs `Variant`)
@@ -402,13 +390,8 @@ pub(crate) enum BatchCmd {
 ///
 /// Pipeable: primary input is a function name (so a previous segment's output
 /// can be piped in). Not pipeable: queries, paths, git refs, or no positional arg.
-/// #1216 (EX-V1.30.1-2): single source of truth for both
-/// `BatchCmd::is_pipeable` AND `dispatch()`. Each row is
-/// `(Variant, handler_fn, pipeable)`.
-///
-/// Adding a new variant: declare it on `BatchCmd`, write the handler,
-/// add one row here. The macro emits exhaustive matches for both
-/// consumers, so a missing row fails to compile.
+/// Single source of truth for both `BatchCmd::is_pipeable` AND `dispatch()`;
+/// each row is `(Variant, handler_fn, pipeable)`.
 macro_rules! for_each_batch_cmd {
     ($emit:ident) => {
         $emit! {
@@ -445,8 +428,8 @@ macro_rules! for_each_batch_cmd {
                 (Plan,       dispatch_plan,         false)
                 (Suggest,    dispatch_suggest,      false)
                 (Reconcile,  dispatch_reconcile,    false)
-                // #1228 (RM-2): wait_secs-only — no positional function
-                // name to receive a pipe.
+                // wait_secs-only — no positional function name to receive
+                // a pipe.
                 (WaitFresh,  dispatch_wait_fresh,   false)
             }
             ctx_only_variants: {
@@ -468,9 +451,9 @@ macro_rules! for_each_batch_cmd {
 
 /// Emits `BatchCmd::is_pipeable` from the table above.
 ///
-/// API-V1.25-6: the generated `match` is intentionally exhaustive (no
-/// wildcard arm), so a new `BatchCmd` variant without a row fails to
-/// compile. `test_is_pipeable_exhaustive` below double-pins this.
+/// The generated `match` is intentionally exhaustive (no wildcard arm), so a
+/// new `BatchCmd` variant without a row fails to compile.
+/// `test_is_pipeable_exhaustive` below double-pins this.
 macro_rules! gen_is_pipeable_impl {
     (
         args_variants:     { $(($v:ident, $h:ident, $p:expr))* }
@@ -512,12 +495,11 @@ macro_rules! gen_dispatch_impl {
         /// — the only edit needed when adding a new command is one row
         /// in that table plus the handler implementation.
         ///
-        /// #1127: takes a [`BatchView`] (snapshot of BatchContext caches built
-        /// under a brief critical section) instead of `&BatchContext`.
+        /// Takes a [`BatchView`] (snapshot of BatchContext caches built
+        /// under a brief critical section).
         pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Value> {
             let _span = tracing::debug_span!("batch_dispatch").entered();
-            // EX-V1.30.1-3 (P3-EX-1): single table-driven query-log call
-            // replaces six hand-sprinkled `log_query(...)` invocations.
+            // Single table-driven query-log call.
             log_query_for(&cmd);
             // `output` field on each variant is intentionally dropped —
             // batch always emits JSON. Pattern-match `..` so the
@@ -538,7 +520,7 @@ macro_rules! gen_dispatch_impl {
                 },)*
                 #[cfg(test)]
                 BatchCmd::TestSleep { ms } => {
-                    // #1127 regression test fixture. Sleeps the dispatcher
+                    // Regression test fixture. Sleeps the dispatcher
                     // thread for `ms` milliseconds, then returns a tiny
                     // envelope. Two concurrent daemon connections both
                     // running `test-sleep --ms N` must finish in
@@ -558,12 +540,9 @@ for_each_batch_cmd!(gen_dispatch_impl);
 
 /// Per-variant table for the eval-capture query log.
 ///
-/// EX-V1.30.1-3 (P3-EX-1): the `log_query("search", &args.query)` calls
-/// used to live at six hand-sprinkled sites in `dispatch`. Each site had
-/// to remember the right command-name string and the right field name
-/// (`args.query` vs `args.description` vs ...). Centralised here so
-/// adding a new logged variant is one row in this table instead of a
-/// new sprinkled call inside `dispatch`.
+/// Centralises the `log_query(command_name, query_field)` mapping so adding a
+/// new logged variant is one row in this table. Each row pairs a command-name
+/// string with the right field name (`args.query` vs `args.description` vs ...).
 ///
 /// The `gen_log_query_dispatch` emitter expands the table into one
 /// `log_query_for(cmd: &BatchCmd)` function that pattern-matches the
@@ -609,8 +588,8 @@ for_each_logged_batch_cmd!(gen_log_query_dispatch);
 /// Best-effort: failures are silently ignored (never blocks batch mode).
 fn log_query(command: &str, query: &str) {
     use std::io::Write;
-    // P3.32: prefer the platform's native cache dir; fall back to `~/.cache`
-    // for legacy behavior. Skip silently if neither is resolvable.
+    // Prefer the platform's native cache dir; fall back to `~/.cache`.
+    // Skip silently if neither is resolvable.
     let Some(cache_root) = dirs::cache_dir().or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
     else {
         return;
@@ -818,7 +797,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Where { ref args, .. } => {
                 assert_eq!(args.description, "new CLI command");
-                // API-V1.36-8 (#1459): --limit defaults harmonised to 5.
+                // --limit defaults to 5.
                 assert_eq!(args.limit_arg.limit, 5);
             }
             _ => panic!("Expected Where command"),
@@ -925,9 +904,8 @@ mod tests {
 
     #[test]
     fn test_parse_blame_with_flags() {
-        // API-V1.22-4: short flag is `-n`, long flag is `--commits`. Old
-        // `-d`/`--depth` is hard-renamed (no alias) — see CLAUDE.md
-        // "No External Users" / agents-only contract.
+        // blame's short flag is `-n`, long flag is `--commits` (no `--depth`
+        // alias).
         let input =
             BatchInput::try_parse_from(["blame", "my_func", "-n", "5", "--callers"]).unwrap();
         match input.cmd {
@@ -951,7 +929,7 @@ mod tests {
         }
     }
 
-    // API-V1.25-6: compile-time guard that every BatchCmd variant is either
+    // Compile-time guard that every BatchCmd variant is either
     // marked pipeable or explicitly not pipeable. Adding a new variant without
     // updating `BatchCmd::is_pipeable`'s match causes *this test* to fail to
     // compile because the inner match below uses the same exhaustiveness.

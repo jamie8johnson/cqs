@@ -62,7 +62,7 @@ pub struct Chunk {
     /// Parser logic version stamp (see `parser::chunk::PARSER_VERSION`).
     /// Bumped when chunk-level extraction logic changes a non-content field
     /// (e.g., `doc` enrichment) so incremental UPSERT can refresh rows whose
-    /// `content_hash` is unchanged. See P2 #29 in `docs/audit-findings.md`.
+    /// `content_hash` is unchanged.
     pub parser_version: u32,
 }
 
@@ -87,7 +87,7 @@ pub struct FunctionCalls {
 }
 
 /// Classification of how a type is referenced in code.
-/// Used for type-level dependency tracking (Phase 2b of moonshot).
+/// Used for type-level dependency tracking.
 /// Stored as string in SQLite `type_edges.edge_kind` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum TypeEdgeKind {

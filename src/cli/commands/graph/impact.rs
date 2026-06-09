@@ -1,17 +1,13 @@
 //! Impact command — what breaks if you change a function
 //!
-//! ## Polymorphic routing (Phase 1, partial)
+//! ## Polymorphic routing
 //!
-//! `cqs impact <name>` historically required a function-or-method name and
-//! returned an empty `Vec` for any other chunk kind (consts, types, etc.) —
-//! the misrouted-to-empty failure mode the polymorphic-routing design
-//! (`docs/polymorphic-routing.md`) targets. This module now consults
-//! `cqs::kind::classify_hits` against an exact-name lookup before running
-//! the call-graph analysis. For [`Kind::Const`] the response is a
-//! kind-labeled definition list with a redirect note instead of empty.
-//! Other non-Function kinds (Type, Module, Ambiguous, ...) still fall
-//! through to the existing flow until their per-(command × kind) cells
-//! land in follow-up PRs.
+//! `cqs impact <name>` consults `cqs::kind::classify_hits` against an
+//! exact-name lookup before running the call-graph analysis. For
+//! [`Kind::Const`], [`Kind::Type`], [`Kind::Module`], and
+//! [`Kind::Ambiguous`] the response is a kind-labeled definition list with
+//! a redirect note instead of empty. Function and other kinds fall through
+//! to the call-graph analysis flow.
 
 use anyhow::Result;
 
@@ -24,9 +20,9 @@ use cqs::{
 use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
-// Task A3 added `limit` as the 8th parameter; the CLI dispatcher inflates a
-// shared arg struct rather than calling this directly, so we accept the lint
-// here instead of forcing every call site through a wrapper.
+// The CLI dispatcher inflates a shared arg struct rather than calling this
+// directly, so we accept the lint here instead of forcing every call site
+// through a wrapper.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_impact(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -42,9 +38,9 @@ pub(crate) fn cmd_impact(
     let store = &ctx.store;
     let root = &ctx.root;
     let depth = depth.clamp(1, 10);
-    // Task A3: per-section truncation cap. Default 5 from `LimitArg`. The
-    // analyzer returns the full result; we apply the cap at render time so
-    // the underlying graph data is unaffected (other consumers — mermaid,
+    // Per-section truncation cap. Default 5 from `LimitArg`. The analyzer
+    // returns the full result; we apply the cap at render time so the
+    // underlying graph data is unaffected (other consumers — mermaid,
     // suggest_tests — still see the full set).
     let limit = limit.clamp(1, 100);
 
@@ -59,8 +55,8 @@ pub(crate) fn cmd_impact(
         )?;
         truncate_impact_sections(&mut result, limit);
 
-        // P4-3 (#1463): exhaustive match — adding a new `OutputFormat`
-        // variant fails to compile until every render site adds an arm.
+        // Exhaustive match — adding a new `OutputFormat` variant fails to
+        // compile until every render site adds an arm.
         match format {
             OutputFormat::Mermaid => {
                 println!("{}", impact_to_mermaid(&result));
@@ -77,18 +73,18 @@ pub(crate) fn cmd_impact(
         return Ok(());
     }
 
-    // Polymorphic-routing kind detection (Phase 1). Read once up-front
-    // so the dispatcher branch happens before the resolve-+-analyze
-    // flow that assumes a function. Hits double-duty as the input to
-    // the kind-mismatch fallbacks below — one SQL query covers all.
+    // Polymorphic-routing kind detection. Read once up-front so the
+    // dispatcher branch happens before the resolve-+-analyze flow that
+    // assumes a function. Hits double-duty as the input to the kind-
+    // mismatch fallbacks below — one SQL query covers all.
     //
-    // Per the design's per-(command × kind) matrix:
-    // - Function: existing call-graph impact analysis (with `kind: "function"` label)
-    // - Const: kind-labeled definition list + redirect note (#1612)
+    // Per-kind routing:
+    // - Function: call-graph impact analysis (with `kind: "function"` label)
+    // - Const: kind-labeled definition list + redirect note
     // - Type: kind-labeled definition list + redirect to `cqs deps <type>`
     // - Module: kind-labeled definition list + redirect to file-import search
     // - Ambiguous: aggregate across kinds with `kind` per result
-    // - Multiple, NotFound, Other: fall through to existing flow
+    // - Multiple, NotFound, Other: fall through to the call-graph flow
     //   (which may resolve via FTS or return "not found")
     let chunks = store.lookup_by_name(name)?;
     let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
@@ -99,8 +95,8 @@ pub(crate) fn cmd_impact(
         Kind::Module => return cmd_impact_module_fallback(name, &chunks, format),
         Kind::Ambiguous => return cmd_impact_ambiguous_fallback(name, &chunks, format),
         // Function | Multiple | Other | NotFound: fall through to the
-        // existing resolve_target + analyze_impact flow. Multiple is
-        // safe because resolve_target picks the first / best match;
+        // resolve_target + analyze_impact flow. Multiple is safe
+        // because resolve_target picks the first / best match;
         // NotFound surfaces a "not found" error from resolve_target.
         _ => {}
     }
@@ -162,7 +158,7 @@ pub(crate) fn cmd_impact(
 
 /// Wrap [`cqs::impact_to_json`] with a top-level `kind` field so agents
 /// can detect whether the response came from the function-shaped happy
-/// path or a kind-mismatch fallback. Polymorphic-routing Phase 1.
+/// path or a kind-mismatch fallback.
 fn impact_to_json_with_kind(result: &cqs::ImpactResult, kind: &str) -> Result<serde_json::Value> {
     let mut json = impact_to_json(result)?;
     if let Some(obj) = json.as_object_mut() {
@@ -173,18 +169,16 @@ fn impact_to_json_with_kind(result: &cqs::ImpactResult, kind: &str) -> Result<se
 
 /// Build a definitions list from chunks. Used by every kind-mismatch
 /// fallback below. Each entry carries file/line/language/chunk_type/
-/// signature/content — the same shape the Const fallback shipped in
-/// #1612 (consumers learned this shape first; the other kinds match).
+/// signature/content — the same shape every kind emits.
 ///
-/// Audit Cluster H (EH-V1.40-9 + SEC-V1.40-4): cap at
-/// [`KIND_FALLBACK_MAX_DEFINITIONS`] entries and truncate per-chunk
-/// content at [`KIND_FALLBACK_MAX_CONTENT_BYTES`]. Hot names like
-/// `Result` / `Error` match hundreds of chunks across a corpus; without
-/// the cap, `cqs callers Result --json` could return multi-MB JSON
-/// (and on the daemon path, write a multi-MB JSONL line that pegs the
-/// receiver's parse buffer). The cap mirrors the `clamp(1, 100)` discipline
-/// the rest of the graph commands ship with; the per-entry truncation
-/// keeps pathological monster-chunk content from ballooning the response.
+/// Caps at [`KIND_FALLBACK_MAX_DEFINITIONS`] entries and truncates per-chunk
+/// content at [`KIND_FALLBACK_MAX_CONTENT_BYTES`]. Hot names like `Result` /
+/// `Error` match hundreds of chunks across a corpus; without the cap,
+/// `cqs callers Result --json` could return multi-MB JSON (and on the daemon
+/// path, write a multi-MB JSONL line that pegs the receiver's parse buffer).
+/// The cap mirrors the `clamp(1, 100)` discipline the rest of the graph
+/// commands use; the per-entry truncation keeps pathological monster-chunk
+/// content from ballooning the response.
 fn chunks_to_definitions(chunks: &[cqs::store::ChunkSummary]) -> Vec<serde_json::Value> {
     chunks
         .iter()
@@ -241,9 +235,8 @@ pub(crate) fn chunk_to_definition_value(c: &cqs::store::ChunkSummary) -> serde_j
     serde_json::Value::Object(entry)
 }
 
-/// Generic kind-mismatch fallback JSON builder. Polymorphic-routing
-/// Phase 1 — every non-Function kind that lands on `cqs impact <name>`
-/// gets a response of this shape:
+/// Generic kind-mismatch fallback JSON builder. Every non-Function kind
+/// that lands on `cqs impact <name>` gets a response of this shape:
 ///
 /// ```json
 /// {
@@ -274,11 +267,10 @@ fn build_impact_kind_fallback_json(
 }
 
 /// Const-specific JSON builder. Thin wrapper around
-/// [`build_impact_kind_fallback_json`] preserved as the canonical
-/// const constructor for the test suite + as the path the
-/// [`cmd_impact_const_fallback`] dispatcher calls (so a regression to
-/// the generic helper would surface here, where the per-kind tests
-/// live).
+/// [`build_impact_kind_fallback_json`]; the canonical const constructor
+/// for the test suite and the path the [`cmd_impact_const_fallback`]
+/// dispatcher calls, so a regression to the generic helper surfaces here
+/// where the per-kind tests live.
 fn build_impact_const_fallback_json(
     name: &str,
     chunks: &[cqs::store::ChunkSummary],
@@ -292,10 +284,10 @@ fn build_impact_const_fallback_json(
     )
 }
 
-/// Generic kind-mismatch fallback dispatcher. Polymorphic-routing
-/// Phase 1. Emits the JSON shape via `emit_json` (which honors the
-/// active `OutputFormat::current()`); Text/Mermaid surfaces print a
-/// plain-text equivalent with the same kind-specific redirect.
+/// Generic kind-mismatch fallback dispatcher. Emits the JSON shape via
+/// `emit_json` (which honors the active `OutputFormat::current()`);
+/// Text/Mermaid surfaces print a plain-text equivalent with the same
+/// kind-specific redirect.
 ///
 /// `text_lead` is the first line printed for Text/Mermaid (e.g.
 /// `"(impact) `{name}` is a const, not a function — ..."`).
@@ -343,12 +335,11 @@ fn cmd_impact_kind_fallback(
     Ok(())
 }
 
-/// Polymorphic-routing fallback: `cqs impact <const>` returns a kind-
-/// labeled definition list + redirect note instead of empty. Pre-fix,
-/// `analyze_impact` against a const name resolved a chunk that the
-/// call-graph layer doesn't track and silently returned zero callers.
-/// The agent saw `[]`, fell through to grep, and the const became
-/// another datapoint in the 79% → 6% search-rate decline.
+/// Kind-mismatch fallback: `cqs impact <const>` returns a kind-labeled
+/// definition list + redirect note instead of empty. Consts aren't
+/// tracked by the call-graph layer, so call-graph impact analysis would
+/// otherwise return zero callers and leave the agent with nothing
+/// actionable.
 fn cmd_impact_const_fallback(
     name: &str,
     chunks: &[cqs::store::ChunkSummary],
@@ -389,7 +380,7 @@ fn cmd_impact_const_fallback(
     Ok(())
 }
 
-/// Polymorphic-routing fallback: `cqs impact <type>` (struct, enum,
+/// Kind-mismatch fallback: `cqs impact <type>` (struct, enum,
 /// trait, class, interface, type alias, ...). Returns the type's
 /// definition site(s) + a redirect to `cqs deps <type>` for type-
 /// dependency analysis (the closest analogue to "what breaks if you
@@ -408,7 +399,7 @@ fn cmd_impact_type_fallback(
     )
 }
 
-/// Polymorphic-routing fallback: `cqs impact <module>` (Rust mod, C++
+/// Kind-mismatch fallback: `cqs impact <module>` (Rust mod, C++
 /// namespace, package, ...). Returns the module's declaration site(s)
 /// + a redirect to find files importing the module.
 fn cmd_impact_module_fallback(
@@ -425,7 +416,7 @@ fn cmd_impact_module_fallback(
     )
 }
 
-/// Polymorphic-routing fallback: `cqs impact <ambiguous-name>` (name
+/// Kind-mismatch fallback: `cqs impact <ambiguous-name>` (name
 /// resolves across multiple kinds — e.g. `len` is both a method and
 /// a const in some codebases). Returns all matched chunks. The
 /// per-definition `chunk_type` field tells the consumer which entry
@@ -536,11 +527,10 @@ mod tests {
         assert_eq!(json["kind"], "function");
     }
 
-    // Polymorphic-routing Phase 1: Type / Module / Ambiguous cells of the
-    // impact × kind matrix. Each cell pins its `kind` label, the
-    // `fallback_from: "impact"` invariant, and that the per-kind redirect
-    // note differs from Const so an agent reading the response shape can
-    // tell which fallback fired.
+    // Type / Module / Ambiguous cells of the impact × kind matrix. Each
+    // cell pins its `kind` label, the `fallback_from: "impact"` invariant,
+    // and that the per-kind redirect note differs from Const so an agent
+    // reading the response shape can tell which fallback fired.
 
     fn make_chunk_of_type(
         chunk_type: cqs::parser::ChunkType,
@@ -631,10 +621,9 @@ mod tests {
         assert_eq!(keys, expected);
     }
 
-    // Audit Cluster H (EH-V1.40-9 + SEC-V1.40-4): kind-fallback paths
-    // must cap definitions count and per-chunk content size to prevent
-    // pathological "hot name" responses (e.g. `cqs callers Result`
-    // matching hundreds of chunks, each emitting full content) from
+    // Kind-fallback paths must cap definitions count and per-chunk content
+    // size to prevent pathological "hot name" responses (e.g. `cqs callers
+    // Result` matching hundreds of chunks, each emitting full content) from
     // saturating the daemon socket / agent's parse buffer.
 
     #[test]
@@ -721,8 +710,8 @@ mod tests {
     }
 }
 
-/// Task A3: truncate each list inside `ImpactResult` to `limit`. Operates
-/// in-place — used by both the local and cross-project paths in `cmd_impact`.
+/// Truncate each list inside `ImpactResult` to `limit`. Operates in-place
+/// — used by both the local and cross-project paths in `cmd_impact`.
 /// Direct callers, transitive callers, affected tests, and type-impacted
 /// callers each get the same cap (a single `--limit` controls all four
 /// sections; no per-section knob today).

@@ -150,9 +150,9 @@ impl GatherOptions {
     }
 }
 
-/// PF-10: Read CQS_GATHER_MAX_NODES once via OnceLock, not on every GatherOptions::default().
+/// Read CQS_GATHER_MAX_NODES once via OnceLock, not on every GatherOptions::default().
 ///
-/// Public so CLI text-mode warnings can report the actual cap (P1.6).
+/// Public so CLI text-mode warnings can report the actual cap.
 pub fn gather_max_nodes() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| match std::env::var("CQS_GATHER_MAX_NODES") {
@@ -306,24 +306,24 @@ pub(crate) fn bfs_expand(
     // Track visited nodes to prevent re-expansion from overlapping seeds.
     // Without this, if two seeds overlap (e.g., bridge results matching ref seeds
     // in gather_cross_index), the same node gets expanded twice, doubling neighbor lookups.
-    // PF-2: Use Arc<str> in visited/queue to avoid per-node String heap allocations.
+    // Use Arc<str> in visited/queue to avoid per-node String heap allocations.
     let mut visited: HashSet<Arc<str>> =
         name_scores.keys().map(|k| Arc::from(k.as_str())).collect();
     let initial_size = name_scores.len();
 
-    // AC-V1.29-3: HashMap iteration order is process-seed-dependent, so
-    // enqueueing straight from `name_scores.keys()` made BFS non-deterministic.
-    // When `max_expanded_nodes` fires mid-expansion, which seeds got their
-    // neighbors in before the cap depended on randomness. Sort by
+    // HashMap iteration order is process-seed-dependent, so enqueueing
+    // straight from `name_scores.keys()` would make BFS non-deterministic:
+    // when `max_expanded_nodes` fires mid-expansion, which seeds got their
+    // neighbors in before the cap would depend on randomness. Sort by
     // (score desc, name asc) so a given input produces the same output on
     // every run, regardless of process-wide HashMap randomization.
     let mut seeds: Vec<(&str, f32)> = name_scores
         .iter()
         .map(|(k, (s, _))| (k.as_str(), *s))
         .collect();
-    // AC-V1.38-3 (#1463): use `total_cmp` to match the rest of the
-    // search/scoring pipeline (BoundedScoreHeap, MMR, apply_parent_boost
-    // re-sort, search_across_projects merge). `partial_cmp().unwrap_or(Equal)`
+    // Use `total_cmp` to match the rest of the search/scoring pipeline
+    // (BoundedScoreHeap, MMR, apply_parent_boost re-sort,
+    // search_across_projects merge). `partial_cmp().unwrap_or(Equal)`
     // collapses NaN to "equal to everyone", which makes the secondary
     // `name asc` tiebreak inherit the input slice's NaN position (not
     // stable under sort). `total_cmp` gives a deterministic total order
@@ -354,10 +354,9 @@ pub(crate) fn bfs_expand(
         let new_score = base_score * opts.decay_factor;
         for neighbor in neighbors {
             if !visited.contains(&neighbor) {
-                // AC-V1.30.1-3: cap is on `name_scores.len()`, so it
-                // only matters for new insertions. Already-visited
-                // bumps below don't grow the map — let them run
-                // unconditionally so a node reached late via a
+                // Cap is on `name_scores.len()`, so it only matters for new
+                // insertions. Already-visited bumps below don't grow the map
+                // — let them run unconditionally so a node reached late via a
                 // higher-score path still gets its score promoted.
                 if name_scores.len() >= opts.max_expanded_nodes {
                     expansion_capped = true;
@@ -369,24 +368,23 @@ pub(crate) fn bfs_expand(
                 queue.push_back((neighbor, depth + 1));
             } else if let Some(existing) = name_scores.get_mut(neighbor.as_ref()) {
                 // Already visited — update score if higher, preserve minimum depth.
-                // AC-13: We intentionally do NOT re-enqueue the node. Re-enqueueing
+                // We intentionally do NOT re-enqueue the node. Re-enqueueing
                 // would propagate the higher score to neighbors (Dijkstra-like), but
                 // risks exponential blowup on dense graphs. The max_expanded_nodes cap
                 // keeps memory bounded, and the score update here ensures the node itself
                 // gets the best available score even without re-expansion.
                 //
-                // AC-V1.30.1-3: this branch must run even when the cap
-                // has been hit — the bump doesn't grow `name_scores`.
+                // This branch must run even when the cap has been hit — the
+                // bump doesn't grow `name_scores`.
                 //
-                // AC-V1.40-5: depth-min update lifted out of the score-gated
-                // branch. Pre-fix, a low-score-shorter-path (e.g. seed B
-                // score 0.01 reaching D in depth 1) couldn't update D's
-                // depth when D was already recorded at depth 2 from a
-                // high-score-deeper-path (seed A score 1.0 → A→C→D). The
-                // depth field surfaces in `GatheredChunk.depth` and on the
-                // JSON output, so wrong values reached agents directly.
-                // Depth-min is idempotent and cheap; running it always
-                // ensures the reported depth is the shortest path's.
+                // Depth-min update runs unconditionally (not score-gated) so a
+                // low-score-shorter-path (e.g. seed B score 0.01 reaching D in
+                // depth 1) can update D's depth even when D was recorded at
+                // depth 2 from a high-score-deeper-path (seed A score 1.0 →
+                // A→C→D). The depth field surfaces in `GatheredChunk.depth` and
+                // on the JSON output. Depth-min is idempotent and cheap;
+                // running it always ensures the reported depth is the shortest
+                // path's.
                 existing.1 = existing.1.min(depth + 1);
                 if new_score > existing.0 {
                     existing.0 = new_score;
@@ -423,8 +421,8 @@ pub(crate) fn fetch_and_assemble<Mode>(
     for (name, (score, depth)) in name_scores {
         if let Some(results) = batch_results.get(name) {
             if let Some(r) = results.first() {
-                // PERF-V1.36-4: HashSet::insert returns false if the key
-                // was already present — single hash probe instead of two.
+                // HashSet::insert returns false if the key was already
+                // present — single hash probe instead of two.
                 if !seen_ids.insert(r.chunk.id.clone()) {
                     continue;
                 }
@@ -702,7 +700,7 @@ pub fn gather_cross_index_with_index<Mode: Sync>(
         })
         .collect();
 
-    // EH-31: Surface total bridge search failures that silently degrade quality
+    // Surface total bridge search failures that silently degrade quality
     let total_bridge_errors = bridge_error_count.load(std::sync::atomic::Ordering::Relaxed);
     if total_bridge_errors > 0 {
         tracing::warn!(
@@ -715,9 +713,9 @@ pub fn gather_cross_index_with_index<Mode: Sync>(
     drop(_bridge_span);
 
     // Merge into bridge_scores sequentially (HashMap not Sync).
-    // PERF-V1.33-9: consume `bridge_results` so the per-result strings
-    // (`pr.chunk.name`, `pr.chunk.id`) move into the entry instead of being
-    // cloned and immediately dropped along with the source vec.
+    // Consume `bridge_results` so the per-result strings (`pr.chunk.name`,
+    // `pr.chunk.id`) move into the entry instead of being cloned and
+    // immediately dropped along with the source vec.
     let mut bridge_scores: HashMap<String, (f32, String)> = HashMap::new(); // name -> (score, chunk_id)
     for (seed_score, results) in bridge_results {
         for pr in results {
@@ -804,7 +802,7 @@ pub fn gather_cross_index_with_index<Mode: Sync>(
 }
 
 /// Get neighbors in the specified direction.
-/// Returns `Arc<str>` cloned from the CallGraph maps to avoid per-node String allocations (PF-1).
+/// Returns `Arc<str>` cloned from the CallGraph maps to avoid per-node String allocations.
 fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> Vec<Arc<str>> {
     let mut neighbors = Vec::new();
     match direction {
@@ -931,10 +929,10 @@ mod tests {
         assert_eq!(&*callers[0], "B");
     }
 
-    /// P2.45 regression-pin: the seed-sort cascade in `bfs_expand` must
-    /// be deterministic on `(score desc, name asc)`. Directly testing
-    /// `bfs_expand` requires a `Store`, so we pin the seed-ordering
-    /// logic that sits at the top of the function.
+    /// The seed-sort cascade in `bfs_expand` must be deterministic on
+    /// `(score desc, name asc)`. Directly testing `bfs_expand` requires a
+    /// `Store`, so we pin the seed-ordering logic that sits at the top of
+    /// the function.
     #[test]
     fn test_p2_45_bfs_seed_order_is_deterministic() {
         // Build a name_scores-shaped vector with two equally-scored seeds
@@ -1001,12 +999,11 @@ mod tests {
 
     #[test]
     fn test_bfs_seed_order_deterministic() {
-        // AC-V1.29-3: BFS seeding must be deterministic regardless of
-        // HashMap iteration order. The previous impl enqueued seeds in
-        // `name_scores.keys()` order, which is process-seed-randomized.
-        // When the cap fires mid-expansion, that randomness bled into the
-        // output. Seed with 10 names, cap at 15, run twice, assert output
-        // is the same set on both runs.
+        // BFS seeding must be deterministic regardless of HashMap iteration
+        // order. Enqueueing seeds in `name_scores.keys()` order is
+        // process-seed-randomized, and when the cap fires mid-expansion that
+        // randomness would bleed into the output. Seed with 10 names, cap at
+        // 15, run twice, assert output is the same set on both runs.
         let mut forward = HashMap::new();
         let mut reverse = HashMap::new();
         // Build a graph where every seed has multiple callees so the cap
@@ -1028,8 +1025,8 @@ mod tests {
             let mut m: HashMap<String, (f32, usize)> = HashMap::new();
             for i in 0..10 {
                 // Give all seeds the same score so name-ascending is the
-                // only tie-break left — this is the worst case where the
-                // HashMap order used to leak through.
+                // only tie-break left — the worst case for HashMap-order
+                // leakage.
                 m.insert(format!("S{i}"), (0.5, 0));
             }
             m
@@ -1070,14 +1067,11 @@ mod tests {
         );
     }
 
-    /// AC-V1.30.1-3: when the cap fires partway through a node's neighbour
-    /// loop, already-visited neighbours that *would* have had their score
-    /// bumped to a higher value used to keep their stale lower score —
-    /// because the cap check sat ABOVE the visited / bump branches and
-    /// `break` skipped the bump entirely. This test pins the post-fix
-    /// behaviour: the bump runs even after the cap is reached, because
-    /// the cap check now lives inside the `!visited` branch (where new
-    /// insertions actually grow `name_scores`), not above it.
+    /// When the cap fires partway through a node's neighbour loop,
+    /// already-visited neighbours that *would* have had their score bumped to
+    /// a higher value still get the bump: the cap check lives inside the
+    /// `!visited` branch (where new insertions actually grow `name_scores`),
+    /// not above the visited / bump branches.
     #[test]
     fn bfs_expand_score_bump_runs_when_cap_reached() {
         // Construct a minimal graph that exercises the bump-after-cap
@@ -1090,9 +1084,8 @@ mod tests {
         // Target is *already-visited* before BFS runs. With cap = 2:
         //   - name_scores starts with {Seed, Target} == 2 entries.
         //   - Seed expands. First neighbour is Target → already-visited
-        //     branch. Pre-fix: cap check at top of loop breaks. Post-fix:
-        //     bump branch runs (no cap check above it), Target gets
-        //     promoted from 0.10 to 1.0*0.5=0.5.
+        //     branch. The bump branch runs (no cap check above it), Target
+        //     gets promoted from 0.10 to 1.0*0.5=0.5.
         //   - Next neighbour `new_a` → !visited branch → cap check fires
         //     (len == 2 == cap), sets `expansion_capped=true`, breaks.
         let mut forward = HashMap::new();
@@ -1124,10 +1117,8 @@ mod tests {
         let capped = bfs_expand(&mut ns, &graph, &opts);
         assert!(capped, "cap MUST fire under this configuration");
 
-        // AC-V1.30.1-3 assertion: Target's score MUST have been bumped
-        // from 0.10 to Seed's decayed score (1.0 * 0.5 = 0.5). Pre-fix
-        // this assertion fails because the cap-check above the !visited
-        // branch was bypassing the bump.
+        // Target's score MUST have been bumped from 0.10 to Seed's decayed
+        // score (1.0 * 0.5 = 0.5) — the bump runs even after the cap fires.
         let (target_score, target_depth) = ns["Target"];
         assert!(
             (target_score - 0.5).abs() < f32::EPSILON,

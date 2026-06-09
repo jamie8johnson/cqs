@@ -4,11 +4,10 @@
 //! `git rev-parse` that return parsed Rust types. All functions accept
 //! a repo path and use `git -C <repo>` to avoid changing directories.
 //!
-//! SEC-V1.25-11: All entry points canonicalize the repo path and require
-//! a `.git` (directory or file — worktrees use a file) to exist at the
-//! canonical location before running any git command. This blocks path-
-//! traversal via relative `../` segments and refuses to operate on a
-//! non-git directory.
+//! All entry points canonicalize the repo path and require a `.git`
+//! (directory or file — worktrees use a file) to exist at the canonical
+//! location before running any git command. This blocks path traversal via
+//! relative `../` segments and refuses to operate on a non-git directory.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -18,17 +17,16 @@ use super::TrainDataError;
 
 /// Resolve and validate a git repository path.
 ///
-/// SEC-V1.25-11:
 ///   * Canonicalize to reject `../` traversal before it reaches git.
 ///   * Reject paths that don't look like a git repository (no `.git`
 ///     entry present). This doubles as a clearer error message than
 ///     git's own "not a git repository".
 fn validate_git_repo(repo: &Path) -> Result<PathBuf, TrainDataError> {
-    // PB-V1.33-2: use `dunce::canonicalize` so the verbatim `\\?\C:\...`
-    // prefix is stripped on Windows before the path is fed to `git -C`.
-    // Older git-for-Windows builds reject extended-length paths in some
-    // subcommand combinations, and downstream display/log surfaces the
-    // ugly prefix to operators when raw `canonicalize` is used.
+    // Use `dunce::canonicalize` so the verbatim `\\?\C:\...` prefix is
+    // stripped on Windows before the path is fed to `git -C`. Older
+    // git-for-Windows builds reject extended-length paths in some subcommand
+    // combinations, and raw `canonicalize` surfaces the ugly prefix to
+    // operators in downstream display/log.
     let canonical = dunce::canonicalize(repo).map_err(|e| {
         TrainDataError::Git(format!(
             "cannot resolve repo path {}: {}",
@@ -71,7 +69,7 @@ pub struct CommitInfo {
 pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, TrainDataError> {
     let _span = tracing::info_span!("git_log", repo = %repo.display(), max_commits).entered();
 
-    // SEC-V1.25-11: resolve + validate before passing to git.
+    // Resolve + validate before passing to git.
     let canonical_repo = validate_git_repo(repo)?;
 
     let mut cmd = Command::new("git");
@@ -140,16 +138,15 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
 /// Uses `--root` so the initial commit (no parent) produces a diff against
 /// the empty tree. `--no-commit-id -r -p` gives raw recursive patch output.
 ///
-/// RM-V1.33-6: stdout is read via a piped child + `Read::take(max)` cap
-/// rather than `Command::output()` so a single bulk-import commit
-/// (vendor drop, schema dump, generated migration) producing hundreds of
-/// MiB of patch text cannot OOM the parent process. The cap is governed
-/// by `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES` (default 256 MiB). When the
-/// cap is hit we kill the child, log a warn, and return
-/// `TrainDataError::Git` so the caller can decide whether to skip the
-/// commit or retry with a tighter window — the alternative (silent
-/// truncation) would corrupt the diff stream and feed a malformed patch
-/// to downstream pair extraction.
+/// stdout is read via a piped child + `Read::take(max)` cap rather than
+/// `Command::output()` so a single bulk-import commit (vendor drop, schema
+/// dump, generated migration) producing hundreds of MiB of patch text
+/// cannot OOM the parent process. The cap is governed by
+/// `CQS_TRAIN_GIT_DIFF_TREE_MAX_BYTES` (default 256 MiB). When the cap is
+/// hit we kill the child, log a warn, and return `TrainDataError::Git` so
+/// the caller can skip the commit or retry with a tighter window — silent
+/// truncation would corrupt the diff stream and feed a malformed patch to
+/// downstream pair extraction.
 pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
     let _span = tracing::info_span!("git_diff_tree", repo = %repo.display(), sha).entered();
 
@@ -160,7 +157,7 @@ pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
         )));
     }
 
-    // SEC-V1.25-11: resolve + validate before passing to git.
+    // Resolve + validate before passing to git.
     let canonical_repo = validate_git_repo(repo)?;
 
     let max = max_diff_tree_size();
@@ -309,7 +306,7 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
         )));
     }
 
-    // SEC-V1.25-11: resolve + validate before passing to git.
+    // Resolve + validate before passing to git.
     let canonical_repo = validate_git_repo(repo)?;
 
     let spec = format!("{}:{}", sha, path);
@@ -351,11 +348,11 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
         return Ok(None);
     }
 
-    // UTF-8 guard — binary files are not useful for training. EH-V1.36-10 / P3:
-    // capture the FromUtf8Error.utf8_error().valid_up_to() byte index so the
-    // debug log distinguishes "binary blob" (valid_up_to=0) from "UTF-16
-    // file" (valid_up_to=0 with BOM detection elsewhere) from "single curly
-    // quote" (valid_up_to>>0).
+    // UTF-8 guard — binary files are not useful for training. Capture the
+    // FromUtf8Error.utf8_error().valid_up_to() byte index so the debug log
+    // distinguishes "binary blob" (valid_up_to=0) from "UTF-16 file"
+    // (valid_up_to=0 with BOM detection elsewhere) from "single curly quote"
+    // (valid_up_to>>0).
     match String::from_utf8(output.stdout) {
         Ok(content) => Ok(Some(content)),
         Err(e) => {
@@ -375,9 +372,9 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
 pub fn is_shallow(repo: &Path) -> bool {
     let _span = tracing::info_span!("is_shallow", repo = %repo.display()).entered();
 
-    // SEC-V1.25-11: resolve + validate before passing to git. Returns false
-    // (conservative default) on any resolution failure, matching the existing
-    // contract that is_shallow never panics on a missing repo.
+    // Resolve + validate before passing to git. Returns false (conservative
+    // default) on any resolution failure, so is_shallow never panics on a
+    // missing repo.
     let canonical_repo = match validate_git_repo(repo) {
         Ok(c) => c,
         Err(e) => {
@@ -485,11 +482,6 @@ mod tests {
 
         dir
     }
-    /// Verifies that `git_log` correctly retrieves commit information from a test repository.
-    /// Creates a temporary test repository, calls `git_log` with offset 0, and asserts that the returned commits list is non-empty and contains valid commit data (non-empty SHA, message, and date fields).
-    /// # Panics
-    /// Panics if any of the assertions fail, indicating that `git_log` did not return expected commit data or the test repository could not be created.
-
     #[test]
     fn git_log_on_test_repo() {
         let dir = create_test_repo();
@@ -499,15 +491,6 @@ mod tests {
         assert!(!commits[0].message.is_empty());
         assert!(!commits[0].date.is_empty());
     }
-    /// Tests that the git_log function correctly respects the max_commits parameter to limit the number of returned commits.
-    /// # Arguments
-    /// This is a test function with no parameters.
-    /// # Behavior
-    /// Creates a test repository with multiple commits, then verifies that:
-    /// - git_log with max_commits=0 returns all commits (2 in this case)
-    /// - git_log with max_commits=1 returns only 1 commit
-    /// - The returned commit matches the most recent commit from the full log
-
     #[test]
     fn git_log_respects_max_commits() {
         let dir = create_test_repo_with_change();
@@ -519,14 +502,6 @@ mod tests {
         // Most recent commit first
         assert_eq!(limited[0].sha, all[0].sha);
     }
-    /// Tests that `git_log` returns commit dates in ISO 8601 format.
-    /// # Arguments
-    /// This is a test function with no parameters.
-    /// # Returns
-    /// Returns nothing. This is a test function that asserts the date format of git commits contains either 'T' or '-' characters, which are present in ISO 8601 formatted dates (e.g., 2026-03-19T14:30:00+00:00).
-    /// # Panics
-    /// Panics if the assertion fails, indicating that `git_log` did not return dates in the expected ISO 8601 format.
-
     #[test]
     fn git_log_returns_iso_date() {
         let dir = create_test_repo();
@@ -538,11 +513,6 @@ mod tests {
             commits[0].date
         );
     }
-    /// Tests the git_diff_tree function with a test repository containing a committed change.
-    /// Creates a test repository with a change, retrieves the most recent commit, and generates a diff tree for that commit. Asserts that the diff output contains references to the modified file (test.rs) and includes standard unified diff hunk headers (@@).
-    /// # Panics
-    /// Panics if the test repository creation fails, git_log returns an error, git_diff_tree returns an error, or if the generated diff does not contain the expected file reference or hunk headers.
-
     #[test]
     fn git_diff_tree_on_test_repo() {
         let dir = create_test_repo_with_change();
@@ -551,14 +521,6 @@ mod tests {
         assert!(diff.contains("test.rs"), "diff should reference test.rs");
         assert!(diff.contains("@@"), "diff should contain hunk headers");
     }
-    /// Verifies that `git_diff_tree` correctly generates a diff for the initial commit in a repository.
-    /// # Arguments
-    /// This function takes no parameters. It creates a test repository internally.
-    /// # Returns
-    /// Returns nothing. This is a test function that asserts expected behavior.
-    /// # Panics
-    /// Panics if the initial commit diff does not contain a reference to "test.rs".
-
     #[test]
     fn git_diff_tree_initial_commit() {
         let dir = create_test_repo();
@@ -570,19 +532,6 @@ mod tests {
             "initial commit diff should reference test.rs"
         );
     }
-    /// Test function that verifies `git_show` correctly retrieves file content from a git repository.
-    /// # Arguments
-    /// None. This function creates its own test repository and uses hardcoded test data.
-    /// # Returns
-    /// None. This function is a test assertion function that panics if assertions fail.
-    /// # Panics
-    /// Panics if:
-    /// - The test repository creation fails
-    /// - `git_log` fails to retrieve commits
-    /// - `git_show` fails to retrieve file content
-    /// - The returned content is `None`
-    /// - The file content does not contain the expected string "fn hello"
-
     #[test]
     fn git_show_returns_content() {
         let dir = create_test_repo();
@@ -591,12 +540,6 @@ mod tests {
         assert!(content.is_some());
         assert!(content.unwrap().contains("fn hello"));
     }
-    /// Tests that `git_show` returns an error when attempting to retrieve a nonexistent file from a git commit.
-    /// # Arguments
-    /// This function takes no parameters. It creates its own temporary test repository internally.
-    /// # Panics
-    /// Panics if the test repository cannot be created, if `git_log` fails unexpectedly, or if the commits list is empty.
-
     #[test]
     fn git_show_nonexistent_file_errors() {
         let dir = create_test_repo();
@@ -604,32 +547,18 @@ mod tests {
         let result = git_show(dir.path(), &commits[0].sha, "nonexistent.rs");
         assert!(result.is_err(), "Should error for nonexistent file");
     }
-    /// Tests that a normally cloned repository is not detected as shallow.
-    /// # Arguments
-    /// None
-    /// # Returns
-    /// None (unit test)
-    /// # Panics
-    /// Panics if the assertion fails, indicating the repository was incorrectly identified as shallow.
-
     #[test]
     fn is_shallow_on_normal_repo() {
         let dir = create_test_repo();
         assert!(!is_shallow(dir.path()));
     }
-    /// Tests that `is_shallow` returns false for a nonexistent repository path instead of panicking.
-    /// # Arguments
-    /// None. This is a test function that uses hardcoded paths.
-    /// # Returns
-    /// Nothing. This is a test that asserts `is_shallow` returns `false` when given a nonexistent path.
-
     #[test]
     fn is_shallow_on_nonexistent_path() {
         // Should return false (conservative default), not panic
         assert!(!is_shallow(Path::new("/nonexistent/repo/path")));
     }
 
-    // SEC-V1.25-11: validate_git_repo rejects non-repo directories and traversal.
+    // validate_git_repo rejects non-repo directories and traversal.
     #[test]
     fn validate_git_repo_rejects_non_repo() {
         let dir = TempDir::new().unwrap();
@@ -664,7 +593,7 @@ mod tests {
         assert!(result.is_err(), "nonexistent path should fail canonicalize");
     }
 
-    // SEC-V1.25-11: git_log refuses non-repo paths up front.
+    // git_log refuses non-repo paths up front.
     #[test]
     fn git_log_rejects_non_repo() {
         let dir = TempDir::new().unwrap();

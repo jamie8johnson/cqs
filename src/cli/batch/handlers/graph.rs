@@ -1,18 +1,16 @@
 //! Call graph dispatch handlers: callers, callees, deps, impact, test-map, trace, related, impact-diff.
 //!
-//! #1216: handlers take a single `&XArgs` argument (not destructured
-//! positionals) so the macro-driven `BatchCmd::dispatch` can call every
-//! row uniformly.
+//! Handlers take a single `&XArgs` argument (not destructured positionals) so
+//! the macro-driven `BatchCmd::dispatch` can call every row uniformly.
 //!
-//! ## Polymorphic routing (Phase 1, daemon path)
+//! ## Polymorphic routing (daemon path)
 //!
-//! Mirrors the CLI-direct sweep in `cli::commands::graph::*` (PRs #1612,
-//! #1616, #1617, #1618). Every kind-specialized dispatch handler now
-//! consults `cqs::kind::classify_hits` against an exact-name lookup
-//! before its happy-path query — Const/Type/Module/Ambiguous return a
-//! kind-labeled `{kind, fallback_from, name, definitions, note}` value
-//! instead of a misrouted-to-empty result. Function-path response shapes
-//! are unchanged.
+//! Mirrors the CLI-direct sweep in `cli::commands::graph::*`. Every
+//! kind-specialized dispatch handler consults `cqs::kind::classify_hits`
+//! against an exact-name lookup before its happy-path query —
+//! Const/Type/Module/Ambiguous return a kind-labeled
+//! `{kind, fallback_from, name, definitions, note}` value instead of a
+//! misrouted-to-empty result. Function-path response shapes are unchanged.
 
 use anyhow::Result;
 
@@ -36,13 +34,12 @@ fn build_kind_fallback_value(
     fallback_from: &str,
     note: &str,
 ) -> serde_json::Value {
-    // Audit Cluster H (EH-V1.40-9 + SEC-V1.40-4): cap definitions at
-    // KIND_FALLBACK_MAX_DEFINITIONS and truncate per-chunk content via
-    // the shared helper. Hot names like `Result` / `Error` match
-    // hundreds of chunks; without the cap, the daemon writes multi-MB
-    // JSONL lines that peg both the wire and the receiver's parse
-    // buffer. The cap mirrors the `clamp(1, 100)` discipline the
-    // happy-path graph dispatchers already use.
+    // Cap definitions at KIND_FALLBACK_MAX_DEFINITIONS and truncate per-chunk
+    // content via the shared helper. Hot names like `Result` / `Error` match
+    // hundreds of chunks; without the cap, the daemon writes multi-MB JSONL
+    // lines that peg both the wire and the receiver's parse buffer. The cap
+    // mirrors the `clamp(1, 100)` discipline the happy-path graph dispatchers
+    // use.
     let definitions: Vec<serde_json::Value> = chunks
         .iter()
         .take(crate::cli::commands::KIND_FALLBACK_MAX_DEFINITIONS)
@@ -136,8 +133,8 @@ pub(in crate::cli::batch) fn dispatch_deps(
     if cross_project {
         tracing::warn!("cross-project deps not yet supported, returning local result");
     }
-    // Task A3: shared cap with `cmd_deps`. Truncates after fetch so the
-    // fetched set is bounded by the same value the CLI path would.
+    // Shared cap with `cmd_deps`. Truncates after fetch so the fetched set is
+    // bounded by the same value the CLI path would.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     // Polymorphic-routing kind detection. Function and Type both have
@@ -176,7 +173,7 @@ pub(in crate::cli::batch) fn dispatch_deps(
     }
 
     if reverse {
-        // P2 #65: bind the limit at SQL time.
+        // Bind the limit at SQL time.
         let types = ctx.store().get_types_used_by(name, limit)?;
         let output = crate::cli::commands::build_deps_reverse(name, &types);
         Ok(serde_json::to_value(&output)?)
@@ -212,7 +209,7 @@ pub(in crate::cli::batch) fn dispatch_callers(
         cross_project
     )
     .entered();
-    // Task A3: shared cap with `cmd_callers`. Truncate before serialization.
+    // Shared cap with `cmd_callers`. Truncate before serialization.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
@@ -272,7 +269,7 @@ pub(in crate::cli::batch) fn dispatch_callees(
         cross_project
     )
     .entered();
-    // Task A3: shared cap with `cmd_callees`.
+    // Shared cap with `cmd_callees`.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
@@ -335,9 +332,9 @@ pub(in crate::cli::batch) fn dispatch_impact(
     )
     .entered();
     let depth = args.depth.clamp(1, 10);
-    // Task A3: shared per-section cap with `cmd_impact`. Test suggestions are
-    // computed off the un-truncated result so the engine sees every untested
-    // caller; truncation happens immediately before serialization.
+    // Shared per-section cap with `cmd_impact`. Test suggestions are computed
+    // off the un-truncated result so the engine sees every untested caller;
+    // truncation happens immediately before serialization.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
@@ -404,7 +401,7 @@ pub(in crate::cli::batch) fn dispatch_impact(
     Ok(json)
 }
 
-/// Task A3: per-section truncation for `ImpactResult`. Mirrors the helper in
+/// Per-section truncation for `ImpactResult`. Mirrors the helper in
 /// `cli::commands::graph::impact` so both code paths apply the same cap.
 fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
     result.callers.truncate(limit);
@@ -442,7 +439,7 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         cross_project
     )
     .entered();
-    // Task A3: shared cap with `cmd_test_map`.
+    // Shared cap with `cmd_test_map`.
     let limit = args.limit_arg.limit.clamp(1, 100);
 
     if cross_project {
@@ -516,7 +513,7 @@ pub(in crate::cli::batch) fn dispatch_trace(
     let max_depth = args.max_depth as usize;
     let cross_project = args.cross_project;
     let _span = tracing::info_span!("batch_trace", source, target, cross_project).entered();
-    // Task A3: `--limit` is accepted for parity with other graph commands. See
+    // `--limit` is accepted for parity with other graph commands. See
     // `cmd_trace` for rationale (single shortest path today; reserved for
     // future k-shortest-paths variants). args.limit_arg.limit intentionally unused.
 
@@ -614,9 +611,8 @@ pub(in crate::cli::batch) fn dispatch_related(
 ) -> Result<serde_json::Value> {
     let name = args.name.as_str();
     let _span = tracing::info_span!("batch_related", name).entered();
-    // CQ-V1.25-2: shared with CLI's cmd_related. Previously 100 here vs
-    // unbounded in CLI — lowered to 50 (per-category) to match and stop
-    // quadratic blow-up on related-related queries.
+    // Shared per-category cap with CLI's cmd_related — bounds related-related
+    // queries against quadratic blow-up.
     let limit = args.limit_arg.limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
 
     let result = cqs::find_related(&ctx.store(), name, limit)?;
@@ -636,7 +632,7 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
     let hunks = cqs::parse_unified_diff(&diff_text);
 
     if hunks.is_empty() {
-        // CQ-V1.29-5: shared shape with impact_diff / affected.
+        // Shared shape with impact_diff / affected.
         return Ok(cqs::diff_impact_empty_json());
     }
 
@@ -649,9 +645,8 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
     Ok(cqs::diff_impact_to_json(&result)?)
 }
 
-// P2.79: TC-HAP — happy-path coverage for the call-graph batch dispatchers.
-// Eight graph handlers (callers/callees/deps/impact/test_map/trace/related/
-// impact_diff) shipped without per-handler tests in the batch module. The
+// Happy-path coverage for the call-graph batch dispatchers
+// (callers/callees/deps/impact/test_map/trace/related/impact_diff). The
 // integration tests in `tests/cli_batch_test.rs` cover the dispatch line
 // parser and JSON envelope shape, but not these handlers' SQL → JSON
 // translation. These are minimal pins: seed a tiny corpus with one caller →

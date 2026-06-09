@@ -32,8 +32,8 @@ pub(crate) fn cmd_affected(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // 1. Get diff text — API-V1.22-6: `--stdin` lets agents pipe a captured
-    // diff (`git diff main | cqs affected --stdin --json`) without re-shelling
+    // 1. Get diff text — `--stdin` lets agents pipe a captured diff
+    // (`git diff main | cqs affected --stdin --json`) without re-shelling
     // git. Mirrors the path in `cmd_review`/`cmd_ci`/`cmd_impact_diff`.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
@@ -80,19 +80,19 @@ pub(crate) fn cmd_affected(
 }
 
 fn empty_affected_json() -> serde_json::Value {
-    // CQ-V1.29-5: share the empty-diff JSON shape with impact_diff / graph
-    // handlers. Adds `overall_risk: "none"` on top of the shared base — the
-    // sentinel that cannot collide with overall_risk() (which only emits
-    // Low/Medium/High) so agents can detect "no changes" without counting.
+    // Share the empty-diff JSON shape with impact_diff / graph handlers. Add
+    // `overall_risk: "none"` on top of the shared base — a sentinel that
+    // cannot collide with overall_risk() (which only emits Low/Medium/High)
+    // so agents can detect "no changes" without counting.
     let mut base = cqs::diff_impact_empty_json();
     base["overall_risk"] = serde_json::json!("none");
     base
 }
 
-/// CQ-V1.29-4: single source of truth for the affected-command risk
-/// thresholds. Both the JSON path (`overall_risk` field) and the text path
-/// (`Risk: ...` footer) go through this function so the two renderings
-/// can't drift on future threshold tweaks.
+/// Single source of truth for the affected-command risk thresholds. Both the
+/// JSON path (`overall_risk` field) and the text path (`Risk: ...` footer) go
+/// through this function so the two renderings can't drift on future threshold
+/// tweaks.
 fn overall_risk(result: &DiffImpactResult) -> RiskLevel {
     if result.all_callers.len() > 10 || result.changed_functions.len() > 5 {
         RiskLevel::High
@@ -142,8 +142,8 @@ fn display_affected_text(result: &DiffImpactResult, root: &Path) {
         }
     }
 
-    // Risk summary — CQ-V1.29-4: route through the same `overall_risk` helper
-    // used by the JSON path so the two outputs can't drift.
+    // Risk summary — route through the same `overall_risk` helper used by
+    // the JSON path so the two outputs can't drift.
     println!();
     let risk = risk_label(&overall_risk(result));
     println!(

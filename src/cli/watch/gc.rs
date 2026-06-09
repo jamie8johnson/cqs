@@ -18,29 +18,27 @@ use std::time::{Duration, SystemTime};
 use cqs::parser::Parser as CqParser;
 use cqs::store::Store;
 
-/// #969: recency threshold for pruning `last_indexed_mtime`.
+/// Recency threshold for pruning `last_indexed_mtime`.
 ///
 /// Entries older than this are dropped when the map grows past
 /// `last_indexed_prune_size_threshold()`. 1 day is long enough to survive an
 /// overnight idle (the map skips duplicate events on re-indexed files) but
 /// short enough that stale entries from deleted/moved files age out without
-/// a per-entry `stat()` syscall. Previously the prune called `Path::exists()`
-/// on every entry, which stalls the watch thread on WSL 9P mounts (up to 5000
-/// serial syscalls). The map's `SystemTime` values make the recency check a
-/// pure in-memory comparison.
+/// a per-entry `stat()` syscall. The recency check uses the map's `SystemTime`
+/// values, so it's a pure in-memory comparison — a per-entry `Path::exists()`
+/// would issue up to 5000 serial syscalls and stall the watch thread on WSL 9P
+/// mounts.
 ///
 /// Tunable by editing this constant.
 pub(super) const LAST_INDEXED_PRUNE_AGE_SECS: u64 = 86_400;
 
-/// #969: default size threshold that triggers the `last_indexed_mtime` prune.
+/// Default size threshold that triggers the `last_indexed_mtime` prune.
 ///
-/// SHL-V1.30-9: env override `CQS_WATCH_PRUNE_SIZE_THRESHOLD`. The audit found
-/// that `cqs ref` index sizes can exceed 5_000 entries, so the previous
-/// "intentionally not an env var" stance was too restrictive. Documented in
-/// README.md.
+/// Env override `CQS_WATCH_PRUNE_SIZE_THRESHOLD` because `cqs ref` index sizes
+/// can exceed 5_000 entries. Documented in README.md.
 pub(super) const LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT: usize = 5_000;
 
-/// SHL-V1.30-9: resolve `CQS_WATCH_PRUNE_SIZE_THRESHOLD` (default 5_000).
+/// Resolve `CQS_WATCH_PRUNE_SIZE_THRESHOLD` (default 5_000).
 fn last_indexed_prune_size_threshold() -> usize {
     std::env::var("CQS_WATCH_PRUNE_SIZE_THRESHOLD")
         .ok()
@@ -49,12 +47,12 @@ fn last_indexed_prune_size_threshold() -> usize {
         .unwrap_or(LAST_INDEXED_PRUNE_SIZE_THRESHOLD_DEFAULT)
 }
 
-/// #969: O(n) in-memory prune of `last_indexed_mtime` by recency.
+/// O(n) in-memory prune of `last_indexed_mtime` by recency.
 ///
-/// Replaces a per-entry `Path::exists()` loop that issued a `stat()` syscall
-/// for every tracked file. On WSL 9P mounts, that stalled the watch thread for
-/// seconds on bulk reindex cycles. The recency check is a `SystemTime`
-/// comparison — no I/O.
+/// The recency check is a `SystemTime` comparison — no I/O. A per-entry
+/// `Path::exists()` loop would issue a `stat()` syscall for every tracked file
+/// and stall the watch thread for seconds on WSL 9P mounts during bulk reindex
+/// cycles.
 ///
 /// Returns the number of entries removed (useful for tracing and tests).
 pub(super) fn prune_last_indexed_mtime(map: &mut HashMap<PathBuf, SystemTime>) -> usize {
@@ -64,14 +62,13 @@ pub(super) fn prune_last_indexed_mtime(map: &mut HashMap<PathBuf, SystemTime>) -
     prune_last_indexed_mtime_by_age(map)
 }
 
-/// RM-V1.38-7 (#1463): age-only prune of `last_indexed_mtime`. Identical
-/// retention policy to [`prune_last_indexed_mtime`] but ignores the
-/// size-threshold gate. Called from the watch loop's idle branch on a
-/// time-shaped cadence so a daemon that sits below the size threshold
-/// for weeks still ages out stale entries (deleted/moved files) instead
-/// of accumulating them indefinitely. Pre-fix the trigger was peak-shaped:
-/// only when the map crossed the threshold did the prune fire, and the
-/// trigger never re-armed once the map quiesced below it.
+/// Age-only prune of `last_indexed_mtime`. Identical retention policy to
+/// [`prune_last_indexed_mtime`] but ignores the size-threshold gate. Called
+/// from the watch loop's idle branch on a time-shaped cadence so a daemon that
+/// sits below the size threshold for weeks still ages out stale entries
+/// (deleted/moved files) instead of accumulating them indefinitely. A
+/// size-gated trigger alone would never re-arm once the map quiesced below the
+/// threshold.
 ///
 /// Cheap: pure in-memory `SystemTime` comparison. No I/O.
 pub(super) fn prune_last_indexed_mtime_by_age(map: &mut HashMap<PathBuf, SystemTime>) -> usize {
@@ -82,25 +79,25 @@ pub(super) fn prune_last_indexed_mtime_by_age(map: &mut HashMap<PathBuf, SystemT
     map.retain(|_, mtime| *mtime >= cutoff);
     before - map.len()
 }
-/// #1024: Default cap on the number of distinct origins examined per
+/// Default cap on the number of distinct origins examined per
 /// idle-time periodic GC tick. Keeps each tick short — at ~10k origins the
 /// matcher walk is microseconds-scale, but capping keeps the write
 /// transaction's lock window small even on much larger indexes. Override
 /// with `CQS_DAEMON_PERIODIC_GC_CAP` (parsed at first read).
 const DAEMON_PERIODIC_GC_CAP_DEFAULT: usize = 1000;
 
-// #1024 / SHL-V1.29-9: Idle-time periodic GC interval and idle gap live
+// Idle-time periodic GC interval and idle gap live
 // in `super::limits` behind `daemon_periodic_gc_interval_secs()` and
 // `daemon_periodic_gc_idle_secs()` so they honor
 // `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` / `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`,
 // matching the sibling `daemon_periodic_gc_cap()` resolver pattern below.
 
-/// #1024 / SHL-V1.30-10: Resolve `CQS_DAEMON_PERIODIC_GC_CAP` on every call.
+/// Resolve `CQS_DAEMON_PERIODIC_GC_CAP` on every call.
 ///
-/// Previously cached in a `OnceLock`, which made `systemctl set-environment`
-/// and `systemctl --user reload-or-restart cqs-watch` ineffective at retuning
-/// the cap mid-process. One `getenv` per GC tick is microseconds; ticks are
-/// minutes apart (see `daemon_periodic_gc_interval_secs()`). Matches
+/// Read fresh (not cached in a `OnceLock`) so `systemctl set-environment` +
+/// `systemctl --user reload-or-restart cqs-watch` can retune the cap
+/// mid-process. One `getenv` per GC tick is microseconds; ticks are minutes
+/// apart (see `daemon_periodic_gc_interval_secs()`). Matches
 /// `reconcile_enabled()` semantics, where the env var is read each call.
 fn daemon_periodic_gc_cap() -> usize {
     std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
@@ -110,19 +107,17 @@ fn daemon_periodic_gc_cap() -> usize {
         .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
 }
 
-/// #1024: Run the daemon's startup GC sweep — Pass 1 (drop chunks for
+/// Run the daemon's startup GC sweep — Pass 1 (drop chunks for
 /// files no longer on disk) and Pass 2 (drop chunks for paths now matched
 /// by `.gitignore`). Runs once when `cqs watch --serve` starts, before
 /// the first request is served. Both passes are best-effort: failures are
 /// logged at warn and the daemon proceeds with whatever rows survived.
 ///
-/// The eval-reliability motivating case: a `cqs index --force` on a
-/// long-running index dropped chunk count by 30 % (15 517 → 10 748). The
-/// extra 4 769 rows were a mix of deleted files and gitignored worktree
-/// pollution that accumulated before v1.26.0 added gitignore-respect to
-/// `cqs watch`. The startup pass closes that gap incrementally so the
-/// daemon converges to the same state a `--force` reindex would produce,
-/// without paying the embed cost.
+/// Why it matters: a `cqs index --force` on a long-running index can drop
+/// chunk count by ~30 % (e.g. 15 517 → 10 748) — the extra rows are a mix of
+/// deleted files and gitignored worktree pollution. The startup pass closes
+/// that gap incrementally so the daemon converges to the same state a
+/// `--force` reindex would produce, without paying the embed cost.
 ///
 /// Disable with `CQS_DAEMON_STARTUP_GC=0`.
 pub(super) fn run_daemon_startup_gc(
@@ -132,9 +127,8 @@ pub(super) fn run_daemon_startup_gc(
     matcher: Option<&ignore::gitignore::Gitignore>,
 ) {
     let _span = tracing::info_span!("daemon_startup_gc").entered();
-    // OB-V1.30.1-7: capture elapsed time for the terminal log line so
-    // operators can correlate startup-GC cost with daemon boot time in
-    // journalctl.
+    // Capture elapsed time for the terminal log line so operators can
+    // correlate startup-GC cost with daemon boot time in journalctl.
     let start = std::time::Instant::now();
 
     if std::env::var("CQS_DAEMON_STARTUP_GC").as_deref() == Ok("0") {
@@ -222,11 +216,10 @@ pub(super) fn run_daemon_startup_gc(
 /// than necessary. The cap means a deeply-polluted index converges over
 /// many ticks rather than one big stop-the-world prune.
 ///
-/// PF-V1.30.1-3 (#1226): when the caller has already enumerated the
-/// working tree (e.g. because reconcile is also firing on the same
-/// idle tick), pass `disk_files: Some(&shared_set)` to skip the
-/// internal walk. `disk_files: None` falls back to the original
-/// `cqs::enumerate_files` call.
+/// When the caller has already enumerated the working tree (e.g. because
+/// reconcile is also firing on the same idle tick), pass
+/// `disk_files: Some(&shared_set)` to skip the internal walk.
+/// `disk_files: None` falls back to a `cqs::enumerate_files` call.
 ///
 /// Disable with `CQS_DAEMON_PERIODIC_GC=0`.
 pub(super) fn run_daemon_periodic_gc(
@@ -237,9 +230,8 @@ pub(super) fn run_daemon_periodic_gc(
     disk_files: Option<&std::collections::HashSet<PathBuf>>,
 ) {
     let _span = tracing::info_span!("daemon_periodic_gc").entered();
-    // OB-V1.30.1-7: capture elapsed time so operators can spot a
-    // periodic-GC tick that wedges on a slow filesystem (WSL 9P, network
-    // mount). The terminal log line was previously bare.
+    // Capture elapsed time so operators can spot a periodic-GC tick that
+    // wedges on a slow filesystem (WSL 9P, network mount).
     let start = std::time::Instant::now();
 
     let cap = daemon_periodic_gc_cap();
@@ -248,12 +240,11 @@ pub(super) fn run_daemon_periodic_gc(
     // here (one full walk of the tree); running it on idle is fine —
     // by definition there is no contention.
     //
-    // PF-V1.30.1-3 (#1226): reuse the caller-supplied walk when present,
-    // so a tick that fires both gc and reconcile only walks the tree
-    // once. The fallback path keeps the function self-contained for
-    // callers that haven't pre-walked (today: no one in production —
-    // mod.rs always pre-walks when either gate fires — but the option
-    // keeps the function testable in isolation).
+    // Reuse the caller-supplied walk when present, so a tick that fires both
+    // gc and reconcile only walks the tree once. The fallback path keeps the
+    // function self-contained for callers that haven't pre-walked: mod.rs
+    // always pre-walks when either gate fires, but the option keeps the
+    // function testable in isolation.
     let exts = parser.supported_extensions();
     let walked: Option<std::collections::HashSet<PathBuf>> = if disk_files.is_none() {
         match cqs::enumerate_files(root, &exts, false) {
@@ -298,7 +289,7 @@ pub(super) fn run_daemon_periodic_gc(
         }
     }
 
-    // OB-V1.30.1-7: terminal info line so journalctl shows a single
+    // Terminal info line so journalctl shows a single
     // "tick complete" entry per cadence. Per-pass success lines stay at
     // info; no-op passes log nothing — this line gives the operator a
     // heartbeat regardless.

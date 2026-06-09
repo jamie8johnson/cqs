@@ -9,9 +9,8 @@ use super::error::StoreError;
 /// Returns an error if embedding doesn't match `expected_dim` dimensions.
 /// Storing wrong-sized embeddings would corrupt the index.
 ///
-/// NOTE: `embedding_slice` and `bytes_to_embedding` return `Option`, while this
-/// returns `Result`. Kept as `Result` because 3 callers use `.collect::<Result<Vec<_>, _>>()?`
-/// and changing would be invasive. (AD-40)
+/// Returns `Result` (not `Option`) because callers use
+/// `.collect::<Result<Vec<_>, _>>()?`.
 pub fn embedding_to_bytes(
     embedding: &Embedding,
     expected_dim: usize,
@@ -107,21 +106,16 @@ mod tests {
         assert!(embedding_to_bytes(&emb, wrong_dim).is_err());
     }
 
-    /// TC-ADV-V1.38-10 (#1463): pin the current write-side contract for
-    /// non-finite embedding values. `embedding_to_bytes` validates dim
-    /// but NOT finiteness — `bytemuck::cast_slice` happily passes NaN /
-    /// ±Inf through to disk. The read-side counterpart
-    /// (`test_embedding_slice_passes_nan_bytes_through` below) pins
-    /// passthrough on load; this pins the same shape on save.
+    /// Pins the write-side contract for non-finite embedding values:
+    /// `embedding_to_bytes` validates dim but NOT finiteness —
+    /// `bytemuck::cast_slice` passes NaN / ±Inf through to disk. The
+    /// read-side counterpart (`test_embedding_slice_passes_nan_bytes_through`
+    /// below) pins passthrough on load; this pins the same shape on save.
     ///
-    /// Pre-fix this contract was undocumented and untested. A NaN
-    /// reaching SQLite via any of the 19 unchecked
-    /// `Embedding::new(...)` constructors poisons every cosine score
-    /// touching the chunk and only surfaces downstream as silent
-    /// drops in `BoundedScoreHeap::push` (which filters non-finite
-    /// scores). The audit recommends flipping this to the rejecting
-    /// form (mirroring `Embedding::try_new`); pinning current behavior
-    /// is the prerequisite so a follow-up PR can flip it loudly.
+    /// A NaN reaching SQLite via an unchecked `Embedding::new(...)`
+    /// constructor poisons every cosine score touching the chunk and
+    /// surfaces only as silent drops in `BoundedScoreHeap::push` (which
+    /// filters non-finite scores).
     #[test]
     fn test_embedding_to_bytes_passes_nan_through() {
         let mut v = vec![0.5f32; crate::EMBEDDING_DIM];
@@ -178,7 +172,7 @@ mod tests {
         assert!(matches!(err, StoreError::EmbeddingBlobMismatch { .. }));
     }
 
-    // ===== TC-ADV-1.29-7: NaN / Inf bytes in embedding blobs =====
+    // ===== NaN / Inf bytes in embedding blobs =====
     //
     // `embedding_slice` is a zero-copy cast from stored bytes to `&[f32]`.
     // The only validation is `bytes.len() == expected_dim * 4` — there is
@@ -191,8 +185,8 @@ mod tests {
     // reads" guard is a deliberate change.
 
     /// A blob containing `f32::NAN` values passes through `embedding_slice`
-    /// unmodified. AUDIT-FOLLOWUP (TC-ADV-1.29-7): if we add a finite-check
-    /// on read, flip this to assert an error.
+    /// unmodified. If a finite-check on read is added, flip this to assert
+    /// an error.
     #[test]
     fn test_embedding_slice_passes_nan_bytes_through() {
         let data = vec![f32::NAN; crate::EMBEDDING_DIM];

@@ -23,7 +23,7 @@ pub struct ReferenceIndex {
     ///
     /// Always `Store<ReadOnly>` — references are loaded from external
     /// codebases and only exposed through search/caller queries. The
-    /// typestate (#946) turns any accidental write into a compile error.
+    /// typestate turns any accidental write into a compile error.
     pub store: Store<ReadOnly>,
     /// Optional HNSW index for O(log n) search
     pub index: Option<Box<dyn VectorIndex>>,
@@ -32,7 +32,7 @@ pub struct ReferenceIndex {
     /// Path to the reference's `index.db` — kept so staleness checks can
     /// re-stat the file without reconstructing the path from `name + path`.
     pub db_path: std::path::PathBuf,
-    /// RM-V1.25-7: (mtime, size) of `index.db` at load time. Long-lived
+    /// (mtime, size) of `index.db` at load time. Long-lived
     /// daemons that cache loaded references need to invalidate them when
     /// the reference's own `cqs ref update <name>` rewrites the DB. The
     /// primary project's mtime change wouldn't catch this, so each
@@ -85,11 +85,11 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
         return None;
     }
 
-    // SEC-4: Warn if reference path is outside project and home directories.
+    // Warn if reference path is outside project and home directories.
     // Canonicalize to resolve any `..` segments, then check containment.
-    // PB-V1.33-1: use `dunce::canonicalize` and canonicalize both sides
-    // so Windows verbatim (`\\?\C:\...`) vs non-verbatim mismatches
-    // don't defeat the comparison.
+    // Use `dunce::canonicalize` and canonicalize both sides so Windows
+    // verbatim (`\\?\C:\...`) vs non-verbatim mismatches don't defeat the
+    // comparison.
     if let Ok(canonical) = dunce::canonicalize(&cfg.path) {
         let home = dirs::home_dir().and_then(|h| dunce::canonicalize(h).ok());
         let cwd = std::env::current_dir()
@@ -108,11 +108,11 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
     }
 
     let db_path = cfg.path.join(crate::INDEX_DB_FILENAME);
-    // RM-V1.25-21 (#970): reference indexes hold a Store for as long as the LRU
-    // cache keeps them resident. Use `open_readonly_small` (16MB mmap, 1MB
-    // cache) instead of `open_readonly` (64MB mmap) so a 4-reference session
-    // reserves tens of MB of mmap instead of hundreds. Reference queries are
-    // low-volume compared to primary-index full-scan reads.
+    // Reference indexes hold a Store for as long as the LRU cache keeps them
+    // resident. Use `open_readonly_small` (16MB mmap, 1MB cache) instead of
+    // `open_readonly` (64MB mmap) so a 4-reference session reserves tens of MB
+    // of mmap instead of hundreds. Reference queries are low-volume compared
+    // to primary-index full-scan reads.
     let store = match Store::open_readonly_small(&db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -126,16 +126,15 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
         }
     };
 
-    // v1.22.0 audit CQ-5: previously passed `dim=None` which defaulted to
-    // `EMBEDDING_DIM` (1024 for BGE-large). A reference built with a 768-dim
-    // model (E5-base or v9-200k) would load as 1024-dim garbage. Pass the
-    // store's actual dim so the HNSW loader trusts the right byte layout.
+    // Pass the store's actual dim so the HNSW loader trusts the right byte
+    // layout. A reference built with a 768-dim model (E5-base or v9-200k)
+    // would otherwise load as `EMBEDDING_DIM`-dim garbage.
     let index = HnswIndex::try_load_with_ef(&cfg.path, None, store.dim());
 
-    // RM-V1.25-7: capture (mtime, size) at load time so cached references
-    // can be invalidated when the reference itself is re-indexed. `None`
-    // on stat failure is fine — `is_stale` treats that as "can't tell,
-    // keep using it" rather than thrashing the cache on transient errors.
+    // Capture (mtime, size) at load time so cached references can be
+    // invalidated when the reference itself is re-indexed. `None` on stat
+    // failure is fine — `is_stale` treats that as "can't tell, keep using it"
+    // rather than thrashing the cache on transient errors.
     let loaded_identity = stat_identity(&db_path);
 
     Some(ReferenceIndex {
@@ -148,9 +147,9 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
     })
 }
 
-/// Stat `path` and return `(mtime, size)` if readable. Used for RM-V1.25-7
-/// reference staleness detection. Errors are logged at debug and treated as
-/// "unknown" (caller falls back to keeping the cached value).
+/// Stat `path` and return `(mtime, size)` if readable. Used for reference
+/// staleness detection. Errors are logged at debug and treated as "unknown"
+/// (caller falls back to keeping the cached value).
 fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
     match std::fs::metadata(path) {
         Ok(md) => match md.modified() {
@@ -168,7 +167,7 @@ fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)>
 }
 
 impl ReferenceIndex {
-    /// RM-V1.25-7: Has the reference's `index.db` been rewritten since load?
+    /// Has the reference's `index.db` been rewritten since load?
     ///
     /// Returns `true` when the current (mtime, size) differs from the value
     /// captured at construction. If we couldn't read the file at all (or
@@ -193,11 +192,9 @@ impl ReferenceIndex {
 /// HnswIndex are Send + Sync.
 pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     let _span = tracing::debug_span!("load_references", count = configs.len()).entered();
-    // RM-29: Cap concurrency — each ref loads Store (~16MB mmap via
-    // open_readonly_small) + HNSW (~50-200MB). The Store mmap shrunk in
-    // #970 but HNSW dominates, so the 4-thread cap still applies.
-    // SHL-V1.36-2: scale with cores, capped at 8. Mirrors v1.33 SHL-V1.33-10
-    // fix to project.rs:260; this sibling site was missed.
+    // Cap concurrency — each ref loads Store (~16MB mmap via
+    // open_readonly_small) + HNSW (~50-200MB). HNSW dominates the footprint.
+    // Scale thread count with cores, capped at 8.
     let threads = std::env::var("CQS_RAYON_THREADS")
         .ok()
         .and_then(|v| {
@@ -250,9 +247,9 @@ pub fn search_reference(
     let _span =
         tracing::info_span!("search_reference", name = %ref_idx.name, weight = ref_idx.weight, apply_weight)
             .entered();
-    // P2.50: when `apply_weight`, the underlying store search would
-    // otherwise filter at the raw threshold AND cap at `limit` — both
-    // computed before the post-weight retain step. That under-samples the
+    // When `apply_weight`, the underlying store search would otherwise
+    // filter at the raw threshold AND cap at `limit` — both computed before
+    // the post-weight retain step. That under-samples the
     // corpus when `weight < 1`: a candidate that scores `0.6 * weight` may
     // exceed the *post-weight* threshold yet get dropped by the *pre-weight*
     // limit cap. Relax the store's threshold and over-fetch headroom so
@@ -308,10 +305,10 @@ pub fn search_reference_by_name(
     let _span =
         tracing::info_span!("search_reference_by_name", ref_name = %ref_idx.name, query = name, apply_weight)
             .entered();
-    // P2.50: same shape as the embedding path — over-fetch from
-    // `search_by_name` so the post-weight retain doesn't see a pre-truncated
-    // pool. The existing `retain(|r| r.score * weight >= threshold)`
-    // boundary is correct; the gap was the pre-weight limit cap.
+    // Same shape as the embedding path — over-fetch from `search_by_name` so
+    // the post-weight retain doesn't see a pre-truncated pool. The
+    // `retain(|r| r.score * weight >= threshold)` boundary is correct; the
+    // pre-weight limit cap is what needs the over-fetch headroom.
     let raw_limit = if apply_weight {
         limit.saturating_mul(2).max(limit)
     } else {
@@ -377,12 +374,12 @@ pub fn merge_results(
     // Deduplicate code results by content hash (keeps highest-scoring occurrence).
     // Dedup must happen before truncation for correctness — otherwise duplicates
     // from different sources could occupy result slots, pushing out unique results.
-    // PF-4: Use stored content_hash when available instead of recomputing blake3.
+    // Use stored content_hash when available instead of recomputing blake3.
     let mut seen_hashes = std::collections::HashSet::new();
     tagged.retain(|t| match &t.result {
         UnifiedResult::Code(r) => {
             if r.chunk.content_hash.is_empty() {
-                // Fallback for test data or legacy chunks without stored hash
+                // Fallback for chunks without a stored hash
                 let hash = blake3::hash(r.chunk.content.as_bytes()).to_string();
                 seen_hashes.insert(hash)
             } else {

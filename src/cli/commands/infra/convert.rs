@@ -13,8 +13,8 @@ pub fn cmd_convert(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_convert").entered();
-    // P2.12: track wall-clock for the JSON envelope; doubles as a sanity
-    // metric on long PDF/CHM batches.
+    // Track wall-clock for the JSON envelope; doubles as a sanity metric on
+    // long PDF/CHM batches.
     let start = std::time::Instant::now();
 
     let source = PathBuf::from(path);
@@ -23,7 +23,7 @@ pub fn cmd_convert(
     }
 
     // Default output dir: same directory as input (or input dir itself)
-    // SEC-4: Canonicalize to normalize symlinks and warn if outside source tree
+    // Canonicalize to normalize symlinks and warn if outside source tree.
     let output_dir = match output {
         Some(dir) => {
             let raw = PathBuf::from(dir);
@@ -65,8 +65,8 @@ pub fn cmd_convert(
     let results = cqs::convert::convert_path(&source, &opts)?;
 
     if json {
-        // P2.12: structured summary for JSON-driven agents. We don't have a
-        // distinct `skipped` list out of `convert_path` today (the converter
+        // Structured summary for JSON-driven agents. We don't have a distinct
+        // `skipped` list out of `convert_path` (the converter
         // surfaces skips as warnings), so the field stays as an empty array
         // for forward compatibility — schema reservation, not a lie.
         let converted: Vec<serde_json::Value> = results

@@ -51,16 +51,12 @@ struct NoteListEntry {
 pub(crate) enum NotesCommand {
     /// List all notes with sentiment and mentions
     ///
-    /// EX-V1.29-5 / API-V1.29-4: flattens the shared `NotesListArgs` so the
-    /// CLI and daemon batch paths can't drift — same pattern as
-    /// `Commands::Search { args: SearchArgs }`. Before the flatten,
-    /// `check: bool` was defined inline here but missing from
-    /// `NotesListArgs`, so daemon-routed `cqs notes list --check` silently
-    /// dropped the flag.
+    /// Flattens the shared `NotesListArgs` so the CLI and daemon batch paths
+    /// can't drift — same pattern as `Commands::Search { args: SearchArgs }`.
     List {
         #[command(flatten)]
         list: crate::cli::args::NotesListArgs,
-        /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
+        /// Shared `--json` arg.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -79,21 +75,19 @@ pub(crate) enum NotesCommand {
         /// File paths or concepts this note relates to (comma-separated)
         #[arg(long, value_delimiter = ',')]
         mentions: Option<Vec<String>>,
-        /// v25 / #1133: optional structured kind tag — `todo`,
-        /// `design-decision`, `deprecation`, `known-bug`, etc. Free-string
-        /// (kebab-case lowercase by convention). When set, takes
-        /// precedence over `--sentiment`'s implicit
-        /// "Warning:"/"Pattern:" prefix in embedding text, and enables
-        /// `cqs notes list --kind <kind>` filtering. Empty string is
-        /// rejected as if absent.
+        /// Optional structured kind tag — `todo`, `design-decision`,
+        /// `deprecation`, `known-bug`, etc. Free-string (kebab-case
+        /// lowercase by convention). When set, takes precedence over
+        /// `--sentiment`'s implicit "Warning:"/"Pattern:" prefix in
+        /// embedding text, and enables `cqs notes list --kind <kind>`
+        /// filtering. Empty string is rejected as if absent.
         #[arg(long)]
         kind: Option<String>,
         /// Skip re-indexing after adding (useful for batch operations)
         #[arg(long)]
         no_reindex: bool,
-        /// P3-26: shared `--json` arg so `cqs notes add ... --json` works
-        /// at the subcommand level. The `List` arm already flattens
-        /// `TextJsonArgs`; the three mutation arms were the holdouts.
+        /// Shared `--json` arg so `cqs notes add ... --json` works at the
+        /// subcommand level.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -114,15 +108,15 @@ pub(crate) enum NotesCommand {
         /// New mentions (replaces all, comma-separated)
         #[arg(long, value_delimiter = ',')]
         new_mentions: Option<Vec<String>>,
-        /// New kind tag (#1133 follow-up). Pass an empty string to clear
-        /// the kind; the trim+lowercase normalization matches `notes add`.
-        /// When unset, the existing kind is preserved.
+        /// New kind tag. Pass an empty string to clear the kind; the
+        /// trim+lowercase normalization matches `notes add`. When unset, the
+        /// existing kind is preserved.
         #[arg(long)]
         new_kind: Option<String>,
         /// Skip re-indexing after update
         #[arg(long)]
         no_reindex: bool,
-        /// P3-26: shared `--json` arg — see `Add` above.
+        /// Shared `--json` arg — see `Add` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -133,7 +127,7 @@ pub(crate) enum NotesCommand {
         /// Skip re-indexing after removal
         #[arg(long)]
         no_reindex: bool,
-        /// P3-26: shared `--json` arg — see `Add` above.
+        /// Shared `--json` arg — see `Add` above.
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -150,7 +144,7 @@ pub(crate) enum NotesCommand {
 ///
 /// Mutation arms open a separate read-write `Store` lazily, only when the
 /// mutation actually runs, to keep list-only workloads from paying for a
-/// second connection (RM-8: avoid double-connecting during pure reads).
+/// second connection (avoid double-connecting during pure reads).
 pub(crate) fn cmd_notes(
     cli: &Cli,
     ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
@@ -274,7 +268,7 @@ fn ensure_notes_file(root: &std::path::Path) -> Result<PathBuf> {
 
 /// Add a note: validate text/sentiment, append to notes.toml, optionally reindex.
 ///
-/// `output_json` accepts the subcommand-level `--json` (P3-26); combined with
+/// `output_json` accepts the subcommand-level `--json`; combined with
 /// `cli.json` to honour the top-level flag too. 8 args is on clippy's
 /// `too_many_arguments` boundary — same rationale as `cmd_notes_update`'s
 /// allow attribute below.
@@ -289,8 +283,8 @@ fn cmd_notes_add(
     no_reindex: bool,
     output_json: bool,
 ) -> Result<()> {
-    // P3 #92: per-subhandler span so the shared "Note operation warning"
-    // line carries enough context (op + sentiment for add, op + length
+    // Per-subhandler span so the shared "Note operation warning" line
+    // carries enough context (op + sentiment for add, op + length
     // discriminator for the others) to disambiguate add/update/remove in
     // journalctl without pulling in arg payloads.
     let _span = tracing::info_span!(
@@ -315,9 +309,9 @@ fn cmd_notes_add(
         .filter(|s| !s.is_empty())
         .cloned()
         .collect();
-    // #1133: normalize kind (trim + lowercase + reject empty). Mirrors
-    // the parser's `normalize_kind` semantics so add and parse stay in
-    // sync — `--kind ""` is silently absent, not stored as Some("").
+    // Normalize kind (trim + lowercase + reject empty). Mirrors the
+    // parser's `normalize_kind` semantics so add and parse stay in sync —
+    // `--kind ""` is silently absent, not stored as Some("").
     let kind: Option<String> = kind.and_then(|raw| {
         let trimmed = raw.trim().to_ascii_lowercase();
         if trimmed.is_empty() {
@@ -348,7 +342,7 @@ fn cmd_notes_add(
     } else {
         // Open read-write store lazily *only* when a mutation actually runs,
         // so list-only invocations never pay the cost of a second connection
-        // (RM-8: avoid double-connecting during pure reads).
+        // (avoid double-connecting during pure reads).
         match open_rw_store(&root) {
             Ok(store) => reindex_notes(root.as_path(), &store),
             Err(e) => (0, Some(format!("{e}"))),
@@ -386,9 +380,9 @@ fn cmd_notes_add(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
-            // P2 #72: surface reindex failure on stderr so an interactive
-            // user sees the same signal a `--json` consumer gets via the
-            // `index_error` field.
+            // Surface reindex failure on stderr so an interactive user sees
+            // the same signal a `--json` consumer gets via the `index_error`
+            // field.
             eprintln!("Warning: note saved but reindex failed: {}", err);
             tracing::warn!(error = %err, "Note operation warning");
         }
@@ -399,7 +393,7 @@ fn cmd_notes_add(
 
 /// Update a note: match by text, apply new text/sentiment/mentions/kind, optionally reindex.
 ///
-/// 9 args after P3-26 added `output_json`. Bundling into a struct would be
+/// 9 args, including `output_json`. Bundling into a struct would be
 /// more shape than the call site warrants — the dispatcher at `cmd_notes`
 /// already destructures the same fields, and a helper struct just round-
 /// trips them through one extra hop.
@@ -415,7 +409,7 @@ fn cmd_notes_update(
     no_reindex: bool,
     output_json: bool,
 ) -> Result<()> {
-    // P3 #92: per-subhandler span — see `cmd_notes_add`.
+    // Per-subhandler span — see `cmd_notes_add`.
     let _span = tracing::info_span!(
         "cmd_notes_update",
         text_len = text.len(),
@@ -529,7 +523,7 @@ fn cmd_notes_update(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
-            // P2 #72: see cmd_notes_add — text users need an explicit signal
+            // See cmd_notes_add — text users need an explicit signal
             // when reindex fails, not just a tracing::warn buried in logs.
             eprintln!("Warning: note saved but reindex failed: {}", err);
             tracing::warn!(error = %err, "Note operation warning");
@@ -547,7 +541,7 @@ fn cmd_notes_remove(
     no_reindex: bool,
     output_json: bool,
 ) -> Result<()> {
-    // P3 #92: per-subhandler span — see `cmd_notes_add`.
+    // Per-subhandler span — see `cmd_notes_add`.
     let _span =
         tracing::info_span!("cmd_notes_remove", text_len = text.len(), no_reindex).entered();
     if text.is_empty() {
@@ -608,7 +602,7 @@ fn cmd_notes_remove(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
-            // P2 #72: see cmd_notes_add — text users need an explicit signal
+            // See cmd_notes_add — text users need an explicit signal
             // when reindex fails, not just a tracing::warn buried in logs.
             eprintln!("Warning: note saved but reindex failed: {}", err);
             tracing::warn!(error = %err, "Note operation warning");

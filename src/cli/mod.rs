@@ -13,10 +13,6 @@ mod files;
 pub(crate) mod json_envelope;
 mod limits;
 mod pipeline;
-// #1366: `mod registry` removed — the central `for_each_command!` table
-// it owned has been replaced by per-variant `#[cqs_cmd(...)]` attributes
-// on `Commands` (see `definitions.rs` and the `cqs_macros::CqsCommands`
-// derive). Per-variant dispatch shims live in `commands::dispatch_shims`.
 mod signal;
 pub(crate) mod staleness;
 mod store;
@@ -34,7 +30,7 @@ pub use definitions::{Cli, OutputFormat};
 pub use dispatch::run_with;
 
 // Shared clamp ceilings for commands that are dispatched from both
-// CLI and batch paths. CQ-V1.25-2.
+// CLI and batch paths.
 pub(crate) use limits::{RELATED_LIMIT_MAX, SCOUT_LIMIT_MAX, SIMILAR_LIMIT_MAX};
 
 // Re-export for watch.rs and commands
@@ -246,7 +242,7 @@ mod tests {
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
                 commands::NotesCommand::List { list, output } => {
-                    // EX-V1.29-5: fields now live on `NotesListArgs`.
+                    // Fields live on `NotesListArgs`.
                     assert!(!list.warnings);
                     assert!(!list.patterns);
                     assert!(!list.check);
@@ -272,9 +268,8 @@ mod tests {
         }
     }
 
-    /// API-V1.29-4: `--check` parses into `NotesListArgs.check`, so the
-    /// daemon batch path can forward it (previously the flag was inline on
-    /// `NotesCommand::List` and dropped when routed through the socket).
+    /// `--check` parses into `NotesListArgs.check` so the daemon batch path
+    /// can forward it through the socket.
     #[test]
     fn test_cmd_notes_list_check_parses_into_shared_args() {
         let cli = Cli::try_parse_from(["cqs", "notes", "list", "--check"]).unwrap();
@@ -453,12 +448,9 @@ mod tests {
         }
     }
 
-    /// #1459 item 1a: `cqs project search` accepts the same filter knobs
-    /// the top-level `cqs <q>` does (`--lang`, `--include-type`,
-    /// `--exclude-type`, `--path`, `--name-boost`, `--rrf`,
-    /// `--include-docs`). Pre-fix, only `--limit` and `--threshold`
-    /// parsed, so cross-project searches couldn't be filtered the way
-    /// per-project searches could.
+    /// `cqs project search` accepts the same filter knobs the top-level
+    /// `cqs <q>` does (`--lang`, `--include-type`, `--exclude-type`,
+    /// `--path`, `--name-boost`, `--rrf`, `--include-docs`).
     #[test]
     fn test_cmd_project_search_full_flag_parity() {
         // Mirrors the top-level `cqs <q>` clap shape: `--include-type` /
@@ -566,9 +558,8 @@ mod tests {
 
     // ===== --rerank / --reranker flag tests =====
 
-    /// API-V1.36-9 (#1459): legacy `--rerank` bool was dropped — clap now
-    /// rejects the spelling outright instead of mapping it to `--reranker
-    /// onnx`. Callers must use the canonical `--reranker onnx`.
+    /// The `--rerank` bool is rejected by clap outright; callers must use the
+    /// canonical `--reranker onnx`.
     #[test]
     fn test_cli_rerank_bool_rejected_post_api_v136_9() {
         let result = Cli::try_parse_from(["cqs", "--rerank", "search query"]);
@@ -600,7 +591,7 @@ mod tests {
         assert_eq!(cli.limit, 20);
     }
 
-    /// #1372: `--reranker onnx` produces the same effective mode as `--rerank`.
+    /// `--reranker onnx` selects the Onnx reranker mode.
     #[test]
     fn test_cli_reranker_onnx() {
         let cli = Cli::try_parse_from(["cqs", "--reranker", "onnx", "query"]).unwrap();
@@ -608,8 +599,8 @@ mod tests {
         assert!(cli.rerank_active());
     }
 
-    /// #1372: `--reranker none` is the default and stays inactive even though
-    /// the flag was passed.
+    /// `--reranker none` is the default and stays inactive even when the flag
+    /// is passed explicitly.
     #[test]
     fn test_cli_reranker_none_explicit() {
         let cli = Cli::try_parse_from(["cqs", "--reranker", "none", "query"]).unwrap();
@@ -617,18 +608,15 @@ mod tests {
         assert!(!cli.rerank_active());
     }
 
-    /// API-V1.36-2: `--reranker llm` was a placeholder variant that errored
-    /// at runtime. v1.36.2 dropped it from the CLI surface — clap now rejects
-    /// the spelling outright instead of running a search that fails late.
+    /// `--reranker llm` is rejected by clap at parse time rather than running
+    /// a search that fails late.
     #[test]
     fn test_cli_reranker_llm_rejected() {
         let res = Cli::try_parse_from(["cqs", "--reranker", "llm", "query"]);
         assert!(res.is_err(), "--reranker llm should be rejected by clap");
     }
 
-    /// API-V1.36-9 (#1459): the previous "both flags passed → --reranker
-    /// wins" coexistence test no longer applies — `--rerank` is gone.
-    /// Pin that the dual-flag form is now a parse-time rejection.
+    /// The dual-flag form `--rerank --reranker` is a parse-time rejection.
     #[test]
     fn test_cli_dual_rerank_flag_rejected_post_api_v136_9() {
         let result = Cli::try_parse_from(["cqs", "--rerank", "--reranker", "none", "query"]);
@@ -638,8 +626,8 @@ mod tests {
         );
     }
 
-    /// #1372: invalid `--reranker` value rejected at parse time (clap
-    /// `value_enum`) — keeps typos from silently downgrading to default.
+    /// Invalid `--reranker` value rejected at parse time (clap `value_enum`)
+    /// — keeps typos from silently downgrading to default.
     #[test]
     fn test_cli_reranker_invalid_rejected() {
         let result = Cli::try_parse_from(["cqs", "--reranker", "bogus", "query"]);
@@ -922,7 +910,7 @@ mod tests {
         );
     }
 
-    // ===== --json alias for --format json (#650) =====
+    // ===== --json alias for --format json =====
 
     #[test]
     fn test_impact_json_flag() {
@@ -1020,9 +1008,9 @@ mod tests {
     }
 
     // ===== apply_config_defaults tests =====
-    // EX-V1.29-8: tests inject argv via `apply_config_defaults_with_argv`
-    // so clap's `ValueSource::DefaultValue` resolves against the test's
-    // fake CLI, not the surrounding `cargo test ...` invocation.
+    // Tests inject argv via `apply_config_defaults_with_argv` so clap's
+    // `ValueSource::DefaultValue` resolves against the test's fake CLI, not
+    // the surrounding `cargo test ...` invocation.
 
     #[test]
     fn test_apply_config_defaults_respects_cli_flags() {
@@ -1082,12 +1070,10 @@ mod tests {
         assert!(!cli.verbose);
     }
 
-    /// EX-V1.29-8 regression: explicitly passing the clap default on the CLI
-    /// (e.g. `cqs -n 5 …` where 5 is the default) must be treated as
-    /// user-set. The pre-refactor code compared `cli.limit == DEFAULT_LIMIT`
-    /// and would let the config file's `limit = 20` win even though the user
-    /// typed `-n 5`. `ValueSource::CommandLine` now reports that case
-    /// correctly.
+    /// Explicitly passing the clap default on the CLI (e.g. `cqs -n 5 …`
+    /// where 5 is the default) must be treated as user-set: `-n 5` wins over a
+    /// config file's `limit = 20`. `ValueSource::CommandLine` distinguishes the
+    /// explicit-default case from an unset flag.
     #[test]
     fn test_apply_config_defaults_explicit_default_wins_over_config() {
         let argv = ["cqs", "-n", "5", "query"];
@@ -1116,11 +1102,9 @@ mod tests {
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 100);
 
-        // API-V1.38-10 (#1463): `-n 0` is now rejected at parse time
-        // (`value_parser = parse_nonzero_usize`) instead of silently
-        // clamped to 1. Pin the new contract: clap rejects 0 with a
-        // clear error rather than producing a usable cli that the
-        // dispatcher then has to fix up.
+        // `-n 0` is rejected at parse time (`value_parser =
+        // parse_nonzero_usize`) with a clear error rather than producing a cli
+        // the dispatcher has to fix up.
         let argv2 = ["cqs", "-n", "0", "query"];
         let result = Cli::try_parse_from(argv2);
         match result {

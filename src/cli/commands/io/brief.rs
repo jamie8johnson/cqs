@@ -38,7 +38,7 @@ struct BriefData {
 fn build_brief_data<Mode>(store: &Store<Mode>, path: &str) -> Result<BriefData> {
     let _span = tracing::info_span!("build_brief_data", path).entered();
 
-    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // Normalize backslash input from Windows / agent pipelines.
     // `get_chunks_by_origin` matches on the stored `origin` column which is
     // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
     let normalized = cqs::normalize_path(Path::new(path));
@@ -61,9 +61,9 @@ fn build_brief_data<Mode>(store: &Store<Mode>, path: &str) -> Result<BriefData> 
 
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
 
-    // EH-V1.29-1: propagate query errors so agents can't mistake "query failed"
-    // for "genuine zero". Previously these three calls used `.unwrap_or_else`
-    // with empty fallbacks, hiding store failures behind a cosmetic warn log.
+    // Propagate query errors so agents can't mistake "query failed" for
+    // "genuine zero" — empty fallbacks would hide store failures behind a
+    // cosmetic warn log.
     let caller_counts = store
         .get_caller_counts_batch(&names)
         .context("Failed to fetch caller counts for brief")?;

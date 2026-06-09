@@ -24,7 +24,7 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 
     let mut output_arg = std::ffi::OsString::from("-o");
     output_arg.push(temp_dir.path());
-    // Audit P2 #37: `-snl` disables symbolic-link creation during extraction.
+    // `-snl` disables symbolic-link creation during extraction.
     // CHM is a CAB-based archive; a malicious file can embed a symlink whose
     // target is `../../escape`, and without `-snl` the extracted on-disk
     // entry IS the symlink — any subsequent file write through that path
@@ -57,14 +57,14 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     }
 
     // Zip-slip containment: verify all extracted files are inside temp_dir.
-    // See `verify_extraction_safety` for the per-entry rules (audit P2 #37).
+    // See `verify_extraction_safety` for the per-entry rules.
     verify_extraction_safety(temp_dir.path())?;
 
-    // P3 #106: shared cap honoring CQS_CONVERT_MAX_PAGES.
+    // Shared cap honoring CQS_CONVERT_MAX_PAGES.
     let max_pages = crate::limits::doc_max_pages();
 
     // Collect all HTML pages, sorted by name for consistent ordering.
-    // Skip symlinks (SEC-9) to prevent symlink escape attacks.
+    // Skip symlinks to prevent symlink escape attacks.
     let mut pages: Vec<_> = walkdir::WalkDir::new(temp_dir.path())
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
@@ -103,9 +103,9 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 
     let mut merged = String::new();
 
-    // RM-V1.29-5: cap per-page reads so a pathological archive with a single
-    // huge "page" can't OOM the process. The outer archive-size check in
-    // `convert/mod.rs` doesn't bound the per-file read.
+    // Cap per-page reads so a pathological archive with a single huge "page"
+    // can't OOM the process. The outer archive-size check in `convert/mod.rs`
+    // doesn't bound the per-file read.
     let max_page_bytes = crate::limits::convert_page_bytes();
 
     for entry in &pages {
@@ -178,7 +178,7 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 
 /// Walk every entry under `extract_root` and reject anything that escapes it.
 ///
-/// Audit P2 #37 hardening:
+/// Hardening rules:
 ///   * Any symbolic link in the extraction is fatal — a benign CHM/CAB
 ///     archive does not contain symbolic links.
 ///   * Any path that cannot be canonicalized (e.g. a dangling symlink, a
@@ -245,21 +245,19 @@ fn verify_extraction_safety(extract_root: &Path) -> Result<()> {
 /// recognizable help output). This prevents accidentally running an unrelated
 /// binary that happens to share the name.
 ///
-/// SEC-V1.25-10: Rejects any binary whose resolved location is in a
-/// user-writable directory (e.g. /tmp, /var/tmp, or a world-writable dir).
-/// This blocks PATH injection where an attacker drops `7z` in a writable
-/// directory earlier in PATH.
+/// Rejects any binary whose resolved location is in a user-writable directory
+/// (e.g. /tmp, /var/tmp, or a world-writable dir). This blocks PATH injection
+/// where an attacker drops `7z` in a writable directory earlier in PATH.
 fn find_7z() -> Result<String> {
     // Check common names first, then env-based Windows install paths
     let mut candidates: Vec<String> =
         vec!["7z".to_string(), "7za".to_string(), "p7zip".to_string()];
-    // SEC-V1.33-7 / #1338: validate that `ProgramFiles` / `ProgramFiles(x86)`
-    // resolve to documented system locations before trusting them as absolute
-    // paths. A non-elevated Windows user can override these via
-    // `setx ProgramFiles C:\Users\me\evil` (HKCU env). The downstream
-    // `is_safe_executable_path` check rejects /tmp + world-writable dirs but
-    // not owner-writable dirs under `C:\Users\<me>\`, so an attacker-set
-    // env var was previously enough to redirect 7z spawning. Pin the
+    // Validate that `ProgramFiles` / `ProgramFiles(x86)` resolve to documented
+    // system locations before trusting them as absolute paths. A non-elevated
+    // Windows user can override these via `setx ProgramFiles C:\Users\me\evil`
+    // (HKCU env). The downstream `is_safe_executable_path` check rejects /tmp +
+    // world-writable dirs but not owner-writable dirs under `C:\Users\<me>\`,
+    // so an attacker-set env var could otherwise redirect 7z spawning. Pin the
     // accepted prefixes to the canonical Windows install roots.
     if let Ok(pf) = std::env::var("ProgramFiles") {
         if is_canonical_program_files(&pf) {
@@ -326,8 +324,8 @@ fn find_7z() -> Result<String> {
     )
 }
 
-/// SEC-V1.33-7 / #1338 — accept only the documented Windows system install
-/// roots for `ProgramFiles` / `ProgramFiles(x86)`. A non-elevated user can
+/// Accept only the documented Windows system install roots for
+/// `ProgramFiles` / `ProgramFiles(x86)`. A non-elevated user can
 /// override these via HKCU env (`setx ProgramFiles ...`) to redirect a
 /// spawned binary; the downstream `is_safe_executable_path` check doesn't
 /// catch owner-writable dirs under `C:\Users\<me>\`.
@@ -395,11 +393,11 @@ mod tests {
         );
     }
 
-    /// Audit P2 #37: a symlink inside an "extracted" archive must cause
+    /// A symlink inside an "extracted" archive must cause
     /// `verify_extraction_safety` to bail with a clear error. Building a
     /// real malicious CHM is impractical (would need a fixture binary in
-    /// CAB format); since #37 hardens the post-extraction walk, we test
-    /// that walk directly against a manually-constructed extract dir.
+    /// CAB format), so we test the post-extraction walk directly against a
+    /// manually-constructed extract dir.
     #[test]
     #[cfg(unix)]
     fn verify_extraction_safety_rejects_relative_symlink_to_escape() {
@@ -417,10 +415,10 @@ mod tests {
         );
     }
 
-    /// Audit P2 #37: a broken symlink (target doesn't exist) must cause the
-    /// walk to bail — the prior code logged a warning and silently skipped.
-    /// A broken symlink in extracted archive output is itself an attack
-    /// signal: a benign archive does not contain dangling references.
+    /// A broken symlink (target doesn't exist) must cause the walk to bail,
+    /// not be silently skipped. A broken symlink in extracted archive output
+    /// is itself an attack signal: a benign archive does not contain dangling
+    /// references.
     #[test]
     #[cfg(unix)]
     fn verify_extraction_safety_bails_on_broken_symlink() {

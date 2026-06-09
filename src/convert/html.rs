@@ -21,27 +21,18 @@ pub fn html_to_markdown(source: &str) -> Result<String> {
     Ok(markdown)
 }
 
-/// Converts an HTML file to Markdown format.
+/// Read an HTML file and convert its contents to Markdown. The file size
+/// must not exceed the configured maximum limit.
 ///
-/// Reads the HTML file from the specified path and converts its contents to Markdown. The file size must not exceed the configured maximum limit.
 /// This is the path-based wrapper used by `FORMAT_TABLE`; the string-based
-/// [`html_to_markdown`] is still used directly by `chm` and `webhelp`.
+/// [`html_to_markdown`] is used directly by `chm` and `webhelp`.
 ///
-/// SHL-V1.29-10: the size cap used to be a local `MAX_CONVERT_FILE_SIZE = 100 MB`
-/// duplicated in `convert::markdown_passthrough`. Both now route through
-/// `crate::limits::convert_file_size()` so `CQS_CONVERT_MAX_FILE_SIZE`
-/// tunes both single-file converters in lockstep.
+/// The size cap routes through `crate::limits::convert_file_size()` so
+/// `CQS_CONVERT_MAX_FILE_SIZE` tunes both single-file converters in lockstep.
 ///
-/// # Arguments
-/// * `path` - Path to the HTML file to convert
-/// # Returns
-/// Returns a `Result` containing the converted Markdown string, or an error if the file cannot be read or converted.
 /// # Errors
-/// Returns an error if:
-/// * The file cannot be accessed or its metadata cannot be retrieved
-/// * The file exceeds the maximum allowed file size
-/// * The file cannot be read as UTF-8 text
-/// * The HTML to Markdown conversion fails
+/// Returns an error if the file cannot be accessed, exceeds the size limit,
+/// is not valid UTF-8, or the HTML-to-Markdown conversion fails.
 pub fn html_file_to_markdown(path: &Path) -> Result<String> {
     let _span = tracing::info_span!("html_file_to_markdown", path = %path.display()).entered();
     let max_bytes = crate::limits::convert_file_size();

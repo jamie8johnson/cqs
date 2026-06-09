@@ -1,4 +1,4 @@
-//! `cqs status` — watch-mode freshness query. (#1182 — Layer 3)
+//! `cqs status` — watch-mode freshness query.
 //!
 //! Connects to the running `cqs watch --serve` daemon and reports the
 //! latest [`WatchSnapshot`]. Designed for agent loops that want to gate
@@ -6,9 +6,7 @@
 //! checks. The CLI sits next to `cqs ping`: same socket, same envelope,
 //! different command name.
 //!
-//! `--watch-fresh` is the canonical flag (today the only mode). Future
-//! sibling flags (`--last-error`, `--clients`) can land without breaking
-//! agents already pinning `--watch-fresh`.
+//! `--watch-fresh` is the canonical flag and currently the only mode.
 //!
 //! `--wait` polls client-side until the snapshot reports `state == fresh`
 //! or the `--wait-secs` budget expires. Polling on the client keeps the
@@ -39,12 +37,10 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
     let _span = tracing::info_span!("cmd_status", json, watch_fresh, wait, wait_secs).entered();
 
     if !watch_fresh {
-        // Reserve room for future sibling modes by gating the entire
-        // command on at least one explicit "what to report" flag.
-        // API-V1.30.1-8: nudge the user toward the canonical no-flag combo
-        // (`--watch-fresh --wait`) instead of just naming the flag they
-        // missed — agents and operators who hit the bare `cqs status`
-        // probably want to wait for fresh, not poll once.
+        // Gate the entire command on at least one explicit "what to report"
+        // flag, and nudge the user toward the canonical combo
+        // (`--watch-fresh --wait`) — agents and operators who hit the bare
+        // `cqs status` probably want to wait for fresh, not poll once.
         let msg = "cqs status: hint: try --watch-fresh --wait";
         if json {
             crate::cli::json_envelope::emit_json_error(
@@ -78,8 +74,8 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
             };
         }
 
-        // PR 4 of #1182: share the polling helper with `cqs eval --require-fresh`.
-        // The status CLI translates outcomes to its `process::exit` paths;
+        // Shares the polling helper with `cqs eval --require-fresh`. The
+        // status CLI translates outcomes to its `process::exit` paths;
         // eval translates to anyhow errors.
         match cqs::daemon_translate::wait_for_fresh(&cqs_dir, budget_secs) {
             cqs::daemon_translate::FreshnessWait::Fresh(snap) => {
@@ -88,7 +84,7 @@ pub(crate) fn cmd_status(json: bool, watch_fresh: bool, wait: bool, wait_secs: u
             }
             cqs::daemon_translate::FreshnessWait::Timeout(snap) => {
                 if json {
-                    // API-V1.30.1-1: error envelope so JSON consumers see
+                    // Error envelope so JSON consumers see
                     // `error.code="timeout"` alongside the non-zero exit
                     // code. Embedding the snapshot in `data` keeps the
                     // counter information for callers that surface them.

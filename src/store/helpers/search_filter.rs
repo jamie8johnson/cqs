@@ -14,15 +14,14 @@ pub const DEFAULT_NAME_BOOST: f32 = 0.2;
 /// All fields are optional. Unset filters match all chunks.
 /// Use [`SearchFilter::validate()`] to check constraints before searching.
 ///
-/// #1349 / EX-V1.33-4: marked `#[non_exhaustive]` so external crates and the
-/// binary crate (`src/main.rs` + `src/cli/*`) cannot construct via struct
-/// literal without `..Default::default()`. The audit found 37+ enumerating
-/// sites pre-2026-05-02; the post-fix invariant is that every binary-crate
-/// site spreads from `Default`, so adding a new field is a one-line struct
-/// edit instead of a 37-site chase. In-crate (lib-side) construction still
-/// allows full enumeration — those sites already use `..SearchFilter::default()`
-/// by convention, but the compiler can't enforce it within the same crate.
-/// Tests living under `tests/*.rs` are external crates and ARE constrained.
+/// Marked `#[non_exhaustive]` so external crates and the binary crate
+/// (`src/main.rs` + `src/cli/*`) cannot construct via struct literal without
+/// `..Default::default()`. Every binary-crate site spreads from `Default`, so
+/// adding a new field is a one-line struct edit instead of a multi-site chase.
+/// In-crate (lib-side) construction still allows full enumeration — those
+/// sites use `..SearchFilter::default()` by convention, but the compiler can't
+/// enforce it within the same crate. Tests living under `tests/*.rs` are
+/// external crates and ARE constrained.
 #[non_exhaustive]
 pub struct SearchFilter {
     /// Filter by programming language(s)
@@ -158,7 +157,7 @@ impl SearchFilter {
             }
         }
 
-        // splade_alpha must be in [0.0, 1.0] when SPLADE is enabled (RB-12)
+        // splade_alpha must be in [0.0, 1.0] when SPLADE is enabled
         if self.enable_splade && !(0.0..=1.0).contains(&self.splade_alpha) {
             return Err(format!(
                 "splade_alpha must be between 0.0 and 1.0, got {}",
@@ -166,7 +165,7 @@ impl SearchFilter {
             ));
         }
 
-        // AC-V1.33-11: include_types ∩ exclude_types is unsatisfiable —
+        // include_types ∩ exclude_types is unsatisfiable —
         // an `IN (..) AND NOT IN (..)` with overlapping sets always returns zero
         // rows for the overlapping types, which silently drops results instead
         // of telling the caller their filter is contradictory.
@@ -298,7 +297,7 @@ mod tests {
         assert!(filter.validate().unwrap_err().contains("too long"));
     }
 
-    // TC-34: SPLADE NaN alpha guard
+    // SPLADE NaN alpha guard
     #[test]
     fn tc34_splade_nan_alpha_rejected() {
         let filter = SearchFilter {
@@ -342,7 +341,7 @@ mod tests {
         assert!(filter.validate().is_ok());
     }
 
-    // AC-V1.33-11: include_types ∩ exclude_types overlap detection
+    // include_types ∩ exclude_types overlap detection
     #[test]
     fn test_search_filter_include_exclude_overlap_rejected() {
         use crate::parser::ChunkType;

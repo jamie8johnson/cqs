@@ -85,8 +85,8 @@ impl<Mode> Store<Mode> {
         }
         let _span = tracing::info_span!("get_call_graph").entered();
         let graph = self.rt.block_on(async {
-            // P3 #103: cap is env-overridable via CQS_CALL_GRAPH_MAX_EDGES
-            // so monorepos above 500K edges can lift the ceiling.
+            // Cap is env-overridable via CQS_CALL_GRAPH_MAX_EDGES so
+            // monorepos above 500K edges can lift the ceiling.
             let max_edges = crate::limits::call_graph_max_edges() as i64;
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT ?1",
@@ -117,7 +117,7 @@ impl<Mode> Store<Mode> {
             > = std::collections::HashMap::new();
 
             // String interner: each unique name is allocated once as Arc<str>,
-            // then shared across forward and reverse maps (PERF-30).
+            // then shared across forward and reverse maps.
             let mut interner: std::collections::HashMap<String, std::sync::Arc<str>> =
                 std::collections::HashMap::new();
             let mut intern = |s: String| -> std::sync::Arc<str> {
@@ -195,11 +195,9 @@ impl<Mode> Store<Mode> {
             let mut result: std::collections::HashMap<String, Vec<CallerWithContext>> =
                 std::collections::HashMap::new();
 
-            // PF-V1.25-8: previously hardcoded `BATCH_SIZE = 200`, derived
-            // from the pre-3.32 SQLite 999-variable limit. Modern SQLite
-            // permits 32766; `max_rows_per_statement(1)` returns ~32466
-            // since we bind one variable per row (the callee name). A 5k
-            // name batch now runs as 1 statement instead of 25.
+            // `max_rows_per_statement(1)` returns ~32466 against SQLite's
+            // 32766-variable limit (one bound variable per row — the callee
+            // name), so a 5k-name batch runs as a single statement.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
             for batch in callee_names.chunks(batch_size) {
@@ -250,9 +248,9 @@ impl<Mode> Store<Mode> {
             let mut result: std::collections::HashMap<String, Vec<CallerInfo>> =
                 std::collections::HashMap::new();
 
-            // PF-V1.25-8: see rationale on `get_callers_with_context_batch`.
-            // Bumping from 250 → `max_rows_per_statement(1)` (~32466) cuts
-            // SQL round-trips ~130× on large name sets.
+            // See rationale on `get_callers_with_context_batch`.
+            // `max_rows_per_statement(1)` (~32466) keeps SQL round-trips low
+            // on large name sets.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
             for batch in callee_names.chunks(batch_size) {
@@ -305,9 +303,9 @@ impl<Mode> Store<Mode> {
             let mut result: std::collections::HashMap<String, Vec<(String, u32)>> =
                 std::collections::HashMap::new();
 
-            // PF-V1.25-8: same modernization as `get_callers_full_batch`.
-            // One bound variable per row, so `max_rows_per_statement(1)`
-            // reuses the whole 32466-slot budget.
+            // Same shape as `get_callers_full_batch`. One bound variable per
+            // row, so `max_rows_per_statement(1)` reuses the whole
+            // 32466-slot budget.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
             for batch in caller_names.chunks(batch_size) {

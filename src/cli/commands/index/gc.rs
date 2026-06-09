@@ -72,7 +72,7 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
     let pruned_calls = prune.pruned_calls as usize;
     let pruned_type_edges = prune.pruned_type_edges as usize;
     let pruned_summaries = prune.pruned_summaries;
-    // Prune orphaned sparse vectors (EH-16)
+    // Prune orphaned sparse vectors
     let pruned_sparse = match store.prune_orphan_sparse_vectors() {
         Ok(n) => {
             if n > 0 {
@@ -96,10 +96,10 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
 
     // Rebuild HNSW if we pruned chunks. Delete the stale HNSW first so
     // concurrent searches fall back to brute-force during the rebuild window
-    // rather than returning orphan IDs from the old index (RT-DATA-2).
+    // rather than returning orphan IDs from the old index.
     let hnsw_vectors = if pruned_chunks > 0 {
-        // DS-3: failing to mark HNSW dirty means concurrent searches could
-        // return stale results from the old index during rebuild. Abort.
+        // Failing to mark HNSW dirty means concurrent searches could return
+        // stale results from the old index during rebuild. Abort.
         // GC only rebuilds enriched; base is left alone for the next full
         // `cqs index` to catch up.
         store
@@ -243,7 +243,7 @@ mod tests {
         assert!(json.get("hnsw_vectors").is_none());
     }
 
-    // HP-6: assert ALL 8 fields of GcOutput are correctly named in JSON
+    // Assert ALL 8 fields of GcOutput are correctly named in JSON
     #[test]
     fn test_gc_output_all_fields() {
         let output = GcOutput {

@@ -1,12 +1,9 @@
-//! Dispatch shims for `#[derive(CqsCommands)]` (issue #1366).
+//! Dispatch shims for `#[derive(CqsCommands)]`.
 //!
 //! Each `cmd_<variant_snake>_dispatch` is a tiny wrapper that:
 //!   1. Pattern-matches the variant out of `&Commands` (proven by the
 //!      derive's match arm — `unreachable!()` is genuinely unreachable).
 //!   2. Calls the actual handler with destructured args + `&cli` / `ctx`.
-//!
-//! The bodies of each shim mirror the rows that used to live in
-//! `crate::cli::registry::for_each_command!` before the refactor.
 //!
 //! ## Signature
 //!
@@ -127,10 +124,9 @@ pub fn cmd_hook_dispatch(
     })
 }
 
-/// API-V1.29-6: `cqs refresh` is a daemon-only concept. By the time we
-/// reach this arm `try_daemon_query` already forwarded the request if a
-/// daemon was running, so we're guaranteed there isn't one. Emit a polite
-/// no-op.
+/// `cqs refresh` is a daemon-only concept. By the time we reach this arm
+/// `try_daemon_query` already forwarded the request if a daemon was running,
+/// so we're guaranteed there isn't one. Emit a polite no-op.
 pub fn cmd_refresh_dispatch(
     cli: &Cli,
     _ctx: Option<&CommandContext<'_, ReadOnly>>,
@@ -241,8 +237,8 @@ pub fn cmd_train_data_dispatch(
             commands::cmd_train_data(cqs::train_data::TrainDataConfig {
                 repos: repos.clone(),
                 output: output.clone(),
-                // API-V1.22-13: CLI surface uses `Option<usize>` (None = unlimited).
-                // Library API still uses `usize` with `0` as the no-cap sentinel.
+                // CLI surface uses `Option<usize>` (None = unlimited).
+                // Library API uses `usize` with `0` as the no-cap sentinel.
                 max_commits: max_commits.unwrap_or(0),
                 min_msg_len: *min_msg_len,
                 max_files: *max_files,
@@ -394,10 +390,10 @@ pub fn cmd_audit_mode_dispatch(
     })
 }
 
-/// SEC-D.9: Notes is a Group A command but conditionally opens a readonly
-/// store (mutations work on a fresh project pre-`cqs init && cqs index`,
-/// list requires the store). Open optimistically, log debug breadcrumb on
-/// failure, hand `Option<&ctx>` to `cmd_notes`.
+/// Notes is a Group A command but conditionally opens a readonly store
+/// (mutations work on a fresh project pre-`cqs init && cqs index`, list
+/// requires the store). Open optimistically, log debug breadcrumb on failure,
+/// hand `Option<&ctx>` to `cmd_notes`.
 pub fn cmd_notes_dispatch(
     cli: &Cli,
     _ctx: Option<&CommandContext<'_, ReadOnly>>,
@@ -606,10 +602,10 @@ pub fn cmd_similar_dispatch(
     })
 }
 
-/// Task #8: top-level `--json` (cli.json) overrides whatever the
-/// subcommand's `--format` says. `effective_format()` already honours
-/// `output.json`; we OR cli.json on top so `cqs --json impact foo` works
-/// without `--json` on the subcommand.
+/// Top-level `--json` (cli.json) overrides whatever the subcommand's
+/// `--format` says. `effective_format()` already honours `output.json`; we OR
+/// cli.json on top so `cqs --json impact foo` works without `--json` on the
+/// subcommand.
 pub fn cmd_impact_dispatch(
     cli: &Cli,
     ctx: Option<&CommandContext<'_, ReadOnly>>,

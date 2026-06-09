@@ -48,12 +48,12 @@ pub(crate) fn enrichment_pass(
     // Step 3: Iterate chunks in pages, collect those needing enrichment
     let mut enriched_count = 0usize;
     let mut cursor = 0i64;
-    // SHL-V1.30-8: env override `CQS_ENRICHMENT_PAGE_SIZE` (default 500). Larger
-    // pages mean fewer SQLite round-trips at the cost of higher per-batch RAM.
+    // Env override `CQS_ENRICHMENT_PAGE_SIZE` (default 500). Larger pages
+    // mean fewer SQLite round-trips at the cost of higher per-batch RAM.
     let page_size = enrichment_page_size();
 
     // Track name frequency — ambiguous names (appearing in multiple files)
-    // are skipped to avoid merging callers from different functions. (RB-B1)
+    // are skipped to avoid merging callers from different functions.
     let identities = store
         .all_chunk_identities()
         .context("Failed to load chunk identities")?;
@@ -62,13 +62,12 @@ pub(crate) fn enrichment_pass(
         *name_file_count.entry(ci.name.as_str()).or_insert(0) += 1;
     }
 
-    // #1452: chunks at `needs_embedding=1` MUST be processed even if they
-    // have no callers/callees/summary/hyde — they have no embedding at all
-    // (zero-vec sentinel), so the standard early-skip would leave them
-    // invisible to search forever. The HashSet is built once per pass; on
-    // a fresh `--llm-summaries` reindex it covers every chunk, on
-    // incremental runs it's empty (≈ no overhead) or has only the
-    // newly-changed chunks.
+    // Chunks at `needs_embedding=1` MUST be processed even if they have no
+    // callers/callees/summary/hyde — they have no embedding at all (zero-vec
+    // sentinel), so the standard early-skip would leave them invisible to
+    // search forever. The HashSet is built once per pass; on a fresh
+    // `--llm-summaries` reindex it covers every chunk, on incremental runs
+    // it's empty (≈ no overhead) or has only the newly-changed chunks.
     let needs_embedding_ids = match store.needs_embedding_ids() {
         Ok(ids) => ids,
         Err(e) => {
@@ -98,17 +97,18 @@ pub(crate) fn enrichment_pass(
 
     // (chunk_id, enriched_nl, enrichment_hash)
     let mut embed_batch: Vec<(String, String, String)> = Vec::new();
-    // SHL-V1.30-1: model-aware batch size so nomic-coderank (768 dim,
-    // 2048 seq) doesn't OOM at batch=64 on an 8 GB GPU. CQS_EMBED_BATCH_SIZE
-    // override is still honoured inside `embed_batch_size_for`.
+    // Model-aware batch size so nomic-coderank (768 dim, 2048 seq) doesn't
+    // OOM at batch=64 on an 8 GB GPU. CQS_EMBED_BATCH_SIZE override is honoured
+    // inside `embed_batch_size_for`.
     let enrich_embed_batch: usize = super::pipeline::embed_batch_size_for(model_config);
     let mut skipped_count = 0usize;
 
-    // Pre-fetch all LLM summaries once before the page loop (PERF-18).
-    // Single query instead of per-page batched fetches.
-    // RM-25: Intentional full pre-load — summaries and HyDE predictions are ~100 bytes each,
-    // so even 100k chunks uses ~20MB. The alternative (paged lookups) would require N SQLite
-    // round trips during the enrichment loop. This is the right trade-off for batch processing.
+    // Pre-fetch all LLM summaries once before the page loop — single query
+    // instead of per-page batched fetches. Intentional full pre-load:
+    // summaries and HyDE predictions are ~100 bytes each, so even 100k chunks
+    // uses ~20MB. Paged lookups would require N SQLite round trips during the
+    // enrichment loop — full pre-load is the right trade-off for batch
+    // processing.
     let all_summaries = match store.get_all_summaries("summary") {
         Ok(s) => s,
         Err(e) => {
@@ -125,12 +125,13 @@ pub(crate) fn enrichment_pass(
         }
     };
 
-    // #966: normalize whitespace once per content_hash. Summaries/hyde are keyed
-    // by content_hash so the same physical string was being re-normalized by every
-    // chunk sharing that content. On a 100k-chunk reindex the per-chunk
-    // split_whitespace().collect::<Vec<_>>().join(" ") produced ~1KB of churn each
-    // (~100MB allocator pressure). Pre-computing in two HashMaps (~20MB) eliminates
-    // that churn and the per-chunk hash function now only borrows &str.
+    // Normalize whitespace once per content_hash. Summaries/hyde are keyed by
+    // content_hash, so without this the same physical string would be
+    // re-normalized by every chunk sharing that content — on a 100k-chunk
+    // reindex the per-chunk split_whitespace().collect::<Vec<_>>().join(" ")
+    // is ~1KB of churn each (~100MB allocator pressure). Pre-computing in two
+    // HashMaps (~20MB) eliminates that churn and the per-chunk hash function
+    // only borrows &str.
     let all_summaries_norm: HashMap<String, String> = all_summaries
         .iter()
         .map(|(k, v)| (k.clone(), normalize_ws(v)))
@@ -140,7 +141,7 @@ pub(crate) fn enrichment_pass(
         .map(|(k, v)| (k.clone(), normalize_ws(v)))
         .collect();
 
-    // PERF-29: Pre-fetch all enrichment hashes once instead of per-page queries.
+    // Pre-fetch all enrichment hashes once instead of per-page queries.
     // Same trade-off as summaries above: ~32 bytes per hash × N chunks is small.
     let all_enrichment_hashes = match store.get_all_enrichment_hashes() {
         Ok(h) => h,
@@ -186,13 +187,13 @@ pub(crate) fn enrichment_pass(
                 let has_callees = callees.is_some_and(|v| !v.is_empty());
                 let summary = all_summaries.get(&cs.content_hash).map(|s| s.as_str());
                 let hyde = all_hyde.get(&cs.content_hash).map(|s| s.as_str());
-                // #966: pre-normalized variants used for hashing only.
-                // generate_nl_with_call_context_and_summary() still sees the raw
+                // Pre-normalized variants used for hashing only.
+                // generate_nl_with_call_context_and_summary() sees the raw
                 // summary/hyde so NL output is unchanged.
                 let summary_norm = all_summaries_norm.get(&cs.content_hash).map(|s| s.as_str());
                 let hyde_norm = all_hyde_norm.get(&cs.content_hash).map(|s| s.as_str());
 
-                // #1452: chunks at `needs_embedding=1` must always be embedded
+                // Chunks at `needs_embedding=1` must always be embedded
                 // regardless of context — they were written by the parser
                 // stage with a zero-vec sentinel (see `upsert_chunks_unembedded_batch`).
                 // Search and HNSW build skip them via `WHERE needs_embedding = 0`,
@@ -200,7 +201,7 @@ pub(crate) fn enrichment_pass(
                 let needs_embedding = needs_embedding_ids.contains(&cs.id);
 
                 // Skip chunks with nothing to add: no call context, no summary,
-                // no hyde — UNLESS they need an embedding at all (#1452).
+                // no hyde — UNLESS they need an embedding at all.
                 if !needs_embedding
                     && !has_callers
                     && !has_callees
@@ -210,24 +211,25 @@ pub(crate) fn enrichment_pass(
                     continue;
                 }
 
-                // Ambiguous names (RB-B1): functions like `new`, `parse`,
-                // `build` appear in multiple files. Today's contract: skip
-                // them so we don't merge callers from unrelated functions.
-                // #1452: even ambiguous names need a base-NL embedding when
-                // `needs_embedding=1` — pass an empty CallContext below so
-                // they get the bare-name vector without false call context.
+                // Ambiguous names: functions like `new`, `parse`, `build`
+                // appear in multiple files. Skip them so we don't merge callers
+                // from unrelated functions. Even ambiguous names need a base-NL
+                // embedding when `needs_embedding=1` — pass an empty
+                // CallContext below so they get the bare-name vector without
+                // false call context.
                 let ambiguous = name_file_count.get(cs.name.as_str()).copied().unwrap_or(0) > 1;
                 if ambiguous && summary.is_none() && hyde.is_none() && !needs_embedding {
                     continue;
                 }
 
-                // PERF-20/21: These clone caller/callee names into CallContext.
-                // Borrowing would require lifetime parameters through CallContext → generate_nl,
-                // cascading across 5+ modules. At ~5 callers + ~5 callees per chunk, these
-                // clones are negligible (~500 bytes) compared to the embedding cost (~3ms each).
+                // These clone caller/callee names into CallContext. Borrowing
+                // would require lifetime parameters through CallContext →
+                // generate_nl, cascading across 5+ modules. At ~5 callers + ~5
+                // callees per chunk, these clones are negligible (~500 bytes)
+                // compared to the embedding cost (~3ms each).
                 //
-                // #1452: ambiguous-name chunks at `needs_embedding=1` get an
-                // EMPTY ctx so the NL is base-only (`generate_nl_description_with_seq_len`)
+                // Ambiguous-name chunks at `needs_embedding=1` get an EMPTY ctx
+                // so the NL is base-only (`generate_nl_description_with_seq_len`)
                 // — equivalent to what the first-pass embed would have produced.
                 // Without this, an ambiguous `new()` on a 50-class project
                 // would inherit 50 unrelated callers.
@@ -247,9 +249,9 @@ pub(crate) fn enrichment_pass(
                     }
                 };
 
-                // Compute enrichment hash from post-filtered call context + summary (RT-DATA-2, SQ-6).
-                // #966: pass pre-normalized summary/hyde so the hash function can
-                // just stream bytes via blake3::Hasher instead of re-normalizing
+                // Compute enrichment hash from post-filtered call context + summary.
+                // Pass pre-normalized summary/hyde so the hash function can
+                // stream bytes via blake3::Hasher instead of re-normalizing
                 // and accumulating a String per chunk.
                 let enrichment_hash = compute_enrichment_hash_with_summary(
                     &ctx,
@@ -275,9 +277,8 @@ pub(crate) fn enrichment_pass(
                     5, // max callees
                     summary,
                     hyde,
-                    // CQ-V1.36-6: was previously dropped — thread the model's
-                    // max_seq_length so the section-preview budget scales with
-                    // model capacity (was hardcoded to env default 512).
+                    // Thread the model's max_seq_length so the section-preview
+                    // budget scales with model capacity.
                     model_config.max_seq_length,
                 );
 
@@ -317,8 +318,7 @@ pub(crate) fn enrichment_pass(
     Ok(enriched_count)
 }
 
-/// RB-6 / #966: normalize whitespace so LLM-generated strings with
-/// SHL-V1.30-8: env override `CQS_ENRICHMENT_PAGE_SIZE` (default 500).
+/// Env override `CQS_ENRICHMENT_PAGE_SIZE` (default 500).
 ///
 /// Controls how many chunks `enrichment_pass` pulls per `chunks_paged` call.
 /// Larger pages mean fewer SQLite round-trips, smaller pages bound the per-batch
@@ -332,35 +332,35 @@ fn enrichment_page_size() -> usize {
         .unwrap_or(500)
 }
 
-/// non-deterministic leading/trailing/internal whitespace collapse to the
-/// same canonical form before hashing.
+/// Normalize whitespace so LLM-generated strings with non-deterministic
+/// leading/trailing/internal whitespace collapse to the same canonical form
+/// before hashing.
 ///
-/// Factored out of `compute_enrichment_hash_with_summary` so the normalized
+/// Separate from `compute_enrichment_hash_with_summary` so the normalized
 /// form can be cached once per `content_hash` instead of recomputed per
 /// chunk in the reindex hot path.
 fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Compute enrichment hash including optional LLM summary (SQ-6).
-/// Extends `compute_enrichment_hash` to also include the summary text.
-/// If the summary changes, the hash changes, triggering re-embedding.
+/// Compute enrichment hash including optional LLM summary.
+/// Includes the call context plus the summary text; if the summary changes,
+/// the hash changes, triggering re-embedding.
 ///
-/// #966: `summary` and `hyde` MUST ALREADY be whitespace-normalized by the
-/// caller (see `normalize_ws`). In production the caller normalizes once
-/// per unique `content_hash` and reuses the result across every chunk that
-/// shares content, avoiding ~100MB of per-chunk String churn on 100k-chunk
-/// reindexes. Tests call `normalize_ws` inline.
+/// `summary` and `hyde` MUST ALREADY be whitespace-normalized by the caller
+/// (see `normalize_ws`). In production the caller normalizes once per unique
+/// `content_hash` and reuses the result across every chunk that shares
+/// content, avoiding ~100MB of per-chunk String churn on 100k-chunk reindexes.
+/// Tests call `normalize_ws` inline.
 ///
 /// Uses `blake3::Hasher` streaming — no intermediate `String` accumulator.
-/// The byte layout must stay identical to the pre-#966 `write!` version so
-/// existing enrichment_hash values in the store remain valid (otherwise
-/// every reindex would invalidate every cache entry). Layout is:
+/// The byte layout is load-bearing: changing it invalidates every existing
+/// enrichment_hash in the store and forces a full re-embed. Layout is:
 ///     "c:{caller}|" per sorted caller
 ///     "e:{callee}|" per sorted filtered callee
 ///     "s:{normalized_summary}"   (no trailing separator, only if present)
 ///     "h:{normalized_hyde}"      (no trailing separator, only if present)
-/// Hash is truncated to the first 32 hex chars to match pre-#966 output.
+/// Hash is truncated to the first 32 hex chars.
 fn compute_enrichment_hash_with_summary(
     ctx: &cqs::CallContext,
     callee_doc_freq: &HashMap<String, f32>,
@@ -380,7 +380,7 @@ fn compute_enrichment_hash_with_summary(
     let mut callees: Vec<&str> = ctx
         .callees
         .iter()
-        // DS-22: Cast to f64 for boundary comparison to avoid f32 non-determinism.
+        // Cast to f64 for boundary comparison to avoid f32 non-determinism.
         .filter(|name| {
             (callee_doc_freq.get(name.as_str()).copied().unwrap_or(0.0) as f64) < 0.1_f64
         })
@@ -455,7 +455,7 @@ mod tests {
         }
     }
 
-    // ---------- enrichment hash determinism (#665) ----------
+    // ---------- enrichment hash determinism ----------
 
     #[test]
     fn enrichment_hash_deterministic_same_inputs() {
@@ -544,14 +544,14 @@ mod tests {
         assert_ne!(h_none, h_hyde, "Adding hyde must change the hash");
     }
 
-    // ---------- #966: byte-identical snapshot test ----------
+    // ---------- byte-identical snapshot test ----------
 
-    /// Reference implementation matching the PRE-#966 `write!`-into-String
-    /// accumulator. Kept only in tests so we can prove the streaming
-    /// `blake3::Hasher` version produces the exact same bytes for the same
-    /// inputs. If this ever diverges from `compute_enrichment_hash_with_summary`,
-    /// every cached `enrichment_hash` in production stores is invalidated
-    /// and the next reindex re-embeds every chunk. Don't change this.
+    /// Reference implementation using a `write!`-into-String accumulator. Lives
+    /// only in tests to prove the streaming `blake3::Hasher` version produces
+    /// the exact same bytes for the same inputs. If this ever diverges from
+    /// `compute_enrichment_hash_with_summary`, every cached `enrichment_hash`
+    /// in production stores is invalidated and the next reindex re-embeds every
+    /// chunk. Don't change this.
     fn reference_hash_pre_966(
         ctx: &cqs::CallContext,
         callee_doc_freq: &HashMap<String, f32>,
@@ -618,10 +618,9 @@ mod tests {
             Some(&hyde_norm),
         );
 
-        // The reference function re-normalizes internally (matching the
-        // pre-#966 behavior), so it takes the raw strings. Feeding it
-        // the already-normalized strings would be equivalent because
-        // normalize_ws is idempotent on its own output.
+        // The reference function re-normalizes internally, so it takes the raw
+        // strings. Feeding it the already-normalized strings would be
+        // equivalent because normalize_ws is idempotent on its own output.
         let reference = reference_hash_pre_966(&ctx, &freq, Some(summary_raw), Some(hyde_raw));
 
         assert_eq!(

@@ -43,11 +43,11 @@ pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
 /// from `parser/markdown/tables.rs::emit_table_window`).
 fn is_window_suffix(seg: &str) -> bool {
     let bytes = seg.as_bytes();
-    // Generic: "wN" — 'w' followed by 1+ ASCII digits. The previous `len <= 3`
-    // ceiling capped windows at `w99`, but `apply_windowing` emits a `u32`
-    // index — chunks that produce 100+ windows (legitimate for very large
-    // markdown / data files) failed this check and the suffix wasn't stripped,
-    // corrupting file-based dedup / glob filtering / SPLADE fusion (P1-35).
+    // Generic: "wN" — 'w' followed by 1+ ASCII digits. `apply_windowing`
+    // emits a `u32` index, so chunks that produce 100+ windows (legitimate
+    // for very large markdown / data files) must match here too — a length
+    // ceiling would leave the suffix unstripped, corrupting file-based dedup
+    // / glob filtering / SPLADE fusion.
     if bytes.first() == Some(&b'w') && bytes.len() >= 2 && bytes[1..].iter().all(u8::is_ascii_digit)
     {
         return true;
@@ -106,8 +106,8 @@ pub(crate) fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
     let mut conditions = Vec::new();
     let mut bind_values: Vec<String> = Vec::new();
 
-    // P3 #130: each branch uses the cached `make_placeholders_offset` helper
-    // instead of inlining `(0..n).map(format!).collect::<Vec<_>>().join(",")`.
+    // Each branch uses the cached `make_placeholders_offset` helper instead
+    // of inlining `(0..n).map(format!).collect::<Vec<_>>().join(",")`.
     // Bind indices stay 1-based and contiguous across branches.
     if let Some(ref langs) = filter.languages {
         let placeholders = make_placeholders_offset(langs.len(), bind_values.len() + 1);
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_extract_file_markdown_table_window() {
-        // AC-V1.33-1: markdown table windows produce `:tNwM` suffix
+        // Markdown table windows produce `:tNwM` suffix
         // (from src/parser/markdown/tables.rs::emit_table_window)
         assert_eq!(
             extract_file_from_chunk_id("docs/x.md:10:abc12345:t0w3"),
@@ -262,9 +262,8 @@ mod tests {
 
     #[test]
     fn test_extract_file_window_index_three_or_more_digits() {
-        // P1-35 / AC-V1.36-1: very large chunks can produce 100+ windows.
-        // The previous `bytes.len() <= 3` ceiling capped wN at w99; w100+
-        // failed the suffix check and the index leaked into the file path,
+        // Very large chunks can produce 100+ windows. w100+ must pass the
+        // suffix check so the index doesn't leak into the file path,
         // corrupting file-based dedup / glob filtering / SPLADE fusion.
         assert_eq!(
             extract_file_from_chunk_id("src/foo.rs:10:abc12345:w100"),
@@ -285,7 +284,7 @@ mod tests {
         // Generic wN
         assert!(is_window_suffix("w0"));
         assert!(is_window_suffix("w99"));
-        // P1-35: 100+-window indices must also be recognised.
+        // 100+-window indices must also be recognised.
         assert!(is_window_suffix("w100"));
         assert!(is_window_suffix("w12345"));
         // Table tNwM
@@ -413,7 +412,7 @@ mod tests {
         assert!(!fsql.use_rrf);
     }
 
-    // ===== language/chunk_type filter set tests (TC-3) =====
+    // ===== language/chunk_type filter set tests =====
 
     #[test]
     fn test_lang_filter_set_membership() {
@@ -445,7 +444,7 @@ mod tests {
         let langs = [Language::Rust];
         let lang_set: HashSet<String> =
             langs.iter().map(|l| l.to_string().to_lowercase()).collect();
-        // eq_ignore_ascii_case avoids per-candidate allocation (PERF-17)
+        // eq_ignore_ascii_case avoids per-candidate allocation
         assert!(lang_set.iter().any(|l| "rust".eq_ignore_ascii_case(l)));
         assert!(lang_set.iter().any(|l| "Rust".eq_ignore_ascii_case(l)));
         assert!(!lang_set.iter().any(|l| "Python".eq_ignore_ascii_case(l)));
@@ -483,7 +482,7 @@ mod tests {
         assert!(!passes);
     }
 
-    // ===== TC-27: exclude_types filter tests =====
+    // ===== exclude_types filter tests =====
 
     #[test]
     fn tc27_exclude_types_generates_not_in_condition() {

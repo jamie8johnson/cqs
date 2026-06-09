@@ -9,12 +9,9 @@ use super::Parser;
 
 /// Parser version stamp embedded on every emitted [`Chunk`].
 ///
-/// Bumped any time a chunk-level field can change without the source bytes
-/// changing — currently only `doc` (PR #1040 added the leading-comment
-/// fallback for short chunks). Persisted via the `chunks.parser_version`
-/// SQLite column so incremental UPSERT can refresh rows whose `content_hash`
-/// is unchanged but whose `doc` would now be enriched. See P2 #29 in
-/// `docs/audit-findings.md` for the full failure mode.
+/// Persisted via the `chunks.parser_version` SQLite column so incremental
+/// UPSERT can refresh rows whose `content_hash` is unchanged but whose `doc`
+/// (or other non-content field) would now be extracted differently.
 ///
 /// Bump this when extraction logic changes the value of any non-content
 /// field (`doc`, `signature`, `parent_type_name`, etc.) for a chunk whose
@@ -301,12 +298,12 @@ const MAX_TOLERATED_BLANK_SIBLINGS: usize = 4;
 /// Trims the leading whitespace before checking; `*` alone is also accepted
 /// for the inner lines of a `/** ... */` block.
 ///
-/// The bare-`#` and bare-`*` arms are tightened to require a separator so
-/// `#[derive]` (Rust attribute), `#include`/`#define`/`#pragma` (C
-/// preprocessor), `#region` (C# pragma), `*ptr = 0` (C deref), and
-/// `*x = y` are NOT classified as comment-like. This separator rule applies
-/// to ambiguous single-char prefixes regardless of whether they came from
-/// the per-language list or the global fallback (P1 #3 hardening).
+/// The bare-`#` and bare-`*` arms require a separator so `#[derive]` (Rust
+/// attribute), `#include`/`#define`/`#pragma` (C preprocessor), `#region`
+/// (C# pragma), `*ptr = 0` (C deref), and `*x = y` are NOT classified as
+/// comment-like. This separator rule applies to ambiguous single-char
+/// prefixes regardless of whether they came from the per-language list or the
+/// global fallback.
 fn line_looks_comment_like(line: &str, lang: Language) -> bool {
     let t = line.trim_start();
     if t.is_empty() {
@@ -387,9 +384,8 @@ fn line_looks_comment_like(line: &str, lang: Language) -> bool {
 /// lines of the prefix are split into a `Vec<&str>`. We locate that tail by
 /// walking the prefix bytes in reverse from `start_byte`, counting newlines,
 /// and stopping once enough are seen. This bounds per-chunk work to O(8
-/// lines) regardless of file size — the previous implementation split the
-/// entire prefix per call and was O(N²) on files with many short chunks
-/// (P2 #43 in `docs/audit-findings.md`).
+/// lines) regardless of file size — splitting the entire prefix per call
+/// would be O(N²) on files with many short chunks.
 fn extract_doc_fallback_for_short_chunk(
     node: tree_sitter::Node,
     source: &str,
@@ -420,10 +416,10 @@ fn extract_doc_fallback_for_short_chunk(
     // blanks is still reachable — matching the walk-back loop's tolerance
     // below. Any prefix beyond that tail is unreachable and not split.
     //
-    // P3 #84 / #133: tree-sitter occasionally surfaces non-codepoint-boundary
-    // `start_byte` values on injection-rooted nodes; we previously dropped
-    // this case silently via `?`. Emit a warn so a pathological grammar
-    // change (or a malformed input) is visible in the journal.
+    // tree-sitter occasionally surfaces non-codepoint-boundary `start_byte`
+    // values on injection-rooted nodes. Emit a warn (rather than silently
+    // dropping via `?`) so a pathological grammar change or malformed input
+    // is visible in the journal.
     let start_byte = node.start_byte();
     let prefix = match source.get(..start_byte) {
         Some(p) => p,
@@ -451,9 +447,8 @@ fn extract_doc_fallback_for_short_chunk(
         }
     }
     let tail = &prefix[tail_start..];
-    // P3 #140: `str::lines()` already strips trailing `\r` from `\r\n` line
-    // terminators, so the previous `.map(|l| l.trim_end_matches('\r'))` was
-    // redundant.
+    // `str::lines()` already strips trailing `\r` from `\r\n` line
+    // terminators, so no separate `\r` trim is needed.
     let lines: Vec<&str> = tail.lines().collect();
     if lines.is_empty() {
         return None;
@@ -1270,10 +1265,9 @@ public class Calculator {
         assert_eq!(name, Some("caf\u{00e9}_func".to_string()));
     }
 
-    /// Tests for the `truncated_gold` fix: leading-comment fallback for short
-    /// chunks plus blank-line tolerance in the sibling walk. Targets the
-    /// failure mode catalogued in `evals/audit_r5_failure_modes.py` and the
-    /// recommendation in `docs/audit-r5-failure-modes.md`.
+    /// Tests for the leading-comment fallback for short chunks plus
+    /// blank-line tolerance in the sibling walk. Targets the `truncated_gold`
+    /// failure mode catalogued in `evals/audit_r5_failure_modes.py`.
     mod doc_fallback_tests {
         use super::*;
 
@@ -1359,8 +1353,8 @@ CREATE TABLE metadata (
         }
 
         /// Happy path 2: short Rust type alias with adjacent leading
-        /// comment — already worked via the normal sibling walk; pin it so
-        /// the fallback doesn't regress the happy path.
+        /// comment — handled by the normal sibling walk; pin it so the
+        /// fallback doesn't regress the happy path.
         #[test]
         fn rust_short_type_alias_with_adjacent_comment_gets_doc() {
             let content = "\
@@ -1446,8 +1440,7 @@ fn longish() {
         }
 
         /// Sad path 4: UTF-8 multi-byte character in the leading comment
-        /// must not crash the byte-prefix slice. Covers the chunker hardening
-        /// per Reranker V2 / WSL session learnings.
+        /// must not crash the byte-prefix slice.
         #[test]
         fn fallback_handles_utf8_in_leading_comment() {
             let content = "\
@@ -1494,7 +1487,7 @@ type WithDoc = u8;
             );
         }
 
-        // ─── A.1: tightened line_looks_comment_like (attribute / preprocessor) ─
+        // ─── line_looks_comment_like (attribute / preprocessor) ───────────
 
         #[test]
         fn line_looks_comment_like_rejects_attribute_and_preprocessor_lines() {
@@ -1577,12 +1570,12 @@ type WithDoc = u8;
             }
         }
 
-        // ─── P2 #53: per-language line_comment_prefixes ────────────────────
+        // ─── per-language line_comment_prefixes ────────────────────────────
 
         /// Pin that the registry-driven prefix list is populated for the
         /// languages most likely to surface in eval data. A language landing
-        /// without prefixes silently falls back to the global heuristic; the
-        /// audit's intent is that common languages get precision.
+        /// without prefixes silently falls back to the global heuristic;
+        /// common languages get per-language precision.
         #[test]
         fn line_comment_prefixes_populated_for_common_languages() {
             for lang in [
@@ -1601,10 +1594,9 @@ type WithDoc = u8;
             }
         }
 
-        /// Pinned decision: `#` is NOT comment-like in Rust. The audit's
-        /// per-language precision intent overrides the previous global
-        /// fallback. `#` belongs to Python/Bash/Ruby/Yaml; in Rust it is an
-        /// attribute (`#[derive]`) or shebang prefix.
+        /// Pinned decision: `#` is NOT comment-like in Rust. Per-language
+        /// precision means `#` belongs to Python/Bash/Ruby/Yaml; in Rust it is
+        /// an attribute (`#[derive]`) or shebang prefix.
         #[test]
         fn python_line_comment_does_not_match_in_rust_context() {
             assert!(
@@ -1617,7 +1609,7 @@ type WithDoc = u8;
             );
         }
 
-        // ─── A.2: walk-back blank-line budget ──────────────────────────────
+        // ─── walk-back blank-line budget ───────────────────────────────────
 
         #[test]
         fn fallback_walks_past_blank_gap_to_capture_earlier_comments() {
@@ -1643,7 +1635,7 @@ CREATE TABLE x (id TEXT);
             );
         }
 
-        // ─── P2 #52: bound the perf-fix's correctness ──────────────────────
+        // ─── bound the bounded-walk-back's correctness ─────────────────────
 
         /// FALLBACK_DOC_MAX_LINES cap: feed a 12-line `--` comment block
         /// before a short SQL chunk. Only the last 8 lines must end up in
@@ -1684,9 +1676,8 @@ CREATE TABLE x (id TEXT);
         }
 
         /// Exact 5-line-span boundary: a chunk whose `line_end - line_start`
-        /// is exactly 4 (a 5-line CREATE TABLE) MUST get the fallback. See
-        /// P2 #52 (boundary coverage gap) and the documentation finding
-        /// flagging "<5 lines" wording vs `>= 5` skip semantics.
+        /// is exactly 4 (a 5-line CREATE TABLE) MUST get the fallback —
+        /// the skip semantics are `>= SHORT_CHUNK_LINE_THRESHOLD`.
         #[test]
         fn fallback_runs_for_chunk_spanning_exactly_5_lines() {
             // 5-line body so `line_end - line_start == 4`. Three columns +
@@ -1774,11 +1765,11 @@ CREATE TABLE five_line (
             );
         }
 
-        /// Mixed-prefix walk: P2 #53 made `line_looks_comment_like` consult
-        /// `lang.def().line_comment_prefixes` instead of a global union, so
-        /// a Rust chunk preceded by SQL-style `--` comments no longer walks
-        /// past the `--` line. Pin this deliberate tightening so a future
-        /// regression (or a permissive rewrite) surfaces as a loud diff.
+        /// Mixed-prefix walk: `line_looks_comment_like` consults
+        /// `lang.def().line_comment_prefixes` rather than a global union, so a
+        /// Rust chunk preceded by SQL-style `--` comments does not walk past
+        /// the `--` line. Pin this so a permissive rewrite surfaces as a loud
+        /// diff.
         #[test]
         fn fallback_does_not_mix_comment_styles() {
             // Under Rust (`line_comment_prefixes: &["//", "/*"]`), the `--`
@@ -1800,16 +1791,15 @@ CREATE TABLE five_line (
             );
         }
 
-        // ─── P2 #43: smoke test that walk-back stays linear in chunk count ─
+        // ─── smoke test that walk-back stays linear in chunk count ─────────
 
-        /// Smoke test for the O(N²) → O(8 lines) fix: parsing 200 short
-        /// CREATE TABLE chunks in one file must not allocate or split the
-        /// entire prefix per call. We don't assert wall-clock here (CI
-        /// flakiness), but we do assert we get the expected chunk count
-        /// without panic and without OOM. The cost of the prior
-        /// implementation on this fixture was ~200 vec allocations of
-        /// growing size (chunk N walked N×~3 lines of prefix); the fix
-        /// caps each at the FALLBACK_DOC_MAX_LINES tail.
+        /// Smoke test for the bounded walk-back: parsing 200 short CREATE
+        /// TABLE chunks in one file must not split the entire prefix per call.
+        /// We don't assert wall-clock here (CI flakiness), but we do assert we
+        /// get the expected chunk count without panic and without OOM. An
+        /// unbounded walk-back would be ~200 vec allocations of growing size
+        /// (chunk N walked N×~3 lines of prefix); the bounded walk caps each
+        /// at the FALLBACK_DOC_MAX_LINES tail.
         #[test]
         fn parses_200_short_chunks_in_one_file_without_quadratic_blowup() {
             let mut content = String::new();

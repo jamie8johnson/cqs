@@ -29,14 +29,12 @@ fn clamp_line_to_u32(v: i64) -> u32 {
     }
 }
 
-// SEC-3 absolute ceilings on response shapes — see `crate::limits::serve_*`.
+// Absolute ceilings on response shapes — see `crate::limits::serve_*`.
 //
-// P2.40: previously hardcoded `const` values (50_000 / 500_000 / 50_000 +
-// per-list LIMIT 50/50/20 in `build_chunk_detail`). Operators can now
-// tune via env vars (`CQS_SERVE_GRAPH_MAX_NODES`, `CQS_SERVE_GRAPH_MAX_EDGES`,
-// `CQS_SERVE_CLUSTER_MAX_NODES`, `CQS_SERVE_CHUNK_DETAIL_{CALLERS,CALLEES,TESTS}`)
-// without recompiling. The helpers in `limits.rs` clamp to a hard maximum
-// so a misconfiguration can't unbound the response.
+// Operators tune via env vars (`CQS_SERVE_GRAPH_MAX_NODES`,
+// `CQS_SERVE_GRAPH_MAX_EDGES`, `CQS_SERVE_CLUSTER_MAX_NODES`,
+// `CQS_SERVE_CHUNK_DETAIL_{CALLERS,CALLEES,TESTS}`). The helpers in `limits.rs`
+// clamp to a hard maximum so a misconfiguration can't unbound the response.
 //
 // Each helper reads its env var on every call. The cost is negligible
 // (one `getenv`) and lets tests flip values inside a single process.
@@ -101,17 +99,16 @@ pub(crate) struct ChunkDetail {
     pub file: String,
     pub line_start: u32,
     pub line_end: u32,
-    /// P2.24 — `Option` so a NULL `chunks.signature` (partial write,
-    /// SIGKILL between INSERT phases) reaches the frontend as `null`
-    /// rather than collapsing to `""`. The frontend renders missing
-    /// columns as a `<missing — DB column NULL>` placeholder so an
-    /// empty signature pane is no longer indistinguishable from a
+    /// `Option` so a NULL `chunks.signature` (partial write, SIGKILL between
+    /// INSERT phases) reaches the frontend as `null` rather than collapsing to
+    /// `""`. The frontend renders missing columns as a
+    /// `<missing — DB column NULL>` placeholder, distinct from a
     /// successfully-extracted void signature.
     pub signature: Option<String>,
     pub doc: Option<String>,
     /// First N lines of the chunk content for inline preview. `None`
     /// when the underlying `chunks.content` column is NULL — same
-    /// reasoning as `signature`. (P2.24.)
+    /// reasoning as `signature`.
     pub content_preview: Option<String>,
     pub callers: Vec<NodeRef>,
     pub callees: Vec<NodeRef>,
@@ -247,13 +244,12 @@ pub(crate) fn build_graph(
         // memory. The user-supplied value is clamped too so
         // `?max_nodes=999999999` can't be used as a DoS vector either.
         // (Env-tunable via `CQS_SERVE_GRAPH_MAX_NODES`; clamped to a
-        // 1M hard ceiling — see `crate::limits`. P2.40.)
+        // 1M hard ceiling — see `crate::limits`.)
         //
-        // PF-V1.30 (P2.70): replace per-row correlated subquery with
-        // one aggregated subselect joined by name. Previously each
-        // scanned row triggered a log-N index probe into function_calls
-        // (~50k probes against the 50k node cap on a 30k-edge corpus).
-        // One GROUP BY pass is O(M+N). The subquery still counts the
+        // An aggregated subselect joined by name avoids a per-row correlated
+        // subquery (which would trigger a log-N index probe into
+        // function_calls per scanned row). One GROUP BY pass is O(M+N). The
+        // subquery still counts the
         // *name* not the chunk, which over-counts for shared-name
         // overloads — but that's exactly what the post-fetch resolution
         // does too. ORDER BY ... LIMIT N pushes the truncation down to
@@ -345,10 +341,10 @@ pub(crate) fn build_graph(
         // millions of rows on a large monorepo); the IN-scoped query
         // could also blow up if the visible-node name set grew large,
         // so `serve_graph_max_edges()` caps it unconditionally.
-        // (Env-tunable via `CQS_SERVE_GRAPH_MAX_EDGES`; P2.40.)
+        // (Env-tunable via `CQS_SERVE_GRAPH_MAX_EDGES`.)
         let max_graph_edges = crate::limits::serve_graph_max_edges();
         //
-        // SEC-4: chunk the IN-list so `name_set.len()` > SQLite's
+        // Chunk the IN-list so `name_set.len()` > SQLite's
         // `SQLITE_MAX_VARIABLE_NUMBER` (32766) doesn't overflow the
         // bind cursor. Each row binds the chunk twice (once for
         // callee_name, once for caller_name) so the per-chunk row
@@ -368,12 +364,11 @@ pub(crate) fn build_graph(
                 use crate::store::helpers::sql::max_rows_per_statement;
                 const EDGE_CHUNK: usize = max_rows_per_statement(2);
                 let names: Vec<&str> = name_set.into_iter().collect();
-                // P3.44: dedup keys are u64 hashes of (file, caller, callee)
-                // instead of three owned `String`s per row. Cloning three
-                // Strings on every dedup-miss row was a HashSet-worth of
-                // allocation churn proportional to the edge fan-out; hashing
-                // is constant per row and the false-collision rate at u64
-                // is negligible for the per-request edge set size we ship.
+                // Dedup keys are u64 hashes of (file, caller, callee) rather
+                // than three owned `String`s per row — hashing is constant per
+                // row and avoids allocation churn proportional to the edge
+                // fan-out. The false-collision rate at u64 is negligible for
+                // the per-request edge set size we ship.
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -528,22 +523,22 @@ pub(crate) fn build_chunk_detail(
         let origin: String = row.get("origin");
         let line_start: i64 = row.get("line_start");
         let line_end: i64 = row.get("line_end");
-        // P2.24: NULL is a real signal (partial write during indexing,
-        // SIGKILL between INSERT phases) — preserve it through to the
-        // wire format rather than flattening to `""`.
+        // NULL is a real signal (partial write during indexing, SIGKILL
+        // between INSERT phases) — preserve it through to the wire format
+        // rather than flattening to `""`.
         let signature: Option<String> = row.get("signature");
         let doc: Option<String> = row.get("doc");
         let content: Option<String> = row.get("content");
 
         // Preview = first 30 lines of content. Bounded so big chunks
         // don't bloat the sidebar JSON. `None` when the row had NULL
-        // content (P2.24).
+        // content.
         let content_preview: Option<String> = content
             .as_deref()
             .map(|c| c.lines().take(30).collect::<Vec<_>>().join("\n"));
 
         // Caller chunks: function_calls WHERE callee_name = this.name.
-        // P2.40: LIMIT bound to `serve_chunk_detail_callers_limit()`
+        // LIMIT bound to `serve_chunk_detail_callers_limit()`
         // (env `CQS_SERVE_CHUNK_DETAIL_CALLERS`, default 50).
         let callers_limit = crate::limits::serve_chunk_detail_callers_limit() as i64;
         let callers_rows = sqlx::query(
@@ -558,10 +553,10 @@ pub(crate) fn build_chunk_detail(
         .bind(callers_limit)
         .fetch_all(&store.pool)
         .await?;
-        // RB-V1.29-3: surface out-of-range `line_start` (negative or
-        // overflows u32) as a `StoreError::Corruption` rather than
-        // silently clamping to 0. A corrupted row here manifests in
-        // the UI as a mis-scrolled sidebar; without the explicit
+        // Surface out-of-range `line_start` (negative or overflows u32)
+        // as a `StoreError::Corruption` rather than silently clamping to 0.
+        // A corrupted row here manifests in the UI as a mis-scrolled
+        // sidebar; without the explicit
         // error the regression has no diagnostic at all. The error
         // propagates through the axum handler as a 500.
         let to_noderef = |r: sqlx::sqlite::SqliteRow| -> Result<NodeRef, StoreError> {
@@ -584,7 +579,7 @@ pub(crate) fn build_chunk_detail(
             .collect::<Result<_, _>>()?;
 
         // Callee chunks: function_calls WHERE caller_name = this.name AND file = this.origin.
-        // P2.40: LIMIT bound to `serve_chunk_detail_callees_limit()`
+        // LIMIT bound to `serve_chunk_detail_callees_limit()`
         // (env `CQS_SERVE_CHUNK_DETAIL_CALLEES`, default 50).
         let callees_limit = crate::limits::serve_chunk_detail_callees_limit() as i64;
         let callees_rows = sqlx::query(
@@ -618,7 +613,7 @@ pub(crate) fn build_chunk_detail(
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        // P2.40: LIMIT bound to `serve_chunk_detail_tests_limit()`
+        // LIMIT bound to `serve_chunk_detail_tests_limit()`
         // (env `CQS_SERVE_CHUNK_DETAIL_TESTS`, default 20).
         let tests_limit = crate::limits::serve_chunk_detail_tests_limit() as i64;
         let tests_rows = sqlx::query(
@@ -965,7 +960,7 @@ pub(crate) fn build_cluster(
         // single request can't materialise the full chunks table.
         // The user-supplied value is clamped too so `?max_nodes=999999999`
         // can't be used as a DoS vector either. (Env-tunable via
-        // `CQS_SERVE_CLUSTER_MAX_NODES`; P2.40.)
+        // `CQS_SERVE_CLUSTER_MAX_NODES`.)
         let max_cluster_nodes = crate::limits::serve_cluster_max_nodes();
         let effective_cap = max_nodes
             .unwrap_or(max_cluster_nodes)
@@ -1012,7 +1007,7 @@ pub(crate) fn build_cluster(
         // below filters on `name_to_first_id` membership, Rust-side
         // filtering after pulling every row over the wire is the DoS
         // vector we're closing. (Env-tunable via
-        // `CQS_SERVE_GRAPH_MAX_EDGES`; P2.40.)
+        // `CQS_SERVE_GRAPH_MAX_EDGES`.)
         let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls LIMIT ?")
             .bind(crate::limits::serve_graph_max_edges() as i64)
             .fetch_all(&store.pool)
@@ -1085,7 +1080,7 @@ pub(crate) fn build_cluster(
             "build_cluster: built response"
         );
 
-        // P3.14: explicit warn when corpus has chunks but every one lacks
+        // Explicit warn when corpus has chunks but every one lacks
         // UMAP coords. Cluster pane renders blank otherwise — operators
         // staring at the empty view need a journal hint that they need to
         // run `cqs index --umap` (UMAP is opt-in, not in default index).
@@ -1103,9 +1098,9 @@ pub(crate) fn build_cluster(
 /// Pull richer stats than the `Store::base_embedding_count` shortcut.
 /// One query for total chunks + files + call edges + type edges.
 ///
-/// PF-V1.30.1-5: collapsed from four sequential `fetch_one` round-trips
-/// into a single SELECT with subqueries. SQLite plans these as parallel
-/// COUNT scans and we save three pool round-trips per `/stats` request.
+/// A single SELECT with subqueries rather than four sequential `fetch_one`
+/// round-trips. SQLite plans these as parallel COUNT scans, saving three pool
+/// round-trips per `/stats` request.
 pub(crate) fn build_stats(store: &Store<ReadOnly>) -> Result<StatsResponse, StoreError> {
     let _span = tracing::info_span!("build_stats").entered();
 

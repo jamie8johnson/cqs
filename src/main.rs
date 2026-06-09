@@ -16,10 +16,9 @@ fn main() -> Result<()> {
     let cli = cli::Cli::parse();
 
     // Log to stderr to keep stdout clean for structured output.
-    // P1.20 / OB-V1.30-1: --verbose flag sets debug level for cqs (everything
-    // else stays at info), otherwise honour RUST_LOG, defaulting to
-    // "cqs=info,warn,ort=error" so the ~150 span instrumentation sites in the
-    // codebase actually render without third-party noise.
+    // --verbose sets debug level for cqs (everything else stays at info),
+    // otherwise honour RUST_LOG, defaulting to "cqs=info,warn,ort=error" so
+    // the span instrumentation sites render without third-party noise.
     let filter = if cli.verbose {
         EnvFilter::new("cqs=debug,info")
     } else {

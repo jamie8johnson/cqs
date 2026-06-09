@@ -25,7 +25,7 @@ pub fn llm_summary_pass(
 
     let llm_config = LlmConfig::resolve(config)?;
     tracing::debug!(
-        // SEC-V1.38-1 (#1463): redacted form so user:pass@host doesn't land in journald.
+        // Redacted form so user:pass@host doesn't land in journald.
         api_base = %llm_config.redacted_api_base(),
         "LLM API base"
     );
@@ -139,8 +139,8 @@ pub fn llm_summary_pass(
         },
     );
 
-    // #1126 / P2.60: drain the per-Store summary queue regardless of
-    // success/failure. Streamed rows are buffered in-memory — without a
+    // Drain the per-Store summary queue regardless of success/failure.
+    // Streamed rows are buffered in-memory — without a
     // flush they would only land on the next call, widening the
     // re-fetch window via `fetch_batch_results`. The flush is idempotent.
     if let Err(e) = store.flush_pending_summaries() {
@@ -252,7 +252,7 @@ fn find_contrastive_neighbors(
     let dim = valid[0].2.len();
     tracing::info!(chunks = n, dim, "Computing pairwise cosine similarity");
 
-    // Copy valid entries into owned data so we can drop the HashMap (RM-33)
+    // Copy valid entries into owned data so we can drop the HashMap.
     let valid_owned: Vec<(String, String)> = valid
         .iter()
         .map(|(h, name, _)| (h.to_string(), name.to_string()))
@@ -268,18 +268,18 @@ fn find_contrastive_neighbors(
             matrix.row_mut(i).mapv_inplace(|x| x / norm);
         }
     }
-    // RM-33: Drop borrowed data — embeddings HashMap (~46MB) freed before N*N matrix
+    // Drop borrowed data — embeddings HashMap (~46MB) freed before N*N matrix
     drop(valid);
     drop(embeddings);
 
     // Pairwise cosine = normalized @ normalized.T
     let sims = matrix.dot(&matrix.t());
-    drop(matrix); // RM-39: Free N*dim*4 bytes (~49MB at 12k*1024)
+    drop(matrix); // Free N*dim*4 bytes (~49MB at 12k*1024)
 
-    // PERF-43: Extract top-N neighbors per chunk using select_nth_unstable_by
-    // for O(N) average per row instead of O(N log K) with BinaryHeap.
-    // RM-5: Reuse a single candidates buffer to avoid N*(N-1) intermediate allocations.
-    // PF-4: Build result map inline — no intermediate per_row_neighbors Vec, no candidates.clone().
+    // Extract top-N neighbors per chunk using select_nth_unstable_by for
+    // O(N) average per row instead of O(N log K) with BinaryHeap. Reuse a
+    // single candidates buffer to avoid N*(N-1) intermediate allocations, and
+    // build the result map inline (no intermediate per_row_neighbors Vec).
     let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
     let mut candidates: Vec<(usize, f32)> = Vec::with_capacity(n);
     for i in 0..n {
@@ -287,8 +287,8 @@ fn find_contrastive_neighbors(
         candidates.clear();
         candidates.extend((0..n).filter(|&j| j != i).map(|j| (j, row[j])));
 
-        // AC-V1.29-4: tiebreak on the candidate index (`a.0`) so two entries
-        // with identical cosine similarity don't swap positions across runs
+        // Tiebreak on the candidate index (`a.0`) so two entries with
+        // identical cosine similarity don't swap positions across runs
         // — the `select_nth_unstable_by` path leaves the tail unspecified
         // and the final `truncate` + `sort_unstable_by` is the only sorter
         // the caller observes.
@@ -309,7 +309,7 @@ fn find_contrastive_neighbors(
             result.insert(valid_owned[i].0.clone(), names);
         }
     }
-    drop(sims); // RM-39: Free N*N*4 bytes (~550MB at 12k)
+    drop(sims); // Free N*N*4 bytes (~550MB at 12k)
 
     let with_neighbors = result.len();
     tracing::info!(total = n, with_neighbors, "Contrastive neighbors computed");
@@ -321,7 +321,7 @@ fn find_contrastive_neighbors(
 mod tests {
     use super::*;
 
-    // ===== TC-22: LLM pass chunk filtering condition tests =====
+    // ===== LLM pass chunk filtering condition tests =====
     //
     // The filtering logic in llm_summary_pass (and hyde_query_pass) applies 4 skip conditions
     // to each ChunkSummary. Since the logic is inline, these tests validate each condition
@@ -370,10 +370,10 @@ mod tests {
         );
     }
 
-    /// Condition 2 (Phase 5 follow-up): the eligibility filter now uses
-    /// `is_code()` instead of `is_callable()`, so type-definition chunks
-    /// (struct, enum, trait, interface, class, constant, impl, etc.) are
-    /// summarizable. Only Section (markdown) and Module (file-level) and
+    /// Condition 2: the eligibility filter uses `is_code()` (not
+    /// `is_callable()`), so type-definition chunks (struct, enum, trait,
+    /// interface, class, constant, impl, etc.) are summarizable. Only Section
+    /// (markdown) and Module (file-level) and
     /// ConfigKey/Object/Namespace are still skipped.
     #[test]
     fn filter_accepts_code_chunk_types() {
@@ -486,7 +486,7 @@ mod tests {
         assert!(!skip_windowed, "No window index");
     }
 
-    // ===== TC-4: contrastive neighbor edge-case tests =====
+    // ===== contrastive neighbor edge-case tests =====
 
     /// Empty store → find_contrastive_neighbors returns Ok with empty HashMap.
     #[test]

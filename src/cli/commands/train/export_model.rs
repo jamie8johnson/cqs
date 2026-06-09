@@ -7,12 +7,12 @@ fn find_python() -> anyhow::Result<String> {
     cqs::convert::find_python()
 }
 
-/// SEC-18 / SEC-V1.33-4: strict allowlist for HuggingFace repo IDs.
-/// The previous denylist missed `\r` (CR — line terminator on some systems),
-/// `[`, `]` (TOML table reopen), `=`, `#`, and surrounding whitespace, all
-/// of which `write_model_toml` interpolates verbatim into model.toml.
-/// HuggingFace repo IDs are documented as `[A-Za-z0-9._/-]` only, so we
-/// reject anything outside that set. Also reject leading `-` to prevent
+/// Strict allowlist for HuggingFace repo IDs.
+/// A denylist would have to enumerate `\r` (CR), `[`, `]` (TOML table reopen),
+/// `=`, `#`, and surrounding whitespace — all of which `write_model_toml`
+/// interpolates verbatim into model.toml. HuggingFace repo IDs are documented
+/// as `[A-Za-z0-9._/-]` only, so we reject anything outside that set instead.
+/// Also reject leading `-` to prevent
 /// arg-confusion in the optimum subprocess that consumes `repo` next.
 fn validate_repo_id(repo: &str) -> anyhow::Result<()> {
     if !repo.contains('/')
@@ -26,7 +26,7 @@ fn validate_repo_id(repo: &str) -> anyhow::Result<()> {
              [A-Za-z0-9._/-] only (e.g. intfloat/e5-base-v2)"
         );
     }
-    // SEC-V1.36-7: forbid `..` even though `.` and `/` are individually allowed.
+    // Forbid `..` even though `.` and `/` are individually allowed.
     // optimum tries to interpret `--model` as a local path before falling
     // through to HF Hub; `org/../../etc/secrets` would walk up from cwd. HF
     // Hub itself rejects `..`; mirror that contract here.
@@ -46,22 +46,21 @@ pub(crate) fn cmd_export_model(
 ) -> anyhow::Result<()> {
     let _span = tracing::info_span!("export_model", repo).entered();
 
-    // PB-30: Canonicalize output path
+    // Canonicalize output path
     let output = dunce::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
 
     validate_repo_id(repo)?;
 
     println!("Exporting {} to ONNX...", repo);
 
-    // PB-29/EH-32: Find a working Python interpreter first
+    // Find a working Python interpreter first
     let python = find_python()?;
 
-    // RM-V1.38-5 (#1463): bounded subprocess output. Both `Command::output()`
-    // calls used to buffer stdout/stderr unbounded — `optimum.exporters.onnx`
-    // can print multi-MB progress logs on a large export and a wedged HF
-    // download can grow RAM for hours. Mirror the RM-V1.36-2 PDF converter
-    // pattern (spawn + take MAX_BYTES). Operators only need the tail of
-    // stderr for diagnostics; stdout is purely informational.
+    // Bound subprocess output. Both `Command::output()` calls buffer
+    // stdout/stderr with a MAX_BYTES cap — `optimum.exporters.onnx` can print
+    // multi-MB progress logs on a large export and a wedged HF download can
+    // grow RAM for hours. Operators only need the tail of stderr for
+    // diagnostics; stdout is purely informational.
     use std::io::Read;
     use std::process::Stdio;
 
@@ -86,7 +85,7 @@ pub(crate) fn cmd_export_model(
         Ok((status, stdout_buf, stderr_buf, truncated))
     }
 
-    // OB-26: Check Python deps. Cheap probe — 4 KiB stdout + 16 KiB stderr is plenty.
+    // Check Python deps. Cheap probe — 4 KiB stdout + 16 KiB stderr is plenty.
     let (check_status, _check_out, check_err, _) = run_capped(
         std::process::Command::new(&python)
             .args(["-c", "import optimum; import sentence_transformers"]),
@@ -133,7 +132,7 @@ pub(crate) fn cmd_export_model(
         anyhow::bail!("ONNX export failed:\n{}", stderr);
     }
 
-    // EX-32: Resolve embedding dimension and write model.toml
+    // Resolve embedding dimension and write model.toml
     let resolved_dim = resolve_dim(dim_override, &output);
     write_model_toml(&output, repo, resolved_dim)?;
 
@@ -201,7 +200,7 @@ tokenizer_path = "tokenizer.json"
     );
     std::fs::write(&toml_path, &toml)?;
 
-    // SEC-19: Restrict model.toml permissions on Unix (contains model config)
+    // Restrict model.toml permissions on Unix (contains model config)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -279,7 +278,7 @@ mod tests {
 
     #[test]
     fn validate_repo_id_rejects_toml_injection_chars() {
-        // SEC-V1.33-4 regression coverage. Each of these would corrupt
+        // Each of these would corrupt
         // model.toml via the `format!("repo = \"{repo}\"")` template if
         // accepted.
         assert!(validate_repo_id("evil/model\rinjected = 1").is_err()); // CR
@@ -306,13 +305,10 @@ mod tests {
         assert!(validate_repo_id("-evil/model").is_err());
     }
 
-    /// TC-ADV-V1.38-1 (#1463): SEC-V1.36-7 added an explicit `..`
-    /// path-traversal rejection at the top of `validate_repo_id` so a
-    /// hostile `org/../../etc/passwd` couldn't escape `optimum`'s CWD.
-    /// The fix shipped without a regression test — a future refactor
-    /// that simplified the validator to rely on the char-set whitelist
-    /// alone (`.` and `/` are both allowed individually) would silently
-    /// revert the fix.
+    /// `validate_repo_id` rejects `..` path-traversal at the top so a hostile
+    /// `org/../../etc/passwd` can't escape `optimum`'s CWD. A refactor that
+    /// relied on the char-set whitelist alone (`.` and `/` are both allowed
+    /// individually) would silently break this, so pin it with a test.
     #[test]
     fn validate_repo_id_rejects_parent_directory_refs() {
         assert!(

@@ -30,7 +30,7 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 
 /// Run all migrations from stored version to current version.
 ///
-/// ## Backup and recovery (issue #953)
+/// ## Backup and recovery
 ///
 /// Before any DDL runs, a filesystem snapshot of `db_path` (and its
 /// `-wal`/`-shm` sidecars) is taken to a sibling `.bak-v{from}-v{to}-{ts}.db`
@@ -56,7 +56,7 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 /// proceeds without a snapshot for users who accept the risk (tight-quota
 /// filesystems, CI rebuilding from source).
 ///
-/// ## Concurrent-migrate safety (v1.22.0 audit DS-W6)
+/// ## Concurrent-migrate safety
 ///
 /// Re-reads `schema_version` inside the migration transaction before executing
 /// DDL. Two concurrent processes both reading version=17 from the pool, then
@@ -65,7 +65,7 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 /// the transaction's implicit exclusive lock prevents this: the second
 /// process sees the version has already advanced and short-circuits.
 ///
-/// ## Pool ownership (P2.59 / issue #1125)
+/// ## Pool ownership
 ///
 /// `migrate` takes ownership of `pool` by value because the failure path must
 /// `.close().await` the pool before `restore_from_backup` runs `atomic_replace`
@@ -128,7 +128,7 @@ pub async fn migrate(
             Ok(pool)
         }
         Err(e) => {
-            // P2.59: close the pool BEFORE atomic_replace overwrites the DB
+            // Close the pool BEFORE atomic_replace overwrites the DB
             // file. Otherwise pool descriptors keep mmap'ing the unlinked
             // old inode while subsequent opens see the restored backup —
             // silent two-state divergence. Drain WAL first so the on-disk
@@ -195,7 +195,7 @@ pub async fn migrate(
 /// Read the stored `schema_version` and migrate to the current version if
 /// needed. Designed to be called from `Store::open` *before* the `Store`
 /// struct is constructed so the pool can be handed off to `migrate()` by
-/// value — a hard requirement of the P2.59 close-and-restore protocol.
+/// value — a hard requirement of the close-and-restore protocol.
 ///
 /// Returns the (possibly-the-same, possibly-migrated) pool on success.
 /// On migration failure the pool is consumed (see [`migrate`]); the caller
@@ -234,8 +234,8 @@ pub async fn check_and_migrate_schema(
                 s, e
             ))
         })?,
-        // EH-22: missing key is OK — init() hasn't been called yet on a
-        // fresh DB. After init(), schema_version is guaranteed present.
+        // Missing key is OK — init() hasn't been called yet on a fresh DB.
+        // After init(), schema_version is guaranteed present.
         None => 0,
     };
 
@@ -249,11 +249,10 @@ pub async fn check_and_migrate_schema(
 
     // Read-only handles can't migrate (every migration step issues writes).
     // Surface `SchemaMismatch` so the operator runs `cqs index` (or restarts
-    // the watch daemon, which opens read-write and migrates structurally) —
-    // before this check, every read-only open of an older DB triggered a
-    // backup → migrate → write-fail → restore loop, which left the DB at
-    // its old version while still scattering `index.bak-*` snapshots and
-    // returning a confusing "attempt to write a readonly database" error.
+    // the watch daemon, which opens read-write and migrates structurally)
+    // rather than triggering a backup → migrate → write-fail → restore loop
+    // that leaves the DB at its old version, scatters `index.bak-*` snapshots,
+    // and returns a confusing "attempt to write a readonly database" error.
     if read_only {
         tracing::info!(
             path = %db_path.display(),
@@ -300,8 +299,8 @@ pub async fn check_and_migrate_schema(
 async fn run_migration_tx(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreError> {
     let mut tx = pool.begin().await?;
 
-    // DS-W6: re-read version under the write lock. A concurrent process may
-    // have already migrated between our caller's pool-level read and our
+    // Re-read version under the write lock. A concurrent process may have
+    // already migrated between our caller's pool-level read and our
     // transaction start. If the version is already at or past `to`, bail.
     let current_in_tx: Option<(String,)> =
         sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
@@ -343,12 +342,12 @@ async fn run_migration_tx(pool: &SqlitePool, from: i32, to: i32) -> Result<(), S
             }
         }
     }
-    // E.1 (P1 #16): use UPSERT instead of UPDATE so a DB without an existing
-    // `schema_version` metadata row gets one stamped on first migration. The
-    // UPDATE form silently affected zero rows, leaving the version unstamped
-    // and causing the next open to re-run the same DDL ("duplicate column
-    // name" / "table already exists" errors). Mirrors the pattern used for
-    // `splade_generation` in `migrate_v18_to_v19` / `migrate_v19_to_v20`.
+    // UPSERT (not UPDATE) so a DB without an existing `schema_version`
+    // metadata row gets one stamped on first migration. A plain UPDATE
+    // affects zero rows here, leaving the version unstamped and causing the
+    // next open to re-run the same DDL ("duplicate column name" / "table
+    // already exists" errors). Mirrors the `splade_generation` UPSERT
+    // pattern in the per-version migrations.
     sqlx::query(
         "INSERT INTO metadata (key, value) VALUES ('schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -361,11 +360,11 @@ async fn run_migration_tx(pool: &SqlitePool, from: i32, to: i32) -> Result<(), S
     Ok(())
 }
 
-/// P3-48: registered migration step. Each row pairs a `(from, to)` pair
-/// with a function that builds a boxed future running the step. Using the
+/// Registered migration step. Each row pairs a `(from, to)` pair with a
+/// function that builds a boxed future running the step. The
 /// `Pin<Box<dyn Future>>` shape lets us hold a slice of `fn` pointers (no
-/// closures, no trait objects) — adding a step in v26 is now one row
-/// append rather than editing a hand-coded `match` ladder.
+/// closures, no trait objects), so adding a step is one row append rather
+/// than editing a hand-coded `match` ladder.
 // `+ Send` is intentionally absent — every per-version migration enters a
 // `tracing::info_span!(...).entered()` whose `EnteredSpan` guard is `!Send`,
 // so the resulting future isn't `Send` either. `run_migration` is awaited
@@ -512,7 +511,7 @@ async fn migrate_v13_to_v14(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// - Sets hnsw_dirty to trigger HNSW rebuild (old index has 769-dim vectors)
 /// - Notes embedding column is left as-is (we write empty blobs now, old data is harmless)
 async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
-    // DS-4: Only update dimensions from 769→768 (the old sentiment-augmented size).
+    // Only update dimensions from 769→768 (the old sentiment-augmented size).
     // Databases already using a different model dim (e.g. 1024 for BGE-large) must
     // not be overwritten to 768.
     sqlx::query("UPDATE metadata SET value = '768' WHERE key = 'dimensions' AND value = '769'")
@@ -578,7 +577,7 @@ async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 ///
 /// - `sparse_vectors`: stores SPLADE sparse vectors for hybrid search.
 ///   Each chunk gets a set of (token_id, weight) pairs from the learned sparse encoder.
-/// - `enrichment_version`: RT-DATA-2 idempotency marker. Tracks which enrichment pass
+/// - `enrichment_version`: idempotency marker. Tracks which enrichment pass
 ///   last processed each chunk, preventing double-application of call graph context.
 async fn migrate_v16_to_v17(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     let _span = tracing::info_span!("migrate_v16_to_v17").entered();
@@ -598,7 +597,7 @@ async fn migrate_v16_to_v17(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
         .execute(&mut *conn)
         .await?;
 
-    // RT-DATA-2: enrichment idempotency marker
+    // enrichment idempotency marker
     sqlx::query("ALTER TABLE chunks ADD COLUMN enrichment_version INTEGER NOT NULL DEFAULT 0")
         .execute(&mut *conn)
         .await?;
@@ -609,7 +608,7 @@ async fn migrate_v16_to_v17(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
 /// Migrate from v17 to v18: add embedding_base column to chunks
 ///
-/// Phase 5 of adaptive retrieval: dual embeddings. Each chunk gets a second
+/// Dual embeddings for adaptive retrieval. Each chunk gets a second
 /// embedding built from the raw NL description (without LLM summary or call-graph
 /// enrichment). Conceptual/behavioral/negation queries route to the base index,
 /// structural/multi-step queries keep the enriched index.
@@ -630,21 +629,12 @@ async fn migrate_v17_to_v18(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
 /// Migrate from v18 to v19: add FK(chunk_id) ON DELETE CASCADE to sparse_vectors
 ///
-/// v1.22.0 audit finding DS-W3: the v17 `sparse_vectors` table was declared
-/// without a foreign key to `chunks`, so three code paths in
-/// `src/store/chunks/crud.rs` (`delete_by_origin`, `delete_phantom_chunks`,
-/// `upsert_chunks_and_calls`) leaked orphan sparse rows — every chunks-delete
-/// produced sparse_vectors rows that no query could reach, and `prune_missing`
-/// / `prune_all` had to clean them up manually. Worse, the cleanup paths
-/// forgot to bump `splade_generation` (DS-W1), so the persisted
-/// `splade.index.bin` kept serving stale chunk_ids after a GC.
-///
-/// This migration makes the invariant structural: any delete from `chunks`
-/// now cascades to `sparse_vectors` automatically, the same way
-/// `calls.source_chunk_id` and `type_edges.source_chunk_id` already cascade
-/// since v10/v11. Memory rule: invalidation counters attached to mutable
-/// state must be enforced at the schema layer, not instrumented at specific
-/// call sites.
+/// Makes the cascade invariant structural: any delete from `chunks` cascades
+/// to `sparse_vectors` automatically, the same way `calls.source_chunk_id` and
+/// `type_edges.source_chunk_id` cascade. Without the FK, chunk deletes leaked
+/// orphan sparse rows that no query could reach — invalidation counters
+/// attached to mutable state must be enforced at the schema layer, not
+/// instrumented at specific call sites.
 ///
 /// SQLite does not support `ALTER TABLE ADD FOREIGN KEY`, so we rebuild the
 /// table in place. Orphan rows (sparse_vectors whose chunk_id no longer
@@ -694,19 +684,14 @@ async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
         .fetch_one(&mut *conn)
         .await?;
     let dropped = before_rows - after_rows;
-    // DS2-8: escalate to `error!` when the INNER JOIN filter drops more than
-    // 10% of rows. A small orphan set is expected (pre-v19 delete paths
-    // leaked rows); a large drop suggests the chunks table was truncated
-    // out-of-band, or an unrelated bug produced widespread chunk/sparse
-    // inconsistency. Surface it at `error` so it's visible in logs even
-    // when the migration itself succeeds. Not a hard fail — the rebuild is
-    // still strictly an improvement on the old unconstrained shape — but
-    // the user should know.
-    // DS-V1.36-8: integer math, not lossy f64 cast. With f64 the threshold
-    // for tiny corpora rounded to 0 and a single dropped orphan tripped the
-    // error! arm spuriously. Require dropped > threshold AND threshold > 0
-    // so before_rows < 10 falls through to the warn arm (where it belongs)
-    // rather than the error arm.
+    // Escalate to `error!` when the INNER JOIN filter drops more than 10% of
+    // rows. A small orphan set is expected; a large drop suggests the chunks
+    // table was truncated out-of-band, or a bug produced widespread
+    // chunk/sparse inconsistency. Not a hard fail — the rebuild is still an
+    // improvement on the old unconstrained shape — but the user should know.
+    // Integer math (not lossy f64 cast): require dropped > threshold AND
+    // threshold > 0 so before_rows < 10 falls through to the warn arm rather
+    // than tripping the error arm on a single dropped orphan.
     let threshold = before_rows / 10;
     if before_rows > 0 && threshold > 0 && dropped > threshold {
         tracing::error!(
@@ -751,8 +736,8 @@ async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
     // Bump splade_generation so any on-disk splade.index.bin from pre-v19
     // is invalidated — its header generation won't match the new value.
-    // The UPSERT seeds the row if it wasn't present (older DBs predating
-    // the PR #895 counter never had this metadata key).
+    // The UPSERT seeds the row if it wasn't present (older DBs without the
+    // counter never had this metadata key).
     sqlx::query(
         "INSERT INTO metadata (key, value) VALUES ('splade_generation', '1')
          ON CONFLICT(key) DO UPDATE SET
@@ -769,13 +754,11 @@ async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
 /// Migrate from v19 to v20: AFTER DELETE trigger on chunks bumps splade_generation
 ///
-/// v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6 (triple-confirmed by three
-/// independent auditors): `cqs watch` never touched SPLADE. When watch
-/// detected a file edit and called `delete_phantom_chunks` or
-/// `delete_by_origin`, the v19 FK CASCADE correctly removed the orphan
-/// sparse rows, but nothing bumped `splade_generation`. The on-disk
-/// `splade.index.bin` still matched the unchanged counter, so readers
-/// trusted the stale file and served chunk_ids that no longer existed.
+/// Guarantees that a chunk delete invalidates the SPLADE index. The v19 FK
+/// CASCADE removes orphan sparse rows when `cqs watch` edits a file, but the
+/// CASCADE alone does not bump `splade_generation`, so the on-disk
+/// `splade.index.bin` would still match the unchanged counter and readers
+/// would serve chunk_ids that no longer exist.
 ///
 /// This trigger fires on every `DELETE FROM chunks` statement, once per
 /// deleted row, and bumps the generation via a single metadata UPDATE.
@@ -809,9 +792,8 @@ async fn migrate_v19_to_v20(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     .await?;
 
     // Bump generation immediately so any pre-v20 persisted splade.index.bin
-    // (possibly already out of sync with sparse_vectors because watch-mode
-    // deletes since v19 landed never bumped the counter) gets invalidated
-    // on the next load.
+    // (possibly already out of sync with sparse_vectors because v19 watch-mode
+    // deletes never bumped the counter) gets invalidated on the next load.
     sqlx::query(
         "INSERT INTO metadata (key, value) VALUES ('splade_generation', '1')
          ON CONFLICT(key) DO UPDATE SET
@@ -828,14 +810,14 @@ async fn migrate_v19_to_v20(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
 /// Migrate from v20 to v21: add `parser_version` column to chunks
 ///
-/// v1.28.0 audit P2 #29 (recovery wave): the watch path UPSERTs chunks with an
+/// The watch path UPSERTs chunks with an
 /// `ON CONFLICT(id) DO UPDATE ... WHERE chunks.content_hash != excluded.content_hash`
-/// short-circuit, which is correct when the only thing that ever changes is the
-/// source bytes. But `extract_doc_fallback_for_short_chunk` (PR #1040) can
-/// change `doc` for a chunk whose source bytes are byte-identical to a
-/// previously-indexed version — and that change was being silently discarded
-/// on every incremental update. A `parser_version` stamp lets the UPSERT
-/// invalidate rows whose parser logic moved on, mirroring `splade_generation`.
+/// short-circuit, which is correct when the only thing that changes is the
+/// source bytes. But `extract_doc_fallback_for_short_chunk` can change `doc`
+/// for a chunk whose source bytes are byte-identical to a previously-indexed
+/// version — without a parser stamp that change is silently discarded on
+/// incremental update. A `parser_version` stamp lets the UPSERT invalidate
+/// rows whose parser logic moved on, mirroring `splade_generation`.
 ///
 /// Defaults to 0 for existing rows so the next `cqs index` (or watch reindex)
 /// will write the live PARSER_VERSION value and refresh the affected fields.
@@ -878,9 +860,9 @@ async fn migrate_v21_to_v22(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 }
 
 /// v22 → v23: Add `source_size` (INTEGER) + `source_content_hash` (BLOB)
-/// columns on `chunks` to power the reconcile fingerprint (issue #1219 /
-/// EX-V1.30.1-6). Both nullable: pre-v23 rows stay valid; first re-embed
-/// populates them. Reconcile uses these as tiebreakers when mtimes are
+/// columns on `chunks` to power the reconcile fingerprint. Both nullable:
+/// pre-v23 rows stay valid; first re-embed populates them. Reconcile uses
+/// these as tiebreakers when mtimes are
 /// identical (FAT32/NTFS/HFS+/SMB ≥1s mtime resolution) or when mtime
 /// changed but content didn't (`git checkout`, formatter passes).
 async fn migrate_v22_to_v23(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
@@ -900,14 +882,13 @@ async fn migrate_v22_to_v23(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 }
 
 /// v23 → v24: Add `vendored` (INTEGER NOT NULL DEFAULT 0) column on
-/// `chunks` to power the third-party-content trust-level downgrade
-/// (issue #1221 / SEC-V1.30.1-5). Pre-migration rows default to
-/// `vendored = 0` (treated as user-code); the next reindex flags chunks
-/// whose `origin` matches a configured vendored-path prefix
-/// (`vendor/`, `node_modules/`, etc.). Search/scout/onboard JSON output
-/// then emits `trust_level: "vendored-code"` for those chunks instead
-/// of the bare `user-code` claim — the structural fix the SEC-V1.30.1-5
-/// doc-only stop-gap acknowledged was needed.
+/// `chunks` to power the third-party-content trust-level downgrade.
+/// Pre-migration rows default to `vendored = 0` (treated as user-code);
+/// the next reindex flags chunks whose `origin` matches a configured
+/// vendored-path prefix (`vendor/`, `node_modules/`, etc.).
+/// Search/scout/onboard JSON output then emits
+/// `trust_level: "vendored-code"` for those chunks instead of the bare
+/// `user-code` claim.
 async fn migrate_v23_to_v24(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     let _span = tracing::info_span!("migrate_v23_to_v24").entered();
 
@@ -922,17 +903,16 @@ async fn migrate_v23_to_v24(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
-/// v24 → v25: Add `kind` (TEXT, nullable) column on `notes` to enable
-/// the kind/tag taxonomy that #1133 (audit P2.91) tracked. Pre-v25
-/// rows stay valid with `kind = NULL`; the parser's
-/// `sentiment_to_prefix` mapping continues to drive embedding-text
-/// prefixes when `kind = None`. New notes added via
+/// v24 → v25: Add `kind` (TEXT, nullable) column on `notes` for the
+/// kind/tag taxonomy. Pre-v25 rows stay valid with `kind = NULL`; the
+/// parser's `sentiment_to_prefix` mapping continues to drive
+/// embedding-text prefixes when `kind = None`. New notes added via
 /// `cqs notes add --kind <kind>` populate the column at insert time
 /// and take precedence over the sentiment-based prefix.
 ///
-/// An index on `notes(kind)` powers the future `cqs notes list --kind`
-/// filter — created at the same migration step rather than separately
-/// to keep v25 a single self-contained schema bump.
+/// An index on `notes(kind)` powers the `cqs notes list --kind` filter —
+/// created at the same migration step to keep v25 a single self-contained
+/// schema bump.
 async fn migrate_v24_to_v25(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     let _span = tracing::info_span!("migrate_v24_to_v25").entered();
 
@@ -950,12 +930,12 @@ async fn migrate_v24_to_v25(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
-/// PERF-V1.33-10 / #1371 — add composite `(source_type, origin)` index on
-/// `chunks` so `list_stale_files` and `prune_missing_files` can satisfy
-/// their `WHERE source_type = ? + DISTINCT origin` queries from a single
-/// index pass. Pre-v26 SQLite would probe `idx_chunks_source_type`, then
-/// row-visit (or fall through to a full scan + sort). Mirrors the
-/// schema.sql change so fresh DBs match.
+/// v25 → v26: add composite `(source_type, origin)` index on `chunks` so
+/// `list_stale_files` and `prune_missing_files` can satisfy their
+/// `WHERE source_type = ? + DISTINCT origin` queries from a single index
+/// pass. Without it SQLite probes `idx_chunks_source_type`, then row-visits
+/// (or falls through to a full scan + sort). Mirrors the schema.sql change
+/// so fresh DBs match.
 async fn migrate_v25_to_v26(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     let _span = tracing::info_span!("migrate_v25_to_v26").entered();
 
@@ -974,8 +954,8 @@ async fn migrate_v25_to_v26(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
-/// v27: add `chunks.needs_embedding` flag for #1452. Pipeline can now skip
-/// the wasted first-pass embed when `--llm-summaries` is set (which guarantees
+/// v26 → v27: add `chunks.needs_embedding` flag. Lets the pipeline skip the
+/// wasted first-pass embed when `--llm-summaries` is set (which guarantees
 /// `enrichment_pass` will overwrite every chunk's embedding anyway).
 /// Chunks written without a real embedding get `needs_embedding = 1` and a
 /// zero-vec sentinel in the `embedding` column; HNSW build + search paths
@@ -1002,16 +982,14 @@ async fn migrate_v26_to_v27(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     .execute(&mut *conn)
     .await?;
 
-    // DS-V1.38-8 (#1463): backfill `needs_embedding=1` for any
-    // pre-v27 row that has `embedding_base IS NULL`. Combined with
-    // DS-V1.38-2 (enrichment_pass repopulates `embedding_base` from
-    // the row's `embedding` on first hit), this trips the next
-    // `cqs index --force` or `cqs index --llm-summaries` cycle into
-    // filling the missing base bytes — restoring base-HNSW coverage
-    // for `cqs <q> --rerank` / DenseBase routing on legacy projects
-    // that pre-date the v17→v18 base-column split (or that ran
-    // earlier `--llm-summaries` cycles before DS-V1.38-2 closed the
-    // permanent-NULL trap).
+    // Backfill `needs_embedding=1` for any pre-v27 row that has
+    // `embedding_base IS NULL`. Combined with enrichment_pass
+    // repopulating `embedding_base` from the row's `embedding` on first
+    // hit, this trips the next `cqs index --force` or
+    // `cqs index --llm-summaries` cycle into filling the missing base
+    // bytes — restoring base-HNSW coverage for `cqs <q> --rerank` /
+    // DenseBase routing on projects that pre-date the v17→v18 base-column
+    // split.
     let backfilled = sqlx::query(
         "UPDATE chunks SET needs_embedding = 1 \
          WHERE embedding_base IS NULL AND needs_embedding = 0",
@@ -1323,9 +1301,9 @@ mod tests {
             .unwrap();
             assert!(table_check.is_none(), "type_edges should not exist yet");
 
-            // Run migration from v10 to v11. P2.59: migrate consumes the pool
-            // by value so the failure path can close it before the file
-            // replace; we rebind to the returned pool to keep using it.
+            // Run migration from v10 to v11. migrate consumes the pool by
+            // value so the failure path can close it before the file replace;
+            // we rebind to the returned pool to keep using it.
             let pool = migrate(pool, &db_path, 10, 11).await.unwrap();
 
             // Verify type_edges now exists
@@ -1945,9 +1923,9 @@ mod tests {
         });
     }
 
-    /// Phase 5 regression: v17→v18 adds embedding_base column without touching
-    /// existing rows, and the migration is idempotent-ish in the sense that a
-    /// follow-up attempt errors on the duplicate ALTER (caller must not re-run).
+    /// v17→v18 adds embedding_base column without touching existing rows, and
+    /// the migration is idempotent-ish in the sense that a follow-up attempt
+    /// errors on the duplicate ALTER (caller must not re-run).
     #[test]
     fn test_migrate_v17_to_v18_adds_embedding_base_column() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -2056,7 +2034,7 @@ mod tests {
         });
     }
 
-    /// Phase 5: full migrate() chain is idempotent at the dispatcher level.
+    /// Full migrate() chain is idempotent at the dispatcher level.
     /// Calling `migrate(pool, 18, 18)` after a successful upgrade must be a
     /// no-op — the schema_version metadata gates re-execution of the ALTER.
     /// (The raw migration function itself is NOT idempotent — `ALTER TABLE
@@ -2123,8 +2101,8 @@ mod tests {
         });
     }
 
-    /// v1.22.0 audit DS-W3: v18→v19 migration adds FK(chunk_id) ON DELETE
-    /// CASCADE on sparse_vectors. Test covers:
+    /// v18→v19 migration adds FK(chunk_id) ON DELETE CASCADE on
+    /// sparse_vectors. Test covers:
     /// - Orphan sparse rows (chunks no longer exist) are dropped during
     ///   the rebuild
     /// - Non-orphan sparse rows survive the rebuild
@@ -2296,8 +2274,8 @@ mod tests {
         });
     }
 
-    /// v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6: v19→v20 adds a trigger on
-    /// chunks that bumps splade_generation on every DELETE. Test covers:
+    /// v19→v20 adds a trigger on chunks that bumps splade_generation on
+    /// every DELETE. Test covers:
     /// - Migration bumps the generation immediately
     /// - The trigger fires on subsequent DELETE FROM chunks
     /// - Multiple deletes produce multiple bumps (cardinality check)
@@ -2485,14 +2463,14 @@ mod tests {
     }
 
     // ========================================================================
-    // Issue #953: filesystem backup before migrate() runs DDL.
+    // Filesystem backup before migrate() runs DDL.
     //
     // The four tests below cover the happy-path backup creation, the
     // failure-path restore, the pruning policy, and the absent-WAL edge case.
     // ========================================================================
 
     /// Helper: build a minimal v19 schema on `pool` so migrate(19 -> 20) can
-    /// run against it. Each #953 test uses this so the test body focuses on
+    /// run against it. Each backup test uses this so the test body focuses on
     /// backup/restore behaviour rather than schema setup.
     async fn seed_v19_schema(pool: &sqlx::SqlitePool) {
         sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -2547,7 +2525,7 @@ mod tests {
         .unwrap();
     }
 
-    /// Issue #953, happy path: a successful migrate() leaves a
+    /// Happy path: a successful migrate() leaves a
     /// `.bak-v{from}-v{to}-{ts}.db` file in the DB's parent directory.
     ///
     /// This is what gives users a recovery path when a future migration
@@ -2620,7 +2598,7 @@ mod tests {
         });
     }
 
-    /// Issue #953, failure path: when a migration step returns `Err` mid-way
+    /// Failure path: when a migration step returns `Err` mid-way
     /// (simulating either a bug inside a migration function or a
     /// commit-time I/O failure), the restore-from-backup path runs and the
     /// DB file is byte-identical to its pre-migrate state.
@@ -2712,9 +2690,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            // P2.59: migrate consumes the pool by value. On the failure
-            // path it closes the pool internally before restore runs, so
-            // we don't need a separate close here.
+            // migrate consumes the pool by value. On the failure path it
+            // closes the pool internally before restore runs, so we don't
+            // need a separate close here.
             let err = migrate(pool, &db_path, 17, 19).await.unwrap_err();
             match err {
                 StoreError::Runtime(msg) => assert!(
@@ -2738,15 +2716,15 @@ mod tests {
         );
     }
 
-    /// P2.59 / issue #1125: when a migration fails, the live pool must be
-    /// closed BEFORE `restore_from_backup`'s `atomic_replace` runs over the
-    /// DB file. Otherwise pool descriptors keep mmap'ing the unlinked old
-    /// inode while subsequent opens see the restored backup — silent
-    /// two-state divergence where in-process queries can read stale rows
-    /// from the orphaned old inode while readers from new processes see the
-    /// restored DB.
+    /// When a migration fails, the live pool must be closed BEFORE
+    /// `restore_from_backup`'s `atomic_replace` runs over the DB file.
+    /// Otherwise pool descriptors keep mmap'ing the unlinked old inode while
+    /// subsequent opens see the restored backup — silent two-state
+    /// divergence where in-process queries can read stale rows from the
+    /// orphaned old inode while readers from new processes see the restored
+    /// DB.
     ///
-    /// This test simulates the daemon scenario from the issue: a long-lived
+    /// This test simulates the daemon scenario: a long-lived
     /// pool is open, a migration runs and fails, then we verify that:
     /// 1. A fresh pool opened against the same path AFTER migrate returns
     ///    sees the restored pre-migrate state — proves the file replace
@@ -2937,7 +2915,7 @@ mod tests {
         });
     }
 
-    /// Issue #953, prune policy: after a successful migrate, only the newest
+    /// Prune policy: after a successful migrate, only the newest
     /// `KEEP_BACKUPS` (2) backups survive. Older ones are deleted.
     ///
     /// Setup seeds 5 fake `.bak-v*.db` files with staggered mtimes so there
@@ -3031,7 +3009,7 @@ mod tests {
         }
     }
 
-    /// Issue #953, absent-WAL edge case: on a cleanly-closed SQLite DB the
+    /// Absent-WAL edge case: on a cleanly-closed SQLite DB the
     /// `-wal` and `-shm` sidecars can be absent. The backup must succeed
     /// without them (don't error on missing source), and the happy-path
     /// prune should leave a usable backup .db file behind.
@@ -3121,10 +3099,10 @@ mod tests {
         );
     }
 
-    /// E.1 (P1 #16): a DB without a `schema_version` metadata row must end up
-    /// with one stamped after `run_migration_tx` completes. The previous
-    /// `UPDATE metadata SET value = ?1 WHERE key = 'schema_version'` silently
-    /// affected zero rows in this case; the next open would re-run all the
+    /// A DB without a `schema_version` metadata row must end up with one
+    /// stamped after `run_migration_tx` completes. A plain
+    /// `UPDATE metadata SET value = ?1 WHERE key = 'schema_version'` would
+    /// affect zero rows in this case, so the next open would re-run all the
     /// migrations and crash on "duplicate column name" / "table already exists".
     #[test]
     fn test_migration_creates_schema_version_row_if_missing() {
@@ -3207,8 +3185,8 @@ mod tests {
         });
     }
 
-    /// v1.28.0 audit P2 #29: v20→v21 adds a `parser_version` column that
-    /// defaults to 0 for existing rows. New rows can write any u32 value;
+    /// v20→v21 adds a `parser_version` column that defaults to 0 for
+    /// existing rows. New rows can write any u32 value;
     /// the UPSERT path uses `OR parser_version != excluded.parser_version`
     /// to refresh chunks whose source bytes are unchanged but whose parser
     /// emitted a different `doc` (or other non-content field).
@@ -3455,7 +3433,7 @@ mod tests {
     /// (both nullable). Round-trip: pre-migration v22 chunk gets NULL fingerprint;
     /// post-migration v23 INSERT can stamp arbitrary size + 32-byte hash and read
     /// them back. Reconcile fingerprint can decide divergence using mtime, size, or
-    /// content_hash interchangeably (issue #1219 / EX-V1.30.1-6).
+    /// content_hash interchangeably.
     #[test]
     fn test_migrate_v22_to_v23_adds_fingerprint_columns() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -3659,13 +3637,10 @@ mod tests {
             .await
             .unwrap();
 
-            // DS-V1.38-8 (#1463): also seed a row with NULL embedding_base
-            // — represents legacy chunks where Phase 5 (#878) never filled
-            // the base column, or chunks from a `--llm-summaries` cycle
-            // that pre-dated DS-V1.38-2's enrichment-time base repopulate.
-            // The migration must mark these as needs_embedding=1 so the
-            // next index pass triggers a re-embed and the base-HNSW
-            // coverage gap closes.
+            // Seed a row with NULL embedding_base — represents chunks where
+            // the base column was never filled. The migration must mark
+            // these as needs_embedding=1 so the next index pass triggers a
+            // re-embed and the base-HNSW coverage gap closes.
             sqlx::query(
                 "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
                  signature, content, content_hash, line_start, line_end, embedding, \
@@ -3703,7 +3678,7 @@ mod tests {
                 "pre-migration chunk with real embedding_base must retain needs_embedding=0"
             );
 
-            // DS-V1.38-8: rows with NULL embedding_base get backfilled to
+            // Rows with NULL embedding_base get backfilled to
             // needs_embedding=1 so the next index pass repopulates the
             // base column.
             let (no_base_flag,): (i64,) =

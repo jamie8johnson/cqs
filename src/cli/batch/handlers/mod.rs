@@ -13,9 +13,8 @@ mod info;
 mod misc;
 mod search;
 
-// TC-HAP-1.29-2: smoke tests for 11 of the 16 dispatch handlers named in
-// the audit (the remaining 5 require embedder cold-load and are intentionally
-// skipped — see module docs).
+// Smoke tests for 11 of the 16 dispatch handlers (the remaining 5 require
+// embedder cold-load and are intentionally skipped — see module docs).
 #[cfg(test)]
 mod dispatch_tests;
 

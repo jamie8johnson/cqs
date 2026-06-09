@@ -122,7 +122,7 @@ fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
 
 /// Detect sessions by splitting on reset events or 4-hour gaps.
 ///
-/// RB-9: starts at 0 sessions; first Command opens session 1.
+/// Starts at 0 sessions; first Command opens session 1.
 /// Reset events or gaps > 4 hours open a new session.
 ///
 /// Production code uses the inlined version in [`TelemetryAggregator::push`].
@@ -212,15 +212,14 @@ fn bar(width: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming aggregator (RM-10, RM-11)
+// Streaming aggregator
 // ---------------------------------------------------------------------------
 
 /// Accumulates telemetry stats in a single pass without storing raw entries.
 ///
-/// RM-10: `--all` previously loaded every archived file into one `Vec<Entry>`.
-/// RM-11: `build_telemetry` then cloned entries into an intermediate `Vec` and
-/// iterated it four separate times. Now we aggregate in one pass per file,
-/// keeping only the fixed-size accumulators — not the raw entries.
+/// Aggregates in one pass per file, keeping only the fixed-size accumulators
+/// — not the raw entries. Avoids loading every archived file into one
+/// `Vec<Entry>` and iterating it multiple times.
 struct TelemetryAggregator {
     event_count: usize,
     min_ts: u64,
@@ -373,7 +372,7 @@ fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
 pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_telemetry").entered();
 
-    // RM-10: streaming aggregation — each file's entries are fed into the
+    // Streaming aggregation — each file's entries are fed into the
     // aggregator then dropped, so --all never holds all files in memory at once.
     let mut agg = TelemetryAggregator::new();
 
@@ -429,8 +428,8 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
 }
 
 /// Format the "Sessions:" line, guarding against divide-by-zero when
-/// `sessions == 0` (RB-V1.33-6: a telemetry log can record session-id rows
-/// before any command event lands).
+/// `sessions == 0` (a telemetry log can record session-id rows before any
+/// command event lands).
 fn format_sessions_line(sessions: usize, total: usize) -> String {
     if sessions > 0 {
         format!(
@@ -522,7 +521,7 @@ fn print_telemetry_text(output: &TelemetryOutput) {
         println!();
         println!("{}:", "Top Queries".cyan());
         for tq in &output.top_queries {
-            // RB-7: char-boundary-safe truncation (avoids panic on multi-byte UTF-8)
+            // char-boundary-safe truncation (avoids panic on multi-byte UTF-8)
             let display = if tq.query.len() > 50 {
                 let truncated: String = tq.query.chars().take(47).collect();
                 format!("{truncated}...")
@@ -540,8 +539,8 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
     let current = cqs_dir.join("telemetry.jsonl");
     if !current.exists() {
         if json {
-            // API-V1.29-3: emit an envelope even when there is nothing to
-            // archive so `--json` consumers always get a parseable document.
+            // Emit an envelope even when there is nothing to archive so
+            // `--json` consumers always get a parseable document.
             crate::cli::json_envelope::emit_json(&serde_json::json!({
                 "archived_events": 0,
                 "archive_path": serde_json::Value::Null,
@@ -553,7 +552,7 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
         return Ok(());
     }
 
-    // DS-NEW-2: advisory file lock to prevent races with concurrent log_command
+    // Advisory file lock to prevent races with concurrent log_command
     let lock_path = cqs_dir.join("telemetry.lock");
     let lock_file = fs::OpenOptions::new()
         .create(true)
@@ -566,23 +565,22 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
         .lock()
         .context("Failed to acquire telemetry lock")?;
 
-    // SEC-7 / RM-11: count lines via BufReader, never load entire file into memory
+    // Count lines via BufReader, never load entire file into memory
     let line_count = {
         let f = fs::File::open(&current)
             .with_context(|| format!("Cannot open {}", current.display()))?;
         BufReader::new(f).lines().count()
     };
 
-    // DS-V1.40-2: archive + reset must be atomic. Pre-fix this was
-    // `fs::copy(current, archive); fs::write(current, reset_event)` —
-    // a kill between the two calls left either a duplicate archive on
+    // Archive + reset must be atomic. A non-atomic
+    // `fs::copy(current, archive); fs::write(current, reset_event)` would
+    // let a kill between the two calls leave either a duplicate archive on
     // the next reset (copy succeeded, write didn't run) or a truncated
     // current with the reset event lost (write started after `O_TRUNC`
     // but didn't finish). Both modes silently corrupt the autopilot
-    // measurement-window contract per [Reset Telemetry After Autopilot]
-    // memory.
+    // measurement-window contract.
     //
-    // Fix: snapshot via atomic rename (current → archive_<ts>), then
+    // Instead: snapshot via atomic rename (current → archive_<ts>), then
     // stage the reset event in a tempfile and atomic_replace to the
     // current path. After step 1 a kill leaves no current file, which
     // the `if !current.exists()` short-circuit at the top handles
@@ -626,11 +624,9 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
         .with_context(|| format!("Failed to atomic-replace {}", current.display()))?;
 
     if json {
-        // API-V1.29-3: `cqs telemetry --reset --json` used to silently drop
-        // the --json flag and print a human-readable line. Emit the envelope
-        // consumers expect: line count, the archive file actually written,
-        // and the advisory lock path so debugging concurrent-reset races is
-        // easy.
+        // Emit the envelope `--json` consumers expect: line count, the
+        // archive file actually written, and the advisory lock path so
+        // debugging concurrent-reset races is easy.
         crate::cli::json_envelope::emit_json(&serde_json::json!({
             "archived_events": line_count,
             "archive_path": archive.display().to_string(),
@@ -651,7 +647,7 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
 
 /// Produce a YYYYMMDD_HHMMSS UTC timestamp in pure Rust.
 ///
-/// PB-10: no longer spawns POSIX `date` — works on all platforms.
+/// Avoids spawning POSIX `date`, so it works on all platforms.
 fn format_utc_timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -970,17 +966,17 @@ mod tests {
         assert!(output.commands.is_empty());
     }
 
-    // RB-9: count_sessions should return 0 for empty entries
+    // count_sessions should return 0 for empty entries
     #[test]
     fn test_count_sessions_empty() {
         assert_eq!(count_sessions(&[]), 0);
     }
 
-    // RB-V1.33-6: format_sessions_line must not produce inf/NaN strings
-    // when sessions == 0 (or sessions > 0 but total > 0 — normal case).
+    // format_sessions_line must not produce inf/NaN strings when
+    // sessions == 0 (or sessions > 0 but total > 0 — normal case).
     #[test]
     fn test_format_sessions_line_zero_sessions() {
-        // Both zero — the corner case the audit flagged.
+        // Both zero — the divide-by-zero corner case.
         let line = format_sessions_line(0, 0);
         assert_eq!(line, "Sessions: 0");
         assert!(!line.contains("NaN"));
@@ -998,7 +994,7 @@ mod tests {
         assert_eq!(line, "Sessions: 3 (avg 4 events/session)");
     }
 
-    // RB-9: resets before any command should not inflate session count
+    // Resets before any command should not inflate session count
     #[test]
     fn test_count_sessions_leading_resets() {
         let entries = vec![
@@ -1020,7 +1016,7 @@ mod tests {
         assert_eq!(count_sessions(&entries), 1);
     }
 
-    // RB-9: only-resets (no commands) should return 0 sessions
+    // Only-resets (no commands) should return 0 sessions
     #[test]
     fn test_count_sessions_only_resets() {
         let entries = vec![
@@ -1036,7 +1032,7 @@ mod tests {
         assert_eq!(count_sessions(&entries), 0);
     }
 
-    // RB-7: multi-byte UTF-8 query truncation must not panic
+    // Multi-byte UTF-8 query truncation must not panic
     #[test]
     fn test_truncation_multibyte_utf8() {
         // Build a query with multi-byte chars that would panic with &query[..47]
@@ -1067,11 +1063,11 @@ mod tests {
             }],
         };
 
-        // This previously panicked; now it should succeed
+        // Must not panic on the multi-byte boundary.
         print_telemetry_text(&output);
     }
 
-    // PB-10: format_utc_timestamp produces YYYYMMDD_HHMMSS pattern
+    // format_utc_timestamp produces YYYYMMDD_HHMMSS pattern
     #[test]
     fn test_format_utc_timestamp() {
         let ts = format_utc_timestamp();

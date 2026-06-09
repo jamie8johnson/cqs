@@ -41,7 +41,7 @@ use upsert::store_stage;
 /// 2. Embedder: Embed chunks (GPU with CPU fallback)
 /// 3. Writer: Write to SQLite
 ///
-/// `skip_first_pass_embed` (#1452): when `true`, the embedder stages
+/// `skip_first_pass_embed`: when `true`, the embedder stages
 /// emit zero-vec sentinels stamped `needs_embedding=1` for cache-miss
 /// chunks instead of running real inference. The post-summary
 /// `enrichment_pass` lands their real embeddings, halving the GPU time
@@ -175,8 +175,8 @@ pub(crate) fn run_index_pipeline(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
                 .unwrap_or_else(|e| {
-                    // P3 #95: structured fields — same rationale as the
-                    // sibling parse warn in `pipeline/parsing.rs`.
+                    // Structured fields — same rationale as the sibling parse
+                    // warn in `pipeline/parsing.rs`.
                     tracing::warn!(error = %e, "Progress bar template invalid, using default");
                     ProgressStyle::default_bar()
                 }),
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(max_tokens_per_window(8192, 3), 8185); // nomic-style 8K, short prefix
         assert_eq!(max_tokens_per_window(32768, 3), 32761); // GTE-Qwen2
 
-        // #1042: long-prefix instruction model (nomic-embed-code: ~38-token prefix)
+        // Long-prefix instruction model (nomic-embed-code: ~38-token prefix)
         // shrinks the window so prefix + window + special tokens stay under max_seq.
         assert_eq!(max_tokens_per_window(512, 38), 470);
         assert_eq!(max_tokens_per_window(8192, 38), 8150);
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(window_overlap_tokens(32736), 4092); // 32K model: ~12.5%
         assert_eq!(window_overlap_tokens(0), 0); // degenerate: no tokens, no overlap
 
-        // AC-8: overlap must stay below max_tokens/2 for split_into_windows
+        // Overlap must stay below max_tokens/2 for split_into_windows
         assert_eq!(window_overlap_tokens(128), 63); // min window from max_tokens_per_window
         assert!(window_overlap_tokens(128) < 128 / 2);
         assert!(window_overlap_tokens(200) < 200 / 2);
@@ -457,8 +457,7 @@ mod tests {
         // for production (best-effort fallback) but it'd make the
         // `result.len() > 1` assertion below fire with a "got 1" misleading
         // diagnostic when the real cause is a corrupt tokenizer.json (e.g.
-        // CI runner half-populated HF cache, see #1305). Skip cleanly
-        // instead.
+        // CI runner half-populated HF cache). Skip cleanly instead.
         if let Err(err) = embedder.token_count("probe") {
             eprintln!("tokenizer unhealthy in test env: {err}; skipping (#1305)");
             return;
@@ -542,12 +541,12 @@ mod tests {
     }
 
     // ========================================================================
-    // TC-HAP-V1.36-8 — `prepare_for_embedding` happy paths
+    // `prepare_for_embedding` happy paths
     //
     // Exercises the windowing → cache-check → text-generation orchestrator end
     // to end against a real CPU embedder + Store. Each test is `#[ignore]`-
     // gated because constructing an `Embedder` requires the ONNX model on disk
-    // (matches the `apply_windowing` test pattern above and #1305).
+    // (matches the `apply_windowing` test pattern above).
     //
     // Branches covered:
     //   1. Fresh batch (no cache) → all chunks in `to_embed`, texts populated.

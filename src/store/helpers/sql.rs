@@ -2,13 +2,11 @@
 //!
 //! ## SQLite variable limit
 //!
-//! `SQLITE_MAX_VARIABLE_NUMBER` was 999 before v3.32 (2020) and is 32766
-//! in current SQLite. cqs requires SQLite 3.35+ (for RETURNING) so the
-//! limit is always 32766. The v1.22.0 audit (SHL-31/32/33) found 15 call
-//! sites still using the old 999-derived batch sizes, producing 10-30×
-//! more SQL statements than necessary. The [`max_rows_per_statement`]
-//! helper centralizes the derivation so call sites don't need to
-//! re-derive the constant.
+//! cqs requires SQLite 3.35+ (for RETURNING), so `SQLITE_MAX_VARIABLE_NUMBER`
+//! is always 32766. The [`max_rows_per_statement`] helper centralizes the
+//! batch-size derivation so call sites don't re-derive the constant (and
+//! don't fall back to the old 999-derived sizes, which produce 10-30× more
+//! SQL statements than necessary).
 
 /// Read `CQS_BUSY_TIMEOUT_MS` env var, falling back to `default_ms`. Single
 /// source of truth so every SQLite pool (store, embedding cache, query
@@ -21,19 +19,19 @@ pub fn busy_timeout_from_env(default_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
-/// SQLite's `SQLITE_MAX_VARIABLE_NUMBER` since v3.32 (2020).
+/// SQLite's `SQLITE_MAX_VARIABLE_NUMBER`.
 /// Single source of truth — all batch-size derivations reference this.
 pub const SQLITE_MAX_VARIABLES: usize = 32766;
 
 /// Generic headroom so a future caller adding one more bind variable
 /// doesn't instantly trip the limit. NOT sized to absorb a full extra
 /// column; adding a new column requires updating `vars_per_row` at the
-/// call site (SHL-41 audit rationale correction).
+/// call site.
 pub const SAFETY_MARGIN_VARS: usize = 300;
 
 /// Derive the maximum rows per INSERT/DELETE statement given the number
 /// of bind variables per row. Centralizes the `(LIMIT - MARGIN) / N`
-/// derivation that was previously inlined (and wrong) at 15+ sites.
+/// derivation so call sites don't inline it.
 ///
 /// For single-bind queries (e.g. `WHERE id IN (?, ?, ...)`), pass
 /// `vars_per_row = 1`. For multi-column INSERTs, pass the column count.
@@ -43,11 +41,10 @@ pub const fn max_rows_per_statement(vars_per_row: usize) -> usize {
 
 /// Maximum batch size that is pre-built and cached at startup.
 ///
-/// SHL-V1.25-14: sized exactly to cover the caller-facing max
+/// Sized exactly to cover the caller-facing max
 /// (`max_rows_per_statement(1) = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS
-/// = 32466`). With the previous 10_000 cap, single-bind batches beyond
-/// 10k fell off the cache and re-built the ~120KB placeholder string
-/// every call, negating the cache's purpose. The extra ~22k strings
+/// = 32466`) so single-bind batches up to that size never fall off the
+/// cache and re-build the ~120KB placeholder string. The extra ~22k strings
 /// cost ~1-2MB at startup in exchange for zero-alloc on the hot path.
 const PLACEHOLDER_CACHE_MAX: usize = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS;
 
@@ -56,20 +53,16 @@ const PLACEHOLDER_CACHE_MAX: usize = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS;
 /// session that uses batches of size 500 and 8116 only ever builds two
 /// strings, not 32,466.
 ///
-/// **The earlier eager design was a 30-second startup tax.** Pre-building
-/// every string from 1..=32,466 in `LazyLock::new` is O(n²) total chars —
-/// `sum(6n for n in 1..=32466) ≈ 3 × 10⁹` chars — which on Linux /tmp
-/// took ~30 s on the first call to [`make_placeholders`]. It looked like a
-/// connection-pool hang because the trigger was the first DB write
-/// (snapshot_content_hashes happens to be the first call site). Tests
-/// that did one upsert spent 30 s here without realising. Production
-/// `cqs index --force` paid the same tax once but it was buried in a
-/// 6-minute reindex run, so it never surfaced as user-visible.
+/// **Eager pre-building would be a 30-second startup tax.** Building every
+/// string from 1..=32,466 up front is O(n²) total chars —
+/// `sum(6n for n in 1..=32466) ≈ 3 × 10⁹` chars — which on Linux /tmp takes
+/// ~30 s, triggered on the first DB write (the first call to
+/// [`make_placeholders`]) and easily mistaken for a connection-pool hang.
+/// The lazy design avoids paying for sizes never used.
 ///
-/// The lazy `Vec<OnceLock<String>>` keeps the original O(1) lookup (index
-/// into the Vec) and zero-alloc-on-hit semantics (`Cow::Borrowed` from the
-/// owned `String` inside the `OnceLock`), without paying for sizes never
-/// used.
+/// The `Vec<OnceLock<String>>` keeps O(1) lookup (index into the Vec) and
+/// zero-alloc-on-hit semantics (`Cow::Borrowed` from the owned `String`
+/// inside the `OnceLock`).
 ///
 /// Memory: `Vec<OnceLock<String>>` of length 32,467 ≈ 520 KB of metadata
 /// upfront — microseconds to allocate.
@@ -113,13 +106,12 @@ fn build_placeholders(n: usize) -> String {
 /// The cache covers the full caller-facing range — no production call site
 /// should fall off it.
 ///
-/// PF-V1.25-7: previously returned `String` via `PLACEHOLDER_CACHE[n].clone()`,
-/// which re-allocated the full placeholder string on every cache hit. A 500-id
-/// batch cost ~4KB memcpy per call; on a hot reindex or batch-search loop
-/// this adds up to measurable allocator pressure. The cache hit now returns a
-/// `&'static str` borrow via `Cow::Borrowed`.
+/// A cache hit returns a `&'static str` borrow via `Cow::Borrowed`, avoiding
+/// the ~4KB memcpy a 500-id batch would cost if it re-allocated the full
+/// placeholder string per call — measurable allocator pressure on a hot
+/// reindex or batch-search loop.
 ///
-/// SHL-V1.25-14: `PLACEHOLDER_CACHE_MAX` is bound to `SQLITE_MAX_VARIABLES -
+/// `PLACEHOLDER_CACHE_MAX` is bound to `SQLITE_MAX_VARIABLES -
 /// SAFETY_MARGIN_VARS` so large batches don't miss the cache.
 ///
 /// Each entry is built lazily (per-size [`OnceLock`]); see
@@ -143,10 +135,10 @@ pub(crate) fn make_placeholders(n: usize) -> std::borrow::Cow<'static, str> {
 /// Build a comma-separated list of numbered SQL placeholders starting at
 /// `start`: `"?{start},?{start+1},...,?{start+n-1}"`.
 ///
-/// P3 #130: replaces the inline `(0..n).map(|i| format!("?{}", base + i + 1))
-/// .collect::<Vec<_>>().join(",")` pattern that allocated `n` `String`s plus
-/// an intermediate `Vec`. For `start = 1` this routes to the cached
-/// [`make_placeholders`] (zero allocation on cache hit).
+/// Builds the list without the intermediate `n` `String`s + `Vec` an inline
+/// `(0..n).map(|i| format!("?{}", base + i + 1)).collect().join(",")` would
+/// allocate. For `start = 1` this routes to the cached [`make_placeholders`]
+/// (zero allocation on cache hit).
 pub(crate) fn make_placeholders_offset(n: usize, start: usize) -> std::borrow::Cow<'static, str> {
     assert!(
         n <= 100_000,

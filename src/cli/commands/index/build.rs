@@ -22,15 +22,15 @@ use crate::cli::{
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
 pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
-    // AC-V1.38-7 (#1463): hard-fail on `cqs index --model <typo>`. The
-    // shared resolver `ModelConfig::resolve` silently falls back to the
-    // default preset when the name doesn't match any built-in — fine for
-    // read paths (`cqs <q>`), wrong for the operator-driven write path
-    // because it can produce an index built against a different model
-    // than the one the operator typed. The drift check runs against the
-    // resolved (post-fallback) name and so misses this case when default
-    // happens to align with the existing index. Catching it here before
-    // any state mutation puts the typo in front of the operator.
+    // Hard-fail on `cqs index --model <typo>`. The shared resolver
+    // `ModelConfig::resolve` silently falls back to the default preset when
+    // the name doesn't match any built-in — fine for read paths (`cqs <q>`),
+    // wrong for the operator-driven write path because it can produce an
+    // index built against a different model than the one the operator typed.
+    // The drift check runs against the resolved (post-fallback) name and so
+    // misses this case when default happens to align with the existing index.
+    // Catch it here before any state mutation puts the typo in front of the
+    // operator.
     if let Some(name) = cli.model.as_deref() {
         if cqs::embedder::ModelConfig::from_preset(name).is_none() {
             anyhow::bail!(
@@ -92,21 +92,20 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     let root = find_project_root();
     let project_cqs_dir = cqs::resolve_index_dir(&root);
 
-    // PB-V1.30.1-7: consume a leftover `.cqs/.dirty` marker.
+    // Consume a leftover `.cqs/.dirty` marker.
     //
     // On Windows-native there is no `cqs watch --serve` daemon (Unix
     // domain sockets are the wire), so `cqs hook fire` falls through
     // to the file-based fallback and writes `.cqs/.dirty`. The Unix
-    // consumer at `cli/watch/mod.rs:608` runs at watch-loop start; on
+    // consumer in `cli/watch/mod.rs` runs at watch-loop start; on
     // Windows that path is dead. Reading the marker here lets `cqs
     // index` (the foreground reindex command Windows users actually
     // run) clear the marker so the dirty signal isn't permanent and
     // operators see the marker getting consumed in tracing output.
     //
-    // Note: this is harmless on Unix too. If the daemon isn't running
-    // and a hook fires, the next `cqs index` clears the marker on
-    // both platforms — the daemon's own consumer just gets there
-    // first when it is running.
+    // Harmless on Unix too: if the daemon isn't running and a hook
+    // fires, the next `cqs index` clears the marker on both platforms —
+    // the daemon's own consumer just gets there first when it is running.
     if project_cqs_dir.exists() && consume_dirty_marker(&project_cqs_dir) {
         tracing::info!("Consumed .cqs/.dirty marker — reindex triggered by hook");
     }
@@ -158,7 +157,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // Ensure the slot dir itself exists with restrictive permissions when
     // we materialize it as part of `cqs index --slot <new>` flows. The
     // project_cqs_dir was already chmodded above; the slot dir is a fresh
-    // child whose permissions also matter for SEC-D.4 alignment.
+    // child whose permissions also matter.
     if !cqs_dir.exists() {
         std::fs::create_dir_all(&cqs_dir)
             .with_context(|| format!("Failed to create slot dir {}", cqs_dir.display()))?;
@@ -193,10 +192,6 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     //   immediate reconcile pass via the daemon's `reconcile` socket
     //   message and return `Ok(())` — the user gets the freshness they
     //   asked for without paying for a redundant from-scratch rebuild.
-    //   Pre-fix, plain `cqs index` against a running daemon would bail
-    //   with a "stop the daemon" error; the v1.33.0 audit telemetry
-    //   showed 166 of 170 `cqs index` errors in 5 days were exactly this
-    //   case (≈98% of the visible "error rate").
     //
     // - **With `--force`**: the operator wants a complete from-scratch
     //   rebuild. That requires invalidating the daemon's in-memory HNSW
@@ -323,8 +318,8 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
     let _span = tracing::info_span!("cmd_index", force = force, dry_run = dry_run).entered();
 
-    // P2.12: capture wall-clock start so the optional JSON envelope can
-    // report `took_ms`. Honors both global `--json` and the local one.
+    // Capture wall-clock start so the optional JSON envelope can report
+    // `took_ms`. Honors both global `--json` and the local one.
     let want_json = cli.json || args.json;
     let json_start = std::time::Instant::now();
 
@@ -356,13 +351,13 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         let store = Store::open(&index_path)
             .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
-        // #1459 item 5a: catch the silent dim-mismatch footgun. The global
-        // `--model` flag already parses for `cqs index`, but without `--force`
-        // we keep the prior store init — so a `cqs index --model X` against an
-        // index that was built for `Y` would feed X-dim embeddings into a
-        // store whose schema is pinned to Y-dim. Bail explicitly with a
-        // recovery hint so the operator gets the actionable error instead of
-        // a downstream embedding write that silently corrupts the index.
+        // Catch the silent dim-mismatch footgun. The global `--model` flag
+        // parses for `cqs index`, but without `--force` we keep the prior
+        // store init — so a `cqs index --model X` against an index that was
+        // built for `Y` would feed X-dim embeddings into a store whose schema
+        // is pinned to Y-dim. Bail explicitly with a recovery hint so the
+        // operator gets the actionable error instead of a downstream embedding
+        // write that silently corrupts the index.
         let mc = cli.try_model_config()?;
         let stored = store.try_stored_model_name().with_context(|| {
             format!(
@@ -393,12 +388,12 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                             "Read LLM summaries from existing DB"
                         );
                     }
-                    // DS-V1.36-4: explicit close() runs the bounded TRUNCATE
-                    // checkpoint so concurrent watch writes are flushed into
-                    // the main DB before we delete -wal/-shm below. Plain
-                    // drop() runs only PASSIVE (post-#1450), which can return
-                    // without flushing under reader contention. close()
-                    // bounds at 30s and falls back to PASSIVE on timeout.
+                    // Explicit close() runs the bounded TRUNCATE checkpoint
+                    // so concurrent watch writes are flushed into the main DB
+                    // before we delete -wal/-shm below. Plain drop() runs only
+                    // PASSIVE, which can return without flushing under reader
+                    // contention. close() bounds at 30s and falls back to
+                    // PASSIVE on timeout.
                     if let Err(e) = old_store.close() {
                         tracing::warn!(
                             error = %e,
@@ -420,7 +415,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         if index_path.exists() {
             std::fs::rename(&index_path, &backup_path)
                 .with_context(|| format!("Failed to back up {}", index_path.display()))?;
-            // DS-13: Also remove WAL/SHM files left by SQLite — stale journal
+            // Also remove WAL/SHM files left by SQLite — stale journal
             // files from the old DB would corrupt the fresh database.
             for suffix in &["-wal", "-shm"] {
                 let journal = cqs_dir.join(format!("index.db{suffix}"));
@@ -447,11 +442,11 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
         store
     };
-    // v24 / #1221: stamp the vendored-path prefix list before any
-    // chunk upsert so new rows get correct `vendored` flags. Reads
-    // `[index].vendored_paths` from `.cqs.toml`; falls back to the
-    // built-in default list when absent. Idempotent setter — safe to
-    // call regardless of which branch above produced `store`.
+    // Stamp the vendored-path prefix list before any chunk upsert so new
+    // rows get correct `vendored` flags. Reads `[index].vendored_paths` from
+    // `.cqs.toml`; falls back to the built-in default list when absent.
+    // Idempotent setter — safe to call regardless of which branch above
+    // produced `store`.
     let cfg_for_vendored = cqs::config::Config::load(&root);
     let vendored_override = cfg_for_vendored
         .index
@@ -469,8 +464,8 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // between SQLite commit and HNSW save, the dirty flag tells the next
     // load to fall back to brute-force search until a full rebuild. Base
     // and enriched are built from the same chunks, so both must be marked.
-    // (RT-DATA-6) DS-41: the dirty flag is a crash-safety invariant — if we
-    // can't set it, abort rather than risk a stale index on crash.
+    // The dirty flag is a crash-safety invariant — if we can't set it,
+    // abort rather than risk a stale index on crash.
     store
         .set_hnsw_dirty(HnswKind::Enriched, true)
         .context("Failed to mark enriched HNSW dirty before indexing")?;
@@ -478,7 +473,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         .set_hnsw_dirty(HnswKind::Base, true)
         .context("Failed to mark base HNSW dirty before indexing")?;
 
-    // #1452: skip the first-pass embed when `--llm-summaries` is set.
+    // Skip the first-pass embed when `--llm-summaries` is set.
     // The post-summary `enrichment_pass` will overwrite every chunk's
     // embedding anyway (NL = `summary + caller/callee names + content`),
     // so the first embed is wasted work — ~30 min of GPU time on a
@@ -550,7 +545,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         println!("  Type edges: {} edges", stats.total_type_edges);
     }
 
-    // LLM summary pass (SQ-6): generate one-sentence summaries via Claude API
+    // LLM summary pass: generate one-sentence summaries via Claude API.
     // Runs BEFORE enrichment so summaries are incorporated into enrichment NL.
     #[cfg(feature = "llm-summaries")]
     if !check_interrupted() && llm_summaries {
@@ -677,17 +672,16 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
-    // #1126 / P2.60: belt-and-braces final flush of the summary queue
-    // before the index lock is dropped. Each LLM pass also flushes on
-    // its own way out, but residue from a signal-interrupted pass would
-    // otherwise have to wait for the next `cqs index` run. Idempotent
-    // on an empty queue; cheap.
+    // Belt-and-braces final flush of the summary queue before the index
+    // lock is dropped. Each LLM pass also flushes on its own way out, but
+    // residue from a signal-interrupted pass would otherwise have to wait
+    // for the next `cqs index` run. Idempotent on an empty queue; cheap.
     #[cfg(feature = "llm-summaries")]
     if let Err(e) = store.flush_pending_summaries() {
         tracing::warn!(error = %e, "cmd_index: final flush of summary queue failed; rows retained for next run");
     }
 
-    // #1587: prune orphaned llm_summaries rows whose content_hash no longer
+    // Prune orphaned llm_summaries rows whose content_hash no longer
     // maps to any chunk. Each reindex that changes any code accumulates
     // orphans (chunk content changed → new hash, old hash sticks around);
     // unpruned, the table grows arbitrarily larger than the corpus and
@@ -712,13 +706,12 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
-    // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee
-    // context. #1452: also fires whenever any chunk is at `needs_embedding=1`
+    // Call-graph enrichment pass: re-embed chunks with caller/callee
+    // context. Also fires whenever any chunk is at `needs_embedding=1`
     // — the parser stage marks chunks unembedded when a `--llm-summaries`
     // run skipped the first-pass embed, and `enrichment_pass` is the gate
-    // that clears those flags. Without this trigger extension, a project
-    // with no calls would leave first-pass-skipped chunks invisible
-    // forever.
+    // that clears those flags. Without this trigger, a project with no calls
+    // would leave first-pass-skipped chunks invisible forever.
     let needs_embed_count = match store.needs_embedding_count() {
         Ok(n) => n,
         Err(e) => {
@@ -759,7 +752,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
     // Index notes if notes.toml exists.
     //
-    // #1168: first-encounter prompt — if this is the project's first index
+    // First-encounter prompt — if this is the project's first index
     // (no `.accepted-shared-notes` marker yet) AND a committed notes file
     // exists, confirm with the user before proceeding. Bypassable with
     // `--accept-shared-notes` for CI / scripted use; non-TTY stdin
@@ -807,7 +800,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             ) {
                 Ok(encoder) => {
                     let _span = tracing::info_span!("splade_index_encode").entered();
-                    // CQ-4: Only encode chunks that don't already have sparse
+                    // Only encode chunks that don't already have sparse
                     // vectors. On --force the DB is fresh so all chunks are
                     // "missing"; on incremental runs this skips the ~95% of
                     // chunks that haven't changed.
@@ -816,7 +809,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                     let mut encoded = 0usize;
                     let mut failed = 0usize;
 
-                    // PF-5: batch encode instead of per-chunk.
+                    // Batch encode instead of per-chunk.
                     //
                     // CQS_SPLADE_BATCH overrides the initial batch size
                     // (default 64). Larger SPLADE models (SPLADE-Code 0.6B
@@ -949,17 +942,17 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                             Ok(generation) => {
                                 let splade_path =
                                     cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
-                                // CQ-4: Load ALL sparse vectors for the
-                                // persist (not just the delta we encoded).
-                                // On --force this equals sparse_vecs; on
-                                // incremental it merges prior + new.
+                                // Load ALL sparse vectors for the persist
+                                // (not just the delta we encoded). On --force
+                                // this equals sparse_vecs; on incremental it
+                                // merges prior + new.
                                 let all_vecs = match store.load_all_sparse_vectors() {
                                     Ok(v) => v,
                                     Err(e) => {
                                         // Don't fall back to delta-only: persisting
                                         // just the newly-encoded subset would silently
                                         // drop all previously-encoded chunks from the
-                                        // on-disk index (correctness audit 2026-04-12).
+                                        // on-disk index.
                                         tracing::warn!(error = %e,
                                             "Failed to load sparse vectors for persist — \
                                              skipping. Next query will rebuild from SQLite.");
@@ -1037,7 +1030,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
 
         if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
-            // HNSW saved successfully — clear enriched dirty flag (RT-DATA-6)
+            // HNSW saved successfully — clear enriched dirty flag
             if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
                 tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after HNSW save");
             }
@@ -1046,7 +1039,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             }
         }
 
-        // Phase 5: also build the base (non-enriched) HNSW index. Non-fatal
+        // Also build the base (non-enriched) HNSW index. Non-fatal
         // if it fails — fall back to enriched-only at query time.
         match build_hnsw_base_index(&store, &cqs_dir) {
             Ok(Some(total)) => {
@@ -1070,16 +1063,16 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             }
         }
 
-        // Issue #1282: invalidate any pre-existing CAGRA index file. cqs
-        // index rebuilds HNSW above but has no parallel CAGRA save path —
-        // CAGRA is built lazily on first search via cagra_build_from_store.
-        // If `index.cagra` exists from a prior run, the lazy path doesn't
-        // fire (cagra_load returns the stale file), and search at chunk
-        // count ≥ CQS_CAGRA_THRESHOLD silently returns pre-rebuild results
-        // because the backend selector prefers CAGRA. Removing the file
-        // forces a fresh build on the next search. The cost is one CAGRA
-        // build per `cqs index` (~seconds to tens-of-seconds depending on
-        // corpus size), paid by the next searcher.
+        // Invalidate any pre-existing CAGRA index file. cqs index rebuilds
+        // HNSW above but has no parallel CAGRA save path — CAGRA is built
+        // lazily on first search via cagra_build_from_store. If `index.cagra`
+        // exists from a prior run, the lazy path doesn't fire (cagra_load
+        // returns the stale file), and search at chunk count ≥
+        // CQS_CAGRA_THRESHOLD silently returns pre-rebuild results because the
+        // backend selector prefers CAGRA. Removing the file forces a fresh
+        // build on the next search. The cost is one CAGRA build per `cqs
+        // index` (~seconds to tens-of-seconds depending on corpus size), paid
+        // by the next searcher.
         let cagra_path = cqs_dir.join("index.cagra");
         if cagra_path.exists() {
             if let Err(e) = std::fs::remove_file(&cagra_path) {
@@ -1103,19 +1096,18 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         let _ = std::fs::remove_file(&backup_path);
     }
 
-    // P2.12: emit a structured summary envelope when --json is set.
-    // Numbers come from the values already computed above so no extra DB
-    // round trip is incurred. Progress prints stayed on the human path —
-    // we don't gate them on `!want_json` since the index command's banner
-    // is informational and many callers tee stdout/stderr; only the
-    // *final* shape matters for the JSON contract.
+    // Emit a structured summary envelope when --json is set. Numbers come
+    // from the values already computed above so no extra DB round trip is
+    // incurred. Progress prints stay on the human path — they aren't gated on
+    // `!want_json` since the index command's banner is informational and many
+    // callers tee stdout/stderr; only the *final* shape matters for the JSON
+    // contract.
     if want_json {
-        // EH-V1.30.1-5: surface model-config and chunk-count failures via
-        // tracing instead of `.unwrap_or_default()` / `.unwrap_or(0)`. The
-        // JSON envelope is the agent-facing contract — silently emitting
-        // "" for model_name or 0 for chunk_count under a real failure
-        // makes downstream tooling believe the index is healthy when it
-        // isn't.
+        // Surface model-config and chunk-count failures via tracing instead
+        // of `.unwrap_or_default()` / `.unwrap_or(0)`. The JSON envelope is
+        // the agent-facing contract — silently emitting "" for model_name or
+        // 0 for chunk_count under a real failure makes downstream tooling
+        // believe the index is healthy when it isn't.
         let model_name = match cli.try_model_config() {
             Ok(c) => c.name.clone(),
             Err(e) => {
@@ -1155,7 +1147,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     Ok(())
 }
 
-/// First-encounter shared-notes gate. (#1168)
+/// First-encounter shared-notes gate.
 ///
 /// Returns `true` if notes indexing should proceed, `false` to skip the
 /// pass entirely (user declined OR non-TTY auto-skip).
@@ -1195,11 +1187,11 @@ fn first_encounter_notes_gate(
             (Some(total), Some(positive), Some(negative))
         }
         Err(e) => {
-            // EH-V1.33-5: log the underlying parse error so operators
-            // staring at a `(? entries, ? positive, ? negative)` prompt
-            // have a debuggable trail. The downstream `index_notes_from_file`
-            // surfaces the error too, but only if the user proceeds —
-            // logging here keeps the diagnostic visible at gate time.
+            // Log the underlying parse error so operators staring at a
+            // `(? entries, ? positive, ? negative)` prompt have a debuggable
+            // trail. The downstream `index_notes_from_file` surfaces the error
+            // too, but only if the user proceeds — logging here keeps the
+            // diagnostic visible at gate time.
             tracing::warn!(
                 error = %e,
                 path = %notes_path.display(),
@@ -1340,9 +1332,8 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 
 /// HNSW insert batch size.
 ///
-/// SHL-V1.36-4: scales with embedding dim so a 4096-dim model holds
-/// ~40 MB per batch (matching BGE-large's 40 MB at 1024-dim) instead of
-/// 160 MB. The 10_000 baseline was picked when BGE-large was the default;
+/// Scales with embedding dim so a 4096-dim model holds ~40 MB per batch
+/// (matching a 1024-dim model's 40 MB) instead of 160 MB.
 /// `dim_scaled_batch(10_000, dim, 500, 50_000)` keeps the per-batch heap
 /// footprint roughly constant. Env override `CQS_HNSW_BATCH_SIZE` wins.
 fn hnsw_batch_size(dim: usize) -> usize {
@@ -1363,18 +1354,15 @@ pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<u
     Ok(build_hnsw_index_owned(store, cqs_dir)?.map(|(h, _)| h.len()))
 }
 
-/// #1244 / RM-4: 64-bit fingerprint of `(id, content_hash)` used by
+/// 64-bit fingerprint of `(id, content_hash)` used by
 /// [`build_hnsw_index_owned`] / `RebuildResult` to track which exact
 /// (chunk_id, content_hash) pairs landed in the rebuilt index.
 ///
 /// The swap-time drain (`drain_pending_rebuild`) compares each delta
-/// entry against this snapshot to decide whether to replay; the
-/// fingerprint form replaces a `HashMap<String, String>` (~ ~150 B per
-/// entry, ~3 MB for a 17 k-chunk corpus, held across the full rebuild
-/// window of tens of seconds) with a `HashSet<u64>` (~24 B per entry,
-/// ~400 KB at the same N — ~7× reduction). Collision risk: blake3
-/// truncated to 64 bits, ~600 M-entry birthday bound vs the ~10 K
-/// per-rebuild N — false positives are below the per-rebuild
+/// entry against this snapshot to decide whether to replay. A `HashSet<u64>`
+/// holds ~24 B per entry (~400 KB at 17 k chunks) across the rebuild window.
+/// Collision risk: blake3 truncated to 64 bits, ~600 M-entry birthday bound
+/// vs the ~10 K per-rebuild N — false positives are below the per-rebuild
 /// already-orphan rate from `insert_batch`'s no-deletion API. A
 /// false-positive collision (delta entry skipped that shouldn't have
 /// been) just leaves a chunk unindexed until the next threshold
@@ -1396,8 +1384,8 @@ pub(crate) fn snapshot_fingerprint(id: &str, hash: &str) -> u64 {
 /// `(HnswIndex, snapshot_keys)` where `snapshot_keys` contains
 /// [`snapshot_fingerprint`]`(id, hash)` for every (id, hash) that landed
 /// in the rebuilt index. Used by watch mode to keep a mutable index in
-/// memory for `insert_batch` calls and (on the background-rebuild path,
-/// #1124) to detect entries that were re-embedded mid-rebuild — the
+/// memory for `insert_batch` calls and (on the background-rebuild path)
+/// to detect entries that were re-embedded mid-rebuild — the
 /// swap-time drain replays them with the fresh vector instead of
 /// dedup'ing them by id-only and silently dropping the update.
 ///
@@ -1406,9 +1394,8 @@ pub(crate) fn snapshot_fingerprint(id: &str, hash: &str) -> u64 {
 /// concurrent writers (WAL snapshot isolation only holds within a
 /// transaction).
 ///
-/// #1244 / RM-4: pre-fix held `HashMap<String, String>` (~3 MB on a
-/// 17 k-chunk corpus); now holds `HashSet<u64>` (~400 KB at the same N).
-/// See [`snapshot_fingerprint`] for the collision-rate analysis.
+/// The snapshot is a `HashSet<u64>` (~400 KB on a 17 k-chunk corpus). See
+/// [`snapshot_fingerprint`] for the collision-rate analysis.
 pub(crate) fn build_hnsw_index_owned<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
@@ -1445,7 +1432,7 @@ pub(crate) fn build_hnsw_index_owned<M>(
     Ok(Some((hnsw, snapshot_keys)))
 }
 
-/// Build the Phase 5 base HNSW index from `embedding_base` and save as
+/// Build the base HNSW index from `embedding_base` and save as
 /// `index_base.hnsw.{graph,data,ids}`.
 ///
 /// The base index contains the raw-NL embedding for each chunk (no LLM summary,
@@ -1453,18 +1440,18 @@ pub(crate) fn build_hnsw_index_owned<M>(
 /// picks a [`SearchStrategy::DenseBase`] — typically conceptual, behavioral,
 /// and negation queries, where enrichment hurts signal.
 ///
-/// Returns `Ok(None)` when the column is entirely NULL (e.g. just after the
-/// v17→v18 migration before the next index pass has populated it). In that
-/// case the router silently falls back to the enriched index.
+/// Returns `Ok(None)` when the column is entirely NULL (no index pass has
+/// populated it yet). In that case the router falls back to the enriched
+/// index.
 pub(crate) fn build_hnsw_base_index<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
 ) -> Result<Option<usize>> {
     let _span = tracing::info_span!("build_hnsw_base_index").entered();
 
-    // If the column hasn't been populated yet (e.g. fresh v17→v18 migration
-    // before the next index pass), skip the build so we don't write an empty
-    // HNSW file that misleads readers into thinking dual indexing is active.
+    // If the column hasn't been populated yet, skip the build so we don't
+    // write an empty HNSW file that misleads readers into thinking dual
+    // indexing is active.
     let base_count = store
         .base_embedding_count()
         .context("Failed to count rows with embedding_base")? as usize;
@@ -1490,15 +1477,13 @@ pub(crate) fn build_hnsw_base_index<M>(
 // NULL-row skipping, which are the two branches that matter here.
 // The HNSW builder itself is covered by `hnsw::build` unit tests.
 
-/// PB-V1.30.1-7: Check `.cqs/.dirty` and consume it (delete) at startup.
+/// Check `.cqs/.dirty` and consume it (delete) at startup.
 ///
 /// On Windows-native there is no `cqs watch --serve` daemon (Unix domain
 /// sockets are the wire), so `cqs hook fire` falls through to the file-based
-/// fallback at `cli/commands/infra/hook.rs:328-332` and writes
-/// `.cqs/.dirty`. The Unix daemon's consumer at `cli/watch/mod.rs:608` is
-/// `#[cfg(unix)]`-gated, so on Windows the marker is written but never
-/// read — Windows users had to know to run `cqs index` after every git
-/// op for the index to keep up.
+/// fallback in `cli/commands/infra/hook.rs` and writes `.cqs/.dirty`. The
+/// Unix daemon's consumer in `cli/watch/mod.rs` is `#[cfg(unix)]`-gated, so
+/// on Windows the marker is written but never read.
 ///
 /// This helper bridges the gap: `cqs index` (the foreground reindex command
 /// Windows users actually run) clears the marker as evidence that the
@@ -1528,18 +1513,17 @@ pub(crate) fn consume_dirty_marker(cqs_dir: &Path) -> bool {
     }
 }
 
-// P2.86: TC-HAP — direct happy-path tests for the two HNSW build helpers
-// invoked by `cmd_index` and the watch loop. Lower-level unit tests cover
-// `embedding_batches` / `embedding_base_batches` and the HNSW builder, but
-// the join — store + cqs_dir → on-disk + in-memory index — had no direct
-// pin. These tests close that gap with a minimal `dim=16` corpus so the
-// HNSW build runs in milliseconds.
+// Direct happy-path tests for the two HNSW build helpers invoked by
+// `cmd_index` and the watch loop. Lower-level unit tests cover
+// `embedding_batches` / `embedding_base_batches` and the HNSW builder; these
+// pin the join — store + cqs_dir → on-disk + in-memory index — with a minimal
+// `dim=16` corpus so the HNSW build runs in milliseconds.
 
-/// #1459 item 5a: bail if the existing index's stored model name doesn't
-/// match the resolved model. Match permissively against both the canonical
-/// preset name (e.g. `bge-large`) and the repo string (e.g.
-/// `BAAI/bge-large-en-v1.5`) — operators pass either form interchangeably,
-/// as `cmd_model_swap`'s no-op short-circuit also does.
+/// Bail if the existing index's stored model name doesn't match the resolved
+/// model. Match permissively against both the canonical preset name (e.g.
+/// `bge-large`) and the repo string (e.g. `BAAI/bge-large-en-v1.5`) —
+/// operators pass either form interchangeably, as `cmd_model_swap`'s no-op
+/// short-circuit also does.
 fn check_index_model_drift(
     stored: Option<&str>,
     requested_name: &str,
@@ -1553,11 +1537,10 @@ fn check_index_model_drift(
     if target_matches {
         return Ok(());
     }
-    // OB-V1.38-2 (#1463): emit a structured warn alongside the bail
-    // string so daemon-mode operators (and journald harvesters) see
-    // the drift event in their structured log stream. Pre-fix only
-    // stderr saw it — daemon-spawned `cqs index` would silently fail
-    // an alert path.
+    // Emit a structured warn alongside the bail string so daemon-mode
+    // operators (and journald harvesters) see the drift event in their
+    // structured log stream — stderr alone wouldn't reach a daemon-spawned
+    // `cqs index`'s alert path.
     tracing::warn!(
         stored_model = %stored_name,
         requested_model = %requested_name,
@@ -1652,10 +1635,9 @@ mod tests {
             .expect("build_hnsw_index_owned must succeed")
             .expect("non-empty store must produce an index");
         assert_eq!(idx.len(), n, "index len must equal seeded chunk count");
-        // P1.17 (#1124) + #1244 / RM-4: snapshot must carry one fingerprint
-        // entry per built (id, content_hash) so the rebuild-window drain
-        // can detect stale entries. Pre-#1244 this was a HashMap<id, hash>;
-        // now a HashSet<u64> of `snapshot_fingerprint(id, hash)`.
+        // Snapshot must carry one fingerprint entry per built
+        // (id, content_hash) so the rebuild-window drain can detect stale
+        // entries. It's a HashSet<u64> of `snapshot_fingerprint(id, hash)`.
         assert_eq!(
             snapshot_keys.len(),
             n,
@@ -1694,8 +1676,8 @@ mod tests {
 
     #[test]
     fn build_hnsw_base_index_returns_some_when_base_populated() {
-        // Phase 5 (v18): `upsert_chunks_batch` seeds embedding_base with the
-        // same bytes as the enriched embedding on insert (see
+        // `upsert_chunks_batch` seeds embedding_base with the same bytes as
+        // the enriched embedding on insert (see
         // `store::chunks::async_helpers`). So a freshly-seeded store has
         // base_embedding_count == n, and the base HNSW build is not
         // skipped. Pin that contract — a regression that stopped seeding
@@ -1727,7 +1709,7 @@ mod tests {
         );
     }
 
-    // ===== #1168: first_encounter_notes_gate =====
+    // ===== first_encounter_notes_gate =====
 
     #[test]
     fn first_encounter_gate_proceeds_when_no_notes_file() {
@@ -1806,7 +1788,7 @@ mentions = []
         );
     }
 
-    // ===== PB-V1.30.1-7: consume_dirty_marker =====
+    // ===== consume_dirty_marker =====
 
     /// Marker absent → returns false, no side effects. Pinned because the
     /// Unix daemon path also calls into the same logic via `cli/watch/mod.rs`
@@ -1841,14 +1823,13 @@ mentions = []
         );
     }
 
-    // ====== #1459 item 5a — `cqs index --model` drift detection ======
+    // ====== `cqs index --model` drift detection ======
 
-    /// AC-V1.38-7 (#1463): the strict-preset gate at the top of `cmd_index`
-    /// rejects unknown CLI presets so an operator typo doesn't silently
-    /// resolve to the default. The unit-level analogue: `from_preset`
-    /// returns `None` for the typo, which is what the bail-on-`is_none()`
-    /// branch keys off of. Pin the contract here so a future preset-rename
-    /// can't make the check vacuous.
+    /// The strict-preset gate at the top of `cmd_index` rejects unknown CLI
+    /// presets so an operator typo doesn't silently resolve to the default.
+    /// The unit-level analogue: `from_preset` returns `None` for the typo,
+    /// which is what the bail-on-`is_none()` branch keys off of. Pin the
+    /// contract here so a future preset-rename can't make the check vacuous.
     #[test]
     fn unknown_preset_rejected_by_from_preset() {
         assert!(cqs::embedder::ModelConfig::from_preset("bgelarge").is_none());
@@ -1879,13 +1860,11 @@ mentions = []
         .expect("matching name must pass");
     }
 
-    /// TC-ADV-V1.38-6 (#1463): drift detection is byte-exact `==`. Pin
-    /// case-sensitivity so a future case-fold is a deliberate change —
-    /// `--model BGE-Large` against stored `bge-large` currently DOES bail.
-    /// Operator who hits this needs to know it's a name-not-content drift
-    /// instead of running a 30-min `--force` rebuild they don't actually
-    /// need; documenting the contract in a test puts the case-fold
-    /// migration on a clear next step.
+    /// Drift detection is byte-exact `==`. Pin case-sensitivity so a future
+    /// case-fold is a deliberate change — `--model BGE-Large` against stored
+    /// `bge-large` DOES bail. The operator who hits this needs to know it's a
+    /// name-not-content drift instead of running a 30-min `--force` rebuild
+    /// they don't actually need.
     #[test]
     fn check_index_model_drift_is_case_sensitive_pin() {
         let path = Path::new("/tmp/x/index.db");
@@ -1901,10 +1880,9 @@ mentions = []
         );
     }
 
-    /// TC-ADV-V1.38-6 (#1463): whitespace in stored model name (e.g. a
-    /// migration that landed `format!("{}\n", name)`) currently fails the
-    /// `stored == requested` check. Pin so a future migration writes are
-    /// either trimmed at write-time or this test flips deliberately.
+    /// Whitespace in the stored model name (e.g. a stray `format!("{}\n",
+    /// name)`) fails the `stored == requested` check. Pin so a future
+    /// write-time trim flips this test deliberately.
     #[test]
     fn check_index_model_drift_rejects_whitespace_drift() {
         let path = Path::new("/tmp/x/index.db");
@@ -1936,8 +1914,8 @@ mentions = []
     }
 
     /// The footgun case: stored = bge-large, requested = embeddinggemma-300m.
-    /// Pre-fix, this silently fed 768-dim embeddings into a 1024-dim store.
-    /// Post-fix, the index command bails with a recovery hint.
+    /// Feeding 768-dim embeddings into a 1024-dim store would corrupt it, so
+    /// the index command bails with a recovery hint.
     #[test]
     fn check_index_model_drift_mismatch_bails() {
         let path = Path::new("/tmp/x/index.db");

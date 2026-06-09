@@ -12,8 +12,8 @@ use crate::index::VectorIndex;
 
 use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 
-/// SHL-17: Configurable HNSW graph file size limit via `CQS_HNSW_MAX_GRAPH_BYTES` env var.
-/// Defaults to 500MB. Cached in OnceLock for single parse.
+/// Configurable HNSW graph file size limit via `CQS_HNSW_MAX_GRAPH_BYTES`
+/// env var. Defaults to 500MB. Cached in OnceLock for single parse.
 fn hnsw_max_graph_bytes() -> u64 {
     static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_GRAPH_BYTES") {
@@ -34,8 +34,8 @@ fn hnsw_max_graph_bytes() -> u64 {
     })
 }
 
-/// SHL-17: Configurable HNSW data file size limit via `CQS_HNSW_MAX_DATA_BYTES` env var.
-/// Defaults to 1GB. Cached in OnceLock for single parse.
+/// Configurable HNSW data file size limit via `CQS_HNSW_MAX_DATA_BYTES`
+/// env var. Defaults to 1GB. Cached in OnceLock for single parse.
 fn hnsw_max_data_bytes() -> u64 {
     static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_DATA_BYTES") {
@@ -56,8 +56,8 @@ fn hnsw_max_data_bytes() -> u64 {
     })
 }
 
-/// SHL-30: Configurable HNSW ID map file size limit via `CQS_HNSW_MAX_ID_MAP_BYTES` env var.
-/// Defaults to 500MB. Cached in OnceLock for single parse.
+/// Configurable HNSW ID map file size limit via `CQS_HNSW_MAX_ID_MAP_BYTES`
+/// env var. Defaults to 500MB. Cached in OnceLock for single parse.
 fn hnsw_max_id_map_bytes() -> u64 {
     static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_ID_MAP_BYTES") {
@@ -82,7 +82,7 @@ fn hnsw_max_id_map_bytes() -> u64 {
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Emit a one-time warning about advisory-only file locking on WSL/NTFS mounts.
-/// PB-V1.29-6: Delegates the `/mnt/<letter>/` detection to `config::is_wsl_drvfs_path`.
+/// Delegates the `/mnt/<letter>/` detection to `config::is_wsl_drvfs_path`.
 fn warn_wsl_advisory_locking(dir: &Path) {
     if crate::config::is_wsl()
         && crate::config::is_wsl_drvfs_path(dir)
@@ -119,10 +119,10 @@ pub const HNSW_ALL_EXTENSIONS: &[&str] = &[
 ///
 /// Returns Ok if checksums match or no checksum file exists (with warning).
 pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
-    // OB-V1.36-3 / P3: entry span so operators can see this on the startup
-    // path. Hashing potentially hundreds of MB of HNSW manifests is the kind
-    // of thing that ends up at the top of "why is `cqs index` slow on cold
-    // start" investigations; an untimed pass is opaque.
+    // Entry span so operators can see this on the startup path. Hashing
+    // potentially hundreds of MB of HNSW manifests is the kind of thing that
+    // ends up at the top of "why is `cqs index` slow on cold start"
+    // investigations; an untimed pass is opaque.
     let started = std::time::Instant::now();
     let _span = tracing::info_span!(
         "verify_hnsw_checksums",
@@ -155,16 +155,14 @@ pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError
                 continue;
             }
             let path = dir.join(format!("{}.{}", basename, ext));
-            // P1 / DS-V1.33-3: a missing file referenced by the checksum
-            // manifest is a hard failure, not a skip. The previous
-            // `if path.exists() { ... }` swallowed exactly the partial-save
-            // case we want to catch — a crash between writing the manifest
-            // and renaming the graph/data files into place left the
-            // verifier returning Ok, then the load path fell into
-            // `hnsw_rs::file_load` against a missing file. The
-            // `HNSW_EXTENSIONS` whitelist at the top of the loop already
-            // gates which paths can reach this branch, so the strict check
-            // is safe.
+            // A missing file referenced by the checksum manifest is a hard
+            // failure, not a skip. This catches the partial-save case: a
+            // crash between writing the manifest and renaming the graph/data
+            // files into place would otherwise leave the verifier returning
+            // Ok, then the load path falling into `hnsw_rs::file_load`
+            // against a missing file. The `HNSW_EXTENSIONS` whitelist at the
+            // top of the loop already gates which paths can reach this
+            // branch, so the strict check is safe.
             if !path.exists() {
                 return Err(HnswError::Internal(format!(
                     "HNSW checksum manifest references missing file: {} (partial save?)",
@@ -222,7 +220,7 @@ impl HnswIndex {
     /// Creates files in the directory:
     /// - `{basename}.hnsw.data` - Vector data
     /// - `{basename}.hnsw.graph` - HNSW graph structure
-    /// - `{basename}.hnsw.ids` - Chunk ID mapping (our addition)
+    /// - `{basename}.hnsw.ids` - Chunk ID mapping
     /// - `{basename}.hnsw.checksum` - Blake3 checksums for integrity
     ///
     /// # Crash safety
@@ -256,11 +254,10 @@ impl HnswIndex {
             ))
         })?;
 
-        // DS-V1.30.1-D7: refuse to start a new save if a previous rollback
-        // left .bak files behind. The operator must clear them manually
-        // so we don't silently overwrite a known-good index with a stale
-        // .bak on a future rollback. Hoisted from the rename loop below
-        // (was previously line ~421) so the guard runs before any writes.
+        // Refuse to start a new save if a previous rollback left .bak files
+        // behind. The operator must clear them manually so we don't silently
+        // overwrite a known-good index with a stale .bak on a future
+        // rollback. Runs before any writes.
         let all_exts = ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
         let stale_baks: Vec<std::path::PathBuf> = all_exts
             .iter()
@@ -295,9 +292,9 @@ impl HnswIndex {
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");
 
-        // Use a temporary directory for atomic writes
-        // This ensures that if we crash mid-save, the old index remains intact
-        // PB-20: unpredictable suffix to prevent symlink TOCTOU
+        // Use a temporary directory for atomic writes so that a crash
+        // mid-save leaves the old index intact. Unpredictable suffix
+        // prevents symlink TOCTOU.
         let suffix = crate::temp_suffix();
         let temp_dir = dir.join(format!(".{}.{:016x}.tmp", basename, suffix));
         if temp_dir.exists() {
@@ -329,11 +326,11 @@ impl HnswIndex {
                 ))
             })?;
 
-        // RM-16: Stream ID map directly to file via BufWriter instead of
+        // Stream ID map directly to file via BufWriter rather than
         // serializing to an in-memory JSON string first.
         let id_map_temp = temp_dir.join(format!("{}.hnsw.ids", basename));
         {
-            // SEC-1: Create with mode 0o600 so file is never world-readable
+            // Create with mode 0o600 so file is never world-readable
             let file = {
                 #[cfg(unix)]
                 {
@@ -356,11 +353,10 @@ impl HnswIndex {
             let mut writer = std::io::BufWriter::new(file);
             serde_json::to_writer(&mut writer, &self.id_map)
                 .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
-            // DS-V1.25-4: flush the BufWriter and fsync the underlying file
-            // before it is dropped so the id_map bytes are durable on disk.
-            // Mirrors the SPLADE persist pattern in `src/splade/index.rs:380-381`.
-            // Without this the id_map could survive in the page cache through
-            // the subsequent rename and get lost on a power cut, leaving the
+            // Flush the BufWriter and fsync the underlying file before it is
+            // dropped so the id_map bytes are durable on disk. Without this
+            // the id_map could survive in the page cache through the
+            // subsequent rename and get lost on a power cut, leaving the
             // graph without any string IDs to look up.
             use std::io::Write;
             writer.flush().map_err(|e| {
@@ -414,7 +410,7 @@ impl HnswIndex {
             }
         }
 
-        // SEC-1: Write checksum with mode 0o600 from creation
+        // Write checksum with mode 0o600 from creation
         let checksum_temp = temp_dir.join(format!("{}.hnsw.checksum", basename));
         {
             #[cfg(unix)]
@@ -469,21 +465,22 @@ impl HnswIndex {
             }
         }
 
-        // Atomically rename each file from temp to final location.
-        // Track which files were successfully moved so we can roll back on failure.
-        // DS-V1.30.1-D7: `all_exts` is now hoisted to the top of `save`
-        // so the stale-bak guard can scan with the same list. Reuse it.
+        // Atomically rename each file from temp to final location. Track
+        // which files were successfully moved so we can roll back on failure.
+        // `all_exts` is reused from the stale-bak guard above.
         let mut moved_exts: Vec<&str> = Vec::new();
 
         let rename_result: Result<(), HnswError> = (|| {
-            // Back up existing files before overwriting so rollback can restore them.
+            // Back up existing files before overwriting so rollback can
+            // restore them.
             //
-            // P2 #30: propagate the rename error instead of warning-and-continuing.
-            // If the backup never landed, the rollback path further down can't
-            // restore the original file when atomic_replace later fails — we'd
-            // delete the (newly promoted) file in `moved_exts` then look for a
-            // `.bak` that was never created and silently lose the prior index.
-            // Better to bail BEFORE the atomic_replace pass touches anything.
+            // Propagate the rename error rather than warning-and-continuing.
+            // If the backup never landed, the rollback path further down
+            // can't restore the original file when atomic_replace later
+            // fails — we'd delete the (newly promoted) file in `moved_exts`
+            // then look for a `.bak` that was never created and silently lose
+            // the prior index. Better to bail BEFORE the atomic_replace pass
+            // touches anything.
             for ext in &all_exts {
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
@@ -499,12 +496,12 @@ impl HnswIndex {
                 }
             }
 
-            // DS2-6: fsync the parent directory so the `.bak` rename entries
-            // are durable before the atomic_replace pass proceeds. Without
-            // this, a power cut between the backup loop and atomic_replace
-            // can leave the directory in a state where the `.bak` file
-            // exists in the page cache but not on disk. Best-effort fsync:
-            // log at debug on platforms that don't support directory fsync.
+            // Fsync the parent directory so the `.bak` rename entries are
+            // durable before the atomic_replace pass proceeds. Without this,
+            // a power cut between the backup loop and atomic_replace can
+            // leave the directory in a state where the `.bak` file exists in
+            // the page cache but not on disk. Best-effort fsync: log at debug
+            // on platforms that don't support directory fsync.
             match std::fs::File::open(dir) {
                 Ok(f) => {
                     if let Err(e) = f.sync_all() {
@@ -532,8 +529,6 @@ impl HnswIndex {
                     // cross-device fallback (the in-process temp dir sits
                     // on a different device from `dir` on Docker overlayfs
                     // and WSL `/mnt/c`), and fsyncs the parent directory.
-                    // Unified replacement for the previous per-extension
-                    // rename + fs::copy fallback; see SEC-2 / PB-20 notes.
                     crate::fs::atomic_replace(&temp_path, &final_path).map_err(|e| {
                         HnswError::Internal(format!(
                             "Failed to promote {} -> {}: {}",
@@ -542,8 +537,8 @@ impl HnswIndex {
                             e
                         ))
                     })?;
-                    // SEC-2: keep the restrictive mode on the promoted file
-                    // now that it lives in the final directory. The library
+                    // Keep the restrictive mode on the promoted file now that
+                    // it lives in the final directory. The library
                     // `file_dump` output uses the process umask; we want
                     // 0o600 regardless.
                     #[cfg(unix)]
@@ -566,14 +561,12 @@ impl HnswIndex {
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 let _ = std::fs::remove_file(&final_path);
             }
-            // DS-V1.30.1-D7: track which `.bak` files failed to restore
-            // instead of warning-and-continuing. The unrestored ones are
-            // left in place as recovery breadcrumbs and the operator gets
-            // an actionable error. Pre-fix the partial-rollback state was
-            // silently swallowed: a subsequent save would refuse to start
-            // if any `.bak` survived (now the case under the start-of-save
-            // guard), but until that guard fired, the operator had no
-            // signal that manual recovery was needed.
+            // Track which `.bak` files failed to restore rather than
+            // warning-and-continuing. The unrestored ones are left in place
+            // as recovery breadcrumbs and the operator gets an actionable
+            // error. The start-of-save guard will also refuse to start the
+            // next save while any `.bak` survives, but surfacing the failure
+            // here gives an immediate signal that manual recovery is needed.
             let mut restore_failures: Vec<(String, std::io::Error)> = Vec::new();
             for ext in &all_exts {
                 let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
@@ -589,10 +582,10 @@ impl HnswIndex {
                     }
                 }
             }
-            // DS2-6: fsync the parent directory after restoring backups so
-            // the restore renames are durable. Without this, a second power
-            // cut during rollback can leave the index with missing files
-            // even though the `.bak` existed on disk.
+            // Fsync the parent directory after restoring backups so the
+            // restore renames are durable. Without this, a second power cut
+            // during rollback can leave the index with missing files even
+            // though the `.bak` existed on disk.
             match std::fs::File::open(dir) {
                 Ok(f) => {
                     if let Err(sync_err) = f.sync_all() {
@@ -614,11 +607,11 @@ impl HnswIndex {
             tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
             let _ = std::fs::remove_dir_all(&temp_dir);
 
-            // DS-V1.30.1-D7: surface partial-rollback as an actionable
-            // error so the operator can clear the orphaned .bak files.
-            // The next `save` would refuse to start anyway under the
-            // stale-bak guard above; this turns the deferred refusal into
-            // an immediate breadcrumb at the point of failure.
+            // Surface partial-rollback as an actionable error so the
+            // operator can clear the orphaned .bak files. The next `save`
+            // would refuse to start anyway under the stale-bak guard above;
+            // this turns the deferred refusal into an immediate breadcrumb at
+            // the point of failure.
             if !restore_failures.is_empty() {
                 let detail: String = restore_failures
                     .iter()
@@ -639,12 +632,11 @@ impl HnswIndex {
             return Err(e);
         }
 
-        // DS-V1.25-4: fsync the parent directory so the renames themselves
-        // are durable on a power cut — otherwise the files exist on disk
-        // but the directory entries can be reordered or lost, leaving a
-        // half-saved index. Best-effort: on platforms where opening a
-        // directory for fsync isn't supported we log at debug level and
-        // continue.
+        // Fsync the parent directory so the renames themselves are durable
+        // on a power cut — otherwise the files exist on disk but the
+        // directory entries can be reordered or lost, leaving a half-saved
+        // index. Best-effort: on platforms where opening a directory for
+        // fsync isn't supported we log at debug level and continue.
         match std::fs::File::open(dir) {
             Ok(f) => {
                 if let Err(e) = f.sync_all() {
@@ -685,8 +677,9 @@ impl HnswIndex {
     /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load_with_dim(dir: &Path, basename: &str, dim: usize) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_load", dir = %dir.display(), basename).entered();
-        // Clean up stale temp dirs from interrupted saves (before anything else).
-        // PB-20: temp dirs now have unpredictable suffixes, so match by prefix+suffix pattern.
+        // Clean up stale temp dirs from interrupted saves (before anything
+        // else). Temp dirs have unpredictable suffixes, so match by
+        // prefix+suffix pattern.
         if let Ok(entries) = std::fs::read_dir(dir) {
             let prefix = format!(".{}.", basename);
             for entry in entries.flatten() {
@@ -703,23 +696,20 @@ impl HnswIndex {
         let data_path = dir.join(format!("{}.hnsw.data", basename));
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
 
-        // DS-V1.38-4 (#1463): existence check moved INSIDE the
-        // shared-lock critical section. Pre-fix, a reader checked
-        // file existence at line 706 BEFORE acquiring the lock at
-        // line 734 — between those two points, a concurrent `save()`
-        // could take the exclusive lock, rename the four files into
-        // `.bak`, and complete. The reader then waited up to ~1s for
-        // the shared lock; if save finished within that window, the
-        // reader proceeded with files that had already been replaced,
-        // and `verify_hnsw_checksums` failed with a confusing
-        // checksum-mismatch error during a normal concurrent rebuild.
+        // The existence check happens INSIDE the shared-lock critical
+        // section. Checking file existence before acquiring the lock
+        // would open a TOCTOU window: a concurrent `save()` could take
+        // the exclusive lock, rename the four files into `.bak`, and
+        // complete; the reader would then proceed with files that had
+        // already been replaced, and `verify_hnsw_checksums` would fail
+        // with a confusing checksum-mismatch error during a normal
+        // concurrent rebuild.
         //
         // The lock-acquisition path doesn't depend on the four data
         // files existing (the lock file is a separate `.hnsw.lock`),
-        // so this reorder is safe and closes the TOCTOU window: any
+        // so the check is done only AFTER the shared lock is held: any
         // saver that wants to rename files MUST first take the
-        // exclusive lock, and we now check existence only AFTER our
-        // shared lock is held.
+        // exclusive lock.
         //
         // The deeper hazard — a half-renamed set where save N+1 has
         // moved graph but not yet data — remains and is tracked as
@@ -737,19 +727,17 @@ impl HnswIndex {
         // is best-effort cross-process; an external Windows tool can
         // still modify the files.
         //
-        // **Why the lock must NOT outlive the read phase**: prior to
-        // this PR, `_lock_file: Some(lock_file)` was stored on the
-        // returned `HnswIndex`, keeping the shared lock alive for the
-        // index's entire lifetime. The same daemon process's HNSW
-        // rebuild thread then called `save()` from a *second* file
-        // descriptor on the same lock path; Linux `flock(2)`'s
-        // exclusive-waits-for-shared-even-self semantics deadlocked
-        // the rebuild thread permanently. With the lock dropped at
-        // the bottom of this function, the load and save paths use
-        // disjoint open descriptions and the in-process self-deadlock
-        // can't form. Cross-process exclusion during runtime was
-        // theoretical anyway — concurrent writers race on the SQLite
-        // writer lock first.
+        // **Why the lock must NOT outlive the read phase**: keeping the
+        // shared lock alive for the index's entire lifetime (by storing
+        // it on the returned `HnswIndex`) deadlocks the daemon. The same
+        // process's HNSW rebuild thread calls `save()` from a *second*
+        // file descriptor on the same lock path; Linux `flock(2)`'s
+        // exclusive-waits-for-shared-even-self semantics block the
+        // rebuild thread permanently. Dropping the lock at the bottom of
+        // this function makes the load and save paths use disjoint open
+        // descriptions so the in-process self-deadlock can't form.
+        // Cross-process exclusion during runtime is theoretical anyway —
+        // concurrent writers race on the SQLite writer lock first.
         let lock_path = dir.join(format!("{}.hnsw.lock", basename));
         let lock_file = std::fs::OpenOptions::new()
             .read(true)
@@ -757,12 +745,12 @@ impl HnswIndex {
             .create(true)
             .truncate(false)
             .open(&lock_path)?;
-        // DS-V1.36-6 / P3: bound the wait with try-lock-and-retry so a
-        // wedged peer process holding the exclusive save lock doesn't hang
-        // every reader indefinitely. 5 attempts × 200 ms (with jitter) =
-        // ~1s ceiling; daemons can retry the load and CLI users see a clear
-        // error instead of a silent hang. Without this, a paused
-        // `cqs index` (debugger / SIGSTOP) takes down all readers.
+        // Bound the wait with try-lock-and-retry so a wedged peer process
+        // holding the exclusive save lock doesn't hang every reader
+        // indefinitely. 5 attempts × 200 ms (with jitter) = ~1s ceiling;
+        // daemons can retry the load and CLI users see a clear error
+        // instead of a silent hang. Without this, a paused `cqs index`
+        // (debugger / SIGSTOP) takes down all readers.
         let lock_acquired = (0..5).any(|attempt| {
             if attempt > 0 {
                 let jitter = std::time::Duration::from_millis(200 + (attempt * 37) as u64);
@@ -779,12 +767,11 @@ impl HnswIndex {
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared, released after read)");
 
-        // DS-V1.38-4 (#1463): existence check NOW happens under the
-        // shared lock. A concurrent `save()` that wanted to rename
-        // these files would need the exclusive lock — which it can't
-        // get while we hold the shared lock. So the files we observe
-        // here are guaranteed to remain in place for the duration of
-        // the load.
+        // Existence check happens under the shared lock. A concurrent
+        // `save()` that wanted to rename these files would need the
+        // exclusive lock — which it can't get while we hold the shared
+        // lock. So the files we observe here are guaranteed to remain in
+        // place for the duration of the load.
         if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
             return Err(HnswError::NotFound(dir.display().to_string()));
         }
@@ -845,12 +832,10 @@ impl HnswIndex {
             ))
         })?;
         let id_map_reader = std::io::BufReader::new(id_map_file);
-        // P4-11 follow-up: deserialize as `Vec<String>` (serde does that
-        // by default), then convert in place to `Vec<Box<str>>`. The
-        // wire format is unchanged — same JSON `[String, ...]` — so
-        // existing `index.hnsw.id_map` files load without migration.
-        // `String::into_boxed_str()` is zero-copy (shrinks the
-        // existing heap allocation, drops the `cap` field).
+        // Deserialize as `Vec<String>` (serde's default), then convert in
+        // place to `Vec<Box<str>>`. The wire format is JSON `[String, ...]`.
+        // `String::into_boxed_str()` is zero-copy (shrinks the existing heap
+        // allocation, drops the `cap` field).
         let id_map_strings: Vec<String> = serde_json::from_reader(id_map_reader)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
         let id_map: Vec<Box<str>> = id_map_strings
@@ -858,7 +843,7 @@ impl HnswIndex {
             .map(String::into_boxed_str)
             .collect();
 
-        // SEC-15: Cap element count to prevent memory exhaustion from crafted id_map files.
+        // Cap element count to prevent memory exhaustion from crafted id_map files.
         // 10M entries at ~64 bytes average ID = ~640MB — well above any real codebase.
         const MAX_ID_MAP_ENTRIES: usize = 10_000_000;
         if id_map.len() > MAX_ID_MAP_ENTRIES {
@@ -869,15 +854,15 @@ impl HnswIndex {
             )));
         }
 
-        // SEC-7: Validate data file size against id_map before bincode deserialization.
+        // Validate data file size against id_map before bincode deserialization.
         // A crafted file could claim more vectors than the id_map supports, causing
         // unbounded allocation during deserialization. Each vector is `dim` f32s,
         // with 2x headroom for HNSW graph overhead (neighbor lists, metadata).
         //
-        // RB-V1.29-10: use checked_mul so a pathological `dim` argument
-        // (future model_info with huge embedding dimensions) can't overflow
-        // usize silently on 32-bit targets. On 64-bit the product fits for
-        // any realistic corpus, but defense-in-depth is cheap here.
+        // Use checked_mul so a pathological `dim` argument (e.g. a model with
+        // a huge embedding dimension) can't overflow usize silently on 32-bit
+        // targets. On 64-bit the product fits for any realistic corpus, but
+        // defense-in-depth is cheap here.
         if !id_map.is_empty() {
             let expected_max_data = id_map
                 .len()
@@ -940,8 +925,8 @@ impl HnswIndex {
         // not mmap'd), so the on-disk file can be modified or removed
         // without affecting this instance. Keeping the lock alive
         // across the return would self-deadlock the daemon's rebuild
-        // thread on its next `save()` (Linux flock; see comment at the
-        // lock acquisition site above).
+        // thread on its next `save()` (Linux flock; see the lock
+        // acquisition site above).
         drop(lock_file);
 
         Ok(Self {
@@ -986,11 +971,10 @@ impl HnswIndex {
         }
         // Guard against oversized id map files.
         //
-        // SHL-V1.29-3: bumped from 100 MB to 1 GB to align with the hard-load
-        // path's MAX_ID_MAP_ENTRIES = 10M × ~64 byte strings = ~640 MB. The
-        // previous 100 MB cap silently returned None for corpora above ~1.7M
-        // chunks, so `cqs stats` / health reported "unknown vector count"
-        // well below the project's 1M+ scaling target.
+        // 1 GB cap aligns with the hard-load path's MAX_ID_MAP_ENTRIES =
+        // 10M × ~64 byte strings = ~640 MB. A lower cap would make
+        // `cqs stats` / health report "unknown vector count" for large
+        // corpora well below the 1M+ scaling target.
         const MAX_ID_MAP_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
         match file.metadata() {
             Ok(meta) if meta.len() > MAX_ID_MAP_SIZE => {
@@ -1021,25 +1005,10 @@ impl HnswIndex {
         struct CountVisitor;
         impl<'de> Visitor<'de> for CountVisitor {
             type Value = usize;
-            /// Writes a human-readable description of the expected type to the given formatter.
-            ///
-            /// # Arguments
-            ///
-            /// * `f` - The formatter to write the description to
-            ///
-            /// # Returns
-            ///
-            /// A `fmt::Result` indicating whether the write operation succeeded
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "an array")
             }
-            /// Counts the number of elements in a sequence by iterating through all elements.
-            ///
-            /// # Arguments
-            /// * `seq` - A sequence accessor that provides access to elements in the sequence
-            ///
-            /// # Returns
-            /// Returns `Ok(count)` where `count` is the total number of elements in the sequence, or an error if deserialization fails during iteration.
+            /// Count sequence elements without materializing them.
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<usize, A::Error> {
                 let mut count = 0usize;
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
@@ -1073,7 +1042,7 @@ impl HnswIndex {
         Self::try_load_named(cq_dir, "index", ef_search, dim)
     }
 
-    /// Phase 5: load the base (non-enriched) HNSW index.
+    /// Load the base (non-enriched) HNSW index.
     ///
     /// Returns `None` when `index_base.hnsw.*` files are absent or corrupt —
     /// the router treats that as a signal to fall back to the enriched index.
@@ -1308,25 +1277,24 @@ mod tests {
 
     /// Regression for the in-process flock self-deadlock between
     /// `load_with_dim`'s shared lock and a subsequent `save()`'s
-    /// exclusive lock. Pre-fix the load held a `shared` flock for the
-    /// entire lifetime of the returned `HnswIndex` via the
-    /// `_lock_file` field; the daemon's HNSW rebuild thread then opened
-    /// a *second* fd on the same lock path inside `save()` and called
-    /// `lock()` (exclusive), which blocks forever on Linux because
-    /// `flock(2)` exclusive-waits for *all* shared holders, including
-    /// ones held by the same process via a different open description.
-    /// In production this manifested as a permanently `state == rebuilding`
-    /// daemon with one `cqs-hnsw-rebuild` thread parked in
-    /// `locks_lock_inode_wait`.
+    /// exclusive lock. If the load held a `shared` flock for the entire
+    /// lifetime of the returned `HnswIndex` via the `_lock_file` field,
+    /// the daemon's HNSW rebuild thread would open a *second* fd on the
+    /// same lock path inside `save()` and call `lock()` (exclusive),
+    /// which blocks forever on Linux because `flock(2)` exclusive-waits
+    /// for *all* shared holders, including ones held by the same process
+    /// via a different open description. That manifests as a permanently
+    /// `state == rebuilding` daemon with one `cqs-hnsw-rebuild` thread
+    /// parked in `locks_lock_inode_wait`.
     ///
-    /// The fix releases the load lock at the end of `load_with_dim`
-    /// (the in-memory `Loaded(...)` is independent of the on-disk
-    /// files), so a same-process `save()` after a `load()` can proceed.
-    /// We model this by loading the on-disk index, then saving a *fresh*
-    /// `HnswIndex` (built in memory) to the same directory while the
-    /// loaded handle is still alive — pre-fix this hangs indefinitely.
-    /// We bound the save in a worker thread with a 5-second timeout so
-    /// the test fails fast on regression instead of hanging the suite.
+    /// `load_with_dim` releases the load lock at the end (the in-memory
+    /// `Loaded(...)` is independent of the on-disk files), so a
+    /// same-process `save()` after a `load()` can proceed. We model this
+    /// by loading the on-disk index, then saving a *fresh* `HnswIndex`
+    /// (built in memory) to the same directory while the loaded handle is
+    /// still alive. We bound the save in a worker thread with a 5-second
+    /// timeout so the test fails fast on regression instead of hanging the
+    /// suite.
     #[test]
     fn load_does_not_block_subsequent_save_in_same_process() {
         use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -1345,16 +1313,15 @@ mod tests {
         .unwrap();
         initial.save(tmp.path(), basename).unwrap();
 
-        // Step 2: load the on-disk HNSW. Pre-fix this stashes a shared
-        // flock in `_lock_file` that lives until `_loaded` drops at the
-        // end of the test scope.
+        // Step 2: load the on-disk HNSW. The shared flock used during the
+        // read phase is released before this returns.
         let _loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("load should succeed");
 
         // Step 3: build a fresh HnswIndex in memory and save it to the
         // same directory while the loaded handle is still alive. This
         // re-enters `save()`, which opens a second fd on the same lock
-        // path and calls `lock()` (exclusive). Pre-fix this deadlocks.
+        // path and calls `lock()` (exclusive) — the deadlock surface.
         let dir = tmp.path().to_path_buf();
         let basename_owned = basename.to_string();
         let (tx, rx) = channel();
@@ -1422,7 +1389,7 @@ mod tests {
         assert_eq!(results[0].id, "chunk1");
     }
 
-    // ===== TC-31: multi-model dim-threading (HNSW persist) =====
+    // ===== multi-model dim-threading (HNSW persist) =====
 
     /// Create a deterministic normalized embedding of arbitrary dimension.
     fn make_embedding_dim(seed: u32, dim: usize) -> crate::embedder::Embedding {
@@ -1441,7 +1408,7 @@ mod tests {
 
     #[test]
     fn tc31_save_and_load_with_dim_1024() {
-        // TC-31.5: Save a 1024-dim HNSW index, load with load_with_dim(1024),
+        // Save a 1024-dim HNSW index, load with load_with_dim(1024),
         // verify it loads and searches correctly.
         let tmp = TempDir::new().unwrap();
         let basename = "test_1024";
@@ -1468,8 +1435,8 @@ mod tests {
 
     #[test]
     fn tc31_load_with_wrong_dim_data_size_rejected() {
-        // TC-31.6: Build with dim=1024, try to load with a much smaller dim.
-        // The SEC-7 check: expected_max_data = id_map.len() * dim * sizeof(f32) * 2
+        // Build with dim=1024, try to load with a much smaller dim.
+        // The size check: expected_max_data = id_map.len() * dim * sizeof(f32) * 2
         // We use dim=128 for the load so the expected_max is small enough that
         // the actual data file (sized for 1024-dim vectors + HNSW overhead)
         // exceeds it, triggering the "data file too large" error.
@@ -1503,9 +1470,8 @@ mod tests {
         );
     }
 
-    /// Phase 5: `try_load_base_with_ef` returns `None` when the index_base
-    /// files don't exist (fresh-migration state). The caller treats this as
-    /// "fall back to enriched index".
+    /// `try_load_base_with_ef` returns `None` when the index_base files
+    /// don't exist. The caller treats this as "fall back to enriched index".
     #[test]
     fn test_try_load_base_returns_none_when_missing() {
         let tmp = TempDir::new().unwrap();
@@ -1528,7 +1494,7 @@ mod tests {
         );
     }
 
-    /// Phase 5: `try_load_base_with_ef` succeeds when index_base files exist.
+    /// `try_load_base_with_ef` succeeds when index_base files exist.
     /// Verifies the basename routing is correct — loading "index_base" when
     /// the base files are present and "index" when only enriched is present.
     #[test]
@@ -1553,10 +1519,10 @@ mod tests {
         );
     }
 
-    /// P2 #30 (recovery wave): a backup-rename failure during save MUST bubble
-    /// up rather than being warning-and-continued. The previous behaviour swallowed
-    /// the error, then the rollback path couldn't restore the original file because
-    /// no `.bak` had ever been created — silently losing the prior index.
+    /// A backup-rename failure during save MUST bubble up rather than being
+    /// warning-and-continued. Swallowing the error would leave the rollback
+    /// path unable to restore the original file because no `.bak` had ever
+    /// been created — silently losing the prior index.
     ///
     /// Force the failure by pre-creating a `.bak` path as a non-empty directory
     /// (Linux `rename(file, dir)` returns EISDIR / ENOTDIR depending on kernel,
@@ -1602,14 +1568,13 @@ mod tests {
             "save MUST surface the backup-rename failure (P2 #30)"
         );
         let err_msg = format!("{}", result.unwrap_err());
-        // DS-V1.30.1-D7: the stale-bak guard now runs before the
-        // backup-rename pass, so a pre-existing `.bak` (whether file or
-        // directory) trips the guard with a "stale .bak files" message
-        // BEFORE the rename failure path runs. Either error path is a
-        // valid surfacing of the underlying scenario: save bails without
-        // touching the original index. Accept both messages so this test
-        // pins the correctness invariant ("save bails before damage")
-        // independent of which guard fires.
+        // The stale-bak guard runs before the backup-rename pass, so a
+        // pre-existing `.bak` (whether file or directory) trips the guard
+        // with a "stale .bak files" message before the rename failure path
+        // runs. Either error path is a valid surfacing of the underlying
+        // scenario: save bails without touching the original index. Accept
+        // both messages so this test pins the correctness invariant ("save
+        // bails before damage") independent of which guard fires.
         assert!(
             err_msg.contains("back up")
                 || err_msg.contains("backup")
@@ -1626,11 +1591,9 @@ mod tests {
         );
     }
 
-    /// DS-V1.30.1-D7: a successful save must leave NO `.bak` files
-    /// behind (cleaned up at line ~609). Pre-fix this was already the
-    /// case; this test pins it so a future refactor of the cleanup loop
-    /// can't silently regress and let the next save trip the new
-    /// stale-bak guard.
+    /// A successful save must leave NO `.bak` files behind. This test pins
+    /// it so a future refactor of the cleanup loop can't silently regress
+    /// and let the next save trip the stale-bak guard.
     #[cfg(unix)]
     #[test]
     fn test_save_cleans_up_baks_on_success() {
@@ -1660,8 +1623,8 @@ mod tests {
         }
     }
 
-    /// DS-V1.30.1-D7: stale `.bak` files from a prior failed rollback
-    /// must be detected at save start. Manual recovery is required so
+    /// Stale `.bak` files from a prior failed rollback must be detected at
+    /// save start. Manual recovery is required so
     /// we don't silently overwrite a known-good index with a stale
     /// `.bak` on a future rollback. The guard returns
     /// `HnswError::Internal` with an actionable message naming the
@@ -1705,15 +1668,14 @@ mod tests {
         );
     }
 
-    // ===== TC-ADV-1.29-6: id_map edge cases =====
+    // ===== id_map edge cases =====
     //
-    // Three previously-untested id_map shapes exercise rare but reachable
-    // states after a corrupt save, a user-crafted index, or a bincode
-    // deserialisation glitch:
+    // Three id_map shapes exercise rare but reachable states after a corrupt
+    // save, a user-crafted index, or a bincode deserialisation glitch:
     //
     // * duplicate string entries — the id_map is not a set, so duplicates
-    //   were historically accepted. Pins that behaviour so a future "dedup
-    //   on load" refactor is deliberate.
+    //   are accepted. Pins that behaviour so a future "dedup on load"
+    //   refactor is deliberate.
     // * empty string entries — the store uses non-empty chunk IDs, but the
     //   loader has no minimum-length check, so `""` in the id_map is
     //   accepted and eventually returned by `search()` as a bogus ID.
@@ -1772,8 +1734,8 @@ mod tests {
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("duplicate id_map entries must not cause load failure");
         assert_eq!(loaded.len(), 3);
-        // AUDIT-FOLLOWUP (TC-ADV-1.29-6): if a future dedup/validation pass
-        // rejects duplicates, update this assertion accordingly.
+        // AUDIT-FOLLOWUP: if a future dedup/validation pass rejects
+        // duplicates, update this assertion accordingly.
     }
 
     /// Empty-string id_map entries are accepted. The id_map carries
@@ -1796,9 +1758,8 @@ mod tests {
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("empty-string id_map entries must not cause load failure");
         assert_eq!(loaded.len(), 2);
-        // AUDIT-FOLLOWUP (TC-ADV-1.29-6): once a non-empty-string guard
-        // lands, change to `assert!(result.is_err())` with the rejection
-        // message.
+        // AUDIT-FOLLOWUP: once a non-empty-string guard lands, change to
+        // `assert!(result.is_err())` with the rejection message.
     }
 
     /// NUL-byte id_map entries are preserved verbatim. JSON encodes NUL as
@@ -1827,8 +1788,8 @@ mod tests {
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("NUL-byte id_map entries must not cause load failure");
         assert_eq!(loaded.len(), 2);
-        // AUDIT-FOLLOWUP (TC-ADV-1.29-6): accepting NUL in chunk ids is a
-        // downstream hazard (SQL queries, log lines). Once a reject-NUL
-        // guard lands, flip this to `result.is_err()`.
+        // AUDIT-FOLLOWUP: accepting NUL in chunk ids is a downstream hazard
+        // (SQL queries, log lines). Once a reject-NUL guard lands, flip this
+        // to `result.is_err()`.
     }
 }

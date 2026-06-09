@@ -24,8 +24,8 @@ use crate::config::AuxModelSection;
 use crate::embedder::{create_session, select_provider};
 use crate::ort_helpers::ort_err;
 
-/// RB-V1.29-9: Convert an ORT-reported tensor dimension (`i64`) to `usize`
-/// with a negative-value guard. ORT shape entries are nominally
+/// Convert an ORT-reported tensor dimension (`i64`) to `usize` with a
+/// negative-value guard. ORT shape entries are nominally
 /// non-negative, but a corrupted or mis-exported model could report a
 /// negative dim (e.g. unresolved symbolic axis that leaks through as -1).
 /// Without this guard the `as usize` cast on a negative value produces a
@@ -71,7 +71,7 @@ pub enum SpladeError {
     },
 }
 
-/// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
+/// Route a stringified ORT message into
 /// [`InferenceFailed`](SpladeError::InferenceFailed) so the shared
 /// [`crate::ort_helpers::ort_err`] helper can hand back the right
 /// variant for SPLADE call sites. Sealed trait, not `From<String>`,
@@ -96,29 +96,29 @@ pub struct SpladeEncoder {
     tokenizer_path: std::path::PathBuf,
     /// Lazy-loaded tokenizer.
     ///
-    /// RM-V1.25-15: Stored as `Mutex<Option<Arc<Tokenizer>>>` so
-    /// `clear_session` can drop the ~20MB tokenizer state alongside the
+    /// Stored as `Mutex<Option<Arc<Tokenizer>>>` so `clear_session` can drop
+    /// the ~20MB tokenizer state alongside the
     /// ONNX session during idle periods. The initial load happens at
     /// construction time (to drive the vocab probe), but the tokenizer
     /// can be freed after that without losing the probe result.
     tokenizer: Mutex<Option<std::sync::Arc<tokenizers::Tokenizer>>>,
     threshold: f32,
     vocab_size: usize,
-    /// SHL-V1.36-6: model's `hidden_size`, probed from `config.json`
-    /// at construction time. Falls back to 768 (the SPLADE-base /
+    /// Model's `hidden_size`, probed from `config.json` at construction time.
+    /// Falls back to 768 (the SPLADE-base /
     /// SPLADE-Code 0.6B value) when the file is missing or malformed.
     /// Used by the indexing-time batch-size formula in
     /// `cli::watch::reindex::splade_batch_size_for`.
     hidden_size: usize,
-    /// SHL-V1.36-6: model's `max_length`, probed from the loaded
-    /// tokenizer's truncation config (falls back to `config.json`'s
+    /// Model's `max_length`, probed from the loaded tokenizer's truncation
+    /// config (falls back to `config.json`'s
     /// `max_position_embeddings`, then to a hardcoded 256). Caps the
     /// per-token activation tensor in batched encode runs.
     max_length: usize,
 }
 
-/// SHL-V1.36-6: read `hidden_size` from `config.json` in the SPLADE
-/// model directory. Falls back to 768 (the canonical SPLADE-base value
+/// Read `hidden_size` from `config.json` in the SPLADE model directory.
+/// Falls back to 768 (the canonical SPLADE-base value
 /// shared by `naver/splade-cocondenser-ensembledistil` and the
 /// SPLADE-Code 0.6B base layer) when the file is missing, malformed,
 /// or the field absent. Surfaces every fallback at `tracing::debug!`.
@@ -152,8 +152,8 @@ fn probe_splade_hidden_size(model_dir: &Path) -> usize {
     }
 }
 
-/// SHL-V1.36-6: read `max_length` from the loaded tokenizer's
-/// truncation config, with `config.json::max_position_embeddings` as a
+/// Read `max_length` from the loaded tokenizer's truncation config, with
+/// `config.json::max_position_embeddings` as a
 /// secondary source. Falls back to 256 (the SPLADE-base default) when
 /// neither is available. The truncation config is the truth at
 /// inference time; `max_position_embeddings` matters when the tokenizer
@@ -202,8 +202,8 @@ fn probe_model_vocab(
     tokenizer: &tokenizers::Tokenizer,
     onnx_path: &Path,
 ) -> Result<usize, SpladeError> {
-    // OB-V1.36-9 / P3: span + completion event with elapsed_ms / vocab_size.
-    // The probe involves a header-load + ONNX forward pass which is
+    // Span + completion event with elapsed_ms / vocab_size. The probe
+    // involves a header-load + ONNX forward pass which is
     // non-trivial IO + parse; cold-start "why is SPLADE slow" investigations
     // can now see this.
     let started = std::time::Instant::now();
@@ -298,11 +298,8 @@ fn probe_model_vocab(
 /// happened: a stale BERT tokenizer was used with a SPLADE-Code model,
 /// silently producing garbage embeddings).
 ///
-/// CQ-V1.36-2: now auto-loads `.cqs.toml` from the cwd / nearest project root
-/// and threads `[splade]` through. Previous zero-arg form forwarded `None` and
-/// silently dropped any preset/path the user had configured. Six production
-/// callers hit this path and all of them now respect config without per-call
-/// retrofits.
+/// Auto-loads `.cqs.toml` from the cwd / nearest project root and threads
+/// `[splade]` through, so a configured preset/path takes effect.
 pub fn resolve_splade_model_dir() -> Option<std::path::PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let cfg = crate::config::Config::load(&cwd);
@@ -313,12 +310,12 @@ pub fn resolve_splade_model_dir() -> Option<std::path::PathBuf> {
 ///
 /// Threads a `[splade]` config section through [`crate::aux_model::resolve`]
 /// so preset names and explicit paths configured in `.cqs.toml` take effect.
-/// Env var (`CQS_SPLADE_MODEL`) still beats config. Pass `None` to match
-/// the legacy no-config behavior.
+/// Env var (`CQS_SPLADE_MODEL`) beats config. Pass `None` for no-config
+/// behavior.
 ///
 /// The returned `PathBuf` points at the **directory** containing
-/// `model.onnx` + `tokenizer.json`, matching the pre-#957 contract so all
-/// [`SpladeEncoder::new`] call sites work unchanged.
+/// `model.onnx` + `tokenizer.json`; [`SpladeEncoder::new`] re-joins the
+/// filenames internally.
 pub fn resolve_splade_model_dir_with_config(
     section: Option<&AuxModelSection>,
 ) -> Option<std::path::PathBuf> {
@@ -339,9 +336,7 @@ pub fn resolve_splade_model_dir_with_config(
     ) {
         Ok(c) => c,
         Err(e) => {
-            // The legacy API signals "no model available" via None and emits
-            // a tracing::warn; mirror that so existing callers keep the same
-            // behavior when resolution fails.
+            // Signal "no model available" via None plus a tracing::warn.
             tracing::warn!(error = %e, "SPLADE model resolution failed");
             return None;
         }
@@ -385,12 +380,11 @@ pub fn resolve_splade_model_dir_with_config(
 /// Maximum characters for SPLADE input truncation.
 /// Configurable via `CQS_SPLADE_MAX_CHARS` (default 4000).
 ///
-/// PF-V1.38-4 (#1463): cached via OnceLock at first call. Pre-fix, every
-/// `encode_*` invocation re-read the env var — at 17k chunks per reindex
-/// that's ~18k getenv syscalls per pass. The env value is read at
-/// process-start (or first encode call); operators tuning the knob need
-/// to restart the daemon to pick up a change, which matches the contract
-/// of every other compiled-in default in the SPLADE encode hot path.
+/// Cached via OnceLock at first call to avoid a getenv syscall per
+/// `encode_*` invocation (~18k per reindex at 17k chunks). The env value is
+/// read at process-start (or first encode call); operators tuning the knob
+/// must restart the daemon to pick up a change, matching every other
+/// compiled-in default in the SPLADE encode hot path.
 fn splade_max_chars() -> usize {
     static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -405,10 +399,9 @@ fn splade_max_chars() -> usize {
 impl SpladeEncoder {
     /// Default SPLADE threshold, overridable via `CQS_SPLADE_THRESHOLD` env var.
     ///
-    /// PF-V1.38-4 (#1463): cached via OnceLock at first call. Same
-    /// rationale as `splade_max_chars` — env-thrash on the encode hot
-    /// path, no test fixtures mutate this var (no daemon-time reload
-    /// expected).
+    /// Cached via OnceLock at first call — same rationale as
+    /// `splade_max_chars`: avoids env-thrash on the encode hot path. No
+    /// daemon-time reload.
     pub fn default_threshold() -> f32 {
         static CACHED: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
         *CACHED.get_or_init(|| {
@@ -526,8 +519,8 @@ impl SpladeEncoder {
         let session = create_session(&onnx_path, provider)
             .map_err(|e| SpladeError::InferenceFailed(format!("ORT session re-init: {e}")))?;
 
-        // SHL-V1.36-6: probe hidden_size and max_length so the indexing-
-        // time batch sizing can scale per-tensor activation memory across
+        // Probe hidden_size and max_length so the indexing-time batch sizing
+        // can scale per-tensor activation memory across
         // SPLADE variants (ensembledistil at 768/256 vs SPLADE-Code 0.6B
         // at 1024/512). Both probes are best-effort — fallbacks preserve
         // the historic batch=32 for the default ensembledistil setup.
@@ -541,8 +534,8 @@ impl SpladeEncoder {
             "SPLADE encoder loaded (vocab consistency verified)"
         );
 
-        // RM-V1.25-15: wrap the probed tokenizer in Arc + Mutex so
-        // clear_session can drop it during idle periods. Skip re-loading
+        // Wrap the probed tokenizer in Arc + Mutex so clear_session can drop
+        // it during idle periods. Skip re-loading
         // — we already have the probed instance in hand.
         Ok(Self {
             session: Mutex::new(Some(session)),
@@ -558,8 +551,8 @@ impl SpladeEncoder {
 
     /// Get or lazy-reload the tokenizer.
     ///
-    /// RM-V1.25-15: Returns `Arc<Tokenizer>` so encode-side callers can
-    /// release the mutex before running inference. `clear_session` drops
+    /// Returns `Arc<Tokenizer>` so encode-side callers can release the mutex
+    /// before running inference. `clear_session` drops
     /// the inner slot during idle; a subsequent `encode` lazily reloads
     /// from `tokenizer_path`.
     fn tokenizer(&self) -> Result<std::sync::Arc<tokenizers::Tokenizer>, SpladeError> {
@@ -589,9 +582,9 @@ impl SpladeEncoder {
     /// sequence → ReLU + log(1+x) → threshold to keep significant weights.
     pub fn encode(&self, text: &str) -> Result<SparseVector, SpladeError> {
         let _span = tracing::debug_span!("splade_encode", text_len = text.len()).entered();
-        // P3-2 (audit v1.33.0): time encode end-to-end so cold session
-        // re-init spikes (`session_guard.is_none()` branch around line 521)
-        // surface in the journal alongside the existing per-call debug spans.
+        // Time encode end-to-end so cold session re-init spikes
+        // (`session_guard.is_none()` branch around line 521) surface in the
+        // journal alongside the per-call debug spans.
         let start = std::time::Instant::now();
 
         if text.is_empty() {
@@ -644,7 +637,7 @@ impl SpladeEncoder {
         let mask_tensor = Tensor::from_array(mask_array)
             .map_err(|e| SpladeError::InferenceFailed(format!("Tensor: {e}")))?;
 
-        // Run inference — lazily re-create session if it was cleared (RM-3)
+        // Run inference — lazily re-create session if it was cleared.
         let mut session_guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
         if session_guard.is_none() {
             let provider = select_provider();
@@ -729,7 +722,7 @@ impl SpladeEncoder {
             )));
         };
 
-        // P3-2: completion with elapsed_ms + nnz so encode-time spikes
+        // Completion with elapsed_ms + nnz so encode-time spikes
         // (cold session, model hiccup) are queryable without inferring
         // from the surrounding `splade_encode` span.
         tracing::debug!(
@@ -822,7 +815,7 @@ impl SpladeEncoder {
         //
         // Inputs longer than max_seq_len are truncated.
         //
-        // SHL-V1.25-15: the 256 default was chosen for code corpora where
+        // The 256 default suits code corpora where
         // p99 is typically ~150-200 tokens. Prose-heavy corpora (docs,
         // notes) and languages with long import headers (Java, Kotlin
         // monorepos) can have p99 well above 400 tokens, silently
@@ -860,8 +853,8 @@ impl SpladeEncoder {
             }
         }
         if truncations > 0 {
-            // SHL-V1.25-15: promote to info when >1% of the batch was
-            // truncated — that's the threshold where max_seq_len is
+            // Promote to info when >1% of the batch was truncated — that's
+            // the threshold where max_seq_len is
             // likely too small for the corpus and the user should bump
             // CQS_SPLADE_MAX_SEQ. Small batches need at least one
             // truncation plus batch_size > 1 to avoid screaming at every
@@ -1081,15 +1074,15 @@ impl SpladeEncoder {
         self.vocab_size
     }
 
-    /// SHL-V1.36-6: model's `hidden_size` (probed from `config.json`
-    /// at construction). Used by indexing-time batch sizing.
+    /// Model's `hidden_size` (probed from `config.json` at construction).
+    /// Used by indexing-time batch sizing.
     pub fn hidden_size(&self) -> usize {
         self.hidden_size
     }
 
-    /// SHL-V1.36-6: model's effective `max_length` (probed from the
-    /// tokenizer's truncation config, with `config.json` as secondary
-    /// source). Used by indexing-time batch sizing.
+    /// Model's effective `max_length` (probed from the tokenizer's truncation
+    /// config, with `config.json` as secondary source). Used by indexing-time
+    /// batch sizing.
     pub fn max_length(&self) -> usize {
         self.max_length
     }
@@ -1099,11 +1092,11 @@ impl SpladeEncoder {
         self.tokenizer().ok()?.decode(&[token_id], false).ok()
     }
 
-    /// RM-3: Drop the ONNX session to free GPU/CPU memory.
-    /// The session is lazily re-created on the next `encode()` call.
+    /// Drop the ONNX session to free GPU/CPU memory. The session is lazily
+    /// re-created on the next `encode()` call.
     ///
-    /// RM-V1.25-15: Also drops the tokenizer (~20MB) — it lazy-reloads
-    /// from `tokenizer_path` on the next encode. In-flight encoders that
+    /// Also drops the tokenizer (~20MB) — it lazy-reloads from
+    /// `tokenizer_path` on the next encode. In-flight encoders that
     /// already cloned the Arc keep their copy for the duration of that
     /// call.
     pub fn clear_session(&self) {
@@ -1126,7 +1119,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn splade_model_dir() -> Option<PathBuf> {
-        // PB-V1.29-8: share the platform-aware HF parent resolution.
+        // Share the platform-aware HF parent resolution.
         let dir = crate::aux_model::hf_cache_dir("splade-onnx");
         if dir.join("model.onnx").exists() {
             Some(dir)
@@ -1462,8 +1455,8 @@ mod tests {
         // we only care that the empty-string env var didn't take precedence.
         // If it had, the resolver would have inspected an empty PathBuf and
         // returned None for "model.onnx not found at ".
-        // PB-V1.29-8: expected path follows the platform-aware resolver so
-        // this test still picks up a real install on Windows.
+        // Expected path follows the platform-aware resolver so this test
+        // still picks up a real install on Windows.
         let expected_default = crate::aux_model::hf_cache_dir("splade-onnx");
         if expected_default.join("model.onnx").exists()
             && expected_default.join("tokenizer.json").exists()
@@ -1490,7 +1483,7 @@ mod tests {
 
         // Identical reasoning to the empty-string case — the result depends
         // on whether a default model is installed on the test machine.
-        // PB-V1.29-8: expected path follows the platform-aware resolver.
+        // Expected path follows the platform-aware resolver.
         let expected_default = crate::aux_model::hf_cache_dir("splade-onnx");
         if expected_default.join("model.onnx").exists()
             && expected_default.join("tokenizer.json").exists()

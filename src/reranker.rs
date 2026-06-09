@@ -25,10 +25,10 @@ use crate::store::SearchResult;
 /// [`crate::aux_model::config_from_dir`] for `AuxModelKind::Reranker`.
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
-/// SHL-V1.36-6: HuggingFace `config.json` contains `hidden_size`, which the
-/// batch-size formula needs to scale per-tensor activation memory across
-/// rerankers of different model widths. Resolved alongside `MODEL_FILE` /
-/// `TOKENIZER_FILE` in [`OnnxReranker::model_paths`].
+/// HuggingFace `config.json` contains `hidden_size`, which the batch-size
+/// formula needs to scale per-tensor activation memory across rerankers of
+/// different model widths. Resolved alongside `MODEL_FILE` / `TOKENIZER_FILE`
+/// in [`OnnxReranker::model_paths`].
 const CONFIG_FILE: &str = "config.json";
 
 /// Reference `hidden_size`, paired with [`DEFAULT_RERANKER_BATCH`] and
@@ -62,13 +62,11 @@ const REFERENCE_MAX_LENGTH: usize = 512;
 
 /// Maximum number of candidates per ORT `session.run()` in the reranker.
 ///
-/// SHL-V1.36-6 (#1463 follow-up): scales the baseline 32 by the loaded
-/// model's `(hidden_size, max_length)` so per-tensor activation memory
-/// stays roughly constant across rerankers. Long-context rerankers
-/// (`CQS_RERANKER_MAX_LENGTH=2048`) and wider rerankers
-/// (hidden_size=768 vs the 384 baseline) used to OOM 8 GB GPUs at the
-/// documented default 32. Now both factors collapse onto the same
-/// formula:
+/// Scales the baseline 32 by the loaded model's `(hidden_size, max_length)`
+/// so per-tensor activation memory stays roughly constant across rerankers.
+/// Long-context rerankers (`CQS_RERANKER_MAX_LENGTH=2048`) and wider rerankers
+/// (hidden_size=768 vs the 384 baseline) would otherwise OOM 8 GB GPUs at the
+/// baseline 32. Both factors collapse onto the same formula:
 ///
 /// ```text
 /// batch = 32 * (REFERENCE_HIDDEN / hidden).max(0.25)
@@ -87,15 +85,15 @@ const REFERENCE_MAX_LENGTH: usize = 512;
 /// `CQS_RERANKER_BATCH` env wins regardless of either dim — operators
 /// with workloads they understand can pin a value.
 ///
-/// EX-V1.38-3 (#1463): `[reranker] batch = N` in `.cqs.toml` is now
-/// consulted as a fallback. Precedence: env > TOML > computed default.
+/// `[reranker] batch = N` in `.cqs.toml` is consulted as a fallback.
+/// Precedence: env > TOML > computed default.
 fn reranker_batch_size(
     max_length: usize,
     hidden_size: usize,
     section: Option<&AuxModelSection>,
 ) -> usize {
-    // P2.4: route through shared `parse_env_usize` so behavior matches the
-    // 24 other CQS_* knobs (missing/empty/garbage/zero -> default).
+    // Route through shared `parse_env_usize` so behavior matches the other
+    // CQS_* knobs (missing/empty/garbage/zero -> default).
     if std::env::var_os("CQS_RERANKER_BATCH").is_some() {
         return crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH);
     }
@@ -172,7 +170,7 @@ pub enum RerankerError {
     InvalidArguments(String),
 }
 
-/// CQ-V1.30.1-5 (P3-CQ-2): route a stringified ORT message into
+/// Route a stringified ORT message into
 /// [`Inference`](RerankerError::Inference) so the shared
 /// [`crate::ort_helpers::ort_err`] helper can hand back the right
 /// variant for reranker call sites. Sealed trait, not `From<String>`,
@@ -186,12 +184,12 @@ impl crate::ort_helpers::FromOrtMessage for RerankerError {
 
 use crate::ort_helpers::ort_err;
 
-/// EX-V1.30.1-8 (#1220): pluggable second-pass scoring trait.
+/// Pluggable second-pass scoring trait.
 ///
 /// Holders should keep rerankers as `Arc<dyn Reranker>` so any of the
 /// shipped impls (`OnnxReranker`, `NoopReranker`, `LlmReranker`) can
-/// drop in without touching the production search path. Adding a
-/// fourth impl (BM25 baseline, dot-product over a different embedder,
+/// drop in without touching the production search path. Adding another
+/// impl (BM25 baseline, dot-product over a different embedder,
 /// API-served scoring service) is one new struct + one `impl Reranker`
 /// block + one wire-up at the construction site.
 ///
@@ -234,18 +232,16 @@ pub trait Reranker: Send + Sync {
 ///
 /// Lazy-loads the model on first use, same pattern as [`crate::Embedder`].
 /// Scores (query, passage) pairs with a cross-encoder, then re-sorts results.
-///
-/// EX-V1.30.1-8 (#1220): renamed from `Reranker` to `OnnxReranker` when the
-/// trait was extracted. The trait is the new `Reranker`; concrete callers
-/// that need ONNX specifically construct via `OnnxReranker::with_section`.
+/// Callers that need ONNX specifically construct via
+/// `OnnxReranker::with_section`.
 pub struct OnnxReranker {
     session: Mutex<Option<Session>>,
     /// Lazy-loaded tokenizer.
     ///
-    /// RM-V1.25-15: `Mutex<Option<Arc<Tokenizer>>>` so `clear_session` can
-    /// drop the tokenizer (~20MB for ms-marco MiniLM) alongside the ONNX
-    /// session. Callers receive an `Arc<Tokenizer>` clone and release the
-    /// mutex before running inference.
+    /// `Mutex<Option<Arc<Tokenizer>>>` so `clear_session` can drop the
+    /// tokenizer (~20MB for ms-marco MiniLM) alongside the ONNX session.
+    /// Callers receive an `Arc<Tokenizer>` clone and release the mutex before
+    /// running inference.
     tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
@@ -255,14 +251,13 @@ pub struct OnnxReranker {
     /// XLM-R variants) do not. Computed at session-init time by inspecting
     /// the model's input names. `None` means "session not yet loaded."
     expects_token_type_ids: Mutex<Option<bool>>,
-    /// SHL-V1.36-6: model's `hidden_size`, probed from `config.json` at
-    /// session-init time. Falls back to [`REFERENCE_HIDDEN_SIZE`] (384)
-    /// when the file is missing or malformed — preserves the historic
-    /// batch=32 for ms-marco-MiniLM-L-6-v2 if the probe fails.
-    /// `OnceCell` so the probe runs at most once per reranker instance.
+    /// Model's `hidden_size`, probed from `config.json` at session-init time.
+    /// Falls back to [`REFERENCE_HIDDEN_SIZE`] (384) when the file is missing
+    /// or malformed — preserves batch=32 for ms-marco-MiniLM-L-6-v2 if the
+    /// probe fails. `OnceCell` so the probe runs at most once per instance.
     hidden_size: OnceCell<usize>,
     /// Cached config-file `[reranker]` section so `resolve_reranker` honours
-    /// `preset` / `model_path` / `tokenizer_path` set in `.cqs.toml` (P1.7).
+    /// `preset` / `model_path` / `tokenizer_path` set in `.cqs.toml`.
     section: Option<AuxModelSection>,
 }
 
@@ -273,11 +268,11 @@ impl OnnxReranker {
     }
 
     /// Create a reranker, threading a `[reranker]` config section through to
-    /// `resolve_reranker` so `.cqs.toml` preset / model_path are honoured (P1.7).
+    /// `resolve_reranker` so `.cqs.toml` preset / model_path are honoured.
     ///
-    /// EX-V1.38-3 (#1463): `[reranker] max_length = N` in `.cqs.toml` is
-    /// consulted as a fallback. Env var precedence: `CQS_RERANKER_MAX_LENGTH`
-    /// wins, then the TOML field, then the compiled-in default 512.
+    /// `[reranker] max_length = N` in `.cqs.toml` is consulted as a fallback.
+    /// Precedence: `CQS_RERANKER_MAX_LENGTH` env wins, then the TOML field,
+    /// then the compiled-in default 512.
     pub fn with_section(section: Option<AuxModelSection>) -> Result<Self, RerankerError> {
         let provider = select_provider();
         let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
@@ -334,16 +329,15 @@ impl OnnxReranker {
     /// zero-length encodings across all passages (nothing to score).
     /// `scores.len() == passages.len()` on `Some(...)`.
     ///
-    /// PF-V1.25-5: extracted so `rerank` can feed passages borrowed directly
-    /// from `&Vec<SearchResult>` without cloning contents, then apply scores
-    /// via `apply_rerank_scores` in a subsequent `&mut` scope.
+    /// Separate from `rerank` so it can feed passages borrowed directly from
+    /// `&Vec<SearchResult>` without cloning contents, then apply scores via
+    /// `apply_rerank_scores` in a subsequent `&mut` scope.
     ///
-    /// Issue #963: passages are chunked into `CQS_RERANKER_BATCH`-sized
-    /// groups (default 32) before feeding each chunk to `session.run()`. This
-    /// keeps the `[chunk_len, max_length]` token tensor bounded so large `k`
-    /// values don't OOM on small GPUs or after SPLADE has claimed VRAM.
-    /// Scoring semantics are preserved — each candidate gets the same
-    /// cross-encoder score, just computed in smaller ORT runs.
+    /// Passages are chunked into `CQS_RERANKER_BATCH`-sized groups (default 32)
+    /// before feeding each chunk to `session.run()`, keeping the
+    /// `[chunk_len, max_length]` token tensor bounded so large `k` values don't
+    /// OOM on small GPUs or after SPLADE has claimed VRAM. Each candidate gets
+    /// the same cross-encoder score, just computed in smaller ORT runs.
     fn compute_scores_opt(
         &self,
         query: &str,
@@ -353,8 +347,7 @@ impl OnnxReranker {
 
         // 1. Tokenize (query, passage) pairs once up front. Tokenization is
         //    cheap relative to ORT inference and doing it here lets us
-        //    short-circuit (return None) when the entire input is degenerate,
-        //    matching the pre-#963 semantics.
+        //    short-circuit (return None) when the entire input is degenerate.
         let encodings: Vec<tokenizers::Encoding> = passages
             .iter()
             .map(|passage| {
@@ -395,17 +388,16 @@ impl OnnxReranker {
     ///
     /// Returns one score per encoding in `chunk`.
     fn run_chunk(&self, chunk: &[tokenizers::Encoding]) -> Result<Vec<f32>, RerankerError> {
-        // P3-1 (audit v1.33.0): track per-chunk wall-clock so operators
-        // tuning `CQS_RERANKER_BATCH` or chasing tail latency can see
-        // per-chunk shape. Owns ~98% of reranker latency (ORT session.run).
+        // Track per-chunk wall-clock so operators tuning `CQS_RERANKER_BATCH`
+        // or chasing tail latency can see per-chunk shape. The ORT
+        // session.run owns ~98% of reranker latency.
         let start = std::time::Instant::now();
         let batch_size = chunk.len();
         debug_assert!(batch_size > 0, "run_chunk called with empty chunk");
 
-        // Build per-chunk padded tensors. PERF-V1.33-3 / #1377: pull
-        // `max_len` from encodings directly and feed the encodings to
-        // `pad_2d_i64_from_encodings` below — no intermediate
-        // `Vec<Vec<i64>>` per field.
+        // Build per-chunk padded tensors. Pull `max_len` from encodings
+        // directly and feed the encodings to `pad_2d_i64_from_encodings`
+        // below — no intermediate `Vec<Vec<i64>>` per field.
         let max_len = chunk
             .iter()
             .map(|e| e.get_ids().len())
@@ -413,15 +405,14 @@ impl OnnxReranker {
             .unwrap_or(0)
             .min(self.max_length);
         if max_len == 0 {
-            // AC-V1.36-3 / P2-9 / P2-11: this chunk's passages all tokenized
-            // empty but the aggregate check in compute_scores_opt already
-            // guaranteed overall_max > 0. Return sigmoid(0)=0.5 for these rows
-            // so the surviving non-empty cohort still carries ranking signal,
-            // BUT warn so operators know the resulting rank order may
-            // interleave 0.5 synthetic scores into the middle of the
-            // cross-encoder distribution. Proper fix (return Option<f32>
-            // through to apply_rerank_scores so we can fall back to the
-            // input cosine for empty rows) is follow-up.
+            // This chunk's passages all tokenized empty, but the aggregate
+            // check in compute_scores_opt already guaranteed overall_max > 0.
+            // Return sigmoid(0)=0.5 for these rows so the surviving non-empty
+            // cohort still carries ranking signal, but warn: the resulting
+            // rank order may interleave 0.5 synthetic scores into the middle
+            // of the cross-encoder distribution.
+            // TODO: return Option<f32> through to apply_rerank_scores so we can
+            // fall back to the input cosine for empty rows.
             tracing::warn!(
                 batch_size,
                 "Reranker chunk all-empty after tokenization — emitting sigmoid(0)=0.5 fallback; \
@@ -431,14 +422,13 @@ impl OnnxReranker {
         }
 
         // token_type_ids come from the tokenizer — BERT-family rerankers use
-        // them to distinguish query (0) from passage (1). Zeroing them out (the
-        // prior behavior) silently broke fine-tuned models that learned to
-        // use the segment signal (caught during reranker v2 eval: gold chunks
-        // got pushed below negatives because the model saw "query query" when
-        // the tokenizer had emitted "query passage"). RoBERTa-family models
-        // (UniXcoder, CodeBERT, XLM-R) don't accept this input at all —
-        // session() detects which family the loaded model is and we skip
-        // building the type tensor when the session doesn't expect it.
+        // them to distinguish query (0) from passage (1). Zeroing them out
+        // breaks fine-tuned models that learned to use the segment signal
+        // (gold chunks get pushed below negatives because the model sees
+        // "query query" when the tokenizer emitted "query passage").
+        // RoBERTa-family models (UniXcoder, CodeBERT, XLM-R) don't accept this
+        // input at all — session() detects which family the loaded model is and
+        // we skip building the type tensor when the session doesn't expect it.
         let mut session_guard = self.session()?;
         let session = session_guard
             .as_mut()
@@ -449,7 +439,7 @@ impl OnnxReranker {
             .unwrap_or_else(|p| p.into_inner())
             .unwrap_or(true); // session() always sets this; fallback to true matches BERT default
 
-        // P3-1: per-chunk span carries shape data for journal correlation.
+        // Per-chunk span carries shape data for journal correlation.
         let _chunk_span =
             tracing::debug_span!("reranker_run_chunk", batch_size, max_len, expects_tti).entered();
 
@@ -487,13 +477,12 @@ impl OnnxReranker {
         }
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
 
-        // AC-V1.29-6: ORT's `shape[1]` is `i64` and can be -1 when a
-        // dynamic axis is unbound (or, in principle, any negative value
-        // the model exporter emits). Casting `-1 as usize` gives
-        // `usize::MAX` — the subsequent `batch_size * stride` then wraps,
-        // `data.len() < expected_len` flips direction, and we read past
-        // the buffer. Guard the cast first, then use `checked_mul` so a
-        // large legitimate stride can't silently overflow either.
+        // ORT's `shape[1]` is `i64` and can be -1 when a dynamic axis is
+        // unbound (or any negative value the exporter emits). Casting
+        // `-1 as usize` gives `usize::MAX`, so `batch_size * stride` wraps,
+        // `data.len() < expected_len` flips direction, and we read past the
+        // buffer. Guard the cast first, then use `checked_mul` so a large
+        // legitimate stride can't silently overflow either.
         let stride = if shape.len() == 2 {
             let dim = shape[1];
             if dim < 0 {
@@ -524,8 +513,8 @@ impl OnnxReranker {
         }
 
         let scores: Vec<f32> = (0..batch_size).map(|i| sigmoid(data[i * stride])).collect();
-        // P3-1: completion event with elapsed_ms so per-chunk latency
-        // is queryable without parsing the surrounding span.
+        // Completion event with elapsed_ms so per-chunk latency is queryable
+        // without parsing the surrounding span.
         tracing::debug!(
             elapsed_ms = start.elapsed().as_millis() as u64,
             batch_size,
@@ -621,12 +610,11 @@ impl OnnxReranker {
                     }
                     // Write marker after successful verification.
                     //
-                    // EH-V1.30.1-6: surface marker write failures via tracing.
-                    // Silently dropping `let _ = ...` means a permission flip
-                    // (or a full disk) costs every subsequent launch a
-                    // re-checksum of large model files. The verification
-                    // itself succeeded, so this is a best-effort cache write
-                    // — keep it warn, not error.
+                    // Surface marker write failures via tracing: silently
+                    // dropping the error means a permission flip (or a full
+                    // disk) costs every subsequent launch a re-checksum of
+                    // large model files. The verification succeeded, so this
+                    // is a best-effort cache write — warn, not error.
                     if let Err(e) = std::fs::write(&marker, &expected_marker) {
                         tracing::warn!(
                             error = %e,
@@ -643,11 +631,10 @@ impl OnnxReranker {
         })
     }
 
-    /// SHL-V1.36-6: probe the loaded model's `hidden_size` from
-    /// `config.json` so [`reranker_batch_size`] can scale per-tensor
-    /// memory across rerankers of different widths. Cached via the
-    /// `hidden_size: OnceCell<usize>` field — at most one probe per
-    /// reranker instance.
+    /// Probe the loaded model's `hidden_size` from `config.json` so
+    /// [`reranker_batch_size`] can scale per-tensor memory across rerankers of
+    /// different widths. Cached via the `hidden_size: OnceCell<usize>` field —
+    /// at most one probe per reranker instance.
     ///
     /// Resolution mirrors the layout assumptions in [`Self::model_paths`]:
     ///
@@ -658,9 +645,8 @@ impl OnnxReranker {
     ///     `repo.get(CONFIG_FILE)` API used for the model + tokenizer.
     ///
     /// Failure modes (file missing, malformed JSON, no `hidden_size`
-    /// field, fetch error) all collapse to the historic
-    /// [`REFERENCE_HIDDEN_SIZE`] (384) — preserves the existing
-    /// batch=32 for ms-marco-MiniLM-L-6-v2 when the probe can't run.
+    /// field, fetch error) all collapse to [`REFERENCE_HIDDEN_SIZE`] (384) —
+    /// preserves batch=32 for ms-marco-MiniLM-L-6-v2 when the probe can't run.
     /// Surfaces every fallback at `tracing::debug!` so an operator
     /// running with `RUST_LOG=cqs=debug` can correlate batch-size
     /// surprises with the probe.
@@ -764,7 +750,7 @@ impl OnnxReranker {
 
     /// Get or initialize the tokenizer.
     ///
-    /// RM-V1.25-15: Returns `Arc<Tokenizer>` so callers drop the mutex
+    /// Returns `Arc<Tokenizer>` so callers drop the mutex
     /// before running inference and `clear_session` can replace the inner
     /// slot without racing against encode.
     fn tokenizer(&self) -> Result<Arc<tokenizers::Tokenizer>, RerankerError> {
@@ -800,9 +786,9 @@ impl Reranker for OnnxReranker {
         results: &mut Vec<SearchResult>,
         limit: usize,
     ) -> Result<(), RerankerError> {
-        // OB-V1.29-1: entry span parity with `rerank_with_passages` so the
-        // CLI `rerank` path shows up in `cqs trace`-style captures with the
-        // same tag and fields.
+        // Entry span parity with `rerank_with_passages` so the CLI `rerank`
+        // path shows up in `cqs trace`-style captures with the same tag and
+        // fields.
         let _span = tracing::info_span!(
             "rerank",
             count = results.len(),
@@ -810,17 +796,13 @@ impl Reranker for OnnxReranker {
             query_len = query.len()
         )
         .entered();
-        // PF-V1.25-5: borrow passages from results directly instead of
-        // cloning content strings. The previous impl did
-        // `results.iter().map(|r| r.chunk.content.clone()).collect()`,
-        // allocating a fresh String per candidate (N allocations × content
-        // length bytes each) only to feed them to `rerank_with_passages`.
-        // Score computation happens in a scoped borrow so the subsequent
-        // `&mut results` write back is valid.
+        // Borrow passages from results directly instead of cloning content
+        // strings. Score computation happens in a scoped borrow so the
+        // subsequent `&mut results` write-back is valid.
         //
-        // We inline the compute-score-then-apply pattern rather than
-        // reusing `rerank_with_passages`, because passages that borrow
-        // from `results` conflict with `&mut results` at the call site.
+        // The compute-score-then-apply pattern is inlined rather than reusing
+        // `rerank_with_passages`, because passages that borrow from `results`
+        // conflict with `&mut results` at the call site.
         let scores = {
             let passages: Vec<&str> = results.iter().map(|r| r.chunk.content.as_str()).collect();
             self.compute_scores(query, &passages)?
@@ -852,9 +834,9 @@ impl Reranker for OnnxReranker {
             return Ok(());
         }
         if results.len() != passages.len() {
-            // P3.11: structured warn so operators see the mismatch in journal,
-            // and surface `InvalidArguments` instead of `Inference` so callers
-            // can match on the caller-bug case distinctly from model errors.
+            // Structured warn so operators see the mismatch in journal, and
+            // surface `InvalidArguments` instead of `Inference` so callers can
+            // match on the caller-bug case distinctly from model errors.
             tracing::warn!(
                 passages = passages.len(),
                 results = results.len(),
@@ -887,17 +869,17 @@ impl Reranker for OnnxReranker {
             .expects_token_type_ids
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = None;
-        // RM-V1.25-15: Drop the tokenizer too (~20MB for ms-marco MiniLM).
-        // In-flight rerank() calls that grabbed an Arc clone before this
-        // call keep their own copy; the slot is cleared and lazy-reloads
-        // on next tokenizer() access.
+        // Drop the tokenizer too (~20MB for ms-marco MiniLM). In-flight
+        // rerank() calls that grabbed an Arc clone before this call keep
+        // their own copy; the slot is cleared and lazy-reloads on next
+        // tokenizer() access.
         let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
         *tok = None;
         tracing::info!("Reranker session and tokenizer cleared");
     }
 }
 
-/// EX-V1.30.1-8 (#1220): no-op pass-through reranker.
+/// No-op pass-through reranker.
 ///
 /// Returns `Ok(())` from every method — the input results are left
 /// alone (their existing scores keep them ordered as they came in).
@@ -964,27 +946,25 @@ impl Reranker for NoopReranker {
     }
 }
 
-/// EX-V1.30.1-8 (#1220): LLM-judge reranker skeleton.
+/// LLM-judge reranker skeleton.
 ///
-/// Holds an `Arc<dyn LlmRerankProvider>` so a future production deployment
-/// can plug in a Claude / GPT / Gemini scorer without touching the search
-/// path. **The current shipped impl is a skeleton** — it returns
-/// `RerankerError::Inference("LlmReranker not yet implemented")` from
+/// Holds an `Arc<dyn LlmRerankProvider>` so a production deployment can plug
+/// in a Claude / GPT / Gemini scorer without touching the search path. **The
+/// current impl is a skeleton** — it returns `RerankerError::Inference` from
 /// every score-producing call. The point is to prove the trait surface
 /// supports an LLM-shaped impl: an `LlmRerankProvider` produces relevance
-/// scores asynchronously via the existing `cqs::llm::BatchProvider`-style
-/// trait, and the `Reranker` shim turns that into the synchronous
-/// `rerank` shape the search path expects.
+/// scores asynchronously via a `cqs::llm::BatchProvider`-style trait, and the
+/// `Reranker` shim turns that into the synchronous `rerank` shape the search
+/// path expects.
 ///
-/// Wiring the production version is a follow-up: the `score` method
-/// becomes a `tokio::block_on` of a batch-call to the LLM provider with
-/// `(query, passage)` pairs, parses scores from the response, and feeds
-/// them through `apply_rerank_scores`. The trait surface here doesn't
-/// change.
-// SCAFFOLD-ONLY (#1220): demoted to `pub(crate)` and gated behind `#[cfg(test)]`
-// per CQ-V1.33.0-8 because every score call returns `Err`. The trait-surface
-// pin lives in the `tests` module below. Promote back to `pub` (and re-export
-// from `lib.rs`) when the LLM provider wiring lands.
+/// TODO: wire the production version — the `score` method becomes a
+/// `tokio::block_on` of a batch-call to the LLM provider with
+/// `(query, passage)` pairs, parses scores from the response, and feeds them
+/// through `apply_rerank_scores`. The trait surface here doesn't change.
+// Scaffold only: `pub(crate)` and gated behind `#[cfg(test)]` because every
+// score call returns `Err`. The trait-surface pin lives in the `tests` module
+// below. Promote back to `pub` (and re-export from `lib.rs`) when the LLM
+// provider wiring lands.
 #[cfg(test)]
 pub(crate) struct LlmReranker;
 
@@ -1058,9 +1038,8 @@ mod batch_scaling_tests {
         );
     }
 
-    /// SHL-V1.36-6 motivating case: a custom 2048-token reranker at
-    /// the baseline width. seq_factor = 512/2048 = 0.25, hidden_factor =
-    /// 1.0; batch = 32 * 0.25 * 1.0 = 8.
+    /// A custom 2048-token reranker at the baseline width. seq_factor =
+    /// 512/2048 = 0.25, hidden_factor = 1.0; batch = 32 * 0.25 * 1.0 = 8.
     #[test]
     fn long_seq_reduces_batch() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -1173,17 +1152,7 @@ fn verify_checksum(path: &std::path::Path, expected: &str) -> Result<(), Reranke
     Ok(())
 }
 
-/// Computes the sigmoid activation function.
-///
-/// The sigmoid function maps any input value to a range between 0 and 1, making it useful for neural networks and probability calculations. It is defined as 1 / (1 + e^(-x)).
-///
-/// # Arguments
-///
-/// * `x` - The input value
-///
-/// # Returns
-///
-/// The sigmoid of x, a value in the range (0, 1)
+/// Sigmoid: `1 / (1 + e^(-x))`. Maps any input to the range (0, 1).
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
@@ -1195,23 +1164,21 @@ fn sigmoid(x: f32) -> f32 {
 /// corresponding result, sorts descending with a chunk-id secondary key for
 /// deterministic tie-breaking, and truncates to `limit`.
 ///
-/// PF-V1.25-5: extracted from the impl block so the &mut results write and
-/// the earlier &results passage borrow live in disjoint scopes at the call
-/// site (`rerank`).
+/// Separate from the impl block so the &mut results write and the earlier
+/// &results passage borrow live in disjoint scopes at the call site (`rerank`).
 fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<f32>, limit: usize) {
     if scores.is_empty() {
         return;
     }
     let n = scores.len().min(results.len());
-    // AC-V1.33-9: if the reranker returned fewer scores than results
-    // (`compute_scores_opt` currently can't, but a future ONNX backend that
-    // short-circuits on a per-batch failure could), drop the un-rescored
-    // tail rather than mixing cross-encoder cohort scores ([0, 1] post
-    // sigmoid) with the surviving cosine cohort ([-1, 1]) inside the same
-    // sort comparator. The mixed comparison would interleave the two
-    // cohorts arbitrarily, producing neither pure rerank nor pure semantic
-    // ranking. Truncating the un-rescored tail keeps the surviving cohort
-    // homogeneous.
+    // If the reranker returned fewer scores than results (`compute_scores_opt`
+    // can't today, but an ONNX backend that short-circuits on a per-batch
+    // failure could), drop the un-rescored tail rather than mixing
+    // cross-encoder cohort scores ([0, 1] post sigmoid) with the surviving
+    // cosine cohort ([-1, 1]) inside the same sort comparator. The mixed
+    // comparison would interleave the two cohorts arbitrarily, producing
+    // neither pure rerank nor pure semantic ranking. Truncating keeps the
+    // surviving cohort homogeneous.
     if n < results.len() {
         tracing::warn!(
             scores = scores.len(),
@@ -1224,7 +1191,7 @@ fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<f32>, limit:
         results[i].score = score;
     }
     let batch_size = results.len();
-    // 5. Sort descending by score, truncate. Secondary sort on chunk id keeps
+    // Sort descending by score, then truncate. Secondary sort on chunk id keeps
     // equal-score candidates deterministically ordered so the truncate()
     // drops the same candidates on every invocation.
     results.sort_by(|a, b| {
@@ -1267,7 +1234,7 @@ mod tests {
 
     #[test]
     fn test_sigmoid_nan_does_not_panic() {
-        // TC-1: If the model returns NaN logits, sigmoid should not panic.
+        // If the model returns NaN logits, sigmoid should not panic.
         // NaN propagates through arithmetic, producing NaN output.
         // The reranker's total_cmp sort handles NaN (sorts to end).
         let result = sigmoid(f32::NAN);
@@ -1288,14 +1255,10 @@ mod tests {
         );
     }
 
-    /// TC-HAP-V1.38-9 (#1463): `test_reranker_new` previously asserted only
-    /// `Result::is_ok()` — it did not verify any post-construction
-    /// invariants, so a regression that flipped `max_length` to 0, broke
-    /// the lazy-load contract, or dropped the cached `[reranker]` config
-    /// section would slip through CI silently. A `model loads + scores
-    /// plausibly` assertion lives in `test_rerank_reorders_by_relevance`
-    /// (gated `#[ignore]` because the model is ~91 MB) — this test pins
-    /// the cheap-to-check construction contract that runs on every PR.
+    /// Pins the cheap-to-check construction contract (max_length, lazy-load
+    /// invariants, cached `[reranker]` section) that runs on every PR. The
+    /// `model loads + scores plausibly` assertion lives in
+    /// `test_rerank_reorders_by_relevance` (gated `#[ignore]`, model ~91 MB).
     #[test]
     fn test_reranker_new() {
         let reranker = OnnxReranker::new().expect("new() must succeed");
@@ -1341,10 +1304,9 @@ mod tests {
         );
     }
 
-    /// TC-HAP-V1.38-9 (#1463): `[reranker] max_length = N` in `.cqs.toml`
-    /// must flow through to the constructed reranker when the env var is
-    /// unset. Pins the EX-V1.38-3 fallback chain shape: env > TOML >
-    /// default. The env-wins-over-TOML branch is exercised below.
+    /// `[reranker] max_length = N` in `.cqs.toml` must flow through to the
+    /// constructed reranker when the env var is unset. Pins the fallback chain
+    /// shape: env > TOML > default. The env-wins-over-TOML branch is below.
     #[test]
     fn test_reranker_with_section_honours_max_length() {
         // SAFETY: section path runs only when env is unset; clear it
@@ -1388,8 +1350,7 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    // TC-HAP-1.29-3: happy-path + empty-input pins for `rerank` /
-    // `rerank_with_passages`.
+    // Happy-path + empty-input pins for `rerank` / `rerank_with_passages`.
     //
     // The `#[ignore]` test loads the ms-marco-MiniLM-L-6-v2 model on first
     // use (~91 MB ONNX, one-time HF fetch), so it is opt-in. Run with:
@@ -1429,7 +1390,7 @@ mod tests {
         SearchResult { chunk, score: 0.0 }
     }
 
-    /// TC-HAP-1.29-3a: seed three passages where the "baking sourdough" one
+    /// Seed three passages where the "baking sourdough" one
     /// is clearly irrelevant to a Rust-async query. After rerank, the baking
     /// passage must sort last. Gated `#[ignore]` because the first call
     /// cold-loads the ms-marco MiniLM model (~91 MB ONNX).
@@ -1488,9 +1449,9 @@ mod tests {
         assert!(ids.contains("futures"));
     }
 
-    /// TC-HAP-1.29-3b: `rerank_with_passages` on empty input is a no-op —
-    /// the `results.len() <= 1` shortcut at line 214 fires before any model
-    /// load, so this test runs without the ONNX session.
+    /// `rerank_with_passages` on empty input is a no-op — the
+    /// `results.len() <= 1` shortcut fires before any model load, so this test
+    /// runs without the ONNX session.
     #[test]
     fn test_rerank_empty_input_returns_empty() {
         let reranker = OnnxReranker::new().expect("reranker new");
@@ -1505,7 +1466,7 @@ mod tests {
         );
     }
 
-    /// EX-V1.30.1-8 (#1220): `NoopReranker::rerank` truncates to `limit`
+    /// `NoopReranker::rerank` truncates to `limit`
     /// and preserves input order otherwise. Pins the contract that the
     /// eval-harness ablation switch (`--reranker none`) gives an
     /// apples-to-apples baseline against the ONNX path: both end with
@@ -1556,9 +1517,9 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.33-4: pin that the length-mismatch error message contains
-    /// both lengths. P3.11 surfaced this as `InvalidArguments` so callers
-    /// can pattern-match the caller-bug case distinctly from model errors;
+    /// Pin that the length-mismatch error message contains both lengths.
+    /// It surfaces as `InvalidArguments` so callers can pattern-match the
+    /// caller-bug case distinctly from model errors;
     /// a future refactor that flipped the variant or dropped the lengths
     /// from the message would break operator log-grep loops.
     #[test]
@@ -1588,7 +1549,7 @@ mod tests {
         );
     }
 
-    /// AC-V1.33-9: when a reranker backend returns fewer scores than results
+    /// When a reranker backend returns fewer scores than results
     /// (a future per-batch-failure short-circuit), `apply_rerank_scores`
     /// must NOT mix cross-encoder cohort scores ([0, 1] post-sigmoid) with
     /// the surviving cosine cohort ([-1, 1]) — the partial-overwrite path.
@@ -1611,8 +1572,8 @@ mod tests {
         // Pre-rerank: tail has high cosine scores that should NOT survive.
         results[3].score = 0.99;
         results[4].score = 0.95;
-        // Rerank cohort: low sigmoid scores that, before this fix, would
-        // have lost the sort to the cosine tail.
+        // Rerank cohort: low sigmoid scores that must still outrank the cosine
+        // tail rather than losing the sort to it.
         let scores = vec![0.1f32, 0.05, 0.2];
         super::apply_rerank_scores(&mut results, scores, 10);
         assert_eq!(
@@ -1661,13 +1622,13 @@ mod tests {
         );
     }
 
-    // ===== TC-HAP-V1.33-10: resolve_reranker config-path coverage =====
+    // ===== resolve_reranker config-path coverage =====
     //
-    // P1.7 fix shipped `OnnxReranker::with_section(section: Option<...>)`
-    // so `.cqs.toml` `[reranker]` `preset` / `model_path` / `tokenizer_path`
-    // override the hardcoded default. These tests pin the precedence chain
-    // documented at line 57-58 ("CLI → CQS_RERANKER_MODEL → [reranker]
-    // model_path → [reranker] preset → hardcoded ms-marco-minilm").
+    // `OnnxReranker::with_section(section: Option<...>)` lets `.cqs.toml`
+    // `[reranker]` `preset` / `model_path` / `tokenizer_path` override the
+    // hardcoded default. These tests pin the precedence chain
+    // ("CLI → CQS_RERANKER_MODEL → [reranker] model_path → [reranker] preset →
+    // hardcoded ms-marco-minilm").
     //
     // Pure-config — no ONNX runtime needed, just `aux_model::resolve`
     // dispatch. CQS_RERANKER_MODEL must be unset for deterministic
@@ -1676,7 +1637,7 @@ mod tests {
     use std::sync::Mutex;
     static RERANKER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// TC-HAP-V1.33-10: `[reranker] preset = "ms-marco-minilm"` resolves
+    /// `[reranker] preset = "ms-marco-minilm"` resolves
     /// to the canonical preset config. Pins the preset branch (line 5 of
     /// the precedence chain documented at reranker.rs:57-58).
     #[test]
@@ -1714,7 +1675,7 @@ mod tests {
         );
     }
 
-    /// TC-HAP-V1.33-10: when no `[reranker]` section is provided,
+    /// When no `[reranker]` section is provided,
     /// `resolve_reranker` falls back to the hardcoded default preset
     /// (`ms-marco-minilm`). Pins the last branch of the precedence chain.
     #[test]
@@ -1737,7 +1698,7 @@ mod tests {
         );
     }
 
-    /// TC-HAP-V1.33-10: model-loading variant — covers the full
+    /// Model-loading variant — covers the full
     /// `OnnxReranker::with_section` construction path. Gated `#[ignore]`
     /// because the lazy session load that follows construction needs the
     /// real ONNX model, but with_section itself only stores the section

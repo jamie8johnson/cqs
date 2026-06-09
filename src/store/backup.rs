@@ -19,8 +19,8 @@
 //! Backups are pruned on success: the newest two (including the one just
 //! written) are kept, older ones are deleted.
 //!
-//! Precedent: `src/hnsw/persist.rs:389-406` uses an identical
-//! save-with-backup-and-rollback pattern for HNSW graph files.
+//! `src/hnsw/persist.rs` uses an identical save-with-backup-and-rollback
+//! pattern for HNSW graph files.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -62,13 +62,13 @@ pub(crate) const KEEP_BACKUPS: usize = 3;
 /// the DB's filesystem — `atomic_replace`'s cheap rename path works without
 /// falling back to cross-device copy.
 ///
-/// DS-V1.33-5: includes `std::process::id()` and `crate::temp_suffix()` so
-/// two CLI processes running migrations concurrently (rare but realistic on
-/// a build farm or under a CI matrix) cannot collide on the same backup
-/// filename. Without per-process disambiguation, second-resolution timestamps
-/// (and the `0` fallback on a clock anomaly) make collisions deterministic.
-/// The `prune_old_backups` regex tolerates arbitrary middle content so the
-/// only-newest-N-mtime sort still works without changes.
+/// Includes `std::process::id()` and `crate::temp_suffix()` so two CLI
+/// processes running migrations concurrently (rare but realistic on a build
+/// farm or under a CI matrix) cannot collide on the same backup filename.
+/// Without per-process disambiguation, second-resolution timestamps (and the
+/// `0` fallback on a clock anomaly) make collisions deterministic. The
+/// `prune_old_backups` regex tolerates arbitrary middle content so the
+/// only-newest-N-mtime sort still works.
 pub(crate) fn backup_path_for(db_path: &Path, from: i32, to: i32) -> PathBuf {
     let dir = db_path.parent().unwrap_or(Path::new("."));
     let stem = db_path
@@ -142,7 +142,7 @@ pub(crate) async fn backup_before_migrate(
             Ok(Some(backup_db))
         }
         Err(e) => {
-            // DS2-8: require-backup is now the default. Opt-out via
+            // Require-backup is the default. Opt-out via
             // CQS_MIGRATE_REQUIRE_BACKUP=0 for environments where the user
             // accepts the data-loss risk (e.g. tight-quota WSL 9P mounts, CI
             // rebuilding from source). The v18→v19 migration is destructive
@@ -179,16 +179,15 @@ pub(crate) async fn backup_before_migrate(
 
 /// Restore a DB file (+ WAL/SHM sidecars) from a backup. Called on migration
 /// failure to leave the DB in its pre-migrate state. Uses `atomic_replace` so
-/// each individual file write is per-file atomic. The restore SEQUENCE is
-/// kill-safe in the following ordering: live sidecars are unlinked first
-/// (DS-V1.40-3), then the main DB is restored, then the backup's sidecars
-/// (if any). A kill at any point leaves either pre-migrate state (caller
-/// re-runs the failed migration) or pre-migrate state (SQLite recreates
-/// fresh sidecars from the restored main on next open). The pre-fix
-/// "post-migrate WAL contaminates restored pre-migrate main" failure mode
-/// is closed.
+/// each individual file write is per-file atomic. The restore sequence is
+/// kill-safe: live sidecars are unlinked first, then the main DB is restored,
+/// then the backup's sidecars (if any). A kill at any point leaves
+/// pre-migrate state — either the caller re-runs the failed migration, or
+/// SQLite recreates fresh sidecars from the restored main on next open. This
+/// avoids a "post-migrate WAL contaminates restored pre-migrate main"
+/// failure mode.
 ///
-/// # P2.59 — caller contract (must close pool first)
+/// # Caller contract (must close pool first)
 ///
 /// **Caller MUST close every SQLite pool open against `db_path` BEFORE
 /// calling.** SQLite's in-process pool holds file descriptors against the
@@ -213,22 +212,16 @@ pub(crate) async fn backup_before_migrate(
 pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<(), StoreError> {
     let _span = tracing::info_span!("restore_from_backup").entered();
 
-    // DS-V1.40-3: delete any live `-wal` / `-shm` sidecars BEFORE
-    // restoring the main DB. The live sidecars belong to the
-    // post-failure / failed-migration state — if they survive the
-    // restore, SQLite's next open will replay their frames against
-    // the restored main (which belongs to a different "lineage"),
-    // producing silent corruption that the integrity check can't
-    // detect. Pre-fix, `copy_triplet`'s in-order copy left the live
-    // WAL extant for the window between main restore and sidecar
-    // copy; a kill in that window (or after main, if the source had
-    // no sidecars to overwrite the live ones) produced the inverse
-    // problem of `copy_triplet`'s safe order.
+    // Delete any live `-wal` / `-shm` sidecars BEFORE restoring the main
+    // DB. The live sidecars belong to the failed-migration state — if they
+    // survive the restore, SQLite's next open replays their frames against
+    // the restored main (a different "lineage"), producing silent
+    // corruption the integrity check can't detect.
     //
-    // Removing first makes the failure ordering safe: a kill any
-    // time after this point and before the sidecar copy leaves
-    // (restored main + missing sidecars) — SQLite creates fresh
-    // sidecars on next open and the state is canonical pre-migrate.
+    // Removing first makes the failure ordering safe: a kill any time after
+    // this point and before the sidecar copy leaves (restored main +
+    // missing sidecars) — SQLite creates fresh sidecars on next open and
+    // the state is canonical pre-migrate.
     for ext in ["-wal", "-shm"] {
         let live_side = sidecar_path(db_path, ext);
         if live_side.exists() {
@@ -272,14 +265,12 @@ pub(crate) fn prune_old_backups(db_path: &Path) -> Result<(), StoreError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(it) => it,
         Err(e) => {
-            // DS-V1.38-5 (#1463): return Err so the caller's existing
-            // `if let Err(e) = prune_old_backups(...)` warn fires at the
-            // migration site every time. DS-V1.36-10 surfaced this at
-            // `error!` but returned `Ok(())` — invisible to the migration
-            // loop, so persistent permission glitches let `.bak-v*.db`
-            // accumulate without bound. The caller still treats this as
-            // non-fatal (the user's DB is at the correct version), so
-            // returning Err only changes log-stream visibility, not
+            // Return Err so the caller's `if let Err(e) =
+            // prune_old_backups(...)` warn fires at the migration site. A
+            // silent `Ok(())` here would let persistent permission glitches
+            // accumulate `.bak-v*.db` files without bound. The caller still
+            // treats this as non-fatal (the DB is at the correct version),
+            // so returning Err only changes log-stream visibility, not
             // migration outcome.
             return Err(StoreError::Io(e));
         }
@@ -501,24 +492,16 @@ mod tests {
         );
     }
 
-    /// DS-V1.40-3 regression: `restore_from_backup` must delete the
-    /// live `-wal` and `-shm` BEFORE restoring the main DB. The live
-    /// sidecars belong to the failed-migration state; if they survive
-    /// the restore, SQLite's next open replays their frames against
-    /// the restored main and silently corrupts the database.
+    /// `restore_from_backup` must delete the live `-wal` and `-shm` BEFORE
+    /// restoring the main DB. The live sidecars belong to the
+    /// failed-migration state; if they survive the restore, SQLite's next
+    /// open replays their frames against the restored main and silently
+    /// corrupts the database.
     ///
-    /// Pre-fix, `restore_from_backup` called `copy_triplet` directly,
-    /// which copied main first then sidecars — leaving the live WAL
-    /// extant during the window between main restore and sidecar
-    /// copy. Post-fix, the live sidecars are unlinked first, so any
-    /// kill in that window leaves (restored main + missing sidecars)
-    /// → SQLite creates fresh sidecars on next open. State is
-    /// canonical pre-migrate.
-    ///
-    /// This test arranges a backup with no sidecars (the cleanly-
-    /// closed case) + a live state with a stale -wal/-shm. After
-    /// `restore_from_backup` runs, both live sidecars must be gone
-    /// (deleted before restore) and the main must match the backup.
+    /// This test arranges a backup with no sidecars (the cleanly-closed
+    /// case) + a live state with a stale -wal/-shm. After
+    /// `restore_from_backup` runs, both live sidecars must be gone (deleted
+    /// before restore) and the main must match the backup.
     #[test]
     fn restore_from_backup_deletes_live_sidecars_before_restore() {
         let dir = tempfile::tempdir().unwrap();
@@ -580,11 +563,11 @@ mod tests {
     }
 
     // ============================================================================
-    // DS2-8: `CQS_MIGRATE_REQUIRE_BACKUP` defaults to on.
+    // `CQS_MIGRATE_REQUIRE_BACKUP` defaults to on.
     //
     // Serialised via a module-local mutex because `std::env::set_var` is
-    // process-global; running the two default-on and opt-out cases in
-    // parallel would race on the env var.
+    // process-global; running the default-on and opt-out cases in parallel
+    // would race on the env var.
     // ============================================================================
 
     /// Process-global mutex for the CQS_MIGRATE_REQUIRE_BACKUP env-var tests.
@@ -631,10 +614,9 @@ mod tests {
             .unwrap()
     }
 
-    /// DS2-8 happy path: when the env var is **unset**, a backup failure is
-    /// promoted to `Err`. The previous default was "warn and proceed", which
-    /// silently ran the destructive v18→v19 migration without a recovery
-    /// snapshot; the fix flips that so unset = require = hard error.
+    /// When the env var is **unset**, a backup failure is promoted to `Err`
+    /// (unset = require = hard error), so the destructive v18→v19 migration
+    /// never runs without a recovery snapshot.
     #[test]
     fn backup_failure_with_env_unset_returns_err_by_default() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -666,10 +648,10 @@ mod tests {
         });
     }
 
-    /// DS2-8 opt-out path: when the user sets `CQS_MIGRATE_REQUIRE_BACKUP=0`,
-    /// a backup failure is downgraded to `Ok(None)` and the migration proceeds
-    /// without a snapshot. Matches the documented escape hatch for tight-quota
-    /// filesystems and CI that can rebuild from source.
+    /// When the user sets `CQS_MIGRATE_REQUIRE_BACKUP=0`, a backup failure is
+    /// downgraded to `Ok(None)` and the migration proceeds without a
+    /// snapshot. The documented escape hatch for tight-quota filesystems and
+    /// CI that can rebuild from source.
     #[test]
     fn backup_failure_with_env_opt_out_returns_ok_none() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -701,9 +683,8 @@ mod tests {
         });
     }
 
-    /// DS2-8: `CQS_MIGRATE_REQUIRE_BACKUP=false` (the string, not `0`) should
-    /// also opt out — the env-var parse is case-insensitive. Guards against a
-    /// regression where only the literal `0` was accepted.
+    /// `CQS_MIGRATE_REQUIRE_BACKUP=false` (the string, not `0`) also opts
+    /// out — the env-var parse is case-insensitive.
     #[test]
     fn backup_failure_with_env_false_string_returns_ok_none() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -728,9 +709,9 @@ mod tests {
         });
     }
 
-    /// DS2-8: any value that is not `0`/`false` (e.g. `1`, `true`, or junk)
-    /// keeps the default require-backup behaviour. This protects against a
-    /// typo turning into silent data-loss risk.
+    /// Any value that is not `0`/`false` (e.g. `1`, `true`, or junk) keeps
+    /// the default require-backup behaviour, so a typo doesn't turn into a
+    /// silent data-loss risk.
     #[test]
     fn backup_failure_with_env_garbage_value_still_returns_err() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

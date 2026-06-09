@@ -9,19 +9,18 @@
 //!   + 16 MiB page cache (allocated immediately)
 //! - **Embedder**: ~500MB for ONNX model (lazy-loaded on first file change)
 //!
-//! ### Background-rebuild peak (#1344 / RM-V1.33-4)
+//! ### Background-rebuild peak
 //!
 //! When `spawn_hnsw_rebuild` fires, the rebuild thread opens a second
-//! read-only `Store` handle to stream chunks for the new HNSW index. As of
-//! this fix that handle uses [`Store::open_readonly`] (64 MiB mmap + 4 MiB
-//! cache) instead of the prior [`Store::open_readonly_pooled`] (256 + 16) —
-//! shaves ~200 MiB off the rebuild-window peak. The build_hnsw_index_owned
-//! pipeline streams chunks via the batched embedding API, so the smaller
-//! mmap doesn't hurt rebuild throughput. Rebuild-window peak now:
+//! read-only `Store` handle to stream chunks for the new HNSW index. That
+//! handle uses [`Store::open_readonly`] (64 MiB mmap + 4 MiB cache) to keep
+//! the rebuild-window peak low. The build_hnsw_index_owned pipeline streams
+//! chunks via the batched embedding API, so the smaller mmap doesn't hurt
+//! rebuild throughput. Rebuild-window peak:
 //!
 //! ```text
 //! main store     :  ~272 MiB (256 mmap + 16 cache)
-//! rebuild store  :   ~68 MiB (64 mmap + 4 cache)        ← was 272 MiB
+//! rebuild store  :   ~68 MiB (64 mmap + 4 cache)
 //! enriched HNSW  :  ~50–200 MiB (live, in main process)
 //! rebuild HNSW   :  ~50–200 MiB (under construction, in rebuild thread)
 //! ```
@@ -107,13 +106,13 @@ mod daemon;
 
 /// Immutable references shared across the watch loop.
 ///
-/// Does not include `Store` because it is re-opened each cycle (DS-9).
+/// Does not include `Store` because it is re-opened each cycle.
 ///
-/// RM-V1.25-28: `embedder` now points at a shared `Arc<OnceLock<Arc<Embedder>>>`
-/// that the daemon thread also holds. First side to populate it wins; the
-/// other side's future lazy-init short-circuits to the same instance.
-/// Eliminates the ~500 MB duplicate footprint that existed when the outer
-/// watch loop and the daemon thread each owned independent OnceLocks.
+/// `embedder` points at a shared `Arc<OnceLock<Arc<Embedder>>>` that the
+/// daemon thread also holds. First side to populate it wins; the other
+/// side's lazy-init short-circuits to the same instance. This keeps the
+/// outer watch loop and the daemon thread from each owning a ~500 MB
+/// duplicate embedder.
 struct WatchConfig<'a> {
     root: &'a Path,
     cqs_dir: &'a Path,
@@ -123,18 +122,18 @@ struct WatchConfig<'a> {
     embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     quiet: bool,
     model_config: &'a ModelConfig,
-    /// #1002: gitignore matcher for the project. `None` if
+    /// gitignore matcher for the project. `None` if
     /// `CQS_WATCH_RESPECT_GITIGNORE=0`, `--no-ignore` was passed, or the
     /// `.gitignore` file is missing/unreadable. Wrapped in `RwLock` so the
     /// watch loop can hot-swap it on `.gitignore` change without a restart.
     gitignore: &'a std::sync::RwLock<Option<ignore::gitignore::Gitignore>>,
-    /// #1004: SPLADE encoder held resident in the daemon so incremental
+    /// SPLADE encoder held resident in the daemon so incremental
     /// reindex cycles can encode sparse vectors for new/changed chunks.
     /// `None` when the SPLADE model is absent, fails to load, or
     /// `CQS_WATCH_INCREMENTAL_SPLADE=0`. `Mutex` serializes GPU access
     /// since the encoder holds a CUDA context.
     splade_encoder: Option<&'a std::sync::Mutex<cqs::splade::SpladeEncoder>>,
-    /// #1129: project-scoped global embedding cache (per-project, shared
+    /// Project-scoped global embedding cache (per-project, shared
     /// across slots). `Some` when the cache opened cleanly at daemon
     /// startup; `None` when `CQS_CACHE_ENABLED=0` is set or the open
     /// failed. `reindex_files` consults this cache before the store's
@@ -153,42 +152,39 @@ struct WatchState {
     last_indexed_mtime: HashMap<PathBuf, SystemTime>,
     hnsw_index: Option<HnswIndex>,
     incremental_count: usize,
-    /// RM-V1.25-23: number of file events dropped this debounce cycle
-    /// because pending_files was at cap. Logged once per cycle in
+    /// Number of file events dropped this debounce cycle because
+    /// pending_files was at cap. Logged once per cycle in
     /// process_file_changes, cleared after.
     dropped_this_cycle: usize,
-    /// #1090: when a background HNSW rebuild is running, the watch loop
+    /// When a background HNSW rebuild is running, the watch loop
     /// queues new (chunk_id, embedding) pairs here so they can be replayed
     /// into the rebuilt Owned index before the swap. `None` while no
     /// rebuild is in flight.
     pending_rebuild: Option<PendingRebuild>,
-    /// PF-V1.30.1-1: throttle the per-tick `fs::metadata(index_path)` call
-    /// in [`publish_watch_snapshot`]. Snapshots fire every ~100 ms, and
+    /// Throttle the per-tick `fs::metadata(index_path)` call in
+    /// [`publish_watch_snapshot`]. Snapshots fire every ~100 ms, and
     /// `last_synced_at` is whole-second resolution anyway — restating
     /// every tick burns a `stat()` syscall (and on WSL 9P, ~ms latency).
     /// Cache the most-recent reading and only re-stat after this throttle
     /// window elapses.
     last_metadata_check: std::time::Instant,
-    /// PF-V1.30.1-1: cached `last_synced_at` value reused between
-    /// throttled stat calls. `None` ⇒ index.db missing or mtime
-    /// unreadable on the last stat.
+    /// Cached `last_synced_at` value reused between throttled stat calls.
+    /// `None` ⇒ index.db missing or mtime unreadable on the last stat.
     cached_last_synced_at: Option<i64>,
-    /// DS-V1.30.1-D4 (#1232): slot name resolved at startup. Cloned
-    /// into the watch snapshot every publish so `daemon_status`
-    /// callers (specifically `cqs slot remove`) can know which slot
-    /// the daemon is serving and refuse to unlink it. Owned String
-    /// rather than borrow because `WatchState` outlives the per-tick
-    /// `WatchSnapshotInput`.
+    /// Slot name resolved at startup. Cloned into the watch snapshot every
+    /// publish so `daemon_status` callers (specifically `cqs slot remove`)
+    /// can know which slot the daemon is serving and refuse to unlink it.
+    /// Owned String rather than borrow because `WatchState` outlives the
+    /// per-tick `WatchSnapshotInput`.
     active_slot: String,
 }
 
-/// PF-V1.30.1-1: how often the watch loop re-stats `index.db` for the
-/// `last_synced_at` field on `WatchSnapshot`. 10 s matches the whole-second
-/// wire resolution; tighter than this would re-stat without giving
-/// observers any new bits.
+/// How often the watch loop re-stats `index.db` for the `last_synced_at`
+/// field on `WatchSnapshot`. 10 s matches the whole-second wire resolution;
+/// tighter than this would re-stat without giving observers any new bits.
 const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// #1182: publish a fresh `WatchSnapshot` into the shared `Arc<RwLock<...>>`
+/// Publish a fresh `WatchSnapshot` into the shared `Arc<RwLock<...>>`
 /// the daemon thread reads through. Called once per outer watch-loop tick.
 ///
 /// Pure assemble-and-write: pulls the relevant counters off `state`, reads
@@ -196,22 +192,20 @@ const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(
 /// state-machine value, and replaces the snapshot under a brief write lock.
 /// The lock is held only for the move; readers never block on real work.
 ///
-/// PF-V1.30.1-1: takes `&mut WatchState` so the `last_synced_at` stat call
-/// can be throttled via the cache. Without throttling this fires every
-/// ~100 ms tick, paying a syscall (ms-scale on WSL 9P) for whole-second
-/// wire data — wasted budget.
+/// Takes `&mut WatchState` so the `last_synced_at` stat call can be
+/// throttled via the cache. Without throttling this fires every ~100 ms
+/// tick, paying a syscall (ms-scale on WSL 9P) for whole-second wire data.
 fn publish_watch_snapshot(
     handle: &cqs::watch_status::SharedWatchSnapshot,
     fresh_notifier: &cqs::watch_status::SharedFreshNotifier,
     state: &mut WatchState,
     index_path: &std::path::Path,
 ) {
-    // PF-V1.30.1-1: only re-stat when the cache has expired. Snapshots
-    // fire every ~100 ms but `last_synced_at` is whole-second resolution
-    // — re-stating every tick burns a syscall for no observer-visible
-    // change. The cache is invalidated after `LAST_SYNCED_REFRESH`.
-    // RB-3: surface overflow as None (treated same as "missing mtime")
-    // instead of silently wrapping past `i64::MAX`.
+    // Only re-stat when the cache has expired. Snapshots fire every ~100 ms
+    // but `last_synced_at` is whole-second resolution — re-stating every
+    // tick burns a syscall for no observer-visible change. The cache is
+    // invalidated after `LAST_SYNCED_REFRESH`. Overflow surfaces as None
+    // (treated same as "missing mtime") instead of wrapping past `i64::MAX`.
     let last_synced_at = if state.last_metadata_check.elapsed() >= LAST_SYNCED_REFRESH {
         let fresh = std::fs::metadata(index_path)
             .ok()
@@ -245,11 +239,9 @@ fn publish_watch_snapshot(
     // Poison-recovery: another writer panicking shouldn't silently stop
     // freshness publishing. Recover and overwrite.
     //
-    // bundle-watch-status-machine / OB-V1.30.1-3: capture the previous
-    // state under the lock so we can emit a transition log line *after*
-    // releasing it. Operators see a journal trail for Fresh↔Stale↔
-    // Rebuilding flips; the loop wrote 100 ms updates with zero state
-    // observability before this. `WatchSnapshot` derives `Clone` and
+    // Capture the previous state under the lock so we can emit a transition
+    // log line *after* releasing it. Operators see a journal trail for
+    // Fresh↔Stale↔Rebuilding flips. `WatchSnapshot` derives `Clone` and
     // `FreshnessState` is `Copy`, so the clone-for-log cost is negligible.
     let prev_state;
     let next_snap = snap.clone();
@@ -277,30 +269,26 @@ fn publish_watch_snapshot(
         );
     }
 
-    // #1228 (RM-2): event-driven freshness wake-up. The notifier
-    // dedupes on idempotent `false → false` and `true → true` calls
-    // (cheap mutex acquire + boolean compare), so calling it every
-    // 100 ms tick is fine — only `false → true` transitions issue a
-    // `notify_all` to parked `wait_fresh` clients.
+    // Event-driven freshness wake-up. The notifier dedupes on idempotent
+    // `false → false` and `true → true` calls (cheap mutex acquire +
+    // boolean compare), so calling it every 100 ms tick is fine — only
+    // `false → true` transitions issue a `notify_all` to parked
+    // `wait_fresh` clients.
     fresh_notifier.set_fresh(next_snap.is_fresh());
 }
 
-/// PB-3: Check if a path is under a WSL DrvFS automount root.
+/// Check if a path is under a WSL DrvFS automount root.
 ///
 /// Default automount root is `/mnt/`, but users can customize it via `automount.root`
 /// in `/etc/wsl.conf`.
 ///
-/// PL-V1.38-4 (#1463): delegates to `cqs::config::wsl_automount_root_or_default`
-/// so this helper and `is_wsl_drvfs_path` share a single OnceLock-cached
-/// source of truth. Pre-fix, the two helpers maintained independent
-/// caches and only the watch helper read `/etc/wsl.conf` — operators
-/// with custom `automount.root` had `coarse_fs_resolution` return 0
-/// instead of 2s for their `/win/c/...` paths.
+/// Delegates to `cqs::config::wsl_automount_root_or_default` so this helper
+/// and `is_wsl_drvfs_path` share a single OnceLock-cached source of truth.
 fn is_under_wsl_automount(path: &str) -> bool {
     path.starts_with(cqs::config::wsl_automount_root_or_default())
 }
 
-/// #1002: Build a `Gitignore` matcher rooted at the project, combining the
+/// Build a `Gitignore` matcher rooted at the project, combining the
 /// root `.gitignore` with any nested `.gitignore` files discovered by a
 /// single shallow walk. Returns `None` under any of:
 ///
@@ -355,12 +343,12 @@ fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> 
         }
     }
 
-    // Root-only .gitignore / .cqsignore in v1. Nested ignore files are not
-    // yet discovered — tracked as follow-up. `cqs index` uses the full
-    // `ignore` crate walk which supports nesting; the watch loop uses a
-    // per-event point query against a pre-built matcher and compile-time
-    // nesting would require rebuilding on every subdir change. Root-level
-    // covers the worktree-pollution + vendor-bundle motivating cases.
+    // Root-only .gitignore / .cqsignore. Nested ignore files are not
+    // discovered: `cqs index` uses the full `ignore` crate walk which
+    // supports nesting; the watch loop uses a per-event point query against
+    // a pre-built matcher, and nesting would require rebuilding on every
+    // subdir change. Root-level covers the worktree-pollution + vendor-bundle
+    // cases.
 
     match builder.build() {
         Ok(gi) => {
@@ -386,7 +374,7 @@ fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> 
 ///
 /// * `cli` - Command-line interface context
 /// * `debounce_ms` - Debounce interval in milliseconds for file change events
-/// * `no_ignore` - If true, skips `.gitignore` filtering in the watch loop (#1002).
+/// * `no_ignore` - If true, skips `.gitignore` filtering in the watch loop.
 ///   Mirrors the `cqs index --no-ignore` flag. When false (default), the watch
 ///   loop queries the project's `.gitignore` for every event and ignores matches.
 ///   Also overridable at runtime via `CQS_WATCH_RESPECT_GITIGNORE=0`.
@@ -409,9 +397,9 @@ pub fn cmd_watch(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_watch", debounce_ms, poll, serve, no_ignore).entered();
 
-    // RM-V1.25-9: install SIGTERM handler *before* spawning the socket
-    // thread so both the main loop and the accept loop observe the
-    // shutdown flag immediately when systemd stops the unit.
+    // Install SIGTERM handler *before* spawning the socket thread so both
+    // the main loop and the accept loop observe the shutdown flag
+    // immediately when systemd stops the unit.
     #[cfg(unix)]
     install_sigterm_handler();
 
@@ -425,8 +413,8 @@ pub fn cmd_watch(
     // the same answer with more syscalls and less portability across WSL versions.
     // If the project root is on a Linux filesystem inside WSL (e.g. /home/...), inotify works
     // fine and we leave use_poll false.
-    // PB-21: Also detect //wsl.localhost/ and //wsl$/ UNC paths
-    // PB-3: Check /etc/wsl.conf for custom automount.root (default is /mnt/)
+    // Also detect //wsl.localhost/ and //wsl$/ UNC paths.
+    // Check /etc/wsl.conf for custom automount.root (default is /mnt/).
     let use_poll = poll
         || (cqs::config::is_wsl()
             && root
@@ -437,8 +425,8 @@ pub fn cmd_watch(
         tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
     }
 
-    // SHL-V1.25-13: the 500ms default is tuned for inotify on native
-    // Linux. WSL DrvFS (/mnt/, //wsl$) exposes NTFS which has 1s mtime
+    // The 500ms default is tuned for inotify on native Linux.
+    // WSL DrvFS (/mnt/, //wsl$) exposes NTFS which has 1s mtime
     // resolution — anything under ~1000ms risks double-fire for a single
     // save. Poll mode also benefits from a longer window. When the user
     // did not override via flag or env, auto-bump to 1500ms for these
@@ -503,10 +491,9 @@ pub fn cmd_watch(
         // active at startup, but the socket is per-project not per-slot.
         let sock_path = super::daemon_socket_path(&project_cqs_dir);
         if sock_path.exists() {
-            // RM-V1.36-4: connect to the existing socket with a bounded
-            // timeout. A wedged peer (mid-shutdown / paused) that never
-            // accepts would otherwise hang `cqs watch --serve` startup
-            // indefinitely.
+            // Connect to the existing socket with a bounded timeout. A wedged
+            // peer (mid-shutdown / paused) that never accepts would otherwise
+            // hang `cqs watch --serve` startup indefinitely.
             let probe_timeout = std::time::Duration::from_millis(2_000);
             let probe_result = (|| -> std::io::Result<std::os::unix::net::UnixStream> {
                 let s = std::os::unix::net::UnixStream::connect(&sock_path)?;
@@ -522,21 +509,20 @@ pub fn cmd_watch(
                     );
                 }
                 Err(_) => {
-                    // SEC-V1.25-15 / PB-V1.25-19: don't blindly unlink whatever
-                    // is at sock_path — an attacker (or a stale test artifact)
-                    // could leave a symlink or regular file there and trick us
-                    // into deleting something we shouldn't. Use symlink_metadata
-                    // (no follow) and refuse to remove anything that isn't a
-                    // socket or a plain file in the cqs dir.
+                    // Don't blindly unlink whatever is at sock_path — an
+                    // attacker (or a stale test artifact) could leave a
+                    // symlink or regular file there and trick us into deleting
+                    // something we shouldn't. Use symlink_metadata (no follow)
+                    // and refuse to remove anything that isn't a socket or a
+                    // plain file in the cqs dir.
                     //
-                    // SEC-V1.36-10 (#1461): ensure the socket's parent
-                    // directory is 0o700 BEFORE the cleanup-then-bind
-                    // sequence. With a private parent dir, a hostile
-                    // local user can't plant their own socket at sock_path
-                    // during the TOCTOU gap between `remove_file` and
+                    // Ensure the socket's parent directory is 0o700 BEFORE the
+                    // cleanup-then-bind sequence. With a private parent dir, a
+                    // hostile local user can't plant their own socket at
+                    // sock_path during the TOCTOU gap between `remove_file` and
                     // `bind`. Failure to secure the parent (symlink, mode
-                    // tightening fails, etc.) is fatal — better to refuse
-                    // to start than serve from a world-writable dir.
+                    // tightening fails, etc.) is fatal — better to refuse to
+                    // start than serve from a world-writable dir.
                     if let Err(e) = cqs::daemon_translate::ensure_socket_parent_dir(&sock_path) {
                         anyhow::bail!(
                             "Failed to secure daemon socket parent directory: {} (SEC-V1.36-10)",
@@ -583,7 +569,7 @@ pub fn cmd_watch(
                 }
             }
         }
-        // SEC-D.6: between `bind()` (creates socket honoring umask) and
+        // Between `bind()` (creates socket honoring umask) and
         // `set_permissions(0o600)`, the socket inode is world-creatable
         // for ~ms. On `/tmp` fallback (`XDG_RUNTIME_DIR` unset) any local
         // user could connect during that window. Set umask to 0o077
@@ -622,21 +608,15 @@ pub fn cmd_watch(
         if !cli.quiet {
             println!("Daemon listening on {}", sock_path.display());
         }
-        // OB-NEW-2 / SEC-V1.30.1-8: Self-maintaining env snapshot —
-        // iterate every CQS_* variable instead of a hardcoded whitelist
-        // that drifts as new knobs are added. Env vars set on client
-        // subprocesses do NOT affect daemon-served queries; only the
-        // daemon's own env applies.
+        // Self-maintaining env snapshot — iterate every CQS_* variable
+        // instead of a hardcoded whitelist that drifts as new knobs are
+        // added. Env vars set on client subprocesses do NOT affect
+        // daemon-served queries; only the daemon's own env applies.
         //
         // Redact secrets — any var whose name *contains* a known secret
         // marker is logged with `<redacted len=N>` instead of the value.
-        // SEC-V1.36-2: switched from suffix-only to substring matching,
-        // added BEARER/AUTH/CRED/PASS to the marker set, and added a
-        // value-shape check that redacts any URL with embedded userinfo
-        // (`scheme://user:pass@host`). Suffix-only missed names that bury
-        // the marker mid-name (an _AUTH_TOKEN_HEADER suffix, a _BEARER
-        // suffix on an unrelated prefix, etc.), plus any URL carrying
-        // creds in CQS_LLM_API_BASE.
+        // A value-shape check also redacts any URL with embedded userinfo
+        // (`scheme://user:pass@host`), e.g. creds in CQS_LLM_API_BASE.
         const SECRET_MARKERS: &[&str] = &[
             "KEY", "TOKEN", "SECRET", "PASSWORD", "BEARER", "AUTH", "CRED", "PASS",
         ];
@@ -673,11 +653,10 @@ pub fn cmd_watch(
     let _socket_guard = socket_listener
         .as_ref()
         .map(|(_, path)| SocketCleanupGuard(path.clone()));
-    // PB-V1.25-2 / PB-V1.25-18: on non-unix platforms the daemon
-    // socket path is #[cfg(unix)]-only, so --serve would otherwise
-    // silently no-op. Warn both on stderr (so interactive users notice
-    // without --log-level=warn) and via tracing (for systemd-style
-    // journals that scrape our output).
+    // On non-unix platforms the daemon socket path is #[cfg(unix)]-only, so
+    // --serve would otherwise silently no-op. Warn both on stderr (so
+    // interactive users notice without --log-level=warn) and via tracing
+    // (for systemd-style journals that scrape our output).
     #[cfg(not(unix))]
     if serve {
         eprintln!(
@@ -687,26 +666,25 @@ pub fn cmd_watch(
         tracing::warn!("--serve requested on non-unix platform; daemon disabled");
     }
 
-    // RM-V1.25-28: Allocate the shared embedder slot before spawning the
-    // daemon thread so the Arc can be cloned into the thread's closure
-    // and adopted by its BatchContext. The slot starts empty; whichever
-    // side initializes first (daemon via `ctx.warm()` or watch via
-    // `try_init_embedder`) wins and the other reuses the same Arc.
+    // Allocate the shared embedder slot before spawning the daemon thread so
+    // the Arc can be cloned into the thread's closure and adopted by its
+    // BatchContext. The slot starts empty; whichever side initializes first
+    // (daemon via `ctx.warm()` or watch via `try_init_embedder`) wins and the
+    // other reuses the same Arc.
     let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
         std::sync::Arc::new(std::sync::OnceLock::new());
 
-    // #968: Build ONE tokio runtime and share it across the outer Store
-    // (read-write, for reindex writes) and the daemon thread's inner
-    // Store (read-only, for queries) plus its EmbeddingCache/QueryCache.
-    // Without this each constructor spawned its own 1-4 worker threads
-    // that never overlapped usefully. `shared_rt` must be declared before
-    // the daemon thread spawn below so we can `Arc::clone` into the
-    // closure; it stays alive until this function returns, after the
-    // daemon thread is joined.
+    // Build ONE tokio runtime and share it across the outer Store
+    // (read-write, for reindex writes) and the daemon thread's inner Store
+    // (read-only, for queries) plus its EmbeddingCache/QueryCache. Otherwise
+    // each constructor spawns its own 1-4 worker threads that never overlap
+    // usefully. `shared_rt` must be declared before the daemon thread spawn
+    // below so we can `Arc::clone` into the closure; it stays alive until
+    // this function returns, after the daemon thread is joined.
     let shared_rt = build_shared_runtime()
         .with_context(|| "Failed to build shared tokio runtime for daemon")?;
 
-    // #1182: shared `Arc<RwLock<WatchSnapshot>>` for cross-thread freshness
+    // Shared `Arc<RwLock<WatchSnapshot>>` for cross-thread freshness
     // publishing. Allocated *before* the daemon spawn so the Arc can be cloned
     // into both the watch loop (writer) and the daemon thread's BatchContext
     // (reader via `dispatch_status`). Initial value is the `unknown` snapshot;
@@ -714,23 +692,22 @@ pub fn cmd_watch(
     let watch_snapshot_handle: cqs::watch_status::SharedWatchSnapshot =
         cqs::watch_status::shared_unknown();
 
-    // #1182 — Layer 1: cross-thread one-shot reconcile signal. Allocated
-    // alongside `watch_snapshot_handle` so a single Arc clone reaches each
-    // side. Watch loop swaps it back to `false` after running the on-demand
-    // reconcile pass; daemon's `dispatch_reconcile` flips it to `true`.
+    // Cross-thread one-shot reconcile signal. Allocated alongside
+    // `watch_snapshot_handle` so a single Arc clone reaches each side. Watch
+    // loop swaps it back to `false` after running the on-demand reconcile
+    // pass; daemon's `dispatch_reconcile` flips it to `true`.
     let reconcile_signal_handle: cqs::watch_status::SharedReconcileSignal =
         cqs::watch_status::shared_reconcile_signal();
 
-    // #1228 (RM-2): cross-thread event-driven freshness notifier. Watch
-    // loop's `publish_watch_snapshot` calls `set_fresh` every cycle;
-    // the daemon's `wait_fresh` handler parks on `wait_until_fresh`.
-    // Replaces the prior client-side 250 ms-poll loop in
-    // `wait_for_fresh` — single round-trip, zero busy-poll.
+    // Cross-thread event-driven freshness notifier. Watch loop's
+    // `publish_watch_snapshot` calls `set_fresh` every cycle; the daemon's
+    // `wait_fresh` handler parks on `wait_until_fresh`. Single round-trip,
+    // zero busy-poll.
     let fresh_notifier_handle: cqs::watch_status::SharedFreshNotifier =
         cqs::watch_status::shared_fresh_notifier();
 
-    // #1182 — Layer 1: pick up a leftover `.cqs/.dirty` marker from a
-    // previous session where a git hook fired without a daemon listening.
+    // Pick up a leftover `.cqs/.dirty` marker from a previous session where
+    // a git hook fired without a daemon listening.
     // The hook touches this file as a fallback; on next daemon start we
     // promote it into a one-shot reconcile request and remove the marker.
     let dirty_marker_path = cqs_dir.join(".dirty");
@@ -753,20 +730,18 @@ pub fn cmd_watch(
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
     //
-    // RM-V1.25-8: keep the `JoinHandle` in a named `socket_thread` so the
-    // main loop can `.take().join()` it on shutdown with a bounded wait.
-    // Previously the handle was stashed under `_socket_thread` and dropped
-    // on function exit, detaching the thread. In that window the daemon's
-    // BatchContext (~500MB+ ONNX sessions, SQLite pool, HNSW Arc, optional
-    // CAGRA GPU resources) lived past the main loop's return with no
-    // WAL checkpoint and no `Drop` ordering. Under `cargo install` or shell
-    // Ctrl+C the orphaned thread could also block stdout writes.
+    // Keep the `JoinHandle` in a named `socket_thread` so the main loop can
+    // `.take().join()` it on shutdown with a bounded wait. A detached thread
+    // would let the daemon's BatchContext (~500MB+ ONNX sessions, SQLite
+    // pool, HNSW Arc, optional CAGRA GPU resources) live past the main loop's
+    // return with no WAL checkpoint and no `Drop` ordering — and under
+    // `cargo install` or shell Ctrl+C the orphaned thread could block stdout
+    // writes.
     #[cfg(unix)]
     let mut socket_thread: Option<std::thread::JoinHandle<()>> = if serve {
         if let Some((listener, _)) = socket_listener.take() {
-            // RM-V1.25-28: Clone the shared OnceLock into the daemon closure
-            // so both the outer watch loop and BatchContext see the same
-            // Arc<Embedder>.
+            // Clone the shared OnceLock into the daemon closure so both the
+            // outer watch loop and BatchContext see the same Arc<Embedder>.
             let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
             // Index-aware model resolution for the daemon's embedder. Prefer
             // the model recorded in the store metadata so a wrong-model
@@ -775,20 +750,20 @@ pub fn cmd_watch(
             // See ROADMAP.md "Embedder swap workflow" for the longer story.
             let daemon_model_config =
                 resolve_index_aware_model_for_watch(&index_path, &root, cli.model.as_deref())?;
-            // #968: Clone the shared runtime handle into the daemon closure so
-            // its BatchContext opens its Store/EmbeddingCache/QueryCache on
-            // the same multi-thread pool as the outer watch loop.
+            // Clone the shared runtime handle into the daemon closure so its
+            // BatchContext opens its Store/EmbeddingCache/QueryCache on the
+            // same multi-thread pool as the outer watch loop.
             let daemon_runtime = Arc::clone(&shared_rt);
-            // #1182: clone the shared snapshot Arc into the daemon thread.
+            // Clone the shared snapshot Arc into the daemon thread.
             let daemon_watch_snapshot = Arc::clone(&watch_snapshot_handle);
-            // #1182 — Layer 1: clone the reconcile-signal Arc too.
+            // Clone the reconcile-signal Arc too.
             let daemon_reconcile_signal = Arc::clone(&reconcile_signal_handle);
-            // #1228 (RM-2): clone the freshness notifier so the daemon's
-            // `wait_fresh` handler shares the same notifier the watch
-            // loop publishes through.
+            // Clone the freshness notifier so the daemon's `wait_fresh`
+            // handler shares the same notifier the watch loop publishes
+            // through.
             let daemon_fresh_notifier = Arc::clone(&fresh_notifier_handle);
             // Stays non-blocking: the accept loop below polls so it can
-            // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
+            // notice SHUTDOWN_REQUESTED on SIGTERM.
             let thread = daemon::spawn_daemon_thread(
                 listener,
                 daemon_embedder,
@@ -819,11 +794,11 @@ pub fn cmd_watch(
     );
     println!("Also watching: docs/notes.toml");
 
-    // v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6: watch does not run SPLADE
-    // encoding on new chunks. The v20 trigger on `chunks` DELETE ensures
-    // sparse correctness (the persisted splade.index.bin gets invalidated
-    // when chunks are removed), but newly-added chunks have no sparse
-    // vectors until a manual `cqs index` runs. If a user has
+    // Watch does not run SPLADE encoding on new chunks. The v20 trigger on
+    // `chunks` DELETE ensures sparse correctness (the persisted
+    // splade.index.bin gets invalidated when chunks are removed), but
+    // newly-added chunks have no sparse vectors until a manual `cqs index`
+    // runs. If a user has
     // CQS_SPLADE_MODEL set expecting full SPLADE coverage to be
     // maintained live, tell them up front that they still need to rerun
     // `cqs index` for fresh coverage on new chunks.
@@ -843,11 +818,11 @@ pub fn cmd_watch(
 
     let (tx, rx) = mpsc::channel();
 
-    // #1091: poll interval is separate from debounce. PollWatcher walks the
-    // entire tree on every tick — on WSL DrvFS each entry is a 9P round-trip,
-    // so 1500ms (the prior debounce-derived default) burns ~8% of one core
-    // continuously on a ~16k-file tree. Default to 5000ms (still fast enough
-    // for save → reindex), override with `CQS_WATCH_POLL_MS`. Inotify watchers
+    // Poll interval is separate from debounce. PollWatcher walks the entire
+    // tree on every tick — on WSL DrvFS each entry is a 9P round-trip, so a
+    // short interval burns ~8% of one core continuously on a ~16k-file tree.
+    // Default to 5000ms (still fast enough for save → reindex), override with
+    // `CQS_WATCH_POLL_MS`. Inotify watchers
     // ignore the value but the field exists in `Config`, so we set it
     // unconditionally and let the watcher type decide.
     let poll_ms = std::env::var("CQS_WATCH_POLL_MS")
@@ -865,7 +840,7 @@ pub fn cmd_watch(
         Box::new(RecommendedWatcher::new(tx, config)?)
     };
 
-    // P2.74: warn when the project tree approaches the inotify watch limit.
+    // Warn when the project tree approaches the inotify watch limit.
     // notify::watch(Recursive) registers a watch per directory; on distros
     // with the old default of 8192 a moderately-deep monorepo exhausts the
     // limit and per-subdir registration failures are silent. We don't fail
@@ -913,20 +888,19 @@ pub fn cmd_watch(
     });
 
     // Embedder is declared above (before daemon thread spawn) so its
-    // OnceLock can be shared with the daemon thread — see RM-V1.25-28.
+    // OnceLock can be shared with the daemon thread.
 
     // Open store and reuse across reindex operations within a cycle.
-    // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
-    // #968: `shared_rt` is declared above the daemon-thread spawn so the
-    // closure can `Arc::clone` it; the outer store shares that runtime
-    // here so the daemon's inner read-only store and its caches all run
-    // on one multi-thread pool instead of three isolated runtimes.
+    // Caches are cleared after each reindex cycle to drop stale OnceLock
+    // caches. The outer store shares `shared_rt` so the daemon's inner
+    // read-only store and its caches all run on one multi-thread pool
+    // instead of three isolated runtimes.
     let mut store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
-    // v24 / #1221: resolve the vendored-path prefix list once at daemon
-    // startup so all subsequent inserts (incremental + reconcile-driven)
-    // get correct `vendored` flags. Reads `[index].vendored_paths` from
+    // Resolve the vendored-path prefix list once at daemon startup so all
+    // subsequent inserts (incremental + reconcile-driven) get correct
+    // `vendored` flags. Reads `[index].vendored_paths` from
     // `.cqs.toml`; falls back to the built-in default list when absent.
     // Captured into a local `Vec<String>` so the DB-replaced reopen
     // paths below can re-stamp the freshly-opened Store without
@@ -941,7 +915,7 @@ pub fn cmd_watch(
     };
     store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
 
-    // DS-W5: Track the database file identity so we detect when `cqs index --force`
+    // Track the database file identity so we detect when `cqs index --force`
     // replaces it. Without this check, watch's Store handle would point at the
     // orphaned (renamed) inode and writes would silently vanish.
     let mut db_id = db_file_identity(&index_path);
@@ -949,23 +923,23 @@ pub fn cmd_watch(
     // Persistent HNSW state for incremental updates.
     //
     // The watch loop keeps an *Owned* HnswIndex in memory so `insert_batch`
-    // (line ~2480 below) can append new chunks without rebuilding the graph
-    // from scratch. After every `hnsw_rebuild_threshold()` incremental inserts
+    // can append new chunks without rebuilding the graph from scratch. After
+    // every `hnsw_rebuild_threshold()` incremental inserts
     // we trigger a full rebuild to clean orphan vectors (hnsw_rs has no
     // delete; updated chunks leave their old vectors behind).
     //
-    // #1090: at startup we load the persisted index from disk for instant
-    // search availability, and *immediately* spawn a background rebuild so
-    // we end up with an Owned variant ready before the first file save —
-    // without paying a 10-15s cold-start hit. The Loaded variant cannot be
-    // mutated (hnsw_rs constraint), so without this swap the first save
-    // after restart would fail incremental insert and force a synchronous
-    // full rebuild, blocking the editor for 15s. Spawning the rebuild
-    // off-thread keeps the daemon responsive throughout.
+    // At startup we load the persisted index from disk for instant search
+    // availability, and *immediately* spawn a background rebuild so we end up
+    // with an Owned variant ready before the first file save — without paying
+    // a 10-15s cold-start hit. The Loaded variant cannot be mutated (hnsw_rs
+    // constraint), so without this swap the first save after restart would
+    // fail incremental insert and force a synchronous full rebuild, blocking
+    // the editor for 15s. Spawning the rebuild off-thread keeps the daemon
+    // responsive throughout.
     //
-    // DS-35: starting `incremental_count` at threshold/2 (when we loaded an
-    // existing index) means stale orphans from prior sessions get cleaned
-    // sooner; the cleanup is now async too via the same pending_rebuild path.
+    // Starting `incremental_count` at threshold/2 (when we loaded an existing
+    // index) means stale orphans from prior sessions get cleaned sooner; the
+    // cleanup is async via the same pending_rebuild path.
     let (hnsw_index, incremental_count, pending_rebuild) =
         match HnswIndex::load_with_dim(cqs_dir.as_ref(), "index", store.dim()) {
             Ok(index) => {
@@ -986,10 +960,9 @@ pub fn cmd_watch(
                 (None, 0, None)
             }
             Err(e) => {
-                // v1.22.0 audit EH-7: previously `Err(_) => (None, 0)` treated
-                // DimensionMismatch, IO errors, and corruption the same as
-                // "first run." Now logs so the operator sees why the prior
-                // index was discarded.
+                // Log so the operator sees why the prior index was discarded
+                // (DimensionMismatch, IO error, corruption) rather than
+                // treating it silently as a first run.
                 tracing::warn!(error = %e, "Existing HNSW index unusable, rebuilding from scratch");
                 (None, 0, None)
             }
@@ -1001,12 +974,12 @@ pub fn cmd_watch(
     // new chunks with a different dim than the index, corrupting
     // incremental reindex.
     //
-    // EH-V1.38-1 (#1463): the lossy `stored_model_name()` returns `None`
-    // on real SQL errors (corrupt metadata, schema skew, sqlite I/O),
-    // not just on fresh DBs. Without surfacing the error the watch loop
-    // falls back to CLI/env/config resolution and silently writes
-    // wrong-dim embeddings into the live store. Use the strict variant
-    // and warn loudly on read failure so journald shows the cause.
+    // The lossy `stored_model_name()` returns `None` on real SQL errors
+    // (corrupt metadata, schema skew, sqlite I/O), not just on fresh DBs.
+    // Without surfacing the error the watch loop falls back to
+    // CLI/env/config resolution and silently writes wrong-dim embeddings
+    // into the live store. Use the strict variant and warn loudly on read
+    // failure so journald shows the cause.
     let stored_model_for_watch = match store.try_stored_model_name() {
         Ok(opt) => opt,
         Err(e) => {
@@ -1037,10 +1010,10 @@ pub fn cmd_watch(
     );
     let model_config = &model_config_owned;
 
-    // #1002: build the gitignore matcher once at startup. `no_ignore` (CLI)
+    // Build the gitignore matcher once at startup. `no_ignore` (CLI)
     // and `CQS_WATCH_RESPECT_GITIGNORE=0` (env) both disable it. Held in
-    // `RwLock<Option<_>>` so a future follow-up can hot-swap on
-    // `.gitignore` change without restart; v1 builds it once.
+    // `RwLock<Option<_>>` so a `.gitignore` change can be hot-swapped
+    // without restart.
     let gitignore = std::sync::RwLock::new(if no_ignore {
         tracing::info!("--no-ignore passed — gitignore filtering disabled");
         None
@@ -1048,10 +1021,10 @@ pub fn cmd_watch(
         build_gitignore_matcher(&root)
     });
 
-    // #1024: Daemon startup GC. Two-pass sweep — drop chunks whose origin
-    // is gone from disk (Pass 1) and drop chunks whose path is now matched
-    // by `.gitignore` (Pass 2, retroactive cleanup of pre-v1.26.0 worktree
-    // pollution). Only runs in `--serve` mode (the systemd unit) and is
+    // Daemon startup GC. Two-pass sweep — drop chunks whose origin is gone
+    // from disk (Pass 1) and drop chunks whose path is now matched by
+    // `.gitignore` (Pass 2, retroactive cleanup of worktree pollution).
+    // Only runs in `--serve` mode (the systemd unit) and is
     // disabled by `CQS_DAEMON_STARTUP_GC=0`. Synchronous on the main
     // thread so the daemon socket sees a clean index from the first
     // accepted connection.
@@ -1064,12 +1037,12 @@ pub fn cmd_watch(
     if serve {
         match try_acquire_index_lock(&cqs_dir) {
             Ok(Some(gc_lock)) => {
-                // EH-V1.29-8: Recover from RwLock poison. A poisoned read
-                // usually means a writer panicked mid-update; the previously-
-                // written matcher is still valid data. Dropping to "no
-                // matcher" silently re-indexes ignored files (including
-                // `.env.secret`). `into_inner()` on the `PoisonError` keeps
-                // the matcher visible.
+                // Recover from RwLock poison. A poisoned read usually means a
+                // writer panicked mid-update; the written matcher is still
+                // valid data. Dropping to "no matcher" would silently
+                // re-index ignored files (including `.env.secret`).
+                // `into_inner()` on the `PoisonError` keeps the matcher
+                // visible.
                 let matcher_guard = match gitignore.read() {
                     Ok(g) => Some(g),
                     Err(poisoned) => {
@@ -1103,7 +1076,7 @@ pub fn cmd_watch(
         }
     }
 
-    // #1004: build the SPLADE encoder once at startup. `None` means
+    // Build the SPLADE encoder once at startup. `None` means
     // incremental SPLADE is disabled for this daemon lifetime — either
     // the model isn't configured, failed to load, or the operator set
     // `CQS_WATCH_INCREMENTAL_SPLADE=0`. Existing sparse vectors in the
@@ -1112,14 +1085,12 @@ pub fn cmd_watch(
     let splade_encoder_ref: Option<&std::sync::Mutex<cqs::splade::SpladeEncoder>> =
         splade_encoder_storage.as_ref();
 
-    // #1129: open the project-scoped global embedding cache once at daemon
-    // startup so reindex cycles can hit it without paying open() per cycle.
-    // Mirrors the bulk pipeline's gating on `CQS_CACHE_ENABLED=0`. Open
-    // failure is best-effort: log and continue with `None`, identical to
-    // the bulk path's degradation.
-    //
-    // Reuse `shared_rt` so this Cache piggybacks on the same worker pool
-    // as the outer Store, daemon Store/Cache, etc. (#968).
+    // Open the project-scoped global embedding cache once at daemon startup
+    // so reindex cycles can hit it without paying open() per cycle. Mirrors
+    // the bulk pipeline's gating on `CQS_CACHE_ENABLED=0`. Open failure is
+    // best-effort: log and continue with `None`, identical to the bulk
+    // path's degradation. Reuses `shared_rt` so this Cache piggybacks on the
+    // same worker pool as the outer Store, daemon Store/Cache, etc.
     let global_cache_storage: Option<cqs::cache::EmbeddingCache> = {
         if std::env::var("CQS_CACHE_ENABLED").as_deref() == Ok("0") {
             tracing::info!(
@@ -1179,9 +1150,9 @@ pub fn cmd_watch(
         incremental_count,
         dropped_this_cycle: 0,
         pending_rebuild,
-        // PF-V1.30.1-1: seed throttle so the very first publish tick does
-        // re-stat `index.db` (the cache starts empty). After that the
-        // cadence is `LAST_SYNCED_REFRESH` between calls. `checked_sub`
+        // Seed throttle so the very first publish tick does re-stat
+        // `index.db` (the cache starts empty). After that the cadence is
+        // `LAST_SYNCED_REFRESH` between calls. `checked_sub`
         // guards against the (theoretical) freshly-booted-machine case
         // where `Instant::now()` is < `LAST_SYNCED_REFRESH` since boot —
         // falling back to `Instant::now()` just means the *second* tick
@@ -1194,12 +1165,12 @@ pub fn cmd_watch(
     };
 
     let mut cycles_since_clear: u32 = 0;
-    // RM-V1.25-5: Track last eviction of the global embedding cache so
-    // the reindex path only trims once per hour, keeping the WAL file
-    // from churning on every micro-edit.
+    // Track last eviction of the global embedding cache so the reindex path
+    // only trims once per hour, keeping the WAL file from churning on every
+    // micro-edit.
     let mut last_cache_evict = std::time::Instant::now();
 
-    // #1024: Track last periodic GC tick. Initialised to "now" so the
+    // Track last periodic GC tick. Initialised to "now" so the
     // first periodic sweep doesn't fire until the full interval
     // (`daemon_periodic_gc_interval_secs()`) has elapsed after startup —
     // the startup pass already covered the initial state.
@@ -1212,16 +1183,16 @@ pub fn cmd_watch(
     }
     let mut last_periodic_gc = std::time::Instant::now();
 
-    // RM-V1.38-7 (#1463): cadence for the age-only prune of
-    // `last_indexed_mtime`. Pre-fix the prune only fired when the map
-    // crossed `CQS_WATCH_PRUNE_SIZE_THRESHOLD`; daemons running below
-    // the threshold for weeks accumulated stale entries forever. This
-    // tick fires once per hour from the idle branch.
+    // Cadence for the age-only prune of `last_indexed_mtime`. The size-gated
+    // prune only fires when the map crosses
+    // `CQS_WATCH_PRUNE_SIZE_THRESHOLD`; this age-only tick fires once per
+    // hour from the idle branch so daemons that stay below the threshold
+    // still shed stale entries.
     const LAST_INDEXED_AGE_PRUNE_INTERVAL_SECS: u64 = 3600;
     let mut last_age_prune = std::time::Instant::now();
 
-    // #1182 Layer 2: periodic full-tree reconciliation cadence. Same
-    // gating model as the GC tick — `--serve` only, opt-out via
+    // Periodic full-tree reconciliation cadence. Same gating model as the
+    // GC tick — `--serve` only, opt-out via
     // `CQS_WATCH_RECONCILE=0`. Initialised to "now" so the first tick
     // fires on the same `daemon_reconcile_interval_secs()` cadence as
     // every subsequent one (no startup walk; the inotify watcher already
@@ -1239,10 +1210,10 @@ pub fn cmd_watch(
                 collect_events(&event, &watch_cfg, &mut state);
             }
             Ok(Err(e)) => {
-                // P3-4 (audit v1.33.0): include `kind` and `paths` so
-                // operators can distinguish MaxFilesWatch (raise sysctl) from
-                // Io(broken pipe) (restart daemon). Display alone collapses
-                // the discriminator and drops paths.
+                // Include `kind` and `paths` so operators can distinguish
+                // MaxFilesWatch (raise sysctl) from Io(broken pipe) (restart
+                // daemon). Display alone collapses the discriminator and drops
+                // paths.
                 warn!(
                     error = %e,
                     kind = ?e.kind,
@@ -1251,8 +1222,8 @@ pub fn cmd_watch(
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // #1182 — Layer 1: out-of-band reconcile request. The
-                // daemon's `dispatch_reconcile` flips this AtomicBool to
+                // Out-of-band reconcile request. The daemon's
+                // `dispatch_reconcile` flips this AtomicBool to
                 // `true` when a `cqs hook fire` client posts a
                 // `reconcile` socket message. Bypasses the periodic
                 // tick's idle gating: a git operation is itself the
@@ -1301,7 +1272,7 @@ pub fn cmd_watch(
                 if should_process {
                     cycles_since_clear = 0;
 
-                    // DS-1: Acquire index lock before reindexing. If another process
+                    // Acquire index lock before reindexing. If another process
                     // (cqs index, cqs gc) holds it, skip this cycle.
                     let lock = match try_acquire_index_lock(&cqs_dir) {
                         Ok(Some(lock)) => lock,
@@ -1315,14 +1286,14 @@ pub fn cmd_watch(
                         }
                     };
 
-                    // DS-W5: Detect if `cqs index --force` replaced the database
+                    // Detect if `cqs index --force` replaced the database
                     // while we were waiting. If so, reopen the Store before processing
                     // any changes — otherwise writes go to the orphaned inode.
                     let current_id = db_file_identity(&index_path);
                     if current_id != db_id {
                         info!("index.db replaced (likely cqs index --force), reopening store");
                         drop(store);
-                        // #968: reuse the shared runtime on re-open so the
+                        // Reuse the shared runtime on re-open so the
                         // replacement store keeps running on the same
                         // multi-thread worker pool as its predecessor.
                         store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
@@ -1332,20 +1303,18 @@ pub fn cmd_watch(
                                     index_path.display()
                                 )
                             })?;
-                        // v24 / #1221: re-stamp the vendored prefix list on
-                        // the fresh Store — the OnceLock is per-instance and
-                        // a brand-new Store starts empty. Use the cached
-                        // resolution from startup so we don't re-read
-                        // .cqs.toml mid-watch.
+                        // Re-stamp the vendored prefix list on the fresh Store
+                        // — the OnceLock is per-instance and a brand-new Store
+                        // starts empty. Use the cached resolution from startup
+                        // so we don't re-read .cqs.toml mid-watch.
                         store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
-                        // db_id updated below in the DS-9 reopen path
+                        // db_id updated below in the cache-clear path.
                         state.hnsw_index = None;
                         state.incremental_count = 0;
-                        // DS-V1.30.1-D1: drop in-flight rebuild whose pending
-                        // delta references OLD DB chunk IDs. The rebuild
-                        // thread will tx.send(...) into a dropped receiver
-                        // (no-op per rebuild.rs:289). Force a fresh rebuild
-                        // on the next threshold tick against the new DB.
+                        // Drop in-flight rebuild whose pending delta references
+                        // OLD DB chunk IDs. The rebuild thread sends into a
+                        // dropped receiver (no-op). Force a fresh rebuild on
+                        // the next threshold tick against the new DB.
                         if state.pending_rebuild.take().is_some() {
                             tracing::info!(
                                 "discarded in-flight HNSW rebuild after DB replacement; \
@@ -1363,25 +1332,22 @@ pub fn cmd_watch(
                         process_note_changes(&root, &store, cli.quiet);
                     }
 
-                    // DS-9: Re-open Store to clear stale OnceLock caches
-                    // (call_graph_cache, test_chunks_cache). The documented contract
-                    // in store/mod.rs requires re-opening after index changes.
-                    // DS-9 / RM-6: Clear caches instead of full re-open.
-                    // Avoids pool teardown + runtime creation + PRAGMA setup
-                    // on every reindex cycle over 24/7 systemd lifetime.
+                    // Clear stale OnceLock caches (call_graph_cache,
+                    // test_chunks_cache) after index changes. Clear caches
+                    // instead of a full re-open to avoid pool teardown +
+                    // runtime creation + PRAGMA setup on every reindex cycle
+                    // over a 24/7 systemd lifetime.
                     store.clear_caches();
                     db_id = db_file_identity(&index_path);
 
-                    // RM-V1.25-5: Periodically evict the global embedding
-                    // cache so long-running watch sessions don't let the
-                    // shared ~/.cache/cqs/embeddings.db grow past its
+                    // Periodically evict the global embedding cache so
+                    // long-running watch sessions don't let the shared
+                    // ~/.cache/cqs/embeddings.db grow past its
                     // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
                     // `last_cache_evict.elapsed()` so we don't churn the
-                    // SQLite file on every single reindex cycle.
-                    //
-                    // #968: reuse the shared runtime so this one-shot eviction
-                    // piggybacks on the existing worker pool rather than
-                    // spinning up a fresh current_thread runtime.
+                    // SQLite file on every single reindex cycle. Reuses the
+                    // shared runtime so this one-shot eviction piggybacks on
+                    // the existing worker pool.
                     if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
                         let project_cqs_dir = cqs::resolve_index_dir(&root);
                         let cache_path =
@@ -1394,15 +1360,14 @@ pub fn cmd_watch(
                         last_cache_evict = std::time::Instant::now();
                     }
 
-                    // DS-1: Release lock after all reindex work (including HNSW rebuild)
+                    // Release lock after all reindex work (including HNSW rebuild).
                     drop(lock);
                 } else {
-                    // RM-V1.38-7 (#1463): age-only prune fires hourly on
-                    // idle ticks regardless of map size. The size-gated
-                    // `prune_last_indexed_mtime` still runs in the event
-                    // path; this idle-tick variant catches daemons that
-                    // sit below the threshold but accumulate stale
-                    // entries from deleted/moved files.
+                    // Age-only prune fires hourly on idle ticks regardless of
+                    // map size. The size-gated `prune_last_indexed_mtime`
+                    // still runs in the event path; this idle-tick variant
+                    // catches daemons that sit below the threshold but
+                    // accumulate stale entries from deleted/moved files.
                     if last_age_prune.elapsed()
                         >= Duration::from_secs(LAST_INDEXED_AGE_PRUNE_INTERVAL_SECS)
                     {
@@ -1422,27 +1387,26 @@ pub fn cmd_watch(
                     // Clear embedder session and HNSW index after ~5 minutes idle
                     // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.
                     //
-                    // RM-V1.25-28: the shared Arc<Embedder> is also held by
-                    // the daemon thread's BatchContext. clear_session is
-                    // safe either way: the ONNX session is behind a Mutex
-                    // and the tokenizer is Mutex<Option<Arc<…>>>.
+                    // The shared Arc<Embedder> is also held by the daemon
+                    // thread's BatchContext. clear_session is safe either way:
+                    // the ONNX session is behind a Mutex and the tokenizer is
+                    // Mutex<Option<Arc<…>>>.
                     if cycles_since_clear >= 3000 {
                         if let Some(emb) = shared_embedder.get() {
                             emb.clear_session();
                         }
-                        // AC-V1.30.1-10: do NOT reset incremental_count on
-                        // idle-clear. The counter's contract is "incremental
-                        // inserts since last full rebuild"; a 5-minute idle
-                        // hasn't changed the on-disk delta. Resetting here
-                        // means the next file event starts the threshold
-                        // timer from scratch and understates delta size,
-                        // delaying the rebuild that should fire on
-                        // accumulated drift.
+                        // Do NOT reset incremental_count on idle-clear. The
+                        // counter's contract is "incremental inserts since
+                        // last full rebuild"; a 5-minute idle hasn't changed
+                        // the on-disk delta. Resetting here would make the
+                        // next file event start the threshold timer from
+                        // scratch and understate delta size, delaying the
+                        // rebuild that should fire on accumulated drift.
                         state.hnsw_index = None;
                         cycles_since_clear = 0;
                     }
 
-                    // #1024: Idle-time periodic GC. Only fires when
+                    // Idle-time periodic GC. Only fires when
                     //   (a) `--serve` is on AND `CQS_DAEMON_PERIODIC_GC` != "0",
                     //   (b) the last actual file event was more than
                     //       `daemon_periodic_gc_idle_secs()` ago (so a long
@@ -1452,12 +1416,12 @@ pub fn cmd_watch(
                     // The bounded sweep (cap = daemon_periodic_gc_cap()) keeps
                     // each tick's write transaction short.
                     //
-                    // PF-V1.30.1-3 (#1226): when both gc and reconcile gates
-                    // fire on the same idle tick, do one disk walk and pass
-                    // it to both consumers. The two intervals share the
-                    // idle gate (`daemon_periodic_gc_idle_secs`), so on
-                    // long-quiet ticks at the gc cadence boundary, both
-                    // would otherwise walk the tree back-to-back.
+                    // When both gc and reconcile gates fire on the same idle
+                    // tick, do one disk walk and pass it to both consumers.
+                    // The two intervals share the idle gate
+                    // (`daemon_periodic_gc_idle_secs`), so on long-quiet ticks
+                    // at the gc cadence boundary, both would otherwise walk
+                    // the tree back-to-back.
                     let gc_due = periodic_gc_enabled
                         && state.last_event.elapsed()
                             >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
@@ -1493,11 +1457,10 @@ pub fn cmd_watch(
                     if gc_due {
                         match try_acquire_index_lock(&cqs_dir) {
                             Ok(Some(gc_lock)) => {
-                                // EH-V1.29-8: Same poison-recovery as startup
-                                // GC above — silently dropping to "no matcher"
-                                // would let periodic GC re-index gitignored
-                                // files (the very ones the matcher was built
-                                // to exclude).
+                                // Same poison-recovery as startup GC above —
+                                // dropping to "no matcher" would let periodic
+                                // GC re-index gitignored files (the very ones
+                                // the matcher was built to exclude).
                                 let matcher_guard = match gitignore.read() {
                                     Ok(g) => Some(g),
                                     Err(poisoned) => {
@@ -1536,8 +1499,8 @@ pub fn cmd_watch(
                         last_periodic_gc = std::time::Instant::now();
                     }
 
-                    // #1182 Layer 2: Periodic full-tree reconciliation.
-                    // Sibling of the GC tick; same idle-gating model:
+                    // Periodic full-tree reconciliation. Sibling of the GC
+                    // tick; same idle-gating model:
                     //   (a) `--serve` on AND `CQS_WATCH_RECONCILE` != "0",
                     //   (b) `last_event.elapsed() >= daemon_periodic_gc_idle_secs()`
                     //       — reuses the same idle threshold so a burst of
@@ -1556,14 +1519,13 @@ pub fn cmd_watch(
                     // needed. The `process_file_changes` drain on the next
                     // tick takes its own lock per its existing contract.
                     if reconcile_due {
-                        // #1231: detect a `cqs index --force` rotation that
-                        // happened between idle ticks — the inotify branch
-                        // at line 1191 only fires on actual filesystem
-                        // events, and a long quiet period followed by a
-                        // forced reindex would land us here with `store`
-                        // pointing at the orphaned inode. Reopen on
-                        // mismatch and skip this tick; the next interval
-                        // will reconcile against the fresh DB.
+                        // Detect a `cqs index --force` rotation that happened
+                        // between idle ticks — the inotify branch only fires
+                        // on actual filesystem events, and a long quiet period
+                        // followed by a forced reindex would land us here with
+                        // `store` pointing at the orphaned inode. Reopen on
+                        // mismatch and skip this tick; the next interval will
+                        // reconcile against the fresh DB.
                         let current_id = db_file_identity(&index_path);
                         if current_id != db_id {
                             info!(
@@ -1578,8 +1540,8 @@ pub fn cmd_watch(
                                     index_path.display()
                                 )
                             })?;
-                            // v24 / #1221: re-stamp vendored prefixes on
-                            // the fresh Store — OnceLock is per-instance.
+                            // Re-stamp vendored prefixes on the fresh Store —
+                            // OnceLock is per-instance.
                             store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
                             db_id = current_id;
                             state.hnsw_index = None;
@@ -1623,7 +1585,7 @@ pub fn cmd_watch(
             }
         }
 
-        // #1182: publish freshness snapshot once per outer iteration.
+        // Publish freshness snapshot once per outer iteration.
         // Cheap — counter reads, one optional `metadata()` on `index.db`,
         // and a brief write-lock acquire. Runs every ~100 ms cycle so the
         // daemon's `dispatch_status` always sees a snapshot less than one
@@ -1652,8 +1614,8 @@ pub fn cmd_watch(
         }
     }
 
-    // RM-V1.25-8: bounded join of the daemon socket thread. The thread
-    // already observes `daemon_should_exit()` at the top of its accept
+    // Bounded join of the daemon socket thread. The thread already observes
+    // `daemon_should_exit()` at the top of its accept
     // loop (Ctrl+C and SIGTERM both satisfy it), so in the common case
     // this returns within one poll cycle (~100ms). Enforce an outer
     // timeout so a wedged handler (e.g. waiting on a long embedder
@@ -1665,11 +1627,9 @@ pub fn cmd_watch(
         let poll = Duration::from_millis(50);
         let mut handle_opt = Some(handle);
         while std::time::Instant::now() < deadline {
-            // RB-V1.38-10 (#1463): drain via `if let Some(h) = handle_opt
-            // .take_if(...)` so the unwrap-after-`as_ref` brittleness goes
-            // away. Refactor adding a third take site between the
-            // `as_ref` and `take` would silently turn the old `.unwrap()`
-            // into a daemon-shutdown panic.
+            // Drain via `as_ref` view + `take` so a refactor adding an
+            // intervening take site can't turn an `.unwrap()` into a
+            // daemon-shutdown panic.
             let finished = handle_opt
                 .as_ref()
                 .map(|h| h.is_finished())
@@ -1690,37 +1650,36 @@ pub fn cmd_watch(
             std::thread::sleep(poll);
         }
         if handle_opt.is_some() {
-            // P3.22: log audit verified — the warn fires whenever the deadline
-            // expires before `is_finished()` returns true, so journal output
-            // reflects reality (no silent detach masquerading as "joined
-            // cleanly"). The "joined cleanly" line above is reachable only
-            // from the `is_finished` arm, which already calls `.join()`.
+            // The warn fires whenever the deadline expires before
+            // `is_finished()` returns true, so journal output reflects
+            // reality (no silent detach masquerading as "joined cleanly").
+            // The "joined cleanly" line above is reachable only from the
+            // `is_finished` arm, which already calls `.join()`.
             tracing::warn!(
                 deadline_secs = 5,
                 "Daemon socket thread did not exit within shutdown window — detaching (BatchContext Drop may race with process exit; in-flight embedder inference is the usual culprit)"
             );
-            // Intentionally drop `handle_opt` to detach — preserved as the
-            // pre-fix behaviour, only when the 5 s budget is exhausted.
+            // Intentionally drop `handle_opt` to detach when the 5 s budget
+            // is exhausted.
         }
     }
 
-    // P2.71: bounded join of the in-flight HNSW rebuild thread (if any).
-    // Without this, the rebuild thread is detached on daemon shutdown — a
-    // long rebuild keeps writing to disk after the process is "done" and may
-    // race the next startup. The rebuild thread doesn't observe a shutdown
-    // flag yet (audit calls cancellation a follow-on issue), so we bound the
-    // wait at 30s — the common case is a near-finished rebuild that completes
-    // in <1s, and a stalled rebuild gets detached with a loud warning.
+    // Bounded join of the in-flight HNSW rebuild thread (if any). Otherwise
+    // the rebuild thread is detached on daemon shutdown — a long rebuild
+    // keeps writing to disk after the process is "done" and may race the next
+    // startup. The rebuild thread doesn't observe a shutdown flag, so bound
+    // the wait at 30s — the common case is a near-finished rebuild that
+    // completes in <1s, and a stalled rebuild gets detached with a loud
+    // warning.
     if let Some(mut pending) = state.pending_rebuild.take() {
         if let Some(handle) = pending.handle.take() {
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             let poll = Duration::from_millis(100);
             let mut handle_opt = Some(handle);
             while std::time::Instant::now() < deadline {
-                // RB-V1.38-10 (#1463): same drain shape as the daemon
-                // socket-thread join above. The `as_ref` view followed
-                // by `take().unwrap()` was safe today but brittle to a
-                // refactor adding an intervening `take()`.
+                // Same drain shape as the daemon socket-thread join above:
+                // `as_ref` view + `take` so an intervening `take()` can't
+                // turn this into a panic.
                 let finished = handle_opt
                     .as_ref()
                     .map(|h| h.is_finished())

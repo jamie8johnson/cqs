@@ -11,12 +11,11 @@ use super::bfs::{reverse_bfs, reverse_bfs_multi_attributed, test_reachability};
 use super::types::{FunctionHints, RiskLevel, RiskScore};
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
-// SHL-V1.29-8: the risk and blast-radius thresholds drive `cqs review` CI
-// gating — wrong defaults silently alter classification on monorepos. The
-// values now flow through `crate::limits::*` so `CQS_RISK_HIGH`,
-// `CQS_RISK_MEDIUM`, `CQS_BLAST_LOW_MAX`, `CQS_BLAST_HIGH_MIN` can pin
-// project-specific policy. The consts below are kept as the canonical
-// defaults (exported for telemetry / doctor output / doctests).
+// The risk and blast-radius thresholds drive `cqs review` CI gating — wrong
+// defaults silently alter classification on monorepos. The values flow through
+// `crate::limits::*` so `CQS_RISK_HIGH`, `CQS_RISK_MEDIUM`, `CQS_BLAST_LOW_MAX`,
+// `CQS_BLAST_HIGH_MIN` can pin project-specific policy. The consts below are the
+// canonical defaults (exported for telemetry / doctor output / doctests).
 
 /// Default risk score above which a function is classified as high risk.
 /// Env-override via `CQS_RISK_HIGH`; see [`risk_threshold_high`].
@@ -91,8 +90,9 @@ pub fn compute_hints<Mode>(
     ))
 }
 
-/// Batch compute hints for multiple functions using forward BFS (PERF-20).
-/// Single `test_reachability` call replaces N independent `reverse_bfs` calls.
+/// Batch compute hints for multiple functions using forward BFS.
+/// A single `test_reachability` call covers all functions, instead of N
+/// independent `reverse_bfs` calls.
 pub fn compute_hints_batch(
     graph: &CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
@@ -125,8 +125,8 @@ pub fn compute_hints_batch(
 /// `test_ratio = min(test_count / max(caller_count, 1), 1.0)`.
 /// Entry-point handling: functions with 0 callers and 0 tests get `Medium`
 /// risk (likely entry points that should have tests).
-/// PERF-24: Uses a single forward BFS from all test nodes to build a
-/// reachability map, instead of N independent reverse_bfs calls.
+/// Uses a single forward BFS from all test nodes to build a reachability map,
+/// instead of N independent reverse_bfs calls.
 pub fn compute_risk_batch(
     names: &[&str],
     graph: &CallGraph,
@@ -139,7 +139,7 @@ pub fn compute_risk_batch(
     let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
     let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
-    // SHL-V1.29-8: read env-overridable thresholds once per batch.
+    // Read env-overridable thresholds once per batch.
     let risk_high = risk_threshold_high();
     let risk_medium = risk_threshold_medium();
     let low_max = blast_low_max();
@@ -189,7 +189,7 @@ pub fn compute_risk_batch(
 /// - `callers >= high_min` → High
 /// - otherwise → Medium
 /// Degenerate configs (`high_min <= low_max`) prefer High, matching the
-/// historical defaults where `low_max=2` and `high_min=11` are disjoint.
+/// defaults where `low_max=2` and `high_min=11` are disjoint.
 fn classify_blast_radius(callers: usize, low_max: usize, high_min: usize) -> RiskLevel {
     if callers >= high_min {
         RiskLevel::High
@@ -211,14 +211,14 @@ pub fn compute_risk_and_tests(
 ) -> (Vec<RiskScore>, Vec<super::TestInfo>) {
     let _span = tracing::info_span!("compute_risk_and_tests", targets = targets.len()).entered();
 
-    // AC-9: Use test_reachability (forward BFS) for risk scoring — same algorithm
+    // Use test_reachability (forward BFS) for risk scoring — same algorithm
     // as compute_risk_batch — to prevent divergent test counts between commands.
     let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
     let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
-    // PF-3: Single reverse_bfs_multi_attributed call replaces N per-target reverse_bfs calls.
-    // The attributed variant tracks which target (by index) first reached each ancestor,
-    // enabling per-target test distribution from the combined result.
+    // A single reverse_bfs_multi_attributed call covers all targets. The
+    // attributed variant tracks which target (by index) first reached each
+    // ancestor, enabling per-target test distribution from the combined result.
     let ancestors = reverse_bfs_multi_attributed(graph, targets, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
     // Build per-target test sets from the combined BFS result
@@ -247,7 +247,7 @@ pub fn compute_risk_and_tests(
         }
     }
 
-    // SHL-V1.29-8: read env-overridable thresholds once per call.
+    // Read env-overridable thresholds once per call.
     let risk_high = risk_threshold_high();
     let risk_medium = risk_threshold_medium();
     let low_max = blast_low_max();
@@ -296,13 +296,10 @@ pub fn compute_risk_and_tests(
 /// Find the most-called functions in the codebase (hotspots).
 /// Returns [`Hotspot`] entries sorted by caller count descending.
 ///
-/// PF-V1.29-4: previously allocated a `String` per callee (via `name.to_string()`)
-/// into a full `Vec<Hotspot>` before sorting and truncating to `top_n`. For a
-/// graph with 50k+ callees and `top_n = 5` this produced ~50k throwaway
-/// strings. Now uses a bounded min-heap keyed on `caller_count`: the heap
-/// never exceeds `top_n` entries, and `Arc::clone` on the name is a refcount
-/// bump (not an allocation). Only the surviving `top_n` names are converted
-/// to owned `String`s at the end.
+/// Uses a bounded min-heap keyed on `caller_count`: the heap never exceeds
+/// `top_n` entries, and `Arc::clone` on the name is a refcount bump (not an
+/// allocation). Only the surviving `top_n` names are converted to owned
+/// `String`s at the end, avoiding a throwaway `String` per callee.
 pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hotspot> {
     let _span = tracing::info_span!("find_hotspots", top_n).entered();
 

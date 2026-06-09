@@ -54,13 +54,13 @@ pub struct CiReport {
     pub review: ReviewResult,
     /// Dead code in files touched by the diff
     pub dead_in_diff: Vec<DeadInDiff>,
-    /// Whether the dead-code scan actually ran successfully. EH-V1.29-2: when
-    /// `false`, `dead_in_diff` is empty because the scan failed — not because
-    /// no dead code exists. The gate fails the build on scan failure unless
-    /// the threshold is `Off`, so CI can't silently green-light a broken
-    /// index. Field is omitted from JSON on the happy path via
-    /// `skip_serializing_if` so agents consuming existing CI JSON see no
-    /// shape change — the failure signal is also surfaced in `gate.reasons`.
+    /// Whether the dead-code scan actually ran successfully. When `false`,
+    /// `dead_in_diff` is empty because the scan failed — not because no dead
+    /// code exists. The gate fails the build on scan failure unless the
+    /// threshold is `Off`, so CI can't silently green-light a broken index.
+    /// Field is omitted from JSON on the happy path via `skip_serializing_if`
+    /// so agents see no shape change — the failure signal is also surfaced in
+    /// `gate.reasons`.
     #[serde(skip_serializing_if = "crate::serde_helpers::is_true")]
     pub dead_scan_ok: bool,
     /// Gate evaluation result
@@ -132,9 +132,9 @@ pub fn run_ci_analysis<Mode>(
             (dead, true)
         }
         Err(e) => {
-            // EH-V1.29-2: record the scan failure so the gate fails loud.
-            // Previously this returned `Vec::new()` with no flag, letting
-            // `evaluate_gate` green-light a CI run whose index was unreadable.
+            // Record the scan failure so the gate fails loud — a scan failure
+            // with no flag would let `evaluate_gate` green-light a CI run whose
+            // index was unreadable.
             tracing::error!(error = %e, "Dead code detection failed — CI treating as a gate failure");
             (Vec::new(), false)
         }
@@ -160,9 +160,9 @@ pub fn run_ci_analysis<Mode>(
 
 /// Evaluate whether the CI gate passes for the given risk summary.
 ///
-/// EH-V1.29-2: when `dead_scan_ok == false`, the gate fails unless the
-/// threshold is `Off`. A broken dead-code scan is a broken build — the
-/// previous behaviour silently reported "0 dead code, gate passed".
+/// When `dead_scan_ok == false`, the gate fails unless the threshold is
+/// `Off`. A broken dead-code scan is a broken build, not "0 dead code,
+/// gate passed".
 fn evaluate_gate(risk: &RiskSummary, threshold: GateThreshold, dead_scan_ok: bool) -> GateResult {
     let (mut passed, mut reasons) = match threshold {
         GateThreshold::High => {
@@ -314,10 +314,9 @@ mod tests {
         assert!(review.affected_tests.is_empty());
     }
 
-    /// EH-V1.29-2: a broken dead-code scan must fail the gate for High/Medium
-    /// thresholds, regardless of the review risk summary. The previous
-    /// behaviour let `evaluate_gate` see an empty `dead_in_diff` and green-
-    /// light the build.
+    /// A broken dead-code scan must fail the gate for High/Medium thresholds,
+    /// regardless of the review risk summary, rather than letting
+    /// `evaluate_gate` see an empty `dead_in_diff` and green-light the build.
     #[test]
     fn test_gate_fails_when_dead_scan_broken_high_threshold() {
         let risk = make_summary(0, 0, 0);

@@ -19,8 +19,8 @@ impl<Mode> Store<Mode> {
     ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
         let mut result = std::collections::HashMap::new();
 
-        // PF-V1.25-8: 500 was sized for the pre-3.32 SQLite 999-var limit.
-        // `max_rows_per_statement(1)` returns ~32466 (one bind per row).
+        // `max_rows_per_statement(1)` returns ~32466 (one bind per row) at the
+        // SQLite variable limit.
         use crate::store::helpers::sql::max_rows_per_statement;
         let batch_size = max_rows_per_statement(1);
         for batch in names.chunks(batch_size) {

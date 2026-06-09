@@ -2,19 +2,15 @@
 //!
 //! Provides callers/callees analysis.
 //!
-//! ## Polymorphic routing (Phase 1)
+//! ## Polymorphic routing
 //!
-//! `cqs callers <name>` and `cqs callees <name>` historically required a
-//! function-or-method name and returned an empty `Vec` for any other
-//! chunk kind — the misrouted-to-empty failure mode the polymorphic-
-//! routing design (`docs/polymorphic-routing.md`) targets. Both commands
-//! now consult `cqs::kind::classify_hits` against an exact-name lookup
-//! before the call-graph query: kind-mismatch fallbacks return an object
-//! with `kind`, `fallback_from`, `name`, `definitions`, and `note`
-//! fields. The function-path success shape (a flat array of caller/callee
-//! entries) is unchanged so existing consumers see no change on the
-//! happy path; agents detect the dispatch decision by type
-//! (`isinstance(parsed, list)` ⇒ function path, `dict` ⇒ fallback).
+//! `cqs callers <name>` and `cqs callees <name>` consult
+//! `cqs::kind::classify_hits` against an exact-name lookup before the
+//! call-graph query (see `docs/polymorphic-routing.md`): kind-mismatch
+//! fallbacks return an object with `kind`, `fallback_from`, `name`,
+//! `definitions`, and `note` fields. The function-path success shape is a
+//! flat array of caller/callee entries; agents detect the dispatch decision
+//! by type (`isinstance(parsed, list)` ⇒ function path, `dict` ⇒ fallback).
 
 use anyhow::{Context as _, Result};
 use colored::Colorize;
@@ -29,18 +25,18 @@ use cqs::store::{CallerInfo, ChunkSummary};
 pub(crate) struct CallerEntry {
     pub name: String,
     pub file: String,
-    pub line_start: u32, // was "line"
+    pub line_start: u32,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct CalleeEntry {
     pub name: String,
-    pub line_start: u32, // was "line"
+    pub line_start: u32,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct CalleesOutput {
-    pub name: String, // was "function"
+    pub name: String,
     pub calls: Vec<CalleeEntry>,
     pub count: usize,
 }
@@ -160,16 +156,15 @@ pub(crate) fn cmd_callers(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name, limit, cross_project).entered();
     let store = &ctx.store;
-    // Task A3: standardised cap. The store query returns every caller; we
-    // truncate before rendering so the user can paginate via repeated calls
-    // (no offset surfaced yet — by design, agents pass `--limit N` once and
-    // ask for more by name if needed).
+    // Standardised cap. The store query returns every caller; we truncate
+    // before rendering so the user can paginate via repeated calls (no offset
+    // surfaced — by design, agents pass `--limit N` once and ask for more by
+    // name if needed).
     let limit = limit.clamp(1, 100);
 
-    // Polymorphic-routing kind detection (Phase 1). Dispatch kind-
-    // mismatch fallbacks before the call-graph query, except on the
-    // cross-project path which has its own (cross-project)
-    // resolution semantics.
+    // Polymorphic-routing kind detection. Dispatch kind-mismatch fallbacks
+    // before the call-graph query, except on the cross-project path which has
+    // its own (cross-project) resolution semantics.
     if !cross_project {
         let chunks = store.lookup_by_name(name)?;
         let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
@@ -345,11 +340,11 @@ pub(crate) fn cmd_callees(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callees", name, limit, cross_project).entered();
     let store = &ctx.store;
-    // Task A3: see cmd_callers — same clamp range.
+    // See cmd_callers — same clamp range.
     let limit = limit.clamp(1, 100);
 
-    // Polymorphic-routing kind detection (Phase 1). Same dispatch
-    // pattern as cmd_callers above.
+    // Polymorphic-routing kind detection. Same dispatch pattern as
+    // cmd_callers above.
     if !cross_project {
         let chunks = store.lookup_by_name(name)?;
         let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
@@ -459,7 +454,7 @@ mod tests {
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("line_start").is_some());
-        assert!(json.get("line").is_none()); // normalized away
+        assert!(json.get("line").is_none());
     }
 
     #[test]
@@ -481,14 +476,14 @@ mod tests {
     fn test_callees_output_field_names() {
         let output = build_callees("bar", &[("baz".into(), 10)]);
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["name"], "bar"); // was "function"
+        assert_eq!(json["name"], "bar");
         assert!(json.get("function").is_none());
         assert_eq!(json["calls"][0]["line_start"], 10);
     }
 
-    // Polymorphic-routing Phase 1: callers + callees kind-mismatch fallback
-    // shape. Each test pins the JSON-builder contract so future schema
-    // tweaks are deliberate, not accidental.
+    // Polymorphic-routing callers + callees kind-mismatch fallback shape.
+    // Each test pins the JSON-builder contract so future schema tweaks are
+    // deliberate, not accidental.
 
     fn make_chunk(
         chunk_type: cqs::parser::ChunkType,

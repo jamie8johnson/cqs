@@ -1,14 +1,11 @@
 //! Kind detection for polymorphic command routing.
 //!
-//! Phase 1 plumbing for `docs/polymorphic-routing.md`. Given a name
-//! string, classify it against the indexed corpus by querying the
-//! chunks table for exact matches, then grouping by the high-level
-//! `Kind` (Function | Type | Const | Module | Other).
+//! Given a name string, classify it against the indexed corpus by querying
+//! the chunks table for exact matches, then grouping by the high-level
+//! `Kind` (Function | Type | Const | Module | Other). See
+//! `docs/polymorphic-routing.md` for the per-(command × kind) behavior matrix.
 //!
-//! **Status:** detection helper ships here as a lib building block.
-//! No CLI command is rerouted yet; future PRs will wire the
-//! kind-mismatch fallback per the design doc's per-(command × kind)
-//! behavior matrix.
+//! This is a lib building block; no CLI command is rerouted through it yet.
 //!
 //! ## Why a separate Kind enum (vs. reusing ChunkType / ChunkClass)
 //!
@@ -135,10 +132,9 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
 /// matrix uses both — the kind drives dispatch, the hits carry the
 /// location info the chosen handler needs).
 ///
-/// Polymorphic-routing Phase 1 entry point. Future PRs will call
-/// this from each function-or-type-specialized command's dispatcher
-/// to decide whether to run the original handler (kind matches the
-/// command) or fall back to a kind-labeled response (kind mismatch).
+/// A command dispatcher calls this to decide whether to run the original
+/// handler (kind matches the command) or fall back to a kind-labeled
+/// response (kind mismatch).
 ///
 /// Cost: one indexed SQL query (`WHERE name = ?`) — not measurable
 /// against the surrounding command latency for interactive use.

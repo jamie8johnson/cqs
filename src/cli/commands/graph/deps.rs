@@ -20,7 +20,7 @@ pub(crate) struct TypeUsageEntry {
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct DepsReverseOutput {
-    pub name: String, // was "function"
+    pub name: String,
     pub types: Vec<TypeUsageEntry>,
     pub count: usize,
 }
@@ -139,11 +139,11 @@ fn deps_kind_fallback(
 /// Forward (default): `cqs deps Config` -- who uses this type?
 /// Reverse: `cqs deps --reverse func_name` -- what types does this function use?
 ///
-/// **Polymorphic routing (Phase 1):** detects the name's kind up-front.
+/// **Polymorphic routing:** detects the name's kind up-front.
 /// `Function` (with `--reverse`) and `Type` (default forward) both have
-/// valid deps semantics — the existing flow runs as today. `Const`,
-/// `Module`, and `Ambiguous` get a kind-labeled fallback because deps'
-/// "uses-of-type" / "uses-of-function" model doesn't fit those.
+/// valid deps semantics and run the normal flow. `Const`, `Module`, and
+/// `Ambiguous` get a kind-labeled fallback because deps' "uses-of-type" /
+/// "uses-of-function" model doesn't fit those.
 pub(crate) fn cmd_deps(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
@@ -158,12 +158,12 @@ pub(crate) fn cmd_deps(
     }
     let store = &ctx.store;
     let root = &ctx.root;
-    // Task A3: cap on user list (forward) or used-types list (reverse).
+    // Cap on user list (forward) or used-types list (reverse).
     let limit = limit.clamp(1, 100);
 
-    // Polymorphic-routing kind detection (Phase 1). Const/Module/Ambiguous
-    // don't fit deps' model — fall back with a redirect note. Function
-    // and Type continue to the existing dual-mode flow below.
+    // Polymorphic-routing kind detection. Const/Module/Ambiguous don't fit
+    // deps' model — fall back with a redirect note. Function and Type continue
+    // to the dual-mode flow below.
     let chunks = store.lookup_by_name(name)?;
     let hits: Vec<cqs::kind::KindHit> = chunks.iter().map(cqs::kind::KindHit::from).collect();
     let kind = cqs::kind::classify_hits(&hits);
@@ -204,7 +204,7 @@ pub(crate) fn cmd_deps(
     }
 
     if reverse {
-        // P2 #65: limit at SQL time so we don't fetch every edge of a popular
+        // Limit at SQL time so we don't fetch every edge of a popular
         // function just to drop the tail.
         let types = store
             .get_types_used_by(name, limit)
@@ -228,7 +228,7 @@ pub(crate) fn cmd_deps(
             println!("Total: {} type(s)", types.len());
         }
     } else {
-        // P2 #65: limit at SQL time. Same shape as the reverse branch above.
+        // Limit at SQL time. Same shape as the reverse branch above.
         let users = store
             .get_type_users(name, limit)
             .context("Failed to load type users")?;
@@ -270,7 +270,7 @@ mod tests {
             count: 1,
         };
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["name"], "my_func"); // was "function"
+        assert_eq!(json["name"], "my_func");
         assert!(json.get("function").is_none());
     }
 

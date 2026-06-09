@@ -45,7 +45,7 @@ pub(crate) fn build_gather_output(
         .iter()
         .filter_map(|c| match serde_json::to_value(c) {
             Ok(mut v) => {
-                // #1167, #1169: derive trust_level + reference_name from the
+                // Derive trust_level + reference_name from the
                 // existing `source: Option<String>`. Reference chunks → tagged
                 // as "reference-code" with reference_name set; project chunks
                 // → "user-code" with reference_name omitted (`source` is

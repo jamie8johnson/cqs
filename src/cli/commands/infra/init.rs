@@ -15,9 +15,9 @@ pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
     let root = find_project_root();
     let cqs_dir = root.join(cqs::INDEX_DIR);
 
-    // P2.12: when --json is set, suppress human progress prints to stderr-or-skip
-    // and emit a single envelope summarizing the result on success. The global
-    // `cli.json` and the local `--json` both honor it.
+    // When --json is set, suppress human progress prints and emit a single
+    // envelope summarizing the result on success. Both the global `cli.json`
+    // and the local `--json` honor it.
     let want_json = cli.json || json;
     let quiet = cli.quiet || want_json;
 
@@ -39,25 +39,16 @@ pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
 
     // Create .gitignore
     //
-    // PL-V1.38-5 (#1463): the original 9-entry literal listed only
-    // index.db / index.hnsw.* / *.tmp — but `.cqs/` actually carries
-    // 14+ files including `audit-mode.json` (deliberately marked SEC-1),
-    // `embeddings_cache.db`, `index.cagra*`, `index_base.hnsw.*`,
-    // `splade.index.bin*`, `slots/`, `slots.lock`, `store.db`,
-    // `telemetry*.jsonl`, `telemetry.lock`, `active_slot`. Operators
-    // running `cqs init && git add .` were committing the audit-mode
-    // SEC-1 file, telemetry hostnames + exec timing, and ~hundreds of
-    // MB of binary index data.
+    // `.cqs/` carries many files that must never be committed: the
+    // `audit-mode.json` file, telemetry hostnames + exec timing, and
+    // hundreds of MB of binary index data. A `*\n!.gitignore\n`
+    // ignore-everything-but-self pattern survives every future addition to
+    // `.cqs/` without an `init.rs` edit. Operators who want to commit specific
+    // `.cqs/` artifacts (e.g. `notes.toml`) add an explicit `!notes.toml` line
+    // — opt-in rather than opt-out.
     //
-    // The fix uses a `*\n!.gitignore\n` ignore-everything-but-self
-    // pattern, which survives every future addition to `.cqs/` without
-    // a corresponding `init.rs` edit. Operators who want to commit
-    // specific `.cqs/` artifacts (e.g. `notes.toml`) explicitly add a
-    // `!notes.toml` line — opt-in rather than opt-out.
-    //
-    // PB-V1.29-4: Windows git with `core.autocrlf=true` renders LF-only
-    // files as modified. Use CRLF on Windows so the initial commit
-    // stays quiet.
+    // Windows git with `core.autocrlf=true` renders LF-only files as modified.
+    // Use CRLF on Windows so the initial commit stays quiet.
     let gitignore = cqs_dir.join(".gitignore");
     #[cfg(windows)]
     let gitignore_contents = "*\r\n!.gitignore\r\n";
@@ -67,10 +58,9 @@ pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
 
     // Download model
     if !quiet {
-        // EX-V1.29-6: Read the exact preset-declared download size instead of
-        // the old `dim >= 1024 ? "~1.3GB" : "~547MB"` heuristic. Custom models
+        // Read the exact preset-declared download size. Custom models
         // (user-supplied repo) carry `None` and surface as "(size unknown)"
-        // rather than silently misreporting a preset's number.
+        // rather than misreporting a preset's number.
         let size = match cli.try_model_config()?.approx_download_bytes {
             Some(bytes) => format_download_size(bytes),
             None => "(size unknown)".to_string(),
@@ -110,8 +100,8 @@ pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// EX-V1.29-6: render bytes as GB or MB with one decimal, matching the
-/// legacy heuristic output ("~1.3GB" / "~547MB"). GB kicks in at 1 GiB.
+/// Render bytes as GB or MB with one decimal ("~1.3GB" / "~547MB").
+/// GB kicks in at 1 GiB.
 fn format_download_size(bytes: u64) -> String {
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * MIB;

@@ -66,12 +66,12 @@ pub(crate) struct StatsOutput {
     /// Includes orphan rows (content_hash no longer matches any chunk) which
     /// inflate this count over real coverage; see `llm_summary_chunks_covered`
     /// and `llm_summary_chunk_coverage_pct` for the per-chunk number that
-    /// excludes orphans (#1587).
+    /// excludes orphans.
     pub llm_summary_count: usize,
     /// Number of chunks that have at least one cached summary row matching
     /// their `content_hash`, regardless of `purpose`. The numerator for the
     /// honest "what fraction of the corpus has a summary" metric — orphans
-    /// don't contribute (#1587).
+    /// don't contribute.
     pub llm_summary_chunks_covered: usize,
     /// `llm_summary_chunks_covered` as a percentage of `total_chunks`. `None`
     /// when there are no chunks at all (avoids spurious 0/0 reporting on a
@@ -198,9 +198,8 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
         llm_summary_count,
         llm_summary_chunks_covered,
         llm_summary_chunk_coverage_pct,
-        // P3 #87: schema_version is read as i64 from SQLite; an explicit cast
-        // would silently wrap a (logically impossible but observed-during-
-        // migration-bugs) negative value. Surface the breach instead.
+        // schema_version is read as i64 from SQLite; an explicit cast would
+        // silently wrap a negative value. Surface the breach instead.
         schema_version: u32::try_from(stats.schema_version).unwrap_or_else(|_| {
             tracing::warn!(
                 schema_version = stats.schema_version,
@@ -393,7 +392,7 @@ mod tests {
         assert!(json.get("total_chunks").is_some());
         assert!(json.get("call_graph").is_some());
         assert!(json.get("by_language").is_some());
-        // Verify the new index-introspection fields are always present
+        // Index-introspection fields are always present
         // (Option fields serialize to null, not omitted).
         assert_eq!(json["dim"], 1024);
         assert!(json.get("splade_model").is_some());
@@ -460,9 +459,9 @@ mod tests {
         assert!(json.get("errors").is_none());
     }
 
-    // ===== A2: index-introspection field tests =====
+    // ===== index-introspection field tests =====
 
-    /// Build an empty Store + tempdir for the A2 stats tests. Mirrors
+    /// Build an empty Store + tempdir for the stats tests. Mirrors
     /// `cqs::test_helpers::setup_store` but inlined here because that helper
     /// is gated on `#[cfg(test)]` inside the `cqs` lib crate and isn't
     /// reachable from the `cqs` binary's test build.

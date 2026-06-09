@@ -1,4 +1,4 @@
-//! Vendored-content detection — see #1221 (SEC-V1.30.1-5).
+//! Vendored-content detection.
 //!
 //! Chunks whose `origin` path passes through one of a small list of
 //! conventional "this code came from outside the project" directories
@@ -20,11 +20,10 @@
 /// Default vendored-path components matched at index time.
 ///
 /// Intentionally conservative. Each entry is matched as an exact path
-/// segment (no trailing slash, no substring match). The list mirrors
-/// the issue's "Proposed direction" set: the convention-cluster of
-/// directories where third-party code typically lives in real-world
-/// repos, plus a handful of build-artifact directories whose contents
-/// are derived from sources elsewhere and would be misleading if
+/// segment (no trailing slash, no substring match). The list covers the
+/// convention-cluster of directories where third-party code typically lives
+/// in real-world repos, plus a handful of build-artifact directories whose
+/// contents are derived from sources elsewhere and would be misleading if
 /// labelled `user-code`.
 ///
 /// Operators can override via `[index].vendored_paths` in `.cqs.toml`
@@ -64,12 +63,11 @@ pub fn is_vendored_origin(origin: &str, prefixes: &[String]) -> bool {
 /// explicit empty list in `.cqs.toml`). `override_list = None` falls
 /// back to [`DEFAULT_VENDORED_PREFIXES`].
 ///
-/// AC-V1.38-8 (#1463): each override entry is matched as an exact path
-/// segment. Entries containing `/` (e.g. `"vendor/oss-lib"`) will never
-/// match — the match is segment-equality, not sub-path containment.
-/// Warn at resolution so an operator who set `vendored_paths = [...]`
-/// in `.cqs.toml` sees that their entry is dead config instead of
-/// silently failing to tag any chunks.
+/// Each override entry is matched as an exact path segment. Entries
+/// containing `/` (e.g. `"vendor/oss-lib"`) will never match — the match is
+/// segment-equality, not sub-path containment. Warn at resolution so an
+/// operator who set `vendored_paths = [...]` in `.cqs.toml` sees that their
+/// entry is dead config instead of silently failing to tag any chunks.
 pub fn effective_prefixes(override_list: Option<&[String]>) -> Vec<String> {
     match override_list {
         Some(ov) => {
@@ -95,8 +93,7 @@ pub fn effective_prefixes(override_list: Option<&[String]>) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Default prefix list contains the convention-cluster directories
-    /// from the #1221 issue body.
+    /// Default prefix list contains the convention-cluster directories.
     #[test]
     fn default_prefixes_cover_common_vendored_dirs() {
         let p: &[&str] = DEFAULT_VENDORED_PREFIXES;

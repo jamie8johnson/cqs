@@ -55,7 +55,7 @@ pub(crate) fn is_name_like_query(query: &str) -> bool {
         "find",
         "search",
     ];
-    // AC-V1.33-6: NL_WORDS check must run BEFORE the ≤2-token short-circuit
+    // NL_WORDS check must run BEFORE the ≤2-token short-circuit
     // so that "how are", "what is", "do that", etc. are correctly classified
     // as natural language even at small lengths.
     let lower = query.to_lowercase();
@@ -81,7 +81,7 @@ pub(crate) fn is_name_like_query(query: &str) -> bool {
 /// Create once before iterating over search results, then call `score()` for each name.
 /// Avoids re-tokenizing the query for every result.
 ///
-/// PF-V1.25-12: on the hot scoring path `score()` avoids all per-candidate
+/// On the hot scoring path `score()` avoids all per-candidate
 /// `String`/`Vec<String>` allocation for ASCII inputs (the overwhelming
 /// common case for code identifiers). Word overlap uses byte-range slices
 /// of the candidate name, held in a 16-slot stack buffer. Unicode inputs
@@ -116,7 +116,7 @@ impl NameMatcher {
 
     /// Compute name match score against pre-tokenized query.
     ///
-    /// PF-V1.25-12: exact-match, substring, and word-overlap tiers are all
+    /// Exact-match, substring, and word-overlap tiers are all
     /// allocation-free for ASCII inputs (hot path for source code
     /// identifiers). The ASCII word-overlap tier tokenizes `name` into a
     /// stack-resident array of byte ranges and compares against
@@ -612,7 +612,7 @@ mod tests {
 
     // ===== Micro-benchmark =====
     //
-    // PF-V1.25-12: log per-call cost so we can track regressions.
+    // Log per-call cost so we can track regressions.
     // Does not assert; just prints elapsed_per_call_ns.
     #[test]
     fn bench_score_hot_path() {

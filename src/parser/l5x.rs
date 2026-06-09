@@ -106,9 +106,9 @@ fn parse_st_regions(
         if all_chunks.len() == region_chunk_start {
             if let Some(ref name) = region.routine_name {
                 let content = region.source.clone();
-                // RB-V1.33-7 (#1290): clamp on the `usize -> u32` cast so
-                // a pathological file with >4 B lines saturates instead of
-                // silently truncating to a tiny line_count.
+                // Clamp on the `usize -> u32` cast so a pathological file with
+                // >4 B lines saturates instead of silently truncating to a
+                // tiny line_count.
                 let line_count: u32 = content.lines().count().try_into().unwrap_or(u32::MAX);
                 let sig = content.lines().next().unwrap_or("").to_string();
                 let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
@@ -124,11 +124,9 @@ fn parse_st_regions(
                     content,
                     file: path.to_path_buf(),
                     line_start: region.line_start,
-                    // AC-V1.33-2: line_end is inclusive 1-indexed (see chunk.rs:93)
-                    // RB-V1.33-7 (#1290): saturating_add so a high
-                    // `region.line_start` plus a large line_count clamps
-                    // at u32::MAX instead of overflow-panicking in debug
-                    // (test runs!) and silently wrapping in release.
+                    // line_end is inclusive 1-indexed. saturating_add so a high
+                    // `region.line_start` plus a large line_count clamps at
+                    // u32::MAX instead of overflowing.
                     line_end: region
                         .line_start
                         .saturating_add(line_count.saturating_sub(1)),
@@ -178,18 +176,17 @@ fn extract_st_chunk(
     }
 
     let content = source[node.byte_range()].to_string();
-    // RB-V1.33-7 (#1290): tree-sitter row indices are usize internally; the
-    // `as u32` cast silently truncates on files >4 B lines. `try_into +
-    // unwrap_or(u32::MAX)` clamps the cast so the saturating_add below
-    // reaches u32::MAX deterministically rather than wrapping.
+    // tree-sitter row indices are usize internally; the `as u32` cast would
+    // silently truncate on files >4 B lines. `try_into + unwrap_or(u32::MAX)`
+    // clamps the cast so the saturating_add below reaches u32::MAX
+    // deterministically rather than wrapping.
     let start_row: u32 = node.start_position().row.try_into().unwrap_or(u32::MAX);
     let end_row: u32 = node.end_position().row.try_into().unwrap_or(u32::MAX);
     // saturating_add so `region.line_start + tree-sitter row` clamps at
-    // u32::MAX on a pathological L5X (large `Routine` with many rungs and
-    // a high `region.line_start` offset). Pre-fix this overflowed in
-    // debug (test panic!) and silently wrapped in release, producing a
-    // chunk with `line_start ≈ 0`, `line_end ≈ u32::MAX` — a nonsense
-    // span that corrupts the index for that chunk.
+    // u32::MAX on a pathological L5X (large `Routine` with many rungs and a
+    // high `region.line_start` offset). Without it, an overflow produces a
+    // chunk with `line_start ≈ 0`, `line_end ≈ u32::MAX` — a nonsense span
+    // that corrupts the index for that chunk.
     let line_start = region.line_start.saturating_add(start_row);
     let line_end = region.line_start.saturating_add(end_row);
 
@@ -260,12 +257,11 @@ fn extract_l5x_regions(source: &str) -> Vec<StRegion> {
     let mut regions = Vec::new();
 
     for st_match in L5X_ST_CONTENT_RE.captures_iter(source) {
-        // RB-V1.38-6 (#1463): group 0 is the full match (always present
-        // when an iter yields a Captures); group 1 is the unconditional
-        // capture in `<STContent>(.*?)</STContent>`. `.expect()` documents
-        // the invariant — a regex tweak that adds an alternation or
-        // optional group would surface here at panic time instead of
-        // hiding behind `.unwrap()`.
+        // group 0 is the full match (always present when an iter yields a
+        // Captures); group 1 is the unconditional capture in
+        // `<STContent>(.*?)</STContent>`. `.expect()` documents the invariant
+        // — a regex tweak that adds an alternation or optional group surfaces
+        // here at panic time instead of hiding behind `.unwrap()`.
         let full = st_match.get(0).expect("captures group 0 always present");
         let inner = st_match
             .get(1)
@@ -344,7 +340,7 @@ pub(crate) fn parse_l5x_chunks(
 /// Match ROUTINE blocks: from `ROUTINE <name>` to `END_ROUTINE`.
 /// Group 1: routine name. Group 2: block content.
 ///
-/// SEC-8 risk: `[^\x00]*?` is non-greedy but still scans forward through
+/// `[^\x00]*?` is non-greedy but still scans forward through
 /// the entire remaining input when `END_ROUTINE` is missing. On malformed
 /// files with many unterminated ROUTINE blocks the cost is
 /// O(N * unterminated_blocks). The regex crate's linear-time guarantee
@@ -371,10 +367,10 @@ fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
     let mut regions = Vec::new();
 
     for block in L5K_ROUTINE_BLOCK_RE.captures_iter(source) {
-        // RB-V1.38-6 (#1463): groups 1 and 2 are unconditional captures in
-        // L5K_ROUTINE_BLOCK_RE (`(\w+)\b([^\x00]*?)`); group 0 is always
-        // present on an iter Captures. `.expect()` over `.unwrap()` makes
-        // the invariant survive a regex refactor at panic message time.
+        // groups 1 and 2 are unconditional captures in L5K_ROUTINE_BLOCK_RE
+        // (`(\w+)\b([^\x00]*?)`); group 0 is always present on an iter
+        // Captures. `.expect()` over `.unwrap()` makes the invariant survive a
+        // regex refactor at panic message time.
         let routine_name = block
             .get(1)
             .expect("L5K_ROUTINE_BLOCK_RE: group 1 (routine name) unconditional")
@@ -406,7 +402,7 @@ fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
 
         // Try ST_CONTENT := [ ... ]; block first
         let st_source = if let Some(st_block) = L5K_ST_CONTENT_BLOCK_RE.captures(block_content) {
-            // RB-V1.38-6 (#1463): group 1 is the unconditional `(.*?)` in
+            // group 1 is the unconditional `(.*?)` in
             // `ST_CONTENT\s*:=\s*\[(.*?)\]\s*;` — present whenever the outer
             // captures matched.
             let inner = st_block
@@ -686,7 +682,7 @@ END_PROGRAM
 
     // --- Audit finding tests ---
 
-    /// TC-8: `<STContent>` present but empty (no CDATA inside).
+    /// `<STContent>` present but empty (no CDATA inside).
     /// extract_l5x_regions must produce zero regions, not panic or produce
     /// an empty-source region.
     #[test]
@@ -719,7 +715,7 @@ END_PROGRAM
         assert!(chunks.is_empty());
     }
 
-    /// TC-9: L5K ST type check only scans `.take(5)` lines of block content.
+    /// L5K ST type check only scans `.take(5)` lines of block content.
     /// If the `Type := ST` declaration appears on line 6 or later (after
     /// DESCRIPTION, tags, comments, etc.), the routine is silently skipped.
     #[test]
@@ -751,7 +747,7 @@ END_PROGRAM
         );
     }
 
-    /// TC-10: Malformed/unclosed CDATA blocks.
+    /// Malformed/unclosed CDATA blocks.
     /// `<![CDATA[...` without a closing `]]>` should not match the CDATA regex,
     /// so the content is silently dropped. Verify no panic and zero regions.
     #[test]
@@ -797,7 +793,7 @@ END_PROGRAM
         assert!(result.is_ok(), "Parser should not panic on malformed CDATA");
     }
 
-    /// SEC-8: L5K_ROUTINE_BLOCK_RE uses `[^\x00]*?` which on malformed input
+    /// L5K_ROUTINE_BLOCK_RE uses `[^\x00]*?` which on malformed input
     /// (unterminated ROUTINE blocks with no END_ROUTINE) causes the regex
     /// engine to scan to the end of the input for each unmatched ROUTINE.
     /// Worst case: O(N * unterminated_blocks).
@@ -825,14 +821,14 @@ END_PROGRAM
         // NOTE: The regex requires END_ROUTINE to close a block. Without it,
         // no captures are produced -- but the engine still scans the full
         // input for each ROUTINE keyword. On very large malformed files this
-        // is O(N * unterminated_blocks). See SEC-8 audit finding.
+        // is O(N * unterminated_blocks).
         assert!(
             regions.is_empty(),
             "Unterminated ROUTINE blocks should produce no regions"
         );
     }
 
-    /// PB-11: L5X CRLF ordering invariant.
+    /// L5X CRLF ordering invariant.
     /// Windows-originated L5X files use CRLF line endings. Verify that:
     /// 1. CDATA extraction works with CRLF
     /// 2. Line counting (`line_of`) handles CRLF correctly
@@ -893,15 +889,14 @@ END_PROGRAM
         }
     }
 
-    /// RB-V1.33-7 (#1290): synthetic-chunk path must saturate on overflow.
+    /// Synthetic-chunk path must saturate on overflow.
     ///
     /// When the routine has a name but tree-sitter produces no matches
     /// (no parseable ST inside), the synthetic-chunk fallback computes
     /// `line_end = region.line_start + (line_count - 1)`. With a high
     /// `region.line_start` (near `u32::MAX`) and a multi-line region,
-    /// pre-fix this overflowed `u32 + u32` — panics in debug (test
-    /// runs!), wraps in release. Post-fix uses `saturating_add` so it
-    /// clamps at `u32::MAX` and produces a valid chunk.
+    /// `saturating_add` clamps at `u32::MAX` and produces a valid chunk
+    /// instead of overflowing.
     #[test]
     fn test_l5x_synthetic_chunk_saturates_on_line_overflow() {
         // The fallback only triggers when the ST source has *no* tree-sitter
@@ -941,11 +936,10 @@ END_PROGRAM
         );
     }
 
-    /// RB-V1.33-7 (#1290): tree-sitter chunk path must saturate on
-    /// overflow. With a high `region.line_start` and a tree-sitter row
-    /// index, pre-fix `region.line_start + node.row as u32` overflowed.
-    /// Post-fix uses `saturating_add` and a clamping cast so both line
-    /// bounds clamp at `u32::MAX`.
+    /// tree-sitter chunk path must saturate on overflow. With a high
+    /// `region.line_start` and a tree-sitter row index,
+    /// `saturating_add` and a clamping cast keep both line bounds at
+    /// `u32::MAX` instead of overflowing.
     #[test]
     fn test_l5x_tree_sitter_chunk_saturates_on_line_overflow() {
         // Real ST function so the tree-sitter parser produces a chunk.

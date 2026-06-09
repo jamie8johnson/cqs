@@ -260,14 +260,14 @@ mod tests {
         assert_eq!(json["summary"]["modified"], 1);
     }
 
-    // ===== TC-16: NaN similarity serialization =====
+    // ===== NaN similarity serialization =====
 
     #[test]
     fn tc16_diff_entry_nan_similarity_becomes_null() {
-        // TC-16: serde_json silently converts NaN f32 to null in JSON output.
-        // This is the actual gap: if semantic_diff produces a NaN similarity
-        // (e.g., identical-hash chunks with zero-norm embeddings), the "similarity"
-        // field becomes null instead of a number, which agents don't expect.
+        // serde_json silently converts NaN f32 to null in JSON output. If
+        // semantic_diff produces a NaN similarity (e.g., identical-hash
+        // chunks with zero-norm embeddings), the "similarity" field becomes
+        // null instead of a number, which agents don't expect.
         let entry = DiffEntryOutput {
             name: "modified_fn".into(),
             file: "src/lib.rs".into(),
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn tc16_diff_output_nan_modified_entry_produces_null() {
-        // TC-16: Full DiffOutput with NaN modified entry — verify silent null
+        // Full DiffOutput with NaN modified entry — verify silent null
         let output = DiffOutput {
             source: "v1.0".into(),
             target: "v2.0".into(),

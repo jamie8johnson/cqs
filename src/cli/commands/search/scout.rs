@@ -1,10 +1,9 @@
 //! Scout command — pre-investigation dashboard for task planning
 //!
-//! CQ-V1.25-7: the JSON builder lives here and is called by both the CLI
-//! (`cmd_scout`) and the batch handler (`dispatch_scout` in
+//! The JSON builder lives here and is called by both the CLI (`cmd_scout`)
+//! and the batch handler (`dispatch_scout` in
 //! `src/cli/batch/handlers/misc.rs`) so the shape stays identical across
-//! the two dispatch paths. Mirrors the `GcOutput` pattern in
-//! `src/cli/commands/index/gc.rs`.
+//! the two dispatch paths.
 
 use anyhow::Result;
 use colored::Colorize;
@@ -33,7 +32,7 @@ pub(crate) fn build_scout_output(
     if let Some(cmap) = content_map {
         crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
     }
-    // #1167: scout only queries the project store — every chunk is user-code.
+    // Scout only queries the project store — every chunk is user-code.
     crate::cli::commands::tag_user_code_trust_level(&mut output);
     crate::cli::commands::inject_token_info(&mut output, token_info);
     Ok(output)
@@ -50,8 +49,8 @@ pub(crate) fn cmd_scout(
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
-    // CQ-V1.25-2: clamp via shared constant so CLI and batch return the
-    // same number of groups. Previously capped at 10 here vs 50 in batch.
+    // Clamp via shared constant so CLI and batch return the same number of
+    // groups.
     let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
 
     let result = scout(store, embedder, task, root, limit)?;
@@ -188,11 +187,11 @@ pub(crate) fn cmd_scout(
 mod tests {
     use serde_json::json;
 
-    // ===== TC-15: inject_content_into_scout_json tests =====
+    // ===== inject_content_into_scout_json tests =====
 
     #[test]
     fn tc15_inject_content_into_scout_json_known_shape() {
-        // TC-15: verify inject_content_into_scout_json mutates content by name
+        // Verify inject_content_into_scout_json mutates content by name.
         let mut scout_json = json!({
             "file_groups": [
                 {
@@ -222,7 +221,7 @@ mod tests {
 
     #[test]
     fn tc15_inject_content_empty_map_is_noop() {
-        // TC-15: empty content_map should leave JSON unchanged
+        // Empty content_map should leave JSON unchanged.
         let original = json!({
             "file_groups": [
                 {
@@ -246,7 +245,7 @@ mod tests {
 
     #[test]
     fn tc15_inject_content_unrecognized_names_is_noop() {
-        // TC-15: content_map with names not in the JSON should not add fields
+        // content_map with names not in the JSON should not add fields.
         let original = json!({
             "file_groups": [
                 {
@@ -271,7 +270,7 @@ mod tests {
 
     #[test]
     fn tc15_inject_content_no_file_groups_is_noop() {
-        // TC-15: JSON without file_groups key should be a safe no-op
+        // JSON without file_groups key should be a safe no-op.
         let mut json_val = json!({ "summary": { "total_files": 0 } });
         let mut content_map = std::collections::HashMap::new();
         content_map.insert("foo".to_string(), "content".to_string());
@@ -281,7 +280,7 @@ mod tests {
         assert!(json_val.get("file_groups").is_none());
     }
 
-    // ===== TC-15: inject_token_info tests =====
+    // ===== inject_token_info tests =====
 
     #[test]
     fn tc15_inject_token_info_adds_fields() {

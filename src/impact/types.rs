@@ -136,15 +136,14 @@ pub struct DiffImpactSummary {
     /// True when changed functions exceeded the cap and were truncated.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// SHL-V1.25-7: number of changed functions dropped past the cap. `--json`
-    /// consumers can detect silent truncation without scraping stderr. Zero
-    /// when `truncated == false`.
+    /// Number of changed functions dropped past the cap. `--json` consumers
+    /// can detect silent truncation without scraping stderr. Zero when
+    /// `truncated == false`.
     #[serde(skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
     pub truncated_functions: usize,
-    /// EH-V1.29-9: true when a store batch query failed during diff-impact
-    /// assembly (callers or caller snippets). Callers/snippets may be
-    /// silently incomplete; distinguishes "no callers" from "batch fetch
-    /// failed".
+    /// True when a store batch query failed during diff-impact assembly
+    /// (callers or caller snippets). Callers/snippets may be silently
+    /// incomplete; distinguishes "no callers" from "batch fetch failed".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub degraded: bool,
 }

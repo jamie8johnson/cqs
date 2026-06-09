@@ -3,9 +3,9 @@
 //! Expands abbreviated query tokens into OR-groups for FTS5, improving recall
 //! when users search with abbreviations (e.g., "auth" finds "authentication").
 //!
-//! EXT-V1.36-1 (#1460): the synonym table is a runtime-mutable
-//! `HashMap<String, Vec<String>>` initialized with compile-time defaults
-//! and overlay-merged from optional TOML files at startup. Operators
+//! The synonym table is a runtime-mutable `HashMap<String, Vec<String>>`
+//! initialized with compile-time defaults and overlay-merged from optional
+//! TOML files at startup. Operators
 //! extend the dictionary with domain vocabulary (manufacturing/industrial:
 //! `plc`/`scada`/`opc`/`hmi`; cqs-internal: `hnsw`/`splade`/`cagra`/`rrf`)
 //! without rebuilding the binary. Schema in `[load_synonym_overlay]`.
@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::{LazyLock, RwLock};
 
 /// Compile-time built-in synonyms — initial floor before any TOML overlay
-/// is installed. These mirror the original v1.x hand-curated dictionary.
+/// is installed.
 fn builtin_synonyms() -> HashMap<String, Vec<String>> {
     let entries: &[(&str, &[&str])] = &[
         ("auth", &["authentication", "authorize", "credential"]),
@@ -64,8 +64,8 @@ fn builtin_synonyms() -> HashMap<String, Vec<String>> {
 static SYNONYMS: LazyLock<RwLock<HashMap<String, Vec<String>>>> =
     LazyLock::new(|| RwLock::new(builtin_synonyms()));
 
-/// EXT-V1.36-1 (#1460): install a runtime synonym overlay. Idempotent
-/// per key — repeated calls overwrite. Per-key precedence is "last
+/// Install a runtime synonym overlay. Idempotent per key — repeated calls
+/// overwrite. Per-key precedence is "last
 /// install wins"; in production [`install_synonym_overlay`] is called
 /// once at CLI/daemon startup with the project-local overlay layered
 /// on top of the user-global one.
@@ -82,11 +82,10 @@ pub fn install_synonym_overlay(extras: HashMap<String, Vec<String>>) {
     if extras.is_empty() {
         return;
     }
-    // OB-V1.38-3 (#1463): info-level so an operator who edited
-    // `~/.config/cqs/synonyms.toml` (or the project-local override) sees
-    // their config landing in journald without RUST_LOG=debug. Fires only
-    // when the merged input is non-empty, so the default no-overlay case
-    // stays silent.
+    // Info-level so an operator who edited `~/.config/cqs/synonyms.toml` (or
+    // the project-local override) sees their config landing in journald
+    // without RUST_LOG=debug. Fires only when the merged input is non-empty,
+    // so the default no-overlay case stays silent.
     let entries = extras.len();
     let mut g = SYNONYMS.write().unwrap_or_else(|p| p.into_inner());
     for (k, v) in extras {
@@ -104,7 +103,7 @@ pub(crate) fn reset_synonyms_for_test() {
     *g = builtin_synonyms();
 }
 
-/// EXT-V1.36-1 (#1460): parse a `synonyms.toml` overlay from disk.
+/// Parse a `synonyms.toml` overlay from disk.
 ///
 /// Schema:
 /// ```toml
@@ -329,7 +328,7 @@ mod tests {
     fn synonym_map_has_expected_entries() {
         reset_synonyms_for_test();
         // Verify key synonyms from the spec exist (read directly from the
-        // table, mirroring the pre-EXT-V1.36-1 invariant).
+        // table).
         let g = SYNONYMS.read().unwrap();
         assert!(g.contains_key("auth"));
         assert!(g.contains_key("config"));
@@ -344,7 +343,7 @@ mod tests {
         assert!(g.len() >= 30, "Expected at least 30 synonym entries");
     }
 
-    // ─── EXT-V1.36-1: TOML overlay tests ───────────────────────────────
+    // ─── TOML overlay tests ───────────────────────────────
 
     #[test]
     #[serial(synonyms_overlay)]
@@ -504,8 +503,8 @@ mod tests {
         assert!(table.is_empty());
     }
 
-    /// TC-ADV-V1.38-9 (#1463): the loader caps reads at 4 KiB
-    /// (`take(MAX_BYTES)`). A 5+ KiB hostile config must not OOM the
+    /// The loader caps reads at 4 KiB (`take(MAX_BYTES)`). A 5+ KiB hostile
+    /// config must not OOM the
     /// indexer or surface its full content. We pin the cap by writing a
     /// file with a valid `[synonyms]` table at the start, then padding
     /// past the cap with a deliberately *malformed* TOML marker — the

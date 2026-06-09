@@ -124,7 +124,7 @@ pub fn semantic_diff<Mode1, Mode2>(
     );
 
     // Build lookup maps: key → identity.
-    // AC-12: If duplicate ChunkKeys exist (e.g., same name+type+file, different line_start),
+    // If duplicate ChunkKeys exist (e.g., same name+type+file, different line_start),
     // the last one wins. This is acceptable: window_idx>0 duplicates are already filtered
     // above, and remaining collisions (rare: same name in two impl blocks) are approximate.
     let source_map: HashMap<ChunkKey, &ChunkIdentity> =
@@ -214,11 +214,11 @@ pub fn semantic_diff<Mode1, Mode2>(
     // Entries with None similarity (missing embeddings) sort to the end
     // rather than being conflated with maximally-changed (similarity=0.0).
     //
-    // AC-V1.29-1: cascade on (file, name, chunk_type) so identical
-    // similarities (common when many chunks hit the exact threshold
-    // boundary or all lose their embeddings) produce deterministic output.
-    // `HashMap` iteration is process-seed-dependent and the previous sort
-    // preserved that non-determinism into `cqs diff` / `cqs drift` JSON.
+    // Cascade on (file, name, chunk_type) so identical similarities (common
+    // when many chunks hit the exact threshold boundary or all lose their
+    // embeddings) produce deterministic output. `HashMap` iteration is
+    // process-seed-dependent, so without this tiebreak that non-determinism
+    // would leak into `cqs diff` / `cqs drift` JSON.
     modified.sort_by(|a, b| {
         match (a.similarity, b.similarity) {
             (Some(sa), Some(sb)) => sa.total_cmp(&sb),
@@ -340,10 +340,9 @@ mod tests {
 
     #[test]
     fn test_diff_sort_tie_break_deterministic() {
-        // AC-V1.29-1: entries with identical similarity must sort
-        // deterministically by (file, name, chunk_type). Previously
-        // HashMap iteration order bled into the output — shuffled inputs
-        // produced different outputs across process invocations.
+        // Entries with identical similarity must sort deterministically by
+        // (file, name, chunk_type) so HashMap iteration order can't bleed
+        // into the output — shuffled inputs must produce identical output.
         let make_entry = |name: &str, file: &str, chunk_type: ChunkType| DiffEntry {
             name: name.into(),
             file: file.into(),

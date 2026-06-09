@@ -1,11 +1,11 @@
-//! Worktree-to-main-index discovery — see #1254.
+//! Worktree-to-main-index discovery.
 //!
 //! When `cqs` is invoked from inside a `git worktree`, the worktree
 //! has no `.cqs/` of its own (`git worktree add` doesn't copy the
-//! directory). Pre-#1254 every cqs command in the worktree errored
-//! with "No cqs index found", which led agents to fall back to raw
-//! `Read`/`grep` on absolute paths under the parent tree — causing
-//! the worktree-leakage class of bugs documented in
+//! directory). Without this discovery a cqs command in the worktree
+//! errors with "No cqs index found", which leads agents to fall back
+//! to raw `Read`/`grep` on absolute paths under the parent tree —
+//! causing the worktree-leakage class of bugs documented in
 //! `feedback_agent_worktrees.md`.
 //!
 //! This module's [`resolve_main_project_dir`] turns a worktree root
@@ -61,8 +61,8 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
     }
 
     // Read `.git` file → "gitdir: <path>" with a bounded cap to defend
-    // against a hostile or accidentally-huge file at this path
-    // (RB-V1.33-2). 4 KiB is far above realistic content (~30 bytes).
+    // against a hostile or accidentally-huge file at this path. 4 KiB is
+    // far above realistic content (~30 bytes).
     let mut raw = String::new();
     std::fs::File::open(&dot_git)
         .ok()?
@@ -88,12 +88,10 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
 
     // Read `<gitdir>/commondir` → relative path back to canonical `.git/`.
     //
-    // RB-V1.38-1 (#1463): cap the read at MAX_GIT_FILE_BYTES (4 KiB),
-    // matching the .git-file read above (RB-V1.33-2 sibling). Pre-fix
-    // `read_to_string` was unbounded — a hostile or corrupt
-    // `<gitdir>/commondir` (the path ultimately derives from the
-    // worktree's untrusted `.git` link) could OOM the CLI on every
-    // invocation from inside a worktree.
+    // Cap the read at MAX_GIT_FILE_BYTES (4 KiB), matching the .git-file read
+    // above. A hostile or corrupt `<gitdir>/commondir` (the path ultimately
+    // derives from the worktree's untrusted `.git` link) could otherwise OOM
+    // the CLI on every invocation from inside a worktree.
     use std::io::Read;
     let commondir_file = gitdir.join("commondir");
     let mut commondir_relative = String::with_capacity(64);
@@ -110,7 +108,7 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
     // Resolve `<gitdir>/<commondir_relative>` → canonical `.git/`.
     // Use `dunce::canonicalize` so Windows returns the non-`\\?\`-prefixed
     // form — downstream `WorktreeUseMain.main_root` is surfaced via JSON
-    // envelopes and string-compared by agents (PB-V1.33-3).
+    // envelopes and string-compared by agents.
     let canonical_git = gitdir.join(commondir_relative);
     let canonical_git = dunce::canonicalize(&canonical_git).ok()?;
 
@@ -130,19 +128,19 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
 /// index" — the second case wants a clearer error message naming
 /// both paths.
 pub fn lookup_main_cqs_dir(dir: &Path) -> MainIndexLookup {
-    // PB-V1.36-3 / P2-12: canonicalize `dir` once up-front so the returned
-    // `worktree_root` matches `find_project_root()` byte-for-byte on
-    // case-insensitive filesystems (Windows NTFS, macOS HFS+/APFS default).
+    // Canonicalize `dir` once up-front so the returned `worktree_root`
+    // matches `find_project_root()` byte-for-byte on case-insensitive
+    // filesystems (Windows NTFS, macOS HFS+/APFS default).
     // resolve_main_project_dir already canonicalizes its result; without
-    // this the worktree side stays raw, so downstream string-equality
-    // checks against find_project_root output (which IS canonicalized via
-    // dunce) report mismatches even when the paths refer to the same dir.
-    // That's the #1254-class leakage origin.
+    // this the worktree side stays raw, so downstream string-equality checks
+    // against find_project_root output (which IS canonicalized via dunce)
+    // report mismatches even when the paths refer to the same dir — the
+    // origin of worktree-leakage.
     let dir_canonical = dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let own_cqs = dir_canonical.join(crate::INDEX_DIR);
-    // PB-V1.36-10: is_dir() rather than exists() — a stray `.cqs` *file* (a
-    // mistaken `touch .cqs`, or a packaged tarball with the wrong entry)
-    // shouldn't be treated as an index dir. Downstream code would otherwise
+    // is_dir() rather than exists() — a stray `.cqs` *file* (a mistaken
+    // `touch .cqs`, or a packaged tarball with the wrong entry) shouldn't be
+    // treated as an index dir. Downstream code would otherwise
     // try to open `<file>/index.db` and surface a confusing
     // "is not a directory" instead of "no index here, fall through to main".
     if own_cqs.is_dir() {
@@ -202,7 +200,7 @@ pub fn worktree_name(dir: &Path) -> Option<String> {
     if std::fs::metadata(&dot_git).ok()?.is_dir() {
         return None;
     }
-    // Bounded read — see RB-V1.33-2 / `MAX_GIT_FILE_BYTES`.
+    // Bounded read — see `MAX_GIT_FILE_BYTES`.
     let mut raw = String::new();
     std::fs::File::open(&dot_git)
         .ok()?
@@ -244,9 +242,9 @@ struct WorktreeContext {
 /// worktree's own. Idempotent: subsequent calls are silently
 /// ignored (the OnceLock semantics).
 pub fn record_worktree_stale(worktree_root: &Path) {
-    // OB-V1.36-10 / P3: log on producer side. The cross-worktree stale
-    // flag is the kind of cross-process signal that's near-impossible to
-    // diagnose without a journal trail (#1254-class issues).
+    // Log on producer side. The cross-worktree stale flag is a
+    // cross-process signal that's near-impossible to diagnose without a
+    // journal trail.
     let name = worktree_name(worktree_root);
     if WORKTREE_STALE
         .set(WorktreeContext { name: name.clone() })
@@ -340,11 +338,10 @@ mod tests {
         );
     }
 
-    /// TC-ADV-V1.38-4 (#1463): a stray `.cqs` *file* (mistaken
-    /// `touch .cqs`, packaged tarball with the wrong entry) must NOT be
-    /// treated as an index dir. P1-43 changed `own_cqs.exists()` →
-    /// `own_cqs.is_dir()`; pin the `is_dir()` contract so a future
-    /// regression to `.exists()` is caught at test time.
+    /// A stray `.cqs` *file* (mistaken `touch .cqs`, packaged tarball with
+    /// the wrong entry) must NOT be treated as an index dir. Pins the
+    /// `is_dir()` contract so a regression to `.exists()` is caught at test
+    /// time.
     #[test]
     fn lookup_ignores_stray_cqs_file_falls_through() {
         let dir = TempDir::new().unwrap();

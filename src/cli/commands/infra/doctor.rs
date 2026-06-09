@@ -38,7 +38,7 @@ struct DoctorIssue {
 fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
     let _span = tracing::info_span!("doctor_fix", issue_count = issues.len()).entered();
 
-    // SEC-V1.25-7: Resolve our own binary path via current_exe() so a malicious
+    // Resolve our own binary path via current_exe() so a malicious
     // `cqs` earlier in PATH can't hijack the rescue flow when an admin runs
     // `cqs doctor --fix`.
     let cqs_path =
@@ -134,21 +134,20 @@ pub(crate) fn cmd_doctor(
     let mut any_failed = false;
     let mut issues: Vec<DoctorIssue> = Vec::new();
 
-    // `--json` implies `--verbose`: JSON without verbose would be the empty
-    // legacy text output serialized as JSON, which has no real consumer.
+    // `--json` implies `--verbose`: JSON without verbose would be empty
+    // output serialized as JSON, which has no real consumer.
     let want_verbose = verbose || json;
 
-    // P2 #27: when `--json` is set we accumulate the structured equivalent of
-    // each check line into `check_records`. The colored human-readable lines
-    // still print but go to stderr (via `out`) so stdout stays pristine for
-    // the final JSON envelope.
+    // When `--json` is set we accumulate the structured equivalent of each
+    // check line into `check_records`. The colored human-readable lines still
+    // print but go to stderr (via `out`) so stdout stays pristine for the
+    // final JSON envelope.
     let mut check_records: Vec<CheckRecord> = Vec::new();
 
-    // CQ-V1.29-6: the "metadata:" label on the `Model:` check used to report
-    // the compile-time `cqs::store::MODEL_NAME` constant, which is identical
-    // to the default model on every invocation — silently wrong after
-    // `cqs model swap` or a custom-model init. Read the actual stored model
-    // name out of the index (if one exists) so doctor surfaces real drift.
+    // Read the actual stored model name out of the index (if one exists) so
+    // doctor surfaces real drift. The compile-time `cqs::store::MODEL_NAME`
+    // constant is the default model on every invocation — silently wrong after
+    // `cqs model swap` or a custom-model init.
     let stored_metadata_model = if index_path.exists() {
         match Store::open_readonly(&index_path) {
             Ok(s) => s.stored_model_name(),
@@ -167,18 +166,16 @@ pub(crate) fn cmd_doctor(
     let model_config = ModelConfig::resolve(model_override, None);
     match Embedder::new(model_config.clone()) {
         Ok(embedder) => {
-            // CQ-V1.29-6: show the actual index-metadata model rather than
-            // the compile-time constant. If stored differs from the runtime
+            // Show the actual index-metadata model rather than the
+            // compile-time constant. If stored differs from the runtime
             // model repo, promote the record from `ok` → `warn` so agents
             // parsing `--json` see the drift as a warning.
             //
-            // CQ-V1.33.0-3: use `model_config.repo` (the resolved override)
-            // instead of `cqs::embedder::model_repo()`, which discards
-            // overrides and always returns the compile-time default. The
-            // old call lied: `cqs doctor --model e5-base` against an
-            // E5-indexed project would warn "stored=e5-base / runtime=
-            // bge-large mismatch" even though the override was honoured
-            // everywhere else.
+            // Use `model_config.repo` (the resolved override) rather than
+            // `cqs::embedder::model_repo()`, which discards overrides and
+            // always returns the compile-time default — that would warn of a
+            // spurious mismatch when an override like `--model e5-base` is in
+            // effect everywhere else.
             let runtime_repo = model_config.repo.as_str();
             let metadata_label = stored_metadata_model.as_deref().unwrap_or("unset");
             let model_msg = format!("{} (metadata: {})", runtime_repo, metadata_label);
@@ -541,13 +538,10 @@ fn out(json: bool, line: &str) {
 fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut bool) {
     let _span = tracing::info_span!("doctor_local_llm").entered();
 
-    // RB-V1.38-4 (#1463): bind validated values once instead of relying
-    // on the early-return + later `.unwrap()` pattern. The original shape
-    // (`api_base.unwrap()` at line 582) was safe today because the
-    // `_ => return` arms above guaranteed `Some(non-empty)`, but any
-    // refactor adding a third arm without `return` (e.g. a "lenient"
-    // mode) silently turns the unwrap into a panic. Binding here makes
-    // the invariant compile-time.
+    // Bind validated values once rather than early-return + later
+    // `.unwrap()`. Binding here makes the "always Some(non-empty)" invariant
+    // compile-time, so a refactor adding a non-returning arm can't silently
+    // turn an unwrap into a panic.
     let base = match std::env::var("CQS_LLM_API_BASE")
         .ok()
         .filter(|s| !s.is_empty())
@@ -591,11 +585,10 @@ fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut 
     // Endpoint reachability probe: GET `{api_base}/models` with a tight
     // timeout. We don't want doctor to hang if the user typo'd a URL.
     let probe_url = format!("{}/models", base.trim_end_matches('/'));
-    // SEC-V1.30.1-7 (#1223): same-origin policy matches the production
-    // submit path so doctor and the real `LocalProvider` agree on what
-    // counts as a "reachable" endpoint. The probe doesn't carry a
-    // bearer today, but pinning the same policy means a future probe
-    // that adds auth doesn't silently regain cross-origin redirect
+    // Same-origin policy matches the production submit path so doctor and the
+    // real `LocalProvider` agree on what counts as a "reachable" endpoint. The
+    // probe doesn't carry a bearer, but pinning the same policy means a future
+    // probe that adds auth can't silently regain cross-origin redirect
     // following.
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
@@ -1343,9 +1336,9 @@ fn collect_cqs_env_vars() -> Vec<EnvVar> {
     vars
 }
 
-/// Pretty-print the verbose report in the same colored style as the legacy
-/// doctor output. JSON consumers go through `crate::cli::json_envelope::emit_json`
-/// instead — they don't see this function.
+/// Pretty-print the verbose report in colored style. JSON consumers go
+/// through `crate::cli::json_envelope::emit_json` instead — they don't see
+/// this function.
 fn print_verbose_report(r: &VerboseReport) {
     println!("{}", "── Verbose ──".bold());
     println!();
@@ -1543,10 +1536,9 @@ mod tests {
     use cqs::embedder::ModelInfo;
     use tempfile::TempDir;
 
-    // ENV_MUTEX hoisted to `cqs::ONNX_DIR_ENV_LOCK` (#1305) so this cohort
-    // serializes against `embedder::tests::ensure_model_tests` and
-    // `embedder::tests::embedder_init_failure`. Pre-fix all three were
-    // independent Mutex instances and raced on `CQS_ONNX_DIR` under
+    // These tests serialize against `embedder::tests::ensure_model_tests` and
+    // `embedder::tests::embedder_init_failure` via the shared
+    // `cqs::ONNX_DIR_ENV_LOCK` so they don't race on `CQS_ONNX_DIR` under
     // cargo's parallel runner.
 
     #[test]

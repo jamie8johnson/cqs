@@ -119,11 +119,10 @@ pub(super) fn extract_field_names(content: &str, language: Language) -> Vec<Stri
                 // Strip pointer/reference markers (C/C++)
                 name.map(|n| n.trim_start_matches(['*', '&']))
             }
-            // RB-V1.38-9 (#1463): exhaustive match — `FieldStyle::None`
-            // is filtered by the early-return at line 84, but the
-            // type-level invariant restoration here means a future
-            // fourth variant on `FieldStyle` is a compile error instead
-            // of a runtime panic on every source file.
+            // Exhaustive match — `FieldStyle::None` is already filtered by
+            // the early-return above, but handling it here makes a future
+            // fourth `FieldStyle` variant a compile error instead of a
+            // runtime panic on every source file.
             FieldStyle::None => return Vec::new(),
         };
 
@@ -193,7 +192,7 @@ fn extract_method_name_from_line(line: &str, language: Language) -> Option<Strin
         return None;
     }
 
-    // EX-35: Visibility/modifier prefixes are hardcoded here rather than in LanguageDef
+    // Visibility/modifier prefixes are hardcoded here rather than in LanguageDef
     // because: (1) the set is small and shared across most C-family languages,
     // (2) LanguageDef is macro-generated for 52 languages — adding per-language
     // prefix arrays would bloat the macro for negligible benefit, and (3) these

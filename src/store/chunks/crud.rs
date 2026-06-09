@@ -1,4 +1,4 @@
-// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// WRITE_LOCK guard is held across .await inside block_on().
 // This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
 #![allow(clippy::await_holding_lock)]
 //! Chunk upsert, metadata, delete, and summary operations.
@@ -67,7 +67,7 @@ impl<Mode> Store<Mode> {
     /// Fetch all enrichment hashes in a single query.
     ///
     /// Returns a map from chunk_id to enrichment_hash for all chunks that have one.
-    /// Used by the enrichment pass to avoid per-page hash fetches (PERF-29).
+    /// Used by the enrichment pass to avoid per-page hash fetches.
     pub fn get_all_enrichment_hashes(
         &self,
     ) -> Result<std::collections::HashMap<String, String>, StoreError> {
@@ -146,7 +146,7 @@ impl<Mode> Store<Mode> {
     }
 
     /// Get all distinct content hashes currently in the chunks table.
-    /// Used to validate batch results against the current index (DS-20).
+    /// Used to validate batch results against the current index.
     pub fn get_all_content_hashes(&self) -> Result<Vec<String>, StoreError> {
         let _span = tracing::debug_span!("get_all_content_hashes").entered();
         self.rt.block_on(async {
@@ -201,7 +201,7 @@ impl<Mode> Store<Mode> {
 }
 
 // Write methods live on `impl Store<ReadWrite>` — the compiler refuses to
-// call them on a `Store<ReadOnly>`. Closes the bug class in GitHub #946.
+// call them on a `Store<ReadOnly>`.
 impl Store<ReadWrite> {
     /// Insert or update chunks in batch using multi-row INSERT.
     ///
@@ -210,26 +210,22 @@ impl Store<ReadWrite> {
     /// 1488 rows per statement). FTS operations remain per-row because FTS5
     /// doesn't support upsert.
     ///
-    /// **DS-V1.33-10 / #1342 — actual cascade contract:**
+    /// **Cascade contract:**
     ///
-    /// Pre-#1342 doc comment claimed `INSERT OR REPLACE`, which would trigger
-    /// `ON DELETE CASCADE` on `calls` / `type_edges` and require callers to
-    /// re-populate. The code was migrated to `INSERT … ON CONFLICT(id) DO
-    /// UPDATE SET …` (upsert) some time ago — the row is updated *in place*,
-    /// no `DELETE` fires, and `calls` / `type_edges` rows are preserved as-is.
+    /// This uses `INSERT … ON CONFLICT(id) DO UPDATE SET …` (upsert): the row
+    /// is updated *in place*, no `DELETE` fires, and `calls` / `type_edges`
+    /// rows are preserved as-is.
     ///
-    /// That preservation is *not* equivalent to the cascade: when a chunk's
-    /// `content_hash` changes, its outgoing calls / type uses likely change
-    /// too, and the old rows now reference a stale call graph. Callers
-    /// **must still** re-populate `calls` and `type_edges` for any chunk
-    /// whose content changed (compare returned `content_hash` to the
-    /// pre-existing snapshot from `snapshot_content_hashes`). The
-    /// pre-existing rows aren't *wrong* in the same way they would be after
-    /// a cascade — they're just stale until the caller refreshes.
+    /// When a chunk's `content_hash` changes, its outgoing calls / type uses
+    /// likely change too, so the preserved rows now reference a stale call
+    /// graph. Callers **must** re-populate `calls` and `type_edges` for any
+    /// chunk whose content changed (compare returned `content_hash` to the
+    /// pre-existing snapshot from `snapshot_content_hashes`). The preserved
+    /// rows aren't wrong, just stale until the caller refreshes.
     ///
     /// `enrichment_hash` and `enrichment_version` columns *are* preserved
     /// across upsert so the enrichment pass doesn't get its work invalidated
-    /// by every reindex (DS-2).
+    /// by every reindex.
     pub fn upsert_chunks_batch(
         &self,
         chunks: &[(Chunk, Embedding)],
@@ -243,10 +239,9 @@ impl Store<ReadWrite> {
             .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // v24 / #1221: compute the vendored bit per chunk from the
-        // store's configured vendored-path prefixes. Empty prefix list
-        // → all-false (the pre-#1221 default and what unwired callers
-        // see). Origin path is normalised to forward-slash form via
+        // Compute the vendored bit per chunk from the store's configured
+        // vendored-path prefixes. Empty prefix list → all-false. Origin
+        // path is normalised to forward-slash form via
         // `crate::normalize_path` to match `is_vendored_origin`'s
         // path-segment matcher.
         let prefixes = self.vendored_prefixes_slice();
@@ -269,7 +264,7 @@ impl Store<ReadWrite> {
                 &vendored_per_chunk,
                 source_mtime,
                 &now,
-                false, // #1452: real embeddings → needs_embedding=0
+                false, // real embeddings → needs_embedding=0
             )
             .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
@@ -278,7 +273,7 @@ impl Store<ReadWrite> {
         })
     }
 
-    /// #1452: insert chunks without a real embedding. Each row gets a
+    /// Insert chunks without a real embedding. Each row gets a
     /// zero-vec sentinel in the `embedding` column and `needs_embedding=1`,
     /// signaling that `enrichment_pass` must overwrite the embedding before
     /// the chunk becomes visible to HNSW build / search hydration.
@@ -287,8 +282,7 @@ impl Store<ReadWrite> {
     /// first-pass embed would just be overwritten by the post-summary
     /// enrichment re-embed, so we skip it entirely. On a fresh
     /// `cqs index --force --llm-summaries` for a 12k-chunk corpus this
-    /// halves the GPU time spent embedding (~30 min → ~30 min total
-    /// instead of ~60 min for the discard-and-redo shape).
+    /// halves the GPU time spent embedding.
     ///
     /// Failure modes: an interrupted enrichment pass leaves chunks at
     /// `needs_embedding=1`. The next `cqs index` invocation observes them
@@ -338,7 +332,7 @@ impl Store<ReadWrite> {
                 &vendored_per_chunk,
                 source_mtime,
                 &now,
-                true, // #1452: zero-vec sentinel → needs_embedding=1
+                true, // zero-vec sentinel → needs_embedding=1
             )
             .await?;
             upsert_fts_conditional(&mut tx, &chunks_with_zero, &old_hashes).await?;
@@ -359,13 +353,11 @@ impl Store<ReadWrite> {
         Ok(())
     }
 
-    /// Update only the embedding for existing chunks by chunk ID.
+    /// Update embeddings in batch without changing enrichment hashes.
     ///
     /// `updates` is a slice of `(chunk_id, embedding)` pairs. Chunk IDs not
     /// found in the store are logged and skipped (rows_affected == 0).
     /// Returns the count of actually updated rows.
-    ///
-    /// Update embeddings in batch (without changing enrichment hashes).
     ///
     /// Convenience wrapper around `update_embeddings_with_hashes_batch` that
     /// passes `None` for the enrichment hash, leaving it unchanged.
@@ -407,7 +399,7 @@ impl Store<ReadWrite> {
             .map(|(_, emb, _)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // PERF-40: Temp table + single UPDATE...FROM instead of N individual UPDATEs.
+        // Temp table + single UPDATE...FROM instead of N individual UPDATEs.
         // Reduces ~10K round-trips to ~100 batch INSERTs + 1 UPDATE.
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
@@ -424,13 +416,10 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
-            // 2. Batch INSERT into temp table. PF-V1.25-9: previously
-            // `BATCH_SIZE = 100` (100 × 3 = 300 binds), sized for the
-            // pre-3.32 SQLite 999-variable limit. Modern SQLite permits
-            // 32766; `max_rows_per_statement(3)` derives ~10822 rows per
-            // statement. On a full reindex with 50k updated embeddings
-            // that's ~5 INSERTs instead of 500 — a 100× reduction in
-            // SQL round-trips.
+            // 2. Batch INSERT into temp table. `max_rows_per_statement(3)`
+            // derives ~10822 rows per statement against SQLite's 32766-variable
+            // limit (3 binds per row). On a full reindex with 50k updated
+            // embeddings that's ~5 INSERTs.
             use crate::store::helpers::sql::max_rows_per_statement;
             const BATCH_SIZE: usize = max_rows_per_statement(3);
             for batch_start in (0..updates.len()).step_by(BATCH_SIZE) {
@@ -458,21 +447,20 @@ impl Store<ReadWrite> {
 
             // 3. Single UPDATE...FROM join (SQLite 3.33+).
             //
-            // #1452: clear `needs_embedding=0` on rows that get a real
-            // embedding written. The first-pass-skip path writes
-            // chunks with `needs_embedding=1` + zero-vec sentinel; a
-            // subsequent enrichment_pass call lands here with the real
-            // vector and must clear the flag so the chunk becomes
-            // visible to HNSW build / search hydration. For chunks
-            // already at `needs_embedding=0` this is a no-op write.
+            // Clear `needs_embedding=0` on rows that get a real embedding
+            // written. The first-pass-skip path writes chunks with
+            // `needs_embedding=1` + zero-vec sentinel; a subsequent
+            // enrichment_pass call lands here with the real vector and must
+            // clear the flag so the chunk becomes visible to HNSW build /
+            // search hydration. For chunks already at `needs_embedding=0`
+            // this is a no-op write.
             //
-            // DS-V1.38-2 (#1463): also repopulate `embedding_base` when
-            // it was previously NULL. The first-pass-skip path inserts
-            // chunks with `embedding_base = NULL` (per
-            // `upsert_chunks_unembedded_batch`); without this, every
-            // `--llm-summaries` reindex permanently leaves the chunk
-            // invisible to `build_hnsw_base_index` (which filters
-            // `WHERE embedding_base IS NOT NULL`), silently degrading
+            // Also repopulate `embedding_base` when it was previously NULL.
+            // The first-pass-skip path inserts chunks with
+            // `embedding_base = NULL` (per `upsert_chunks_unembedded_batch`);
+            // without this, every `--llm-summaries` reindex permanently
+            // leaves the chunk invisible to `build_hnsw_base_index` (which
+            // filters `WHERE embedding_base IS NOT NULL`), silently degrading
             // the DenseBase routing target (conceptual / behavioral /
             // negation queries).
             //
@@ -530,7 +518,7 @@ impl Store<ReadWrite> {
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
 
-            // P3.40: TEMP TABLE is connection-scoped, not transaction-scoped.
+            // TEMP TABLE is connection-scoped, not transaction-scoped.
             // A prior call on the same pooled connection (or a rollback path
             // that didn't reach the trailing DROP) can leave a stale
             // `_update_umap` with the wrong row count. DROP first, then
@@ -612,13 +600,12 @@ impl Store<ReadWrite> {
             use crate::store::helpers::sql::max_rows_per_statement;
             const BATCH_SIZE: usize = max_rows_per_statement(5);
             for batch in summaries.chunks(BATCH_SIZE) {
-                // DS-V1.36-9 / P3: ON CONFLICT DO UPDATE instead of INSERT OR
-                // REPLACE so the upsert is a true UPDATE on conflict and
-                // never fires the implicit DELETE that INSERT OR REPLACE
-                // emits. Matches PR #1342's chunks-table fix. Today there's
-                // no FK to chunks, but a future ON DELETE CASCADE addition
-                // would otherwise turn every summary refresh into a v20
-                // splade-trigger fire (full SPLADE invalidation).
+                // ON CONFLICT DO UPDATE (not INSERT OR REPLACE) so the upsert
+                // is a true UPDATE on conflict and never fires the implicit
+                // DELETE that INSERT OR REPLACE emits. There's no FK to chunks
+                // today, but a future ON DELETE CASCADE addition would
+                // otherwise turn every summary refresh into a splade-trigger
+                // fire (full SPLADE invalidation).
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
                     "INSERT INTO llm_summaries (content_hash, summary, model, purpose, created_at)",
                 );
@@ -643,25 +630,19 @@ impl Store<ReadWrite> {
     }
 
     /// Enqueue one streamed `llm_summaries` row into the per-Store
-    /// write-coalescing queue (#1126 / P2.60).
+    /// write-coalescing queue.
     ///
     /// The queue holds rows in-memory until either the row threshold or
     /// the time interval is crossed, at which point a synchronous flush
-    /// drains every queued row inside one `begin_write()` transaction —
-    /// restoring the invariant that all `index.db` writes serialize
-    /// through `WRITE_LOCK`.
-    ///
-    /// Pre-#1126, the streaming callback executed `INSERT OR IGNORE`
-    /// directly against `&pool`, bypassing `WRITE_LOCK` and racing
-    /// concurrent reindex transactions for SQLite's exclusive lock with
-    /// 1 fsync per row. The queue restores both correctness (no race)
-    /// and throughput (one fsync per batch).
+    /// drains every queued row inside one `begin_write()` transaction, so
+    /// all `index.db` writes serialize through `WRITE_LOCK` with one fsync
+    /// per batch instead of one per row.
     #[cfg(feature = "llm-summaries")]
     pub fn queue_summary_write(&self, custom_id: &str, text: &str, model: &str, purpose: &str) {
-        // #1170: validate prose summaries before they reach the cache. The
+        // Validate prose summaries before they reach the cache. The
         // doc-comment purpose is intentionally exempt — its prompt asks for
         // imperative reference docs which trip the heuristics on legitimate
-        // content. Doc-comment write-back has its own review gate (#1166).
+        // content. Doc-comment write-back has its own review gate.
         let validated_text = if purpose == "summary" {
             use crate::llm::validation::{
                 validate_summary, SummaryValidationMode, ValidationOutcome,
@@ -725,9 +706,8 @@ impl Store<ReadWrite> {
     /// and swallowed because `flush_pending_summaries` is idempotent and
     /// the LLM-pass final flush will retry.
     ///
-    /// #1126 / P2.60: this path now goes through `WRITE_LOCK` via the
-    /// queue's flush. Concurrent reindex no longer collides — both sides
-    /// serialize through the same in-process mutex.
+    /// This path goes through `WRITE_LOCK` via the queue's flush, so a
+    /// concurrent reindex serializes through the same in-process mutex.
     #[cfg(feature = "llm-summaries")]
     pub fn stream_summary_writer(
         &self,
@@ -780,10 +760,10 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
-            // E.2 (P1 #17): `function_calls` has no FK to `chunks` (it stores
-            // `caller_name` strings, not chunk IDs), so deleting chunks does
-            // not cascade. Without this DELETE, every incremental delete path
-            // leaves orphan call-graph rows that surface as ghost callers in
+            // `function_calls` has no FK to `chunks` (it stores `caller_name`
+            // strings, not chunk IDs), so deleting chunks does not cascade.
+            // Without this DELETE, every incremental delete path leaves orphan
+            // call-graph rows that surface as ghost callers in
             // `cqs callers`/`callees`/`dead`.
             sqlx::query("DELETE FROM function_calls WHERE file = ?1")
                 .bind(&origin_str)
@@ -798,11 +778,11 @@ impl Store<ReadWrite> {
     /// Refresh `source_mtime` on every chunk for `origin` without touching
     /// content.
     ///
-    /// EH-V1.30.1-1: when the watch loop's `parse_file_all_with_chunk_calls`
-    /// fails (syntax error in the user's code), the watch path emits an empty
-    /// chunk vector for that file. The previous chunks stay as ghosts AND
-    /// `chunks.source_mtime` is never refreshed, so `run_daemon_reconcile`
-    /// keeps classifying the file MODIFIED on every tick (default 30 s) —
+    /// When the watch loop's `parse_file_all_with_chunk_calls` fails (syntax
+    /// error in the user's code), the watch path emits an empty chunk vector
+    /// for that file. Without bumping stored mtime, the existing chunks stay
+    /// AND `chunks.source_mtime` is never refreshed, so `run_daemon_reconcile`
+    /// keeps classifying the file MODIFIED on every tick (default 30 s) — an
     /// unbounded reindex-fail-warn loop until the user fixes the syntax.
     ///
     /// This helper lets the parse-failure path bump stored mtime so reconcile
@@ -840,19 +820,18 @@ impl Store<ReadWrite> {
     /// Refresh the full reconcile fingerprint (`source_mtime`, `source_size`,
     /// `source_content_hash`) on every chunk for `origin`.
     ///
-    /// Issue #1219 / EX-V1.30.1-6: schema v23 added the `source_size` and
-    /// `source_content_hash` columns so Layer 2 reconciliation
-    /// (`run_daemon_reconcile`) can fall back to BLAKE3 when mtime/size alone
-    /// is unreliable (coarse-mtime FAT32/NTFS/HFS+/SMB; `git checkout` and
-    /// formatter passes that bump mtime without changing content). Both
-    /// production write paths (`cli/pipeline/upsert.rs` and
+    /// The `source_size` and `source_content_hash` columns let Layer 2
+    /// reconciliation (`run_daemon_reconcile`) fall back to BLAKE3 when
+    /// mtime/size alone is unreliable (coarse-mtime FAT32/NTFS/HFS+/SMB;
+    /// `git checkout` and formatter passes that bump mtime without changing
+    /// content). Both production write paths (`cli/pipeline/upsert.rs` and
     /// `cli/watch/reindex.rs`) call this helper after their chunk upsert so
     /// the next reconcile pass sees a populated fingerprint.
     ///
     /// `None` fields stay NULL; callers that can't read disk pass a
-    /// fingerprint with all three set to `None` and get the legacy
-    /// mtime-only behavior. `read_disk` always populates mtime+size; only
-    /// the hash is conditional on policy.
+    /// fingerprint with all three set to `None` and get mtime-only behavior.
+    /// `read_disk` always populates mtime+size; only the hash is conditional
+    /// on policy.
     ///
     /// Returns the number of chunk rows updated for telemetry; `0` typically
     /// means the origin path didn't match the canonicalized form stored in
@@ -909,15 +888,11 @@ impl Store<ReadWrite> {
     /// Atomically upsert chunks + calls AND prune phantom chunks for a file,
     /// all inside a single `begin_write()` transaction.
     ///
-    /// DS2-4: Before this method, `reindex_files` in the watch loop called
-    /// `upsert_chunks_and_calls` and then `delete_phantom_chunks` in two
-    /// independent transactions. A crash between the two left the index in a
-    /// half-pruned state — new chunks were visible but removed chunks were
-    /// still there, alongside a dirty HNSW flag. Merging both operations into
-    /// one tx makes the reindex all-or-nothing.
+    /// Folding the upsert and the phantom prune into one tx makes the reindex
+    /// all-or-nothing: a crash can't leave the index half-pruned (new chunks
+    /// visible but removed chunks still present, plus a dirty HNSW flag).
     ///
-    /// When `prune_file` is `None`, behaves identically to the old
-    /// `upsert_chunks_and_calls` (phantom pruning is skipped). When
+    /// When `prune_file` is `None`, phantom pruning is skipped. When
     /// `prune_file` is `Some(path)`, chunks matching that `origin` whose IDs
     /// are not present in `live_ids` are deleted alongside the upsert.
     ///
@@ -942,17 +917,14 @@ impl Store<ReadWrite> {
         )
     }
 
-    /// #1574: same as [`Self::upsert_chunks_calls_and_prune`] but ALSO writes
+    /// Same as [`Self::upsert_chunks_calls_and_prune`] but ALSO writes
     /// the file-level `function_calls` table in the same transaction.
     ///
-    /// The asymmetric-state bug this closes: pre-fix, `cli/watch/reindex.rs`
-    /// called `upsert_function_calls` per-file inside the parser flat_map
-    /// BEFORE the (heavy, crash-prone) embed phase. If the daemon crashed
-    /// during embed (we observed SIGFPE crashes on TensorRT), the
-    /// function_calls table got the new state but the chunks/FTS table did
-    /// not — `cqs callers <new_fn>` worked but `cqs explain <new_fn>` and
-    /// search-by-name didn't. Folding the function_calls write into this
-    /// per-file tx makes the reindex all-or-nothing.
+    /// Folding the function_calls write into this per-file tx makes the
+    /// reindex all-or-nothing. Otherwise a crash during the embed phase can
+    /// leave the function_calls table with the new state while chunks/FTS
+    /// lags — `cqs callers <new_fn>` works but `cqs explain <new_fn>` and
+    /// search-by-name don't.
     ///
     /// `file_function_calls` MUST be paired with `prune_file` (the file the
     /// function_calls belong to). When `prune_file = None`, this method
@@ -1007,8 +979,7 @@ impl Store<ReadWrite> {
             .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // v24 / #1221: same vendored pre-compute as the simpler
-        // `upsert_chunks_batch` path.
+        // Same vendored pre-compute as the simpler `upsert_chunks_batch` path.
         let prefixes = self.vendored_prefixes_slice();
         let vendored_per_chunk: Vec<bool> = chunks
             .iter()
@@ -1029,7 +1000,7 @@ impl Store<ReadWrite> {
                 &vendored_per_chunk,
                 source_mtime,
                 &now,
-                false, // #1452: real embeddings → needs_embedding=0
+                false, // real embeddings → needs_embedding=0
             )
             .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
@@ -1067,8 +1038,8 @@ impl Store<ReadWrite> {
                     query.execute(&mut *tx).await?;
                 }
 
-                // 3 binds per row → modern SQLite variable limit yields
-                // ~10822 rows per statement (was hardcoded 300).
+                // 3 binds per row → SQLite's variable limit yields
+                // ~10822 rows per statement.
                 use crate::store::helpers::sql::max_rows_per_statement;
                 const INSERT_BATCH: usize = max_rows_per_statement(3);
                 for batch in calls.chunks(INSERT_BATCH) {
@@ -1085,7 +1056,7 @@ impl Store<ReadWrite> {
                 }
             }
 
-            // DS2-4: Phantom-chunk pruning fused into the same transaction.
+            // Phantom-chunk pruning fused into the same transaction.
             // Mirrors `delete_phantom_chunks`, adapted to run on the open
             // `tx` instead of opening its own. An empty `live_ids` with
             // `Some(prune_file)` degrades to a full DELETE of the file —
@@ -1172,10 +1143,10 @@ impl Store<ReadWrite> {
                 }
             }
 
-            // #1574: fold the file-level `function_calls` write into the
-            // same tx as chunks/FTS/calls so a crash here can't leave the
-            // tables in an asymmetric state where the call graph knows
-            // about a function the chunks/FTS index doesn't.
+            // Fold the file-level `function_calls` write into the same tx
+            // as chunks/FTS/calls so a crash here can't leave the tables in
+            // an asymmetric state where the call graph knows about a function
+            // the chunks/FTS index doesn't.
             if let (Some(file), Some(fcs)) = (prune_file, file_function_calls) {
                 let file_str = crate::normalize_path(file);
                 crate::store::calls::write_function_calls_in_tx(&mut tx, &file_str, fcs).await?;
@@ -1186,7 +1157,7 @@ impl Store<ReadWrite> {
         })
     }
 
-    /// Delete chunks for a file that are no longer in the current parse output (RT-DATA-10).
+    /// Delete chunks for a file that are no longer in the current parse output.
     ///
     /// After re-parsing a file, some functions may have been removed. Their old
     /// chunks would linger as phantoms. This deletes chunks whose origin matches
@@ -1274,16 +1245,13 @@ mod tests {
     use crate::parser::{CallSite, FunctionCalls};
     use crate::test_helpers::{mock_embedding, setup_store};
 
-    /// #1574 regression: `upsert_chunks_calls_and_prune_with_file_calls`
-    /// must write chunks/FTS/calls AND function_calls in the same SQLite
-    /// transaction. Pre-fix the watch-mode reindex called
-    /// `upsert_function_calls` separately BEFORE the embed phase, so a
-    /// daemon crash mid-embed (we observed SIGFPE crashes on TensorRT)
-    /// left function_calls ahead of chunks/FTS — search-by-name returned
-    /// 0 hits for the new function while `cqs callers <new_fn>` worked.
-    /// This test pins the post-commit invariant: after a successful
-    /// upsert, BOTH the chunks/FTS shadow AND the function_calls table
-    /// reflect the new function.
+    /// `upsert_chunks_calls_and_prune_with_file_calls` must write
+    /// chunks/FTS/calls AND function_calls in the same SQLite transaction.
+    /// Pins the invariant: after a successful upsert, BOTH the chunks/FTS
+    /// shadow AND the function_calls table reflect the new function. Without
+    /// atomicity, a daemon crash mid-embed can leave function_calls ahead of
+    /// chunks/FTS — search-by-name returns 0 hits for the new function while
+    /// `cqs callers <new_fn>` works.
     #[test]
     fn test_upsert_chunks_calls_and_prune_with_file_calls_atomic() {
         let (store, _dir) = setup_store();
@@ -1319,7 +1287,7 @@ mod tests {
         assert_eq!(stored.get(&chunk.id).unwrap().name, "new_fn");
 
         // FTS shadow has the new function (this is the table that backs
-        // `search_by_name` — pre-fix this was the missing piece)
+        // `search_by_name`)
         let fts_hits = store
             .search_by_name("new_fn", 5)
             .expect("search_by_name must succeed");
@@ -1330,8 +1298,7 @@ mod tests {
         );
 
         // function_calls table has the new caller (this is the call-graph
-        // table that pre-fix was being written EARLY — the asymmetric
-        // state was that this had the row but FTS didn't)
+        // table; it and the FTS shadow must land in the same transaction)
         let callers = store
             .get_callers_full("callee_alpha")
             .expect("get_callers_full");
@@ -1342,10 +1309,10 @@ mod tests {
         );
     }
 
-    /// #1574 corollary: passing `None` for file_function_calls leaves the
-    /// existing function_calls rows untouched (the legacy non-atomic path).
-    /// Pin so a future refactor that defaults to "always write" doesn't
-    /// silently wipe call-graph state for callers using the legacy method.
+    /// Passing `None` for file_function_calls leaves the existing
+    /// function_calls rows untouched. Pin so a future refactor that defaults
+    /// to "always write" doesn't silently wipe call-graph state for callers
+    /// using this method.
     #[test]
     fn test_upsert_chunks_calls_and_prune_none_leaves_function_calls() {
         let (store, _dir) = setup_store();
@@ -1444,7 +1411,7 @@ mod tests {
         assert_eq!(store.chunk_count().unwrap(), 0);
     }
 
-    // ===== #1452: needs_embedding flag round-trip =====
+    // ===== needs_embedding flag round-trip =====
 
     /// `upsert_chunks_unembedded_batch` writes chunks with `needs_embedding=1`
     /// and a zero-vec sentinel in the `embedding` column. `needs_embedding_count`
@@ -1533,20 +1500,18 @@ mod tests {
         );
     }
 
-    /// #1452 follow-up: skip-first-pass writes `embedding_base = NULL`
-    /// (not the zero-vec sentinel). Otherwise `build_hnsw_base_index`
+    /// Skip-first-pass writes `embedding_base = NULL` (not the zero-vec
+    /// sentinel). Otherwise `build_hnsw_base_index`
     /// (`SELECT ... WHERE embedding_base IS NOT NULL`) would join the
-    /// base HNSW with corrupt zeros for every partial-state chunk —
-    /// the base index is the routing-fallback channel and silently
-    /// degrading it is the original-bug shape this PR fixed.
+    /// base HNSW with corrupt zeros for every partial-state chunk — the
+    /// base index is the routing-fallback channel and silently degrading
+    /// it would break conceptual / behavioral / negation routing.
     ///
-    /// DS-V1.38-2 (#1463) follow-up: `update_embeddings_with_hashes_batch`
-    /// now repopulates `embedding_base` (when previously NULL) using
-    /// `COALESCE(chunks.embedding_base, t.embedding)`. Pre-fix every
-    /// `--llm-summaries` cycle permanently degraded base-HNSW coverage
-    /// for affected chunks; post-fix the first enrichment hit fills
-    /// the base bytes and the chunk becomes routable on the DenseBase
-    /// path (conceptual / behavioral / negation queries).
+    /// `update_embeddings_with_hashes_batch` repopulates `embedding_base`
+    /// (when previously NULL) using
+    /// `COALESCE(chunks.embedding_base, t.embedding)`, so the first
+    /// enrichment hit fills the base bytes and the chunk becomes routable
+    /// on the DenseBase path.
     #[test]
     fn unembedded_chunks_have_null_embedding_base() {
         let (store, _dir) = setup_store();
@@ -1565,9 +1530,8 @@ mod tests {
         );
 
         // Post-enrichment: enrichment writes the real `embedding` AND
-        // repopulates the previously-NULL `embedding_base` (DS-V1.38-2).
-        // The base index now sees the chunk and DenseBase routing serves
-        // it correctly.
+        // repopulates the previously-NULL `embedding_base`. The base index
+        // now sees the chunk and DenseBase routing serves it correctly.
         let real_emb = mock_embedding(0.5);
         let updates = vec![(c.id.clone(), real_emb, Some("hash".to_string()))];
         store.update_embeddings_with_hashes_batch(&updates).unwrap();
@@ -1580,13 +1544,13 @@ mod tests {
         );
     }
 
-    // DS-V1.38-2 (#1463): the "preserve existing embedding_base" invariant
-    // is already covered by `test_enrichment_does_not_overwrite_base` in
+    // The "preserve existing embedding_base" invariant is covered by
+    // `test_enrichment_does_not_overwrite_base` in
     // `src/store/chunks/async_helpers.rs`. The above test
     // (`unembedded_chunks_have_null_embedding_base`) covers the
-    // sibling NULL → COALESCE → repopulate case introduced by DS-V1.38-2.
+    // sibling NULL → COALESCE → repopulate case.
 
-    /// #1221: end-to-end vendored-flag round-trip. With the default
+    /// End-to-end vendored-flag round-trip. With the default
     /// prefix list configured on the store, a chunk whose origin
     /// passes through `vendor/` is upserted with `vendored = 1` and
     /// retrieves as `ChunkSummary { vendored: true, .. }`; a sibling
@@ -1646,7 +1610,7 @@ mod tests {
         );
     }
 
-    /// #1221: an empty prefix list (operator opt-out via
+    /// An empty prefix list (operator opt-out via
     /// `[index].vendored_paths = []` in `.cqs.toml`) disables vendored
     /// detection — even chunks under `vendor/` are stored with
     /// `vendored = 0`.
@@ -1678,7 +1642,7 @@ mod tests {
         );
     }
 
-    // ===== EH-V1.30.1-1: touch_source_mtime =====
+    // ===== touch_source_mtime =====
 
     /// Happy path: insert a chunk at one mtime, touch to a new mtime, verify
     /// `rows_affected > 0` and the stored value advanced. Pinned because the
@@ -1725,11 +1689,10 @@ mod tests {
         assert_eq!(rows, 0);
     }
 
-    /// #1219: `set_file_fingerprint` round-trips mtime+size+hash so the
-    /// next `indexed_file_origins()` read sees a fully-populated
-    /// `FileFingerprint`. Pre-test: rows have legacy NULLs because the
-    /// upsert path doesn't bind the v23 columns. Calling the helper
-    /// upgrades them in place.
+    /// `set_file_fingerprint` round-trips mtime+size+hash so the next
+    /// `indexed_file_origins()` read sees a fully-populated `FileFingerprint`.
+    /// Before the call the rows have NULL size/hash because the upsert path
+    /// doesn't bind those columns; the helper upgrades them in place.
     #[test]
     fn test_set_file_fingerprint_round_trips_all_three_fields() {
         use crate::store::chunks::staleness::FileFingerprint;
@@ -1740,7 +1703,7 @@ mod tests {
             .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
             .unwrap();
 
-        // Pre-state: legacy row (only mtime), v23 columns NULL.
+        // Pre-state: only mtime set, size/hash columns NULL.
         let pre = store.indexed_file_origins().unwrap();
         let pre_fp = pre
             .get("src/alpha.rs")
@@ -1773,11 +1736,11 @@ mod tests {
         assert_eq!(post_fp.content_hash, fp.content_hash);
     }
 
-    /// #1219: separator normalization mirrors `touch_source_mtime`. A
-    /// Windows-style backslash origin must round-trip through
-    /// `normalize_path` so the UPDATE matches the slash-form indexer key.
-    /// Without this the v23 fingerprint columns silently stay NULL on
-    /// Windows tools that emit `\\` separators.
+    /// Separator normalization mirrors `touch_source_mtime`. A Windows-style
+    /// backslash origin must round-trip through `normalize_path` so the
+    /// UPDATE matches the slash-form indexer key. Without this the
+    /// fingerprint columns silently stay NULL on Windows tools that emit
+    /// `\\` separators.
     #[test]
     fn test_set_file_fingerprint_normalizes_separators() {
         use crate::store::chunks::staleness::FileFingerprint;
@@ -1832,7 +1795,7 @@ mod tests {
         );
     }
 
-    // ===== TC-8: LLM summary functions =====
+    // ===== LLM summary functions =====
 
     #[test]
     fn test_get_summaries_empty_input() {
@@ -2070,7 +2033,7 @@ mod tests {
         assert!(remaining.contains_key(&c1.content_hash));
     }
 
-    // ===== TC-SQ8: purpose coexistence =====
+    // ===== purpose coexistence =====
 
     #[test]
     fn test_summaries_different_purposes_coexist() {
@@ -2117,7 +2080,7 @@ mod tests {
         assert_eq!(all_doc.len(), 1);
     }
 
-    // ===== delete_phantom_chunks tests (TC-42) =====
+    // ===== delete_phantom_chunks tests =====
 
     #[test]
     fn delete_phantom_chunks_removes_stale() {
@@ -2198,12 +2161,11 @@ mod tests {
         );
     }
 
-    // ===== TC-HAP-V1.33-7: update_umap_coords_batch happy path =====
+    // ===== update_umap_coords_batch happy path =====
 
-    /// TC-HAP-V1.33-7: seed chunks, call `update_umap_coords_batch` with
-    /// finite values, verify the rows are written and `umap_x`/`umap_y`
-    /// round-trip via raw SELECT (matching how `build_cluster` reads them
-    /// in `serve/data.rs`).
+    /// Seed chunks, call `update_umap_coords_batch` with finite values,
+    /// verify the rows are written and `umap_x`/`umap_y` round-trip via raw
+    /// SELECT (matching how `build_cluster` reads them in `serve/data.rs`).
     #[test]
     fn test_update_umap_coords_batch_writes_coords_atomically() {
         let (store, _dir) = setup_store();
@@ -2249,9 +2211,9 @@ mod tests {
         });
     }
 
-    /// TC-HAP-V1.33-7: passing an extra unknown ID — the warn fires +
-    /// `updated` is < input length. Documents the partial-update path
-    /// the function uses when the projection script's input drifts.
+    /// Passing an extra unknown ID — the warn fires + `updated` is < input
+    /// length. Documents the partial-update path the function uses when the
+    /// projection script's input drifts.
     #[test]
     fn test_update_umap_coords_batch_handles_missing_ids() {
         let (store, _dir) = setup_store();
@@ -2278,17 +2240,15 @@ mod tests {
         );
     }
 
-    // ===== TC-ADV-V1.33-10: update_umap_coords_batch NaN/Inf handling =====
+    // ===== update_umap_coords_batch NaN/Inf handling =====
 
-    /// TC-ADV-V1.33-10: pin current behaviour around NaN/Inf coords.
-    /// Today the temp table's `umap_x REAL NOT NULL` schema rejects NaN
-    /// (sqlx binds NaN as NULL → constraint violation), so the call
-    /// surfaces a SQLite error rather than panicking or silently
-    /// writing corrupt floats to `chunks`. This test pins that
-    /// observed status quo: a future fix that adds an explicit
-    /// `is_finite` guard at the helper boundary should produce a
-    /// different, more user-friendly error — flipping this test signals
-    /// that contract change.
+    /// Pins current behaviour around NaN/Inf coords. The temp table's
+    /// `umap_x REAL NOT NULL` schema rejects NaN (sqlx binds NaN as NULL →
+    /// constraint violation), so the call surfaces a SQLite error rather
+    /// than panicking or silently writing corrupt floats to `chunks`. Adding
+    /// an explicit `is_finite` guard at the helper boundary would produce a
+    /// different, more user-friendly error — flipping this test signals that
+    /// contract change.
     #[test]
     fn test_update_umap_coords_batch_rejects_nan_today() {
         let (store, _dir) = setup_store();

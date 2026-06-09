@@ -65,17 +65,13 @@ impl Bm25Index {
         // Compute IDF using the Robertson-Sparck-Jones formula:
         //   ln((N - df + 0.5) / (df + 0.5))
         //
-        // AC-V1.33-5: Previously this used the Atire/Lucene `+ 1.0` variant
-        // (`ln((N - df + 0.5) / (df + 0.5) + 1.0)`), which prevents negative
-        // IDF when `df > N/2` but mismatches the FTS5-backed BM25 path at
-        // `src/store/search.rs` (`ORDER BY bm25(chunks_fts, ...)`). SQLite
-        // FTS5's built-in BM25 uses the standard Robertson-Sparck-Jones
-        // formula without the `+ 1.0` shift. Aligning the hard-negative
-        // selection scoring with FTS5 means A/B comparisons of negative-
-        // mining quality against FTS5-derived candidates compare the same
-        // ranking function. Negative IDF on extremely-common terms is
-        // acceptable for hard-negative selection: the per-doc score is
-        // still monotonic in match strength.
+        // This matches the FTS5-backed BM25 path at `src/store/search.rs`
+        // (`ORDER BY bm25(chunks_fts, ...)`): SQLite FTS5's built-in BM25 uses
+        // the standard Robertson-Sparck-Jones formula (no Atire/Lucene `+ 1.0`
+        // shift), so A/B comparisons of negative-mining quality against
+        // FTS5-derived candidates compare the same ranking function. Negative
+        // IDF on extremely-common terms is acceptable for hard-negative
+        // selection: the per-doc score is still monotonic in match strength.
         let mut idf = HashMap::new();
         for (term, doc_freq) in &df {
             let idf_val = ((n - doc_freq + 0.5) / (doc_freq + 0.5)).ln();
@@ -102,16 +98,16 @@ impl Bm25Index {
             .enumerate()
             .map(|(i, (hash, _))| {
                 let tf_map = &self.doc_terms[i];
-                // AC-15: Document length is the sum of term frequencies (total token count).
-                // This matches the `total_dl` accumulation in `build()` where `dl = terms.len()`.
+                // Document length is the sum of term frequencies (total token count).
+                // Matches the `total_dl` accumulation in `build()` where `dl = terms.len()`.
                 // Both use the same tokenizer, so they are consistent. The sum of TF values
                 // equals the token count because each token increments its entry by 1.0.
                 let dl = tf_map.values().sum::<f32>();
                 let mut score = 0.0f32;
 
-                // RB-V1.33-1: guard against avg_dl == 0 (empty corpus or
-                // every doc tokenizes to zero terms) so dl/avg_dl can't
-                // produce inf/NaN that escapes via partial_cmp.
+                // Guard against avg_dl == 0 (empty corpus or every doc
+                // tokenizes to zero terms) so dl/avg_dl can't produce inf/NaN
+                // that escapes via partial_cmp.
                 let dl_ratio = if self.avg_dl > 0.0 {
                     dl / self.avg_dl
                 } else {
@@ -132,9 +128,9 @@ impl Bm25Index {
 
         // Secondary sort on doc hash keeps equal-score documents
         // deterministically ordered across process invocations (the
-        // upstream HashMap iterates in random order). RB-V1.33-1: use
-        // total_cmp so any NaN that survives the avg_dl guard sorts
-        // deterministically (matches search/query.rs:642 pattern).
+        // upstream HashMap iterates in random order). total_cmp so any NaN
+        // that survives the avg_dl guard sorts deterministically (matches
+        // search/query.rs:642 pattern).
         scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         scores
     }
@@ -152,10 +148,9 @@ impl Bm25Index {
         let positive_content_hash = blake3::hash(positive_content.as_bytes());
         let scored = self.score(query);
 
-        // AC-V1.36-4 / P3: move the empty-content drop ahead of `take(k)`
-        // so empty rows don't count toward the budget. Pre-fix the docstring
-        // promised "top-k negatives" but a stretch of empty-content rows in
-        // the top-k slice silently shrank the result below k.
+        // Drop empty-content rows ahead of `take(k)` so they don't count
+        // toward the budget — otherwise a stretch of empty-content rows in the
+        // top-k slice silently shrinks the result below k.
         scored
             .into_iter()
             .filter(|(hash, _score)| hash != positive_hash)
@@ -245,7 +240,7 @@ mod tests {
         assert!(negs.is_empty());
     }
 
-    // TC-28: select_negatives with a desynced docs list (hash from score()
+    // select_negatives with a desynced docs list (hash from score()
     // not found by the content hash guard's find()). We simulate this by
     // mutating the hash in self.docs after build, so score() returns the
     // mutated hash, then we query select_negatives with a positive that
@@ -266,9 +261,9 @@ mod tests {
         );
     }
 
-    // RB-V1.33-1: A corpus where every doc tokenizes to zero terms (pure
-    // whitespace, after a content rewrite that strips everything, etc.)
-    // produces avg_dl == 0. score() must not divide by zero / leak NaN.
+    // A corpus where every doc tokenizes to zero terms (pure whitespace,
+    // after a content rewrite that strips everything, etc.) produces
+    // avg_dl == 0. score() must not divide by zero / leak NaN.
     #[test]
     fn score_zero_token_corpus_produces_finite_scores() {
         let docs = vec![
@@ -289,8 +284,8 @@ mod tests {
         }
     }
 
-    // TC-28: Verify that when the positive hash doesn't exist in the index,
-    // all documents pass the positive-hash filter and the function doesn't panic.
+    // Verify that when the positive hash doesn't exist in the index, all
+    // documents pass the positive-hash filter and the function doesn't panic.
     #[test]
     fn select_negatives_nonexistent_positive_hash() {
         let docs = vec![

@@ -26,10 +26,10 @@ use super::runner::EvalReport;
 /// that K. Stored as `f64` so 0.0 round-trips exactly through JSON and
 /// the diff math doesn't accumulate float noise on small deltas.
 ///
-/// P1 #26: field names match the sibling `EvalReport` shape (`r_at_1`,
-/// `r_at_5`, `r_at_20` in `runner.rs`) so the same command emits one
-/// consistent JSON convention. The display labels stay `R@1` / `R@5` /
-/// `R@20` (those live in `Regression.metric`).
+/// Field names match the sibling `EvalReport` shape (`r_at_1`, `r_at_5`,
+/// `r_at_20` in `runner.rs`) so the same command emits one consistent JSON
+/// convention. The display labels stay `R@1` / `R@5` / `R@20` (those live in
+/// `Regression.metric`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct KDelta {
     pub r_at_1: f64,

@@ -1,5 +1,4 @@
 //! `cqs hook` — git-hook integration for watch-mode reconciliation.
-//! (#1182 — Layer 1)
 //!
 //! Closes the **bulk-git missed-event** class: `git checkout`, `merge`,
 //! `reset`, `rebase` shift many files at once but inotify (and especially
@@ -52,9 +51,9 @@ pub(crate) const MANAGED_HOOKS: &[&str] = &["post-checkout", "post-merge", "post
 
 /// `cqs hook` subcommand surface.
 #[derive(clap::Subcommand, Debug, Clone)]
-/// API-V1.38-1 (#1463): every variant flattens
-/// [`crate::cli::definitions::TextJsonArgs`] (`output: TextJsonArgs`) instead
-/// of an inline `json: bool`. Matches the codebase-wide pattern.
+/// Every variant flattens [`crate::cli::definitions::TextJsonArgs`]
+/// (`output: TextJsonArgs`) rather than an inline `json: bool`, matching the
+/// codebase-wide pattern.
 pub(crate) enum HookCommand {
     /// Install cqs hooks into `.git/hooks/`. Idempotent — re-running is
     /// safe; already-installed cqs hooks are upgraded in place.
@@ -96,11 +95,10 @@ pub(crate) enum HookCommand {
     },
 }
 
-// PB-V1.30.1-8: `git_dir` and `dirty_marker` carry forward-slash-normalized
-// strings, not raw `PathBuf`s, so JSON output matches the rest of the
-// surface (per `src/store/types.rs:220`). Backslashes on Windows would
-// otherwise leak into reports and break tooling that grep-matches on
-// canonical relative paths.
+// `git_dir` and `dirty_marker` carry forward-slash-normalized strings, not
+// raw `PathBuf`s, so JSON output matches the rest of the surface. Backslashes
+// on Windows would otherwise leak into reports and break tooling that
+// grep-matches on canonical relative paths.
 #[derive(Debug, Serialize)]
 struct InstallReport {
     git_dir: String,
@@ -125,8 +123,8 @@ struct StatusReport {
     foreign: Vec<String>,
     missing: Vec<String>,
     daemon_up: bool,
-    /// PB-V1.33-7 / #1354: on Windows, the MSYS shell that runs hooks does
-    /// not see `%PATH%` reliably. This field carries the result of a
+    /// On Windows, the MSYS shell that runs hooks does not see `%PATH%`
+    /// reliably. This field carries the result of a
     /// `bash -c 'command -v cqs'` probe so operators see whether the hook
     /// will actually fire. `None` on Linux/macOS (PATH is shared, probe is
     /// moot) and on Windows when `bash` itself isn't available.
@@ -160,11 +158,11 @@ pub(crate) fn cmd_hook(subcmd: HookCommand) -> Result<()> {
     }
 }
 
-/// RB-V1.36-3: bounded read of a managed hook file. Hooks are normally
-/// <10 KB; cap at 1 MiB so a corrupt / hostile multi-GB hook file doesn't
-/// OOM `cqs ci ...`. Files above the cap are reported as `read_to_string`
-/// I/O errors with `kind() == InvalidData` so callers treat them as foreign
-/// (refuse to overwrite) — same effect as the existing fall-through.
+/// Bounded read of a managed hook file. Hooks are normally <10 KB; cap at
+/// 1 MiB so a corrupt / hostile multi-GB hook file doesn't OOM `cqs ci ...`.
+/// Files above the cap are reported as `read_to_string` I/O errors with
+/// `kind() == InvalidData` so callers treat them as foreign (refuse to
+/// overwrite).
 const HOOK_MAX_BYTES: u64 = 1024 * 1024;
 
 fn read_hook_capped(path: &Path) -> std::io::Result<String> {
@@ -202,12 +200,12 @@ fn cmd_install(no_overwrite: bool, json: bool) -> Result<()> {
 
     for &hook in MANAGED_HOOKS {
         let path = git_dir.join(hook);
-        // EH-V1.33-3: distinguish `NotFound` (no hook present, safe to
-        // install) from any other read failure (PermissionDenied, corrupt
-        // UTF-8, IO hiccup). Collapsing all errors to `None` via `.ok()`
-        // would let the `None` arm clobber a foreign hook that was simply
-        // unreadable. Refuse to write in any non-NotFound failure case.
-        // RB-V1.36-3: read_hook_capped bounds the read at 1 MiB.
+        // Distinguish `NotFound` (no hook present, safe to install) from any
+        // other read failure (PermissionDenied, corrupt UTF-8, IO hiccup).
+        // Collapsing all errors to `None` via `.ok()` would let the `None`
+        // arm clobber a foreign hook that was simply unreadable. Refuse to
+        // write in any non-NotFound failure case. `read_hook_capped` bounds
+        // the read at 1 MiB.
         let existing = match read_hook_capped(&path) {
             Ok(s) => Some(s),
             Err(e) if e.kind() == ErrorKind::NotFound => None,
@@ -265,8 +263,8 @@ fn write_hook_script(path: &Path, hook_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// PB-V1.33-7 / #1354: Windows-only — the git-bash MSYS shell that runs
-/// `.git/hooks/*` does not inherit `%PATH%`; only entries that translate
+/// Windows-only — the git-bash MSYS shell that runs `.git/hooks/*` does not
+/// inherit `%PATH%`; only entries that translate
 /// to valid POSIX-style paths survive (`C:\Users\foo\.cargo\bin` →
 /// `/c/Users/foo/.cargo/bin`). Operators who installed `cqs` via
 /// `cargo install` and verified `cqs --version` works in `cmd.exe` see
@@ -333,11 +331,10 @@ fn render_hook_script(hook_name: &str, absolute_fallback: Option<&str>) -> Strin
     // own socket timeout and exits within a few hundred ms even on a wedged
     // daemon. The redirect keeps git's output channel clean.
     //
-    // PB-V1.33-7 / #1354: on Windows-native installs, the MSYS shell that
-    // runs hooks does not see `%PATH%` entries reliably. When `cqs hook
-    // install` runs on Windows, the resolved absolute `cqs.exe` path is
-    // embedded as a second branch; on Linux/macOS the fallback is absent
-    // and the script is identical to the pre-#1354 form.
+    // On Windows-native installs, the MSYS shell that runs hooks does not see
+    // `%PATH%` entries reliably. When `cqs hook install` runs on Windows, the
+    // resolved absolute `cqs.exe` path is embedded as a second branch; on
+    // Linux/macOS the fallback is absent and the script has one branch.
     let fallback_branch = match absolute_fallback {
         Some(p) => format!(
             "elif [ -x \"{p}\" ]; then\n    \"{p}\" hook fire {hook_name} \"$@\" >/dev/null 2>&1 &\n",
@@ -377,9 +374,8 @@ fn cmd_uninstall(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// TC-HAP-1.30.1-2: path-aware uninstall helper. Body of `cmd_uninstall`
-/// extracted so unit tests can drive a tempdir without the global
-/// `find_project_root` walk.
+/// Path-aware uninstall helper. Body of `cmd_uninstall` extracted so unit
+/// tests can drive a tempdir without the global `find_project_root` walk.
 fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
     let mut report = UninstallReport {
         git_dir: cqs::normalize_path(git_dir),
@@ -390,14 +386,14 @@ fn do_uninstall(git_dir: &Path) -> Result<UninstallReport> {
 
     for &hook in MANAGED_HOOKS {
         let path = git_dir.join(hook);
-        // RB-V1.36-3: capped read; oversize files are treated as not-present
-        // to fall through to the "leave foreign hook alone" branch.
+        // Capped read; oversize files are treated as not-present to fall
+        // through to the "leave foreign hook alone" branch.
         //
-        // EH-V1.38-6 (#1463): distinguish NotFound (expected, fine) from
-        // permission-denied / oversize / other I/O errors so an operator
-        // doesn't see "hook not present" while a perm-locked or oversize
-        // file silently survives. The report bucket stays the same to avoid
-        // a schema change; the warn is the operator-facing signal.
+        // Distinguish NotFound (expected, fine) from permission-denied /
+        // oversize / other I/O errors so an operator doesn't see "hook not
+        // present" while a perm-locked or oversize file silently survives.
+        // The report bucket stays the same to avoid a schema change; the warn
+        // is the operator-facing signal.
         match read_hook_capped(&path) {
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
@@ -437,9 +433,9 @@ fn cmd_fire(name: String, args: Vec<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// TC-HAP-1.30.1-2: path-aware fire helper. Tries the daemon socket first
-/// (when `try_daemon` is true and the platform supports unix sockets),
-/// falls back to writing `.cqs/.dirty` atomically (DS-V1.30.1-D5).
+/// Path-aware fire helper. Tries the daemon socket first (when `try_daemon`
+/// is true and the platform supports unix sockets), falls back to writing
+/// `.cqs/.dirty` atomically.
 fn do_fire(cqs_dir: &Path, name: &str, args: Vec<String>, try_daemon: bool) -> Result<FireReport> {
     let mut report = FireReport {
         hook: name.to_string(),
@@ -475,9 +471,9 @@ fn do_fire(cqs_dir: &Path, name: &str, args: Vec<String>, try_daemon: bool) -> R
     // Fallback: leave a marker the daemon will pick up on next start.
     let dirty = cqs_dir.join(".dirty");
     std::fs::create_dir_all(cqs_dir).with_context(|| format!("create {}", cqs_dir.display()))?;
-    // DS-V1.30.1-D5: stage to .dirty.tmp then atomic_replace so the
-    // marker survives a power-cut between write and the next directory
-    // sync. atomic_replace fsyncs the tmp before rename and best-effort
+    // Stage to .dirty.tmp then atomic_replace so the marker survives a
+    // power-cut between write and the next directory sync. atomic_replace
+    // fsyncs the tmp before rename and best-effort
     // fsyncs the parent afterwards. The marker is the *only* signal the
     // daemon will see post-reboot, so durability matters more than the
     // empty-file write cost.
@@ -507,9 +503,9 @@ fn cmd_status(json: bool) -> Result<()> {
         let _ = cqs_dir; // unused on non-unix
     }
 
-    // PB-V1.33-7 / #1354: on Windows-native, surface whether the hook's
-    // shell environment can actually find `cqs`. Linux/macOS share PATH
-    // with the hook shell, so the probe is moot and the field stays None.
+    // On Windows-native, surface whether the hook's shell environment can
+    // actually find `cqs`. Linux/macOS share PATH with the hook shell, so the
+    // probe is moot and the field stays None.
     #[cfg(windows)]
     {
         report.cqs_visible_in_hook_shell = probe_cqs_visible_in_bash();
@@ -535,9 +531,8 @@ fn probe_cqs_visible_in_bash() -> Option<bool> {
     Some(out.success())
 }
 
-/// TC-HAP-1.30.1-2: path-aware hook-status helper. Pure file-system
-/// classification with no daemon probe — `cmd_status` overlays
-/// `daemon_up` separately.
+/// Path-aware hook-status helper. Pure file-system classification with no
+/// daemon probe — `cmd_status` overlays `daemon_up` separately.
 fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
     let mut report = StatusReport {
         git_dir: cqs::normalize_path(git_dir),
@@ -550,13 +545,13 @@ fn do_hook_status(git_dir: &Path) -> Result<StatusReport> {
 
     for &hook in MANAGED_HOOKS {
         let path = git_dir.join(hook);
-        // RB-V1.36-3: capped read; oversize files are reported as foreign
-        // (since we can't tell whether they contain HOOK_MARKER_PREFIX).
+        // Capped read; oversize files are reported as foreign (since we can't
+        // tell whether they contain HOOK_MARKER_PREFIX).
         //
-        // EH-V1.38-6 (#1463): same NotFound-vs-other split as `do_uninstall`
-        // — an operator running `cqs hook status` should see a warn for
-        // permission-denied / oversize files instead of the discrepancy
-        // hiding under a "missing" label.
+        // Same NotFound-vs-other split as `do_uninstall` — an operator
+        // running `cqs hook status` should see a warn for permission-denied /
+        // oversize files instead of the discrepancy hiding under a "missing"
+        // label.
         match read_hook_capped(&path) {
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
@@ -647,11 +642,11 @@ mod tests {
         assert_eq!(second_line, HOOK_MARKER_CURRENT);
     }
 
-    /// PB-V1.33-7 / #1354: a Windows install passes the POSIX-translated
-    /// absolute `cqs.exe` path as the fallback. The rendered script
-    /// keeps the `command -v cqs` branch (so cargo-bin-on-MSYS-PATH users
-    /// still hit the bare `cqs` invocation) and adds an `elif [ -x "<abs>" ]`
-    /// branch that fires the hook through the absolute path.
+    /// A Windows install passes the POSIX-translated absolute `cqs.exe` path
+    /// as the fallback. The rendered script keeps the `command -v cqs` branch
+    /// (so cargo-bin-on-MSYS-PATH users still hit the bare `cqs` invocation)
+    /// and adds an `elif [ -x "<abs>" ]` branch that fires the hook through
+    /// the absolute path.
     #[test]
     fn render_hook_script_with_absolute_fallback_emits_elif_branch() {
         let body = render_hook_script("post-checkout", Some("/c/Users/foo/.cargo/bin/cqs.exe"));
@@ -674,8 +669,8 @@ mod tests {
     }
 
     /// Without a fallback (Linux / macOS), the script must not emit any
-    /// `elif` branch — keeps the on-disk text minimal and identical to
-    /// the pre-#1354 one-branch shape on platforms that don't need it.
+    /// `elif` branch — keeps the on-disk text minimal as a single branch on
+    /// platforms that don't need the fallback.
     #[test]
     fn render_hook_script_without_fallback_has_no_elif() {
         let body = render_hook_script("post-merge", None);
@@ -744,18 +739,18 @@ mod tests {
         assert!(cqs_hook.contains(HOOK_MARKER_PREFIX));
     }
 
-    /// TC-HAP-1.30.1-1: a pre-existing v0-marker hook gets upgraded to the
-    /// current marker on a re-install. Drives the lower-level
-    /// `write_hook_script` directly because `cmd_install` would resolve the
-    /// project root from the workspace, not the temp dir.
+    /// A pre-existing older-marker hook gets upgraded to the current marker
+    /// on a re-install. Drives the lower-level `write_hook_script` directly
+    /// because `cmd_install` would resolve the project root from the
+    /// workspace, not the temp dir.
     #[test]
     fn install_upgrade_replaces_v0_marker_with_current() {
         let tmp = TempDir::new().unwrap();
         let hooks = tmp.path().join(".git").join("hooks");
         std::fs::create_dir_all(&hooks).unwrap();
         let path = hooks.join("post-checkout");
-        // Seed a v0-marker hook (legacy install). The version part of
-        // HOOK_MARKER_CURRENT differs but HOOK_MARKER_PREFIX matches both.
+        // Seed an older-marker hook. The version part of HOOK_MARKER_CURRENT
+        // differs but HOOK_MARKER_PREFIX matches both.
         std::fs::write(&path, "#!/bin/sh\n# cqs:hook v0\n").unwrap();
         let pre = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -784,8 +779,8 @@ mod tests {
         );
     }
 
-    /// TC-HAP-1.30.1-1: idempotency — a second `write_hook_script` call on
-    /// an already-current hook leaves the file with exactly one marker.
+    /// Idempotency — a second `write_hook_script` call on an already-current
+    /// hook leaves the file with exactly one marker.
     #[test]
     fn install_idempotent_second_run_keeps_marker() {
         let tmp = TempDir::new().unwrap();
@@ -822,14 +817,14 @@ mod tests {
         assert!(resolved.to_string_lossy().ends_with("hooks"));
     }
 
-    // ───── TC-HAP-1.30.1-2: cmd_uninstall / cmd_fire / cmd_status ─────────
+    // ───── cmd_uninstall / cmd_fire / cmd_status ─────────
     //
     // These tests drive the path-aware helpers (`do_uninstall`, `do_fire`,
     // `do_hook_status`) so the body of each cmd_* dispatch is exercised
     // without the global `find_project_root` walk. Marker-classification
-    // logic uses `HOOK_MARKER_PREFIX` (per line 45) — `HOOK_MARKER_CURRENT`
-    // contains the prefix, so seeding tests with `HOOK_MARKER_CURRENT`
-    // exercises the same code path the installer hits.
+    // logic uses `HOOK_MARKER_PREFIX` — `HOOK_MARKER_CURRENT` contains the
+    // prefix, so seeding tests with `HOOK_MARKER_CURRENT` exercises the same
+    // code path the installer hits.
 
     #[test]
     fn cmd_uninstall_removes_only_marked_hooks() {
@@ -838,8 +833,8 @@ mod tests {
         std::fs::create_dir_all(&hooks).unwrap();
 
         // Two cqs-marked hooks + one foreign hook + one missing hook.
-        // HOOK_MARKER_CURRENT contains HOOK_MARKER_PREFIX so the
-        // matcher at line ~279 fires for both.
+        // HOOK_MARKER_CURRENT contains HOOK_MARKER_PREFIX so the marker
+        // matcher fires for both.
         std::fs::write(hooks.join("post-checkout"), HOOK_MARKER_CURRENT).unwrap();
         std::fs::write(hooks.join("post-merge"), HOOK_MARKER_CURRENT).unwrap();
         std::fs::write(hooks.join("post-rewrite"), "#!/bin/sh\necho user").unwrap();
@@ -885,7 +880,7 @@ mod tests {
     fn cmd_fire_writes_dirty_marker_when_daemon_absent() {
         // No socket — daemon unreachable. With try_daemon=false the
         // helper still goes through the fallback path that writes
-        // .cqs/.dirty atomically (DS-V1.30.1-D5).
+        // .cqs/.dirty atomically.
         let tmp = TempDir::new().unwrap();
         let cqs_dir = tmp.path().join(".cqs");
 
@@ -897,14 +892,14 @@ mod tests {
         )
         .unwrap();
         assert!(!report.sent_to_daemon);
-        // PB-V1.30.1-8: `dirty_marker` is a normalized String now, not PathBuf.
+        // `dirty_marker` is a normalized String, not a PathBuf.
         assert_eq!(
             report.dirty_marker.as_ref().unwrap(),
             &cqs::normalize_path(&cqs_dir.join(".dirty")),
         );
         assert!(cqs_dir.join(".dirty").exists());
 
-        // DS-V1.30.1-D5: the empty-bytes marker must be exactly 0 bytes.
+        // The empty-bytes marker must be exactly 0 bytes.
         let meta = std::fs::metadata(cqs_dir.join(".dirty")).unwrap();
         assert_eq!(meta.len(), 0, "marker should be zero-length");
 

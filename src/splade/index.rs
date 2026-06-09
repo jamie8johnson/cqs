@@ -127,13 +127,12 @@ pub enum SpladeIndexPersistError {
 /// Tee-style wrapper that forwards writes to an inner writer while feeding
 /// every byte through a blake3 hasher. Used by [`SpladeIndex::save`] so the
 /// body can be streamed to disk and hashed in a single pass instead of being
-/// materialized into a `Vec<u8>` (#917 — eliminates ~60-100MB peak-memory
-/// duplication on SPLADE-Code 0.6B).
+/// materialized into a `Vec<u8>` — eliminates ~60-100MB peak-memory
+/// duplication on SPLADE-Code 0.6B.
 ///
 /// The hasher is pre-seeded with `header[0..32]` by the caller before any
 /// body bytes are written, so the final hash matches the documented
-/// invariant `blake3(header[0..32] || body)` — identical to the pre-#917
-/// on-disk format.
+/// invariant `blake3(header[0..32] || body)`.
 struct HashingWriter<'a, W: Write> {
     inner: &'a mut W,
     hasher: &'a mut blake3::Hasher,
@@ -162,12 +161,11 @@ pub struct SpladeIndex {
     /// Inverted postings: token_id → [(chunk_index, weight)]
     postings: HashMap<u32, Vec<(usize, f32)>>,
     /// Sequential chunk ID map (chunk_index → chunk_id string).
-    /// PF-V1.38-2 (#1463): `Box<str>` instead of `String` to match the
-    /// HNSW + CAGRA migration in #1502 — saves 8 bytes per entry
-    /// (24+len → 16+len) at the cost of zero ergonomics (`Box<str>`
-    /// derefs to `&str` for read access). Build-once / read-many access
-    /// pattern; `push` is the only mutator and always immediately
-    /// followed by an `into_boxed_str()`-cheap conversion.
+    /// `Box<str>` rather than `String` saves 8 bytes per entry
+    /// (24+len → 16+len) with zero ergonomic cost (`Box<str>` derefs to
+    /// `&str` for read access). Build-once / read-many access pattern;
+    /// `push` is the only mutator and always immediately followed by an
+    /// `into_boxed_str()`-cheap conversion.
     id_map: Vec<Box<str>>,
 }
 
@@ -225,7 +223,7 @@ impl SpladeIndex {
 
         // Accumulate dot product scores per chunk.
         //
-        // PERF-V1.33-5: pre-size to a sensible upper bound so we don't pay
+        // Pre-size to a sensible upper bound so we don't pay
         // 12-14 rehashes during accumulation. Bounded by both the corpus
         // (`id_map.len()`) and the query's reach (`query.len() * 256`,
         // assuming each query token's posting list rarely exceeds 256
@@ -236,7 +234,7 @@ impl SpladeIndex {
         for &(token_id, query_weight) in query {
             if let Some(posting_list) = self.postings.get(&token_id) {
                 for &(chunk_idx, doc_weight) in posting_list {
-                    // Apply filter (PF-13: direct indexing — idx always valid by construction)
+                    // Apply filter (direct indexing — idx always valid by construction)
                     if chunk_idx >= self.id_map.len() || !filter(&self.id_map[chunk_idx]) {
                         continue;
                     }
@@ -245,24 +243,23 @@ impl SpladeIndex {
             }
         }
 
-        // PF-V1.25-3: bounded heap keeps top-k in O(n log k) instead of the
+        // Bounded heap keeps top-k in O(n log k) instead of the
         // full O(n log n) sort+truncate. `BoundedScoreHeap::into_sorted_vec`
         // applies the id tie-breaker so equal-score results are
         // deterministically ordered across process invocations (the HashMap
         // above iterates in random order).
         let mut heap = crate::search::scoring::BoundedScoreHeap::new(k);
         for (idx, score) in scores {
-            // PERF-V1.36-9: gate the id clone behind a heap pre-flight so
-            // ~17,800 of ~18,000 scored candidates skip the clone entirely
-            // when k=200. Saves ~570 KB of String churn per search at 32-char
-            // chunk ids.
+            // Gate the id clone behind a heap pre-flight so ~17,800 of
+            // ~18,000 scored candidates skip the clone entirely when k=200.
+            // Saves ~570 KB of String churn per search at 32-char chunk ids.
             if !heap.would_accept(score) {
                 continue;
             }
             if let Some(id) = self.id_map.get(idx) {
-                // PF-V1.38-2 (#1463): `Box<str>` derefs to `&str`; one
-                // `String::from(&str)` allocation per accepted candidate
-                // (gated by `would_accept` above so most are skipped).
+                // `Box<str>` derefs to `&str`; one `String::from(&str)`
+                // allocation per accepted candidate (gated by `would_accept`
+                // above so most are skipped).
                 heap.push(id.to_string(), score);
             }
         }
@@ -322,21 +319,13 @@ impl SpladeIndex {
     /// ```
     ///
     /// Body bytes are streamed to the temp file as they are produced and
-    /// hashed in-flight via [`HashingWriter`]. Previously the entire body
-    /// was materialized into a `Vec<u8>` so it could be hashed in one pass
-    /// and written in one call; for SPLADE-Code 0.6B on a cqs-sized project
-    /// that vec held ~60-100MB while the in-memory index itself (still
-    /// live in the caller) held the same data, doubling peak RSS during
-    /// save (#917). The streaming path keeps peak bounded by the
-    /// `BufWriter` capacity (~8 KiB).
+    /// hashed in-flight via [`HashingWriter`], keeping peak RSS bounded by
+    /// the `BufWriter` capacity (~8 KiB) rather than materializing the whole
+    /// body (~60-100MB for SPLADE-Code 0.6B on a cqs-sized project).
     ///
-    /// The wire format is unchanged from pre-#917 — `save()` first writes
-    /// a placeholder header with a zero'd checksum field, streams the
-    /// body, finalizes the hash of `header[0..32] || body`, then seeks
-    /// back to offset 32 to stamp the real checksum into place. The hash
-    /// invariant `blake3(header[0..32] || body)` is preserved byte-for-
-    /// byte, so files produced by the old in-memory path and the new
-    /// streaming path are indistinguishable on disk.
+    /// `save()` first writes a placeholder header with a zero'd checksum
+    /// field, streams the body, finalizes the hash of `header[0..32] || body`,
+    /// then seeks back to offset 32 to stamp the real checksum into place.
     pub fn save(&self, path: &Path, generation: u64) -> Result<(), SpladeIndexPersistError> {
         let _span = tracing::info_span!(
             "splade_index_save",
@@ -371,10 +360,10 @@ impl SpladeIndex {
         })?;
         std::fs::create_dir_all(parent)?;
 
-        // Audit PB-NEW-9: use `to_string_lossy()` instead of
-        // `to_str().unwrap_or(...)` so non-UTF-8 path components produce a
-        // unique-ish temp name rather than collapsing to a shared fallback
-        // that could collide across concurrent saves.
+        // Use `to_string_lossy()` instead of `to_str().unwrap_or(...)` so
+        // non-UTF-8 path components produce a unique-ish temp name rather than
+        // collapsing to a shared fallback that could collide across concurrent
+        // saves.
         let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy())
@@ -416,7 +405,7 @@ impl SpladeIndex {
             writer.write_all(&[0u8; CHECKSUM_LEN])?;
 
             // Seed the hasher with the header prefix so the final digest
-            // covers `header[0..32] || body`, matching the pre-#917 format.
+            // covers `header[0..32] || body`.
             let mut hasher = blake3::Hasher::new();
             hasher.update(&header_prefix);
 
@@ -450,21 +439,19 @@ impl SpladeIndex {
             total_bytes = (SPLADE_INDEX_HEADER_LEN as u64).saturating_add(body_bytes);
         }
 
-        // DS-V1.36-5 (P4-13 / #1463): mirror the HNSW save's `.bak` rollback
-        // pattern. Pre-fix, `atomic_replace` overwrote the previous good
-        // `splade.index.bin` directly, so a fallback failure (cross-device
-        // EXDEV running out of disk after the source was promoted but before
-        // the rename completed) destroyed the prior index without recovery.
-        // The new sequence:
-        //   1. Refuse to save if a stale `.bak` already exists (pre-existing
-        //      crash recovery breadcrumb — operator must clear it manually).
+        // `.bak` rollback so a mid-save failure can't destroy the prior good
+        // `splade.index.bin` (e.g. cross-device EXDEV running out of disk
+        // after the source is promoted but before the rename completes). The
+        // sequence:
+        //   1. Refuse to save if a stale `.bak` already exists (crash recovery
+        //      breadcrumb — operator must clear it manually).
         //   2. Rename the live `splade.index.bin` -> `splade.index.bin.bak`.
         //   3. fsync the parent directory so the `.bak` rename is durable.
         //   4. atomic_replace the tmp into place (the load-bearing write).
         //   5. On atomic_replace failure: restore the live name from `.bak`,
         //      fsync the parent, return the error.
         //   6. On success: remove `.bak` after a parent fsync.
-        // Mirrors `src/hnsw/persist.rs:467-484`.
+        // Mirrors `src/hnsw/persist.rs`.
         let bak_path = {
             let file_name = path
                 .file_name()
@@ -475,13 +462,9 @@ impl SpladeIndex {
 
         // (1) Stale-`.bak` guard. A leftover means a previous save failed
         // mid-rollback and the operator has not cleared it; bail loudly so
-        // we don't clobber the only live copy.
-        //
-        // OB-V1.38-7 (#1463): emit a structured warn before the early
-        // return so journald records "SPLADE save refused — stale .bak"
-        // independent of the error chain that propagates upward. The
-        // anyhow::Error string still carries the recovery hint, but a
-        // structured event lets operators alert on this condition.
+        // we don't clobber the only live copy. Emit a structured warn before
+        // the early return so journald records "SPLADE save refused — stale
+        // .bak" independent of the error chain that propagates upward.
         if bak_path.exists() {
             tracing::warn!(
                 bak_path = %bak_path.display(),
@@ -530,8 +513,8 @@ impl SpladeIndex {
         }
 
         // (4) atomic_replace tmp -> path. This is the load-bearing write.
-        // Audit PB-NEW-3 / PB-NEW-4 / PB-NEW-5: atomic rename with
-        // cross-device fallback and parent-dir fsync. The full sequence
+        // Atomic rename with cross-device fallback and parent-dir fsync.
+        // The full sequence
         // lives in `cqs::fs::atomic_replace`. The BufWriter above already
         // flushed and sync_all'd the tmp file, but atomic_replace re-fsyncs
         // the path it reopens — effectively free.
@@ -584,8 +567,7 @@ impl SpladeIndex {
     }
 
     /// Stream the body (id_map + postings) through `writer`. Returns the
-    /// number of body bytes written so the caller can log it for parity
-    /// with the pre-#917 in-memory path.
+    /// number of body bytes written so the caller can log it.
     ///
     /// Splitting this out of [`SpladeIndex::save`] keeps the I/O logic
     /// (open file, write header, seek back to stamp checksum) focused on
@@ -595,9 +577,8 @@ impl SpladeIndex {
     /// body size fits in `u64` for any realistic SPLADE index.
     fn write_body<W: Write>(
         writer: &mut W,
-        // PF-V1.38-2 (#1463): `&[Box<str>]` matches the in-memory storage.
-        // `Box<str>` derefs to `&str` so `id.len()` and `id.as_bytes()`
-        // work unchanged below.
+        // `&[Box<str>]` matches the in-memory storage. `Box<str>` derefs to
+        // `&str` so `id.len()` and `id.as_bytes()` work below.
         id_map: &[Box<str>],
         postings: &HashMap<u32, Vec<(usize, f32)>>,
     ) -> Result<u64, SpladeIndexPersistError> {
@@ -606,7 +587,7 @@ impl SpladeIndex {
         // id_map
         for id in id_map {
             let len_u32: u32 = id.len().try_into().map_err(|_| {
-                // Audit EH-4: these are structural invariants, not I/O errors.
+                // These are structural invariants, not I/O errors.
                 SpladeIndexPersistError::CorruptData(format!(
                     "chunk id exceeds u32::MAX bytes: {}",
                     id.len()
@@ -723,13 +704,11 @@ impl SpladeIndex {
         if &header[0..4] != SPLADE_INDEX_MAGIC {
             return Err(SpladeIndexPersistError::BadMagic);
         }
-        // RB-V1.38-3 (#1463): replace `.try_into().unwrap()` with `expect`
-        // and an explicit invariant message. The slice ranges are
-        // statically derived from the fixed `SPLADE_INDEX_HEADER_LEN` (64
-        // bytes); `read_exact` above guarantees the buffer is full, so
-        // each `try_into` of an N-byte sub-range into `[u8; N]` is
-        // structurally infallible. `expect` documents that and surfaces
-        // the failure mode (a refactor that miscounts header bytes)
+        // The slice ranges are statically derived from the fixed
+        // `SPLADE_INDEX_HEADER_LEN` (64 bytes); `read_exact` above guarantees
+        // the buffer is full, so each `try_into` of an N-byte sub-range into
+        // `[u8; N]` is structurally infallible. `expect` documents that and
+        // surfaces the failure mode (a refactor that miscounts header bytes)
         // loudly instead of silently propagating an `unwrap()` panic.
         let version = u32::from_le_bytes(
             header[4..8]
@@ -767,17 +746,16 @@ impl SpladeIndex {
             .try_into()
             .expect("invariant: header[32..64] is 32 bytes (CHECKSUM_LEN)");
 
-        // Audit PF-4: pre-allocate the body Vec from known file size. The
-        // previous `Vec::new()` caused ~log₂(59MB) reallocations on a typical
-        // SPLADE-Code 0.6B index, ~100ms of wasted memcpy per warm query.
+        // Pre-allocate the body Vec from known file size to avoid
+        // ~log₂(59MB) reallocations on a typical SPLADE-Code 0.6B index
+        // (~100ms of wasted memcpy per warm query).
         let body_len = (file_size as usize).saturating_sub(SPLADE_INDEX_HEADER_LEN);
         let mut body = Vec::with_capacity(body_len);
         reader.read_to_end(&mut body)?;
 
-        // Audit RB-1: hash covers header[0..32] + body. Previously only the
-        // body was hashed, so flipping a bit in `chunk_count` (header bytes
-        // [16..24]) passed the integrity check and reached
-        // `Vec::with_capacity(usize::MAX)` → process panic.
+        // Hash covers header[0..32] + body so flipping a bit in `chunk_count`
+        // (header bytes [16..24]) fails the integrity check rather than
+        // reaching `Vec::with_capacity(usize::MAX)` → process panic.
         let mut hasher = blake3::Hasher::new();
         hasher.update(&header[0..32]);
         hasher.update(&body);
@@ -814,7 +792,7 @@ impl SpladeIndex {
                 body.len()
             )));
         }
-        // PF-V1.38-2 (#1463): `Vec<Box<str>>` matches the build-time storage.
+        // `Vec<Box<str>>` matches the build-time storage.
         let mut id_map: Vec<Box<str>> = Vec::with_capacity(chunk_count_usize);
         let mut cursor: usize = 0;
 
@@ -828,10 +806,9 @@ impl SpladeIndex {
 
         for _ in 0..chunk_count_usize {
             need(&body, cursor, 4)?;
-            // RB-V1.38-3 (#1463): `need(&body, cursor, 4)?` above ensures
-            // the 4-byte slice exists; `try_into` of a 4-byte slice into
-            // `[u8; 4]` is structurally infallible. `expect` documents the
-            // invariant.
+            // `need(&body, cursor, 4)?` above ensures the 4-byte slice
+            // exists; `try_into` of a 4-byte slice into `[u8; 4]` is
+            // structurally infallible. `expect` documents the invariant.
             let len = u32::from_le_bytes(
                 body[cursor..cursor + 4]
                     .try_into()
@@ -839,11 +816,9 @@ impl SpladeIndex {
             ) as usize;
             cursor += 4;
             need(&body, cursor, len)?;
-            // Audit PF-5: `.to_string()` here allocates an owned String from
-            // a `&str` borrow into `body`. This is inherent — `id_map` owns
-            // its strings and the source is a transient byte-slice reference.
-            // `String::from` would be equivalent; there is no zero-copy path
-            // because `body` is dropped after parsing completes.
+            // `.to_string()` allocates an owned String from a `&str` borrow
+            // into `body`. Inherent — `id_map` owns its strings and `body` is
+            // dropped after parsing, so there is no zero-copy path.
             let id = std::str::from_utf8(&body[cursor..cursor + len])
                 .map_err(|e| {
                     SpladeIndexPersistError::CorruptData(format!(
@@ -874,10 +849,10 @@ impl SpladeIndex {
 
         for _ in 0..token_count_usize {
             need(&body, cursor, 8)?;
-            // RB-V1.38-3 (#1463): each `try_into` is gated by the
-            // preceding `need(&body, cursor, N)?`; `expect` documents
-            // the invariant so a future refactor that breaks the
-            // bound check fails loudly instead of through `unwrap()`.
+            // Each `try_into` is gated by the preceding
+            // `need(&body, cursor, N)?`; `expect` documents the invariant so a
+            // future refactor that breaks the bound check fails loudly instead
+            // of through `unwrap()`.
             let token_id = u32::from_le_bytes(
                 body[cursor..cursor + 4]
                     .try_into()
@@ -1284,12 +1259,10 @@ mod tests {
         assert!(rebuilt_called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    /// #917: streaming `save()` must produce a file the existing `load()`
-    /// can round-trip, proving the streamed-body-then-seek-back-checksum
-    /// path matches the pre-#917 in-memory-body path structurally. Uses
-    /// the multi-token `make_test_index()` fixture so HashMap iteration
-    /// order is exercised (only the total bytes + checksum matter — the
-    /// order of postings on disk is allowed to vary across runs).
+    /// Streaming `save()` must produce a file `load()` can round-trip. Uses
+    /// the multi-token `make_test_index()` fixture so HashMap iteration order
+    /// is exercised (only the total bytes + checksum matter — the order of
+    /// postings on disk is allowed to vary across runs).
     #[test]
     fn test_streaming_save_roundtrips_through_load() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1316,11 +1289,9 @@ mod tests {
         }
     }
 
-    /// #917: the on-disk format must stay byte-identical to the pre-#917
-    /// in-memory-body path. This test pins the exact blake3 hex for a
-    /// fully-deterministic 1-chunk / 1-token / 1-posting fixture. If the
-    /// header layout or write ordering changes, this test fails and we
-    /// know the streaming path drifted from the original format.
+    /// Pins the exact blake3 hex for a fully-deterministic 1-chunk /
+    /// 1-token / 1-posting fixture. If the header layout or write ordering
+    /// changes, this test fails so on-disk format drift is caught.
     ///
     /// The expected hex was computed out-of-band against the documented
     /// hash invariant `blake3(header[0..32] || body)` with:
@@ -1369,9 +1340,8 @@ mod tests {
             .to_hex()
             .to_string();
 
-        // Hardcoded hex proving the on-disk format (and the
-        // `blake3(header[0..32] || body)` invariant) is byte-identical
-        // between the in-memory and streaming implementations.
+        // Hardcoded hex pinning the on-disk format and the
+        // `blake3(header[0..32] || body)` invariant.
         let expected_hex = "8cdea25d4b34ce371cf1a8189fc0af7fd99f963f4de2da2c7ea3aff935db3a53";
         assert_eq!(
             actual_hex, expected_hex,
@@ -1388,7 +1358,7 @@ mod tests {
         assert_eq!(hasher.finalize().to_hex().to_string(), expected_hex);
     }
 
-    // ====== DS-V1.36-5 (P4-13 / #1463) — `.bak` rollback pattern ======
+    // ====== `.bak` rollback pattern ======
 
     /// First save (no prior file) leaves no `.bak` — there's nothing to
     /// back up. Pins the "skipped backup" branch.
@@ -1438,16 +1408,15 @@ mod tests {
 
         // The post-save file is a valid index loadable at the new generation.
         let loaded = SpladeIndex::load(&path, 2).unwrap().unwrap();
-        // PF-V1.38-2 (#1463): id_map is now Vec<Box<str>>; deref each
-        // entry to compare against the expected literal.
+        // id_map is Vec<Box<str>>; deref each entry to compare against the
+        // expected literal.
         assert_eq!(loaded.id_map.len(), 1);
         assert_eq!(&*loaded.id_map[0], "chunk_v2");
     }
 
     /// Stale `.bak` left over from a prior failed save must block the next
-    /// save with an actionable error so the operator notices and clears it.
-    /// Pre-fix, the next save would clobber the live file (the only good
-    /// copy) without warning.
+    /// save with an actionable error so the operator notices and clears it
+    /// rather than clobbering the live file (the only good copy).
     #[test]
     fn save_refuses_when_stale_bak_exists() {
         let dir = tempfile::TempDir::new().unwrap();

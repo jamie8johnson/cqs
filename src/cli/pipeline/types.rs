@@ -15,8 +15,8 @@ use cqs::{Chunk, Embedding, Store};
 pub(super) struct RelationshipData {
     pub type_refs: HashMap<PathBuf, Vec<ChunkTypeRefs>>,
     pub function_calls: HashMap<PathBuf, Vec<FunctionCalls>>,
-    /// Per-chunk call sites for the `calls` table (PERF-28: extracted during parse stage
-    /// to avoid re-parsing in store_stage). Keyed by chunk ID.
+    /// Per-chunk call sites for the `calls` table, extracted during the parse
+    /// stage to avoid re-parsing in store_stage. Keyed by chunk ID.
     pub chunk_calls: Vec<(String, CallSite)>,
 }
 
@@ -32,7 +32,7 @@ pub(super) struct EmbeddedBatch {
     pub relationships: RelationshipData,
     pub cached_count: usize,
     pub file_mtimes: HashMap<PathBuf, i64>,
-    /// #1452: when `true`, the chunks past index `cached_count` carry
+    /// When `true`, the chunks past index `cached_count` carry
     /// **zero-vec sentinel embeddings** and must be written via
     /// `upsert_chunks_unembedded_batch` so they're stamped with
     /// `needs_embedding=1`. Cached chunks (indexes `0..cached_count`)
@@ -81,7 +81,7 @@ pub(super) struct EmbedStageContext {
     pub embedded_count: Arc<AtomicUsize>,
     pub model_config: ModelConfig,
     pub global_cache: Option<Arc<cqs::cache::EmbeddingCache>>,
-    /// #1452: when `true`, skip the actual `embed_documents()` call for
+    /// When `true`, skip the actual `embed_documents()` call for
     /// cache-miss chunks and emit zero-vec sentinels stamped
     /// `needs_embedding=1` instead. The post-summary `enrichment_pass`
     /// will overwrite every chunk's embedding anyway, so the first-pass
@@ -113,17 +113,13 @@ pub(super) fn file_batch_size() -> usize {
 /// Parse channel depth — buffers `ParsedBatch` messages between the parse
 /// and embed stages.
 ///
-/// SHL-V1.38-6 (#1463): default lowered from 512 to 256. The 512 was a
-/// pre-`file_batch_size = 5_000` guess and never re-derived. Each
-/// `ParsedBatch` holds a `Vec<Chunk>` for one file_batch slice; on a
-/// large repo (5000 files × 100 chunks/file × 5 KB content) the
-/// worst-case 512-deep buffer reaches ~256 MB before the embed stage
-/// starts draining. Halving to 256 cuts that ceiling to ~128 MB while
-/// staying well above the practical fill level (parse is faster than
-/// embed, so the queue rarely backs up — the audit's measurement was
-/// the queue rarely exceeded ~10 messages even on cold builds). The
-/// `CQS_PARSE_CHANNEL_DEPTH` env override remains for operators who
-/// want the old depth or a tighter cap on memory-constrained boxes.
+/// Default 256. Each `ParsedBatch` holds a `Vec<Chunk>` for one file_batch
+/// slice; on a large repo (5000 files × 100 chunks/file × 5 KB content) a
+/// 256-deep buffer caps at ~128 MB before the embed stage starts draining.
+/// That stays well above the practical fill level (parse is faster than
+/// embed, so the queue rarely exceeds ~10 messages even on cold builds). The
+/// `CQS_PARSE_CHANNEL_DEPTH` env override lets operators set a deeper or
+/// tighter cap on memory-constrained boxes.
 pub(super) fn parse_channel_depth() -> usize {
     const DEFAULT_DEPTH: usize = 256;
     static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -148,15 +144,14 @@ pub(super) fn parse_channel_depth() -> usize {
 
 /// Embed channel depth — heavy (embedding vectors), bounded for memory.
 ///
-/// SHL-V1.36-8: pins a *byte budget* (~16 MB by default) instead of a fixed
-/// depth so the channel holds the same amount of vector data regardless of
-/// embedding dim. Pre-fix, `depth=64` × batch=64 × dim=1024 × 4 bytes = 16 MB
-/// at BGE-large but ballooned/shrank linearly with dim. Now: depth scales
-/// inversely with `(batch × dim × 4)` so the buffered byte total stays in
-/// the same neighborhood.
+/// Pins a *byte budget* (~16 MB by default) instead of a fixed depth so the
+/// channel holds the same amount of vector data regardless of embedding dim.
+/// Depth scales inversely with `(batch × dim × 4)` so the buffered byte total
+/// stays in the same neighborhood; a fixed depth would balloon or shrink
+/// linearly with dim.
 ///
 /// `CQS_EMBED_CHANNEL_DEPTH` env override wins verbatim. With no override
-/// and `dim == 0` (test paths) we fall back to the historic default of 64.
+/// and `dim == 0` (test paths) we fall back to a default of 64.
 pub(super) fn embed_channel_depth(dim: usize, batch_size: usize) -> usize {
     static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *DEPTH.get_or_init(|| match std::env::var("CQS_EMBED_CHANNEL_DEPTH") {
@@ -174,12 +169,12 @@ pub(super) fn embed_channel_depth(dim: usize, batch_size: usize) -> usize {
     })
 }
 
-/// SHL-V1.36-8: derive channel depth from a 16 MB byte budget. Each
-/// message ≈ `batch_size * dim * 4 bytes` of f32 vectors. Clamp `[16, 256]`.
+/// Derive channel depth from a 16 MB byte budget. Each message ≈
+/// `batch_size * dim * 4 bytes` of f32 vectors. Clamp `[16, 256]`.
 fn derive_depth_from_budget(dim: usize, batch_size: usize) -> usize {
     const BYTE_BUDGET: usize = 16 * 1024 * 1024;
     if dim == 0 || batch_size == 0 {
-        return 64; // historic default for test / unknown paths
+        return 64; // default for test / unknown paths
     }
     let msg_bytes = batch_size.saturating_mul(dim).saturating_mul(4);
     if msg_bytes == 0 {
@@ -195,8 +190,8 @@ fn derive_depth_from_budget(dim: usize, batch_size: usize) -> usize {
 #[cfg(test)]
 pub(super) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Legacy fixed-batch helper kept ONLY for callers without a `ModelConfig`
-/// in scope (currently: nothing in production, only the in-tree tests
+/// Fixed-batch helper kept ONLY for callers without a `ModelConfig` in scope
+/// (currently: nothing in production, only the in-tree tests
 /// `pipeline::tests::test_embed_batch_size` and the parser-stage drain
 /// regression test). Production must use [`embed_batch_size_for`] which
 /// scales batch with the active model's dim & seq — at batch=64 the
@@ -223,13 +218,12 @@ pub(crate) fn embed_batch_size() -> usize {
     }
 }
 
-/// SHL-V1.30-1 / P2.41 — scale the embed batch size with the active model's
-/// dim & seq.
+/// Scale the embed batch size with the active model's dim & seq.
 ///
-/// CQ-V1.33.0-2: the implementation moved onto [`cqs::embedder::ModelConfig`]
-/// so `Embedder::embed_documents` (which only has `&ModelConfig` in scope)
-/// can use the same scaling rule. This thin wrapper is kept for cli-side
-/// callers that already had the function path baked in.
+/// The implementation lives on [`cqs::embedder::ModelConfig`] so
+/// `Embedder::embed_documents` (which only has `&ModelConfig` in scope) can
+/// use the same scaling rule. This thin wrapper is kept for cli-side callers
+/// that already had the function path baked in.
 pub(crate) fn embed_batch_size_for(model: &cqs::embedder::ModelConfig) -> usize {
     model.embed_batch_size()
 }

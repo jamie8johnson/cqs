@@ -1,16 +1,7 @@
 //! Model swap commands — `cqs model { show, list, swap }`.
 //!
-//! Closes the manual backup-and-swap dance the user hit during the v9-200k
-//! experiment. Pre-`cqs model swap`, switching the embedder meant:
-//!
-//!   1. `mv .cqs/ .cqs.bge-large.bak/`
-//!   2. `CQS_EMBEDDING_MODEL=v9-200k cqs index --force`
-//!   3. `systemctl --user restart cqs-watch`
-//!   4. Hope nothing crashed mid-rebuild — if it did, manual recovery from
-//!      `.cqs.bge-large.bak/` was the only way out.
-//!
-//! `cqs model swap <preset>` automates the whole sequence with restore-on-
-//! failure semantics:
+//! `cqs model swap <preset>` automates the embedder backup-and-rebuild
+//! sequence with restore-on-failure semantics:
 //!
 //!   1. Validate the preset name.
 //!   2. Stop the cqs-watch daemon (Linux best-effort via systemctl).
@@ -40,8 +31,7 @@ use crate::cli::definitions::Cli;
 
 /// Operator-facing daemon control hint for the current platform.
 ///
-/// PB-V1.33-5: previously the eval / index error paths hardcoded
-/// `systemctl --user start cqs-watch` strings, which are dead UX on macOS
+/// A hardcoded `systemctl --user start cqs-watch` string is dead UX on macOS
 /// (no systemd) and on bare-Linux setups without the cqs-watch unit. This
 /// helper returns the platform-correct nudge so a single bail message
 /// works across release targets.
@@ -85,9 +75,9 @@ pub(crate) fn daemon_control_hint(hint: DaemonHint) -> &'static str {
             }
         }
     }
-    // PL-V1.38-6 (#1463): cfg(unix) covers macOS + every BSD + illumos —
-    // pkill works identically on all of them, and the daemon (cfg(unix))
-    // builds on FreeBSD/OpenBSD/NetBSD/illumos too.
+    // cfg(unix) covers macOS + every BSD + illumos — pkill works identically
+    // on all of them, and the daemon (cfg(unix)) builds on
+    // FreeBSD/OpenBSD/NetBSD/illumos too.
     #[cfg(all(unix, not(target_os = "linux")))]
     {
         match hint {
@@ -120,8 +110,8 @@ pub(crate) fn daemon_control_hint(hint: DaemonHint) -> &'static str {
 
 /// `cqs model` subcommand surface.
 ///
-/// API-V1.38-1 (#1463): each variant flattens [`crate::cli::definitions::TextJsonArgs`]
-/// (`output: TextJsonArgs`) instead of an inline `json: bool`. Matches the
+/// Each variant flattens [`crate::cli::definitions::TextJsonArgs`]
+/// (`output: TextJsonArgs`) rather than an inline `json: bool`, matching the
 /// pattern used across Project / Ref / Slot / Cache / Notes / Init / Doctor /
 /// Stats / Affected / Brief / Refresh / Ping / Status / Convert. Future shared
 /// output knobs (`--pretty`, `--ndjson`) become a one-line addition to
@@ -178,9 +168,9 @@ struct ModelListEntry {
 
 /// `cqs model swap --json` payload (success case).
 ///
-/// P2 #73: `chunks_indexed` is `i64` rather than `u64` so we can emit `-1`
-/// as a sentinel meaning "swap succeeded but we couldn't read back the
-/// post-swap chunk count" (store open failed, or chunk_count failed).
+/// `chunks_indexed` is `i64` rather than `u64` so we can emit `-1` as a
+/// sentinel meaning "swap succeeded but we couldn't read back the post-swap
+/// chunk count" (store open failed, or chunk_count failed).
 /// `count_error` carries the underlying error string in that case so agents
 /// can distinguish "really zero" (`chunks_indexed: 0, count_error: null`)
 /// from "couldn't count" (`chunks_indexed: -1, count_error: Some(...)`).
@@ -226,7 +216,7 @@ fn cmd_model_show(json: bool) -> Result<()> {
     let index_path = cqs::resolve_index_db(&cqs_dir);
 
     if !index_path.exists() {
-        // P2.11: route bail through the JSON envelope when --json is set so
+        // Route bail through the JSON envelope when --json is set so
         // `cqs --json model show` keeps the canonical {data, error, version}
         // shape instead of dumping anyhow text to stderr.
         let msg = format!(
@@ -243,11 +233,11 @@ fn cmd_model_show(json: bool) -> Result<()> {
     let store = Store::open_readonly(&index_path)
         .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
 
-    // EH-V1.38-3 (#1463): `cqs model show` is the operator's first-line
-    // diagnostic for "what model built this index?". Distinguish "fresh
-    // DB / never indexed" (Ok(None) → `<unrecorded>`) from "metadata
-    // table broken / sqlite I/O failure" (Err → `<read-error>`) so the
-    // user picks `cqs index` vs `cqs doctor` correctly.
+    // `cqs model show` is the operator's first-line diagnostic for "what
+    // model built this index?". Distinguish "fresh DB / never indexed"
+    // (Ok(None) → `<unrecorded>`) from "metadata table broken / sqlite I/O
+    // failure" (Err → `<read-error>`) so the user picks `cqs index` vs
+    // `cqs doctor` correctly.
     let model = match store.try_stored_model_name() {
         Ok(Some(name)) => name,
         Ok(None) => "<unrecorded>".to_string(),
@@ -333,9 +323,9 @@ fn cmd_model_list(json: bool) -> Result<()> {
         .collect();
 
     if json {
-        // P2.15: wrap in `{models: [...], current: <name>}` so list-shape
-        // envelopes match ref/project/slot. The per-row `current` bool stays
-        // for backward compatibility but the top-level field is canonical.
+        // Wrap in `{models: [...], current: <name>}` so list-shape envelopes
+        // match ref/project/slot. The per-row `current` bool is also present
+        // but the top-level field is canonical.
         let current_name = entries.iter().find(|e| e.current).map(|e| e.name.clone());
         crate::cli::json_envelope::emit_json(&serde_json::json!({
             "models": entries,
@@ -366,7 +356,7 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
     let _span = tracing::info_span!("cmd_model_swap", preset, no_backup).entered();
 
     // 1. Validate preset.
-    // P2.11: emit JSON envelope error on bad preset / missing index so
+    // Emit JSON envelope error on bad preset / missing index so
     // `cqs --json model swap …` returns structured output, not text.
     let new_cfg = match ModelConfig::from_preset(preset) {
         Some(c) => c,
@@ -402,10 +392,10 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
     // 2. Read current model. Used both for the no-op short-circuit and the
     //    backup-directory name.
     //
-    // P1-18 (#1456 follow-up): use the strict variant so a corrupted-metadata
-    // read isn't conflated with "fresh DB". A lossy `None` here would make
-    // `already_on_target` false and we'd proceed with the destructive
-    // backup+rebuild against an unreadable but possibly recoverable index.
+    // Use the strict variant so a corrupted-metadata read isn't conflated
+    // with "fresh DB". A lossy `None` here would make `already_on_target`
+    // false and we'd proceed with the destructive backup+rebuild against an
+    // unreadable but possibly recoverable index.
     let current_model = {
         let store = Store::open_readonly(&index_path)
             .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
@@ -487,8 +477,8 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
 
     match reindex_result {
         Ok(()) => {
-            // P2 #73: count chunks for the success report. Bind both error
-            // paths and emit a `-1` sentinel + `count_error` when we can't
+            // Count chunks for the success report. Bind both error paths and
+            // emit a `-1` sentinel + `count_error` when we can't
             // read back the post-swap chunk count, so agents can distinguish
             // "really empty project" (chunks_indexed=0, count_error=null)
             // from "swap succeeded but the new index is unreadable"
@@ -633,10 +623,10 @@ fn reindex_with_new_model(cli: &Cli, new_cfg: ModelConfig) -> Result<()> {
         // pass, so the prune is a no-op here. Default-on is fine.
         no_prune_summaries: false,
         umap: false,
-        // P2.12: model swap drives a programmatic reindex; we never want
-        // the swap path to spit a JSON envelope to stdout (the caller is
-        // already mid-text-rendering). Keep the inner index run on the
-        // text path regardless of the outer `--json`.
+        // Model swap drives a programmatic reindex; we never want the swap
+        // path to spit a JSON envelope to stdout (the caller is already
+        // mid-text-rendering). Keep the inner index run on the text path
+        // regardless of the outer `--json`.
         json: false,
     };
 
@@ -664,12 +654,12 @@ fn clone_cli_for_reindex(cli: &Cli) -> Cli {
 ///
 /// Linux: `systemctl --user stop cqs-watch`.
 ///
-/// P2 #71: macOS — `systemctl` doesn't exist, but `cqs watch --serve` is
-/// equally Unix domain socket-based. Discover the daemon PID via
-/// `LOCAL_PEERPID` on a fresh socket connection, then `SIGTERM` it and poll
-/// for socket disappearance. Without this fix `cqs model swap` on macOS would
-/// always proceed against a live daemon holding the OLD model in memory and
-/// the old store pool open against the database file the swap is rewriting.
+/// macOS — `systemctl` doesn't exist, but `cqs watch --serve` is equally
+/// Unix domain socket-based. Discover the daemon PID via `LOCAL_PEERPID` on
+/// a fresh socket connection, then `SIGTERM` it and poll for socket
+/// disappearance. Without this, `cqs model swap` on macOS would proceed
+/// against a live daemon holding the OLD model in memory and the old store
+/// pool open against the database file the swap is rewriting.
 fn stop_daemon_best_effort(cqs_dir: &Path) -> bool {
     let _span = tracing::info_span!("stop_daemon_best_effort").entered();
     let was_running = daemon_socket_alive(cqs_dir);
@@ -731,7 +721,7 @@ fn stop_daemon_best_effort(cqs_dir: &Path) -> bool {
 /// a fresh socket connection, send SIGTERM, then poll for the socket file
 /// to disappear.
 ///
-/// P2 #71: factored out so `stop_daemon_best_effort` stays readable while the
+/// Factored out so `stop_daemon_best_effort` stays readable while the
 /// macOS-specific FFI lives in one place. Failure modes covered:
 /// - socket vanishes between `daemon_socket_alive` and our connect: returns
 ///   Ok(()) — the daemon went away on its own and the caller's `was_running`
@@ -815,7 +805,7 @@ fn stop_daemon_via_sigterm_macos(cqs_dir: &Path) -> Result<()> {
 /// Best-effort daemon restart. No-op when the daemon wasn't previously running.
 ///
 /// Linux: `systemctl --user start cqs-watch`.
-/// P2 #71: macOS — spawn `cqs watch --serve` directly (no systemctl); detached
+/// macOS — spawn `cqs watch --serve` directly (no systemctl); detached
 /// stdio so we don't block on the long-lived child.
 fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
     if !was_running {
@@ -823,13 +813,12 @@ fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
     }
     #[cfg(target_os = "linux")]
     {
-        // PB-V1.30.1-10: probe whether the systemd user unit is loaded
-        // before invoking `systemctl --user start`. On distros without
-        // systemd-user (or on hosts where the user never ran the
-        // installer), the unit doesn't exist and `start` returns a
-        // confusing "Failed to start cqs-watch.service: Unit not found"
-        // error. Fall back to spawning `cqs watch --serve` directly,
-        // mirroring the macOS branch below.
+        // Probe whether the systemd user unit is loaded before invoking
+        // `systemctl --user start`. On distros without systemd-user (or on
+        // hosts where the user never ran the installer), the unit doesn't
+        // exist and `start` returns a confusing "Failed to start
+        // cqs-watch.service: Unit not found" error. Fall back to spawning
+        // `cqs watch --serve` directly, mirroring the macOS branch below.
         let probe = std::process::Command::new("systemctl")
             .args(["--user", "is-enabled", "cqs-watch"])
             .stdout(std::process::Stdio::null())
@@ -868,9 +857,8 @@ fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
             }
         } else {
             // No systemd unit — spawn `cqs watch --serve` directly,
-            // mirroring the macOS branch. SEC-V1.25-7: resolve our own
-            // binary path so a malicious `cqs` earlier in PATH can't
-            // hijack the restart.
+            // mirroring the macOS branch. Resolve our own binary path so a
+            // malicious `cqs` earlier in PATH can't hijack the restart.
             tracing::info!("cqs-watch.service not loaded; spawning `cqs watch --serve` directly");
             match std::env::current_exe() {
                 Ok(cqs_path) => {
@@ -919,8 +907,8 @@ fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
     #[cfg(target_os = "macos")]
     {
         // No systemctl on macOS — re-launch `cqs watch --serve` directly.
-        // SEC-V1.25-7: resolve our own binary path so a malicious `cqs`
-        // earlier in PATH can't hijack the restart.
+        // Resolve our own binary path so a malicious `cqs` earlier in PATH
+        // can't hijack the restart.
         match std::env::current_exe() {
             Ok(cqs_path) => {
                 let spawn_result = std::process::Command::new(&cqs_path)
@@ -1107,8 +1095,8 @@ mod tests {
         assert_eq!(file_size_or_zero(Path::new("/nonexistent/file/path/x")), 0);
     }
 
-    /// P2 #73: zero chunks (empty project) emits `0` with no `count_error`
-    /// field — agents see an unambiguous "really empty" signal.
+    /// Zero chunks (empty project) emits `0` with no `count_error` field —
+    /// agents see an unambiguous "really empty" signal.
     #[test]
     fn model_swap_output_zero_chunks_no_error() {
         let out = ModelSwapOutput {
@@ -1129,8 +1117,8 @@ mod tests {
         assert_eq!(json["to"], "v9-200k");
     }
 
-    /// P2 #73: when the post-swap chunk_count fails, agents see
-    /// `chunks_indexed: -1` and a populated `count_error` string.
+    /// When the post-swap chunk_count fails, agents see `chunks_indexed: -1`
+    /// and a populated `count_error` string.
     #[test]
     fn model_swap_output_sentinel_with_count_error() {
         let out = ModelSwapOutput {
@@ -1147,9 +1135,9 @@ mod tests {
         assert_eq!(json["backup_path"], "/tmp/x/.cqs.bak");
     }
 
-    /// PB-V1.33-5: every variant must produce a non-empty hint string on
-    /// the host platform — silently empty hints would degrade UX
-    /// without surfacing a compile error.
+    /// Every variant must produce a non-empty hint string on the host
+    /// platform — silently empty hints would degrade UX without surfacing a
+    /// compile error.
     #[test]
     fn daemon_control_hint_all_variants_nonempty() {
         for hint in [
@@ -1163,9 +1151,9 @@ mod tests {
         }
     }
 
-    /// PB-V1.33-5: on Linux (the canonical CI host), the hint must
-    /// reference `systemctl --user` so the deployment-doc commands stay
-    /// in lockstep with bail messages.
+    /// On Linux (the canonical CI host), the hint must reference
+    /// `systemctl --user` so the deployment-doc commands stay in lockstep
+    /// with bail messages.
     #[cfg(target_os = "linux")]
     #[test]
     fn daemon_control_hint_linux_uses_systemctl() {
@@ -1175,9 +1163,9 @@ mod tests {
         assert!(daemon_control_hint(DaemonHint::Reinstall).contains("cargo install --path ."));
     }
 
-    /// PB-V1.33-5: the macOS arm must NOT mention systemctl (no systemd
-    /// on Darwin) — guard against drift if a future edit copies the
-    /// Linux strings into the macOS branch.
+    /// The macOS arm must NOT mention systemctl (no systemd on Darwin) —
+    /// guard against drift if an edit copies the Linux strings into the
+    /// macOS branch.
     #[cfg(target_os = "macos")]
     #[test]
     fn daemon_control_hint_macos_no_systemctl() {
