@@ -77,6 +77,10 @@ fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
         chunk_type: ChunkType::Section,
         name: fields.name,
         signature: fields.signature,
+        // Fallback canonicalization (whitespace-collapse only): markdown
+        // sections have no tree-sitter comment nodes, so the fallback is the
+        // best available cache key for prose.
+        canonical_hash: super::chunk::canonical_hash_fallback(&fields.content),
         content: fields.content,
         doc: None,
         line_start: fields.line_start,

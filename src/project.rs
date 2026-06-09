@@ -603,6 +603,7 @@ mod tests {
             line_end: 3,
             language: crate::parser::Language::Rust,
             content_hash: hash,
+            canonical_hash: String::new(),
             parent_id: None,
             window_idx: None,
             parent_type_name: None,

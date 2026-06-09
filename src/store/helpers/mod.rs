@@ -147,7 +147,12 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   filter `WHERE needs_embedding = 0` so chunks in the partial state
 ///   are invisible until enrichment lands their real vector. The
 ///   visibility gate is local — LLM summary failure does not block it.
-pub const CURRENT_SCHEMA_VERSION: i32 = 27;
+/// - v28: chunks.canonical_hash column + idx_chunks_canonical_hash. blake3 of
+///   a comment-/whitespace-normalized form of the content, used as the
+///   embedding-reuse cache key so comment-only / formatting-only edits reuse
+///   the prior embedding instead of re-embedding the corpus. Nullable; pre-v28
+///   rows stay NULL (clean cache miss) until the next reindex writes it.
+pub const CURRENT_SCHEMA_VERSION: i32 = 28;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

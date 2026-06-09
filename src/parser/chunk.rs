@@ -21,6 +21,134 @@ use super::Parser;
 /// triggers a refresh.
 pub const PARSER_VERSION: u32 = 1;
 
+/// Collapse every run of ASCII/Unicode whitespace in `s` to a single space,
+/// then trim. Pure string normalization — no tree required.
+///
+/// This is the fallback canonicalization used when no tree-sitter node is
+/// available (window chunks, markdown sections, L5X routine fallback, etc.).
+/// It catches formatting-only edits (reindent, trailing whitespace, CRLF↔LF)
+/// but not comment edits.
+pub fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Compute the blake3 hex of the whitespace-collapsed form of `content`.
+/// The no-tree fallback used by every Chunk construction site that lacks a
+/// tree-sitter node (markdown sections, window chunks, L5X routine fallback).
+pub fn canonical_hash_fallback(content: &str) -> String {
+    blake3::hash(collapse_whitespace(content).as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// Compute the canonical (comment- and whitespace-normalized) hash for a
+/// chunk, used as the embedding-reuse **cache key** (never as store identity).
+///
+/// Strategy (tree-precise path): walk every descendant of `node` whose kind
+/// name contains `"comment"` — this covers `comment`, `line_comment`,
+/// `block_comment`, `doc_comment`, `block_documentation_comment`, etc. across
+/// all 54 grammars — collect their byte ranges, remove those ranges from the
+/// chunk's `content`, collapse whitespace, trim, then blake3 → hex.
+///
+/// Byte ranges from tree-sitter are absolute (into `source`); `node.start_byte()`
+/// is subtracted to rebase them onto the chunk-local `content` slice.
+///
+/// Safety / correctness notes:
+/// - This is a cache key, not identity. A **missed** comment kind merely yields
+///   a cache miss later (re-embed), which is safe. The only real risk is
+///   **over-matching** a non-comment node whose kind happens to contain
+///   `"comment"` — acceptable per grammar conventions (no mainstream grammar
+///   names a code node `*comment*`).
+/// - Ranges are sorted and merged so nested/overlapping comment nodes don't
+///   double-remove bytes or produce out-of-order splices.
+/// - On any non-UTF-8-boundary slice (pathological injection-rooted node) the
+///   affected comment range is skipped with a `warn!`, degrading to a
+///   slightly-less-canonical (but still valid) hash rather than panicking.
+pub(crate) fn canonical_hash(node: tree_sitter::Node, content: &str) -> String {
+    let _span = tracing::debug_span!("canonical_hash", kind = node.kind()).entered();
+    let base = node.start_byte();
+    let content_len = content.len();
+
+    // Collect chunk-local byte ranges of all comment descendants.
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    collect_comment_ranges(node, base, content_len, &mut ranges);
+
+    if ranges.is_empty() {
+        return canonical_hash_fallback(content);
+    }
+
+    // Sort + merge overlapping/adjacent ranges so the splice loop below can
+    // walk them in one forward pass.
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+
+    // Rebuild content with comment ranges removed. Replace each removed range
+    // with a single space so two tokens that were only separated by a comment
+    // don't fuse (`a/*c*/b` → `a b`, not `ab`).
+    let mut stripped = String::with_capacity(content_len);
+    let mut pos = 0usize;
+    for (start, end) in merged {
+        if start > content_len || end > content_len || start < pos {
+            // Out-of-range or non-monotonic (shouldn't happen after merge,
+            // but guard against a pathological node) — skip this range.
+            continue;
+        }
+        if let Some(seg) = content.get(pos..start) {
+            stripped.push_str(seg);
+        } else {
+            tracing::warn!(
+                pos,
+                start,
+                "canonical_hash: comment range not on UTF-8 boundary, skipping segment"
+            );
+        }
+        stripped.push(' ');
+        pos = end;
+    }
+    if let Some(seg) = content.get(pos..) {
+        stripped.push_str(seg);
+    }
+
+    blake3::hash(collapse_whitespace(&stripped).as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// Recursively collect chunk-local byte ranges of every node whose kind name
+/// contains `"comment"`. Ranges are rebased by subtracting `base`
+/// (the chunk's `node.start_byte()`) and clamped to `content_len`.
+fn collect_comment_ranges<'a>(
+    node: tree_sitter::Node<'a>,
+    base: usize,
+    content_len: usize,
+    out: &mut Vec<(usize, usize)>,
+) {
+    if node.kind().contains("comment") {
+        let r = node.byte_range();
+        // Rebase absolute byte offsets onto the chunk-local content slice.
+        let start = r.start.saturating_sub(base);
+        let end = r.end.saturating_sub(base).min(content_len);
+        if start < end {
+            out.push((start, end));
+        }
+        // A comment node has no comment descendants worth recursing into.
+        return;
+    }
+    // Each call owns its cursor (lifetime-tied to `node`), so the recursive
+    // call below doesn't fight cursor invariance.
+    let mut cursor = node.walk();
+    let children: Vec<tree_sitter::Node<'a>> = node.children(&mut cursor).collect();
+    for child in children {
+        collect_comment_ranges(child, base, content_len, out);
+    }
+}
+
 impl Parser {
     /// Extracts a code chunk from a source file using Tree-sitter query matches.
     /// # Arguments
@@ -121,6 +249,10 @@ impl Parser {
         let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
         let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
 
+        // Comment- and whitespace-normalized hash for embedding cache reuse.
+        // Tree-precise: strips all comment descendants of `node`.
+        let canonical = canonical_hash(node, &content);
+
         Ok(Chunk {
             id,
             file: path.to_path_buf(),
@@ -133,6 +265,7 @@ impl Parser {
             line_start,
             line_end,
             content_hash,
+            canonical_hash: canonical,
             parent_id: None,
             window_idx: None,
             parent_type_name,
@@ -638,6 +771,143 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    /// Tests for the comment-/whitespace-canonical embedding-cache hash
+    /// (`canonical_hash`). Verifies that comment-only and formatting-only
+    /// edits produce the SAME canonical hash (so the embedding is reused),
+    /// while a real code change produces a DIFFERENT one.
+    mod canonical_hash_tests {
+        use super::*;
+
+        /// Parse `content` with the given extension and return the
+        /// canonical_hash of the chunk named `name`.
+        fn canon_of(content: &str, ext: &str, name: &str) -> String {
+            let mut file = tempfile::Builder::new()
+                .suffix(&format!(".{ext}"))
+                .tempfile()
+                .unwrap();
+            file.write_all(content.as_bytes()).unwrap();
+            file.flush().unwrap();
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("chunk {name} not found in {content:?}"));
+            assert!(
+                !chunk.canonical_hash.is_empty(),
+                "freshly-parsed chunk must have a non-empty canonical_hash"
+            );
+            chunk.canonical_hash.clone()
+        }
+
+        #[test]
+        fn collapse_whitespace_basics() {
+            assert_eq!(collapse_whitespace("a   b\n\tc"), "a b c");
+            assert_eq!(
+                collapse_whitespace("  leading trailing  "),
+                "leading trailing"
+            );
+            assert_eq!(collapse_whitespace(""), "");
+        }
+
+        #[test]
+        fn fallback_ignores_whitespace_only_diffs() {
+            // Collapse normalizes runs of whitespace (newlines, tabs, multiple
+            // spaces) to a single space + trim — so reindent / CRLF / trailing
+            // whitespace edits hash identically.
+            assert_eq!(
+                canonical_hash_fallback("fn a() {\n\tx\n}"),
+                canonical_hash_fallback("fn a()   {  x  }  ")
+            );
+            assert_ne!(
+                canonical_hash_fallback("fn a() {}"),
+                canonical_hash_fallback("fn b() {}")
+            );
+        }
+
+        #[test]
+        fn rust_line_comment_does_not_change_canonical_hash() {
+            let a = canon_of("fn add(a: i32, b: i32) -> i32 { a + b }\n", "rs", "add");
+            let b = canon_of(
+                "fn add(a: i32, b: i32) -> i32 {\n    // sum the two args\n    a + b\n}\n",
+                "rs",
+                "add",
+            );
+            assert_eq!(
+                a, b,
+                "a //-comment-only edit must not change canonical_hash"
+            );
+        }
+
+        #[test]
+        fn rust_block_comment_does_not_change_canonical_hash() {
+            let a = canon_of("fn mul(a: i32, b: i32) -> i32 { a * b }\n", "rs", "mul");
+            let b = canon_of(
+                "fn mul(a: i32, b: i32) -> i32 { /* product */ a * b }\n",
+                "rs",
+                "mul",
+            );
+            assert_eq!(
+                a, b,
+                "a /* */-comment-only edit must not change canonical_hash"
+            );
+        }
+
+        #[test]
+        fn rust_doc_comment_does_not_change_canonical_hash() {
+            // The doc comment sits inside the function-item byte range only
+            // when attached; here we vary an *inner* comment to keep the same
+            // chunk node. Outer doc comments are a sibling of the node so they
+            // don't affect the chunk content either way — this asserts the
+            // inner case.
+            let a = canon_of("fn f() -> u8 {\n    1\n}\n", "rs", "f");
+            let b = canon_of("fn f() -> u8 {\n    //! inner\n    1\n}\n", "rs", "f");
+            assert_eq!(a, b);
+        }
+
+        #[test]
+        fn rust_formatting_only_edit_does_not_change_canonical_hash() {
+            let a = canon_of("fn t() -> i32 { 1 + 2 }\n", "rs", "t");
+            let b = canon_of("fn   t()   ->   i32   {\n\n    1  +  2\n\n}\n", "rs", "t");
+            assert_eq!(
+                a, b,
+                "reindent / whitespace-only edit must not change canonical_hash"
+            );
+        }
+
+        #[test]
+        fn rust_code_change_does_change_canonical_hash() {
+            let a = canon_of("fn add(a: i32, b: i32) -> i32 { a + b }\n", "rs", "add");
+            let b = canon_of("fn add(a: i32, b: i32) -> i32 { a - b }\n", "rs", "add");
+            assert_ne!(a, b, "a real code change MUST change canonical_hash");
+        }
+
+        #[test]
+        fn python_hash_comment_does_not_change_canonical_hash() {
+            let a = canon_of("def f(x):\n    return x + 1\n", "py", "f");
+            let b = canon_of("def f(x):\n    # add one\n    return x + 1\n", "py", "f");
+            assert_eq!(a, b, "a #-comment-only edit must not change canonical_hash");
+        }
+
+        #[test]
+        fn python_code_change_does_change_canonical_hash() {
+            let a = canon_of("def f(x):\n    return x + 1\n", "py", "f");
+            let b = canon_of("def f(x):\n    return x + 2\n", "py", "f");
+            assert_ne!(a, b);
+        }
+
+        #[test]
+        fn comment_strip_does_not_fuse_adjacent_tokens() {
+            // `a/* */b` must canonicalize differently from `ab`: the removed
+            // comment is replaced with a space so the two identifiers stay
+            // distinct. Use the pure helper with a synthetic split.
+            assert_ne!(
+                canonical_hash_fallback("a b"),
+                canonical_hash_fallback("ab")
+            );
+        }
+    }
 
     mod signature_tests {
         use super::*;

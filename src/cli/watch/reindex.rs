@@ -462,7 +462,19 @@ pub(super) fn reindex_files(
     // progress); the global cache is dim-checked inside `read_batch` so
     // dimension drift there is silently filtered.
     let dim = embedder.embedding_dim();
-    let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+    // Reuse is keyed by canonical_hash (v28) so a comment-only / formatting-only
+    // edit reuses the embedding instead of re-embedding. Mirrors
+    // `prepare_for_embedding`. Falls back to content_hash for a chunk with no
+    // canonical_hash (shouldn't occur on the parse path; guard anyway).
+    let canon_key = |c: &cqs::Chunk| -> String {
+        if c.canonical_hash.is_empty() {
+            c.content_hash.clone()
+        } else {
+            c.canonical_hash.clone()
+        }
+    };
+    let canon_hashes: Vec<String> = chunks.iter().map(&canon_key).collect();
+    let hashes: Vec<&str> = canon_hashes.iter().map(|s| s.as_str()).collect();
 
     // Step 1: global (project-scoped, cross-slot) cache.
     let mut global_hits: HashMap<String, Embedding> = HashMap::new();
@@ -497,7 +509,9 @@ pub(super) fn reindex_files(
         if missed.is_empty() {
             HashMap::new()
         } else {
-            store.get_embeddings_by_hashes(&missed)?
+            // Keyed by canonical_hash; NULL rows (pre-v28) are skipped → clean
+            // cache miss, re-embed on first touch.
+            store.get_embeddings_by_canonical_hashes(&missed)?
         }
     } else {
         tracing::info!(
@@ -518,9 +532,10 @@ pub(super) fn reindex_files(
     // hit, which is correct: one cached embedding satisfies one slot.
     let global_hits_total = global_hits.len();
     for (i, chunk) in chunks.iter().enumerate() {
-        if let Some(emb) = global_hits.remove(&chunk.content_hash) {
+        let key = canon_key(chunk);
+        if let Some(emb) = global_hits.remove(&key) {
             cached.push((i, emb));
-        } else if let Some(emb) = store_hits.remove(&chunk.content_hash) {
+        } else if let Some(emb) = store_hits.remove(&key) {
             cached.push((i, emb));
         } else {
             to_embed.push((i, chunk));
@@ -569,10 +584,19 @@ pub(super) fn reindex_files(
     // Best-effort — mirrors the bulk pipeline's write-back shape with borrowed
     // slices to skip per-entry allocations.
     if let (Some(cache), false) = (global_cache, to_embed.is_empty()) {
+        // Write under the canonical key (v28) so a later comment-only edit
+        // reuses this embedding. Falls back to content_hash when absent.
         let entries: Vec<(&str, &[f32])> = to_embed
             .iter()
             .zip(new_embeddings.iter())
-            .map(|((_, chunk), emb)| (chunk.content_hash.as_str(), emb.as_slice()))
+            .map(|((_, chunk), emb)| {
+                let key = if chunk.canonical_hash.is_empty() {
+                    chunk.content_hash.as_str()
+                } else {
+                    chunk.canonical_hash.as_str()
+                };
+                (key, emb.as_slice())
+            })
             .collect();
         if let Err(e) = cache.write_batch(
             &entries,

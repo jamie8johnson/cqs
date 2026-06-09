@@ -112,6 +112,9 @@ fn parse_st_regions(
                 let line_count: u32 = content.lines().count().try_into().unwrap_or(u32::MAX);
                 let sig = content.lines().next().unwrap_or("").to_string();
                 let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                // No tree-sitter node for the synthetic whole-routine chunk —
+                // fall back to whitespace-collapse only.
+                let canonical = super::chunk::canonical_hash_fallback(&content);
                 all_chunks.push(Chunk {
                     id: format!(
                         "{}:{}:{}",
@@ -133,6 +136,7 @@ fn parse_st_regions(
                     language: st_lang,
                     signature: sig,
                     doc: None,
+                    canonical_hash: canonical,
                     content_hash,
                     parent_id: None,
                     window_idx: None,
@@ -205,6 +209,8 @@ fn extract_st_chunk(
     }
 
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    // Tree-precise: the ST node is available, so strip comment descendants.
+    let canonical = super::chunk::canonical_hash(node, &content);
 
     Ok(Chunk {
         id: format!(
@@ -222,6 +228,7 @@ fn extract_st_chunk(
         language,
         signature,
         doc: None,
+        canonical_hash: canonical,
         content_hash,
         parent_id: None,
         window_idx: None,

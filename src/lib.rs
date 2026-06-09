@@ -185,7 +185,7 @@ pub use note::{
     parse_notes, path_matches_mention, rewrite_notes_file, NoteEntry, NoteError, NoteFile,
     NOTES_HEADER,
 };
-pub use parser::{Chunk, Parser};
+pub use parser::{canonical_hash_fallback, collapse_whitespace, Chunk, Parser};
 // `LlmReranker` is a scaffold-only stub (every score call returns Err), so
 // it is `pub(crate)` and absent from this re-export.
 pub use reranker::{NoopReranker, OnnxReranker, Reranker};

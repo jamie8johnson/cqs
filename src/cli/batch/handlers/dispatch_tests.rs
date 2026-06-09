@@ -65,6 +65,7 @@ fn make_chunk(
         line_start,
         line_end,
         content_hash,
+        canonical_hash: String::new(),
         parent_id: None,
         window_idx: None,
         parent_type_name: None,

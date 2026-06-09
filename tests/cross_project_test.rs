@@ -42,6 +42,7 @@ fn insert_chunk_and_call(
         line_start: 1,
         line_end: 5,
         content_hash: format!("hash_{}", caller),
+        canonical_hash: String::new(),
         window_idx: None,
         parent_id: None,
         parent_type_name: None,

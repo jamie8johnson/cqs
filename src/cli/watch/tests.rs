@@ -1872,6 +1872,7 @@ fn make_gc_test_chunk(file: &Path, name: &str, line_start: u32) -> cqs::parser::
         line_start,
         line_end: line_start + 4,
         content_hash,
+        canonical_hash: String::new(),
         parent_id: None,
         window_idx: None,
         parent_type_name: None,

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Comment-canonical embedding-cache hash.** Chunks now carry a
+  `canonical_hash` (schema v28) — the blake3 of a comment- and
+  whitespace-normalized form of the content, computed tree-precisely
+  (all `*comment*` tree-sitter nodes stripped) at parse time. The embedding
+  reuse paths (global `EmbeddingCache` and store-side `get_embeddings_by_hashes`,
+  in both the bulk pipeline and the `cqs watch` incremental reindex) key on
+  `canonical_hash` instead of `content_hash`, so a comment-only or
+  formatting-only edit reuses the prior embedding instead of re-embedding the
+  whole corpus. `content_hash` remains the store identity. Pre-v28 rows keep
+  `canonical_hash` NULL (a clean cache miss — never a wrong hit) until the next
+  reindex writes it; no backfill. Old `content_hash`-keyed global-cache rows
+  become unreachable under the new key and age out via `cqs cache prune`.
+
 ## [1.41.0] - 2026-05-20
 
 Minor release. 30 commits since v1.40.0. Three threads:

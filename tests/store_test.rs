@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 27); // v27: chunks.needs_embedding flag for #1452 first-pass-skip; chains v23→v24→v25→v26→v27
+    assert_eq!(stats.schema_version, 28); // v28: chunks.canonical_hash for comment-canonical cache lookups
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
@@ -1040,6 +1040,7 @@ fn test_check_origins_stale_across_batch_boundary() {
             line_start: 1,
             line_end: 3,
             content_hash: hash,
+            canonical_hash: String::new(),
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
@@ -1115,7 +1116,7 @@ fn test_open_readonly_on_initialized_store() {
     let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
-    assert_eq!(stats.schema_version, 27);
+    assert_eq!(stats.schema_version, 28);
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 

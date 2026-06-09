@@ -75,6 +75,82 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Get embeddings for chunks with matching **canonical** hashes (batch
+    /// lookup), keyed by `canonical_hash`.
+    ///
+    /// This is the embedding-reuse path for the comment-canonical cache
+    /// (schema v28): a comment-only / formatting-only edit changes
+    /// `content_hash` (store identity) but leaves `canonical_hash` stable, so
+    /// the prior embedding can be reused. Rows with `canonical_hash IS NULL`
+    /// (pre-v28, or never written) are skipped by the `IS NOT NULL` filter so a
+    /// NULL is a clean cache miss, never a wrong hit on the empty-string key.
+    ///
+    /// Mirrors `get_embeddings_by_hashes` (same finiteness guard, same
+    /// batching) but selects + keys by `canonical_hash`.
+    pub fn get_embeddings_by_canonical_hashes(
+        &self,
+        canonical_hashes: &[&str],
+    ) -> Result<HashMap<String, Embedding>, StoreError> {
+        let _span = tracing::debug_span!(
+            "get_embeddings_by_canonical_hashes",
+            count = canonical_hashes.len()
+        )
+        .entered();
+        if canonical_hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        const BATCH_SIZE: usize = max_rows_per_statement(1);
+        let dim = self.dim;
+        let mut result = HashMap::new();
+
+        self.rt.block_on(async {
+            for batch in canonical_hashes.chunks(BATCH_SIZE) {
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                let sql = format!(
+                    "SELECT canonical_hash, embedding FROM chunks \
+                     WHERE canonical_hash IS NOT NULL AND canonical_hash IN ({})",
+                    placeholders
+                );
+
+                let rows: Vec<_> = {
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+                    for hash in batch {
+                        q = q.bind(*hash);
+                    }
+                    q.fetch_all(&self.pool).await?
+                };
+
+                for row in rows {
+                    let hash: String = row.get(0);
+                    let bytes: Vec<u8> = row.get(1);
+                    match bytes_to_embedding(&bytes, dim) {
+                        // Same finiteness guard as `get_embeddings_by_hashes`:
+                        // reject NaN/Inf before they can poison HNSW build or
+                        // query paths.
+                        Ok(embedding) => match Embedding::try_new(embedding) {
+                            Ok(e) => {
+                                result.insert(hash, e);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    hash = %hash,
+                                    error = %e,
+                                    "Non-finite embedding values (NaN/Inf), skipping — \
+                                     run 'cqs index --force' to rebuild"
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(hash = %hash, error = %e, "Corrupt embedding blob, skipping — run 'cqs index --force' to rebuild");
+                        }
+                    }
+                }
+            }
+            Ok(result)
+        })
+    }
+
     /// Get `(chunk_id, embedding, content_hash)` triples for chunks with
     /// matching content hashes.
     ///
@@ -188,6 +264,7 @@ mod tests {
             line_start: 1,
             line_end: 5,
             content_hash: hash,
+            canonical_hash: String::new(),
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
@@ -390,5 +467,61 @@ mod tests {
         assert_eq!(by_id[chunk1.id.as_str()].1, chunk1.content_hash);
         assert_eq!(by_id[chunk2.id.as_str()].1, chunk2.content_hash);
         assert_eq!(by_id[chunk3.id.as_str()].1, chunk3.content_hash);
+    }
+
+    /// `test_chunk` variant with an explicit `canonical_hash`.
+    fn test_chunk_with_canon(name: &str, content: &str, canon: &str) -> Chunk {
+        let mut c = test_chunk(name, content);
+        c.canonical_hash = canon.to_string();
+        c
+    }
+
+    /// End-to-end embedding reuse via the comment-canonical cache: a chunk
+    /// with the same `canonical_hash` as a stored one gets a cache hit even
+    /// though its `content_hash` (store identity) differs — the comment-only
+    /// edit scenario. A row with NULL canonical_hash is never returned.
+    #[test]
+    fn test_get_embeddings_by_canonical_hashes_reuses_across_comment_edit() {
+        let (store, _dir) = make_store();
+
+        // Original chunk A: code + a comment. Store it with a known
+        // canonical_hash (what the parser would emit for the comment-stripped
+        // form).
+        let canon = "canon_shared_key";
+        let original = test_chunk_with_canon("add", "fn add() { /* v1 */ 1 + 1 }", canon);
+        store
+            .upsert_chunk(&original, &mock_embedding(1.0), Some(100))
+            .unwrap();
+
+        // A comment-only edited version B has a DIFFERENT content_hash but the
+        // SAME canonical_hash. Looking up by the canonical key returns the
+        // stored embedding — reuse, no re-embed.
+        let hits = store.get_embeddings_by_canonical_hashes(&[canon]).unwrap();
+        assert!(
+            hits.contains_key(canon),
+            "comment-only edit must reuse the stored embedding via canonical_hash"
+        );
+        let cos =
+            crate::math::cosine_similarity(hits[canon].as_slice(), mock_embedding(1.0).as_slice())
+                .unwrap();
+        assert!(
+            cos > 0.99,
+            "reused embedding must match the stored one: {cos}"
+        );
+
+        // A NULL canonical_hash row (pre-v28 / hydrated chunk written with
+        // empty canonical_hash → bound as NULL) must NOT be returned by the
+        // canonical lookup — a clean cache miss, never a wrong hit.
+        let null_chunk = test_chunk("nullcanon", "fn nullcanon() { 0 }");
+        assert!(null_chunk.canonical_hash.is_empty());
+        store
+            .upsert_chunk(&null_chunk, &mock_embedding(2.0), Some(100))
+            .unwrap();
+        // Empty string is bound as NULL, so querying for "" returns nothing.
+        let miss = store.get_embeddings_by_canonical_hashes(&[""]).unwrap();
+        assert!(
+            miss.is_empty(),
+            "NULL/empty canonical_hash rows must be skipped (clean cache miss)"
+        );
     }
 }

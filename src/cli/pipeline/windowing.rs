@@ -61,6 +61,10 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                 let parent_id = chunk.id.clone();
                 for (window_content, window_idx) in windows {
                     let window_hash = blake3::hash(window_content.as_bytes()).to_hex().to_string();
+                    // Fallback canonicalization (whitespace-collapse only): a
+                    // comment edit inside a long windowed chunk shifts window
+                    // boundaries anyway, so tree-precision buys nothing here.
+                    let window_canonical = cqs::canonical_hash_fallback(&window_content);
                     result.push(Chunk {
                         id: format!("{}:w{}", parent_id, window_idx),
                         file: chunk.file.clone(),
@@ -77,6 +81,7 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                         line_start: chunk.line_start,
                         line_end: chunk.line_end,
                         content_hash: window_hash,
+                        canonical_hash: window_canonical,
                         parent_id: Some(parent_id.clone()),
                         window_idx: Some(window_idx),
                         parent_type_name: chunk.parent_type_name.clone(),

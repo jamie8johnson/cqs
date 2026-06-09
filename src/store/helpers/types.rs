@@ -78,6 +78,10 @@ impl From<&ChunkSummary> for Chunk {
             line_start: cs.line_start,
             line_end: cs.line_end,
             content_hash: cs.content_hash.clone(),
+            // canonical_hash is an index-time embedding-cache key only; it is
+            // never persisted into ChunkSummary and never consulted on a
+            // hydrated Chunk. Empty string = "not computed".
+            canonical_hash: String::new(),
             parent_id: cs.parent_id.clone(),
             window_idx: cs.window_idx.map(|i| i as u32),
             parent_type_name: cs.parent_type_name.clone(),

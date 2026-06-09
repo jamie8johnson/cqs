@@ -58,6 +58,7 @@ fn build_chunk(name: &str, file: &str, line_start: u32) -> Chunk {
         line_start,
         line_end: line_start + 4,
         content_hash: hash,
+        canonical_hash: String::new(),
         parent_id: None,
         window_idx: None,
         parent_type_name: None,
