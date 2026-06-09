@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-06-09
+
+Minor release. Schema v28. Four threads: comment-canonical embedding reuse, a whole-codebase comment cleanup with a CI guard to keep it clean, retirement of the cuvs fork onto official 26.6.0, and eval-harness drift-proofing.
+
 ### Added
 
 - **Comment-canonical embedding-cache hash.** Chunks now carry a
@@ -21,6 +25,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `canonical_hash` NULL (a clean cache miss — never a wrong hit) until the next
   reindex writes it; no backfill. Old `content_hash`-keyed global-cache rows
   become unreachable under the new key and age out via `cqs cache prune`.
+- **Comment-provenance CI lint** (#1676). `scripts/check_comment_provenance.py`
+  scans PR diffs for audit-finding IDs and PR citations in added comments
+  (TODO/FIXME exempt; string literals ignored) and fails the fmt job on hits.
+  Validated against #1673's history: 0 false positives forward, 2,673 catches
+  reversed.
+
+### Changed
+
+- **Whole-codebase comment cleanup** (#1673). 231 of 264 source files: ~1,500+
+  changelog/provenance refs removed from comments (audit IDs, PR citations,
+  "previously/formerly/pre-fix" narration), rewritten present-tense.
+  Comment-only by construction — mechanically verified that every changed line
+  is a comment, blank, or trailing-comment edit on byte-identical code. One
+  doc-accuracy fix: `lib.rs` claimed `EMBEDDING_DIM` is 1024/BGE-large
+  (768/EmbeddingGemma since v1.35.0).
+- **cuvs fork retired → official 26.6.0** (#1679). Our v26.06.00 upstream
+  contributions (CAGRA serialize/deserialize + `search_with_filter` Rust
+  wrappers) shipped, so the `[patch.crates-io]` git override is gone: cuvs
+  pinned `=26.6` from crates.io, conda libcuvs 26.04 → 26.06 in lockstep,
+  fork workspace dir removed. JIT LTO CAGRA search (new in 26.06): no
+  cold-start tax measured — cold CLI 8.4s → 7.5s, warm daemon ~0.55s
+  round-trip unchanged. Next contribution tracked: IVF-SQ Rust bindings
+  (#1678).
+- **ROADMAP currency** (#1673): v1.41.0 as Current, SNR Phases 4-6 marked
+  shipped, Open Issues re-audited against GitHub (30 closed rows pruned, the
+  two deferred v1.40-cycle P1s now tracked).
+
+### Fixed
+
+- **Eval harnesses are line-drift-proof** (#1675). 16 Python eval scripts
+  matched gold chunks on the strict `(file, name, line_start)` triple; any
+  refactor that shifted line numbers (like #1673) faked a 25-30pp regression.
+  All gold↔result equality now matches `(file, name)`, mirroring the Rust
+  matcher. Drift-measurement and fixture-migration scripts deliberately keep
+  line_start.
+- **Flaky CI hardened** (#1676). `tc31_save_and_load_with_dim_1024` asserts
+  top-3 containment instead of exact rank-1 (near-parallel test vectors made
+  exact order RNG-dependent); CI caches `~/.cache/huggingface` in both
+  workflows (repeated model downloads were tripping HF 429 rate limits).
+- **clippy 1.96 `manual_option_zip`** (#1672) at two SPLADE-arg call sites.
+
+### Dependencies
+
+- sqlx 0.8.6 → 0.9.0 with `AssertSqlSafe` on dynamic SQL (#1666); tree-sitter
+  0.26.9, tree-sitter-erlang 0.18, tree-sitter-swift 0.7.3, reqwest 0.13.4,
+  similar 3.1.1, serde_json 1.0.150, log 0.4.32, serial_test 3.5.0,
+  uuid 1.23.3 (#1659–#1671).
 
 ## [1.41.0] - 2026-05-20
 

@@ -19,6 +19,37 @@ After consolidation: **150 raw → 78 triage entries.** Heavy overlap: the v1.40
 
 ---
 
+## Verification 2026-06-09 (audit-mode, direct code examination)
+
+All findings still marked open after the v1.41.0 cycle were re-verified against main (post-#1677, schema v28). Verdicts below supersede the per-row Status cells; this section is the work queue for the standing fix loop.
+
+### Closed by verification (no work needed)
+
+- **SEC-V1.40-7** — FIXED/never-matched: daemon uses `String::with_capacity(8192)` + `.take(cap)` read-limit (socket.rs:101-110); the "5 MB preallocation" never existed.
+- **DS-V1.40-9** — INVALID: v26→v27 sets `needs_embedding=1` only `WHERE embedding_base IS NULL` (migrations.rs:994-996); the half-state can't be created.
+- **RB-V1.40-2 sub-claim "no chunks.name index → full scan"** — INVALID: `idx_chunks_name` is in base schema.sql:99. Only the `format!`-per-call sub-claim survives (cleanup tier).
+- **TC-HAP-V1.40-7 sub-claim "no tests"** — FIXED: kind.rs:303-340 has round-trip tests.
+- **Posture truth-table + env-read-caching sub-claims** (TC-*-V1.40-1 part, CQ-V1.40-5 part) — FIXED by #1629 (OnceLock + 12 unit tests).
+
+### Verified-open queue (priority order for the fix loop)
+
+1. **Cap parity for CLI graph fallbacks** (CQ-V1.40-3 remainder + EXT-V1.40-2): #1632's 100-def/2KB cap covers only impact + daemon; callers/callees/deps/test_map/trace CLI paths emit unbounded JSON on hot names. Extend `chunk_to_definition_value` to all four files — closes the DoS gap AND the duplication. Easy/medium.
+2. **EH-V1.40-8 + PB-V1.40-7**: `try_kind_fallback` propagates `lookup_by_name` errors as fatal (`?` at handlers/graph.rs:79,147); should warn + fall through to the normal path. Easy.
+3. **SHL-V1.40-1 + AC-V1.40-9**: `lookup_by_name` (store/chunks/query.rs:271-275) — add LIMIT and routing-priority ORDER BY (currently alphabetical chunk_type, no cap; #1632's cap is downstream of the full fetch). Easy, one query.
+4. **Cluster C architecture refactor** (CQ-V1.40-1/2/4/9, API-V1.40-1/2/4, RM-V1.40-1, EXT-V1.40-1): adopt `detect_kind_for_store` at its 8 inlined call sites; unify the 6 dispatcher signatures (`&OutputFormat` vs `json: bool`); split Kind vs KindResolution; replace `_ => {}` fallthroughs with exhaustive matches; delete `cmd_impact_const_fallback` (hand-rolled duplicate); single source of truth for the ~24 redirect-note strings. One refactor PR. Medium.
+5. **DS-V1.40-1**: daemon Store cache invalidation via `PRAGMA data_version` (identity check is inode/size/mtime only, batch/mod.rs:441-509). Medium.
+6. **DS-V1.40-8/10**: kind-detect + real query share no read snapshot. Medium; consider folding into 4.
+7. **Test backfill** (TC-ADV-V1.40-4, TC-HAP-V1.40-3, TC-ADV-V1.40-9, TC-ADV-V1.40-1 remainder): daemon try_kind_fallback has zero tests for any kind; no CLI integration tests for fallback kinds; V2Bare default + ULTRASECURITY×OUTPUT_FORMAT compose untested at binary boundary (every integration test pins CQS_OUTPUT_FORMAT=v1). Medium.
+8. **Observability bundle** (OB-V1.40-1/2/5/6): fallback-fired tracing events, telemetry category (Phase 2 prioritization signal), kind.rs entry spans, Tier 2b drop counter. Easy.
+9. **Perf bundle**: Cluster A2 N+1 GLOB scans in `filter_invoked_macros` (dead_code.rs:189-199, correctness fixed by #1627 but still per-macro full scans); daemon `dispatch_value` refactor (TODO P2 #62, socket.rs:270) + `emit_json` double-serialization; PERF-V1.40-7 build_test_map inversion (modest — loop body is O(1)). Medium.
+10. **Cleanup tier**: PERF-V1.40-8 fragment caching — NOTE the proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale fields); cache only the static part. CQ-V1.40-5/6 `_with_posture` plumbing — wire it or delete it (perf motivation gone post-#1629). AC-V1.40-6/7, EH-V1.40-3 (trace macro/Multiple/target-validation). SEC-V1.40-8 walk caps. PB-V1.40-9 WAL-on-9P detection. RM-V1.40-4 SQL string const. RM-V1.40-6/7 cross-project graph caching. Easy-medium each.
+
+### Still deferred (unchanged decision)
+
+- **DS-V1.40-7**: partially mitigated (CLI clamps to [-1,1], rejects NaN/Inf) but `--sentiment 0.7` still accepted — no discrete-value CHECK. Stays deferred per the v1.41.0 rationale.
+
+---
+
 ## Cross-cutting clusters
 
 These clusters drive the recommended PR order. A single PR per cluster collapses 3-7 findings into one fix-pattern review.

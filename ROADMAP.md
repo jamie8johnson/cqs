@@ -1,14 +1,22 @@
 # Roadmap
 
-## Current: v1.41.0 (cut 2026-05-20, crates.io published)
+## Current: v1.42.0 (cut 2026-06-09)
+
+Minor release. Schema v28. Four threads:
+- **Comment-canonical embedding reuse** (#1677): `chunks.canonical_hash` (comment-stripped + whitespace-collapsed blake3) keys both embedding-reuse paths on both surfaces (bulk pipeline + watch incremental); comment/formatting-only edits no longer re-embed the corpus.
+- **Comment hygiene** (#1673 + #1676): ~1,500+ provenance refs stripped from comments across 231 files, present-tense rewrite; CI provenance lint (fmt job) keeps it clean.
+- **cuvs fork retired** (#1679): our CAGRA serialize/deserialize + search_with_filter wrappers shipped in official cuvs 26.6.0 — pin `=26.6`, conda libcuvs 26.06, `[patch.crates-io]` gone. JIT LTO CAGRA search: no cold-start tax (cold CLI 8.4s→7.5s, warm daemon ~0.55s unchanged). Next upstream contribution: **IVF-SQ Rust bindings (#1678, agent in flight)** — 4× memory reduction candidate for multi-slot A/Bs once bound.
+- **Eval drift-proofing** (#1675): 16 Python harnesses match gold on `(file, name)` like the Rust matcher; refactor line-shifts can no longer fake regressions.
+
+**Post-v1.40.0 audit verification (2026-06-09, audit-mode):** every still-open finding re-verified against code — 24 confirmed open, 6 partially fixed, 1 fixed, 2 invalidated (incl. the "missing chunks.name index" premise: `idx_chunks_name` was in base schema all along). Verified priority queue in `docs/audit-triage.md` § Verification 2026-06-09; the standing 5h fix loop works from it. Also queued: #1680 (MSRV 1.95→1.96, `assert_matches!` sweep, clippy --all-targets cleanup). New finding from live failure: daemon CLI client has no socket read timeout (request racing a daemon restart blocks forever).
+
+## Previous: v1.41.0 (cut 2026-05-20, crates.io published)
 
 Minor release. 30 commits since v1.40.0; no breaking changes (v1.40.0 carried the SNR wire-format flip). Three threads: polymorphic routing Phase 1 completion (matrix below), post-v1.40.0 audit cycle closure, `cqs dead` false-positive reduction (table below).
 
 **Post-v1.40.0 audit cycle (closed in v1.41.0):** 16-category audit, 150 raw findings → 78 triaged → 9 closeout PRs (#1626–#1634). 21 of 23 P1s closed; 2 deferred with rationale (DS-V1.40-1 daemon Store cache invalidation, DS-V1.40-7 sentiment CHECK constraint — tracked in Open Issues below). Highlights: lying-docs sweep (#1626), Tier 2b `filter_invoked_macros` correctness — LIKE → GLOB, Rust-only guard, recursive-macro self-exclusion (#1627), Posture/OutputFormat env-var caching + truthy aliases (#1629), `worktree_stale` signal restored under V2Bare (#1630), atomic backup-restore sidecar ordering (#1631), kind-fallback DoS caps (#1632), BFS sentinel + Tier 2a anchoring (#1633).
 
 Also: `cqs chat` honors `CQS_OUTPUT_FORMAT=v1` (#1650, first external-contributor fix), `cli_chat_format_test` aligned with the slim envelope — closed 8 consecutive nightly failures (#1655), screw-mcp/screw-tape moved to its own repo (#1656).
-
-**Post-release on main (ahead of v1.41.0 tag):** sqlx 0.8.6 → 0.9.0 with `AssertSqlSafe` on dynamic SQL (#1666), clippy 1.96 `manual_option_zip` fix (#1672), comment-cleanup sweep across all 264 source files, and dependabot bumps (tree-sitter 0.26.9, tree-sitter-erlang 0.18, reqwest 0.13.4, similar 3.1.1, serde_json 1.0.150, log 0.4.31, serial_test 3.5.0, uuid 1.23.2).
 
 **Polymorphic-routing Phase 1 matrix (first cell v1.40.0 #1612; completed in v1.41.0):**
 
@@ -34,8 +42,6 @@ Also: `cqs chat` honors `CQS_OUTPUT_FORMAT=v1` (#1650, first external-contributo
 | 2b correctness | #1627 (v1.41.0) | LIKE → GLOB (case-sensitive, no `_` collision), Rust-only guard, recursive-macro self-exclusion, GLOB metachar escape, +7 tests | closes the Tier 2b false-match edge cases |
 
 Cumulative: ~114 → 35 cqs-dead entries (as of v1.41.0). Remaining 35 includes 2 macros (`for_each_logged_batch_cmd`, `gen_log_query_dispatch`) flagged because their only invocation is at file scope (line 606 of `src/cli/batch/commands.rs`) — outside any chunk's byte range. Closing fully requires a chunker change to include doc comments / file-level statements; deferred as architectural.
-
-## Previous: v1.40.0 (cut 2026-05-08)
 
 **v1.40.0 (2026-05-08):** 14-PR minor release driven by agent-adoption telemetry (search rate dropped 79% → 6% mid-April → early May). **Breaking:** CLI direct `--json` emits the bare JSON payload (no envelope wrap); `CQS_OUTPUT_FORMAT=v1` is the consumer-migration hedge. Contents:
 - **SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613):** `Posture` enum + per-result skip-when-default + posture-gated force-emit + slim batch/daemon envelope + CLI direct → bare payload. ~30% smaller per result + ~70 KB saved per 1000-line fixture batch.
