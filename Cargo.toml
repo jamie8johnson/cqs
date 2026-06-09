@@ -29,7 +29,6 @@ exclude = [
     "evals/",
     "samples/",
     "tools/",
-    "cuvs-fork-push/",
 ]
 
 [dependencies]
@@ -130,7 +129,7 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
 simsimd = "6"
-cuvs = { version = "=26.4", optional = true }  # pinned — strict version coupling with conda libcuvs
+cuvs = { version = "=26.6", optional = true }  # pinned — strict version coupling with conda libcuvs
 
 # Text processing
 regex = "1"
@@ -315,9 +314,6 @@ serial_test = "3"
 # Mock HTTP server for LocalProvider unit + integration tests (OpenAI-compat).
 # Used only under `cfg(test)` behind the `llm-summaries` feature.
 httpmock = "0.8"
-
-[patch.crates-io]
-cuvs = { git = "https://github.com/jamie8johnson/cuvs-patched.git", branch = "add-serialize-deserialize" }  # adds search_with_filter + CAGRA serialize/deserialize wrappers
 
 [profile.release]
 lto = "thin"
