@@ -172,7 +172,17 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
 ///
 /// Uses incremental HNSW insertion when an Owned index is available in memory.
 /// Falls back to full rebuild on first run or after `hnsw_rebuild_threshold()` incremental inserts.
-pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+///
+/// On a successful drain the changed-file set is propagated into
+/// `siblings`' per-slot delta queues — the active reindex has just
+/// written the fresh embeddings back to the global cache, so same-model
+/// sibling drains that follow are pure cache hits.
+pub(super) fn process_file_changes(
+    cfg: &WatchConfig,
+    store: &Store,
+    state: &mut WatchState,
+    siblings: &mut super::siblings::SiblingSet,
+) {
     let files: Vec<PathBuf> = state.pending_files.drain().collect();
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     state.pending_files.shrink_to(64);
@@ -249,6 +259,13 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         cfg.quiet,
     ) {
         Ok((count, content_hashes)) => {
+            // Propagate the drained delta to sibling slots. Strictly
+            // after the active reindex succeeded: the global cache now
+            // holds the fresh embeddings, so a same-model sibling drain
+            // resolves the whole set via `resolve_reuse` without
+            // touching the embedder. O(files × slots) set inserts —
+            // does not affect active-slot freshness latency.
+            siblings.enqueue(&files);
             // Publish-side stats for `cqs status --watch`: a
             // timestamp + duration pair the snapshot publisher reads
             // every tick.

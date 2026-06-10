@@ -100,9 +100,12 @@ pub struct WatchErrorInfo {
 
 /// Per-slot freshness entry inside [`WatchOpsStats::slots`].
 ///
-/// Today the daemon serves exactly one slot, so the vec carries one
-/// entry (the active slot). Slot-parallel work extends the vec
-/// with additional entries rather than reshaping the output.
+/// The first entry is always the active slot; sibling slots tracked by
+/// the slot-parallel reindex propagation follow. Sibling states:
+/// `stale` while their delta queue is non-empty (or the slot errored),
+/// `fresh` once a drain or reconcile pass has converged them, `unknown`
+/// for slots the daemon knows about but does not propagate to (a
+/// foreign-model slot without `CQS_WATCH_ALL_SLOTS`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotWatchStatus {
     /// Slot name (`default` unless `--slot`/`CQS_SLOT` selected another).
@@ -114,6 +117,17 @@ pub struct SlotWatchStatus {
     pub last_synced_at: Option<i64>,
     /// Latency of the most recent reindex pass against this slot.
     pub last_reindex: Option<ReindexLatency>,
+    /// Files queued for this slot but not yet drained. For the active
+    /// slot this mirrors [`WatchSnapshot::modified_files`]; for sibling
+    /// slots it is the depth of the propagation delta queue.
+    #[serde(default)]
+    pub queue_depth: u64,
+    /// Most recent error observed against this slot (sticky, same
+    /// semantics as [`WatchOpsStats::last_error`]). For sibling slots
+    /// this is how a stale-schema / locked-DB / missing-index slot
+    /// surfaces without poisoning the watch loop.
+    #[serde(default)]
+    pub last_error: Option<WatchErrorInfo>,
 }
 
 /// Operational stats block for `cqs status --watch`.
@@ -426,6 +440,10 @@ pub struct WatchSnapshotInput<'a> {
     pub last_reindex: Option<&'a ReindexLatency>,
     /// Borrowed most-recent watch-loop error (sticky).
     pub last_error: Option<&'a WatchErrorInfo>,
+    /// Pre-built status entries for sibling slots tracked by the
+    /// slot-parallel propagation machinery. Appended after the active
+    /// slot's entry in [`WatchOpsStats::slots`].
+    pub sibling_slots: Vec<SlotWatchStatus>,
 }
 
 impl<'a> WatchSnapshotInput<'a> {
@@ -457,6 +475,7 @@ impl<'a> WatchSnapshotInput<'a> {
             reconcile_pending: false,
             last_reindex: None,
             last_error: None,
+            sibling_slots: Vec::new(),
         }
     }
 
@@ -485,6 +504,15 @@ impl<'a> WatchSnapshotInput<'a> {
         self.reconcile_pending = reconcile_pending;
         self.last_reindex = last_reindex;
         self.last_error = last_error;
+        self
+    }
+
+    /// Builder-style chain for sibling-slot status entries. The watch
+    /// loop builds these from its `SiblingSet` once per publish tick;
+    /// they are appended after the active slot in the ops block's
+    /// `slots` vec.
+    pub fn with_sibling_slots(mut self, sibling_slots: Vec<SlotWatchStatus>) -> Self {
+        self.sibling_slots = sibling_slots;
         self
     }
 }
@@ -543,11 +571,12 @@ impl WatchSnapshot {
         // without rebuilding the state-machine inputs.
         tracing::trace!(state = %state, "compute decision");
 
-        // Ops block. The per-slot vec carries exactly the
-        // active slot today; the slot-parallel reindex work extends it. Built whenever the slot
-        // name is known — `active_slot == None` only happens for
-        // synthetic inputs that never reach the daemon wire.
-        let slots = input
+        // Ops block. The per-slot vec leads with the active slot and
+        // appends sibling-slot entries from the slot-parallel
+        // propagation machinery. Built whenever the slot name is known —
+        // `active_slot == None` only happens for synthetic inputs that
+        // never reach the daemon wire.
+        let mut slots = input
             .active_slot
             .map(|name| {
                 vec![SlotWatchStatus {
@@ -555,9 +584,12 @@ impl WatchSnapshot {
                     state,
                     last_synced_at: input.last_synced_at,
                     last_reindex: input.last_reindex.cloned(),
+                    queue_depth: u64::try_from(input.pending_files_count).unwrap_or(u64::MAX),
+                    last_error: input.last_error.cloned(),
                 }]
             })
             .unwrap_or_default();
+        slots.extend(input.sibling_slots.iter().cloned());
         let ops = Some(WatchOpsStats {
             in_flight_clients: u64::try_from(input.in_flight_clients).unwrap_or(u64::MAX),
             reconcile_pending: input.reconcile_pending,
@@ -819,6 +851,52 @@ mod tests {
         assert_eq!(slot.state, snap.state);
         assert_eq!(slot.last_synced_at, Some(1_750_000_000));
         assert_eq!(slot.last_reindex.as_ref(), Some(&lr));
+        // Active-slot queue depth mirrors modified_files; last_error
+        // mirrors the ops-level sticky error.
+        assert_eq!(slot.queue_depth, snap.modified_files);
+        assert_eq!(slot.last_error.as_ref(), Some(&le));
+    }
+
+    /// Sibling-slot entries handed to `with_sibling_slots` are appended
+    /// after the active slot in the ops block, verbatim. This is the
+    /// wire shape the slot-parallel propagation publishes through.
+    #[test]
+    fn compute_appends_sibling_slot_entries() {
+        let sibling = SlotWatchStatus {
+            name: "exp-a".to_string(),
+            state: FreshnessState::Stale,
+            last_synced_at: Some(1_749_000_000),
+            last_reindex: None,
+            queue_depth: 4,
+            last_error: Some(WatchErrorInfo {
+                at_unix_secs: 1_749_000_100,
+                message: "drain failed: locked".to_string(),
+            }),
+        };
+        let snap = WatchSnapshot::compute(
+            input(0, false, false, 0)
+                .with_active_slot("default")
+                .with_sibling_slots(vec![sibling.clone()]),
+        );
+        let ops = snap.ops.expect("ops present");
+        assert_eq!(ops.slots.len(), 2, "active + one sibling");
+        assert_eq!(ops.slots[0].name, "default");
+        assert_eq!(ops.slots[1], sibling);
+    }
+
+    /// Old wire shape (per-slot entries without queue_depth/last_error)
+    /// must still deserialize — the fields are serde-defaulted.
+    #[test]
+    fn slot_status_without_new_fields_deserializes() {
+        let old = serde_json::json!({
+            "name": "default",
+            "state": "fresh",
+            "last_synced_at": null,
+            "last_reindex": null,
+        });
+        let entry: SlotWatchStatus = serde_json::from_value(old).expect("old slot shape");
+        assert_eq!(entry.queue_depth, 0);
+        assert!(entry.last_error.is_none());
     }
 
     #[test]

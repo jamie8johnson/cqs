@@ -1671,7 +1671,7 @@ fn dropped_this_cycle_survives_embedder_init_early_return() {
         "test setup: backoff must block retry so try_init_embedder returns None"
     );
 
-    process_file_changes(&cfg, &fix.store, &mut state);
+    process_file_changes(&cfg, &fix.store, &mut state, &mut SiblingSet::empty());
 
     // Pin: the early-return path must NOT have zeroed the counter.
     assert_eq!(
@@ -1752,7 +1752,7 @@ fn dropped_this_cycle_resets_after_successful_drain() {
     state.dropped_this_cycle = 5;
     // No files queued → reindex_files returns Ok((0, vec![])).
 
-    process_file_changes(&cfg, &store, &mut state);
+    process_file_changes(&cfg, &store, &mut state, &mut SiblingSet::empty());
 
     assert_eq!(
         state.dropped_this_cycle, 0,
@@ -1793,7 +1793,7 @@ fn process_file_changes_zero_files_is_noop_when_embedder_blocked() {
     assert_eq!(state.dropped_this_cycle, 0);
 
     // Should not panic, should not mutate state.
-    process_file_changes(&cfg, &fix.store, &mut state);
+    process_file_changes(&cfg, &fix.store, &mut state, &mut SiblingSet::empty());
 
     assert!(state.pending_files.is_empty(), "still empty after no-op");
     assert_eq!(
@@ -2065,6 +2065,7 @@ fn publish_watch_snapshot_carries_ops_block() {
         &tmp.path().join("missing-index.db"),
         &in_flight,
         &reconcile,
+        &SiblingSet::empty(),
     );
 
     let snap = handle.read().unwrap().clone();
@@ -2112,6 +2113,7 @@ fn publish_watch_snapshot_ops_zeros_without_daemon() {
         &tmp.path().join("missing-index.db"),
         &in_flight,
         &reconcile,
+        &SiblingSet::empty(),
     );
 
     let snap = handle.read().unwrap().clone();
