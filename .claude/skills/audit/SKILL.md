@@ -38,6 +38,8 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
 
 4. **Spawn teammates**: One per category. Use `model: "fable"` for every auditor (opus is an acceptable alternative) — the 2026-06-10 review/fix campaign showed Fable at or above opus quality on exactly this kind of judgment work (15/15 review findings confirmed, premise-drift catches, empirical hypothesis correction). Sonnet produces lower-quality judgments and haiku misses subtle findings. The per-category scope keeps each agent focused enough that frontier-model cost is reasonable.
 
+   **Exception — the Security category auditor uses `model: "opus"`.** Fable's documented bug-finding gains explicitly exclude security-focused analysis (its cyber classifiers apply there), and benign-adjacent security work can occasionally trigger a classifier false positive — a mid-run refusal kills that category's coverage for the whole audit. Opus carries no refusal risk on this lane, has no documented capability deficit for it, and costs half. Same reasoning applies to `/red-team`.
+
 5. **Each teammate prompt must include**:
    - Their category scope (from table below)
    - Instruction to read archived triage files (e.g., `docs/audit-triage-v*.md`) — skip anything already triaged in prior audits
