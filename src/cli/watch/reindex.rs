@@ -463,9 +463,22 @@ pub(super) fn reindex_files(
     // `resolve_reuse` returns indices into `chunks` (a borrowed slice here);
     // we rebuild the `(usize, &Chunk)` shape the order-merge below expects so
     // cache hits stay out of the incremental HNSW insert set.
+    // Compute the model fingerprint only when a global cache exists — it's
+    // the fingerprint's only consumer here (resolve_reuse's global branch +
+    // the write-back below), and its first computation streams blake3 over
+    // the full ONNX model file. Computed once and reused at both sites.
     let dim = embedder.embedding_dim();
-    let model_fp = embedder.model_fingerprint();
-    let split = crate::cli::pipeline::resolve_reuse(&chunks, store, global_cache, dim, &model_fp);
+    let model_fp: Option<String> = global_cache.is_some().then(|| embedder.model_fingerprint());
+    // `?` on a store-cache read failure aborts this cycle so the watch loop
+    // retries next tick with the error visible — a persistent SQLite failure
+    // must NOT silently degrade into re-embedding the corpus on GPU each tick.
+    let split = crate::cli::pipeline::resolve_reuse(
+        &chunks,
+        store,
+        global_cache,
+        dim,
+        model_fp.as_deref(),
+    )?;
     let global_hits_total = split.global_hits;
     let cached: Vec<(usize, Embedding)> = split.cached;
     let to_embed: Vec<(usize, &cqs::Chunk)> = split
@@ -515,30 +528,17 @@ pub(super) fn reindex_files(
     // (or another slot) hits cache instead of going through the embedder.
     // Best-effort — mirrors the bulk pipeline's write-back shape with borrowed
     // slices to skip per-entry allocations.
-    if let (Some(cache), false) = (global_cache, to_embed.is_empty()) {
+    if let (Some(cache), Some(fp), false) = (global_cache, model_fp.as_deref(), to_embed.is_empty())
+    {
         // Write under the canonical key (v28) so a later comment-only edit
-        // reuses this embedding. Falls back to content_hash when absent.
-        // Key choice must stay in sync with `pipeline::reuse::canon_key`
-        // (inlined here as &str borrows to avoid per-entry String allocation
-        // on the write-back hot path).
+        // reuses this embedding — the shared `canon_key_ref` owns the
+        // empty-canonical fallback for both read and write-back sites.
         let entries: Vec<(&str, &[f32])> = to_embed
             .iter()
             .zip(new_embeddings.iter())
-            .map(|((_, chunk), emb)| {
-                let key = if chunk.canonical_hash.is_empty() {
-                    chunk.content_hash.as_str()
-                } else {
-                    chunk.canonical_hash.as_str()
-                };
-                (key, emb.as_slice())
-            })
+            .map(|((_, chunk), emb)| (crate::cli::pipeline::canon_key_ref(chunk), emb.as_slice()))
             .collect();
-        if let Err(e) = cache.write_batch(
-            &entries,
-            &embedder.model_fingerprint(),
-            cqs::cache::CachePurpose::Embedding,
-            dim,
-        ) {
+        if let Err(e) = cache.write_batch(&entries, fp, cqs::cache::CachePurpose::Embedding, dim) {
             tracing::warn!(error = %e, "Watch global cache write failed (best-effort)");
         }
     }
