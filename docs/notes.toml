@@ -1900,3 +1900,8 @@ mentions = [
     "cuvs",
     "worktree",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "hnsw::safety::tests::test_loaded_index_lifecycle is flaky under parallel cargo test (passes in isolation) — same family as tc31; HNSW tests under concurrent execution need the containment treatment if a third one appears."
+mentions = ["src/hnsw/safety.rs"]

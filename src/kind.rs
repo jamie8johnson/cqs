@@ -138,8 +138,8 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
 ///
 /// Cost: one indexed SQL query (`WHERE name = ?`) — not measurable
 /// against the surrounding command latency for interactive use.
-pub fn detect_kind_for_store(
-    store: &Store,
+pub fn detect_kind_for_store<Mode>(
+    store: &Store<Mode>,
     name: &str,
 ) -> Result<(Kind, Vec<KindHit>), StoreError> {
     let chunks = store.lookup_by_name(name)?;

@@ -8,7 +8,25 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use cqs::store::{ChunkSummary, TypeUsage};
+use cqs::store::{ChunkSummary, ReadOnly, Store, TypeUsage};
+
+use super::notes_text;
+use super::KindFallbackOutput;
+
+// ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
+
+/// Input for [`deps_core`]. Cross-project deps is not yet supported (both
+/// surfaces warn and return the local result); the flag lives on the
+/// adapter side, so the core covers the single-project path.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct DepsArgs {
+    /// Type name (forward) or function name (with `reverse`).
+    pub name: String,
+    /// Reverse: show types used by a function instead of type users.
+    pub reverse: bool,
+    /// Cap on type users (forward) or used types (reverse), clamped 1..=100.
+    pub limit: usize,
+}
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
@@ -31,6 +49,21 @@ pub(crate) struct DepsUserEntry {
     pub file: String,
     pub line_start: u32,
     pub chunk_type: String,
+}
+
+/// Single JSON-schema source for `cqs deps <name>`. Three happy-path
+/// shapes plus the shared fallback. `#[serde(untagged)]` preserves the
+/// historical wire shapes: reverse ⇒ `{name, types, count}`, forward ⇒
+/// `[DepsUserEntry, …]`, kind mismatch ⇒ the fallback object.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum DepsCoreOutput {
+    /// `--reverse`: types used by a function — `{name, types, count}`.
+    Reverse(DepsReverseOutput),
+    /// Forward (default): chunks that use a type — flat array.
+    Forward(Vec<DepsUserEntry>),
+    /// Kind mismatch (const/module/ambiguous): the shared fallback object.
+    Fallback(KindFallbackOutput),
 }
 
 // ─── Shared JSON builders ──────────────────────────────────────────────────
@@ -65,61 +98,57 @@ pub(crate) fn build_deps_forward(users: &[ChunkSummary], root: &Path) -> Vec<Dep
         .collect()
 }
 
-// ─── Polymorphic-routing fallback ──────────────────────────────────────────
+// ─── Core ───────────────────────────────────────────────────────────────────
 
-/// Polymorphic-routing kind-mismatch fallback for `cqs deps <name>`.
-/// Same shape pattern as the impact / callers / callees / test-map / trace
-/// fallbacks. Deps is dual-mode (forward = "type users", reverse =
-/// "function's used types"), so Function and Type both have valid
-/// semantics in their respective modes — the fallback fires only for
-/// kinds that don't fit deps' model at all (Const, Module, Ambiguous).
-fn deps_kind_fallback(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    json: bool,
-    kind_label: &str,
-    note: &str,
-    text_lead: &str,
-    text_redirect: &str,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Kind fallback called with no hits — caller must classify before dispatching"
-    );
-    if json {
-        let definitions = super::chunks_to_definitions(chunks);
-        let payload = serde_json::json!({
-            "kind": kind_label,
-            "fallback_from": "deps",
-            "name": name,
-            "definitions": definitions,
-            "note": note,
-        });
-        crate::cli::json_envelope::emit_json(&payload)?;
-    } else {
-        println!("{text_lead}");
-        println!();
-        println!("Definitions:");
-        for c in chunks {
-            println!(
-                "  {}:{}-{} ({} {})",
-                cqs::normalize_path(&c.file),
-                c.line_start,
-                c.line_end,
-                c.language,
-                c.chunk_type
-            );
-            if !c.signature.is_empty() {
-                println!("    {}", c.signature);
-            }
+/// Surface-agnostic core for `cqs deps <name>` (single-project).
+///
+/// deps is dual-mode: forward (default) lists chunks that use a type;
+/// reverse (`--reverse`) lists types a function uses. Function (reverse)
+/// and Type (forward) both have valid semantics and run the normal flow;
+/// Const / Module / Ambiguous fall back since deps' "uses-of-X" model
+/// doesn't fit them. `Type` deliberately routes to the forward query even
+/// though it is a fallback-eligible kind elsewhere — that's why this
+/// matches on the `FallbackKind` rather than blindly emitting a fallback.
+pub(crate) fn deps_core(
+    store: &Store<ReadOnly>,
+    root: &Path,
+    args: &DepsArgs,
+) -> Result<DepsCoreOutput> {
+    let _span =
+        tracing::info_span!("deps_core", name = %args.name, reverse = args.reverse, limit = args.limit)
+            .entered();
+    let limit = args.limit.clamp(1, 100);
+
+    // Const/Module/Ambiguous don't fit deps' model. `notes_text::deps`
+    // returns `None` for Type, encoding "deps runs the forward query for a
+    // type" — so a Type classification falls through to the normal flow.
+    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    if let Some(fk) = fallback {
+        if let Some(text) = notes_text::deps(fk) {
+            return Ok(DepsCoreOutput::Fallback(KindFallbackOutput::new(
+                &args.name, &chunks, fk, "deps", &text,
+            )));
         }
-        println!();
-        println!("{text_redirect}");
     }
-    Ok(())
+
+    if args.reverse {
+        // Limit at SQL time so we don't fetch every edge of a popular
+        // function just to drop the tail.
+        let types = store
+            .get_types_used_by(&args.name, limit)
+            .context("Failed to load type dependencies")?;
+        Ok(DepsCoreOutput::Reverse(build_deps_reverse(
+            &args.name, &types,
+        )))
+    } else {
+        let users = store
+            .get_type_users(&args.name, limit)
+            .context("Failed to load type users")?;
+        Ok(DepsCoreOutput::Forward(build_deps_forward(&users, root)))
+    }
 }
 
-// ─── CLI command ────────────────────────────────────────────────────────────
+// ─── CLI command (thin adapter over the core) ──────────────────────────────
 
 /// Show type dependencies.
 ///
@@ -145,98 +174,68 @@ pub(crate) fn cmd_deps(
     }
     let store = &ctx.store;
     let root = &ctx.root;
-    // Cap on user list (forward) or used-types list (reverse).
-    let limit = limit.clamp(1, 100);
 
-    // Polymorphic-routing kind detection. Const/Module/Ambiguous don't fit
-    // deps' model — fall back with a redirect note. Function and Type continue
-    // to the dual-mode flow below.
-    let chunks = store.lookup_by_name(name)?;
-    let hits: Vec<cqs::kind::KindHit> = chunks.iter().map(cqs::kind::KindHit::from).collect();
-    let kind = cqs::kind::classify_hits(&hits);
-    match kind {
-        cqs::kind::Kind::Const => {
-            return deps_kind_fallback(
-                name, &chunks, json, "const",
-                "consts don't have type dependencies in either direction; here are the definition sites. \
-                 Use `cqs <name>` to find references to this const.",
-                &format!("(deps) `{name}` is a const, not a function or type — type-dependency analysis doesn't apply."),
-                "Use `cqs <name>` to find references to this const.",
-            );
+    let args = DepsArgs {
+        name: name.to_string(),
+        reverse,
+        limit,
+    };
+    match deps_core(store, root, &args)? {
+        DepsCoreOutput::Fallback(fb) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&fb)?;
+            } else {
+                render_deps_fallback_text(name, store)?;
+            }
         }
-        cqs::kind::Kind::Module => {
-            return deps_kind_fallback(
-                name, &chunks, json, "module",
-                "modules don't have type dependencies in this view; here are the declaration sites. \
-                 Use `cqs deps <type-or-function-in-module>` for an item-level analysis.",
-                &format!("(deps) `{name}` is a module/namespace, not a function or type — type-dependency analysis doesn't apply at this granularity."),
-                "Use `cqs deps <type-or-function-in-module>` for an item-level analysis.",
-            );
-        }
-        cqs::kind::Kind::Ambiguous => {
-            return deps_kind_fallback(
-                name, &chunks, json, "ambiguous",
-                "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
-                 Re-run `cqs deps <name>` against a more specific name (e.g. `Type::method`).",
-                &format!("(deps) `{name}` is ambiguous — matches multiple chunk kinds."),
-                "Re-run with a more specific name (e.g. `Type::method`).",
-            );
-        }
-        // Function | Type | Multiple | Other | NotFound: continue to
-        // existing flow. Function with --reverse and Type forward both
-        // have valid semantics; Multiple typically resolves via the
-        // store query's deterministic ordering; NotFound surfaces an
-        // empty result naturally.
-        _ => {}
-    }
-
-    if reverse {
-        // Limit at SQL time so we don't fetch every edge of a popular
-        // function just to drop the tail.
-        let types = store
-            .get_types_used_by(name, limit)
-            .context("Failed to load type dependencies")?;
-        if json {
-            let output = build_deps_reverse(name, &types);
-            crate::cli::json_envelope::emit_json(&output)?;
-        } else if types.is_empty() {
-            println!("No type dependencies found for '{}'", name);
-        } else {
-            println!("Types used by '{}':", name.cyan());
-            println!();
-            for t in &types {
-                if t.edge_kind.is_empty() {
-                    println!("  {}", t.type_name);
-                } else {
-                    println!("  {} ({})", t.type_name, t.edge_kind.dimmed());
+        DepsCoreOutput::Reverse(output) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&output)?;
+            } else if output.types.is_empty() {
+                println!("No type dependencies found for '{}'", name);
+            } else {
+                println!("Types used by '{}':", name.cyan());
+                println!();
+                for t in &output.types {
+                    if t.edge_kind.is_empty() {
+                        println!("  {}", t.type_name);
+                    } else {
+                        println!("  {} ({})", t.type_name, t.edge_kind.dimmed());
+                    }
                 }
+                println!();
+                println!("Total: {} type(s)", output.count);
             }
-            println!();
-            println!("Total: {} type(s)", types.len());
         }
-    } else {
-        // Limit at SQL time. Same shape as the reverse branch above.
-        let users = store
-            .get_type_users(name, limit)
-            .context("Failed to load type users")?;
-        if json {
-            let output = build_deps_forward(&users, root);
-            crate::cli::json_envelope::emit_json(&output)?;
-        } else if users.is_empty() {
-            println!("No users found for type '{}'", name);
-        } else {
-            println!("Chunks that use type '{}':", name.cyan());
-            println!();
-            for user in &users {
-                println!(
-                    "  {} ({}:{})",
-                    user.name.cyan(),
-                    cqs::rel_display(&user.file, root),
-                    user.line_start
-                );
+        DepsCoreOutput::Forward(users) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&users)?;
+            } else if users.is_empty() {
+                println!("No users found for type '{}'", name);
+            } else {
+                println!("Chunks that use type '{}':", name.cyan());
+                println!();
+                for user in &users {
+                    println!("  {} ({}:{})", user.name.cyan(), user.file, user.line_start);
+                }
+                println!();
+                println!("Total: {} user(s)", users.len());
             }
-            println!();
-            println!("Total: {} user(s)", users.len());
+        }
+    }
+    Ok(())
+}
+
+/// Plain-text deps fallback renderer. The core decided a fallback fires;
+/// for text the adapter re-runs `detect_fallback` (cheap indexed lookup)
+/// to print the definition list. Type never reaches here (it routes to the
+/// forward query), so an unexpected `None` from `notes_text::deps` is a
+/// no-op.
+fn render_deps_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
+    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    if let Some(fk) = fallback {
+        if let (Some(text), Some(lead)) = (notes_text::deps(fk), notes_text::deps_lead(fk, name)) {
+            super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");
         }
     }
     Ok(())

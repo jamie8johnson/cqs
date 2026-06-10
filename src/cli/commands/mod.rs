@@ -32,7 +32,6 @@ pub(crate) use dispatch_shims::*;
 // Re-export inner modules accessed directly by batch handlers via
 // crate::cli::commands::{module}::{function} paths.
 pub(crate) use graph::explain;
-pub(crate) use graph::trace;
 pub(crate) use io::blame;
 pub(crate) use io::context;
 pub(crate) use io::read;
@@ -55,13 +54,13 @@ pub(crate) use search::cmd_where;
 pub(crate) use search::GatherContext;
 
 // -- graph --
-pub(crate) use graph::build_callees;
-pub(crate) use graph::build_callers;
-pub(crate) use graph::build_deps_forward;
-pub(crate) use graph::build_deps_reverse;
+// `build_test_map` / `build_test_map_output` are still called directly by
+// the cross-project test-map daemon path (the single-project path goes
+// through `test_map_core`). The other `build_*` / `chunks_to_definitions`
+// helpers are now reached only inside the graph cores, so they no longer
+// re-export here.
 pub(crate) use graph::build_test_map;
 pub(crate) use graph::build_test_map_output;
-pub(crate) use graph::chunks_to_definitions;
 pub(crate) use graph::cmd_callees;
 pub(crate) use graph::cmd_callers;
 pub(crate) use graph::cmd_deps;
@@ -70,6 +69,14 @@ pub(crate) use graph::cmd_impact;
 pub(crate) use graph::cmd_impact_diff;
 pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
+// graph cores + arg types (daemon dispatch handlers call these). The
+// `*CoreOutput` types are returned by the cores and serialized via
+// `serde_json::to_value` / `to_value()` without being named at the call
+// site, so they stay internal to the graph module.
+pub(crate) use graph::{
+    callees_core, callers_core, deps_core, impact_core, test_map_core, trace_core, CalleesArgs,
+    CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+};
 
 // -- review --
 pub(crate) use review::build_dead_output;

@@ -15,12 +15,27 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use cqs::kind::{classify_hits, Kind, KindHit};
-use cqs::store::ChunkSummary;
+use cqs::store::ReadOnly;
 use cqs::Store;
 
+use super::notes_text;
 use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
+
+// ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
+
+/// Input for [`trace_core`]. Cross-project trace lives in the adapters
+/// (separate cross-project BFS, no kind-fallback); the core covers the
+/// single-project path.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct TraceArgs {
+    /// Source function name or `file:function`.
+    pub source: String,
+    /// Target function name or `file:function`.
+    pub target: String,
+    /// Max search depth — "give up after N hops."
+    pub max_depth: usize,
+}
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
@@ -43,6 +58,34 @@ pub(crate) struct TraceOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<usize>,
     pub found: bool,
+}
+
+/// Trace's kind-mismatch fallback payload. Unlike the other graph
+/// commands, trace classifies the *source* name and carries
+/// `source`/`target` rather than a single `name` — so it cannot reuse the
+/// shared `KindFallbackOutput`. Serializes to
+/// `{kind, fallback_from: "trace", source, target, definitions, note}`,
+/// the exact shape both surfaces have always emitted.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TraceKindFallbackOutput {
+    pub kind: &'static str,
+    pub fallback_from: &'static str,
+    pub source: String,
+    pub target: String,
+    pub definitions: Vec<serde_json::Value>,
+    pub note: &'static str,
+}
+
+/// Single JSON-schema source for `cqs trace <source> <target>`. Happy path
+/// is the `TraceOutput` object; a source kind-mismatch is the
+/// trace-specific fallback object.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum TraceCoreOutput {
+    /// Function path: `{source, target, path?, depth?, found}`.
+    Trace(TraceOutput),
+    /// Source kind mismatch: trace-shaped fallback object.
+    Fallback(TraceKindFallbackOutput),
 }
 
 // ─── Shared JSON builder ───────────────────────────────────────────────────
@@ -104,6 +147,61 @@ pub(crate) fn build_trace_output<Mode>(
             found: false,
         }),
     }
+}
+
+// ─── Core ───────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs trace <source> <target>` (single-project).
+///
+/// Classifies the source name: a non-callable source (const/type/module/
+/// ambiguous) short-circuits to a kind-labeled fallback instead of running
+/// the BFS to "no path found". Otherwise resolves both names, handles the
+/// trivial `source == target` case, and runs the shortest-path BFS over the
+/// passed-in call graph (passed in, like test-map, so each adapter supplies
+/// its own cached source).
+pub(crate) fn trace_core(
+    store: &Store<ReadOnly>,
+    graph: &cqs::store::CallGraph,
+    root: &std::path::Path,
+    args: &TraceArgs,
+) -> Result<TraceCoreOutput> {
+    let _span =
+        tracing::info_span!("trace_core", source = %args.source, target = %args.target).entered();
+
+    // Polymorphic-routing kind detection on the source name. The trace BFS
+    // requires a callable starting node; a non-Function source dispatches a
+    // kind-labeled fallback. The target's kind is left to `resolve_target`
+    // to surface its own error if missing.
+    let (chunks, fallback) = super::detect_fallback(store, &args.source)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::trace(fk);
+        return Ok(TraceCoreOutput::Fallback(TraceKindFallbackOutput {
+            kind: fk.label(),
+            fallback_from: "trace",
+            source: args.source.clone(),
+            target: args.target.clone(),
+            definitions: super::chunks_to_definitions(&chunks),
+            note: text.note,
+        }));
+    }
+
+    // Resolve source and target to chunk names.
+    let source_resolved = resolve_target(store, &args.source)?;
+    let target_resolved = resolve_target(store, &args.target)?;
+    let source_name = source_resolved.chunk.name.clone();
+    let target_name = target_resolved.chunk.name.clone();
+
+    // Trivial case: source == target.
+    if source_name == target_name {
+        let trivial_path = vec![source_name.clone()];
+        let output =
+            build_trace_output(store, &source_name, &target_name, Some(&trivial_path), root)?;
+        return Ok(TraceCoreOutput::Trace(output));
+    }
+
+    let path = bfs_shortest_path(&graph.forward, &source_name, &target_name, args.max_depth);
+    let output = build_trace_output(store, &source_name, &target_name, path.as_deref(), root)?;
+    Ok(TraceCoreOutput::Trace(output))
 }
 
 // ─── CLI command ────────────────────────────────────────────────────────────
@@ -212,204 +310,149 @@ pub(crate) fn cmd_trace(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // Polymorphic-routing kind detection (Phase 1) on the source name.
-    // The trace BFS requires a callable starting node; if `source` is a
-    // const/type/module/ambiguous name, dispatch a kind-labeled fallback
-    // instead of running the BFS to "no path found" — `target`'s kind is
-    // left to `resolve_target` to surface its own error if missing.
-    let source_chunks = store.lookup_by_name(source)?;
-    let source_hits: Vec<KindHit> = source_chunks.iter().map(KindHit::from).collect();
-    let source_kind = classify_hits(&source_hits);
-    match source_kind {
-        Kind::Const => {
-            return trace_kind_fallback(
-                source, target, &source_chunks, format, "const",
-                "consts don't participate in the call-graph; no call path can originate from a const value. \
-                 Use `cqs <source>` to find references and trace from the calling functions.",
-                &format!("(trace) source `{source}` is a const, not a function — no call path applies."),
-                "Use `cqs <source>` to find references and trace from the calling functions.",
-            );
-        }
-        Kind::Type => {
-            return trace_kind_fallback(
-                source, target, &source_chunks, format, "type",
-                "types don't have call chains; here are the type's definition sites. \
-                 Use `cqs <source>` to find usage references or `cqs trace <method-on-type> <target>` for a specific method.",
-                &format!("(trace) source `{source}` is a type, not a function — no call path applies."),
-                "Use `cqs <source>` to find usage references or trace from a specific method.",
-            );
-        }
-        Kind::Module => {
-            return trace_kind_fallback(
-                source, target, &source_chunks, format, "module",
-                "modules don't participate in the call-graph as nodes. \
-                 Use `cqs <source>` to find files that reference this module, or `cqs trace <function-in-module> <target>`.",
-                &format!("(trace) source `{source}` is a module/namespace, not a function — no call path applies."),
-                "Use `cqs trace <function-in-module> <target>` for a specific function.",
-            );
-        }
-        Kind::Ambiguous => {
-            return trace_kind_fallback(
-                source, target, &source_chunks, format, "ambiguous",
-                "source name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
-                 Re-run `cqs trace <source> <target>` against a more specific name.",
-                &format!("(trace) source `{source}` is ambiguous — matches multiple chunk kinds."),
-                "Re-run with a more specific name (e.g. `Type::method`).",
-            );
-        }
-        _ => {}
-    }
-
-    // Resolve source and target to chunk names
-    let source_resolved = resolve_target(store, source)?;
-    let source_chunk = source_resolved.chunk;
-    let target_resolved = resolve_target(store, target)?;
-    let target_chunk = target_resolved.chunk;
-
-    let source_name = source_chunk.name.clone();
-    let target_name = target_chunk.name.clone();
-
-    // Trivial case: source == target
-    if source_name == target_name {
-        match format {
-            OutputFormat::Json => {
-                let trivial_path = vec![source_name.clone()];
-                let result = build_trace_output(
-                    store,
-                    &source_name,
-                    &target_name,
-                    Some(&trivial_path),
-                    root,
-                )?;
-                crate::cli::json_envelope::emit_json(&result)?;
-            }
-            OutputFormat::Mermaid => {
-                let rel_file = cqs::rel_display(&source_chunk.file, root);
-                println!("graph TD");
-                println!(
-                    "    A[\"{} ({}:{})\"]",
-                    mermaid_escape(&source_name),
-                    mermaid_escape(&rel_file),
-                    source_chunk.line_start
-                );
-            }
-            OutputFormat::Text => {
-                println!("{} and {} are the same function.", source_name, target_name);
-            }
-        }
-        return Ok(());
-    }
-
-    // Load call graph and BFS
+    // Load the call graph up-front so the core stays surface-agnostic (the
+    // daemon adapter passes its snapshot Arc instead). Cached at the store
+    // level — cheap even when a source kind-fallback fires and the graph
+    // goes unused.
     let graph = store
         .get_call_graph()
         .context("Failed to load call graph")?;
-    let path = bfs_shortest_path(&graph.forward, &source_name, &target_name, max_depth);
 
-    match path {
-        Some(names) => match format {
+    let args = TraceArgs {
+        source: source.to_string(),
+        target: target.to_string(),
+        max_depth,
+    };
+    match trace_core(store, &graph, root, &args)? {
+        TraceCoreOutput::Fallback(fb) => match format {
             OutputFormat::Json => {
-                let result =
-                    build_trace_output(store, &source_name, &target_name, Some(&names), root)?;
-                crate::cli::json_envelope::emit_json(&result)?;
+                crate::cli::json_envelope::emit_json(&fb)?;
             }
-            OutputFormat::Mermaid => {
-                format_mermaid(store, root, &names)?;
-            }
-            OutputFormat::Text => {
-                println!(
-                    "Call path from {} to {} ({} hop{}):",
-                    source_name.cyan(),
-                    target_name.cyan(),
-                    names.len() - 1,
-                    if names.len() - 1 == 1 { "" } else { "s" }
-                );
-                println!();
-
-                // CQ-5: Batch lookup instead of N individual search_by_name calls
-                let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-                let batch_results = store.search_by_names_batch(&name_refs, 1)?;
-
-                for (i, name) in names.iter().enumerate() {
-                    let prefix = if i == 0 {
-                        "  ".to_string()
-                    } else {
-                        "  \u{2192} ".to_string()
-                    };
-                    match batch_results.get(name.as_str()).and_then(|v| v.first()) {
-                        Some(r) => {
-                            let rel = cqs::rel_display(&r.chunk.file, root);
-                            println!("{}{} ({}:{})", prefix, name.cyan(), rel, r.chunk.line_start);
-                        }
-                        None => {
-                            println!("{}{}", prefix, name.cyan());
-                        }
-                    }
-                }
+            OutputFormat::Text | OutputFormat::Mermaid => {
+                render_trace_fallback_text(source, store)?;
             }
         },
-        None => match format {
-            OutputFormat::Json => {
-                let result = build_trace_output(store, &source_name, &target_name, None, root)?;
-                crate::cli::json_envelope::emit_json(&result)?;
-            }
-            OutputFormat::Mermaid => {
-                // Empty graph with comment
-                println!("graph TD");
-                println!(
-                    "    %% No call path found from {} to {} within depth {}",
-                    source_name, target_name, max_depth
-                );
-            }
-            OutputFormat::Text => {
-                println!(
-                    "No call path found from {} to {} within depth {}.",
-                    source_name.cyan(),
-                    target_name.cyan(),
-                    max_depth
-                );
-            }
-        },
+        TraceCoreOutput::Trace(output) => render_trace_output(&output, format, max_depth)?,
     }
 
     Ok(())
 }
 
-/// Format trace path as Mermaid graph TD diagram
-fn format_mermaid<Mode>(
-    store: &Store<Mode>,
-    root: &std::path::Path,
-    names: &[String],
+/// Render a [`TraceOutput`] in the requested format. JSON emits the typed
+/// struct directly; Text and Mermaid derive their rendering from the same
+/// struct's hops so all three formats agree on the computed path.
+fn render_trace_output(
+    output: &TraceOutput,
+    format: &OutputFormat,
+    max_depth: usize,
 ) -> Result<()> {
-    println!("graph TD");
+    let source = &output.source;
+    let target = &output.target;
+    // Trivial case (`source == target`): the core returns a single-hop
+    // path. Each format keeps its historical trivial-case rendering.
+    let trivial = output.found && output.path.as_ref().map(|p| p.len() == 1).unwrap_or(false);
 
-    // CQ-5: Batch lookup instead of N individual search_by_name calls
-    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-    let batch_results = store.search_by_names_batch(&name_refs, 1)?;
-
-    // Generate node definitions with labels
-    for (i, name) in names.iter().enumerate() {
-        let label = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
-            Some(r) => {
-                let rel = cqs::rel_display(&r.chunk.file, root);
-                format!(
-                    "{} ({}:{})",
-                    mermaid_escape(name),
-                    mermaid_escape(&rel),
-                    r.chunk.line_start
-                )
+    match (format, &output.path) {
+        (OutputFormat::Json, _) => {
+            crate::cli::json_envelope::emit_json(output)?;
+        }
+        (OutputFormat::Text, Some(hops)) if trivial => {
+            println!("{} and {} are the same function.", source, target);
+            let _ = hops;
+        }
+        (OutputFormat::Mermaid, Some(hops)) if trivial => {
+            let hop = &hops[0];
+            println!("graph TD");
+            if hop.file.is_empty() {
+                println!("    A[\"{}\"]", mermaid_escape(&hop.name));
+            } else {
+                println!(
+                    "    A[\"{} ({}:{})\"]",
+                    mermaid_escape(&hop.name),
+                    mermaid_escape(&hop.file),
+                    hop.line_start
+                );
             }
-            None => mermaid_escape(name),
-        };
-        let node_id = node_letter(i);
-        println!("    {}[\"{}\"]", node_id, label);
+        }
+        (OutputFormat::Text, Some(hops)) => {
+            let edges = hops.len().saturating_sub(1);
+            println!(
+                "Call path from {} to {} ({} hop{}):",
+                source.cyan(),
+                target.cyan(),
+                edges,
+                if edges == 1 { "" } else { "s" }
+            );
+            println!();
+            for (i, hop) in hops.iter().enumerate() {
+                let prefix = if i == 0 {
+                    "  ".to_string()
+                } else {
+                    "  \u{2192} ".to_string()
+                };
+                if hop.file.is_empty() {
+                    println!("{}{}", prefix, hop.name.cyan());
+                } else {
+                    println!(
+                        "{}{} ({}:{})",
+                        prefix,
+                        hop.name.cyan(),
+                        hop.file,
+                        hop.line_start
+                    );
+                }
+            }
+        }
+        (OutputFormat::Mermaid, Some(hops)) => {
+            println!("graph TD");
+            for (i, hop) in hops.iter().enumerate() {
+                let label = if hop.file.is_empty() {
+                    mermaid_escape(&hop.name)
+                } else {
+                    format!(
+                        "{} ({}:{})",
+                        mermaid_escape(&hop.name),
+                        mermaid_escape(&hop.file),
+                        hop.line_start
+                    )
+                };
+                println!("    {}[\"{}\"]", node_letter(i), label);
+            }
+            for i in 0..hops.len().saturating_sub(1) {
+                println!("    {} --> {}", node_letter(i), node_letter(i + 1));
+            }
+        }
+        // No path found (`output.path == None`).
+        (OutputFormat::Text, None) => {
+            println!(
+                "No call path found from {} to {} within depth {}.",
+                source.cyan(),
+                target.cyan(),
+                max_depth
+            );
+        }
+        (OutputFormat::Mermaid, None) => {
+            println!("graph TD");
+            println!(
+                "    %% No call path found from {} to {} within depth {}",
+                source, target, max_depth
+            );
+        }
     }
+    Ok(())
+}
 
-    // Generate edges
-    for i in 0..names.len().saturating_sub(1) {
-        println!("    {} --> {}", node_letter(i), node_letter(i + 1));
+/// Plain-text/mermaid trace fallback renderer (source kind mismatch). The
+/// core decided the fallback; for text the adapter re-runs
+/// `detect_fallback` (cheap indexed lookup) to print the source
+/// definition list with a "Source definitions:" heading.
+fn render_trace_fallback_text(source: &str, store: &Store<ReadOnly>) -> Result<()> {
+    let (chunks, fallback) = super::detect_fallback(store, source)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::trace(fk);
+        let lead = notes_text::trace_lead(fk, source);
+        super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Source definitions:");
     }
-
     Ok(())
 }
 
@@ -512,68 +555,6 @@ pub(crate) fn bfs_shortest_path(
         }
     }
     None
-}
-
-/// Polymorphic-routing kind-mismatch fallback for `cqs trace <source> <target>`.
-/// Same shape pattern as the impact / callers / callees / test-map
-/// fallbacks. JSON path emits `{kind, fallback_from: "trace", source,
-/// target, definitions, note}`; text path prints the lead, definitions,
-/// and redirect.
-///
-/// 8 args is intentional: each per-kind dispatcher (Const/Type/Module/
-/// Ambiguous) passes its kind label, JSON note, text lead, and text
-/// redirect — collapsing into a struct would just be 4 fields no caller
-/// reuses, so the `allow` is the simpler tradeoff.
-#[allow(clippy::too_many_arguments)]
-fn trace_kind_fallback(
-    source: &str,
-    target: &str,
-    chunks: &[ChunkSummary],
-    format: &OutputFormat,
-    kind_label: &str,
-    note: &str,
-    text_lead: &str,
-    text_redirect: &str,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Kind fallback called with no source hits — caller must classify before dispatching"
-    );
-    match format {
-        OutputFormat::Json => {
-            let definitions = super::chunks_to_definitions(chunks);
-            let payload = serde_json::json!({
-                "kind": kind_label,
-                "fallback_from": "trace",
-                "source": source,
-                "target": target,
-                "definitions": definitions,
-                "note": note,
-            });
-            crate::cli::json_envelope::emit_json(&payload)?;
-        }
-        OutputFormat::Text | OutputFormat::Mermaid => {
-            println!("{text_lead}");
-            println!();
-            println!("Source definitions:");
-            for c in chunks {
-                println!(
-                    "  {}:{}-{} ({} {})",
-                    cqs::normalize_path(&c.file),
-                    c.line_start,
-                    c.line_end,
-                    c.language,
-                    c.chunk_type
-                );
-                if !c.signature.is_empty() {
-                    println!("    {}", c.signature);
-                }
-            }
-            println!();
-            println!("{text_redirect}");
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -44,22 +44,23 @@ Rules:
 ## Phases
 
 ### Phase 0 — cap parity + helper hoist (branch `fix/kind-fallback-cap-parity`)
-- [ ] `chunk_to_definition_value` + cap consts hoisted to `graph/mod.rs`; all 6 graph commands + daemon use it
-- [ ] Per-command cap tests
-- Closes audit queue item 1. **In flight via implementer agent.**
+- [x] `chunk_to_definition_value` + cap consts hoisted to `graph/mod.rs`; all 6 graph commands + daemon use it
+- [x] Per-command cap tests
+- Closes audit queue item 1. **Merged; the cores now route every fallback through `chunks_to_definitions`.**
 
 ### Phase 1 — graph commands (pilot, 6 commands × 2 surfaces)
 Order: callers, callees (same file), deps, test_map, trace, impact (hardest: const/kind fallback variants).
-- [ ] `notes_text.rs` consts for all kind-fallback/redirect strings (closes CQ-V1.40-4)
-- [ ] Adopt `detect_kind_for_store` inside cores (closes CQ-V1.40-1/2, RM-V1.40-1: take `chunk_type` without full KindHit clones if trivial)
-- [ ] Unify dispatcher signatures via cores (closes API-V1.40-1); delete `cmd_impact_const_fallback` duplicate (CQ-V1.40-9)
-- [ ] Exhaustive `match` on Kind in cores — no `_ => {}` (closes EXT-V1.40-1)
-- [ ] Typed `KindFallbackOutput` + per-command output structs
-- [ ] Daemon `dispatch_*` for all 6 reduced to adapter calling the core (parity test: same Args → byte-identical Value on both surfaces)
-- [ ] Tests: dispatcher-level tests now call cores directly (closes TC-HAP-V1.40-4); daemon kind-fallback tests (TC-ADV-V1.40-4 partial)
-- Gate: full suite green; `cqs eval` agg R@K within noise of pre-refactor (fixture sensitivity check); CHANGELOG entry.
+- [x] `notes_text.rs` consts for all kind-fallback/redirect strings — `graph/notes_text.rs` holds per-(command,kind) `note` + `text_redirect` consts and templated `*_lead` formatters; CLI and daemon reference the same strings.
+- [x] Adopt `detect_kind_for_store` inside cores — `graph/mod.rs::detect_fallback` is the single classification site (calls the now-generic `detect_kind_for_store`); the 8 inlined `lookup_by_name`+`classify_hits` incantations are gone.
+- [x] Unify dispatcher signatures via cores — every `dispatch_*` is a thin adapter over a `*_core`; deleted the hand-rolled const-fallback duplicate in impact.
+- [x] Exhaustive `match` on `Kind` in `fallback_kind` — every variant named, no `_ => {}`.
+- [x] Typed `KindFallbackOutput` (shared) + per-command core-output enums (trace keeps its own `source`/`target`-shaped fallback).
+- [x] Daemon `dispatch_*` for all 6 reduced to adapter calling the core; deleted `try_kind_fallback` / `KindNotes` / `build_kind_fallback_value`.
+- [x] Parity tests: 6 tests (one per command) assert daemon adapter == direct core `serde_json::Value` for happy + const-fallback inputs. Hand-rolled-JSON shape tests migrated to the typed `KindFallbackOutput` / `ImpactCoreOutput` builders.
+- Gate: targeted graph + handler + kind tests green; CHANGELOG entry added. Full-suite + `cqs eval` fixture-sensitivity check deferred to the orchestrator's post-collection run (cores produce byte-stable JSON; no retrieval path touched).
 
-### Phase 2 — search/io commands (search/query, read, context, gather, scout, onboard, brief, notes, diff, blame, drift, reconstruct)
+### Phase 2 — search/io commands
+- [ ] Request-scoped config pattern: fold the BFS-ceiling env caps (`CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`) into Args/ctx so the core-purity invariant (no env reads) becomes literally true for the Phase 1 cores too (search/query, read, context, gather, scout, onboard, brief, notes, diff, blame, drift, reconstruct)
 - [ ] Cores + typed outputs (unblocks the `TODO(json-schema)` in query.rs — requires display module typed structs; do display first)
 - [ ] `display_unified_results_json` replaced by `SearchOutput` struct
 - Gate: same as Phase 1 + eval guard (search path touched — paired test+dev eval, both within noise).
