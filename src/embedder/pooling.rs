@@ -29,23 +29,6 @@ pub(crate) fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
     &text[..end]
 }
 
-/// Pad 2D sequences to a fixed length.
-///
-/// Production embed/rerank uses [`pad_2d_i64_from_encodings`], which fills the
-/// `Array2` directly from tokenizer encodings. This helper is for tests +
-/// callers that have a `&[Vec<i64>]` already in hand.
-#[allow(dead_code)]
-pub(crate) fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
-    let batch_size = inputs.len();
-    let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
-    for (i, seq) in inputs.iter().enumerate() {
-        for (j, &val) in seq.iter().take(max_len).enumerate() {
-            arr[[i, j]] = val;
-        }
-    }
-    arr
-}
-
 /// Build the padded `Array2<i64>` directly from tokenizer encodings, with no
 /// per-batch `Vec<Vec<i64>>` intermediate.
 ///
@@ -189,4 +172,77 @@ pub(crate) fn last_token_pool(hidden: &Array3<f32>, attention_mask: &Array2<i64>
             hidden.slice(ndarray::s![i, last_idx, ..]).to_vec()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal `tokenizers::Encoding` carrying `ids` (all sibling
+    /// fields zero/empty at matching length). The padding tests below only
+    /// exercise the `extract` field selector via `get_ids`.
+    fn encoding_with_ids(ids: &[u32]) -> tokenizers::Encoding {
+        let n = ids.len();
+        tokenizers::Encoding::new(
+            ids.to_vec(),
+            vec![0; n],
+            vec![String::new(); n],
+            vec![None; n],
+            vec![(0, 0); n],
+            vec![0; n],
+            vec![1; n],
+            vec![],
+            Default::default(),
+        )
+    }
+
+    // ===== pad_2d_i64_from_encodings padding-semantics tests =====
+    //
+    // Ported from the former `pad_2d_i64` tests in `embedder/core.rs` when
+    // that helper (test-only, no production caller) was deleted. These pin
+    // the semantics production actually relies on: pad-value placement
+    // after each sequence, `take(max_len)` truncation, empty-batch shape,
+    // and custom pad values.
+
+    #[test]
+    fn test_pad_2d_from_encodings_basic() {
+        let encodings = vec![encoding_with_ids(&[1, 2, 3]), encoding_with_ids(&[4, 5])];
+        let result = pad_2d_i64_from_encodings(&encodings, |e| e.get_ids(), 4, 0);
+        assert_eq!(result.shape(), &[2, 4]);
+        assert_eq!(result[[0, 0]], 1);
+        assert_eq!(result[[0, 1]], 2);
+        assert_eq!(result[[0, 2]], 3);
+        assert_eq!(result[[0, 3]], 0); // padded
+        assert_eq!(result[[1, 0]], 4);
+        assert_eq!(result[[1, 1]], 5);
+        assert_eq!(result[[1, 2]], 0); // padded
+        assert_eq!(result[[1, 3]], 0); // padded
+    }
+
+    #[test]
+    fn test_pad_2d_from_encodings_truncates() {
+        let encodings = vec![encoding_with_ids(&[1, 2, 3, 4, 5])];
+        let result = pad_2d_i64_from_encodings(&encodings, |e| e.get_ids(), 3, 0);
+        assert_eq!(result.shape(), &[1, 3]);
+        assert_eq!(result[[0, 0]], 1);
+        assert_eq!(result[[0, 1]], 2);
+        assert_eq!(result[[0, 2]], 3);
+        // 4 and 5 are truncated
+    }
+
+    #[test]
+    fn test_pad_2d_from_encodings_empty_input() {
+        let encodings: Vec<tokenizers::Encoding> = vec![];
+        let result = pad_2d_i64_from_encodings(&encodings, |e| e.get_ids(), 5, 0);
+        assert_eq!(result.shape(), &[0, 5]);
+    }
+
+    #[test]
+    fn test_pad_2d_from_encodings_custom_pad_value() {
+        let encodings = vec![encoding_with_ids(&[1])];
+        let result = pad_2d_i64_from_encodings(&encodings, |e| e.get_ids(), 3, -1);
+        assert_eq!(result[[0, 0]], 1);
+        assert_eq!(result[[0, 1]], -1);
+        assert_eq!(result[[0, 2]], -1);
+    }
 }

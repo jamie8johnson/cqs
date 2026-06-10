@@ -38,10 +38,6 @@ pub(crate) fn create_context_with_runtime(
         let (s, _root, _cqs_dir) = open_project_store_readonly()?;
         s
     };
-    // Cache the store's runtime Arc so subsequent re-opens and lazily-opened
-    // caches stay on the same pool.
-    let runtime = std::sync::Arc::clone(store.runtime());
-
     // Capture initial index.db identity (inode/size/mtime on unix).
     // Stat the slot-aware index path, not `cqs_dir/index.db` directly: a
     // slot-migrated project keeps the live DB at
@@ -70,51 +66,18 @@ pub(crate) fn create_context_with_runtime(
     )
     .apply_env_overrides();
 
-    Ok(BatchContext {
-        // Mutex<Arc<Store>> so `checkout_view` can clone the Arc out cheaply.
-        store: Mutex::new(Arc::new(store)),
-        runtime,
-        embedder: Arc::new(OnceLock::new()),
-        config: RefCell::new(None),
-        reranker: Arc::new(OnceLock::new()),
-        audit_state: RefCell::new(None),
-        hnsw: RefCell::new(None),
-        base_hnsw: RefCell::new(None),
-        call_graph: RefCell::new(None),
-        test_chunks: RefCell::new(None),
-        file_set: RefCell::new(None),
-        notes_cache: RefCell::new(None),
-        splade_encoder: Arc::new(OnceLock::new()),
-        splade_index: Arc::new(Mutex::new(None)),
-        refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
+    // `BatchContext::new` defaults the watch-loop handles (snapshot /
+    // reconcile signal / fresh notifier) to the unwired no-op shapes —
+    // `cmd_batch` and one-shot `create_context` callers don't run a watch
+    // loop, so those stay at their defaults for the whole session, while
+    // `watch_and_serve` swaps shared handles in via the `adopt_*` methods.
+    Ok(BatchContext::new(
+        store,
         root,
         cqs_dir,
         model_config,
-        index_id: Cell::new(index_id),
-        // None means the first check runs unconditionally; the 100ms
-        // rate-limit kicks in only after the first successful stat.
-        last_staleness_check: Cell::new(None),
-        error_count: Arc::new(AtomicU64::new(0)),
-        last_command_time: Cell::new(Instant::now()),
-        // `started_at` is captured here so `uptime_secs` in the ping response
-        // measures from BatchContext creation — the meaningful event for the
-        // daemon (the embedder load may be later).
-        started_at: Instant::now(),
-        query_count: Arc::new(AtomicU64::new(0)),
-        // `cmd_batch` and one-shot `create_context` callers don't run a watch
-        // loop, so the snapshot stays at `unknown` for their whole lifetime.
-        // `watch_and_serve` clones this Arc into the watch loop and overwrites
-        // it on every tick.
-        watch_snapshot: cqs::watch_status::shared_unknown(),
-        // Outside `cqs watch --serve` no listener is plugged in, so flipping
-        // this from a stray client is harmless (the watch loop that would
-        // consume the signal simply isn't running).
-        reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
-        // Default no-op notifier. Outside `cqs watch --serve` the watch loop
-        // never calls `set_fresh`, so a stray `wait_fresh` request hits the
-        // caller's deadline naturally.
-        fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
-    })
+        index_id,
+    ))
 }
 
 /// Create a BatchContext for testing with a temporary store.
@@ -135,47 +98,18 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         .map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
     let index_id = DbFileIdentity::from_path(&index_path);
-    // Cache the runtime Arc so test contexts re-open on the same pool.
-    let runtime = std::sync::Arc::clone(store.runtime());
 
-    Ok(BatchContext {
-        store: Mutex::new(Arc::new(store)),
-        runtime,
-        embedder: Arc::new(OnceLock::new()),
-        config: RefCell::new(None),
-        reranker: Arc::new(OnceLock::new()),
-        audit_state: RefCell::new(None),
-        hnsw: RefCell::new(None),
-        base_hnsw: RefCell::new(None),
-        call_graph: RefCell::new(None),
-        test_chunks: RefCell::new(None),
-        file_set: RefCell::new(None),
-        notes_cache: RefCell::new(None),
-        splade_encoder: Arc::new(OnceLock::new()),
-        splade_index: Arc::new(Mutex::new(None)),
-        refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
+    // Same constructor as production (`create_context_with_runtime`) so
+    // ping-handler tests see realistic counter / uptime values, and tests
+    // that exercise the freshness / reconcile APIs replace the default
+    // unwired handles via the fields directly.
+    Ok(BatchContext::new(
+        store,
         root,
-        cqs_dir: cqs_dir.to_path_buf(),
-        model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
-        index_id: Cell::new(index_id),
-        last_staleness_check: Cell::new(None),
-        error_count: Arc::new(AtomicU64::new(0)),
-        last_command_time: Cell::new(Instant::now()),
-        // Same fields as production constructor — keep parity so ping-handler
-        // tests against `create_test_context` see realistic counter / uptime
-        // values.
-        started_at: Instant::now(),
-        query_count: Arc::new(AtomicU64::new(0)),
-        // Tests get the same `unknown` initial snapshot. Tests that exercise
-        // the freshness API replace it via the field directly.
-        watch_snapshot: cqs::watch_status::shared_unknown(),
-        // Tests get an unwired reconcile signal too. Tests that need to assert
-        // the daemon flipped it pull the field clone before invoking dispatch.
-        reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
-        // Tests get a fresh notifier; freshness-API tests pull the field clone
-        // and call `set_fresh` directly.
-        fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
-    })
+        cqs_dir.to_path_buf(),
+        ModelConfig::resolve(None, None).apply_env_overrides(),
+        index_id,
+    ))
 }
 
 /// Entry point for `cqs batch`.

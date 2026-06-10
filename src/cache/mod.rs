@@ -131,14 +131,9 @@ impl CachePurpose {
     }
 }
 
-/// TODO: both [`EmbeddingCache::open_with_runtime`] and
-/// [`QueryCache::open_with_runtime`] share ~90 lines of parent-dir prep,
-/// runtime fallback, pool open, schema create, and 0o600 chmod loop, with
-/// only `busy_timeout` (30000 vs 15000 ms) and the schema SQL differing. A
-/// full extraction would yield three private helpers (`prepare_cache_dir_perms`,
-/// `apply_db_file_perms`, `connect_cache_pool(path, busy_ms, runtime, schema_sql)`)
-/// collapsing each `open_with_runtime` to ~30 lines. Touches both opens + their
-/// tests + WAL/SHM filename quirk handling in `apply_db_file_perms`.
+/// Restrict the DB file and its WAL/SHM sidecars to 0o600. Best-effort:
+/// chmod failures (NFS, read-only mounts, filesystems without unix
+/// permissions) are logged and skipped rather than failing the open.
 #[cfg(unix)]
 fn apply_db_file_perms(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -163,6 +158,120 @@ fn apply_db_file_perms(path: &Path) {
 
 #[cfg(not(unix))]
 fn apply_db_file_perms(_path: &Path) {}
+
+/// Shared pool-open skeleton for [`EmbeddingCache::open_with_runtime`] and
+/// [`QueryCache::open_with_runtime`]: parent-dir prep (0o700), runtime
+/// fallback, WAL/Normal connect options honouring `CQS_BUSY_TIMEOUT_MS`, the
+/// 0o077 umask wrap around pool creation, the per-connection
+/// `wal_autocheckpoint` pragma, schema initialization, and the 0o600 chmod
+/// loop on the DB triplet.
+///
+/// `busy_timeout_default_ms` is the per-cache default when
+/// `CQS_BUSY_TIMEOUT_MS` is unset (30 s embedding cache / 15 s query cache —
+/// rationale at the call sites). `init_schema` runs on the freshly opened
+/// pool inside the umask window so schema writes (and any sidecar files they
+/// create) are born private.
+fn connect_cache_pool<F, Fut>(
+    path: &Path,
+    busy_timeout_default_ms: u64,
+    runtime: Option<Arc<tokio::runtime::Runtime>>,
+    init_schema: F,
+) -> Result<(sqlx::SqlitePool, Arc<tokio::runtime::Runtime>), CacheError>
+where
+    F: FnOnce(sqlx::SqlitePool) -> Fut,
+    Fut: std::future::Future<Output = Result<(), sqlx::Error>>,
+{
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Best-effort parent chmod. On NFS / read-only mounts /
+            // filesystems without unix permissions this fails, but the
+            // cache itself is still usable — log and continue instead of
+            // refusing to open. Mirrors the DB-file chmod warn arm in
+            // `apply_db_file_perms`.
+            if let Err(e) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "Failed to set cache parent dir permissions to 0o700"
+                );
+            }
+        }
+    }
+
+    let rt: Arc<tokio::runtime::Runtime> = if let Some(rt) = runtime {
+        rt
+    } else {
+        Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| CacheError::Io(std::io::Error::other(e)))?,
+        )
+    };
+
+    // Use SqliteConnectOptions to avoid URL-encoding issues with special
+    // paths. Honour CQS_BUSY_TIMEOUT_MS like the main Store pool so the
+    // caches don't surrender while the store still waits.
+    let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(busy_timeout_from_env(busy_timeout_default_ms))
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+
+    // Tighten umask to 0o077 around pool creation so the DB (and WAL/SHM
+    // sidecars) are born 0o600, not the user's umask default (0o644).
+    // Without this, there is a window between SQLite first-write and
+    // `apply_db_file_perms` below where the sidecar files are
+    // world-readable. SAFETY: `libc::umask` is process-global; we do this
+    // on a synchronous open path before the pool spins up its worker,
+    // restoring before any other file-creating code runs.
+    #[cfg(unix)]
+    let prev_umask = unsafe { libc::umask(0o077) };
+    // Cap the on-disk WAL via after_connect so every connection (including
+    // the read-only checkout acquired for statistics) carries the ceiling.
+    // Same default and env override as the main store.
+    let wal_pragma = wal_autocheckpoint_pragma();
+    let pool = rt.block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1) // single worker thread can only use 1 connection
+            .idle_timeout(std::time::Duration::from_secs(30)) // release idle connections
+            .after_connect(move |conn, _meta| {
+                let wal = wal_pragma.clone();
+                Box::pin(async move {
+                    sqlx::query(sqlx::AssertSqlSafe(wal.as_str()))
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect_with(connect_opts)
+            .await?;
+
+        init_schema(pool.clone()).await?;
+
+        Ok::<_, sqlx::Error>(pool)
+    })?;
+    // Restore the previous umask now that pool creation is done. On the
+    // `?` error path above this is skipped, but the process exits (or `?`
+    // propagates) before any other umask-sensitive code runs. The success
+    // path is the common case and is correctly restored here.
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(prev_umask);
+    }
+
+    // Restrict DB + WAL/SHM sidecar files to 0o600. Belt-and-suspenders
+    // alongside the umask wrap above so a future refactor that drops the
+    // umask doesn't silently regress.
+    apply_db_file_perms(path);
+
+    Ok((pool, rt))
+}
 
 mod embedding_cache;
 mod query_cache;

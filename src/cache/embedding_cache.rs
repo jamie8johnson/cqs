@@ -66,80 +66,13 @@ impl EmbeddingCache {
     ) -> Result<Self, CacheError> {
         let _span = tracing::info_span!("embedding_cache_open", path = %path.display()).entered();
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                // Best-effort parent chmod. On NFS / read-only mounts /
-                // filesystems without unix permissions this fails, but the
-                // cache itself is still usable — log and continue instead of
-                // refusing to open. Mirrors the DB-file chmod warn arm below.
-                if let Err(e) =
-                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                {
-                    tracing::warn!(
-                        path = %parent.display(),
-                        error = %e,
-                        "Failed to set embedding cache parent dir permissions to 0o700"
-                    );
-                }
-            }
-        }
-
-        let rt: Arc<tokio::runtime::Runtime> = if let Some(rt) = runtime {
-            rt
-        } else {
-            Arc::new(
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| CacheError::Io(std::io::Error::other(e)))?,
-            )
-        };
-
-        // Use SqliteConnectOptions to avoid URL-encoding issues with special
-        // paths. Honour CQS_BUSY_TIMEOUT_MS like the main Store pool so the
-        // cache doesn't surrender while the store still waits. The 30s default
-        // gives transient WAL-checkpoint contention room (seen on long-running
-        // WSL `cqs index` runs as `(code: 5) database is locked`) without
-        // making real deadlocks invisible.
-        let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(busy_timeout_from_env(30_000))
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
-
-        // Tighten umask to 0o077 around pool creation so the DB (and WAL/SHM
-        // sidecars) are born 0o600, not the user's umask default (0o644).
-        // Without this, there is a window between SQLite first-write and
-        // `apply_db_file_perms` below where the sidecar files are
-        // world-readable. SAFETY: `libc::umask` is process-global; we do this
-        // on a synchronous open path before the pool spins up its worker,
-        // restoring before any other file-creating code runs.
-        #[cfg(unix)]
-        let prev_umask = unsafe { libc::umask(0o077) };
-        // Cap the on-disk WAL via after_connect so every connection (including
-        // the read-only checkout acquired for statistics) carries the ceiling.
-        // Same default and env override as the main store.
-        let wal_pragma = wal_autocheckpoint_pragma();
-        let pool = rt.block_on(async {
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(1) // single worker thread can only use 1 connection
-                .idle_timeout(std::time::Duration::from_secs(30)) // release idle connections
-                .after_connect(move |conn, _meta| {
-                    let wal = wal_pragma.clone();
-                    Box::pin(async move {
-                        sqlx::query(sqlx::AssertSqlSafe(wal.as_str()))
-                            .execute(&mut *conn)
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .connect_with(connect_opts)
-                .await?;
-
+        // Pool-open skeleton (parent-dir prep, runtime fallback, umask wrap,
+        // WAL pragma, 0o600 chmod) is shared with `QueryCache` via
+        // `connect_cache_pool`. The 30s default busy timeout gives transient
+        // WAL-checkpoint contention room (seen on long-running WSL `cqs index`
+        // runs as `(code: 5) database is locked`) without making real
+        // deadlocks invisible.
+        let (pool, rt) = connect_cache_pool(path, 30_000, runtime, |pool| async move {
             // PRIMARY KEY includes `purpose` so the same
             // (content_hash, model_fingerprint) can hold both the post-
             // enrichment `embedding` and the raw `embedding_base` vectors
@@ -225,21 +158,8 @@ impl EmbeddingCache {
             .execute(&pool)
             .await?;
 
-            Ok::<_, sqlx::Error>(pool)
+            Ok(())
         })?;
-        // Restore the previous umask now that pool creation is done. On the
-        // `?` error path above this is skipped, but the process exits (or `?`
-        // propagates) before any other umask-sensitive code runs. The success
-        // path is the common case and is correctly restored here.
-        #[cfg(unix)]
-        unsafe {
-            libc::umask(prev_umask);
-        }
-
-        // Shared 0o600 chmod loop on the DB triplet — see helper docs (kept as
-        // belt-and-suspenders against future refactors that drop the umask
-        // wrap above).
-        apply_db_file_perms(path);
 
         // Filter `0` so the env-var matches `QueryCache`'s semantic ("0 is
         // invalid → fall back to default"). Without the filter, setting

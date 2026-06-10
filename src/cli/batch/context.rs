@@ -54,8 +54,8 @@ pub(crate) struct BatchContext {
     // `OnceLock<Arc<Embedder>>` so the watch outer scope can hand the same
     // Embedder instance down into the daemon thread — without sharing, the
     // BatchContext and the watch loop would each hold a ~500 MB ONNX session.
-    // `BatchContext::new_with_embedder` accepts a pre-built Arc; the CLI path
-    // creates a fresh one lazily via `warm`.
+    // `BatchContext::adopt_embedder` installs a pre-built Arc after
+    // `BatchContext::new`; the CLI path creates a fresh one lazily via `warm`.
     //
     // Wrapped in `Arc<...>` so `BatchView` can carry a clone of the same
     // `OnceLock`; init through the view propagates to BatchContext and any
@@ -170,6 +170,66 @@ pub(crate) struct BatchContext {
 /// method to avoid noise.
 #[allow(dead_code)]
 impl BatchContext {
+    /// Construct a `BatchContext` around an already-opened read-only store.
+    ///
+    /// The single construction path for both the production factory
+    /// (`create_context_with_runtime`) and the test fixture
+    /// (`create_test_context`), so the cache/counter invariants live in one
+    /// place: all lazy caches start empty, counters start at zero, and the
+    /// watch-loop handles (`watch_snapshot` / `reconcile_signal` /
+    /// `fresh_notifier`) default to the unwired no-op shapes — the daemon
+    /// thread swaps real ones in via the `adopt_*` methods before serving.
+    ///
+    /// The runtime is captured from the store so the re-opens in
+    /// [`Self::check_index_staleness`] and [`Self::invalidate`] stay on the
+    /// same worker pool instead of spinning up a transient current-thread
+    /// runtime per index swap.
+    pub(super) fn new(
+        store: Store<ReadOnly>,
+        root: PathBuf,
+        cqs_dir: PathBuf,
+        model_config: cqs::embedder::ModelConfig,
+        index_id: Option<DbFileIdentity>,
+    ) -> Self {
+        let runtime = Arc::clone(store.runtime());
+        Self {
+            // Mutex<Arc<Store>> so `checkout_view` can clone the Arc out
+            // cheaply.
+            store: Mutex::new(Arc::new(store)),
+            runtime,
+            embedder: Arc::new(OnceLock::new()),
+            config: RefCell::new(None),
+            reranker: Arc::new(OnceLock::new()),
+            audit_state: RefCell::new(None),
+            hnsw: RefCell::new(None),
+            base_hnsw: RefCell::new(None),
+            call_graph: RefCell::new(None),
+            test_chunks: RefCell::new(None),
+            file_set: RefCell::new(None),
+            notes_cache: RefCell::new(None),
+            splade_encoder: Arc::new(OnceLock::new()),
+            splade_index: Arc::new(Mutex::new(None)),
+            refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
+            root,
+            cqs_dir,
+            model_config,
+            index_id: Cell::new(index_id),
+            // None means the first staleness check runs unconditionally; the
+            // rate-limit kicks in only after the first successful stat.
+            last_staleness_check: Cell::new(None),
+            error_count: Arc::new(AtomicU64::new(0)),
+            last_command_time: Cell::new(Instant::now()),
+            // `started_at` is captured here so `uptime_secs` in the ping
+            // response measures from BatchContext creation — the meaningful
+            // event for the daemon (the embedder load may be later).
+            started_at: Instant::now(),
+            query_count: Arc::new(AtomicU64::new(0)),
+            watch_snapshot: cqs::watch_status::shared_unknown(),
+            reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
+            fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
+        }
+    }
+
     /// Check idle timeout and clear ONNX sessions if enough time has passed.
     ///
     /// Call this at the start of each command. Clears embedder and reranker
