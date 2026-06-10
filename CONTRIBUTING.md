@@ -240,7 +240,10 @@ src/
       train/      - export_model, plan, task, train_data, train_pairs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
-      mod.rs      - BatchContext, vector index builder, main loop
+      mod.rs      - Module root: wire/identity types (DbFileIdentity, CachedReload), vector index builder, evict + JSON-serialization helpers, re-exports, main test suite (split #1691)
+      context.rs  - BatchContext struct + impl: shared Store/Embedder/index, per-name reference cache, staleness invalidation (split #1691)
+      view.rs     - BatchView snapshot (owned-Arc clones), checkout_view_from_arc/dispatch_via_view glue, SearchCtx impl, refs-LRU helpers (split #1691)
+      session.rs  - Session entry points: create_context, cmd_batch stdin line-loop, create_test_context (split #1691)
       commands.rs - BatchInput/BatchCmd parsing, dispatch router
       handlers/ - Daemon dispatch adapters (one per command); each `dispatch_*` is a thin wrapper that parses the wire request into the command's typed `*Args` and calls the shared `*_core`
         mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs, dispatch_tests.rs (cross-surface parity tests: daemon dispatch == direct core)
@@ -307,7 +310,10 @@ src/
     markdown/   - Heading-based markdown parser
       mod.rs, headings.rs, code_blocks.rs, tables.rs
   embedder/      - ONNX embedding models (configurable: embeddinggemma-300m default since v1.35.0; bge-large, bge-large-ft, E5-base, v9-200k, nomic-coderank-137M, qwen3-embedding-4b, qwen3-embedding-8b, custom ONNX presets)
-    mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection, ExecutionProvider enum (CUDA/TensorRT/CPU; CoreML/ROCm cfg-gated per #956 Phase A)
+    mod.rs      - Module root: error/value types (EmbedderError, Embedding, EmbeddingDimensionError, ExecutionProvider enum — CUDA/TensorRT/CPU; CoreML/ROCm cfg-gated per #956 Phase A), shared consts, re-exports, unit tests (split #1691)
+    core.rs     - Embedder struct + impl: session lifecycle, embed()/embed_query()/embed_batch(), runtime dimension detection, model_fingerprint() (split #1691)
+    download.rs - Model + tokenizer download / fingerprint helpers (ensure_model, verify_checksum) (split #1691)
+    pooling.rs  - Tensor padding (pad_2d_i64*), L2 normalize, mean/cls/last-token pooling, truncate_at_char_boundary (split #1691)
     models.rs   - ModelConfig struct, built-in presets (embeddinggemma-300m default, bge-large, bge-large-ft, e5-base, v9-200k, nomic-coderank, qwen3-embedding-4b, qwen3-embedding-8b), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection — per-backend cfg-blocks; CUDA/TensorRT always-on, CoreML/ROCm scaffolded via `ep-coreml`/`ep-rocm` features (#956 Phase A)
   reranker.rs   - Cross-encoder re-ranking (Reranker trait + OnnxReranker / NoopReranker / LlmReranker impls; default ms-marco-MiniLM-L-6-v2)
@@ -338,7 +344,10 @@ src/
     naming.rs   - Title extraction, kebab-case filename generation
     cleaning.rs - Extensible tag-based cleaning rules (7 rules)
     webhelp.rs  - Web help site detection and multi-page merge
-  cache.rs      - Per-project embedding cache `.cqs/embeddings_cache.db` (SQLite, keyed by content_hash + model_id; #1105)
+  cache/        - Per-project embedding cache `.cqs/embeddings_cache.db` (SQLite, keyed by content_hash + model_id; #1105) (split #1691)
+    mod.rs            - Shared types (CacheError, CacheStats, PerModelStats, CachePurpose), evict locks, perms/WAL helpers, re-exports, shared-runtime tests
+    embedding_cache.rs - EmbeddingCache struct + impl (read/write batch, evict, checkpoint_wal)
+    query_cache.rs    - QueryCache struct + impl (persistent query-embedding cache)
   slot/         - Named slots — side-by-side full indexes under `.cqs/slots/<name>/` (#1105)
     mod.rs      - slot_dir(), resolve_slot_name() (CQS_SLOT > .cqs/active_slot > "default"), one-shot legacy migration
   cagra.rs      - GPU-accelerated CAGRA index (optional), save/load via cuvsCagraSerialize

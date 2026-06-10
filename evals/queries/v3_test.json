@@ -2116,7 +2116,7 @@
           "gold_chunk": {
             "id": null,
             "name": "invalidate_mutable_caches",
-            "origin": "src/cli/batch/mod.rs",
+            "origin": "src/cli/batch/context.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 373,
@@ -2135,7 +2135,7 @@
           "gold_chunk": {
             "id": null,
             "name": "invalidate_mutable_caches",
-            "origin": "src/cli/batch/mod.rs",
+            "origin": "src/cli/batch/context.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 373,
@@ -2155,7 +2155,7 @@
       "gold_chunk": {
         "id": null,
         "name": "invalidate_mutable_caches",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "method",
         "line_start": 373,
@@ -3141,7 +3141,7 @@
           "gold_chunk": {
             "id": null,
             "name": "Embedder",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "struct",
             "line_start": 217,
@@ -3160,7 +3160,7 @@
           "gold_chunk": {
             "id": null,
             "name": "Embedder",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "struct",
             "line_start": 217,
@@ -3180,7 +3180,7 @@
       "gold_chunk": {
         "id": null,
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "struct",
         "line_start": 217,
@@ -3979,7 +3979,7 @@
           "gold_chunk": {
             "id": null,
             "name": "evict",
-            "origin": "src/cache.rs",
+            "origin": "src/cache/embedding_cache.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 321,
@@ -3998,7 +3998,7 @@
           "gold_chunk": {
             "id": null,
             "name": "evict",
-            "origin": "src/cache.rs",
+            "origin": "src/cache/embedding_cache.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 321,
@@ -4018,7 +4018,7 @@
       "gold_chunk": {
         "id": null,
         "name": "evict",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
         "line_start": 321,
