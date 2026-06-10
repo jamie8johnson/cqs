@@ -36,7 +36,7 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
 
 3. **Create team**: One team per batch (`audit-batch-N`)
 
-4. **Spawn teammates**: One per category. Use `model: "opus"` for every auditor — sonnet produces lower-quality judgments and haiku misses subtle findings. The per-category scope keeps each agent focused enough that opus cost is reasonable.
+4. **Spawn teammates**: One per category. Use `model: "fable"` for every auditor (opus is an acceptable alternative) — the 2026-06-10 review/fix campaign showed Fable at or above opus quality on exactly this kind of judgment work (15/15 review findings confirmed, premise-drift catches, empirical hypothesis correction). Sonnet produces lower-quality judgments and haiku misses subtle findings. The per-category scope keeps each agent focused enough that frontier-model cost is reasonable.
 
 5. **Each teammate prompt must include**:
    - Their category scope (from table below)
@@ -57,13 +57,13 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
    - P4: Hard or low impact → create issues for hard items; fix trivial ones inline (doc comments, one-liners, undocumented edge cases)
    - **Write triage to `docs/audit-triage.md`** — fresh file with P1-P4 tables (include Status column). This survives context compaction.
 
-8. **Generate fix prompts**: For each P1, P2, and P3 finding, spawn opus agents to (P4 trivials get prompts too; hard P4s get issue descriptions):
+8. **Generate fix prompts**: For each P1, P2, and P3 finding, spawn fable agents to (P4 trivials get prompts too; hard P4s get issue descriptions):
    - Read the actual source file at the stated line numbers
    - Write a self-contained fix prompt with: exact file path, current code verbatim, replacement code, one-line "why"
    - Group related findings (e.g., stale doc references) into a single prompt
    - Save to `docs/audit-fix-prompts.md`
 
-9. **Review fix prompts**: Spawn a second opus agent to verify each prompt against the actual source:
+9. **Review fix prompts**: Spawn a second fable agent to verify each prompt against the actual source:
    - Does the "current code" match what's really in the file? (catches line drift)
    - Does the fix compile? (check types, imports, API existence)
    - Are there any missing edge cases?
