@@ -3,9 +3,10 @@
 pub(crate) mod gather;
 mod neighbors;
 mod onboard;
-mod query;
+pub(crate) mod query;
 mod related;
 mod scout;
+pub(crate) mod search_ctx;
 mod similar;
 mod where_cmd;
 

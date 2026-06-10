@@ -2,17 +2,23 @@
 //!
 //! Executes semantic search queries.
 //!
-//! ## Command-core split (Phase 2a)
+//! ## Command-core split (Phase 2a/2b)
 //!
 //! [`query_core`] owns the surface-agnostic search logic for the project and
 //! name-only paths: routing/classification, embedding, search invocation, and
 //! assembly into the typed [`QueryOutput`]. It never prints, never reads env
-//! posture, and never branches on its surface — the CLI adapter [`cmd_query`]
-//! renders the result (text or JSON via the [`crate::cli::display`] typed
-//! structs) and owns the `NoResults` exit code. The `--ref`-scoped and
-//! `--include-refs` paths stay in the adapter for now (see the
-//! `TODO(phase-2b)` markers) because their reference-index resolution and
-//! tagged-result shape don't yet share the core's `UnifiedResult` model.
+//! posture, and never branches on its surface — it takes a
+//! [`search_ctx::SearchCtx`], so both the CLI ([`cmd_query`]) and the daemon
+//! (`dispatch_search`) drive the same core (Phase 2b). The CLI adapter renders
+//! the result (text or JSON via the [`crate::cli::display`] typed structs) and
+//! owns the `NoResults` exit code.
+//!
+//! The `--ref`-scoped and `--include-refs` paths stay in the adapter: their
+//! reference-index resolution needs config load + multi-store fan-out, which a
+//! single-store `SearchCtx` doesn't model, so core-extraction is not
+//! applicable (Phase 2b ref-path decision). They still serialize through the
+//! shared [`display`] schema, so reference results carry the same per-result
+//! shape as project results.
 
 use std::collections::HashMap;
 
@@ -22,6 +28,7 @@ use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, Embedding, Pattern, SearchFilter, Store};
 
+use crate::cli::commands::search::search_ctx;
 use crate::cli::{display, signal, staleness, Cli};
 
 // ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
@@ -82,6 +89,25 @@ pub(crate) struct QueryArgs {
     /// A wire/MCP caller that always serializes should set the per-result
     /// overhead constant; the `#[serde(default)]` value is 0.
     pub json_overhead: usize,
+    /// Adaptive-routing posture, resolved once at the adapter boundary.
+    ///
+    /// The CLI suppresses classification when an explicit strategy flag
+    /// (`--rrf` / `--rerank`) is set, so the user's flag wins. The daemon
+    /// always classifies — `cqs search` is the agent-facing surface where
+    /// per-category routing is the whole point — so it sets this `true` to keep
+    /// the router live even alongside `--rrf` / `--rerank`. Folding the
+    /// difference into a field (not branching logic) is what lets one core
+    /// serve both surfaces.
+    pub always_route: bool,
+    /// Whether the `NameOnly` routing strategy tries an FTS-by-name lookup
+    /// first and only falls back to dense on zero hits.
+    ///
+    /// The CLI keeps this `true` (its historical behavior: a `NameOnly`-routed
+    /// query short-circuits to `search_by_name`). The daemon sets it `false` —
+    /// `dispatch_search` never had the FTS-first branch, it always ran the dense
+    /// hybrid path for non-`--name-only` queries — so the core reproduces the
+    /// daemon's exact retrieval when driven from the wire.
+    pub fts_first: bool,
 }
 
 impl Default for QueryArgs {
@@ -109,6 +135,10 @@ impl Default for QueryArgs {
             expand_parent: false,
             force_base_index: false,
             json_overhead: 0,
+            // CLI defaults: classification is gated on explicit flags, and the
+            // NameOnly strategy tries FTS-by-name first.
+            always_route: false,
+            fts_first: true,
         }
     }
 }
@@ -143,6 +173,9 @@ impl QueryArgs {
             } else {
                 0
             },
+            // CLI semantics: explicit-flag classification gating + FTS-first.
+            always_route: false,
+            fts_first: true,
         }
     }
 }
@@ -203,15 +236,12 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 /// than printing or exiting — the adapter maps empty to the `NoResults` exit
 /// code. Reads no env: the base-index override arrives via
 /// [`QueryArgs::force_base_index`].
-pub(crate) fn query_core(
-    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
-    args: &QueryArgs,
-) -> Result<QueryOutput> {
+pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> Result<QueryOutput> {
     let query = args.query.as_str();
     let _span = tracing::info_span!("query_core", query_len = query.len()).entered();
 
-    let store = &ctx.store;
-    let cqs_dir = &ctx.cqs_dir;
+    let store = ctx.store();
+    let cqs_dir = ctx.cqs_dir();
 
     // Name-only path: FTS by name, skip embedding entirely.
     if args.name_only {
@@ -226,7 +256,11 @@ pub(crate) fn query_core(
     // --splade is NOT a routing override (it only controls SPLADE fusion);
     // --rrf/--rerank override the search strategy. (--ref never reaches the
     // core.)
-    let has_explicit_flags = args.rrf || args.rerank;
+    //
+    // `always_route` (daemon) keeps the router live even with explicit flags —
+    // `cqs search` always classifies — while the CLI suppresses classification
+    // when the user pins a strategy.
+    let has_explicit_flags = (args.rrf || args.rerank) && !args.always_route;
     let classification = if !has_explicit_flags {
         let c = cqs::search::router::classify_query(query);
         tracing::info!(
@@ -242,8 +276,11 @@ pub(crate) fn query_core(
     };
 
     // NameOnly strategy: try FTS5 first, fall back to dense on 0 results.
+    // Gated on `fts_first`: the daemon (`fts_first = false`) never had this
+    // short-circuit, so it stays on the dense hybrid path even for
+    // NameOnly-classified queries.
     if let Some(ref c) = classification {
-        if c.strategy == cqs::search::router::SearchStrategy::NameOnly {
+        if args.fts_first && c.strategy == cqs::search::router::SearchStrategy::NameOnly {
             let results = store.search_by_name(query, args.limit)?;
             if !results.is_empty() {
                 tracing::info!(results = results.len(), "NameOnly search succeeded");
@@ -280,8 +317,7 @@ pub(crate) fn query_core(
         args.limit
     };
 
-    let embedder = ctx.embedder()?;
-    let query_embedding = embedder.embed_query(query)?;
+    let query_embedding = ctx.embedder()?.embed_query(query)?;
 
     // Centroid reclassification + α-floor tracking.
     let pre_centroid_cat = classification.as_ref().map(|c| c.category);
@@ -369,14 +405,10 @@ pub(crate) fn query_core(
     };
 
     // SPLADE sparse encoding (if enabled by --splade or per-category routing).
+    // The encode two-step (+ daemon index priming) lives behind
+    // `SearchCtx::splade_encode`, so the core just asks for the sparse vector.
     let splade_query = if use_splade {
-        ctx.splade_encoder().and_then(|enc| match enc.encode(query) {
-            Ok(sv) => Some(sv),
-            Err(e) => {
-                tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
-                None
-            }
-        })
+        ctx.splade_encode(query)
     } else {
         None
     };
@@ -391,7 +423,7 @@ pub(crate) fn query_core(
     ) || args.force_base_index;
     let mut base_fallback = false;
     let index = if use_base {
-        match crate::cli::build_base_vector_index(store, cqs_dir)? {
+        match ctx.base_vector_index()? {
             Some(base_idx) => {
                 tracing::info!(
                     basename = "index_base",
@@ -404,11 +436,11 @@ pub(crate) fn query_core(
                     "Base HNSW unavailable — falling back to enriched index for DenseBase query"
                 );
                 base_fallback = true;
-                crate::cli::build_vector_index(store, cqs_dir)?
+                ctx.vector_index()?
             }
         }
     } else {
-        crate::cli::build_vector_index(store, cqs_dir)?
+        ctx.vector_index()?
     };
 
     if use_base {
@@ -427,14 +459,17 @@ pub(crate) fn query_core(
         );
     }
 
-    let audit_mode = cqs::audit::load_audit_state(cqs_dir);
+    let audit_mode = ctx.audit_state();
 
     let search_limit = if args.pattern.is_some() {
         effective_limit * 3
     } else {
         effective_limit
     };
-    let splade_arg = splade_index.zip(splade_query.as_ref());
+    // `SpladeIndexRef` derefs to `&SpladeIndex`; `as_deref` collapses the
+    // Owned/Borrowed handle into the `&SpladeIndex` the primitive wants while
+    // the handle stays alive in `splade_index` for the search call's lifetime.
+    let splade_arg = splade_index.as_deref().zip(splade_query.as_ref());
 
     // Audit mode and SPLADE both require the hybrid path (search_unified
     // doesn't support SPLADE yet); only the plain dense path uses
@@ -495,12 +530,12 @@ pub(crate) fn query_core(
 /// paths: token-budget packing + parent-context resolution. The input is
 /// already a ranked `Vec<UnifiedResult>`.
 fn assemble_output(
-    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    ctx: &dyn search_ctx::SearchCtx,
     args: &QueryArgs,
     results: Vec<UnifiedResult>,
 ) -> Result<QueryOutput> {
-    let store = &ctx.store;
-    let root = &ctx.root;
+    let store = ctx.store();
+    let root = ctx.root();
 
     // Token-budget packing. The per-result JSON overhead is resolved by the
     // adapter into `args.json_overhead` (the CLI's format-dependent estimate),
@@ -613,10 +648,10 @@ pub(crate) fn cmd_query(
             bail!("--rerank requires embedding search, incompatible with --name-only");
         }
         if let Some(ref ref_name) = cli.ref_name {
-            // TODO(phase-2b): ref-name-only search resolves a reference index
-            // and emits the tagged-result shape — distinct from the core's
-            // `UnifiedResult` model. Stays in the adapter until the ref paths
-            // adopt the shared output type.
+            // Ref-name-only search resolves a reference index (config +
+            // single-store lookup) — not modeled by the single-store
+            // `SearchCtx`, so it stays in the adapter (Phase 2b ref-path
+            // decision). It serializes through the shared tagged-result schema.
             return cmd_query_ref_name_only(cli, ref_name, query, root);
         }
         // Non-ref name-only routes through the shared core (which performs the
@@ -629,8 +664,9 @@ pub(crate) fn cmd_query(
 
     // Plain (non-ref, non-multi-index) search routes through the shared core.
     // The `--ref`-scoped and `--include-refs` paths keep the adapter-local
-    // retrieval below (TODO(phase-2b)) because they emit the tagged-result
-    // shape rather than the core's `UnifiedResult` envelope.
+    // multi-store retrieval below (reference resolution doesn't fit the
+    // single-store core, Phase 2b ref-path decision); they serialize through
+    // the shared tagged-result schema.
     if cli.ref_name.is_none() && !cli.include_refs {
         let args = QueryArgs::from_cli(cli);
         let output = query_core(ctx, &args)?;

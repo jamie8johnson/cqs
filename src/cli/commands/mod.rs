@@ -16,7 +16,7 @@ mod infra;
 mod io;
 pub(crate) mod resolve;
 pub(crate) mod review;
-mod search;
+pub(crate) mod search;
 #[cfg(feature = "serve")]
 pub(crate) mod serve;
 mod train;

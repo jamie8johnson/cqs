@@ -10,7 +10,6 @@
 mod commands;
 mod handlers;
 mod pipeline;
-mod types;
 
 pub(crate) use commands::{dispatch, BatchInput};
 pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
@@ -2028,6 +2027,72 @@ impl BatchView {
                  refresh from this surface should go through BatchContext directly"
             )),
         }
+    }
+}
+
+// ─── SearchCtx impl: BatchView drives the shared query_core ──────────────────
+//
+// Phase 2b: the daemon search handler routes through the same
+// `search::query::query_core` the CLI uses. `BatchView` produces the
+// surface-agnostic resource surface the core needs; the differences from the
+// CLI context (Arc snapshots vs borrows, ensure-then-borrow SPLADE priming) are
+// erased here so the core stays single-implementation.
+impl crate::cli::commands::search::search_ctx::SearchCtx for BatchView {
+    fn store(&self) -> &Store<ReadOnly> {
+        // The view holds the snapshot Arc as a field; lend a borrow out of it
+        // (Arc derefs to Store) rather than cloning per accessor call.
+        &self.store
+    }
+
+    fn cqs_dir(&self) -> &Path {
+        &self.cqs_dir
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn embedder(&self) -> Result<&Embedder> {
+        BatchView::embedder(self)
+    }
+
+    fn reranker(&self) -> Result<Arc<dyn cqs::Reranker>> {
+        BatchView::reranker(self)
+    }
+
+    fn splade_encode(&self, query: &str) -> Option<cqs::splade::SparseVector> {
+        // Daemon SPLADE: prime the inverted index first (the snapshot may have
+        // been empty at checkout), then encode the query. Mirrors the
+        // pre-refactor `dispatch_search` ordering: `ensure_splade_index()`
+        // followed by `splade_encoder().encode()`.
+        self.ensure_splade_index();
+        self.splade_encoder()
+            .and_then(|enc| match enc.encode(query) {
+                Ok(sv) => Some(sv),
+                Err(e) => {
+                    tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
+                    None
+                }
+            })
+    }
+
+    fn splade_index(&self) -> Option<crate::cli::commands::search::search_ctx::SpladeIndexRef<'_>> {
+        // `splade_encode` already called `ensure_splade_index`; borrow the Arc
+        // snapshot back as an owned handle.
+        self.borrow_splade_index()
+            .map(crate::cli::commands::search::search_ctx::SpladeIndexRef::Owned)
+    }
+
+    fn vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
+        BatchView::vector_index(self)
+    }
+
+    fn base_vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
+        BatchView::base_vector_index(self)
+    }
+
+    fn audit_state(&self) -> cqs::audit::AuditMode {
+        BatchView::audit_state(self)
     }
 }
 
