@@ -81,6 +81,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `line_end`/`content`/`signature`/`score`, all preserved. The internal
   `ChunkOutput` struct and its `batch/types.rs` module were deleted.
 
+- **Command-core unification for io commands (Phase 2b io half, internal).**
+  Seven io commands now route both surfaces through a single surface-agnostic
+  core: `diff` (`diff_core`), `drift` (`drift_core`), `scout` (`scout_core`),
+  `onboard` (`onboard_core`), `gather` (`gather_core`), `context`
+  (`context_core`), and `blame` (`blame_core`). Each takes a typed `*Args`
+  struct deriving `Deserialize` with `#[serde(default)]` and doc-commented
+  fields (the param surface a future MCP tool wraps), pinned to the clap
+  defaults by a `*_args_default_matches_clap_defaults` test. The `cmd_*` and
+  `dispatch_*` functions are thin adapters. `brief` and `reconstruct` stay
+  typed-output-only (no daemon path, display-oriented, single positional arg).
+  `read` and `notes` are deferred — their two surfaces emit divergent JSON
+  schemas that need a deliberate union-schema PR first.
+
+  **Daemon io wire-schema changes (agents parse — read this).** Routing the
+  daemon through the CLI's typed outputs converged several hand-rolled inline
+  JSON shapes onto the single schema source:
+  - `cqs diff` (daemon): added/removed entries no longer carry a `similarity`
+    key (correctly skipped — they never have one); modified entries keep
+    `similarity`. `type` and the `summary` block are unchanged.
+  - `cqs drift` (daemon): `chunk_type` now serializes via `ChunkType::to_string`
+    (matching the CLI) instead of the raw enum serde form. Field set otherwise
+    unchanged (`reference`/`threshold`/`min_drift`/`drifted`/`total_compared`/
+    `unchanged`).
+  - `cqs context --json` (full mode, daemon): now emits the CLI's `FullOutput`
+    shape. **Added** per-result `external_callers`, `external_callees`,
+    `dependent_files`, per-chunk `injection_flags`, `doc`, and split
+    `line_start`/`line_end`. **Removed** the daemon-only `lines: [start, end]`
+    array, per-chunk `language`, and the top-level `total` (use
+    `chunks.len()`). `trust_level` and the `token_count`/`token_budget` packing
+    fields are preserved. Compact and summary modes already shared the CLI
+    builders — unchanged.
+  - `cqs gather` (daemon): `--tokens` packing now applies the CLI's
+    reading-order re-sort (reference chunks first, then project, each in
+    file/line order) and over-fetches ≥50 seed candidates, so packed daemon
+    output matches the CLI's chunk ordering.
+  Path fields across these commands are forward-slash-normalized on both
+  surfaces. The `GatherDirection` enum gained a `Deserialize` derive (additive;
+  its `Serialize` output is byte-identical). No retrieval/indexing path was
+  touched; paired v3.v2 eval (test .459/.743/.862, dev .514/.817/.927) confirms
+  retrieval is unchanged.
+
 ### Fixed
 
 - **Kind-fallback cap parity across all graph commands.** The

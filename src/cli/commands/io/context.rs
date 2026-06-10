@@ -1,16 +1,99 @@
 //! Context command — module-level understanding
 //!
-//! Core logic is in shared functions (`build_compact_data`, `build_full_data`,
-//! `compact_to_json`, `full_to_json`) so batch mode can reuse them without
-//! duplicating ~120 lines.
+//! ## Command-core split (Phase 2b)
+//!
+//! [`context_core`] is the surface-agnostic JSON producer for all three modes
+//! (compact / summary / full). It routes through the shared data builders
+//! (`build_compact_data`, `build_full_data`) and the single JSON-schema sources
+//! (`compact_to_json`, `summary_to_json`, [`full_to_json`]). Both the CLI
+//! ([`cmd_context`] JSON path) and the daemon (`dispatch_context`) drive it, so
+//! the wire shape is identical — the daemon's full-context path now carries the
+//! same `external_callers` / `external_callees` / `dependent_files` /
+//! `injection_flags` / `line_start`/`line_end` shape the CLI always emitted.
+//! Reads no env; the embedder for `--tokens` packing is passed by the adapter.
 
 use anyhow::{bail, Context as _, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use cqs::store::{ChunkSummary, Store};
+use cqs::store::{ChunkSummary, ReadOnly, Store};
+use cqs::Embedder;
 
 use crate::cli::staleness;
+
+// ─── Args (surface-agnostic, MCP-ready) ──────────────────────────────────────
+
+/// Input for [`context_core`] — the context knobs both the CLI and a future
+/// MCP `context` tool deserialize into. Store/root and the optional embedder
+/// (for `--tokens` packing) come from the adapter.
+///
+/// `#[serde(default)]` so a wire caller can supply just `path` and inherit the
+/// production defaults. `summary`/`compact` are mutually-exclusive modes (clap
+/// enforces; the core treats `compact` as winning if both are somehow set).
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct ContextArgs {
+    /// File path (relative to project root) to build context for.
+    pub path: String,
+    /// Summary mode: aggregated caller/callee counts + chunk TOC.
+    pub summary: bool,
+    /// Compact mode: signatures-only TOC with per-chunk caller/callee counts.
+    pub compact: bool,
+    /// Token budget — full mode only; packs chunk content into the budget.
+    pub tokens: Option<usize>,
+}
+
+// ─── Core ─────────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic JSON core for `cqs context`. Dispatches on mode (compact /
+/// summary / full) and returns the assembled `serde_json::Value` from the
+/// shared schema sources. The `--tokens` full-mode packing needs an embedder;
+/// the adapter supplies one (lazily built CLI-side, cached daemon-side) only
+/// when `tokens` is set. Reads no env and never prints.
+pub(crate) fn context_core(
+    store: &Store<ReadOnly>,
+    root: &Path,
+    args: &ContextArgs,
+    embedder: Option<&Embedder>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("context_core", path = %args.path).entered();
+
+    // Normalize backslash input from Windows / agent pipelines so the
+    // `origin`-column match (forward-slash-normalized) and the JSON `file`
+    // field are canonical across surfaces.
+    let normalized = cqs::normalize_path(Path::new(&args.path));
+
+    if args.compact {
+        let data = build_compact_data(store, &normalized)?;
+        return Ok(compact_to_json(&data, &normalized)?);
+    }
+
+    let data = build_full_data(store, &normalized, root)?;
+
+    if args.summary {
+        return Ok(summary_to_json(&data, &normalized)?);
+    }
+
+    // Full mode — optional token-budgeted content.
+    let (content_set, token_info) = match (args.tokens, embedder) {
+        (Some(budget), Some(emb)) => {
+            let names: Vec<&str> = data.chunks.iter().map(|c| c.name.as_str()).collect();
+            let caller_counts = store.get_caller_counts_batch(&names).context(
+                "Failed to fetch caller counts for token packing — ranking signal required",
+            )?;
+            let (included, used) = pack_by_relevance(&data.chunks, &caller_counts, budget, emb);
+            (Some(included), Some((used, budget)))
+        }
+        _ => (None, None),
+    };
+
+    Ok(full_to_json(
+        &data,
+        &normalized,
+        content_set.as_ref(),
+        token_info,
+    )?)
+}
 
 // ─── Shared core ────────────────────────────────────────────────────────────
 
@@ -395,6 +478,32 @@ pub(crate) fn cmd_context(
         bail!("--tokens cannot be used with --compact or --summary");
     }
 
+    // JSON path routes through the shared `context_core` (same code the daemon
+    // runs), so the wire shape is identical across surfaces. The embedder for
+    // full-mode `--tokens` packing is built lazily here only when needed.
+    if json {
+        // Proactive staleness warning (surface I/O — adapter owns it).
+        if !ctx.cli.quiet && !ctx.cli.no_stale_check {
+            staleness::warn_stale_results(store, &[path], root);
+        }
+        let embedder = if max_tokens.is_some() && !compact && !summary {
+            Some(cqs::Embedder::new(ctx.model_config().clone())?)
+        } else {
+            None
+        };
+        let args = ContextArgs {
+            path: path.to_string(),
+            summary,
+            compact,
+            tokens: max_tokens,
+        };
+        let output = context_core(store, root, &args, embedder.as_ref())?;
+        crate::cli::json_envelope::emit_json(&output)?;
+        return Ok(());
+    }
+
+    // Text path keeps the raw data structs for rendering.
+
     // Compact mode: signatures-only TOC with caller/callee counts
     if compact {
         let data = build_compact_data(store, path)?;
@@ -404,12 +513,7 @@ pub(crate) fn cmd_context(
             staleness::warn_stale_results(store, &[path], root);
         }
 
-        if json {
-            let output = compact_to_json(&data, path)?;
-            crate::cli::json_envelope::emit_json(&output)?;
-        } else {
-            print_compact_terminal(&data, path);
-        }
+        print_compact_terminal(&data, path);
         return Ok(());
     }
 
@@ -422,17 +526,7 @@ pub(crate) fn cmd_context(
     }
 
     if summary {
-        if json {
-            let output = summary_to_json(&data, path)?;
-            crate::cli::json_envelope::emit_json(&output)?;
-        } else {
-            print_summary_terminal(&data, path);
-        }
-    } else if json {
-        let (content_set, token_info) =
-            build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;
-        let output = full_to_json(&data, path, content_set.as_ref(), token_info)?;
-        crate::cli::json_envelope::emit_json(&output)?;
+        print_summary_terminal(&data, path);
     } else {
         let (content_set, token_info) =
             build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;
@@ -659,6 +753,47 @@ mod tests {
     use cqs::language::{ChunkType, Language};
     use cqs::store::ChunkSummary;
     use std::path::PathBuf;
+
+    /// A wire/MCP caller can supply only `path` and inherit defaults.
+    #[test]
+    fn context_args_deserialize_minimal() {
+        let args: ContextArgs = serde_json::from_str(r#"{"path": "src/lib.rs"}"#).unwrap();
+        assert_eq!(args.path, "src/lib.rs");
+        assert!(!args.summary);
+        assert!(!args.compact);
+        assert!(args.tokens.is_none());
+    }
+
+    /// `ContextArgs::default` must match the clap `ContextArgs` defaults.
+    /// Parses `cqs context <path>` via a throwaway `clap::Parser` wrapper.
+    #[test]
+    fn context_args_default_matches_clap_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: crate::cli::args::ContextArgs,
+        }
+
+        let clap_args = Wrap::try_parse_from(["cqs-context", "src/lib.rs"])
+            .unwrap()
+            .args;
+        let core = ContextArgs {
+            path: clap_args.path.clone(),
+            summary: clap_args.summary,
+            compact: clap_args.compact,
+            tokens: clap_args.tokens,
+        };
+        let expected = ContextArgs {
+            path: "src/lib.rs".to_string(),
+            ..ContextArgs::default()
+        };
+        assert_eq!(
+            core, expected,
+            "clap context defaults drifted from ContextArgs::default — update both together"
+        );
+    }
 
     fn make_chunk(name: &str, line_start: u32, line_end: u32) -> ChunkSummary {
         ChunkSummary {

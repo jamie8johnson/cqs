@@ -1,4 +1,12 @@
 //! Drift command — semantic change detection between reference snapshots
+//!
+//! ## Command-core split (Phase 2b)
+//!
+//! [`drift_core`] owns the surface-agnostic drift logic: it takes the
+//! already-resolved reference + project stores plus a typed [`DriftArgs`] and
+//! returns the typed [`DriftOutput`] (the single JSON-schema source). Store
+//! resolution stays in each adapter (CLI [`cmd_drift`] / daemon
+//! `dispatch_drift`); both drive the same core, so the wire shape is identical.
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
@@ -8,12 +16,49 @@ use cqs::{normalize_path, Store};
 use crate::cli::find_project_root;
 
 // ---------------------------------------------------------------------------
+// Args (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`drift_core`] — the drift knobs both the CLI and a future MCP
+/// `drift` tool deserialize into. Store resolution is the adapter's job.
+///
+/// `#[serde(default)]` so a wire caller can supply just `reference` and inherit
+/// the production defaults (matching clap's `DriftArgs`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct DriftArgs {
+    /// Reference name to compare the project against (echoed into output).
+    pub reference: String,
+    /// Similarity threshold: pairs below are reported as drifted.
+    pub threshold: f32,
+    /// Minimum drift value to include in the output.
+    pub min_drift: f32,
+    /// Restrict the comparison to this language (e.g. `rust`).
+    pub lang: Option<String>,
+    /// Cap on the number of drifted entries returned (`None` = all).
+    pub limit: Option<usize>,
+}
+
+impl Default for DriftArgs {
+    fn default() -> Self {
+        // Mirrors clap's `DriftArgs` defaults (threshold 0.95, min_drift 0.0).
+        DriftArgs {
+            reference: String::new(),
+            threshold: 0.95,
+            min_drift: 0.0,
+            lang: None,
+            limit: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Output structs
 // ---------------------------------------------------------------------------
 
 /// A single entry in the drift output.
 #[derive(Debug, serde::Serialize)]
-struct DriftEntryOutput {
+pub(crate) struct DriftEntryOutput {
     name: String,
     file: String,
     chunk_type: String,
@@ -21,9 +66,10 @@ struct DriftEntryOutput {
     drift: f32,
 }
 
-/// Top-level JSON output for the drift command.
+/// Top-level JSON output for the drift command — the single JSON-schema source
+/// shared by the CLI and daemon adapters.
 #[derive(Debug, serde::Serialize)]
-struct DriftOutput {
+pub(crate) struct DriftOutput {
     reference: String,
     threshold: f32,
     min_drift: f32,
@@ -73,6 +119,31 @@ fn build_drift_output(result: &cqs::drift::DriftResult, limit: Option<usize>) ->
     }
 }
 
+// ---------------------------------------------------------------------------
+// Core
+// ---------------------------------------------------------------------------
+
+/// Surface-agnostic core for `cqs drift`. Takes the already-resolved reference
+/// + project stores (the adapter owns resolution) plus a [`DriftArgs`], runs
+/// the `detect_drift` primitive, and assembles the typed [`DriftOutput`]
+/// (applying the optional limit). Reads no env and never prints.
+pub(crate) fn drift_core<Mode1, Mode2>(
+    ref_store: &Store<Mode1>,
+    project_store: &Store<Mode2>,
+    args: &DriftArgs,
+) -> Result<DriftOutput> {
+    let _span = tracing::info_span!("drift_core", reference = %args.reference).entered();
+    let result = cqs::drift::detect_drift(
+        ref_store,
+        project_store,
+        &args.reference,
+        args.threshold,
+        args.min_drift,
+        args.lang.as_deref(),
+    )?;
+    Ok(build_drift_output(&result, args.limit))
+}
+
 /// Detect semantic drift between a reference and the current project.
 pub(crate) fn cmd_drift(
     reference: &str,
@@ -98,17 +169,27 @@ pub(crate) fn cmd_drift(
     let project_store = Store::open(&index_path)
         .with_context(|| format!("Failed to open project store at {}", index_path.display()))?;
 
+    let args = DriftArgs {
+        reference: reference.to_string(),
+        threshold,
+        min_drift,
+        lang: lang.map(str::to_string),
+        limit,
+    };
     let result = cqs::drift::detect_drift(
         &ref_store,
         &project_store,
-        reference,
-        threshold,
-        min_drift,
-        lang,
+        &args.reference,
+        args.threshold,
+        args.min_drift,
+        args.lang.as_deref(),
     )?;
+    // Full (pre-limit) drifted count for the text summary — the limit only
+    // truncates the displayed/serialized list, never the reported totals.
+    let total_drifted = result.drifted.len();
+    let output = build_drift_output(&result, args.limit);
 
     if json {
-        let output = build_drift_output(&result, limit);
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
         println!(
@@ -118,31 +199,23 @@ pub(crate) fn cmd_drift(
             min_drift
         );
 
-        let entries = if let Some(lim) = limit {
-            &result.drifted[..result.drifted.len().min(lim)]
-        } else {
-            &result.drifted
-        };
-
-        if entries.is_empty() {
+        if output.drifted.is_empty() {
             println!("  No drift detected.");
         } else {
-            for entry in entries {
+            for entry in &output.drifted {
                 println!(
                     "  {:.2}  {}  {}  {}",
                     entry.drift,
                     entry.name,
-                    entry.file.display().to_string().dimmed(),
-                    entry.chunk_type.to_string().dimmed()
+                    entry.file.dimmed(),
+                    entry.chunk_type.dimmed()
                 );
             }
         }
 
         println!(
             "\n{} drifted of {} compared ({} unchanged)",
-            result.drifted.len(),
-            result.total_compared,
-            result.unchanged
+            total_drifted, output.total_compared, output.unchanged
         );
     }
 
@@ -156,6 +229,47 @@ pub(crate) fn cmd_drift(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wire/MCP caller can supply only `reference` and inherit defaults.
+    #[test]
+    fn drift_args_deserialize_minimal() {
+        let args: DriftArgs = serde_json::from_str(r#"{"reference": "v1.0"}"#).unwrap();
+        assert_eq!(args.reference, "v1.0");
+        assert!((args.threshold - 0.95).abs() < 1e-6);
+        assert!((args.min_drift - 0.0).abs() < 1e-6);
+        assert!(args.lang.is_none());
+        assert!(args.limit.is_none());
+    }
+
+    /// `DriftArgs::default` must match the clap `DriftArgs` defaults exactly.
+    /// Parses `cqs drift <reference>` via a throwaway `clap::Parser` wrapper.
+    #[test]
+    fn drift_args_default_matches_clap_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: crate::cli::args::DriftArgs,
+        }
+
+        let clap_args = Wrap::try_parse_from(["cqs-drift", "v1.0"]).unwrap().args;
+        let core = DriftArgs {
+            reference: clap_args.reference.clone(),
+            threshold: clap_args.threshold,
+            min_drift: clap_args.min_drift,
+            lang: clap_args.lang.clone(),
+            limit: clap_args.limit,
+        };
+        let expected = DriftArgs {
+            reference: "v1.0".to_string(),
+            ..DriftArgs::default()
+        };
+        assert_eq!(
+            core, expected,
+            "clap drift defaults drifted from DriftArgs::default — update both together"
+        );
+    }
 
     #[test]
     fn drift_output_empty() {

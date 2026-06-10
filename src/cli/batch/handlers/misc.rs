@@ -28,50 +28,42 @@ pub(in crate::cli::batch) fn dispatch_gather(
 
     let embedder = ctx.embedder()?;
 
-    let opts = cqs::GatherOptions {
-        expand_depth: args.depth.clamp(0, 5),
+    // Thin adapter over the shared `gather_core`. The daemon always serializes,
+    // so it charges the per-result JSON overhead in token packing. Reference
+    // resolution differs by surface (cached LRU here), so the adapter resolves
+    // the reference index + project vector index and hands them to the core.
+    let core_args = crate::cli::commands::gather::GatherArgs {
+        query: query.to_string(),
+        depth: args.depth,
         direction: args.direction,
-        limit: args.limit_arg.limit.clamp(1, 100),
-        ..cqs::GatherOptions::default()
+        limit: args.limit_arg.limit,
+        tokens: args.tokens,
+        json_overhead: crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
     };
 
-    let mut result = if let Some(rn) = ref_name {
-        let query_embedding = embedder
-            .embed_query(query)
-            .context("Failed to embed query")?;
+    let (result, token_info) = if let Some(rn) = ref_name {
         ctx.get_ref(rn)?;
         let ref_idx = ctx
             .borrow_ref(rn)
             .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", rn))?;
         let index = ctx.vector_index()?;
-        let index = index.as_deref();
-        cqs::gather_cross_index_with_index(
+        crate::cli::commands::gather::gather_core(
             &ctx.store(),
-            &ref_idx,
-            &query_embedding,
-            query,
-            &opts,
+            embedder,
             &ctx.root,
-            index,
+            &core_args,
+            Some(ref_idx.as_ref()),
+            index.as_deref(),
         )?
     } else {
-        cqs::gather(&ctx.store(), embedder, query, &opts, &ctx.root)?
-    };
-
-    // Token-budget packing
-    let token_info: Option<(usize, usize)> = if let Some(budget) = args.tokens {
-        let embedder = ctx.embedder()?;
-        let chunks = std::mem::take(&mut result.chunks);
-        let (packed, used) = crate::cli::commands::pack_gather_chunks(
-            chunks,
+        crate::cli::commands::gather::gather_core(
+            &ctx.store(),
             embedder,
-            budget,
-            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
-        );
-        result.chunks = packed;
-        Some((used, budget))
-    } else {
-        None
+            &ctx.root,
+            &core_args,
+            None,
+            None,
+        )?
     };
 
     let output = crate::cli::commands::build_gather_output(&result, query, token_info);
@@ -233,28 +225,18 @@ pub(in crate::cli::batch) fn dispatch_scout(
     args: &ScoutArgs,
 ) -> Result<serde_json::Value> {
     let query = args.query.as_str();
-    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
-    // Shared with CLI's cmd_scout.
-    let limit = args.limit_arg.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
-    let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
-
-    let (content_map, token_info) = if let Some(budget) = tokens {
-        let named_items = crate::cli::commands::scout_scored_names(&result);
-        let (cmap, used) = crate::cli::commands::fetch_and_pack_content(
-            &ctx.store(),
-            embedder,
-            &named_items,
-            budget,
-        );
-        (Some(cmap), Some((used, budget)))
-    } else {
-        (None, None)
+    // Thin adapter over the shared `scout_core` — identical JSON shape across
+    // the CLI and daemon surfaces.
+    let core_args = crate::cli::commands::scout::ScoutArgs {
+        query: query.to_string(),
+        limit: args.limit_arg.limit,
+        tokens: args.tokens,
     };
-
-    // Shared with CLI's cmd_scout — same JSON shape across both dispatch paths.
-    crate::cli::commands::build_scout_output(&result, content_map.as_ref(), token_info)
+    let (output, _token_info) =
+        crate::cli::commands::scout::scout_core(&ctx.store(), embedder, &ctx.root, &core_args)?;
+    Ok(output)
 }
 
 /// Suggests optimal file placements for code based on a natural language description.
@@ -307,8 +289,6 @@ pub(in crate::cli::batch) fn dispatch_drift(
     args: &DriftArgs,
 ) -> Result<serde_json::Value> {
     let reference = args.reference.as_str();
-    let lang = args.lang.as_deref();
-    let limit = args.limit;
     let _span = tracing::info_span!("batch_drift", reference).entered();
     let threshold = validate_finite_f32(args.threshold, "threshold")?;
     let min_drift = validate_finite_f32(args.min_drift, "min_drift")?;
@@ -319,135 +299,55 @@ pub(in crate::cli::batch) fn dispatch_drift(
         .borrow_ref(reference)
         .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", reference))?;
 
-    let result = cqs::drift::detect_drift(
-        &ref_idx.store,
-        &ctx.store(),
-        reference,
+    // Thin adapter: build the surface-agnostic args, then drive the shared
+    // `drift_core` so the wire shape matches the CLI's typed `DriftOutput`
+    // (normalized forward-slash paths, `chunk_type` via `ChunkType::to_string`).
+    let core_args = crate::cli::commands::drift::DriftArgs {
+        reference: reference.to_string(),
         threshold,
         min_drift,
-        lang,
-    )?;
-
-    let mut drifted_json: Vec<_> = result
-        .drifted
-        .iter()
-        .map(|e| {
-            // Emit normalized forward-slash paths (match sister
-            // handlers in info.rs) so agents chaining `drift` → `context --json`
-            // don't trip on Windows backslashes.
-            serde_json::json!({
-                "name": e.name,
-                "file": cqs::normalize_path(&e.file),
-                "chunk_type": e.chunk_type,
-                "similarity": e.similarity,
-                "drift": e.drift,
-            })
-        })
-        .collect();
-    if let Some(lim) = limit {
-        drifted_json.truncate(lim);
-    }
-
-    Ok(serde_json::json!({
-        "reference": result.reference,
-        "threshold": result.threshold,
-        "min_drift": result.min_drift,
-        "drifted": drifted_json,
-        "total_compared": result.total_compared,
-        "unchanged": result.unchanged,
-    }))
+        lang: args.lang.clone(),
+        limit: args.limit,
+    };
+    let output = crate::cli::commands::drift::drift_core(&ref_idx.store, &ctx.store(), &core_args)?;
+    Ok(serde_json::to_value(&output)?)
 }
 
-/// Runs semantic diff between a reference and the project (or another reference).
+/// Runs semantic diff between a reference and the project (or another
+/// reference). Thin adapter: resolve the source/target stores (needs the
+/// reference LRU + config), build a surface-agnostic
+/// [`crate::cli::commands::diff::DiffArgs`], then drive the shared
+/// `diff_core` so the wire shape matches the CLI's typed `DiffOutput`.
 pub(in crate::cli::batch) fn dispatch_diff(
     ctx: &BatchView,
     args: &DiffArgs,
 ) -> Result<serde_json::Value> {
     let source = args.source.as_str();
     let target = args.target.as_deref();
-    let lang = args.lang.as_deref();
     let _span = tracing::info_span!("batch_diff", source).entered();
     let threshold = validate_finite_f32(args.threshold, "threshold")?;
 
     let source_store = crate::cli::commands::resolve::resolve_reference_store(&ctx.root, source)?;
 
     let target_label = target.unwrap_or("project");
+    let core_args = crate::cli::commands::diff::DiffArgs {
+        source: source.to_string(),
+        target: target_label.to_string(),
+        threshold,
+        lang: args.lang.clone(),
+    };
+
     // `project` diffs against the open store; any other target resolves a
-    // reference store in the else arm.
-    let result = if target_label == "project" {
-        cqs::semantic_diff(
-            &source_store,
-            &ctx.store(),
-            source,
-            target_label,
-            threshold,
-            lang,
-        )?
+    // reference store first.
+    let output = if target_label == "project" {
+        crate::cli::commands::diff::diff_core(&source_store, &ctx.store(), &core_args)?
     } else {
         let target_ref_store =
             crate::cli::commands::resolve::resolve_reference_store(&ctx.root, target_label)?;
-        cqs::semantic_diff(
-            &source_store,
-            &target_ref_store,
-            source,
-            target_label,
-            threshold,
-            lang,
-        )?
+        crate::cli::commands::diff::diff_core(&source_store, &target_ref_store, &core_args)?
     };
 
-    // Emit normalized forward-slash paths (same rationale as
-    // `dispatch_drift` above) across added/removed/modified.
-    let added: Vec<_> = result
-        .added
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.name,
-                "file": cqs::normalize_path(&e.file),
-                "type": e.chunk_type.to_string(),
-            })
-        })
-        .collect();
-
-    let removed: Vec<_> = result
-        .removed
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.name,
-                "file": cqs::normalize_path(&e.file),
-                "type": e.chunk_type.to_string(),
-            })
-        })
-        .collect();
-
-    let modified: Vec<_> = result
-        .modified
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.name,
-                "file": cqs::normalize_path(&e.file),
-                "type": e.chunk_type.to_string(),
-                "similarity": e.similarity,
-            })
-        })
-        .collect();
-
-    Ok(serde_json::json!({
-        "source": result.source,
-        "target": result.target,
-        "added": added,
-        "removed": removed,
-        "modified": modified,
-        "summary": {
-            "added": result.added.len(),
-            "removed": result.removed.len(),
-            "modified": result.modified.len(),
-            "unchanged": result.unchanged_count,
-        }
-    }))
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Runs task planning with template classification and returns results as JSON.

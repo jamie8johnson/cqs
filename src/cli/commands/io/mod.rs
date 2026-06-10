@@ -3,8 +3,8 @@
 pub(crate) mod blame;
 mod brief;
 pub(crate) mod context;
-mod diff;
-mod drift;
+pub(crate) mod diff;
+pub(crate) mod drift;
 mod notes;
 pub(crate) mod read;
 mod reconstruct;

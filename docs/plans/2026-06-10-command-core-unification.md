@@ -99,9 +99,58 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
   eval path) reproduces the identical shift.
 
 #### Phase 2b — search half (daemon + schema)
-- [ ] Cores + typed outputs for the io commands (read, context, gather, scout,
+- [~] Cores + typed outputs for the io commands (read, context, gather, scout,
   onboard, brief, notes, diff, blame, drift, reconstruct). *(io half — separate
-  PR; not part of the search-half landing.)*
+  PR.)* **Landed 2026-06-10 (branch `refactor/command-cores-io`):**
+  - **Cored + daemon-routed** (typed `*Args` w/ Deserialize + `#[serde(default)]`
+    clap-pinned, named `*_core`, both surfaces drive it): `diff` (`diff_core`),
+    `drift` (`drift_core`), `scout` (`scout_core`), `onboard` (`onboard_core`),
+    `gather` (`gather_core`), `context` (`context_core`), `blame` (`blame_core`).
+  - **Schema convergence on the daemon side** (the 2b "reconciliation" note):
+    `dispatch_diff`/`dispatch_drift` dropped their hand-rolled inline JSON and
+    now serialize the CLI's typed `DiffOutput`/`DriftOutput` (drift's
+    `chunk_type` now goes through `ChunkType::to_string`; diff added/removed
+    `similarity` is correctly skipped, modified present). `dispatch_context`
+    full-mode dropped its inline per-chunk JSON and now emits the CLI's
+    `FullOutput` shape (gains `external_callers`/`external_callees`/
+    `dependent_files`/`injection_flags`, per-chunk `line_start`/`line_end`
+    replacing `lines:[s,e]`, drops `language`/`total`). `dispatch_gather` gains
+    the CLI's reading-order re-sort + ≥50 over-fetch on `--tokens`. Compact /
+    summary context already shared builders — unchanged.
+  - **gather/scout/onboard env audit (audit-queue convergence):** cores read no
+    env. scout/onboard clamp via the `SCOUT_LIMIT_MAX` const, gather's
+    `gather_max_nodes()` stays an adapter-side text-display read; the only
+    request-scoped knob folded into Args is gather's `json_overhead` (resolved
+    at the adapter boundary, CLI format-dependent / daemon always-serialize).
+  - **`GatherDirection` gained `#[derive(Deserialize)]`** (additive; Serialize
+    output byte-identical — no `rename_all`) so `OnboardArgs`/`GatherArgs`
+    deserialize. `src/gather.rs` is not an eval-reachable dir; retrieval
+    untouched.
+  - **Typed-output-only (no daemon path, display-oriented, trivial logic — plan
+    option 3):** `brief`, `reconstruct`. Already carried typed `*Output`
+    structs; left as-is. No `*Args`/`*_core` added (single positional `path`,
+    no defaults to drift, so the clap-pin would be vacuous).
+  - **Deferred (schema divergence needs a deliberate union-schema PR):**
+    - `read`: full-read JSON diverges *in both directions* (daemon emits
+      `notes_injected`+`trust_level` the CLI omits; CLI focused emits
+      `injection_flags` the daemon omits) plus the daemon full-read does
+      file-path vendored detection the CLI doesn't. Reconciling needs a
+      union-schema decision (which fields win) — its own schema-change PR.
+    - `notes`: the CLI list path reads `docs/notes.toml` while the daemon reads
+      the store-cached notes, and the two emit *different* schemas (CLI `id`+
+      `type`, daemon `sentiment_label`, no shared `id`). A single
+      surface-agnostic core needs a unified data source + union schema first.
+  - **Parity tests:** `parity_context_compact_daemon_equals_core` +
+    `parity_context_full_daemon_equals_core` (byte-equal daemon vs core,
+    embedder-free) pin the biggest schema change. The other cored commands are
+    structurally parity-by-construction (the `dispatch_*` adapter literally
+    calls the same `*_core`). Per-command clap-pin tests
+    (`*_args_default_matches_clap_defaults`) + minimal-deserialize tests added
+    for diff/drift/scout/onboard/gather/blame/context.
+  - **Eval (gate b):** paired v3.v2, release build, against a force-rebuilt
+    index — TEST .459/.743/.862, DEV .514/.817/.927; both at/above the brief's
+    bands. No eval-reachable source touched (gate a); the force-reindex was
+    incidental (refreshed line anchors), not required by the diff.
 - [x] Daemon `dispatch_search` → `query_core` via a shared search-context trait.
   `SearchCtx` (in `commands/search/search_ctx.rs`) is the lean common surface
   (store / cqs_dir / root / embedder / reranker / splade_encode / splade_index /

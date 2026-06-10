@@ -5,12 +5,137 @@
 use anyhow::Result;
 use colored::Colorize;
 
+use cqs::index::VectorIndex;
+use cqs::reference::ReferenceIndex;
+use cqs::store::{ReadOnly, Store};
+use cqs::Embedder;
 use cqs::{
     gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions,
     GatherResult,
 };
 
 use crate::cli::staleness;
+
+// ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
+
+/// Input for [`gather_core`] — the gather knobs both the CLI and a future MCP
+/// `gather` tool deserialize into. Store/embedder/root and the resolved
+/// reference index come from the adapter (reference resolution differs by
+/// surface); these are the request-shaped settings.
+///
+/// `#[serde(default)]` so a wire caller can supply just `query` and inherit the
+/// production defaults (depth/direction/limit mirror clap).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct GatherArgs {
+    /// Search query / question.
+    pub query: String,
+    /// Call-graph BFS depth for expansion (clamped 0..=5).
+    pub depth: usize,
+    /// Expansion direction: both / callers / callees.
+    pub direction: GatherDirection,
+    /// Max seed chunks before expansion (clamped 1..=100).
+    pub limit: usize,
+    /// Token budget — when set, packs chunks into the budget.
+    pub tokens: Option<usize>,
+    /// Per-result JSON overhead the token packer charges (the CLI sets this to
+    /// the per-result envelope cost under `--json`, 0 for text; a wire caller
+    /// that always serializes should set the constant). `#[serde(default)]` 0.
+    pub json_overhead: usize,
+}
+
+impl Default for GatherArgs {
+    fn default() -> Self {
+        GatherArgs {
+            query: String::new(),
+            // Mirrors clap: DEFAULT_DEPTH_BLAST = 1, direction = both,
+            // LimitArg default = 5.
+            depth: crate::cli::args::DEFAULT_DEPTH_BLAST,
+            direction: GatherDirection::Both,
+            limit: 5,
+            tokens: None,
+            json_overhead: 0,
+        }
+    }
+}
+
+// ─── Core ───────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs gather`. Runs the gather lib primitive
+/// (project, or cross-index when `ref_idx` is `Some`), then applies the shared
+/// token-budget packing + reading-order re-sort. Returns the assembled
+/// [`GatherResult`] plus `(used, budget)` token accounting; the adapter renders
+/// text/JSON and owns staleness warnings. Reads no env — the
+/// `json_overhead` and reference resolution arrive via `args` / parameters.
+///
+/// Unifying the packing here gives the daemon the same reading-order re-sort
+/// the CLI always had (previously the daemon left packed chunks in score order).
+pub(crate) fn gather_core(
+    store: &Store<ReadOnly>,
+    embedder: &Embedder,
+    root: &std::path::Path,
+    args: &GatherArgs,
+    ref_idx: Option<&ReferenceIndex>,
+    project_index: Option<&dyn VectorIndex>,
+) -> Result<(GatherResult, Option<(usize, usize)>)> {
+    let _span = tracing::info_span!("gather_core", query_len = args.query.len()).entered();
+
+    // When token-budgeted, fetch more seeds than the limit so the packer has
+    // candidates to choose from.
+    let fetch_limit = if args.tokens.is_some() {
+        args.limit.clamp(1, 100).max(50)
+    } else {
+        args.limit.clamp(1, 100)
+    };
+
+    let opts = GatherOptions {
+        expand_depth: args.depth.clamp(0, 5),
+        direction: args.direction,
+        limit: fetch_limit,
+        ..GatherOptions::default()
+    };
+
+    let mut result = if let Some(ref_idx) = ref_idx {
+        let query_embedding = embedder.embed_query(&args.query)?;
+        gather_cross_index_with_index(
+            store,
+            ref_idx,
+            &query_embedding,
+            &args.query,
+            &opts,
+            root,
+            project_index,
+        )?
+    } else {
+        gather(store, embedder, &args.query, &opts, root)?
+    };
+
+    let token_info = if let Some(budget) = args.tokens {
+        let chunks = std::mem::take(&mut result.chunks);
+        let (mut packed, used) =
+            crate::cli::commands::pack_gather_chunks(chunks, embedder, budget, args.json_overhead);
+
+        // Re-sort to reading order (ref first, then project, each in
+        // file/line order) so chained reads are coherent.
+        packed.sort_by(|a, b| {
+            let source_ord = match (&a.source, &b.source) {
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            };
+            source_ord
+                .then(a.file.cmp(&b.file))
+                .then(a.line_start.cmp(&b.line_start))
+                .then(a.name.cmp(&b.name))
+        });
+        result.chunks = packed;
+        Some((used, budget))
+    } else {
+        None
+    };
+
+    Ok((result, token_info))
+}
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
@@ -121,66 +246,38 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     let cqs_dir = &ctx.cqs_dir;
     let embedder = ctx.embedder()?;
 
-    // When token-budgeted, fetch more chunks than limit so we have candidates to pack
-    let fetch_limit = if max_tokens.is_some() {
-        limit.max(50) // Fetch at least 50 candidates for token packing
+    let json_overhead = if json {
+        crate::cli::commands::JSON_OVERHEAD_PER_RESULT
     } else {
-        limit
+        0
     };
-
-    let opts = GatherOptions {
-        expand_depth: expand.clamp(0, 5),
+    let args = GatherArgs {
+        query: query.to_string(),
+        depth: expand,
         direction,
-        limit: fetch_limit,
-        ..GatherOptions::default()
+        limit,
+        tokens: max_tokens,
+        json_overhead,
     };
 
-    // Cross-index gather: seed from reference, bridge into project code
-    let mut result = if let Some(rn) = ref_name {
-        let query_embedding = embedder.embed_query(query)?;
+    // Resolve the reference index + project vector index for cross-index
+    // gather (CLI-side resolution; the daemon resolves its own), then drive
+    // the shared core.
+    let (result, token_info) = if let Some(rn) = ref_name {
         let ref_idx = crate::cli::commands::resolve::find_reference(root, rn)?;
         let index = crate::cli::build_vector_index(store, cqs_dir)?;
-        gather_cross_index_with_index(
+        gather_core(
             store,
-            &ref_idx,
-            &query_embedding,
-            query,
-            &opts,
+            embedder,
             root,
+            &args,
+            Some(&ref_idx),
             index.as_deref(),
         )?
     } else {
-        gather(store, embedder, query, &opts, root)?
+        gather_core(store, embedder, root, &args, None, None)?
     };
-
-    // Token-budgeted packing: keep highest-scoring chunks within token budget
-    let token_count_used = if let Some(budget) = max_tokens {
-        let overhead = if json {
-            crate::cli::commands::JSON_OVERHEAD_PER_RESULT
-        } else {
-            0
-        };
-        let chunks = std::mem::take(&mut result.chunks);
-        let (mut packed, used) =
-            crate::cli::commands::pack_gather_chunks(chunks, embedder, budget, overhead);
-
-        // Re-sort to reading order (ref first, then project, each in file/line order)
-        packed.sort_by(|a, b| {
-            let source_ord = match (&a.source, &b.source) {
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            };
-            source_ord
-                .then(a.file.cmp(&b.file))
-                .then(a.line_start.cmp(&b.line_start))
-                .then(a.name.cmp(&b.name))
-        });
-        result.chunks = packed;
-        Some(used)
-    } else {
-        None
-    };
+    let token_count_used = token_info.map(|(used, _)| used);
 
     // Proactive staleness warning (only for project chunks)
     if !ctx.cli.quiet && !ctx.cli.no_stale_check && !result.chunks.is_empty() {
@@ -294,6 +391,50 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wire/MCP caller can supply only `query` and inherit defaults.
+    #[test]
+    fn gather_args_deserialize_minimal() {
+        let args: GatherArgs = serde_json::from_str(r#"{"query": "search path"}"#).unwrap();
+        assert_eq!(args.query, "search path");
+        assert_eq!(args.depth, 1);
+        assert_eq!(args.direction, GatherDirection::Both);
+        assert_eq!(args.limit, 5);
+        assert!(args.tokens.is_none());
+        assert_eq!(args.json_overhead, 0);
+    }
+
+    /// `GatherArgs::default` must match the clap `GatherArgs` defaults.
+    /// Parses `cqs gather <query>` via a throwaway `clap::Parser` wrapper.
+    #[test]
+    fn gather_args_default_matches_clap_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: crate::cli::args::GatherArgs,
+        }
+
+        let clap_args = Wrap::try_parse_from(["cqs-gather", "q"]).unwrap().args;
+        let core = GatherArgs {
+            query: clap_args.query.clone(),
+            depth: clap_args.depth,
+            direction: clap_args.direction,
+            limit: clap_args.limit_arg.limit,
+            tokens: clap_args.tokens,
+            // json_overhead is an adapter-resolved field, not a clap flag.
+            json_overhead: 0,
+        };
+        let expected = GatherArgs {
+            query: "q".to_string(),
+            ..GatherArgs::default()
+        };
+        assert_eq!(
+            core, expected,
+            "clap gather defaults drifted from GatherArgs::default — update both together"
+        );
+    }
 
     fn make_result(chunks: Vec<cqs::GatheredChunk>) -> GatherResult {
         GatherResult {

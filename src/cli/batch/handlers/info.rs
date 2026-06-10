@@ -8,7 +8,6 @@ use anyhow::Result;
 use super::super::BatchView;
 use crate::cli::args::{BlameArgs, ContextArgs, ExplainArgs, OnboardArgs, ReadArgs, SimilarArgs};
 use crate::cli::validate_finite_f32;
-use cqs::normalize_path;
 
 /// Dispatches a blame analysis request for a specified target and returns the results as JSON.
 /// This function orchestrates the blame operation by building blame data for the given target and converting it to JSON format. It uses tracing instrumentation to log the operation.
@@ -26,16 +25,15 @@ pub(in crate::cli::batch) fn dispatch_blame(
     args: &BlameArgs,
 ) -> Result<serde_json::Value> {
     let target = args.name.as_str();
-    let depth = args.commits;
-    let show_callers = args.callers;
     let _span = tracing::info_span!("batch_blame", target).entered();
-    let data = crate::cli::commands::blame::build_blame_data(
-        &ctx.store(),
-        &ctx.root,
-        target,
-        depth,
-        show_callers,
-    )?;
+    // Thin adapter over the shared `blame_core` — identical JSON shape across
+    // the CLI and daemon surfaces (both serialize via `blame_to_json`).
+    let core_args = crate::cli::commands::blame::BlameArgs {
+        name: target.to_string(),
+        commits: args.commits,
+        callers: args.callers,
+    };
+    let data = crate::cli::commands::blame::blame_core(&ctx.store(), &ctx.root, &core_args)?;
     Ok(crate::cli::commands::blame::blame_to_json(&data, &ctx.root))
 }
 
@@ -167,88 +165,26 @@ pub(in crate::cli::batch) fn dispatch_context(
     args: &ContextArgs,
 ) -> Result<serde_json::Value> {
     let path = args.path.as_str();
-    let summary = args.summary;
-    let compact = args.compact;
-    let tokens = args.tokens;
     let _span = tracing::info_span!("batch_context", path).entered();
 
-    // Normalize backslash input from Windows / agent pipelines.
-    // `get_chunks_by_origin` matches on the stored `origin` column which is
-    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
-    // `build_compact_data` / `build_full_data` also normalize internally, but
-    // we use the canonical form here for the fall-through full-context path
-    // below and the JSON `file:` field so cross-platform consumers see slashes.
-    let normalized = normalize_path(std::path::Path::new(path));
-
-    if compact {
-        let data = crate::cli::commands::context::build_compact_data(&ctx.store(), &normalized)?;
-        return Ok(crate::cli::commands::context::compact_to_json(
-            &data,
-            &normalized,
-        )?);
-    }
-
-    if summary {
-        let data =
-            crate::cli::commands::context::build_full_data(&ctx.store(), &normalized, &ctx.root)?;
-        return Ok(crate::cli::commands::context::summary_to_json(
-            &data,
-            &normalized,
-        )?);
-    }
-
-    // Full context -- with optional token packing
-    let chunks = ctx.store().get_chunks_by_origin(&normalized)?;
-    if chunks.is_empty() {
-        anyhow::bail!(
-            "No indexed chunks found for '{}'. Is the file indexed?",
-            path
-        );
-    }
-
-    let (chunks, token_info) = if let Some(budget) = tokens {
-        let embedder = ctx.embedder()?;
-        let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = ctx.store().get_caller_counts_batch(&names)?;
-        let (included, used) = crate::cli::commands::context::pack_by_relevance(
-            &chunks,
-            &caller_counts,
-            budget,
-            embedder,
-        );
-        let filtered: Vec<_> = chunks
-            .into_iter()
-            .filter(|c| included.contains(&c.name))
-            .collect();
-        (filtered, Some((used, budget)))
+    // Thin adapter over the shared `context_core` — identical JSON shape across
+    // the CLI and daemon surfaces (compact / summary / full all route through
+    // the same schema sources, so the daemon's full-context path now carries
+    // the external_callers / external_callees / dependent_files /
+    // injection_flags / line_start/line_end shape the CLI always emitted).
+    // The embedder for full-mode `--tokens` packing comes from the cached view.
+    let embedder = if args.tokens.is_some() && !args.compact && !args.summary {
+        Some(ctx.embedder()?)
     } else {
-        (chunks, None)
+        None
     };
-
-    let entries: Vec<_> = chunks
-        .iter()
-        .map(|c| {
-            // Chunks from `get_chunks_by_origin` come straight from the
-            // user's project store, so they're always user-code.
-            serde_json::json!({
-                "name": c.name,
-                "chunk_type": c.chunk_type.to_string(),
-                "language": c.language.to_string(),
-                "lines": [c.line_start, c.line_end],
-                "signature": c.signature,
-                "content": c.content,
-                "trust_level": "user-code",
-            })
-        })
-        .collect();
-
-    let mut response = serde_json::json!({
-        "file": normalized,
-        "chunks": entries,
-        "total": entries.len(),
-    });
-    crate::cli::commands::inject_token_info(&mut response, token_info);
-    Ok(response)
+    let core_args = crate::cli::commands::context::ContextArgs {
+        path: path.to_string(),
+        summary: args.summary,
+        compact: args.compact,
+        tokens: args.tokens,
+    };
+    crate::cli::commands::context::context_core(&ctx.store(), &ctx.root, &core_args, embedder)
 }
 
 /// Collects and aggregates statistics from the batch processing context into a JSON response.
@@ -318,7 +254,6 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     args: &OnboardArgs,
 ) -> Result<serde_json::Value> {
     let query = args.query.as_str();
-    let tokens = args.tokens;
     let direction = args.direction;
     let _span = tracing::info_span!(
         "batch_onboard",
@@ -329,33 +264,17 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     )
     .entered();
     let embedder = ctx.embedder()?;
-    let depth = args.depth.clamp(1, 5);
-    // Cap on call_chain + callers + tests. entry_point always kept.
-    let limit = args.limit_arg.limit.clamp(1, 100);
 
-    let mut result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth, direction)?;
-    result.call_chain.truncate(limit);
-    result.callers.truncate(limit);
-    result.tests.truncate(limit);
-
-    let Some(budget) = tokens else {
-        let mut json = serde_json::to_value(&result)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
-        crate::cli::commands::tag_user_code_trust_level(&mut json);
-        return Ok(json);
+    // Thin adapter over the shared `onboard_core` — identical JSON shape across
+    // the CLI and daemon surfaces.
+    let core_args = crate::cli::commands::onboard::OnboardArgs {
+        query: query.to_string(),
+        depth: args.depth,
+        direction,
+        limit: args.limit_arg.limit,
+        tokens: args.tokens,
     };
-
-    let named_items = crate::cli::commands::onboard_scored_names(&result);
-    let (content_map, used) =
-        crate::cli::commands::fetch_and_pack_content(&ctx.store(), embedder, &named_items, budget);
-
-    let mut json = serde_json::to_value(&result)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
-    crate::cli::commands::inject_content_into_onboard_json(&mut json, &content_map, &result);
-    crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
-    // Onboard only queries the project store — every chunk is user-code.
-    crate::cli::commands::tag_user_code_trust_level(&mut json);
-    Ok(json)
+    crate::cli::commands::onboard::onboard_core(&ctx.store(), embedder, &ctx.root, &core_args)
 }
 
 /// Dispatches a read operation on a file within a batch context, optionally with focused reading on a specific note.
@@ -646,5 +565,77 @@ mod tests {
             json["trust_level"], "user-code",
             "non-vendored chunk must surface trust_level=user-code, got: {json}"
         );
+    }
+
+    /// Parity: `dispatch_context` (the daemon adapter) is byte-equal to
+    /// `context_core` driven with the same args. Compact mode is embedder-free,
+    /// so this runs without an ONNX load. Pins the Phase-2b convergence — the
+    /// daemon no longer hand-rolls per-chunk JSON.
+    #[test]
+    fn parity_context_compact_daemon_equals_core() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+
+        let args = ContextArgs {
+            path: "src/lib.rs".into(),
+            summary: false,
+            compact: true,
+            tokens: None,
+        };
+        let daemon = dispatch_context(&view, &args).expect("dispatch_context");
+        let core = crate::cli::commands::context::context_core(
+            &view.store(),
+            &view.root,
+            &crate::cli::commands::context::ContextArgs {
+                path: "src/lib.rs".into(),
+                summary: false,
+                compact: true,
+                tokens: None,
+            },
+            None,
+        )
+        .expect("context_core");
+        assert_eq!(
+            daemon, core,
+            "daemon dispatch_context must equal context_core (compact)"
+        );
+    }
+
+    /// Parity for the full-context path (the path whose schema converged onto
+    /// the CLI's `FullOutput` in Phase 2b). Embedder-free because `tokens` is
+    /// `None`.
+    #[test]
+    fn parity_context_full_daemon_equals_core() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+
+        let args = ContextArgs {
+            path: "src/lib.rs".into(),
+            summary: false,
+            compact: false,
+            tokens: None,
+        };
+        let daemon = dispatch_context(&view, &args).expect("dispatch_context");
+        let core = crate::cli::commands::context::context_core(
+            &view.store(),
+            &view.root,
+            &crate::cli::commands::context::ContextArgs {
+                path: "src/lib.rs".into(),
+                summary: false,
+                compact: false,
+                tokens: None,
+            },
+            None,
+        )
+        .expect("context_core");
+        assert_eq!(
+            daemon, core,
+            "daemon dispatch_context must equal context_core (full)"
+        );
+        // The full path carries the converged schema — these keys were absent
+        // from the daemon's old inline JSON.
+        assert!(daemon.get("external_callers").is_some());
+        assert!(daemon.get("external_callees").is_some());
+        assert!(daemon.get("dependent_files").is_some());
     }
 }
