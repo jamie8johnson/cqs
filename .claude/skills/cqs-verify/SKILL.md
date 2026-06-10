@@ -52,7 +52,7 @@ echo "9. health:" && cqs health --json 2>/dev/null | python3 -c "import sys,json
 echo "10. doctor:" && cqs doctor 2>/dev/null | grep -c "✓" | xargs -I{} echo "  PASS ({} checks)"
 
 # 11. Notes
-echo "11. notes:" && cqs notes list --json 2>/dev/null | python3 -c "import sys,json; print(f'  PASS ({len(json.load(sys.stdin))} notes)')" 2>&1 || echo "  FAIL"
+echo "11. notes:" && cqs notes list --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({len(r[\"notes\"])} notes)')" 2>&1 || echo "  FAIL"
 
 # 12. Dead code
 echo "12. dead:" && cqs dead --json 2>/dev/null | python3 -c "import sys,json; print('  PASS')" 2>&1 || echo "  FAIL"
