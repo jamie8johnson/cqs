@@ -989,8 +989,8 @@ mod tests {
     /// - **happy**: a non-empty result set,
     /// - **empty**: a no-match query (the `{results:[], total:0}` envelope),
     /// - **trust-labeled**: the converged per-result schema carries the store
-    ///   serializer's `type: "code"` + posture-gated trust fields, identical on
-    ///   both the adapter and the direct-core path.
+    ///   serializer's `type: "code"` + skip-when-default trust fields, identical
+    ///   on both the adapter and the direct-core path.
     #[test]
     fn parity_daemon_dispatch_equals_core_plus_serializer() {
         use crate::cli::commands::search::query::query_core;
@@ -1062,9 +1062,9 @@ mod tests {
                 r["type"], "code",
                 "converged daemon schema must carry the store serializer's type tag"
             );
-            // `trust_level` is skip-when-`user-code` under the default Friendly
-            // posture; if present it must be a string, never the old
-            // always-emitted shape leaking a non-string.
+            // `trust_level` is skip-when-`user-code` by default; if present it
+            // must be a string, never the old always-emitted shape leaking a
+            // non-string.
             if let Some(tl) = r.get("trust_level") {
                 assert!(tl.is_string(), "trust_level must serialize as a string");
             }

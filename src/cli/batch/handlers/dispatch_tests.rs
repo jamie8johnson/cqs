@@ -227,16 +227,15 @@ fn dispatch(ctx: &BatchContext, line: &str) -> serde_json::Value {
 
 /// Assert the envelope succeeded and return the `data` field.
 ///
-/// **SNR Phase 3 wire shape:** in Friendly mode (the default the test
-/// process inherits), the slim envelope drops `error: null` and `version`
-/// — the success contract is "no `error` key present". The verbose
-/// `error: null` and `version: 1` only appear under `CQS_ULTRASECURITY=1`.
-/// Tests that need the full envelope should set the env var explicitly
-/// (with `serial_test::serial`) and call `assert_ok_envelope_full`.
+/// **Wire shape:** the batch / daemon JSONL path emits the slim envelope,
+/// which drops `error: null` and `version` — the success contract is
+/// "no `error` key present". The full `{data, error, version, _meta}`
+/// envelope is only produced by `Envelope::ok` on the CLI direct path
+/// under `CQS_OUTPUT_FORMAT=v1`.
 fn assert_ok_envelope<'a>(env: &'a serde_json::Value, ctx_label: &str) -> &'a serde_json::Value {
     assert!(
         env.get("error").is_none(),
-        "{ctx_label} returned error envelope (Friendly slim shape skips error key only when null): {env}"
+        "{ctx_label} returned error envelope (slim shape skips error key only when null): {env}"
     );
     let data = env
         .get("data")

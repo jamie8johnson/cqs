@@ -22,20 +22,26 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// Default helper — no env pins. The CLI direct success path emits the
+/// bare V2Bare payload (shipped default), so the `dead` object is the
+/// top-level JSON value and tests read `parsed["dead"]` directly.
 fn cqs() -> Command {
     #[allow(deprecated)]
-    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
-    // SNR Phase 4 (2026-05-08): default flipped to V2Bare. These
-    // tests pin themselves to the legacy V1Envelope shape so existing
-    // `parsed["data"][...]` assertions keep working. Test-shape
-    // migration to bare-payload is a follow-up PR.
-    c.env("CQS_OUTPUT_FORMAT", "v1");
-    c
+    Command::cargo_bin("cqs").expect("Failed to find cqs binary")
 }
 
 fn cqs_no_daemon() -> Command {
     let mut c = cqs();
     c.env("CQS_NO_DAEMON", "1");
+    c
+}
+
+/// v1 compatibility helper — `CQS_OUTPUT_FORMAT=v1` restores the legacy
+/// `{data, error, version, _meta}` envelope. One kept-v1 test below asserts
+/// the contract still resolves.
+fn cqs_no_daemon_v1() -> Command {
+    let mut c = cqs_no_daemon();
+    c.env("CQS_OUTPUT_FORMAT", "v1");
     c
 }
 
@@ -109,12 +115,11 @@ fn seed_dead_code_store() -> TempDir {
     dir
 }
 
-/// `cqs --json dead` returns a JSON envelope whose `data.dead[]` array
-/// surfaces functions with no callers. Pin the envelope shape so
-/// agents that consume `data.dead[*].name` aren't broken by an
-/// accidental field rename.
+/// `cqs --json dead` (bare default) emits the payload directly: `dead[]`
+/// at the top level. Pin the shape so agents that consume `dead[*].name`
+/// aren't broken by an accidental field rename.
 #[test]
-fn dead_cli_emits_envelope_with_data_dead_field() {
+fn dead_cli_emits_bare_payload_with_dead_field() {
     let dir = seed_dead_code_store();
 
     let result = cqs_no_daemon()
@@ -133,15 +138,19 @@ fn dead_cli_emits_envelope_with_data_dead_field() {
     let parsed: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("--json output must be JSON. got: {stdout}"));
 
-    // Envelope shape: `data.dead` MUST be an array; agents key off this name.
-    let dead = parsed["data"]["dead"]
+    // Bare default: no `data` wrapper. `dead` MUST be an array at top level.
+    assert!(
+        parsed.get("data").is_none(),
+        "bare default must not wrap in data envelope: {parsed:?}"
+    );
+    let dead = parsed["dead"]
         .as_array()
-        .unwrap_or_else(|| panic!("data.dead must be a JSON array: {parsed:?}"));
+        .unwrap_or_else(|| panic!("dead must be a JSON array: {parsed:?}"));
 
     let dead_names: Vec<&str> = dead.iter().filter_map(|d| d["name"].as_str()).collect();
     assert!(
         dead_names.contains(&"func_dead"),
-        "func_dead must appear in data.dead[*].name: {parsed:?}"
+        "func_dead must appear in dead[*].name: {parsed:?}"
     );
     assert!(
         !dead_names.contains(&"func_b"),
@@ -149,8 +158,8 @@ fn dead_cli_emits_envelope_with_data_dead_field() {
     );
 }
 
-/// Sanity: `data.count` matches the array length so consumers can
-/// trust the count without re-iterating.
+/// Sanity: `count` matches the array length so consumers can trust the
+/// count without re-iterating.
 #[test]
 fn dead_cli_count_matches_array_length() {
     let dir = seed_dead_code_store();
@@ -165,10 +174,35 @@ fn dead_cli_count_matches_array_length() {
     let parsed: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("--json output must be JSON. got: {stdout}"));
 
-    let dead_len = parsed["data"]["dead"].as_array().unwrap().len();
-    let count = parsed["data"]["count"].as_u64().unwrap_or(u64::MAX) as usize;
-    assert_eq!(
-        count, dead_len,
-        "data.count must match data.dead.len(): {parsed:?}"
-    );
+    let dead_len = parsed["dead"].as_array().unwrap().len();
+    let count = parsed["count"].as_u64().unwrap_or(u64::MAX) as usize;
+    assert_eq!(count, dead_len, "count must match dead.len(): {parsed:?}");
+}
+
+/// Kept v1-compat: `CQS_OUTPUT_FORMAT=v1` restores the `{data, error,
+/// version, _meta}` envelope, so `data.dead[]` still resolves for
+/// consumers pinned to the legacy shape.
+#[test]
+fn dead_cli_v1_compat_restores_data_envelope() {
+    let dir = seed_dead_code_store();
+
+    let result = cqs_no_daemon_v1()
+        .args(["dead", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run cqs dead");
+
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(result.status.success(), "cqs dead must succeed. {stdout}");
+
+    let parsed: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|_| panic!("--json output must be JSON. got: {stdout}"));
+
+    assert_eq!(parsed["version"], 1, "v1 envelope carries version: 1");
+    assert!(parsed["error"].is_null(), "v1 success → error: null");
+    let dead = parsed["data"]["dead"]
+        .as_array()
+        .unwrap_or_else(|| panic!("v1: data.dead must be a JSON array: {parsed:?}"));
+    let dead_names: Vec<&str> = dead.iter().filter_map(|d| d["name"].as_str()).collect();
+    assert!(dead_names.contains(&"func_dead"));
 }

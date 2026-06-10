@@ -25,15 +25,12 @@ use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
 
+/// Default helper — no env pins. `cmd_chat` formats each result through
+/// `emit_json`, which honors the V2Bare default: the search result payload
+/// is emitted bare (array/object), not wrapped in a `data` envelope.
 fn cqs() -> Command {
     #[allow(deprecated)]
-    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
-    // SNR Phase 4 (2026-05-08): default flipped to V2Bare. These
-    // tests pin themselves to the legacy V1Envelope shape so existing
-    // `parsed["data"][...]` assertions keep working. Test-shape
-    // migration to bare-payload is a follow-up PR.
-    c.env("CQS_OUTPUT_FORMAT", "v1");
-    c
+    Command::cargo_bin("cqs").expect("Failed to find cqs binary")
 }
 
 /// Set up a tiny indexed project so the chat REPL has a store to query.
@@ -129,24 +126,22 @@ fn test_chat_emits_parseable_envelope_for_search_query() {
         })
     });
 
-    // SNR Phase 3 slim envelope shape (v1.40.0+, `Posture::Friendly`
-    // default): `{"data": <payload>}` — `error: null` and `version` are
-    // dropped from the success path because they were always-redundant.
-    // The original always-on shape (`{"data": ..., "error": null,
-    // "version": 1, "_meta": {...}}`) is preserved under
-    // `CQS_ULTRASECURITY=1` (Adversarial posture) and pinned by the
-    // unit tests in `src/cli/json_envelope.rs::tests::*_with_posture_*`.
+    // V2Bare default (v1.40.0+): `emit_json` emits the bare search-result
+    // payload — an array of results (or an object), with no `data` wrapper
+    // and no `error` / `version` envelope keys.
     assert!(
-        parsed["data"].is_array() || parsed["data"].is_object(),
-        "data must be the search result array/object, got: {}",
-        parsed["data"]
+        parsed.is_array() || parsed.is_object(),
+        "bare payload must be the search result array/object, got: {parsed}"
     );
-    // Defensive: if `error` IS present (e.g. consumer ran with
-    // CQS_ULTRASECURITY=1), it must be null on the success path.
-    if !parsed["error"].is_null() && !parsed.get("error").map_or(true, |v| v.is_null()) {
-        panic!(
-            "envelope `error` field present but non-null on success path: {}",
-            parsed["error"]
+    assert!(
+        parsed.get("version").is_none(),
+        "bare default drops the version key on success, got: {parsed}"
+    );
+    // On the bare success path there is no top-level `error` key.
+    if let Some(err) = parsed.get("error") {
+        assert!(
+            err.is_null(),
+            "envelope `error` field present but non-null on success path: {err}"
         );
     }
 }
