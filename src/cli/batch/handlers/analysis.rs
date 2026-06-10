@@ -69,12 +69,16 @@ pub(in crate::cli::batch) fn dispatch_stale(
     let count_only = args.count_only;
     let _span = tracing::info_span!("batch_stale", count_only).entered();
 
-    // `file_set` is `Arc<HashSet<PathBuf>>`. Auto-deref hands the inner
-    // `&HashSet` to the store helpers without cloning.
+    // `file_set` is `Arc<HashSet<PathBuf>>` — the daemon keeps it cached so we
+    // avoid re-enumerating the tree on every probe. `stale_core` takes the set
+    // by ref so this hot path reuses the cache (the CLI enumerates once).
     let file_set = ctx.file_set()?;
-    let report = ctx.store().list_stale_files(&file_set, &ctx.root)?;
-
-    let output = crate::cli::commands::build_stale(&report);
+    let output = crate::cli::commands::stale_core(
+        &ctx.store(),
+        &ctx.root,
+        &file_set,
+        &crate::cli::commands::StaleArgs { count_only },
+    )?;
     if count_only {
         Ok(serde_json::json!({
             "stale_count": output.stale_count,

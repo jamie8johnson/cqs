@@ -40,6 +40,15 @@ pub(crate) struct TelemetryOutput {
     pub top_queries: Vec<TopQuery>,
 }
 
+/// `cqs telemetry reset --json` payload. `archive_path` is `None` when there
+/// was no `telemetry.jsonl` to archive (the no-op short-circuit).
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TelemetryResetOutput {
+    pub archived_events: usize,
+    pub archive_path: Option<String>,
+    pub lock_path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -369,14 +378,26 @@ fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
 // CLI command
 // ---------------------------------------------------------------------------
 
-pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_telemetry").entered();
+/// Input for [`telemetry_core`].
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct TelemetryArgs {
+    /// Aggregate every `telemetry*.jsonl` (archived + current) rather than
+    /// just the live `telemetry.jsonl`.
+    #[serde(default)]
+    pub all: bool,
+}
 
-    // Streaming aggregation — each file's entries are fed into the
-    // aggregator then dropped, so --all never holds all files in memory at once.
+/// Surface-agnostic core for the `cqs telemetry` dashboard. Streams the
+/// telemetry JSONL file(s) through the aggregator (each file's entries are
+/// dropped after being folded in, so `--all` never holds every file in memory
+/// at once) and returns the typed [`TelemetryOutput`]. No daemon path —
+/// telemetry is a process-local file read.
+pub(crate) fn telemetry_core(cqs_dir: &Path, args: &TelemetryArgs) -> Result<TelemetryOutput> {
+    let _span = tracing::info_span!("telemetry_core", all = args.all).entered();
+
     let mut agg = TelemetryAggregator::new();
 
-    if all {
+    if args.all {
         // Read all telemetry files (archived + current), one at a time
         if let Ok(dir) = fs::read_dir(cqs_dir) {
             let mut paths: Vec<_> = dir
@@ -407,7 +428,13 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
         }
     }
 
-    let output = agg.finish();
+    Ok(agg.finish())
+}
+
+pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_telemetry").entered();
+
+    let output = telemetry_core(cqs_dir, &TelemetryArgs { all })?;
 
     if output.events == 0 {
         if json {
@@ -541,11 +568,11 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
         if json {
             // Emit an envelope even when there is nothing to archive so
             // `--json` consumers always get a parseable document.
-            crate::cli::json_envelope::emit_json(&serde_json::json!({
-                "archived_events": 0,
-                "archive_path": serde_json::Value::Null,
-                "lock_path": cqs_dir.join("telemetry.lock").display().to_string(),
-            }))?;
+            crate::cli::json_envelope::emit_json(&TelemetryResetOutput {
+                archived_events: 0,
+                archive_path: None,
+                lock_path: cqs_dir.join("telemetry.lock").display().to_string(),
+            })?;
         } else {
             println!("No telemetry file to reset.");
         }
@@ -627,11 +654,11 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bo
         // Emit the envelope `--json` consumers expect: line count, the
         // archive file actually written, and the advisory lock path so
         // debugging concurrent-reset races is easy.
-        crate::cli::json_envelope::emit_json(&serde_json::json!({
-            "archived_events": line_count,
-            "archive_path": archive.display().to_string(),
-            "lock_path": lock_path.display().to_string(),
-        }))?;
+        crate::cli::json_envelope::emit_json(&TelemetryResetOutput {
+            archived_events: line_count,
+            archive_path: Some(archive.display().to_string()),
+            lock_path: lock_path.display().to_string(),
+        })?;
     } else {
         println!(
             "Archived {} events to {}",
@@ -715,6 +742,25 @@ fn format_utc_timestamp() -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// `cqs telemetry` carries only the `--all` toggle; the core default
+    /// (live file only) must agree with `TelemetryArgs::default`, and the MCP
+    /// empty-object deserialize must reach the same default.
+    #[test]
+    fn telemetry_args_default_and_deserialize() {
+        assert!(!TelemetryArgs::default().all);
+        let from_empty: TelemetryArgs = serde_json::from_str("{}").unwrap();
+        assert_eq!(from_empty.all, TelemetryArgs::default().all);
+    }
+
+    /// `telemetry_core` over an empty `.cqs` dir returns a zero-event output
+    /// (no panic, no error) — the "telemetry disabled" path.
+    #[test]
+    fn telemetry_core_empty_dir_is_zero_events() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(out.events, 0);
+    }
 
     fn write_test_telemetry(dir: &Path, lines: &[&str]) {
         let path = dir.join("telemetry.jsonl");

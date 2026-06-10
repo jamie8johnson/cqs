@@ -192,7 +192,88 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
 - Gate: same as Phase 1 + eval guard — amended 2026-06-10: byte-exact eval match is unachievable under codegen-units=1 (any code change re-coalesces FP ops and can flip rank-boundary ties; proven via graph-only-subset A/B in phase 2a). The enforceable invariant: (a) eval-reachable source (search/store/pipeline/splade/hnsw/embedder/eval) byte-identical in the diff, AND (b) paired test+dev numbers within the clean-HEAD rebuild variance band.
 
 ### Phase 3 — infra/index commands (index, gc, stats, doctor, status, slot, cache, model, reference, hook, telemetry, audit-mode, init, ping, watch-adjacent)
-- [ ] Cores + typed outputs; daemon adapters
+- [~] Cores + typed outputs; daemon adapters. **Landed 2026-06-10 (branch
+  `refactor/command-cores-infra`):**
+  - **Group 1 — read-query, cored + (where a dispatcher exists) daemon-routed
+    + parity:**
+    - `stats` (daemon-routed): `StatsArgs` + `stats_core(store, root, cqs_dir)`.
+      Folded the staleness-walk + `created_at`/`hnsw_vectors` population (was
+      duplicated inline in `cmd_stats` and `dispatch_stats`) into the core.
+      `dispatch_stats` now = `stats_core(..) + errors`. **Additive JSON:** the
+      daemon stats path gains `created_at` + `hnsw_vectors` (previously
+      CLI-only). Parity test `parity_stats_dispatch_equals_core_plus_errors`.
+    - `stale` (daemon-routed): `StaleArgs` + `stale_core(store, root,
+      file_set)`. Core takes the file_set by ref so the hot daemon path keeps
+      its cached set (CLI uses `enumerate_for_stale`). `count_only` is an
+      adapter-honored Arg (daemon projects a 3-field subset). Parity test
+      `parity_stale_dispatch_equals_core`.
+    - `cache stats`: typed `CacheStatsOutput` + `cache_stats_core` (bytes-only
+      JSON contract preserved).
+    - `model list`: typed `ModelListOutput` + `model_list_core`.
+    - `slot list` / `slot active`: `SlotListOutput`/`SlotActiveOutput` +
+      `slot_list_core`/`slot_active_core`.
+    - `reference list`: `RefListOutput` + `ref_list_core`. **Behavior fix:** the
+      text path now opens reference stores read-only (was `Store::open` RW) and
+      normalizes the source path (was raw `to_string_lossy`), matching JSON.
+    - `telemetry` dashboard: `TelemetryArgs` + `telemetry_core` (the streaming
+      file-read aggregation; `TelemetryOutput` already existed).
+  - **Group 2 — mutations, cored / typed-output:**
+    - `gc`: `GcArgs` + `gc_core(store, root, cqs_dir)` (ReadWrite). All prune +
+      HNSW-rebuild logic moved into the core; `render_gc_text` reads the typed
+      `GcOutput`. No daemon path (`dispatch_gc` bails by design), so no parity
+      test. HNSW dirty-flag abort-on-failure semantics preserved.
+    - `cache prune`/`compact`/`clear`: `CachePruneOutput`/`CacheCompactOutput`/
+      `CacheClearOutput` + `cache_prune_core`/`cache_compact_core`/
+      `cache_clear_core`. Mutual-exclusion + atomic-VACUUM behavior preserved.
+    - `slot create`/`promote`/`remove`: typed `SlotCreateOutput`/
+      `SlotPromoteOutput`/`SlotRemoveOutput` replacing inline JSON; the
+      lock-guarded lifecycle logic (incl. the active-daemon guard) is unchanged.
+    - `telemetry reset`: typed `TelemetryResetOutput`; the atomic
+      rename + `atomic_replace` reset stays adapter-owned.
+    - `audit-mode on/off/query`: `AuditModeArgs` + `audit_mode_core(cqs_dir)`
+      (query path pure-read, on/off persist via `save_audit_state`).
+    - `reference add`/`remove`: typed `RefAddOutput`/`RefRemoveOutput`
+      (orchestration stays in the adapter; only the success-envelope shape is
+      typed).
+  - **Group 3 — orchestration, typed-output-only (logic stays in the
+    adapter; cores would force process/subprocess/multi-store side effects
+    into a "core" — incorrect architecture per the plan):**
+    - `index/build`: `IndexSummaryOutput` for the `--json` final summary
+      (adapter-level, `src/cli/pipeline/` untouched).
+    - `init`: `InitOutput` (downloads model + warms embedder — orchestration).
+    - `convert`: `ConvertEntry`/`ConvertOutput` (document conversion).
+    - `project add`/`list`/`remove`: `ProjectAddOutput`/`ProjectListOutput`/
+      `ProjectRemoveOutput` (registry read/write).
+  - **Deferred (with reasoning):**
+    - `ping` / `status`: CLI `cmd_ping`/`cmd_status` are *socket clients*;
+      daemon `dispatch_ping`/`dispatch_status` are *server snapshots*
+      (`PingResponse` / `WatchSnapshot` are already the shared schema). They
+      are not the same logic on two surfaces — no shared core to extract.
+    - `gc` daemon path: `dispatch_gc` intentionally bails (writable store can't
+      be shared with the serving snapshot) — no daemon adapter to wire.
+    - `index/build` line-266 daemon-reconcile-queued early-return envelope:
+      hand-rolls the full `{data,version,error}` wrapper for a special-case
+      return; left as-is to bound risk on the index adapter (its own typed-shape
+      cleanup, low value).
+    - `doctor`: env/hardware probes, no inline JSON to type (already prints via
+      its own report structs); no Args/core surface worth adding.
+    - `hook`: install/status orchestration, no inline `serde_json::json!`;
+      deferred — typed-output cleanup is low-value and it has no daemon path.
+    - `umap`: python subprocess driver — typed output already present; subprocess
+      side effects correctly adapter-owned; deferred.
+    - `model swap`: long daemon-stop → reindex → daemon-restart orchestration;
+      already carries typed `ModelSwapOutput`/`ModelShowOutput`. Core extraction
+      would pull process control into a "core" — left as adapter.
+    - `reference update` (`reindex`): full ref reindex pipeline (LLM/HyDE/docs
+      enrichment passes); deferred — touches the enrichment pipeline, out of
+      scope for an infra-group typed-output pass.
+  - **Gate:** eval-reachable source (search/store/pipeline/splade/hnsw/embedder/
+    eval) byte-identical — diff is confined to `src/cli/commands/{index,infra}/`,
+    `src/cli/batch/handlers/{info,analysis}.rs`, and the two mod re-export
+    files. `build.rs` changes are adapter-only (the summary struct);
+    `src/cli/pipeline/` untouched. Eval run skipped per the amended gate (diff
+    provably touches no eval-reachable dir). Build/clippy/fmt clean; targeted +
+    parity tests green.
 - Gate: full suite + `/cqs-verify` pass.
 
 ### Phase 4 — review/train/eval commands + sweep

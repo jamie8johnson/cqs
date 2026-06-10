@@ -33,20 +33,35 @@ pub(crate) struct GcOutput {
 }
 
 // ---------------------------------------------------------------------------
-// CLI command
+// Args + core (surface-agnostic)
 // ---------------------------------------------------------------------------
 
-/// Run garbage collection on the index
-pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_gc").entered();
+/// Input for [`gc_core`]. gc takes no positional or flag input today — the
+/// struct exists for schema/clap-pin uniformity and a future `--dry-run`
+/// (count-without-prune) lands here as a field.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct GcArgs {}
 
-    let ctx = crate::cli::CommandContext::open_readwrite(cli)?;
-    let store = &ctx.store;
-    let root = &ctx.root;
-    let cqs_dir = &ctx.cqs_dir;
-
-    // Acquire lock to prevent race with watch/index
-    let _lock = acquire_index_lock(cqs_dir)?;
+/// Surface-agnostic core for `cqs gc`.
+///
+/// Prunes chunks/calls/type-edges/summaries for deleted files in a single
+/// transaction, drops orphan sparse vectors, and rebuilds the enriched HNSW
+/// when chunks were removed. Mutating — takes a `ReadWrite` store. The caller
+/// (CLI) owns the index lock and store open; gc has no daemon path (the
+/// daemon's `dispatch_gc` bails by design — a writable store can't be shared
+/// with the serving snapshot), so this core has a single production caller.
+///
+/// HNSW dirty-flag handling: marking dirty before the rebuild is load-bearing
+/// (concurrent searches must fall back to brute-force, not return orphan IDs
+/// from the stale graph), so a `set_hnsw_dirty` failure aborts rather than
+/// proceeding with an un-marked rebuild.
+pub(crate) fn gc_core(
+    store: &cqs::Store<cqs::store::ReadWrite>,
+    root: &std::path::Path,
+    cqs_dir: &std::path::Path,
+    _args: &GcArgs,
+) -> Result<GcOutput> {
+    let _span = tracing::info_span!("gc_core").entered();
 
     // Enumerate current files
     let parser = Parser::new()?;
@@ -135,19 +150,56 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
         None
     };
 
+    Ok(GcOutput {
+        stale_files: stale_count as usize,
+        missing_files: missing_count as usize,
+        pruned_chunks,
+        pruned_calls,
+        pruned_type_edges,
+        pruned_summaries,
+        hnsw_rebuilt: pruned_chunks > 0,
+        hnsw_vectors,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// CLI command
+// ---------------------------------------------------------------------------
+
+/// Run garbage collection on the index
+pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_gc").entered();
+
+    let ctx = crate::cli::CommandContext::open_readwrite(cli)?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
+
+    // Acquire lock to prevent race with watch/index
+    let _lock = acquire_index_lock(cqs_dir)?;
+
+    let output = gc_core(store, root, cqs_dir, &GcArgs::default())?;
+
     if json {
-        let output = GcOutput {
-            stale_files: stale_count as usize,
-            missing_files: missing_count as usize,
-            pruned_chunks,
-            pruned_calls,
-            pruned_type_edges,
-            pruned_summaries,
-            hnsw_rebuilt: pruned_chunks > 0,
-            hnsw_vectors,
-        };
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
+        render_gc_text(&output);
+    }
+
+    Ok(())
+}
+
+/// Plain-text renderer for `cqs gc`. Reads the typed [`GcOutput`] so text and
+/// JSON can never drift.
+fn render_gc_text(output: &GcOutput) {
+    let stale_count = output.stale_files;
+    let missing_count = output.missing_files;
+    let pruned_chunks = output.pruned_chunks;
+    let pruned_calls = output.pruned_calls;
+    let pruned_type_edges = output.pruned_type_edges;
+    let pruned_summaries = output.pruned_summaries;
+    let hnsw_vectors = output.hnsw_vectors;
+    {
         if pruned_chunks == 0
             && pruned_calls == 0
             && pruned_type_edges == 0
@@ -197,8 +249,6 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
             );
         }
     }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +258,14 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cqs gc` takes no positional/flag input, so `GcArgs` is empty and an
+    /// MCP no-params call (`{}`) deserializes cleanly to it. Pins that the
+    /// Args surface stays parameter-free until a field is deliberately added.
+    #[test]
+    fn gc_args_deserialize_empty() {
+        let _: GcArgs = serde_json::from_str("{}").unwrap();
+    }
 
     #[test]
     fn test_gc_output_serialization() {

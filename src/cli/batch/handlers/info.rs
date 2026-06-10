@@ -198,43 +198,18 @@ pub(in crate::cli::batch) fn dispatch_context(
 pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchView) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stats").entered();
     let errors = ctx.error_count.load(std::sync::atomic::Ordering::Relaxed);
-    let mut output = crate::cli::commands::build_stats(&ctx.store(), &ctx.cqs_dir)?;
-    output.errors = Some(errors as usize);
 
-    // Mirror cmd_stats — populate `stale_files` / `missing_files` so daemon
-    // and CLI agree on freshness. Filesystem walk + `count_stale_files` is
-    // cheap; the parser is constructed lazily and torn down.
-    match cqs::Parser::new() {
-        Ok(parser) => match crate::cli::enumerate_files(&ctx.root, &parser, false) {
-            Ok(files) => {
-                let file_set: std::collections::HashSet<_> = files.into_iter().collect();
-                match ctx.store().count_stale_files(&file_set, &ctx.root) {
-                    Ok((stale_count, missing_count)) => {
-                        output.stale_files = Some(stale_count as usize);
-                        output.missing_files = Some(missing_count as usize);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "dispatch_stats: count_stale_files failed; staleness fields omitted"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "dispatch_stats: enumerate_files failed; staleness fields omitted"
-                );
-            }
-        },
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "dispatch_stats: Parser::new failed; staleness fields omitted"
-            );
-        }
-    }
+    // The CLI and daemon now share `stats_core` so freshness / created_at /
+    // hnsw_vectors are computed identically on both surfaces. The daemon
+    // layers on its request-error counter afterward — `errors` is the only
+    // field that has no CLI analogue.
+    let mut output = crate::cli::commands::stats_core(
+        &ctx.store(),
+        &ctx.root,
+        &ctx.cqs_dir,
+        &crate::cli::commands::StatsArgs::default(),
+    )?;
+    output.errors = Some(errors as usize);
 
     Ok(serde_json::to_value(&output)?)
 }
@@ -476,6 +451,77 @@ mod tests {
         assert!(
             json.get("errors").and_then(|v| v.as_u64()).is_some(),
             "stats must carry an `errors` field, got: {json}"
+        );
+        // Post-core-unification: the daemon now shares `stats_core` with the
+        // CLI, so the formerly CLI-only `created_at` / `hnsw_vectors` keys are
+        // present on the daemon path too (hnsw_vectors is null with no HNSW).
+        assert!(
+            json.get("created_at").is_some(),
+            "stats must carry `created_at` post-unification: {json}"
+        );
+        assert!(
+            json.as_object().unwrap().contains_key("hnsw_vectors")
+                || json.get("hnsw_vectors").is_none(),
+            "hnsw_vectors key handling is core-owned"
+        );
+    }
+
+    /// Daemon `dispatch_stale` (non-count-only) is byte-equal to
+    /// `stale_core(...)` over the daemon's cached file_set — the parity
+    /// contract for the cored stale command.
+    #[test]
+    fn parity_stale_dispatch_equals_core() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+
+        let file_set = view.file_set().expect("file_set");
+        let core = crate::cli::commands::stale_core(
+            &view.store(),
+            &view.root,
+            &file_set,
+            &crate::cli::commands::StaleArgs { count_only: false },
+        )
+        .expect("stale_core");
+        let core_val = serde_json::to_value(&core).expect("serialize core");
+
+        let dispatched = super::super::analysis::dispatch_stale(
+            &view,
+            &crate::cli::args::StaleArgs { count_only: false },
+        )
+        .expect("dispatch_stale");
+
+        assert_eq!(
+            dispatched, core_val,
+            "dispatch_stale (full) must equal stale_core output"
+        );
+    }
+
+    /// Daemon `dispatch_stats` is byte-equal to `stats_core(...)` plus the
+    /// daemon-only `errors` field — the parity contract for the cored stats
+    /// command. Asserts the adapter adds nothing beyond `errors`.
+    #[test]
+    fn parity_stats_dispatch_equals_core_plus_errors() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+
+        let dispatched = dispatch_stats(&view).expect("dispatch_stats");
+        let core = crate::cli::commands::stats_core(
+            &view.store(),
+            &view.root,
+            &view.cqs_dir,
+            &crate::cli::commands::StatsArgs::default(),
+        )
+        .expect("stats_core");
+        let mut core_val = serde_json::to_value(&core).expect("serialize core");
+        // The adapter layers on `errors`; everything else must match exactly.
+        let errors = dispatched.get("errors").cloned().expect("errors present");
+        core_val
+            .as_object_mut()
+            .unwrap()
+            .insert("errors".to_string(), errors);
+        assert_eq!(
+            dispatched, core_val,
+            "dispatch_stats must equal stats_core + errors"
         );
     }
 

@@ -33,6 +33,74 @@ pub(crate) struct RefListEntry {
     pub chunks: u64,
 }
 
+/// `cqs ref list --json` envelope: `{references: [...]}` — the list shape
+/// shared with slot/model/project/notes.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct RefListOutput {
+    pub references: Vec<RefListEntry>,
+}
+
+/// `cqs ref add --json` success payload. `warnings` carries the
+/// symlink-redirect notice when the source path was canonicalized through a
+/// symlink; empty (and skipped) otherwise.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct RefAddOutput {
+    pub status: &'static str,
+    pub name: String,
+    pub weight: f32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// `cqs ref remove --json` success payload.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct RefRemoveOutput {
+    pub status: &'static str,
+    pub name: String,
+}
+
+/// Surface-agnostic core for `cqs ref list`. Loads the project config and,
+/// for each reference, opens its index read-only to read the chunk count
+/// (best-effort: a failed open shows 0 chunks and logs a warning). No daemon
+/// path — reference management is CLI-only.
+pub(crate) fn ref_list_core(root: &std::path::Path) -> RefListOutput {
+    let _span = tracing::info_span!("ref_list_core").entered();
+    let config = cqs::config::Config::load(root);
+    let references = config
+        .references
+        .iter()
+        .map(|r| {
+            let chunks = Store::open_readonly(&r.path.join(cqs::INDEX_DB_FILENAME))
+                .map_err(|e| {
+                    tracing::warn!(
+                        name = %r.name,
+                        path = %r.path.display(),
+                        error = %e,
+                        "Failed to open reference store, showing 0 chunks"
+                    );
+                    e
+                })
+                .ok()
+                .and_then(|s| {
+                    s.chunk_count()
+                        .map_err(|e| {
+                            tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");
+                        })
+                        .ok()
+                })
+                .unwrap_or(0);
+            RefListEntry {
+                name: r.name.clone(),
+                path: cqs::normalize_path(&r.path),
+                source: r.source.as_ref().map(|p| cqs::normalize_path(p)),
+                weight: r.weight,
+                chunks,
+            }
+        })
+        .collect();
+    RefListOutput { references }
+}
+
 // ---------------------------------------------------------------------------
 // CLI types
 // ---------------------------------------------------------------------------
@@ -374,18 +442,13 @@ fn cmd_ref_add(
     add_reference_to_config(&config_path, &ref_config)?;
 
     if json {
-        let mut payload = serde_json::json!({
-            "status": "added",
-            "name": name,
-            "weight": weight,
-        });
-        if let Some(msg) = symlink_warning {
-            payload
-                .as_object_mut()
-                .expect("payload is an object literal above")
-                .insert("warnings".to_string(), serde_json::json!([msg]));
-        }
-        crate::cli::json_envelope::emit_json(&payload)?;
+        let out = RefAddOutput {
+            status: "added",
+            name: name.to_string(),
+            weight,
+            warnings: symlink_warning.into_iter().collect(),
+        };
+        crate::cli::json_envelope::emit_json(&out)?;
     } else if !cli.quiet {
         println!("Reference '{}' added.", name);
     }
@@ -444,91 +507,30 @@ fn lexical_normalize(p: &std::path::Path) -> std::path::PathBuf {
 
 fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     let root = find_project_root();
-    let config = cqs::config::Config::load(&root);
     let want_json = json || cli.json;
 
-    if config.references.is_empty() {
-        if want_json {
-            // Emit `{references: []}` envelope so list commands share a
-            // uniform `data.<plural>` accessor across
-            // ref/model/project/slot/notes.
-            crate::cli::json_envelope::emit_json(&serde_json::json!({
-                "references": Vec::<RefListEntry>::new(),
-            }))?;
-        } else {
-            println!("No references configured.");
-        }
+    let out = ref_list_core(&root);
+
+    if want_json {
+        // `{references: [...]}` envelope (empty list when none configured) so
+        // the list shape matches slot/model/project/notes.
+        crate::cli::json_envelope::emit_json(&out)?;
         return Ok(());
     }
 
-    if want_json {
-        let refs: Vec<_> = config
-            .references
-            .iter()
-            .map(|r| {
-                let chunks = Store::open_readonly(&r.path.join(cqs::INDEX_DB_FILENAME))
-                    .map_err(|e| {
-                        tracing::warn!(
-                            name = %r.name,
-                            path = %r.path.display(),
-                            error = %e,
-                            "Failed to open reference store, showing 0 chunks"
-                        );
-                        e
-                    })
-                    .ok()
-                    .and_then(|s| {
-                        s.chunk_count().map_err(|e| {
-                            tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");
-                        }).ok()
-                    })
-                    .unwrap_or(0);
-                RefListEntry {
-                    name: r.name.clone(),
-                    path: cqs::normalize_path(&r.path),
-                    source: r.source.as_ref().map(|p| cqs::normalize_path(p)),
-                    weight: r.weight,
-                    chunks,
-                }
-            })
-            .collect();
-        // Wrap in `{references: [...]}` so the list shape matches
-        // slot/project/notes envelopes.
-        crate::cli::json_envelope::emit_json(&serde_json::json!({
-            "references": refs,
-        }))?;
+    if out.references.is_empty() {
+        println!("No references configured.");
         return Ok(());
     }
 
     println!("{:<15} {:<8} {:<10} SOURCE", "NAME", "WEIGHT", "CHUNKS");
     println!("{}", "─".repeat(60));
 
-    for r in &config.references {
-        let chunks = Store::open(&r.path.join(cqs::INDEX_DB_FILENAME))
-            .map_err(|e| {
-                tracing::warn!(
-                    name = %r.name,
-                    path = %r.path.display(),
-                    error = %e,
-                    "Failed to open reference store, showing 0 chunks"
-                );
-                e
-            })
-            .ok()
-            .and_then(|s| {
-                s.chunk_count().map_err(|e| {
-                    tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");
-                }).ok()
-            })
-            .unwrap_or(0);
-        let source_str = r
-            .source
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "(none)".to_string());
+    for r in &out.references {
+        let source_str = r.source.as_deref().unwrap_or("(none)");
         println!(
             "{:<15} {:<8.2} {:<10} {}",
-            r.name, r.weight, chunks, source_str
+            r.name, r.weight, r.chunks, source_str
         );
     }
 
@@ -579,10 +581,10 @@ fn cmd_ref_remove(name: &str, json: bool) -> Result<()> {
     }
 
     if json {
-        crate::cli::json_envelope::emit_json(&serde_json::json!({
-            "status": "removed",
-            "name": name,
-        }))?;
+        crate::cli::json_envelope::emit_json(&RefRemoveOutput {
+            status: "removed",
+            name: name.to_string(),
+        })?;
     } else {
         println!("Reference '{}' removed.", name);
     }
@@ -976,6 +978,41 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `RefListOutput` is the `{references: [...]}` envelope. An empty config
+    /// serializes to an empty array (never `null`) so consumers can iterate
+    /// unconditionally.
+    #[test]
+    fn ref_list_output_empty_is_array() {
+        let out = RefListOutput { references: vec![] };
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(json["references"].is_array());
+        assert!(json["references"].as_array().unwrap().is_empty());
+    }
+
+    /// `RefAddOutput` skips `warnings` when empty and emits it when a
+    /// symlink-redirect notice is present.
+    #[test]
+    fn ref_add_output_warnings_skip_when_empty() {
+        let clean = RefAddOutput {
+            status: "added",
+            name: "stdlib".into(),
+            weight: 0.8,
+            warnings: vec![],
+        };
+        let j = serde_json::to_value(&clean).unwrap();
+        assert_eq!(j["status"], "added");
+        assert!(j.get("warnings").is_none());
+
+        let warned = RefAddOutput {
+            status: "added",
+            name: "stdlib".into(),
+            weight: 0.8,
+            warnings: vec!["source resolved via symlink".into()],
+        };
+        let j = serde_json::to_value(&warned).unwrap();
+        assert_eq!(j["warnings"][0], "source resolved via symlink");
+    }
 
     #[test]
     fn test_ref_list_entry_serialization() {

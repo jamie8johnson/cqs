@@ -8,6 +8,16 @@ use cqs::Embedder;
 
 use crate::cli::{find_project_root, Cli};
 
+/// `cqs init --json` success payload. init is orchestration (downloads the
+/// model, warms the embedder), so it has no surface-agnostic core — the typed
+/// output is the schema for its single success envelope.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct InitOutput {
+    pub initialized: bool,
+    pub cqs_dir: String,
+    pub model: String,
+}
+
 /// Initialize cqs in a project directory
 /// Creates `.cqs/` directory, downloads the embedding model, and warms up the embedder.
 pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
@@ -89,12 +99,11 @@ pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
             .try_model_config()
             .map(|c| c.name.clone())
             .unwrap_or_default();
-        let obj = serde_json::json!({
-            "initialized": true,
-            "cqs_dir": cqs_dir.display().to_string(),
-            "model": model_name,
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        crate::cli::json_envelope::emit_json(&InitOutput {
+            initialized: true,
+            cqs_dir: cqs_dir.display().to_string(),
+            model: model_name,
+        })?;
     }
 
     Ok(())

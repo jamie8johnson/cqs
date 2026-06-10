@@ -216,6 +216,99 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`stats_core`]. `cqs stats` takes no positional or flag input
+/// beyond the freshness toggle — both CLI and daemon want the same numbers.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct StatsArgs {
+    /// When `true`, walk the filesystem and populate `stale_files` /
+    /// `missing_files`. Both surfaces set this; it is an Arg (not hardcoded)
+    /// so a future caller that already knows the tree is fresh can skip the
+    /// walk. `created_at` and `hnsw_vectors` are populated unconditionally —
+    /// they are cheap metadata reads, not a filesystem scan.
+    #[serde(default = "default_true")]
+    pub include_staleness: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// Manual `Default` so it agrees with the serde default (`true`). A derived
+// `Default` would use `bool::default()` (`false`) and silently disagree with
+// the deserialize path, which the clap-pin tests catch.
+impl Default for StatsArgs {
+    fn default() -> Self {
+        Self {
+            include_staleness: true,
+        }
+    }
+}
+
+/// Surface-agnostic core for `cqs stats`.
+///
+/// Builds [`StatsOutput`] via [`build_stats`] and then layers on the
+/// CLI-shaped fields that both surfaces want to agree on: `created_at`,
+/// `hnsw_vectors`, and (when `args.include_staleness`) `stale_files` /
+/// `missing_files`. The `errors` field stays adapter-owned — only the daemon
+/// has a request-error counter to report.
+///
+/// The staleness walk is best-effort: a parser-construction or enumeration
+/// failure logs and omits the staleness fields rather than failing the whole
+/// command (mirrors the daemon's prior inline behaviour).
+pub(crate) fn stats_core<Mode>(
+    store: &cqs::Store<Mode>,
+    root: &Path,
+    cqs_dir: &Path,
+    args: &StatsArgs,
+) -> Result<StatsOutput> {
+    let _span =
+        tracing::info_span!("stats_core", include_staleness = args.include_staleness).entered();
+
+    let mut output = build_stats(store, cqs_dir)?;
+
+    // created_at + hnsw_vectors are cheap metadata reads — always populate.
+    // count_vectors avoids loading the full HNSW index just for the count.
+    output.hnsw_vectors = HnswIndex::count_vectors(cqs_dir, "index");
+    match store.stats() {
+        Ok(stats) => output.created_at = Some(stats.created_at.clone()),
+        Err(e) => tracing::warn!(error = %e, "stats_core: failed to read created_at; omitting"),
+    }
+
+    if args.include_staleness {
+        match Parser::new() {
+            Ok(parser) => match crate::cli::enumerate_files(root, &parser, false) {
+                Ok(files) => {
+                    let file_set: HashSet<_> = files.into_iter().collect();
+                    match store.count_stale_files(&file_set, root) {
+                        Ok((stale_count, missing_count)) => {
+                            output.stale_files = Some(stale_count as usize);
+                            output.missing_files = Some(missing_count as usize);
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "stats_core: count_stale_files failed; staleness fields omitted"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "stats_core: enumerate_files failed; staleness fields omitted"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                error = %e,
+                "stats_core: Parser::new failed; staleness fields omitted"
+            ),
+        }
+    }
+
+    Ok(output)
+}
+
+// ---------------------------------------------------------------------------
 // Text output
 // ---------------------------------------------------------------------------
 
@@ -316,24 +409,7 @@ pub(crate) fn cmd_stats(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
-    // Check staleness by scanning filesystem
-    let parser = Parser::new()?;
-    let files = crate::cli::enumerate_files(root, &parser, false)?;
-    let file_set: HashSet<_> = files.into_iter().collect();
-    let (stale_count, missing_count) = store
-        .count_stale_files(&file_set, root)
-        .context("Failed to count stale files")?;
-
-    // Use count_vectors to avoid loading full HNSW index just for stats
-    let hnsw_vectors = HnswIndex::count_vectors(cqs_dir, "index");
-
-    let stats = store.stats().context("Failed to read index statistics")?;
-
-    let mut output = build_stats(store, cqs_dir)?;
-    output.stale_files = Some(stale_count as usize);
-    output.missing_files = Some(missing_count as usize);
-    output.created_at = Some(stats.created_at.clone());
-    output.hnsw_vectors = hnsw_vectors;
+    let output = stats_core(store, root, cqs_dir, &StatsArgs::default())?;
 
     if json || ctx.cli.json {
         crate::cli::json_envelope::emit_json(&output)?;
@@ -471,6 +547,31 @@ mod tests {
         let store = cqs::Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
         (store, dir)
+    }
+
+    /// `cqs stats` carries no positional/flag input, so `StatsArgs::default()`
+    /// is what both surfaces pass. Pin the default the cores rely on:
+    /// staleness is included by default (CLI walks the tree, daemon walks it
+    /// too post-unification). A flipped default would silently drop the
+    /// `stale_files`/`missing_files` fields.
+    #[test]
+    fn stats_args_default_includes_staleness() {
+        assert!(
+            StatsArgs::default().include_staleness,
+            "stats default must include staleness — both surfaces depend on it"
+        );
+    }
+
+    /// An empty JSON object (an MCP tool call with no params) deserializes to
+    /// the same defaults `StatsArgs::default()` produces — the
+    /// `#[serde(default)]` contract for the MCP-ready Args surface.
+    #[test]
+    fn stats_args_deserialize_empty_matches_default() {
+        let from_empty: StatsArgs = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            from_empty.include_staleness,
+            StatsArgs::default().include_staleness
+        );
     }
 
     /// `cqs stats --json` exposes `dim` from `Store::dim()` so an agent can

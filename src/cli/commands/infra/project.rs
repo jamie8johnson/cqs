@@ -41,6 +41,27 @@ pub(crate) struct ProjectListEntry {
     pub indexed: bool,
 }
 
+/// `cqs project list --json` envelope: `{projects: [...]}`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ProjectListOutput {
+    pub projects: Vec<ProjectListEntry>,
+}
+
+/// `cqs project add --json` payload.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ProjectAddOutput {
+    pub status: &'static str,
+    pub name: String,
+    pub path: String,
+}
+
+/// `cqs project remove --json` payload. `status` is `removed` / `not_found`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ProjectRemoveOutput {
+    pub status: &'static str,
+    pub name: String,
+}
+
 // ---------------------------------------------------------------------------
 // CLI types
 // ---------------------------------------------------------------------------
@@ -157,11 +178,11 @@ pub(crate) fn cmd_project(
             // (`cqs project add ... --json`). Mirrors the `Remove` arm shape.
             let json = cli.json || output.json;
             if json {
-                crate::cli::json_envelope::emit_json(&serde_json::json!({
-                    "status": "registered",
-                    "name": name,
-                    "path": normalize_path(&abs_path),
-                }))?;
+                crate::cli::json_envelope::emit_json(&ProjectAddOutput {
+                    status: "registered",
+                    name: name.clone(),
+                    path: normalize_path(&abs_path),
+                })?;
             } else {
                 println!("Registered '{}' at {}", name, abs_path.display());
             }
@@ -181,9 +202,7 @@ pub(crate) fn cmd_project(
                             || e.path.join(".cq/index.db").exists(),
                     })
                     .collect();
-                crate::cli::json_envelope::emit_json(&serde_json::json!({
-                    "projects": entries,
-                }))?;
+                crate::cli::json_envelope::emit_json(&ProjectListOutput { projects: entries })?;
             } else if registry.project.is_empty() {
                 println!("No projects registered.");
                 println!("Use 'cqs project register <name> <path>' to add one.");
@@ -208,10 +227,10 @@ pub(crate) fn cmd_project(
             let removed = registry.remove(name)?;
             if json {
                 let status = if removed { "removed" } else { "not_found" };
-                crate::cli::json_envelope::emit_json(&serde_json::json!({
-                    "status": status,
-                    "name": name,
-                }))?;
+                crate::cli::json_envelope::emit_json(&ProjectRemoveOutput {
+                    status,
+                    name: name.clone(),
+                })?;
             } else if removed {
                 println!("Removed '{}'", name);
             } else {

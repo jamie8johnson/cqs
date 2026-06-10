@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Command-core unification for infra/index commands (Phase 3, internal).**
+  The infra and index command groups now carry surface-agnostic cores and/or
+  typed output structs that are the single JSON-schema source. Read-query
+  commands gained cores: `stats` (`stats_core`), `stale` (`stale_core`),
+  `cache stats` (`cache_stats_core`), `model list` (`model_list_core`),
+  `slot list`/`slot active` (`slot_list_core`/`slot_active_core`),
+  `reference list` (`ref_list_core`), and the `telemetry` dashboard
+  (`telemetry_core`). Mutating commands gained cores or typed outputs: `gc`
+  (`gc_core`), the `cache prune`/`compact`/`clear` trio, `slot create`/
+  `promote`/`remove`, `telemetry reset`, `audit-mode` (`audit_mode_core`), and
+  `reference add`/`remove`. Orchestration commands (`index`, `init`, `convert`,
+  `project add`/`list`/`remove`) gained typed outputs for their inline JSON
+  while keeping their process/subprocess/multi-store logic in the adapter.
+  For the two daemon-routed commands (`stats`, `stale`) the daemon dispatcher
+  now drives the same core as the CLI, pinned by parity tests.
+  **Additive JSON:** the daemon `stats` path now emits `created_at` and
+  `hnsw_vectors` (previously CLI-only); no field was removed or renamed.
+  **Behavior fix:** `cqs ref list` text output now opens reference indexes
+  read-only (was read-write) and normalizes the source path to match the JSON
+  path. `ping`, `status`, `model swap`, `doctor`, `hook`, `umap`, and
+  `reference update` were deferred with reasons recorded in the campaign plan
+  (client-vs-server split, or process/pipeline orchestration that does not fit
+  a surface-agnostic core).
+
 - **Command-core unification for graph commands (internal).** The six graph
   commands (`callers`, `callees`, `deps`, `test-map`, `trace`, `impact`) now
   route both the CLI-direct path and the daemon dispatch path through a single
@@ -135,6 +159,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chunk-to-definition transform are hoisted to a single shared location so
   all five CLI graph commands and the daemon dispatch handler share one
   implementation.
+
+- `cqs ref list` no longer silently migrates a stale-schema reference index on disk during a read: both output paths open read-only, so a stale-schema ref shows 0 chunks until `cqs index` runs in that reference.
 
 ## [1.42.0] - 2026-06-09
 

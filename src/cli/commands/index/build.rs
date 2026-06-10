@@ -17,6 +17,25 @@ use crate::cli::{
     reset_interrupted, run_index_pipeline, signal, Cli,
 };
 
+/// `cqs index --json` summary envelope. `cqs index` is pipeline orchestration
+/// (parse → embed → store → HNSW), so the logic stays in this adapter; the
+/// typed output is just the schema for the final success summary, built from
+/// values already computed during the run (no extra DB round trip).
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct IndexSummaryOutput {
+    pub indexed_files: usize,
+    pub indexed_chunks: u64,
+    pub took_ms: u64,
+    pub model: String,
+    pub total_embedded: usize,
+    pub total_cached: usize,
+    pub gpu_failures: usize,
+    pub pruned: u32,
+    pub parse_errors: usize,
+    pub total_calls: usize,
+    pub total_type_edges: usize,
+}
+
 /// Index codebase files for semantic search
 ///
 /// Parses source files, generates embeddings, and stores them in the index database.
@@ -1128,20 +1147,19 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                 0
             }
         };
-        let obj = serde_json::json!({
-            "indexed_files": existing_files.len(),
-            "indexed_chunks": chunk_count,
-            "took_ms": json_start.elapsed().as_millis() as u64,
-            "model": model_name,
-            "total_embedded": total_embedded,
-            "total_cached": total_cached,
-            "gpu_failures": gpu_failures,
-            "pruned": pruned,
-            "parse_errors": stats.parse_errors,
-            "total_calls": stats.total_calls,
-            "total_type_edges": stats.total_type_edges,
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        crate::cli::json_envelope::emit_json(&IndexSummaryOutput {
+            indexed_files: existing_files.len(),
+            indexed_chunks: chunk_count,
+            took_ms: json_start.elapsed().as_millis() as u64,
+            model: model_name,
+            total_embedded,
+            total_cached,
+            gpu_failures,
+            pruned,
+            parse_errors: stats.parse_errors,
+            total_calls: stats.total_calls,
+            total_type_edges: stats.total_type_edges,
+        })?;
     }
 
     Ok(())
