@@ -2,14 +2,18 @@
 
 ## Right Now
 
-**v1.42.0 cut — 2026-06-09 (evening).** Release PR in flight. Schema v28 (canonical_hash). Contents: comment-canonical embedding reuse (#1677), comment cleanup + CI provenance lint (#1673/#1676), cuvs fork retired onto official 26.6.0 + conda libcuvs 26.06 (#1679), eval drift-proofing (#1675), sqlx 0.9 + dep bumps. Toolchain updated to 1.96.0 (local now matches CI; this morning's manual_option_zip ambush can't recur).
+**v1.42.0 RELEASED — 2026-06-09.** Tagged, crates.io published, GitHub release binaries built, local binary + daemon on 1.42.0, target dir cleaned (166 GiB). Schema v28 (canonical_hash). Toolchain 1.96.0 local + CI.
 
-**In flight:**
-- **IVF-SQ Rust bindings agent** (~/cuvs-contrib, branch rust-ivf-sq) — next cuvs upstream contribution, tracked #1678. No pushes; review before anything goes upstream.
-- **Standing fix loop** (session cron, 5h): merges green PRs, continues ongoing work, else pulls from the verified audit queue (`docs/audit-triage.md` § Verification 2026-06-09 — 24 confirmed-open, priority-ordered) or fixable issues (#1680 MSRV 1.96 + assert_matches sweep, #1350, #1351).
-- **Post-release housekeeping queued:** tag + crates.io publish after release PR merges, then `cargo clean` (~/.cargo-target/cqs) + /tmp scratch cleanup.
+**cuvs upstream contribution fleet (2026-06-09/10):**
+- **PRs open on rapidsai/cuvs:** #2229 IVF-SQ bindings (cqs #1678), #2230 refine (cqs #1684), #2231 brute_force serialize (cqs #1682). All implemented by agents in isolated worktrees (~/cuvs-wt-*), code-reviewed to maintainer standards, GPU-tested single-threaded.
+- **In flight:** scalar quantizer (review running, worktree ~/cuvs-wt-quant, cqs #1683), tiered index (implementing, ~/cuvs-wt-tiered, cqs #1685 — the upstream half of "kill the periodic HNSW rebuild").
+- **Issues filed upstream with recommended fixes:** rapidsai/cuvs#2232 (ManagedTensor borrows host ndarray shape storage — dangling pointer at Drop if host array dies first; fix: owned Box<[i64]> dims), #2233 (parallel cargo test SIGSEGVs on GPU tests; fix: harness-level serialization + Resources thread-safety audit). Both offer follow-up PRs.
+- **Maintenance rule for our PRs:** overlapping lib.rs/bindings.rs edits — merge main into branches as siblings land, NEVER rebase after review starts (their guideline).
+- **Monthly cloud routine `cuvs-prs-follow`** (trig_013tdB4kKRZBeFX2UQjk1A9g, 3rd of month 14:17 UTC): enumerates all our open cuvs PRs live, follow-only (no posting — user posts nudges manually), next run Jul 3.
 
-**Operational notes from today:** daemon CLI client has no socket read timeout — a request racing a daemon restart blocks forever (hung cli_envelope_test 40min; noted in notes.toml, queue it). Never restart cqs-watch while a test suite runs. Telemetry reset at 23:03 (archived 33-day window: impact 71% — pre-edit hook; search 4.4%; no kind-fallback visibility until OB-V1.40-2 ships).
+**Standing fix loop** (session cron efc9e985, 5h): merges green PRs, continues ongoing work, else pulls from the verified audit queue (`docs/audit-triage.md` § Verification 2026-06-09 — 24 confirmed-open, priority-ordered) or fixable issues (#1680 MSRV 1.96 + assert_matches sweep, #1350, #1351).
+
+**Operational notes from today:** daemon CLI client has no socket read timeout — request racing a daemon restart blocks forever (hung cli_envelope_test 40min; in notes.toml + audit queue). Never restart cqs-watch mid-test-suite. WSL git push now works directly (credential helper wired into cqs + cuvs clones; gh still via PowerShell). Telemetry reset 23:03 (archived window: impact 71% = pre-edit hook, search 4.4%, kind-fallback invisible until OB-V1.40-2). cuvs Rust gotcha: keep host ndarray alive while any index built from it lives (see #2232).
 
 ### Earlier today — comment hygiene + dependabot drain
 
