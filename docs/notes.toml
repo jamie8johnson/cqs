@@ -1905,3 +1905,11 @@ mentions = [
 sentiment = -0.5
 text = "hnsw::safety::tests::test_loaded_index_lifecycle is flaky under parallel cargo test (passes in isolation) — same family as tc31; HNSW tests under concurrent execution need the containment treatment if a third one appears."
 mentions = ["src/hnsw/safety.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "Provenance lint catches old comment-hygiene stragglers whenever a file moves: git diff re-presents every line as added, so audit-ID comments that survived the #1673 sweep surface at the next refactor touching their file. Scrub before commit; this is the lint working as designed, not a false positive."
+mentions = [
+    "scripts/check_comment_provenance.py",
+    "refactoring",
+]
