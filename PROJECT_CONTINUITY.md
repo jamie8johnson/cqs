@@ -2,6 +2,24 @@
 
 ## Right Now
 
+**Implementation campaign IN FLIGHT (2026-06-10 evening) — watch-mode + audit-queue + open-issue knockout.** User queued 4 roadmap items (#1714-#1717 filed with full specs), then expanded to "knock out other open issues too". Status:
+
+*Merged:* **#1718** (→#1714, `PRAGMA data_version` second staleness discriminator — dedicated raw probe connection dodges sqlx pool-recycling re-baseline; WAL-write-no-checkpoint test), **#1719** (→#1350, ScoreSignal trait — bit-identical refactor, pinned exact-score test run against pre-refactor code first; found the issue's SPLADE-path premise had drifted, paths already converged), **#1720** (→#1715, `cqs status --watch` ops block over the socket — WatchOpsStats on WatchSnapshot, per-slot vec ready for #1717), **#1721** (implementer agent rule: no issue refs in comments), **#1722** (→#1351, DistanceMetric {Cosine, DotProduct} threaded through HNSW+CAGRA, persisted `.hnsw.meta` header + CAGRA sidecar field, typed mismatch errors; empirical: cuVS CAGRA InnerProduct returns RAW inner product best-first — first hypothesis wrong, GPU test caught it; L2 deliberately skipped, score-normalization design needed).
+
+*Verified-stale:* **#1573** tier 2 already shipped via #1621/#1622/#1633 (confident dead 114→41, languages.rs 0 FPs) — issue comment posted with remaining-tier decomposition (3a dyn dispatch, 3b serde callbacks, 4 test-only, one macro-callback residual); issue stays open.
+
+*Wave 2 agents running:* **#1716** adaptive debounce (idle-flush + max-latency cap, `CQS_WATCH_MAX_DEBOUNCE_MS` new) and **audit bundle** items 2/3/7 (try_kind_fallback warn-and-fall-through, lookup_by_name LIMIT + routing-priority ORDER BY, fallback-kind test backfill) — branches feat/1716-adaptive-debounce, fix/audit-queue-fallback-bundle.
+
+*Queued:* wave 3 = **#1717** slot-parallel reindex (full design in the issue: delta propagation from one event pipeline, active-first ordering makes same-model siblings pure cache hits, foreign-model batches with hysteresis opt-in, durability via slot-aware #1182 reconcile, per-slot status/freshness). Then **#1680** MSRV 1.96 + assert_matches + clippy --all-targets sweep — runs ALONE (broad test-file touch). Then closing ceremony: consolidated CHANGELOG, audit-triage sweep, **eval gate** (baseline = today's re-pinned: test 45.9/69.7/83.5, dev 49.5/79.8/93.6 — #1719/#1722 touch retrieval-adjacent code), binary rebuild+install, telemetry reset (window is maintenance-distorted, reset at session END), fix implementer.md's stale "#1254 until it ships" note (#1254 is CLOSED).
+
+*Stash forensics CLOSED:* 7 stashes (6-8 weeks old, audit-wave/serve-auth/agent-leak eras) audited hunk-by-hunk against main — six fully LANDED via their campaign PRs (verbatim evidence per hunk), one MIXED at ~95%. The only unlanded material: two ~15-line residues (daemon-client thread stack pin, loopback URL for `--no-auth --bind 0.0.0.0 --open`) salvaged as **#1723** (queued, post-wave-2 — touches watch/daemon.rs + serve.rs). All 7 stashes dropped; drop SHAs in session transcript, reflog-recoverable ~90 days.
+
+*Two WSL crashes today, both zero-loss* (worktree-per-agent + early push = nothing in RAM worth losing). *Lint scoreboard:* provenance lint caught agent-written issue refs 3× (#1718, #1720 fixups; #1722 stripped pre-PR) → rule now in implementer.md (#1721); env-var docs guard caught missing CQS_DISTANCE_METRIC README row (#1722 fixup). *Skipped issues with rationale:* #1576 (live-GPU SIGFPE repro), #1391/#106 (upstream), #1512/#1043 (Windows env), #1463/#1459 (design umbrellas), #1139/#1140 (user's prior skip), #916/#717/#255.
+
+*Cleanup done:* 5 stale merged remote branches + 11 stale remote-tracking refs pruned; 3 schema-migration backup DBs deleted (~1.2GB); worktrees/branches cleaned as PRs merge. Target dir at 49G left alone (agents building). Daemon binary is PRE-campaign — rebuild+install at ceremony.
+
+---
+
 **Code review + fixes + recall gate: CLOSED (2026-06-10 afternoon).** High-effort multi-agent review (Fable agents per user request) of the taste-debt queue PRs #1701-#1706: 7 finder angles → 15 verified findings (14 CONFIRMED, 1 PLAUSIBLE, 0 refuted). All 15 fixed across 5 PRs, all merged:
 - **#1707** (reuse): resolve_reuse returns Result — watch path restored to fail-and-retry (a SQLite error was silently becoming a full-corpus GPU re-embed per tick); `canon_key_ref(&Chunk) -> &str` is now THE key function for read + all 3 write-back sites (drift hazard + hot-path alloc gone); model_fingerprint gated on cache presence (was paying a ~550MB blake3 on the cache-disabled path).
 - **#1708** (docs): ULTRASECURITY removal annotations for the files #1703's sweep missed (ROADMAP, json-snr-restoration banner, json-noise-audit, polymorphic-routing, audit-triage, plan doc, tears); display.rs "posture-gated" → "skip-when-default".

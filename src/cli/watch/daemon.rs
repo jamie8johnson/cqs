@@ -229,13 +229,14 @@ pub(super) fn spawn_daemon_thread(
                     // read/parse/write I/O happens in parallel. Only
                     // the dispatch itself is serialized via the
                     // BatchContext mutex inside handle_socket_client.
-                    // 256 KiB pinned stack: the handler path is shallow
-                    // (read/parse/dispatch/write), and at the max-clients
-                    // cap the 2 MiB platform default would reserve ~224 MiB
-                    // of virtual address space for nothing.
+                    // Platform-default stack: a 256 KiB pin was tried and
+                    // crashed the daemon — the dispatch path (command cores,
+                    // audit-state load, serde) overflows small stacks. The
+                    // 2 MiB default costs virtual address space only, not
+                    // resident memory; do not re-pin without a stress test
+                    // of the deepest dispatch path.
                     if let Err(e) = std::thread::Builder::new()
                         .name("cqs-daemon-client".to_string())
-                        .stack_size(256 * 1024)
                         .spawn(move || {
                             handle_socket_client(stream, &ctx_clone);
                             in_flight_clone.fetch_sub(1, Ordering::AcqRel);
