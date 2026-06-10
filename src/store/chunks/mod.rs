@@ -13,6 +13,7 @@ mod embeddings;
 mod query;
 pub mod staleness;
 
+pub use query::LOOKUP_BY_NAME_LIMIT;
 pub use staleness::PruneAllResult;
 
 // Free async functions in async_helpers are pub(super) — accessible

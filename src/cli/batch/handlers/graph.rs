@@ -645,6 +645,219 @@ mod tests {
         (dir, ctx)
     }
 
+    // ─── Kind-fallback shape tests (daemon path) ───────────────────────────
+    //
+    // The parity tests below prove daemon == core; these pin what that
+    // shared output actually IS for each fallback kind. One test per kind
+    // (const / type / module / ambiguous), spread across four different
+    // dispatch handlers so the per-command `fallback_from` label is
+    // exercised too.
+
+    /// Like `make_chunk` but with an explicit chunk type, for seeding
+    /// non-function definitions (consts, structs, modules).
+    fn make_typed_chunk(id: &str, name: &str, chunk_type: ChunkType) -> Chunk {
+        let mut c = make_chunk(id, name);
+        c.chunk_type = chunk_type;
+        c
+    }
+
+    /// Seed the call-graph fixture plus one definition of every fallback
+    /// kind: a const (`MAX_LEN`), a struct (`MyConfig`), a module
+    /// (`settings_mod`), and a function+const collision (`dual_name`).
+    fn seed_kind_corpus() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let chunks = vec![
+                (
+                    make_chunk("src/lib.rs:1:caller", "caller_fn"),
+                    embedding.clone(),
+                ),
+                (
+                    make_chunk("src/lib.rs:2:callee", "callee_fn"),
+                    embedding.clone(),
+                ),
+                (
+                    make_typed_chunk("src/lib.rs:9:max", "MAX_LEN", ChunkType::Constant),
+                    embedding.clone(),
+                ),
+                (
+                    make_typed_chunk("src/lib.rs:20:cfg", "MyConfig", ChunkType::Struct),
+                    embedding.clone(),
+                ),
+                (
+                    make_typed_chunk("src/lib.rs:30:mod", "settings_mod", ChunkType::Module),
+                    embedding.clone(),
+                ),
+                (
+                    make_chunk("src/lib.rs:40:dualfn", "dual_name"),
+                    embedding.clone(),
+                ),
+                (
+                    make_typed_chunk("src/other.rs:5:dualconst", "dual_name", ChunkType::Constant),
+                    embedding.clone(),
+                ),
+            ];
+            store
+                .upsert_chunks_batch(&chunks, Some(0))
+                .expect("upsert chunks");
+            let fc = FunctionCalls {
+                name: "caller_fn".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "callee_fn".to_string(),
+                    line_number: 3,
+                }],
+            };
+            store
+                .upsert_function_calls(Path::new("src/lib.rs"), &[fc])
+                .expect("upsert function call");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    /// Assert the shared `{kind, fallback_from, name, definitions, note}`
+    /// fallback shape on a dispatch handler's JSON output.
+    fn assert_fallback_shape(json: &serde_json::Value, kind: &str, from: &str, name: &str) {
+        assert_eq!(json["kind"], kind, "kind label, got: {json}");
+        assert_eq!(json["fallback_from"], from, "fallback_from, got: {json}");
+        assert_eq!(json["name"], name, "queried name, got: {json}");
+        let defs = json["definitions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("definitions must be an array, got: {json}"));
+        assert!(!defs.is_empty(), "definitions must not be empty: {json}");
+        for key in ["file", "line_start", "line_end", "language", "chunk_type"] {
+            assert!(
+                defs[0].get(key).is_some(),
+                "definitions[0] missing {key}: {json}"
+            );
+        }
+        let note = json["note"]
+            .as_str()
+            .unwrap_or_else(|| panic!("note must be a string, got: {json}"));
+        assert!(!note.is_empty(), "note must not be empty");
+    }
+
+    #[test]
+    fn dispatch_callers_const_name_returns_const_fallback() {
+        let (_dir, ctx) = seed_kind_corpus();
+        let args = CallersArgs {
+            name: "MAX_LEN".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        assert_fallback_shape(&json, "const", "callers", "MAX_LEN");
+        assert_eq!(json["definitions"][0]["chunk_type"], "constant");
+    }
+
+    #[test]
+    fn dispatch_callees_type_name_returns_type_fallback() {
+        let (_dir, ctx) = seed_kind_corpus();
+        let args = CallersArgs {
+            name: "MyConfig".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
+        assert_fallback_shape(&json, "type", "callees", "MyConfig");
+        assert_eq!(json["definitions"][0]["chunk_type"], "struct");
+    }
+
+    #[test]
+    fn dispatch_test_map_module_name_returns_module_fallback() {
+        let (_dir, ctx) = seed_kind_corpus();
+        let args = TestMapArgs {
+            name: "settings_mod".into(),
+            depth: 5,
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_test_map(&ctx.build_view(None), &args).expect("dispatch_test_map");
+        assert_fallback_shape(&json, "module", "test-map", "settings_mod");
+    }
+
+    #[test]
+    fn dispatch_impact_ambiguous_name_returns_ambiguous_fallback() {
+        let (_dir, ctx) = seed_kind_corpus();
+        let args = ImpactArgs {
+            name: "dual_name".into(),
+            depth: 1,
+            suggest_tests: false,
+            type_impact: false,
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_impact(&ctx.build_view(None), &args).expect("dispatch_impact");
+        assert_fallback_shape(&json, "ambiguous", "impact", "dual_name");
+        // Both colliding definitions must surface, callable ranked first
+        // (routing-priority lookup order).
+        let defs = json["definitions"].as_array().expect("definitions array");
+        assert_eq!(defs.len(), 2, "both colliding definitions: {defs:?}");
+        assert_eq!(defs[0]["chunk_type"], "function");
+        assert_eq!(defs[1]["chunk_type"], "constant");
+    }
+
+    /// Kind detection is best-effort: a store error during the kind-detect
+    /// lookup must degrade to the command's normal path, not fail the
+    /// request. Seed the normal call-graph fixture, then break the chunks
+    /// table (which only the kind-detect lookup reads — the callers query
+    /// reads `function_calls`) and assert the dispatcher still answers.
+    #[test]
+    fn dispatch_callers_degrades_to_normal_path_when_kind_lookup_fails() {
+        use sqlx::ConnectOptions;
+
+        let (dir, ctx) = seed_call_graph_ctx();
+        let index_path = dir.path().join(".cqs").join(cqs::INDEX_DB_FILENAME);
+
+        // Rename the chunks table out from under the open read connection.
+        // Reads see the committed schema change on their next query: the
+        // kind-detect `lookup_by_name` ("no such table: chunks") fails
+        // while `get_callers_full` (function_calls) keeps working.
+        let mut writer = ctx
+            .runtime
+            .block_on(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&index_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect(),
+            )
+            .expect("open writer");
+        ctx.runtime
+            .block_on(async {
+                sqlx::query("ALTER TABLE chunks RENAME TO chunks_offline")
+                    .execute(&mut writer)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .expect("rename chunks table");
+
+        let args = CallersArgs {
+            name: "callee_fn".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args)
+            .expect("kind-detect store error must not fail the request");
+        let callers = json
+            .as_array()
+            .unwrap_or_else(|| panic!("normal-path response must be an array, got: {json}"));
+        assert!(
+            callers.iter().any(|c| c["name"] == "caller_fn"),
+            "normal callers path must still answer, got: {callers:?}"
+        );
+    }
+
     #[test]
     fn parity_callers_daemon_matches_core() {
         let (_dir, ctx) = seed_with_const();

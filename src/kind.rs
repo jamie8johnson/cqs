@@ -126,6 +126,33 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
     }
 }
 
+/// Routing priority for a [`Kind`]: lower values sort first in
+/// `Store::lookup_by_name`'s ORDER BY.
+///
+/// The classifier ([`classify_hits`]) reduces over the *set* of kinds it
+/// sees, so ordering only becomes load-bearing once the lookup is bounded:
+/// for a hot name with more matches than the row cap, the priority decides
+/// which kinds survive the cut and therefore how the name classifies.
+/// Callables rank first because every graph command's happy path routes on
+/// `Kind::Function` — a callable name that also collides with hundreds of
+/// alphabetically-earlier types or consts must still present its callable
+/// evidence to the classifier, or the command would misroute into a
+/// wrong-kind fallback. Types outrank consts (deps runs its normal flow
+/// for types), and modules come last among the routed kinds.
+pub fn routing_priority(kind: Kind) -> u8 {
+    match kind {
+        Kind::Function => 0,
+        Kind::Type => 1,
+        Kind::Const => 2,
+        Kind::Module => 3,
+        Kind::Other => 4,
+        // Aggregate dispatch decisions — never produced by
+        // `classify_chunk_type` for a single chunk_type. Listed to keep
+        // the match exhaustive (a new Kind variant must pick a rank).
+        Kind::Ambiguous | Kind::Multiple | Kind::NotFound => 5,
+    }
+}
+
 /// One-shot kind detection: query the store for exact-name matches,
 /// build hits, and reduce to a [`Kind`]. Returns the classified kind
 /// alongside the underlying hits (the per-(command × kind) routing
@@ -337,6 +364,50 @@ mod tests {
         let (kind, hits) = detect_kind_for_store(&store, "missing_name").unwrap();
         assert_eq!(kind, Kind::NotFound);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn detect_kind_for_store_cross_kind_collision_still_ambiguous() {
+        // The bounded, priority-ordered lookup must not change how a
+        // routing-relevant collision classifies: a name that is both a
+        // function and a const (well under the row cap) stays Ambiguous,
+        // exactly as it did with the unbounded alphabetical lookup.
+        use crate::store::Store;
+        use crate::test_helpers::mock_embedding;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+        let store = Store::open(&db_path).unwrap();
+        store.init(&crate::store::ModelInfo::default()).unwrap();
+
+        let fn_chunk = build_test_chunk("len", "src/a.rs");
+        let mut const_chunk = build_test_chunk("len", "src/b.rs");
+        const_chunk.chunk_type = ChunkType::Constant;
+        const_chunk.id = "src/b.rs:1:constlen".to_string();
+        store
+            .upsert_chunks_batch(
+                &[
+                    (fn_chunk, mock_embedding(1.0)),
+                    (const_chunk, mock_embedding(2.0)),
+                ],
+                Some(100),
+            )
+            .unwrap();
+
+        let (kind, hits) = detect_kind_for_store(&store, "len").unwrap();
+        assert_eq!(kind, Kind::Ambiguous);
+        assert_eq!(hits.len(), 2);
+        // Priority order: the callable hit ranks first.
+        assert_eq!(hits[0].chunk_type, ChunkType::Function);
+    }
+
+    #[test]
+    fn routing_priority_callables_first() {
+        // Pin the relative ranking the ORDER BY depends on.
+        assert!(routing_priority(Kind::Function) < routing_priority(Kind::Type));
+        assert!(routing_priority(Kind::Type) < routing_priority(Kind::Const));
+        assert!(routing_priority(Kind::Const) < routing_priority(Kind::Module));
+        assert!(routing_priority(Kind::Module) < routing_priority(Kind::Other));
     }
 
     #[test]

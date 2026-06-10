@@ -122,7 +122,7 @@ pub(crate) fn deps_core(
     // Const/Module/Ambiguous don't fit deps' model. `notes_text::deps`
     // returns `None` for Type, encoding "deps runs the forward query for a
     // type" — so a Type classification falls through to the normal flow.
-    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         if let Some(text) = notes_text::deps(fk) {
             return Ok(DepsCoreOutput::Fallback(KindFallbackOutput::new(
@@ -232,7 +232,7 @@ pub(crate) fn cmd_deps(
 /// forward query), so an unexpected `None` from `notes_text::deps` is a
 /// no-op.
 fn render_deps_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    let (chunks, fallback) = super::detect_fallback(store, name);
     if let Some(fk) = fallback {
         if let (Some(text), Some(lead)) = (notes_text::deps(fk), notes_text::deps_lead(fk, name)) {
             super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");

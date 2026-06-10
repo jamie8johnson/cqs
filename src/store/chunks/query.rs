@@ -15,6 +15,36 @@ use crate::store::helpers::{
 };
 use crate::store::Store;
 
+/// Row cap for [`Store::lookup_by_name`]. Matches the kind-mismatch
+/// fallback's `definitions[]` render cap downstream (the CLI/daemon
+/// graph fallbacks cap definitions at 100 entries), so the lookup never
+/// fetches summaries the fallback would discard, while still feeding the
+/// kind classifier enough evidence to route a hot name.
+pub const LOOKUP_BY_NAME_LIMIT: usize = 100;
+
+/// SQL `CASE chunk_type ... END` expression ranking rows by routing
+/// priority for [`Store::lookup_by_name`]'s ORDER BY. Generated from
+/// `ChunkType::ALL` through `classify_chunk_type` + `routing_priority`,
+/// so the priority groups can never drift from the kind classifier: a
+/// new `ChunkType` variant is ranked automatically by its `Kind`.
+fn chunk_type_priority_case() -> &'static str {
+    use std::fmt::Write as _;
+    use std::sync::OnceLock;
+    static CASE_SQL: OnceLock<String> = OnceLock::new();
+    CASE_SQL.get_or_init(|| {
+        let mut case = String::from("CASE chunk_type");
+        for ct in ChunkType::ALL {
+            let priority = crate::kind::routing_priority(crate::kind::classify_chunk_type(*ct));
+            // ChunkType's Display strings are the exact values stored in
+            // the chunk_type column; none contain quotes.
+            let _ = write!(case, " WHEN '{ct}' THEN {priority}");
+        }
+        // Unknown values (future schema drift) sort last.
+        case.push_str(" ELSE 99 END");
+        case
+    })
+}
+
 impl<Mode> Store<Mode> {
     /// Get the number of chunks in the index
     pub fn chunk_count(&self) -> Result<u64, StoreError> {
@@ -250,12 +280,25 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Exact-match lookup: return all chunks whose `name` equals `name`,
-    /// ordered by `(chunk_type, origin, line_start)` for deterministic
-    /// ranking. Polymorphic-routing Phase 1 building block — the
-    /// `cqs::kind::classify_hits` reducer consumes the result to decide
-    /// which command to dispatch (or whether to fall through to a
-    /// freeform search). See `docs/polymorphic-routing.md`.
+    /// Exact-match lookup: return chunks whose `name` equals `name`,
+    /// ordered by routing priority (callables, then types, then consts,
+    /// then modules — see [`crate::kind::routing_priority`]) with
+    /// `(chunk_type, origin, line_start)` as deterministic tiebreakers,
+    /// capped at [`LOOKUP_BY_NAME_LIMIT`] rows. Polymorphic-routing
+    /// building block — the `cqs::kind::classify_hits` reducer consumes
+    /// the result to decide which command to dispatch (or whether to fall
+    /// through to a freeform search). See `docs/polymorphic-routing.md`.
+    ///
+    /// The cap exists so a hot name (`Result`, `Error`, `new`) never
+    /// deserializes thousands of full `ChunkSummary` rows just to answer
+    /// a routing question. Under the cap, ordering is load-bearing: the
+    /// classifier reduces over the set of kinds it sees, so the priority
+    /// ORDER BY guarantees the highest-priority kinds survive the cut.
+    /// A name whose matches all fit under the cap classifies exactly as
+    /// it did unbounded; a name with more matches than the cap classifies
+    /// from its highest-priority kinds (a name that is overwhelmingly
+    /// callable routes as callable rather than tipping into a fallback
+    /// because alphabetically-earlier kinds crowded the result).
     ///
     /// Distinct from [`Store::search_by_name`] (FTS-driven, prefix +
     /// fuzzy) and [`Self::get_chunks_by_names_batch`] (also exact, but
@@ -270,8 +313,11 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let sql = format!(
                 "SELECT {cols} FROM chunks WHERE name = ?1 \
-                 ORDER BY chunk_type, origin, line_start",
+                 ORDER BY {priority}, chunk_type, origin, line_start \
+                 LIMIT {limit}",
                 cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
+                priority = chunk_type_priority_case(),
+                limit = LOOKUP_BY_NAME_LIMIT,
             );
             let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(name)
@@ -898,6 +944,116 @@ mod tests {
         // sorts before b.rs.
         assert_eq!(hits[0].file.to_string_lossy(), "src/a.rs");
         assert_eq!(hits[1].file.to_string_lossy(), "src/b.rs");
+    }
+
+    #[test]
+    fn test_lookup_by_name_orders_by_routing_priority_not_alphabetical() {
+        // A name colliding across kinds must come back callables-first.
+        // Alphabetically, 'constant' < 'function' < 'struct'; routing
+        // priority is function < struct (type) < constant. Seed the
+        // collision in alphabetical-friendly file order so a regression
+        // back to `ORDER BY chunk_type` flips the assertion.
+        let (store, _dir) = setup_store();
+
+        let mut const_chunk = make_chunk("collide", "src/a.rs");
+        const_chunk.chunk_type = crate::parser::ChunkType::Constant;
+        const_chunk.id = format!("src/a.rs:1:{}", &const_chunk.content_hash[..8]);
+
+        let mut struct_chunk = make_chunk("collide", "src/b.rs");
+        struct_chunk.chunk_type = crate::parser::ChunkType::Struct;
+        struct_chunk.id = format!("src/b.rs:1:{}", &struct_chunk.content_hash[..8]);
+
+        let mut fn_chunk = make_chunk("collide", "src/c.rs");
+        fn_chunk.id = format!("src/c.rs:1:{}", &fn_chunk.content_hash[..8]);
+
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(
+                &[
+                    (const_chunk, emb.clone()),
+                    (struct_chunk, emb.clone()),
+                    (fn_chunk, emb.clone()),
+                ],
+                Some(100),
+            )
+            .unwrap();
+
+        let hits = store.lookup_by_name("collide").unwrap();
+        let order: Vec<_> = hits.iter().map(|h| h.chunk_type).collect();
+        assert_eq!(
+            order,
+            vec![
+                crate::parser::ChunkType::Function,
+                crate::parser::ChunkType::Struct,
+                crate::parser::ChunkType::Constant,
+            ],
+            "lookup_by_name must rank callable > type > const"
+        );
+    }
+
+    #[test]
+    fn test_lookup_by_name_caps_result_rows() {
+        // Hot names must not deserialize unbounded row sets — the lookup
+        // is a routing primitive, and its consumers (kind classifier +
+        // fallback definitions) never need more than the cap.
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let pairs: Vec<_> = (0..(super::LOOKUP_BY_NAME_LIMIT + 25))
+            .map(|i| {
+                let mut c = make_chunk("hot_name", &format!("src/f{i:04}.rs"));
+                c.id = format!("src/f{i:04}.rs:1:{}", &c.content_hash[..8]);
+                (c, emb.clone())
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(1000)).unwrap();
+
+        let hits = store.lookup_by_name("hot_name").unwrap();
+        assert_eq!(hits.len(), super::LOOKUP_BY_NAME_LIMIT);
+    }
+
+    #[test]
+    fn test_lookup_by_name_priority_keeps_callable_evidence_under_cap() {
+        // One function buried among LIMIT consts whose chunk_type sorts
+        // alphabetically earlier: the priority ORDER BY must surface the
+        // callable inside the capped window (first, in fact), so the kind
+        // classifier still sees the Function evidence on hot names.
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let mut pairs: Vec<_> = (0..super::LOOKUP_BY_NAME_LIMIT)
+            .map(|i| {
+                let mut c = make_chunk("busy", &format!("src/c{i:04}.rs"));
+                c.chunk_type = crate::parser::ChunkType::Constant;
+                c.id = format!("src/c{i:04}.rs:1:{}", &c.content_hash[..8]);
+                (c, emb.clone())
+            })
+            .collect();
+        let mut f = make_chunk("busy", "src/zzz.rs");
+        f.id = format!("src/zzz.rs:1:{}", &f.content_hash[..8]);
+        pairs.push((f, emb.clone()));
+        store.upsert_chunks_batch(&pairs, Some(1000)).unwrap();
+
+        let hits = store.lookup_by_name("busy").unwrap();
+        assert_eq!(hits.len(), super::LOOKUP_BY_NAME_LIMIT);
+        assert_eq!(
+            hits[0].chunk_type,
+            crate::parser::ChunkType::Function,
+            "the callable must survive the cap and rank first"
+        );
+    }
+
+    #[test]
+    fn test_chunk_type_priority_case_covers_every_chunk_type() {
+        // The CASE expression is generated from ChunkType::ALL, so every
+        // stored chunk_type string must appear in it — pin the generation
+        // so a refactor to a hand-written list can't silently drop one.
+        let case = super::chunk_type_priority_case();
+        for ct in crate::parser::ChunkType::ALL {
+            assert!(
+                case.contains(&format!("WHEN '{ct}' THEN")),
+                "priority CASE missing chunk_type '{ct}'"
+            );
+        }
+        assert!(case.ends_with("ELSE 99 END"));
     }
 
     #[test]
