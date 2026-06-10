@@ -5,6 +5,90 @@ use anyhow::Result;
 use cqs::ReviewResult;
 use cqs::RiskLevel;
 
+// ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`review_core`]. The diff text is acquired by the adapter
+/// (CLI: git or stdin; daemon: git) and passed in, so the core stays I/O-free.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct ReviewArgs {
+    /// Token budget for the output. When set, callers/tests lists are
+    /// truncated to fit; changed functions + notes are always included.
+    #[serde(default)]
+    pub tokens: Option<usize>,
+}
+
+/// Typed output for `cqs review`. Flattens the lib [`ReviewResult`] and adds
+/// the optional token-budget telemetry the adapters previously spliced inline.
+/// THE schema — both surfaces serialize this.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ReviewOutput {
+    #[serde(flatten)]
+    pub review: ReviewResult,
+    /// Estimated tokens used after budgeting (present only when `--tokens` set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
+    /// The requested token budget (present only when `--tokens` set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+}
+
+/// An empty [`ReviewResult`] — emitted when the diff touches no indexed
+/// functions. Serializes to the historical empty-review shape
+/// (`changed_functions:[]`, …, `risk_summary:{…,overall:"low"}`,
+/// `stale_warning:null`).
+fn empty_review_result() -> ReviewResult {
+    ReviewResult {
+        changed_functions: vec![],
+        affected_callers: vec![],
+        affected_tests: vec![],
+        relevant_notes: vec![],
+        risk_summary: cqs::RiskSummary {
+            high: 0,
+            medium: 0,
+            low: 0,
+            overall: RiskLevel::Low,
+        },
+        stale_warning: None,
+        warnings: vec![],
+    }
+}
+
+/// Surface-agnostic core for `cqs review`. Runs the diff-review pipeline on
+/// `diff_text`, applies the optional token budget, and returns the typed
+/// [`ReviewOutput`]. Both the CLI (`cmd_review`) and daemon (`dispatch_review`)
+/// drive this so the review schema + budgeting live in one place.
+pub(crate) fn review_core(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &std::path::Path,
+    diff_text: &str,
+    args: &ReviewArgs,
+) -> Result<ReviewOutput> {
+    let _span = tracing::info_span!("review_core", tokens = ?args.tokens).entered();
+
+    match cqs::review_diff(store, diff_text, root)? {
+        // No indexed functions affected: emit the empty-review shape with no
+        // budget telemetry (matches the historical empty-diff envelope on both
+        // surfaces — budget fields were never spliced onto the empty case).
+        None => Ok(ReviewOutput {
+            review: empty_review_result(),
+            token_count: None,
+            token_budget: None,
+        }),
+        Some(mut review) => {
+            let token_count = args
+                .tokens
+                .map(|budget| apply_token_budget(&mut review, budget, true));
+            Ok(ReviewOutput {
+                review,
+                token_count,
+                token_budget: args.tokens,
+            })
+        }
+    }
+}
+
 pub(crate) fn cmd_review(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
@@ -27,37 +111,25 @@ pub(crate) fn cmd_review(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // 1. Get diff text
+    // 1. Get diff text — adapter owns I/O (CLI supports stdin; daemon git only).
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
         crate::cli::commands::run_git_diff(base)?
     };
 
-    // 2. Run review
-    let result = cqs::review_diff(store, &diff_text, root)?;
-
-    match result {
-        None => {
-            if json {
-                crate::cli::json_envelope::emit_json(&empty_review_json())?;
-            } else {
-                println!("No indexed functions affected by this diff.");
-            }
-        }
-        Some(mut review) => {
-            // Apply token budget: truncate callers and tests lists to fit
-            let token_count_used =
-                max_tokens.map(|budget| apply_token_budget(&mut review, budget, json));
-
-            if json {
-                let mut output: serde_json::Value = serde_json::to_value(&review)?;
-                if let Some(tokens) = token_count_used {
-                    output["token_count"] = serde_json::json!(tokens);
-                    output["token_budget"] = serde_json::json!(max_tokens.unwrap_or(0));
-                }
-                crate::cli::json_envelope::emit_json(&output)?;
-            } else {
+    if json {
+        // JSON path goes through the shared core (same as the daemon).
+        let output = review_core(store, root, &diff_text, &ReviewArgs { tokens: max_tokens })?;
+        crate::cli::json_envelope::emit_json(&output)?;
+    } else {
+        // Text path budgets with json=false accounting (different per-item
+        // overhead than the JSON surface) and renders the human dashboard.
+        match cqs::review_diff(store, &diff_text, root)? {
+            None => println!("No indexed functions affected by this diff."),
+            Some(mut review) => {
+                let token_count_used =
+                    max_tokens.map(|budget| apply_token_budget(&mut review, budget, false));
                 display_review_text(&review, root, token_count_used, max_tokens);
             }
         }
@@ -71,15 +143,6 @@ pub(crate) fn cmd_review(
 /// Callers and tests are the variable-size sections that get truncated.
 /// `json` adds per-item overhead for JSON field names and structure tokens.
 /// Returns total token count used.
-/// Public entry point for batch mode to apply token budgeting to review output.
-pub(crate) fn apply_token_budget_public(
-    review: &mut ReviewResult,
-    budget: usize,
-    json: bool,
-) -> usize {
-    apply_token_budget(review, budget, json)
-}
-
 fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> usize {
     let _span = tracing::info_span!("review_token_budget", budget, json).entered();
 
@@ -152,27 +215,6 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     }
 
     used
-}
-
-/// Creates and returns a JSON object representing an empty code review with no findings.
-/// This function constructs a default review structure containing empty arrays for changed functions, affected callers, and affected tests, along with empty risk assessments and a null stale warning field.
-/// # Returns
-/// A `serde_json::Value` containing a JSON object with the following fields:
-/// - `changed_functions`: empty array
-/// - `affected_callers`: empty array
-/// - `affected_tests`: empty array
-/// - `relevant_notes`: empty array
-/// - `risk_summary`: object with zero counts for high, medium, and low risk items, and overall risk set to "low"
-/// - `stale_warning`: null value
-fn empty_review_json() -> serde_json::Value {
-    serde_json::json!({
-        "changed_functions": [],
-        "affected_callers": [],
-        "affected_tests": [],
-        "relevant_notes": [],
-        "risk_summary": { "high": 0, "medium": 0, "low": 0, "overall": "low" },
-        "stale_warning": null
-    })
 }
 
 fn display_review_text(
@@ -386,6 +428,15 @@ mod tests {
             stale_warning: None,
             warnings: vec![],
         }
+    }
+
+    /// `ReviewArgs` deserializes from a wire/MCP object; `tokens` defaults to None.
+    #[test]
+    fn review_args_minimal_deserialize() {
+        let def: ReviewArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(def.tokens.is_none());
+        let with: ReviewArgs = serde_json::from_value(serde_json::json!({"tokens": 500})).unwrap();
+        assert_eq!(with.tokens, Some(500));
     }
 
     #[test]

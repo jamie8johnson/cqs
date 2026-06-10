@@ -1,11 +1,47 @@
 //! Health command — codebase quality snapshot
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use colored::Colorize;
 
 use cqs::Parser;
+
+// ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`health_core`]. The health snapshot takes no user parameters
+/// today; the struct exists so the core matches the established
+/// `*Args` + `*_core` shape and can grow Deserialize-able fields without a
+/// signature change (MCP-ready).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct HealthArgs {}
+
+/// Surface-agnostic core for `cqs health`. Returns the typed
+/// [`cqs::health::HealthReport`] (already the schema). The adapter owns file
+/// enumeration so the hot daemon path can pass its cached `file_set` (the CLI
+/// builds the set once via [`enumerate_for_health`]); mirrors the
+/// `stale_core` split.
+pub(crate) fn health_core(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    file_set: &HashSet<PathBuf>,
+    cqs_dir: &Path,
+    root: &Path,
+    _args: &HealthArgs,
+) -> Result<cqs::health::HealthReport> {
+    let _span = tracing::info_span!("health_core").entered();
+    Ok(cqs::health::health_check(store, file_set, cqs_dir, root)?)
+}
+
+/// Enumerate on-disk source files for the health staleness check. CLI helper —
+/// the daemon supplies its cached `file_set` directly to [`health_core`].
+pub(crate) fn enumerate_for_health(root: &Path) -> Result<HashSet<PathBuf>> {
+    let parser = Parser::new()?;
+    let files = crate::cli::enumerate_files(root, &parser, false)?;
+    Ok(files.into_iter().collect())
+}
 
 pub(crate) fn cmd_health(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -13,16 +49,11 @@ pub(crate) fn cmd_health(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_health").entered();
 
-    let store = &ctx.store;
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
-    // Enumerate current files for staleness check
-    let parser = Parser::new()?;
-    let files = crate::cli::enumerate_files(root, &parser, false)?;
-    let file_set: HashSet<_> = files.into_iter().collect();
-
-    let report = cqs::health::health_check(store, &file_set, cqs_dir, root)?;
+    let file_set = enumerate_for_health(root)?;
+    let report = health_core(&ctx.store, &file_set, cqs_dir, root, &HealthArgs::default())?;
 
     if json {
         let json_val = serde_json::to_value(&report)?;

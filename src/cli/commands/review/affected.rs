@@ -22,6 +22,59 @@ fn risk_label(level: &RiskLevel) -> colored::ColoredString {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`affected_core`]. The diff text is acquired by the adapter
+/// (CLI: git or `--stdin`) and passed in, so the core stays I/O-free.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct AffectedArgs {}
+
+/// Typed output for `cqs affected`. The per-result JSON projection is owned by
+/// the lib (`diff_impact_to_json` handles rel-path display + field selection),
+/// so this is a thin newtype over the projected value plus the
+/// command-specific `overall_risk` field. Implementing `Serialize` by emitting
+/// the inner value keeps the schema lib-owned while giving the core a typed
+/// return (one definition site for the `affected` JSON).
+#[derive(Debug)]
+pub(crate) struct AffectedOutput(serde_json::Value);
+
+impl serde::Serialize for AffectedOutput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize(s)
+    }
+}
+
+/// Surface-agnostic core for `cqs affected`. Parses the diff, maps hunks to
+/// functions, runs the impact analysis, and returns the typed
+/// [`AffectedOutput`]. Empty diffs / no-indexed-functions both yield the
+/// shared empty shape (with `overall_risk: "none"`). `cqs affected` is
+/// CLI-only today, but the core is daemon-ready by construction.
+pub(crate) fn affected_core(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &std::path::Path,
+    diff_text: &str,
+    _args: &AffectedArgs,
+) -> Result<AffectedOutput> {
+    let _span = tracing::info_span!("affected_core").entered();
+
+    let hunks = parse_unified_diff(diff_text);
+    if hunks.is_empty() {
+        return Ok(AffectedOutput(empty_affected_json()));
+    }
+
+    let changed = map_hunks_to_functions(store, &hunks);
+    if changed.is_empty() {
+        return Ok(AffectedOutput(empty_affected_json()));
+    }
+
+    let result = analyze_diff_impact(store, changed, root)?;
+    let mut json_val = diff_impact_to_json(&result)?;
+    json_val["overall_risk"] = serde_json::json!(overall_risk(&result).to_string());
+    Ok(AffectedOutput(json_val))
+}
+
 pub(crate) fn cmd_affected(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
@@ -32,47 +85,33 @@ pub(crate) fn cmd_affected(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // 1. Get diff text — `--stdin` lets agents pipe a captured diff
+    // Get diff text — `--stdin` lets agents pipe a captured diff
     // (`git diff main | cqs affected --stdin --json`) without re-shelling
     // git. Mirrors the path in `cmd_review`/`cmd_ci`/`cmd_impact_diff`.
+    // Adapter owns I/O.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
         crate::cli::commands::run_git_diff(base)?
     };
 
-    // 2. Parse hunks
-    let hunks = parse_unified_diff(&diff_text);
-    if hunks.is_empty() {
-        if json {
-            crate::cli::json_envelope::emit_json(&empty_affected_json())?;
-        } else {
-            println!("No changes detected.");
-        }
-        return Ok(());
-    }
-
-    // 3. Map hunks to functions
-    let changed = map_hunks_to_functions(store, &hunks);
-    if changed.is_empty() {
-        if json {
-            crate::cli::json_envelope::emit_json(&empty_affected_json())?;
-        } else {
-            println!("No indexed functions affected by this diff.");
-        }
-        return Ok(());
-    }
-
-    // 4. Analyze impact (callers + tests + risk)
-    let result = analyze_diff_impact(store, changed, root)?;
-
-    // 5. Display
     if json {
-        let mut json_val = diff_impact_to_json(&result)?;
-        // Add overall risk
-        json_val["overall_risk"] = serde_json::json!(overall_risk(&result).to_string());
-        crate::cli::json_envelope::emit_json(&json_val)?;
+        let output = affected_core(store, root, &diff_text, &AffectedArgs::default())?;
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
+        // Text path re-derives the analysis to drive the dashboard rendering
+        // (the typed output is a JSON projection; text needs the rich result).
+        let hunks = parse_unified_diff(&diff_text);
+        if hunks.is_empty() {
+            println!("No changes detected.");
+            return Ok(());
+        }
+        let changed = map_hunks_to_functions(store, &hunks);
+        if changed.is_empty() {
+            println!("No indexed functions affected by this diff.");
+            return Ok(());
+        }
+        let result = analyze_diff_impact(store, changed, root)?;
         display_affected_text(&result, root);
     }
 

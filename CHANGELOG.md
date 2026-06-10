@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Command-core unification for review/train/eval commands (Phase 4, final
+  implementation phase, internal).** The review group gained surface-agnostic
+  cores routed by both surfaces where a dispatcher exists: `dead`
+  (`dead_core`), `health` (`health_core`), `suggest` (`suggest_core`), `review`
+  (`review_core`), `ci` (`ci_core`), plus a CLI-only-but-daemon-ready
+  `affected` (`affected_core`). The train group cored its two genuine pure
+  queries — `plan` (`plan_core`) and `task` (the shared `task_json_core`
+  projection both surfaces now drive) — while the orchestration commands
+  (`train-data`, `train-pairs`, `export-model`) stay adapter-owned (git / file
+  / subprocess pipelines). `eval` was already conformant (`EvalReport` is the
+  typed output, `EvalArgs` the typed input; `runner.rs` matcher/scoring is
+  eval-reachable and untouched). Each cored daemon command is pinned by a
+  parity test asserting the dispatcher is byte-equal to the core output.
+  **Additive JSON:** the daemon `review` empty-diff case now emits the full
+  CLI shape (`relevant_notes`, `stale_warning`) instead of the old
+  four-field hand-rolled object. **Field rename (daemon only):** the daemon
+  `suggest` path now emits `count` (matching the CLI's typed `SuggestOutput`)
+  instead of the old `total`; per-entry shape unchanged. `review`/`ci` token
+  telemetry (`token_count`/`token_budget`) is now skip-when-absent on both
+  surfaces. Agents parsing daemon `suggest`/`review` output should read `count`
+  and the full review shape.
+- **Dead `_with_posture` emit plumbing removed (campaign-closing cleanup).**
+  `emit_json_with_posture` / `emit_json_error_with_posture` in
+  `json_envelope.rs` had zero callers (carried under `#[allow(dead_code)]`).
+  With the core/adapter split complete, adapters are the only JSON emit sites
+  and they resolve posture through the OnceLock-cached `Posture::current()` in
+  `emit_json` — wiring an explicit posture through every adapter would add
+  indirection with no behavior change. The two functions are deleted; the live
+  posture-threaded variants (`Envelope::ok_with_posture`/`err_with_posture`,
+  `wrap_value_with_posture`, `emit_json_error_with_data_and_posture`) stay.
+  The `CQS_ULTRASECURITY` env knob is untouched here (its removal is tracked
+  separately in #1690).
+
 - **Command-core unification for infra/index commands (Phase 3, internal).**
   The infra and index command groups now carry surface-agnostic cores and/or
   typed output structs that are the single JSON-schema source. Read-query

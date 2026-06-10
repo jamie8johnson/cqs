@@ -6,6 +6,62 @@ use cqs::ci::run_ci_analysis;
 use cqs::ReviewResult;
 use cqs::RiskLevel;
 
+// ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`ci_core`]. The diff text + gate threshold are supplied by the
+/// adapter (which owns I/O and the `GateThreshold` parse); `tokens` folds the
+/// request-scoped budget in.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct CiArgs {
+    /// Token budget for the embedded review (truncates callers/tests lists).
+    #[serde(default)]
+    pub tokens: Option<usize>,
+}
+
+/// Typed output for `cqs ci`. Flattens the lib [`cqs::ci::CiReport`] and adds
+/// the optional token-budget telemetry the adapters previously spliced inline.
+/// THE schema — both surfaces serialize this.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CiOutput {
+    #[serde(flatten)]
+    pub report: cqs::ci::CiReport,
+    /// Estimated tokens used after budgeting (present only when `--tokens` set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
+    /// The requested token budget (present only when `--tokens` set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+}
+
+/// Surface-agnostic core for `cqs ci`. Runs the CI analysis (review + dead
+/// code + gate) on `diff_text`, applies the optional token budget, and returns
+/// the typed [`CiOutput`]. The gate `passed` flag rides along in the report;
+/// the *exit-code* reaction to a failed gate is adapter-owned (the CLI exits
+/// non-zero, the daemon just reports). Both surfaces drive this so the CI
+/// schema + budgeting live in one place.
+pub(crate) fn ci_core(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &std::path::Path,
+    diff_text: &str,
+    gate: cqs::ci::GateThreshold,
+    args: &CiArgs,
+) -> Result<CiOutput> {
+    let _span = tracing::info_span!("ci_core", ?gate, tokens = ?args.tokens).entered();
+
+    let mut report = run_ci_analysis(store, diff_text, root, gate)?;
+    let token_count = args
+        .tokens
+        .map(|budget| apply_token_budget(&mut report.review, budget, true));
+
+    Ok(CiOutput {
+        report,
+        token_count,
+        token_budget: args.tokens,
+    })
+}
+
 pub(crate) fn cmd_ci(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
@@ -29,45 +85,43 @@ pub(crate) fn cmd_ci(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // Get diff text
+    // Get diff text — adapter owns I/O (CLI supports stdin; daemon git only).
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
         crate::cli::commands::run_git_diff(base)?
     };
 
-    // Run CI analysis
-    let mut report = run_ci_analysis(store, &diff_text, root, *gate)?;
-
-    // Apply token budget
-    let token_count_used =
-        max_tokens.map(|budget| apply_token_budget(&mut report.review, budget, json));
-
-    if json {
-        let mut output: serde_json::Value = serde_json::to_value(&report)?;
-        if let Some(tokens) = token_count_used {
-            output["token_count"] = serde_json::json!(tokens);
-            output["token_budget"] = serde_json::json!(max_tokens.unwrap_or(0));
-        }
+    // The gate `passed` flag drives the process exit code below, so both
+    // branches surface it. JSON goes through the shared core (same as the
+    // daemon); text budgets with json=false accounting and renders the
+    // dashboard.
+    let gate_passed = if json {
+        let output = ci_core(
+            store,
+            root,
+            &diff_text,
+            *gate,
+            &CiArgs { tokens: max_tokens },
+        )?;
+        let gate_passed = output.report.gate.passed;
         crate::cli::json_envelope::emit_json(&output)?;
+        gate_passed
     } else {
+        let mut report = run_ci_analysis(store, &diff_text, root, *gate)?;
+        let token_count_used =
+            max_tokens.map(|budget| apply_token_budget(&mut report.review, budget, false));
         display_ci_text(&report, root, token_count_used, max_tokens);
-    }
+        report.gate.passed
+    };
 
-    // Exit with gate code if failed
-    if !report.gate.passed {
+    // Exit with gate code if failed (adapter-owned reaction; the core only
+    // reports the gate result).
+    if !gate_passed {
         std::process::exit(crate::cli::signal::ExitCode::GateFailed as i32);
     }
 
     Ok(())
-}
-
-/// Apply token budget by truncating callers and tests lists.
-/// Reuses the same logic as review.rs — changed functions and risk summary
-/// are always included, callers and tests are truncated.
-/// Public entry point for batch mode to apply CI token budgeting.
-pub(crate) fn apply_ci_token_budget(review: &mut ReviewResult, budget: usize) -> usize {
-    apply_token_budget(review, budget, true)
 }
 
 fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> usize {
@@ -393,14 +447,23 @@ mod tests {
         }
     }
 
-    /// Pin apply_ci_token_budget shape with json=true accounting (sibling
+    /// `CiArgs` deserializes from a wire/MCP object; `tokens` defaults to None.
+    #[test]
+    fn ci_args_minimal_deserialize() {
+        let def: CiArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(def.tokens.is_none());
+        let with: CiArgs = serde_json::from_value(serde_json::json!({"tokens": 800})).unwrap();
+        assert_eq!(with.tokens, Some(800));
+    }
+
+    /// Pin the CI token-budget shape with json=true accounting (sibling
     /// test_apply_token_budget_truncates_when_over only covers json=false).
     /// json=true adds JSON_OVERHEAD_PER_RESULT to per-item cost, so the same
-    /// budget fits fewer items.
+    /// budget fits fewer items. This is the budgeting `ci_core` applies.
     #[test]
     fn test_apply_ci_token_budget_truncates_callers_and_tests() {
         let mut review = make_review(50, 50);
-        let used = apply_ci_token_budget(&mut review, 200);
+        let used = apply_token_budget(&mut review, 200, true);
         assert!(
             review.affected_callers.len() < 50 || review.affected_tests.len() < 50,
             "small budget must truncate at least one of callers/tests with json=true accounting"
@@ -411,7 +474,7 @@ mod tests {
     #[test]
     fn test_apply_ci_token_budget_zero_produces_zero_items() {
         let mut review = make_review(5, 5);
-        apply_ci_token_budget(&mut review, 0);
+        apply_token_budget(&mut review, 0, true);
         assert_eq!(
             review.affected_callers.len(),
             0,

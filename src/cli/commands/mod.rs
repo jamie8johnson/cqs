@@ -37,7 +37,6 @@ pub(crate) use io::context;
 pub(crate) use io::diff;
 pub(crate) use io::drift;
 pub(crate) use io::read;
-pub(crate) use review::ci;
 pub(crate) use search::gather;
 pub(crate) use search::onboard;
 pub(crate) use search::scout;
@@ -84,13 +83,16 @@ pub(crate) use graph::{
 };
 
 // -- review --
-pub(crate) use review::build_dead_output;
 pub(crate) use review::cmd_affected;
 pub(crate) use review::cmd_ci;
 pub(crate) use review::cmd_dead;
 pub(crate) use review::cmd_health;
 pub(crate) use review::cmd_review;
 pub(crate) use review::cmd_suggest;
+pub(crate) use review::{
+    ci_core, dead_core, health_core, review_core, suggest_core, CiArgs, DeadArgs, HealthArgs,
+    ReviewArgs, SuggestArgs,
+};
 
 // -- index --
 pub(crate) use index::build_hnsw_base_index;
@@ -142,10 +144,10 @@ pub(crate) use infra::{daemon_control_hint, DaemonHint};
 
 // -- train --
 pub(crate) use train::cmd_export_model;
-pub(crate) use train::cmd_plan;
 pub(crate) use train::cmd_task;
 pub(crate) use train::cmd_train_data;
 pub(crate) use train::cmd_train_pairs;
+pub(crate) use train::{cmd_plan, plan_core, PlanArgs};
 
 // -- eval --
 pub(crate) use eval::{cmd_eval, EvalCmdArgs};

@@ -33,6 +33,77 @@ pub(crate) struct DeadOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`dead_core`]. Derives `Deserialize` (MCP param surface) with
+/// doc-commented fields; `min_confidence` deserializes from the same
+/// `low`/`medium`/`high` strings the CLI / wire accept.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct DeadArgs {
+    /// Include public-API functions in the main `dead` list (otherwise they
+    /// land in `possibly_dead_pub`, which agents usually skip).
+    #[serde(default)]
+    pub include_pub: bool,
+    /// Minimum confidence to report (`low` | `medium` | `high`). Entries below
+    /// this level are filtered out of both lists.
+    #[serde(
+        default = "default_dead_confidence",
+        deserialize_with = "de_confidence"
+    )]
+    pub min_confidence: DeadConfidence,
+}
+
+fn default_dead_confidence() -> DeadConfidence {
+    DeadConfidence::Low
+}
+
+/// Deserialize a [`DeadConfidence`] from its stable `low`/`medium`/`high`
+/// string. Kept local to the adapter layer so the lib enum stays
+/// `Serialize`-only (no eval-reachable source touched).
+fn de_confidence<'de, D>(de: D) -> std::result::Result<DeadConfidence, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let s = String::deserialize(de)?;
+    match s.to_ascii_lowercase().as_str() {
+        "low" => Ok(DeadConfidence::Low),
+        "medium" => Ok(DeadConfidence::Medium),
+        "high" => Ok(DeadConfidence::High),
+        other => Err(serde::de::Error::custom(format!(
+            "invalid dead confidence '{other}' (expected low|medium|high)"
+        ))),
+    }
+}
+
+/// Surface-agnostic core for `cqs dead`. Finds zero-caller functions, filters
+/// by `min_confidence`, and returns the typed [`DeadOutput`]. Both the CLI
+/// (`cmd_dead`) and the daemon (`dispatch_dead`) drive this so the dead-code
+/// schema has exactly one definition site.
+pub(crate) fn dead_core(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &Path,
+    args: &DeadArgs,
+) -> Result<DeadOutput> {
+    let _span = tracing::info_span!("dead_core", include_pub = args.include_pub).entered();
+    let (confident, possibly_pub) = store
+        .find_dead_code(args.include_pub)
+        .context("Failed to detect dead code")?;
+
+    let confident: Vec<_> = confident
+        .into_iter()
+        .filter(|d| d.confidence >= args.min_confidence)
+        .collect();
+    let possibly_pub: Vec<_> = possibly_pub
+        .into_iter()
+        .filter(|d| d.confidence >= args.min_confidence)
+        .collect();
+
+    Ok(build_dead_output(&confident, &possibly_pub, root))
+}
+
+// ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
 
@@ -57,7 +128,7 @@ pub(crate) fn build_dead_output(
         chunk_type: d.chunk.chunk_type.to_string(),
         signature: d.chunk.signature.clone(),
         language: d.chunk.language.to_string(),
-        confidence: confidence_label(d.confidence).to_string(),
+        confidence: d.confidence.as_str().to_string(),
     };
 
     DeadOutput {
@@ -80,90 +151,62 @@ pub(crate) fn cmd_dead(
     min_level: DeadConfidence,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
-    let store = &ctx.store;
-    let root = &ctx.root;
-    let (confident, possibly_pub) = store
-        .find_dead_code(include_pub)
-        .context("Failed to detect dead code")?;
 
-    // Filter by minimum confidence
-    let confident: Vec<_> = confident
-        .into_iter()
-        .filter(|d| d.confidence >= min_level)
-        .collect();
-    let possibly_pub: Vec<_> = possibly_pub
-        .into_iter()
-        .filter(|d| d.confidence >= min_level)
-        .collect();
+    let args = DeadArgs {
+        include_pub,
+        min_confidence: min_level,
+    };
+    let output = dead_core(&ctx.store, &ctx.root, &args)?;
 
     if json {
-        let output = build_dead_output(&confident, &possibly_pub, root);
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
-        display_dead_text(&confident, &possibly_pub, root, ctx.cli.quiet);
+        display_dead_text(&output, ctx.cli.quiet);
     }
 
     Ok(())
 }
 
-/// Human-readable confidence label
-fn confidence_label(c: DeadConfidence) -> &'static str {
-    c.as_str()
-}
-
-fn display_dead_text(
-    confident: &[DeadFunction],
-    possibly_pub: &[DeadFunction],
-    root: &Path,
-    quiet: bool,
-) {
-    if confident.is_empty() && possibly_pub.is_empty() {
+/// Render the typed [`DeadOutput`] as human-readable text. Reads the same
+/// struct the JSON path emits so the two renderings can't drift.
+fn display_dead_text(output: &DeadOutput, quiet: bool) {
+    if output.dead.is_empty() && output.possibly_dead_pub.is_empty() {
         println!("No dead code found.");
         return;
     }
 
-    if !confident.is_empty() {
+    if !output.dead.is_empty() {
         if !quiet {
-            println!("Dead code ({} functions):", confident.len());
+            println!("Dead code ({} functions):", output.dead.len());
             println!();
         }
-        for dead in confident {
-            let rel = cqs::rel_display(&dead.chunk.file, root);
+        for d in &output.dead {
             println!(
                 "  {} {}:{}  [{}] ({})",
-                dead.chunk.name,
-                rel,
-                dead.chunk.line_start,
-                dead.chunk.chunk_type,
-                confidence_label(dead.confidence),
+                d.name, d.file, d.line_start, d.chunk_type, d.confidence,
             );
             if !quiet {
-                println!("    {}", dead.chunk.signature.lines().next().unwrap_or(""));
+                println!("    {}", d.signature.lines().next().unwrap_or(""));
             }
         }
     }
 
-    if !possibly_pub.is_empty() {
-        if !confident.is_empty() {
+    if !output.possibly_dead_pub.is_empty() {
+        if !output.dead.is_empty() {
             println!();
         }
         println!(
             "Possibly dead (public API, {} functions):",
-            possibly_pub.len()
+            output.possibly_dead_pub.len()
         );
         if !quiet {
             println!("  (Use --include-pub to include these in the main list)");
         }
         println!();
-        for dead in possibly_pub {
-            let rel = cqs::rel_display(&dead.chunk.file, root);
+        for d in &output.possibly_dead_pub {
             println!(
                 "  {} {}:{}  [{}] ({})",
-                dead.chunk.name,
-                rel,
-                dead.chunk.line_start,
-                dead.chunk.chunk_type,
-                confidence_label(dead.confidence),
+                d.name, d.file, d.line_start, d.chunk_type, d.confidence,
             );
         }
     }
@@ -176,6 +219,27 @@ fn display_dead_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DeadArgs` deserializes from a wire/MCP-shaped object, mapping the
+    /// `min_confidence` string through the local `de_confidence` helper without
+    /// the lib enum deriving `Deserialize`.
+    #[test]
+    fn dead_args_deserialize_confidence_string() {
+        let args: DeadArgs =
+            serde_json::from_value(serde_json::json!({"min_confidence": "high"})).unwrap();
+        assert_eq!(args.min_confidence, DeadConfidence::High);
+        assert!(!args.include_pub, "include_pub defaults to false");
+
+        // Empty object → defaults (include_pub=false, min_confidence=Low).
+        let def: DeadArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(def.min_confidence, DeadConfidence::Low);
+
+        // Unknown confidence string is a hard error (no silent default).
+        assert!(
+            serde_json::from_value::<DeadArgs>(serde_json::json!({"min_confidence": "bogus"}))
+                .is_err()
+        );
+    }
 
     #[test]
     fn dead_output_empty() {
