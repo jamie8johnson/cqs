@@ -91,6 +91,9 @@ mod events;
 use events::max_pending_files;
 use events::{collect_events, process_file_changes, process_note_changes};
 
+mod siblings;
+use siblings::{SiblingPolicy, SiblingSet};
+
 mod reindex;
 #[cfg(target_os = "linux")]
 use reindex::count_watchable_dirs;
@@ -223,6 +226,7 @@ fn publish_watch_snapshot(
     index_path: &std::path::Path,
     in_flight_clients: &std::sync::atomic::AtomicUsize,
     reconcile_signal: &std::sync::atomic::AtomicBool,
+    siblings: &SiblingSet,
 ) {
     // Only re-stat when the cache has expired. Snapshots fire every ~100 ms
     // but `last_synced_at` is whole-second resolution — re-stating every
@@ -263,7 +267,8 @@ fn publish_watch_snapshot(
             reconcile_signal.load(std::sync::atomic::Ordering::Acquire),
             state.last_reindex.as_ref(),
             state.last_error.as_ref(),
-        ),
+        )
+        .with_sibling_slots(siblings.status_entries()),
     );
     // Poison-recovery: another writer panicking shouldn't silently stop
     // freshness publishing. Recover and overwrite.
@@ -1140,6 +1145,23 @@ pub fn cmd_watch(
     );
     let model_config = &model_config_owned;
 
+    // Discover sibling slots for slot-parallel delta propagation. The
+    // set is fixed for the daemon's lifetime (slots created later need a
+    // restart, same contract as slot promotion). Same-model siblings
+    // ride the active cycle's cache write-backs; foreign-model siblings
+    // are inert unless CQS_WATCH_ALL_SLOTS=1. Disable entirely with
+    // CQS_WATCH_SIBLING_SLOTS=0.
+    let mut sibling_slots = if cqs::slot::slots_root(&project_cqs_dir).exists() {
+        SiblingSet::discover(
+            &project_cqs_dir,
+            &active_slot.name,
+            model_config,
+            SiblingPolicy::from_env(),
+        )
+    } else {
+        SiblingSet::empty()
+    };
+
     // Build the gitignore matcher once at startup. `no_ignore` (CLI)
     // and `CQS_WATCH_RESPECT_GITIGNORE=0` (env) both disable it. Held in
     // `RwLock<Option<_>>` so a `.gitignore` change can be hot-swapped
@@ -1384,6 +1406,21 @@ pub fn cmd_watch(
                         pending_total = state.pending_files.len(),
                         "On-demand reconcile (#1182 Layer 1) drained"
                     );
+                    // Slot-aware pass: the same git-operation signal that
+                    // triggered the active reconcile applies to every
+                    // propagated sibling. Without this, repeated hook
+                    // fires (which slide `last_reconcile`) could starve
+                    // sibling reconciliation indefinitely.
+                    if !sibling_slots.is_empty() {
+                        sibling_slots.reconcile_siblings(
+                            &root,
+                            &parser,
+                            no_ignore,
+                            max_pending_files(),
+                            None,
+                            &shared_rt,
+                        );
+                    }
                     if queued > 0 {
                         // Reset `last_event` so the synthetic pending
                         // entries flush one quiet-gap from queue time
@@ -1608,6 +1645,21 @@ pub fn cmd_watch(
                                 max_pending_files(),
                                 shared_disk_files.as_ref(),
                             );
+                            // Slot-aware pass (durability net for the
+                            // in-memory sibling delta queues): every
+                            // propagated sibling gets the same
+                            // fingerprint reconciliation, sharing the
+                            // pre-walked disk set when available.
+                            if !sibling_slots.is_empty() {
+                                sibling_slots.reconcile_siblings(
+                                    &root,
+                                    &parser,
+                                    no_ignore,
+                                    max_pending_files(),
+                                    shared_disk_files.as_ref(),
+                                    &shared_rt,
+                                );
+                            }
                             if queued > 0 {
                                 // Reset `last_event` so the synthetic
                                 // pending entries flush one quiet-gap
@@ -1621,6 +1673,23 @@ pub fn cmd_watch(
                             }
                             last_reconcile = std::time::Instant::now();
                         }
+                    }
+
+                    // Sibling slot drains run strictly on idle ticks —
+                    // active-slot work (the flush block below) always
+                    // preempts them, and at most ONE slot drains per
+                    // tick so fresh events get a look-in between slots.
+                    // Same-model drains are SQLite-only (pure cache
+                    // hits by construction); foreign drains carry their
+                    // own embedder load and respect the hysteresis
+                    // thresholds.
+                    if !sibling_slots.is_empty() {
+                        let _ = sibling_slots.drain_one(
+                            &watch_cfg,
+                            &mut state.embedder_backoff,
+                            &shared_rt,
+                            state.pending_rebuild.is_some(),
+                        );
                     }
                 }
 
@@ -1695,7 +1764,7 @@ pub fn cmd_watch(
             }
 
             if !state.pending_files.is_empty() {
-                process_file_changes(&watch_cfg, &store, &mut state);
+                process_file_changes(&watch_cfg, &store, &mut state, &mut sibling_slots);
             }
 
             if state.pending_notes {
@@ -1751,6 +1820,7 @@ pub fn cmd_watch(
             &index_path,
             &in_flight_clients_handle,
             &reconcile_signal_handle,
+            &sibling_slots,
         );
 
         if check_interrupted() {

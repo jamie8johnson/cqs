@@ -109,7 +109,14 @@ pub fn cmd_status_dispatch(
     cmd: &Commands,
 ) -> Result<()> {
     must_be!(cmd, Commands::Status { watch_fresh, watch, output, wait, wait_secs } => {
-        commands::cmd_status(cli.json || output.json, *watch_fresh, *watch, *wait, *wait_secs)
+        commands::cmd_status(
+            cli.json || output.json,
+            *watch_fresh,
+            *watch,
+            *wait,
+            *wait_secs,
+            cli.slot.as_deref(),
+        )
     })
 }
 

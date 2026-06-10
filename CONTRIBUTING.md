@@ -268,6 +268,7 @@ src/
       events.rs - collect_events + process_file_changes + process_note_changes
       reindex.rs - reindex_files + reindex_notes + SPLADE encoder helpers
       reconcile.rs - Layer 2 periodic full-tree reconciliation (#1182)
+      siblings.rs - Slot-parallel reindex: delta propagation + drains for sibling slots (#1717)
       daemon.rs - spawn_daemon_thread (the --serve accept-loop closure body)
       tests.rs  - watch unit-test bench (#[cfg(test)])
       adversarial_socket_tests.rs - adversarial coverage for handle_socket_client (#[cfg(all(test, unix))])
