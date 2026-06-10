@@ -13,7 +13,7 @@ mod upsert;
 mod windowing;
 
 // Re-export public items
-pub(crate) use reuse::resolve_reuse;
+pub(crate) use reuse::{canon_key_ref, resolve_reuse};
 pub(crate) use types::embed_batch_size_for;
 pub(crate) use types::PipelineStats;
 pub(crate) use windowing::apply_windowing;
@@ -592,7 +592,7 @@ mod tests {
         let chunk = make_test_chunk("fresh", "fn fresh() {}");
         let batch = make_parsed_batch_with_chunk(chunk);
 
-        let prepared = prepare_for_embedding(batch, &embedder, &store, None, "test-fp");
+        let prepared = prepare_for_embedding(batch, &embedder, &store, None, None);
 
         assert!(
             prepared.cached.is_empty(),
@@ -664,7 +664,7 @@ mod tests {
         );
         let batch = make_parsed_batch_with_chunk(lookup_chunk);
 
-        let prepared = prepare_for_embedding(batch, &embedder, &store, None, "test-fp");
+        let prepared = prepare_for_embedding(batch, &embedder, &store, None, None);
 
         assert_eq!(
             prepared.cached.len(),
@@ -710,7 +710,7 @@ mod tests {
             file_mtimes: std::collections::HashMap::new(),
         };
 
-        let prepared = prepare_for_embedding(batch, &embedder, &store, None, "test-fp");
+        let prepared = prepare_for_embedding(batch, &embedder, &store, None, None);
 
         assert!(prepared.cached.is_empty());
         assert!(prepared.to_embed.is_empty());

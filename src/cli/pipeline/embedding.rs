@@ -28,7 +28,7 @@ pub(super) fn prepare_for_embedding(
     embedder: &Embedder,
     store: &Store,
     global_cache: Option<&cqs::cache::EmbeddingCache>,
-    model_fingerprint: &str,
+    model_fingerprint: Option<&str>,
 ) -> PreparedEmbedding {
     let _span = tracing::info_span!("prepare_for_embedding").entered();
     use cqs::generate_nl_description_with_seq_len;
@@ -49,13 +49,27 @@ pub(super) fn prepare_for_embedding(
     // the reuse DECISION so the canonical_hash key (and any future
     // reuse-semantics change) lives in exactly one place.
     let dim = embedder.embedding_dim();
-    let split = crate::cli::pipeline::resolve_reuse(
+    // A store-cache read failure is non-fatal on the bulk path: warn and
+    // degrade to re-embedding the batch (the watch path, by contrast,
+    // propagates the error so the daemon retries next tick — see
+    // `resolve_reuse`'s error contract).
+    let split = match crate::cli::pipeline::resolve_reuse(
         &windowed_chunks,
         store,
         global_cache,
         dim,
         model_fingerprint,
-    );
+    ) {
+        Ok(split) => split,
+        Err(e) => {
+            tracing::warn!(error = %e, "Embedding-reuse resolution failed; re-embedding batch");
+            super::reuse::ReuseSplit {
+                cached: Vec::new(),
+                to_embed: (0..windowed_chunks.len()).collect(),
+                global_hits: 0,
+            }
+        }
+    };
     let global_hits_total = split.global_hits;
 
     // Step 3: Map the index split into this caller's owned output shape.
@@ -189,7 +203,13 @@ pub(super) fn gpu_embed_stage(
     let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
     let embedder = Embedder::new(ctx.model_config).context("Failed to initialize GPU embedder")?;
     embedder.warm().context("Failed to warm GPU embedder")?;
-    let fingerprint = embedder.model_fingerprint().to_string();
+    // The fingerprint's only consumer is the global cache, and its first
+    // computation streams blake3 over the full ONNX model file — skip it
+    // entirely when no cache is present.
+    let fingerprint: Option<String> = ctx
+        .global_cache
+        .is_some()
+        .then(|| embedder.model_fingerprint());
 
     for batch in parse_rx {
         if check_interrupted() {
@@ -202,7 +222,7 @@ pub(super) fn gpu_embed_stage(
             &embedder,
             &ctx.store,
             ctx.global_cache.as_deref(),
-            &fingerprint,
+            fingerprint.as_deref(),
         );
 
         if prepared.to_embed.is_empty() {
@@ -306,26 +326,23 @@ pub(super) fn gpu_embed_stage(
                 // and embedding vec into an owned tuple per batch. The borrowed
                 // slices live until `write_batch` returns, well within the
                 // chunk/embedding lifetimes here.
-                if let Some(ref cache) = ctx.global_cache {
+                if let (Some(cache), Some(fp)) =
+                    (ctx.global_cache.as_deref(), fingerprint.as_deref())
+                {
                     // Write under the canonical key (v28) so a later
-                    // comment-only edit reuses this embedding. Fall back to
-                    // content_hash only for a chunk with no canonical_hash.
+                    // comment-only edit reuses this embedding — the shared
+                    // `canon_key_ref` owns the empty-canonical fallback.
                     let entries: Vec<(&str, &[f32])> = prepared
                         .to_embed
                         .iter()
                         .zip(new_embeddings.iter())
                         .map(|(chunk, emb)| {
-                            let key = if chunk.canonical_hash.is_empty() {
-                                chunk.content_hash.as_str()
-                            } else {
-                                chunk.canonical_hash.as_str()
-                            };
-                            (key, emb.as_slice())
+                            (crate::cli::pipeline::canon_key_ref(chunk), emb.as_slice())
                         })
                         .collect();
                     if let Err(e) = cache.write_batch(
                         &entries,
-                        &fingerprint,
+                        fp,
                         cqs::cache::CachePurpose::Embedding,
                         embedder.embedding_dim(),
                     ) {
@@ -449,17 +466,23 @@ pub(super) fn cpu_embed_stage(
             }
         };
 
-        // Compute fingerprint lazily (after embedder init)
-        if fingerprint.is_none() {
-            fingerprint = Some(emb.model_fingerprint().to_string());
+        // Compute fingerprint lazily (after embedder init), and only when a
+        // global cache exists — the fingerprint's only consumer is the cache,
+        // and its first computation streams blake3 over the full ONNX model.
+        if fingerprint.is_none() && ctx.global_cache.is_some() {
+            fingerprint = Some(emb.model_fingerprint());
         }
-        let fp = fingerprint.as_deref().unwrap_or("");
 
         // Prepare batch: windowing, cache check, text generation
         // (still useful in skip-first-pass mode — windowing splits long chunks
         // and cache lookup salvages real embeddings for hit chunks).
-        let prepared =
-            prepare_for_embedding(batch, emb, &ctx.store, ctx.global_cache.as_deref(), fp);
+        let prepared = prepare_for_embedding(
+            batch,
+            emb,
+            &ctx.store,
+            ctx.global_cache.as_deref(),
+            fingerprint.as_deref(),
+        );
 
         // Skip-first-pass-embed short-circuit (CPU side). Mirrors the GPU
         // stage above — emit zero-vec sentinels for to_embed chunks stamped
@@ -514,20 +537,13 @@ pub(super) fn cpu_embed_stage(
             //
             // Build with borrows so we don't clone every `content_hash` and
             // embedding vec into an owned tuple per batch.
-            if let Some(ref cache) = ctx.global_cache {
+            if let (Some(cache), Some(fp)) = (ctx.global_cache.as_deref(), fingerprint.as_deref()) {
                 // Write under the canonical key (v28) — see GPU-stage note.
                 let entries: Vec<(&str, &[f32])> = prepared
                     .to_embed
                     .iter()
                     .zip(embs.iter())
-                    .map(|(chunk, emb)| {
-                        let key = if chunk.canonical_hash.is_empty() {
-                            chunk.content_hash.as_str()
-                        } else {
-                            chunk.canonical_hash.as_str()
-                        };
-                        (key, emb.as_slice())
-                    })
+                    .map(|(chunk, e)| (crate::cli::pipeline::canon_key_ref(chunk), e.as_slice()))
                     .collect();
                 if let Err(e) = cache.write_batch(
                     &entries,

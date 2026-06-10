@@ -33,11 +33,15 @@ use cqs::{Chunk, Embedding, Store};
 /// `content_hash` so it still gets a usable, content-exact key — the
 /// NULL/empty-canonical fallback every reuse site must share; having it in
 /// one place is the point of this module.
-pub(crate) fn canon_key(c: &Chunk) -> String {
+///
+/// Borrows from the chunk so both the read path ([`resolve_reuse`]) and the
+/// cache write-back sites (bulk GPU/CPU stages, watch reindex) share the SAME
+/// key function without per-chunk `String` allocation on hot paths.
+pub(crate) fn canon_key_ref(c: &Chunk) -> &str {
     if c.canonical_hash.is_empty() {
-        c.content_hash.clone()
+        &c.content_hash
     } else {
-        c.canonical_hash.clone()
+        &c.canonical_hash
     }
 }
 
@@ -70,8 +74,20 @@ pub(crate) struct ReuseSplit {
 ///    `.remove()`, falling through to `to_embed` on a miss.
 ///
 /// `dim` is the embedder's embedding dimension and `model_fingerprint` its
-/// model fingerprint (already computed by each caller). Both are passed in
-/// rather than re-derived so this stays decoupled from the `Embedder` type.
+/// model fingerprint (computed by each caller, and ONLY when a global cache is
+/// present — the fingerprint's first computation streams blake3 over the full
+/// ONNX model file, so callers gate it on `global_cache.is_some()`). Both are
+/// passed in rather than re-derived so this stays decoupled from the
+/// `Embedder` type. The fingerprint is only consumed by the global-cache
+/// branch; `None` with `global_cache: Some(..)` skips that branch.
+///
+/// # Errors
+///
+/// A per-slot STORE-cache read failure returns `Err` — the watch path
+/// propagates it (aborting the cycle so the daemon retries next tick with the
+/// error visible) while the bulk pipeline catches it, warns, and degrades to
+/// re-embedding the batch. The GLOBAL-cache read stays best-effort internally:
+/// a read error there logs and degrades to the store cache, never blocks.
 ///
 /// **Duplicate-key fallthrough contract (load-bearing, tested):** two chunks
 /// that share a canonical key within one batch (identical after normalization —
@@ -83,12 +99,11 @@ pub(crate) fn resolve_reuse(
     store: &Store,
     global_cache: Option<&cqs::cache::EmbeddingCache>,
     dim: usize,
-    model_fingerprint: &str,
-) -> ReuseSplit {
+    model_fingerprint: Option<&str>,
+) -> anyhow::Result<ReuseSplit> {
     let _span = tracing::debug_span!("resolve_reuse", chunks = chunks.len()).entered();
 
-    let canon_hashes: Vec<String> = chunks.iter().map(canon_key).collect();
-    let hashes: Vec<&str> = canon_hashes.iter().map(|s| s.as_str()).collect();
+    let hashes: Vec<&str> = chunks.iter().map(canon_key_ref).collect();
 
     // Step 1: global (project-scoped, cross-slot) cache. Best-effort — a read
     // error logs and degrades to the store cache, never blocks indexing.
@@ -97,10 +112,10 @@ pub(crate) fn resolve_reuse(
     // purpose. EmbeddingBase has no producer here yet — when enrichment caching
     // lands it will own its own purpose.
     let mut global_hits: HashMap<String, Embedding> = HashMap::new();
-    if let Some(cache) = global_cache {
+    if let (Some(cache), Some(fingerprint)) = (global_cache, model_fingerprint) {
         match cache.read_batch(
             &hashes,
-            model_fingerprint,
+            fingerprint,
             cqs::cache::CachePurpose::Embedding,
             dim,
         ) {
@@ -128,6 +143,11 @@ pub(crate) fn resolve_reuse(
     // Store-side reuse is also keyed by canonical_hash (v28). Rows whose
     // canonical_hash IS NULL (pre-v28) are skipped by the helper, so they
     // re-embed on first touch — a clean cache miss, never a wrong hit.
+    //
+    // A read failure here propagates as `Err` — see the function doc. The
+    // watch path needs the failure visible (a persistent SQLite error must not
+    // silently become a total cache miss that re-embeds the corpus on GPU each
+    // cycle); the bulk pipeline catches it and degrades.
     let mut store_hits: HashMap<String, Embedding> = if dim == store.dim() {
         let missed: Vec<&str> = hashes
             .iter()
@@ -137,13 +157,12 @@ pub(crate) fn resolve_reuse(
         if missed.is_empty() {
             HashMap::new()
         } else {
-            match store.get_embeddings_by_canonical_hashes(&missed) {
-                Ok(map) => map,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to fetch cached embeddings by canonical hash");
-                    HashMap::new()
-                }
-            }
+            store
+                .get_embeddings_by_canonical_hashes(&missed)
+                .map_err(|e| {
+                    anyhow::anyhow!(e)
+                        .context("Failed to fetch cached embeddings by canonical hash")
+                })?
         }
     } else {
         tracing::info!(
@@ -163,21 +182,21 @@ pub(crate) fn resolve_reuse(
     let global_hits_total = global_hits.len();
     let mut cached: Vec<(usize, Embedding)> = Vec::new();
     let mut to_embed: Vec<usize> = Vec::new();
-    for (i, key) in canon_hashes.iter().enumerate() {
-        if let Some(emb) = global_hits.remove(key) {
+    for (i, key) in hashes.iter().enumerate() {
+        if let Some(emb) = global_hits.remove(*key) {
             cached.push((i, emb));
-        } else if let Some(emb) = store_hits.remove(key) {
+        } else if let Some(emb) = store_hits.remove(*key) {
             cached.push((i, emb));
         } else {
             to_embed.push(i);
         }
     }
 
-    ReuseSplit {
+    Ok(ReuseSplit {
         cached,
         to_embed,
         global_hits: global_hits_total,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -235,7 +254,7 @@ mod tests {
         let mut seeded = chunk_with("seed", "fn seeded() {}", "");
         // The store binds an empty canonical_hash as NULL (async_helpers.rs),
         // so the store-side canonical lookup can never hit for such chunks; this
-        // test pins the READ-side fallback: canon_key uses content_hash when
+        // test pins the READ-side fallback: canon_key_ref uses content_hash when
         // canonical_hash is empty, letting the global cache still serve.
         seeded.canonical_hash = seeded.content_hash.clone();
         let mut v = vec![0.0_f32; dim];
@@ -244,12 +263,12 @@ mod tests {
             .upsert_chunks_batch(&[(seeded.clone(), Embedding::new(v))], Some(0))
             .unwrap();
 
-        // Lookup chunk: same content, empty canonical → canon_key == content_hash.
+        // Lookup chunk: same content, empty canonical → canon_key_ref == content_hash.
         let lookup = chunk_with("lookup", "fn seeded() {}", "");
         assert!(lookup.canonical_hash.is_empty());
-        assert_eq!(canon_key(&lookup), lookup.content_hash);
+        assert_eq!(canon_key_ref(&lookup), lookup.content_hash);
 
-        let split = resolve_reuse(&[lookup], &store, None, dim, "fp");
+        let split = resolve_reuse(&[lookup], &store, None, dim, None).unwrap();
         assert_eq!(
             split.cached.len(),
             1,
@@ -278,10 +297,10 @@ mod tests {
         // Two lookup chunks that both key on "dup".
         let a = chunk_with("a", "fn a() {}", "dup");
         let b = chunk_with("b", "fn b_but_same_canon() {}", "dup");
-        assert_eq!(canon_key(&a), "dup");
-        assert_eq!(canon_key(&b), "dup");
+        assert_eq!(canon_key_ref(&a), "dup");
+        assert_eq!(canon_key_ref(&b), "dup");
 
-        let split = resolve_reuse(&[a, b], &store, None, dim, "fp");
+        let split = resolve_reuse(&[a, b], &store, None, dim, None).unwrap();
         assert_eq!(
             split.cached.len(),
             1,
@@ -306,7 +325,7 @@ mod tests {
             chunk_with("c1", "fn one() {}", "k1"),
             chunk_with("c2", "fn two() {}", "k2"),
         ];
-        let split = resolve_reuse(&chunks, &store, None, dim, "fp");
+        let split = resolve_reuse(&chunks, &store, None, dim, None).unwrap();
         assert!(split.cached.is_empty());
         assert_eq!(split.to_embed, vec![0, 1]);
         assert_eq!(split.global_hits, 0);
@@ -328,7 +347,7 @@ mod tests {
 
         let lookup = chunk_with("a", "fn a() {}", "k1");
         // Resolve with a DIFFERENT embedder dim → store cache skipped.
-        let split = resolve_reuse(&[lookup], &store, None, store_dim + 1, "fp");
+        let split = resolve_reuse(&[lookup], &store, None, store_dim + 1, None).unwrap();
         assert!(
             split.cached.is_empty(),
             "dim mismatch must skip store cache"
