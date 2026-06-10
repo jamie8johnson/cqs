@@ -818,6 +818,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_FTS_NORMALIZE_MAX` | `16384` | Max bytes of `normalize_for_fts` output per chunk. Truncation is emitted at warn level; bump if FTS recall on long chunks (large generated tables, monolithic functions) is degraded. |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
 | `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |
+| `CQS_DISTANCE_METRIC` | `cosine` | Distance metric at index build (`cosine`, `dot`). Stored in the index; a conflicting value at load is a typed error |
 | `CQS_HNSW_EF_SEARCH` | `100` | HNSW query-time search width |
 | `CQS_HNSW_BATCH_SIZE` | `10000` | Vectors per HNSW build batch |
 | `CQS_HNSW_M` | `24` | HNSW connections per node |

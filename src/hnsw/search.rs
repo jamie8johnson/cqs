@@ -1,6 +1,5 @@
 //! HNSW search implementation
 
-use hnsw_rs::api::AnnT;
 use hnsw_rs::filter::FilterT;
 use hnsw_rs::prelude::DataId;
 
@@ -122,6 +121,10 @@ impl HnswIndex {
             .filter_map(|n| {
                 let idx = n.d_id;
                 if idx < self.id_map.len() {
+                    // Distance → similarity. Holds for both supported
+                    // metrics: DistCosine returns 1 − cos (score = cos) and
+                    // DistDot returns 1 − a·b (score = a·b) — see
+                    // `DistanceMetric`.
                     let score = 1.0 - n.distance;
                     if !score.is_finite() {
                         tracing::warn!(

@@ -56,7 +56,7 @@ use thiserror::Error;
 #[cfg(feature = "cuda-index")]
 use crate::embedder::Embedding;
 #[cfg(feature = "cuda-index")]
-use crate::index::{IndexResult, VectorIndex};
+use crate::index::{DistanceMetric, IndexResult, VectorIndex};
 
 /// On-disk magic bytes for the CAGRA sidecar. Changes force a rebuild.
 #[cfg(feature = "cuda-index")]
@@ -84,9 +84,10 @@ const CAGRA_META_VERSION: u32 = 1;
 ///
 /// The fix is to pre-fill `distances_host` with this sentinel before the
 /// kernel launch and drop any slot whose distance still holds it after
-/// copy-back. CAGRA writes squared-L2 distances, so every real hit is a
-/// finite non-negative value strictly less than `+∞` — the sentinel is
-/// therefore unambiguous.
+/// copy-back. CAGRA writes finite distances for every real hit — squared-L2
+/// values are non-negative, InnerProduct (raw dot product, #1351) values may
+/// be negative but are still finite — so the `+∞` sentinel is unambiguous
+/// for both metrics.
 ///
 /// # Why `f32::INFINITY` specifically?
 ///
@@ -191,8 +192,14 @@ fn cagra_itopk_max_default(n_vectors: usize) -> usize {
 /// `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` (default 128) is the pruned-input
 /// graph degree. Both map to the corresponding cuVS `IndexParams` setters.
 /// Returns `IndexParams` with those setters applied (and traces the choice).
+///
+/// `metric` threads the cqs [`DistanceMetric`] into cuVS:
+/// - `Cosine` keeps cuVS's default `L2Expanded`, which is rank-equivalent to
+///   cosine on the unit-norm embeddings cqs produces (`d² = 2 − 2·cos`) and
+///   is exactly what every pre-#1351 build used.
+/// - `DotProduct` sets `InnerProduct`.
 #[cfg(feature = "cuda-index")]
-fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
+fn cagra_build_params(metric: DistanceMetric) -> Result<cuvs::cagra::IndexParams, CagraError> {
     // Use parse_env_usize_clamped so a literal "0" or empty string falls back
     // to the default. cuvs treats 0 as "library default" on some versions,
     // errors on others — silent-misconfig surface.
@@ -204,9 +211,24 @@ fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
         .map_err(|e| CagraError::Cuvs(e.to_string()))?
         .set_graph_degree(graph_degree)
         .set_intermediate_graph_degree(intermediate_graph_degree);
+    match metric {
+        // Default L2Expanded — deliberately untouched (see doc comment).
+        DistanceMetric::Cosine => {}
+        DistanceMetric::DotProduct => {
+            // The cuvs 26.6 Rust wrapper exposes no `set_metric` builder, but
+            // `IndexParams.0` is the pub raw `cuvsCagraIndexParams_t`.
+            // SAFETY: identical access pattern to the wrapper's own setters
+            // (e.g. `set_graph_degree`) — the pointer is valid for the
+            // lifetime of `params` and we hold exclusive access here.
+            unsafe {
+                (*params.0).metric = cuvs::distance_type::DistanceType::InnerProduct;
+            }
+        }
+    }
     tracing::info!(
         graph_degree,
         intermediate_graph_degree,
+        metric = %metric,
         "CAGRA build params"
     );
     Ok(params)
@@ -222,6 +244,10 @@ fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
 pub struct CagraIndex {
     /// Embedding dimensionality (runtime, from model config)
     dim: usize,
+    /// Distance metric the index was built with. Drives the
+    /// distance → similarity conversion in `search_impl` and is stamped
+    /// into the persisted sidecar.
+    metric: DistanceMetric,
     /// cuVS resources + index, protected by Mutex (CUDA contexts require serialized access)
     gpu: Mutex<GpuState>,
     /// Mapping from internal index to chunk ID.
@@ -338,20 +364,32 @@ impl CagraIndex {
         true
     }
 
-    /// Build a CAGRA index from embeddings
+    /// Build a CAGRA index from embeddings. The distance metric is resolved
+    /// from `CQS_DISTANCE_METRIC` (default cosine); use
+    /// [`Self::build_with_metric`] to pin it explicitly.
     pub fn build(embeddings: Vec<(String, Embedding)>, dim: usize) -> Result<Self, CagraError> {
-        let _span = tracing::debug_span!("cagra_build").entered();
+        let metric = DistanceMetric::resolve().map_err(CagraError::Build)?;
+        Self::build_with_metric(embeddings, dim, metric)
+    }
+
+    /// [`Self::build`] with an explicit [`DistanceMetric`].
+    pub fn build_with_metric(
+        embeddings: Vec<(String, Embedding)>,
+        dim: usize,
+        metric: DistanceMetric,
+    ) -> Result<Self, CagraError> {
+        let _span = tracing::debug_span!("cagra_build", metric = %metric).entered();
         let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings, dim)
             .map_err(|e| CagraError::Build(e.to_string()))?;
 
-        tracing::info!(n_vectors, "Building CAGRA index");
+        tracing::info!(n_vectors, metric = %metric, "Building CAGRA index");
 
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
         let dataset = Array2::from_shape_vec((n_vectors, dim), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
-        let build_params = cagra_build_params()?;
+        let build_params = cagra_build_params(metric)?;
 
         let index = cuvs::cagra::Index::build(&resources, &build_params, &dataset)
             .map_err(|e| CagraError::Cuvs(e.to_string()))?;
@@ -360,10 +398,16 @@ impl CagraIndex {
 
         Ok(Self {
             dim,
+            metric,
             gpu: Mutex::new(GpuState { resources, index }),
             id_map,
             poisoned: AtomicBool::new(false),
         })
+    }
+
+    /// The distance metric this index was built (or loaded) with.
+    pub fn metric(&self) -> DistanceMetric {
+        self.metric
     }
 
     /// Number of vectors in the index
@@ -549,8 +593,15 @@ impl CagraIndex {
             return Vec::new();
         }
 
-        // Convert results: CAGRA uses squared L2 distance. For unit-norm vectors:
-        // d = 2 - 2*cos_sim, so cos_sim = 1 - d/2.
+        // Convert results: distance → similarity, per build metric.
+        // - Cosine: the index is built with cuVS's default L2Expanded
+        //   (squared L2). For unit-norm vectors d = 2 - 2*cos_sim, so
+        //   cos_sim = 1 - d/2.
+        // - DotProduct: cuVS InnerProduct returns the RAW inner product in
+        //   the distances buffer, best-first (descending) — verified
+        //   empirically on cuVS 26.06 by `test_dot_product_build_and_search`
+        //   (self-match slot holds ≈ +1.0 on unit-norm vectors). The
+        //   similarity is the value itself.
         let mut results = Vec::with_capacity(k);
         let neighbor_row = neighbors_host.row(0);
         let distance_row = distances_host.row(0);
@@ -569,7 +620,10 @@ impl CagraIndex {
                 continue;
             }
             if idx < self.id_map.len() {
-                let score = 1.0 - dist / 2.0;
+                let score = match self.metric {
+                    DistanceMetric::Cosine => 1.0 - dist / 2.0,
+                    DistanceMetric::DotProduct => dist,
+                };
                 results.push(IndexResult {
                     id: self.id_map[idx].to_string(),
                     score,
@@ -748,7 +802,20 @@ impl CagraIndex {
         store: &crate::Store<Mode>,
         dim: usize,
     ) -> Result<Self, CagraError> {
-        let _span = tracing::debug_span!("cagra_build_from_store").entered();
+        let metric = DistanceMetric::resolve().map_err(CagraError::Build)?;
+        Self::build_from_store_with_metric(store, dim, metric)
+    }
+
+    /// [`Self::build_from_store`] with an explicit [`DistanceMetric`].
+    /// `CagraBackend::try_open` uses this to keep a rebuilt CAGRA index
+    /// consistent with the slot's stored HNSW metric instead of silently
+    /// re-resolving to the default.
+    pub fn build_from_store_with_metric<Mode>(
+        store: &crate::Store<Mode>,
+        dim: usize,
+        metric: DistanceMetric,
+    ) -> Result<Self, CagraError> {
+        let _span = tracing::debug_span!("cagra_build_from_store", metric = %metric).entered();
         let chunk_count = store
             .chunk_count()
             .map_err(|e| CagraError::Cuvs(format!("Failed to count chunks: {}", e)))?
@@ -819,7 +886,7 @@ impl CagraIndex {
             );
         }
 
-        Self::build_from_flat(id_map, flat_data, dim)
+        Self::build_from_flat(id_map, flat_data, dim, metric)
     }
 
     /// Build CAGRA index from pre-collected flat data (also used by tests)
@@ -827,20 +894,21 @@ impl CagraIndex {
         id_map: Vec<String>,
         flat_data: Vec<f32>,
         dim: usize,
+        metric: DistanceMetric,
     ) -> Result<Self, CagraError> {
         let n_vectors = id_map.len();
         if n_vectors == 0 {
             return Err(CagraError::Cuvs("Cannot build empty index".into()));
         }
 
-        tracing::info!(n_vectors, "Building CAGRA index");
+        tracing::info!(n_vectors, metric = %metric, "Building CAGRA index");
 
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
         let dataset = Array2::from_shape_vec((n_vectors, dim), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
-        let build_params = cagra_build_params()?;
+        let build_params = cagra_build_params(metric)?;
 
         let index = cuvs::cagra::Index::build(&resources, &build_params, &dataset)
             .map_err(|e| CagraError::Cuvs(e.to_string()))?;
@@ -855,6 +923,7 @@ impl CagraIndex {
 
         Ok(Self {
             dim,
+            metric,
             gpu: Mutex::new(GpuState { resources, index }),
             id_map: id_map_boxed,
             poisoned: AtomicBool::new(false),
@@ -891,6 +960,17 @@ struct CagraMeta {
     id_map: Vec<String>,
     /// Blake3 checksum over the `.cagra` binary blob as a hex string.
     blake3: String,
+    /// [`DistanceMetric::as_str`] value the index was built with.
+    /// Legacy sidecars (pre-#1351) omit the field and default to cosine —
+    /// which is what every legacy build used.
+    #[serde(default = "default_metric_string")]
+    metric: String,
+}
+
+/// serde default for [`CagraMeta::metric`]: legacy sidecars are cosine.
+#[cfg(feature = "cuda-index")]
+fn default_metric_string() -> String {
+    DistanceMetric::Cosine.as_str().to_string()
 }
 
 /// Whether CAGRA persistence is enabled (via `CQS_CAGRA_PERSIST`).
@@ -985,6 +1065,7 @@ impl CagraIndex {
             // (the on-disk schema is Vec<String> for `serde_json` decode).
             id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
             blake3: blob_hash,
+            metric: self.metric.as_str().to_string(),
         };
 
         // Meta-write failure after the blob is in place leaves a blob
@@ -1069,6 +1150,7 @@ impl CagraIndex {
             // (the on-disk schema is Vec<String> for `serde_json` decode).
             id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
             blake3: blob_hash,
+            metric: self.metric.as_str().to_string(),
         };
 
         if let Err(e) = write_meta_atomic(&meta_path, &meta) {
@@ -1201,6 +1283,23 @@ impl CagraIndex {
             )));
         }
 
+        // Distance metric: the stored value wins; an explicitly set,
+        // conflicting CQS_DISTANCE_METRIC marks the blob stale so the caller
+        // rebuilds with the requested metric (CAGRA is a derived index — the
+        // rebuild path is the remedy, unlike HNSW where the same conflict is
+        // a hard typed error).
+        let stored_metric: DistanceMetric = meta
+            .metric
+            .parse()
+            .map_err(|e| CagraError::BadMeta(format!("sidecar has invalid metric: {e}")))?;
+        if let Some(requested) = DistanceMetric::from_env().map_err(CagraError::Build)? {
+            if requested != stored_metric {
+                return Err(CagraError::Stale {
+                    reason: format!("distance metric '{stored_metric}' != requested '{requested}'"),
+                });
+            }
+        }
+
         // Verify the `.cagra` blob matches the hash in the sidecar before
         // handing it to cuVS — cheap insurance against silent disk rot
         // and against someone (or us) overwriting the blob without
@@ -1225,11 +1324,13 @@ impl CagraIndex {
             n_vectors = meta.chunk_count,
             dim = meta.dim,
             splade_generation = meta.splade_generation,
+            metric = %stored_metric,
             "CAGRA index loaded from disk"
         );
 
         Ok(Self {
             dim: meta.dim,
+            metric: stored_metric,
             gpu: Mutex::new(GpuState { resources, index }),
             // Convert Vec<String> → Vec<Box<str>> at the load boundary.
             // Zero-copy via `String::into_boxed_str()`.
@@ -1594,7 +1695,29 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
             }
         }
 
-        match CagraIndex::build_from_store(ctx.store, ctx.store.dim()) {
+        // Resolve the metric for a fresh build: explicit env wins;
+        // otherwise follow the slot's stored HNSW metric so the two backends
+        // can't drift apart; cosine when neither exists. An invalid env
+        // value falls through to HNSW, whose load/build path surfaces the
+        // typed error.
+        let metric = match DistanceMetric::from_env() {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                crate::hnsw::HnswIndex::stored_metric(ctx.cqs_dir, "index").unwrap_or_else(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to read stored HNSW metric for CAGRA build — using cosine"
+                    );
+                    DistanceMetric::Cosine
+                })
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Invalid CQS_DISTANCE_METRIC — falling through to HNSW");
+                return Ok(None);
+            }
+        };
+
+        match CagraIndex::build_from_store_with_metric(ctx.store, ctx.store.dim(), metric) {
             Ok(idx) => {
                 tracing::info!(
                     backend = "cagra",
@@ -2213,5 +2336,166 @@ mod tests {
         // valid pass — the important thing is the helper returned without
         // panicking and the type is correct.
         let _: bool = enabled;
+    }
+
+    // ===== distance metric =====
+
+    /// DotProduct build + search on the GPU backend. The self-match score
+    /// pins the InnerProduct distance → similarity conversion in
+    /// `search_impl` (cuVS returns the raw inner product, best-first; on
+    /// unit-norm vectors the self-match similarity must come back ≈ 1).
+    #[test]
+    fn test_dot_product_build_and_search() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let embeddings: Vec<(String, Embedding)> = (0..10)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        let index =
+            CagraIndex::build_with_metric(embeddings, EMBEDDING_DIM, DistanceMetric::DotProduct)
+                .expect("DotProduct CAGRA build should succeed");
+        assert_eq!(index.metric(), DistanceMetric::DotProduct);
+
+        let results = index.search(&make_embedding(3), 5);
+        assert!(!results.is_empty(), "search returned no results");
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"chunk_3"),
+            "chunk_3 should be in top-5, got {ids:?}"
+        );
+        let self_score = results
+            .iter()
+            .find(|r| r.id == "chunk_3")
+            .map(|r| r.score)
+            .unwrap();
+        assert!(
+            self_score > 0.9,
+            "unit-norm self-match under InnerProduct should score ≈ 1, got {self_score} \
+             (full results: {results:?}) — if this fails the distance→similarity \
+             conversion for InnerProduct is wrong"
+        );
+        // Descending score order must hold for the negated-IP conversion too.
+        for window in results.windows(2) {
+            assert!(
+                window[0].score >= window[1].score,
+                "results not sorted: {} < {}",
+                window[0].score,
+                window[1].score
+            );
+        }
+    }
+
+    /// Sidecar metric roundtrip: a DotProduct index persists its metric and
+    /// loads back as DotProduct with env unset (the stored value wins).
+    /// Holds `HNSW_ENV_LOCK` so the hnsw mismatch test's transient
+    /// `CQS_DISTANCE_METRIC=cosine` can't mark this dot sidecar stale
+    /// mid-load. Lock order is GPU_LOCK → HNSW_ENV_LOCK in every CAGRA test
+    /// that takes both.
+    #[test]
+    fn test_metric_sidecar_roundtrip_dot() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let _env = crate::hnsw::HNSW_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.cagra");
+
+        let embeddings: Vec<(String, Embedding)> = (0..8)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        let original =
+            CagraIndex::build_with_metric(embeddings, EMBEDDING_DIM, DistanceMetric::DotProduct)
+                .unwrap();
+        original.save(&path).expect("save should succeed");
+        drop(original);
+
+        let loaded = CagraIndex::load(&path, EMBEDDING_DIM, 8)
+            .expect("dot-product sidecar should load with env unset (stored wins)");
+        assert_eq!(loaded.metric(), DistanceMetric::DotProduct);
+
+        let results = loaded.search(&make_embedding(2), 3);
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"chunk_2"),
+            "chunk_2 should be in top-3 after reload, got {ids:?}"
+        );
+    }
+
+    /// A legacy (pre-#1351) sidecar has no `metric` field; serde's default
+    /// must decode it as cosine — that is what every legacy build used.
+    #[test]
+    fn test_legacy_sidecar_without_metric_loads_as_cosine() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.cagra");
+
+        let original = build_test_index(8);
+        original.save(&path).expect("save should succeed");
+        drop(original);
+
+        // Strip the `metric` field from the sidecar to simulate a legacy
+        // file. The blob checksum only covers the `.cagra` blob, so the
+        // sidecar rewrite doesn't invalidate it.
+        let meta_path = super::meta_path_for(&path);
+        let mut meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert!(
+            meta.as_object_mut().unwrap().remove("metric").is_some(),
+            "current save must stamp the metric field"
+        );
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+
+        let loaded = CagraIndex::load(&path, EMBEDDING_DIM, 8)
+            .expect("legacy sidecar without metric field must load");
+        assert_eq!(loaded.metric(), DistanceMetric::Cosine);
+    }
+
+    /// Loading a DotProduct sidecar with `CQS_DISTANCE_METRIC` explicitly
+    /// set to cosine marks the blob stale (the rebuild path is CAGRA's
+    /// mismatch remedy, unlike HNSW's hard typed error). Test discipline:
+    /// the env var is only ever set to "cosine" so concurrent cosine loads
+    /// are unaffected; held under `HNSW_ENV_LOCK` (taken after GPU_LOCK).
+    #[test]
+    fn test_metric_mismatch_marks_stale() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let _env = crate::hnsw::HNSW_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.cagra");
+
+        let embeddings: Vec<(String, Embedding)> = (0..8)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        let original =
+            CagraIndex::build_with_metric(embeddings, EMBEDDING_DIM, DistanceMetric::DotProduct)
+                .unwrap();
+        original.save(&path).expect("save should succeed");
+        drop(original);
+
+        let _var = crate::hnsw::EnvVarGuard::set("CQS_DISTANCE_METRIC", "cosine");
+        match CagraIndex::load(&path, EMBEDDING_DIM, 8) {
+            Err(CagraError::Stale { reason }) => {
+                assert!(
+                    reason.contains("metric"),
+                    "stale reason should mention the metric: {reason}"
+                );
+            }
+            Err(other) => panic!("expected Stale, got: {other:?}"),
+            Ok(_) => panic!("conflicting metric must not load"),
+        }
     }
 }

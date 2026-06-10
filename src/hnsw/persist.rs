@@ -4,13 +4,11 @@ use std::cell::UnsafeCell;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hnsw_rs::anndists::dist::distances::DistCosine;
-use hnsw_rs::api::AnnT;
 use hnsw_rs::hnswio::HnswIo;
 
-use crate::index::VectorIndex;
+use crate::index::{DistanceMetric, VectorIndex};
 
-use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
+use super::{HnswError, HnswGraph, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 
 /// Configurable HNSW graph file size limit via `CQS_HNSW_MAX_GRAPH_BYTES`
 /// env var. Defaults to 500MB. Cached in OnceLock for single parse.
@@ -94,18 +92,128 @@ fn warn_wsl_advisory_locking(dir: &Path) {
     }
 }
 
-/// Core HNSW file extensions (graph, data, IDs)
-const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
+/// Core HNSW file extensions (graph, data, IDs, meta header). These are the
+/// extensions allowed in the checksum manifest. `hnsw.meta` is absent from
+/// legacy (pre-#1351) indexes — the load path treats a missing meta as
+/// cosine, which is what every legacy index is.
+const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.meta"];
 
 /// All HNSW file extensions including checksum (for cleanup/deletion).
-/// NOTE: Keep in sync with HNSW_EXTENSIONS above — first 3 elements must match.
+/// NOTE: Keep in sync with HNSW_EXTENSIONS above — first 4 elements must match.
 pub const HNSW_ALL_EXTENSIONS: &[&str] = &[
     "hnsw.graph",
     "hnsw.data",
     "hnsw.ids",
+    "hnsw.meta",
     "hnsw.checksum",
     "hnsw.lock",
 ];
+
+/// Magic string for the `{basename}.hnsw.meta` JSON header. A
+/// mismatch is a typed load error, not a silent default.
+const HNSW_META_MAGIC: &str = "CQSHNSW";
+
+/// Version of the `.hnsw.meta` header. Bump when adding fields an older
+/// binary must not misinterpret; the load path rejects versions newer than
+/// this binary understands.
+const HNSW_META_VERSION: u32 = 1;
+
+/// JSON header persisted next to the HNSW graph/data/ids files.
+///
+/// Carries index-level configuration that the raw hnsw_rs dump does not
+/// expose up front — today that is the distance metric, which the load path
+/// needs *before* it can instantiate the right `Hnsw<f32, D>` type
+/// parameter. Mirrors the CAGRA `.cagra.meta` sidecar pattern
+/// (`src/cagra.rs`).
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct HnswMeta {
+    /// Format magic. See [`HNSW_META_MAGIC`].
+    magic: String,
+    /// Header schema version. See [`HNSW_META_VERSION`].
+    version: u32,
+    /// [`DistanceMetric::as_str`] value the index was built with.
+    metric: String,
+}
+
+/// Read the persisted distance metric for an index, if any.
+///
+/// - Missing meta file → `Ok(Cosine)`: every pre-#1351 index was built with
+///   `DistCosine` by construction.
+/// - Present but malformed / unknown magic / newer version / unknown metric
+///   → typed error. Never a silent cosine fallback: misreading a dot-product
+///   index as cosine produces wrong distances, not a crash.
+fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
+    let meta_path = dir.join(format!("{}.hnsw.meta", basename));
+    if !meta_path.exists() {
+        tracing::debug!(
+            path = %meta_path.display(),
+            "No HNSW meta header (legacy index) — metric is cosine"
+        );
+        return Ok(DistanceMetric::Cosine);
+    }
+
+    // Size cap: the header is a 3-field JSON object; anything beyond a few
+    // KB is corruption or tampering.
+    const MAX_META_SIZE: u64 = 64 * 1024;
+    let meta_size = std::fs::metadata(&meta_path)
+        .map_err(|e| {
+            HnswError::Internal(format!(
+                "Failed to stat HNSW meta {}: {}",
+                meta_path.display(),
+                e
+            ))
+        })?
+        .len();
+    if meta_size > MAX_META_SIZE {
+        return Err(HnswError::Internal(format!(
+            "HNSW meta {} is {} bytes, exceeds {} byte limit",
+            meta_path.display(),
+            meta_size,
+            MAX_META_SIZE
+        )));
+    }
+
+    let raw = std::fs::read(&meta_path).map_err(|e| {
+        HnswError::Internal(format!(
+            "Failed to read HNSW meta {}: {}",
+            meta_path.display(),
+            e
+        ))
+    })?;
+    let meta: HnswMeta = serde_json::from_slice(&raw).map_err(|e| {
+        HnswError::Internal(format!(
+            "Failed to parse HNSW meta {}: {}",
+            meta_path.display(),
+            e
+        ))
+    })?;
+
+    if meta.magic != HNSW_META_MAGIC {
+        return Err(HnswError::Internal(format!(
+            "HNSW meta {} has unexpected magic {:?} (want {:?})",
+            meta_path.display(),
+            meta.magic,
+            HNSW_META_MAGIC
+        )));
+    }
+    if meta.version > HNSW_META_VERSION {
+        return Err(HnswError::Internal(format!(
+            "HNSW meta {} has version {} — newer than this binary understands ({}). \
+             Run 'cqs index --force' or upgrade cqs.",
+            meta_path.display(),
+            meta.version,
+            HNSW_META_VERSION
+        )));
+    }
+
+    meta.metric.parse::<DistanceMetric>().map_err(|e| {
+        HnswError::Internal(format!(
+            "HNSW meta {} has invalid metric: {}",
+            meta_path.display(),
+            e
+        ))
+    })
+}
 
 /// Verify HNSW index file checksums using blake3.
 ///
@@ -221,6 +329,7 @@ impl HnswIndex {
     /// - `{basename}.hnsw.data` - Vector data
     /// - `{basename}.hnsw.graph` - HNSW graph structure
     /// - `{basename}.hnsw.ids` - Chunk ID mapping
+    /// - `{basename}.hnsw.meta` - JSON header (distance metric, #1351)
     /// - `{basename}.hnsw.checksum` - Blake3 checksums for integrity
     ///
     /// # Crash safety
@@ -258,7 +367,13 @@ impl HnswIndex {
         // behind. The operator must clear them manually so we don't silently
         // overwrite a known-good index with a stale .bak on a future
         // rollback. Runs before any writes.
-        let all_exts = ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+        let all_exts = [
+            "hnsw.graph",
+            "hnsw.data",
+            "hnsw.ids",
+            "hnsw.meta",
+            "hnsw.checksum",
+        ];
         let stale_baks: Vec<std::path::PathBuf> = all_exts
             .iter()
             .filter_map(|ext| {
@@ -316,7 +431,7 @@ impl HnswIndex {
 
         // Save the HNSW graph and data to temp directory
         self.inner
-            .with_hnsw(|h| h.file_dump(&temp_dir, basename))
+            .with_hnsw(|g| g.file_dump(&temp_dir, basename))
             .map_err(|e| {
                 HnswError::Internal(format!(
                     "Failed to dump HNSW to {}/{}: {}",
@@ -325,6 +440,48 @@ impl HnswIndex {
                     e
                 ))
             })?;
+
+        // Write the meta header (distance metric) to the temp directory.
+        // Small JSON; written with mode 0600 + fsync like the id map so a
+        // power cut can't promote a checksum manifest that references a
+        // page-cache-only meta file.
+        let meta_temp = temp_dir.join(format!("{}.hnsw.meta", basename));
+        {
+            let meta = HnswMeta {
+                magic: HNSW_META_MAGIC.to_string(),
+                version: HNSW_META_VERSION,
+                metric: self.metric().as_str().to_string(),
+            };
+            let meta_json = serde_json::to_vec(&meta).map_err(|e| {
+                HnswError::Internal(format!("Failed to serialize HNSW meta: {}", e))
+            })?;
+            let mut file = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&meta_temp)
+                }
+                #[cfg(not(unix))]
+                {
+                    std::fs::File::create(&meta_temp)
+                }
+            }
+            .map_err(|e| {
+                HnswError::Internal(format!("Failed to create {}: {}", meta_temp.display(), e))
+            })?;
+            use std::io::Write;
+            file.write_all(&meta_json).map_err(|e| {
+                HnswError::Internal(format!("Failed to write {}: {}", meta_temp.display(), e))
+            })?;
+            file.sync_all().map_err(|e| {
+                HnswError::Internal(format!("Failed to fsync {}: {}", meta_temp.display(), e))
+            })?;
+        }
 
         // Stream ID map directly to file via BufWriter rather than
         // serializing to an in-memory JSON string first.
@@ -387,7 +544,7 @@ impl HnswIndex {
             hasher.finalize()
         };
         let mut checksums = vec![format!("hnsw.ids:{}", ids_hash.to_hex())];
-        for ext in &["hnsw.graph", "hnsw.data"] {
+        for ext in &["hnsw.graph", "hnsw.data", "hnsw.meta"] {
             let path = temp_dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
                 let file = std::fs::File::open(&path).map_err(|e| {
@@ -779,6 +936,20 @@ impl HnswIndex {
         tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
         verify_hnsw_checksums(dir, basename)?;
 
+        // Resolve the distance metric. The stored value (meta
+        // header; legacy indexes without one are cosine) always wins — but
+        // an *explicit* conflicting CQS_DISTANCE_METRIC is a typed error
+        // rather than a silent reinterpretation of distances.
+        let stored_metric = read_hnsw_meta_metric(dir, basename)?;
+        if let Some(requested) = DistanceMetric::from_env().map_err(HnswError::Internal)? {
+            if requested != stored_metric {
+                return Err(HnswError::MetricMismatch {
+                    stored: stored_metric,
+                    requested,
+                });
+            }
+        }
+
         // Check ID map file size to prevent OOM (limit configurable via CQS_HNSW_MAX_ID_MAP_BYTES)
         let max_id_map_size = hnsw_max_id_map_bytes();
         let id_map_size = std::fs::metadata(&id_map_path)
@@ -903,8 +1074,10 @@ impl HnswIndex {
             // SAFETY: Exclusive access during construction — no other references exist.
             // After this closure returns, the UnsafeCell is never accessed again directly.
             let io = unsafe { &mut *cell.0.get() };
-            io.load_hnsw::<f32, DistCosine>()
-                .map_err(|e| HnswError::Internal(format!("Failed to load HNSW: {}", e)))
+            // Instantiate the dist type recorded in the meta header. hnsw_rs
+            // additionally cross-checks the distance name embedded in the
+            // graph file, so a forged meta cannot misread distances.
+            HnswGraph::load(io, stored_metric)
         })?;
 
         // Validate id_map size matches HNSW vector count
@@ -917,7 +1090,7 @@ impl HnswIndex {
             )));
         }
 
-        tracing::info!(count = id_map.len(), "HNSW index loaded");
+        tracing::info!(count = id_map.len(), metric = %stored_metric, "HNSW index loaded");
 
         // Release the load-phase shared lock before returning. The
         // in-memory `Loaded(...)` variant is fully self-contained
@@ -936,6 +1109,15 @@ impl HnswIndex {
             dim,
             _lock_file: None,
         })
+    }
+
+    /// Read the stored distance metric for a persisted index without
+    /// loading it. Missing meta header → `Cosine` (legacy indexes,
+    /// and the build default when no index exists yet). Used by derived
+    /// backends (CAGRA rebuild path) to stay consistent with the slot's
+    /// HNSW metric when `CQS_DISTANCE_METRIC` is unset.
+    pub fn stored_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
+        read_hnsw_meta_metric(dir, basename)
     }
 
     /// Check if an HNSW index exists at the given path
@@ -1673,6 +1855,187 @@ mod tests {
             stale_bak.exists(),
             "guard must NOT delete the stale .bak (it's the operator's recovery breadcrumb)"
         );
+    }
+
+    // ===== distance metric persistence =====
+
+    /// Roundtrip: build with DotProduct → save → load → metric preserved
+    /// and search still finds the self-match with a near-1 score (the
+    /// embeddings are unit-norm, so self-dot ≈ 1 and `1 − dist` ≈ 1).
+    /// Uses the shared retry helper so the rare degenerate concurrent-build
+    /// graph can't flake the assertion; the metric roundtrip itself is
+    /// asserted on every build inside the closure.
+    #[test]
+    fn test_metric_dot_save_load_roundtrip() {
+        use crate::index::DistanceMetric;
+        let basename = "test_dot_metric";
+        let build = || {
+            let tmp = TempDir::new().unwrap();
+            let embeddings = vec![
+                ("chunk1".to_string(), make_embedding(1)),
+                ("chunk2".to_string(), make_embedding(2)),
+            ];
+            let index = HnswIndex::build_with_dim_and_metric(
+                embeddings,
+                crate::EMBEDDING_DIM,
+                DistanceMetric::DotProduct,
+            )
+            .unwrap();
+            assert_eq!(index.metric(), DistanceMetric::DotProduct);
+            index.save(tmp.path(), basename).unwrap();
+
+            // The meta header must be on disk and covered by the manifest.
+            assert!(
+                tmp.path().join(format!("{basename}.hnsw.meta")).exists(),
+                "save must write the .hnsw.meta header"
+            );
+
+            let loaded =
+                HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).unwrap();
+            assert_eq!(
+                loaded.metric(),
+                DistanceMetric::DotProduct,
+                "metric must survive the save/load roundtrip"
+            );
+            assert_eq!(loaded.len(), 2);
+            // TempDir drops here; the loaded index is self-contained.
+            loaded
+        };
+        let score =
+            crate::hnsw::assert_self_match_reachable(build, &make_embedding(1), "chunk1", 2);
+        assert!(
+            score > 0.9,
+            "unit-norm self-match under DistDot should score ≈ 1, got {score}"
+        );
+    }
+
+    /// A pre-#1351 index has no `.hnsw.meta` and a 3-line checksum manifest.
+    /// It must load as cosine — that is what every legacy index was built
+    /// with.
+    #[test]
+    fn test_legacy_index_without_meta_loads_as_cosine() {
+        use crate::index::DistanceMetric;
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_legacy";
+
+        let embeddings = vec![
+            ("a".to_string(), make_embedding(1)),
+            ("b".to_string(), make_embedding(2)),
+        ];
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        // Simulate the legacy layout: drop the meta header and rewrite the
+        // manifest with only the three legacy extensions (`write_checksums`
+        // covers exactly graph/data/ids).
+        std::fs::remove_file(tmp.path().join(format!("{basename}.hnsw.meta"))).unwrap();
+        write_checksums(tmp.path(), basename);
+
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+            .expect("legacy index without meta header must load");
+        assert_eq!(
+            loaded.metric(),
+            DistanceMetric::Cosine,
+            "legacy index must load as cosine"
+        );
+        assert_eq!(loaded.len(), 2);
+    }
+
+    /// Loading with `CQS_DISTANCE_METRIC` explicitly set to a different
+    /// metric than the stored one is a typed `MetricMismatch` error, never
+    /// a silent reinterpretation.
+    ///
+    /// Test discipline: the env var is only ever set to "cosine" —
+    /// a concurrent unlocked test loading a cosine index then still sees
+    /// `requested == stored` and is unaffected. The conflict is created by
+    /// the *stored* side (a DotProduct index built via the explicit-metric
+    /// API). Held under `HNSW_ENV_LOCK` for the var's whole lifetime.
+    #[test]
+    fn test_metric_mismatch_is_typed_error() {
+        use crate::hnsw::{EnvVarGuard, HNSW_ENV_LOCK};
+        use crate::index::DistanceMetric;
+
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_metric_mismatch";
+
+        let _lock = HNSW_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let embeddings = vec![
+            ("a".to_string(), make_embedding(1)),
+            ("b".to_string(), make_embedding(2)),
+        ];
+        let index = HnswIndex::build_with_dim_and_metric(
+            embeddings.clone(),
+            crate::EMBEDDING_DIM,
+            DistanceMetric::DotProduct,
+        )
+        .unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        let _var = EnvVarGuard::set("CQS_DISTANCE_METRIC", "cosine");
+
+        // Explicit conflicting request → typed error.
+        match HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM) {
+            Err(crate::hnsw::HnswError::MetricMismatch { stored, requested }) => {
+                assert_eq!(stored, DistanceMetric::DotProduct);
+                assert_eq!(requested, DistanceMetric::Cosine);
+            }
+            Err(other) => panic!("expected MetricMismatch, got: {other}"),
+            Ok(_) => panic!("conflicting metric must not load"),
+        }
+
+        // Matching explicit request → loads fine. Same env value ("cosine"),
+        // conflict-free because this index IS cosine.
+        let cosine_index = HnswIndex::build_with_dim_and_metric(
+            embeddings,
+            crate::EMBEDDING_DIM,
+            DistanceMetric::Cosine,
+        )
+        .unwrap();
+        let basename2 = "test_metric_match";
+        cosine_index.save(tmp.path(), basename2).unwrap();
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename2, crate::EMBEDDING_DIM)
+            .expect("matching explicit metric must load");
+        assert_eq!(loaded.metric(), DistanceMetric::Cosine);
+        // _var's Drop removes the env var before the lock releases.
+    }
+
+    /// The meta header is covered by the blake3 manifest: tampering with it
+    /// after save must fail checksum verification before the metric is even
+    /// read.
+    #[test]
+    fn test_tampered_meta_fails_checksum() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_meta_tamper";
+
+        let embeddings = vec![
+            ("a".to_string(), make_embedding(1)),
+            ("b".to_string(), make_embedding(2)),
+        ];
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        // Rewrite the meta to claim a different metric WITHOUT updating the
+        // manifest.
+        let meta_path = tmp.path().join(format!("{basename}.hnsw.meta"));
+        std::fs::write(
+            &meta_path,
+            r#"{"magic":"CQSHNSW","version":1,"metric":"dot"}"#,
+        )
+        .unwrap();
+
+        match HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM) {
+            Err(HnswError::ChecksumMismatch { file, .. }) => {
+                assert!(
+                    file.contains("hnsw.meta"),
+                    "checksum failure should point at the meta file: {file}"
+                );
+            }
+            Err(other) => panic!("expected ChecksumMismatch, got: {other}"),
+            Ok(_) => panic!("tampered meta must not load"),
+        }
     }
 
     // ===== id_map edge cases =====

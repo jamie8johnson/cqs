@@ -180,7 +180,7 @@ pub mod cagra;
 pub use audit::parse_duration;
 pub use embedder::{Embedder, Embedding};
 pub use hnsw::HnswIndex;
-pub use index::{IndexResult, VectorIndex};
+pub use index::{DistanceMetric, IndexResult, VectorIndex};
 pub use note::{
     parse_notes, path_matches_mention, rewrite_notes_file, NoteEntry, NoteError, NoteFile,
     NOTES_HEADER,
