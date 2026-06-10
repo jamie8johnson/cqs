@@ -162,7 +162,19 @@ struct MockDaemon {
 }
 
 impl MockDaemon {
+    /// Like [`MockDaemon::new`] but replies with an arbitrary pre-framed
+    /// response line (for structured `output` values rather than string
+    /// sentinels).
+    fn with_response_line(sock_path: PathBuf, response: String) -> Self {
+        Self::spawn(sock_path, response)
+    }
+
     fn new(sock_path: PathBuf, sentinel: &'static str) -> Self {
+        let response = format!(r#"{{"status":"ok","output":"{sentinel}"}}"#);
+        Self::spawn(sock_path, response)
+    }
+
+    fn spawn(sock_path: PathBuf, response: String) -> Self {
         let listener = UnixListener::bind(&sock_path)
             .unwrap_or_else(|e| panic!("bind {} failed: {e}", sock_path.display()));
         listener
@@ -174,7 +186,6 @@ impl MockDaemon {
         let c2 = Arc::clone(&conn_count);
         let s2 = Arc::clone(&stop);
 
-        let response = format!(r#"{{"status":"ok","output":"{sentinel}"}}"#);
         let handle = std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(30);
             while !s2.load(Ordering::SeqCst) && Instant::now() < deadline {
@@ -886,5 +897,110 @@ fn test_status_watch_no_daemon_exits_one_with_structured_error() {
     assert!(
         stdout.contains("\"error\"") || stdout.contains("\"code\""),
         "stdout should contain a JSON error envelope, got: {stdout}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Daemon slim-envelope translation: the CLI surface emits a bare payload
+// (or full v1 envelope under CQS_OUTPUT_FORMAT=v1) regardless of whether a
+// daemon served the query. Regression seed for the {"data": ...} leak that
+// /cqs-verify caught on 2026-06-10: daemon-forwarded output printed the
+// batch envelope verbatim, so output shape depended on daemon presence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Bare-default binary command: cqs_v1 minus the v1 pin.
+fn cqs_bare() -> assert_cmd::Command {
+    #[allow(deprecated)]
+    let mut c = assert_cmd::Command::cargo_bin("cqs").expect("Failed to find cqs binary");
+    c.env_remove("CQS_OUTPUT_FORMAT");
+    c
+}
+
+fn slim_envelope_response() -> String {
+    r#"{"status":"ok","output":{"data":{"notes":[],"count":0},"_meta":{"worktree_stale":true}}}"#
+        .to_string()
+}
+
+#[test]
+fn test_slim_data_envelope_unwraps_to_bare_payload() {
+    let (dir, sock_path) = setup_project();
+    let _mock = MockDaemon::with_response_line(sock_path, slim_envelope_response());
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["notes", "list", "--json"]);
+
+    let output = cmd.output().expect("cqs notes list spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout=<{stdout}>");
+
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert!(
+        v.get("data").is_none(),
+        "bare surface must not carry the batch envelope; got <{stdout}>"
+    );
+    assert_eq!(v["count"], 0, "payload fields at top level");
+    assert_eq!(
+        v["_meta"]["worktree_stale"], true,
+        "daemon _meta spliced onto the bare object payload"
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "trailing newline parity with println"
+    );
+}
+
+#[test]
+fn test_slim_data_envelope_rebuilds_v1_envelope() {
+    let (dir, sock_path) = setup_project();
+    let _mock = MockDaemon::with_response_line(sock_path, slim_envelope_response());
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+
+    let mut cmd = cqs(); // v1-pinned
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["notes", "list", "--json"]);
+
+    let output = cmd.output().expect("cqs notes list spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout=<{stdout}>");
+
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(v["data"]["count"], 0, "v1 surface keeps the full envelope");
+    assert!(v.get("version").is_some(), "v1 envelope carries version");
+}
+
+#[test]
+fn test_slim_error_envelope_exits_nonzero() {
+    let (dir, sock_path) = setup_project();
+    let _mock = MockDaemon::with_response_line(
+        sock_path,
+        r#"{"status":"ok","output":{"error":{"code":"not_found","message":"no such note"}}}"#
+            .to_string(),
+    );
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["notes", "list", "--json"]);
+
+    let output = cmd.output().expect("cqs notes list spawn");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "slim error envelope must exit non-zero, not print an error with exit 0"
+    );
+    assert!(
+        stderr.contains("not_found") && stderr.contains("no such note"),
+        "error code+message surfaced; stderr=<{stderr}>"
     );
 }

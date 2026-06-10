@@ -435,20 +435,46 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         };
         let text = match output {
             serde_json::Value::String(s) => s.clone(),
-            // Pretty-print to match CLI `emit_json` so agents diffing
-            // `cqs --json …` output between CLI and daemon modes don't hit
-            // spurious whitespace drift. One re-encode cost; worth the parity
-            // with the in-process path.
-            other => match serde_json::to_string_pretty(other) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        stage = "parse",
-                        "Daemon ok response missing/unserializable output — falling back to CLI"
-                    );
-                    return Ok(None);
+            // JSON outputs from the daemon arrive in the slim batch envelope
+            // (`{"data": …}` / `{"error": …}` from `wrap_value`/`wrap_error`).
+            // That envelope is the BATCH/JSONL contract — the CLI surface
+            // emits a bare payload (or the full v1 envelope under
+            // CQS_OUTPUT_FORMAT=v1), and its shape must not depend on whether
+            // a daemon happened to serve the query. Translate before
+            // printing; anything that isn't a slim envelope prints verbatim.
+            other => match cqs::daemon_translate::classify_slim_envelope(other) {
+                Some(cqs::daemon_translate::SlimEnvelope::Data { payload, meta }) => {
+                    match crate::cli::json_envelope::daemon_payload_to_cli_text(payload, meta) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                stage = "parse",
+                                "Daemon payload presentation failed — falling back to CLI"
+                            );
+                            return Ok(None);
+                        }
+                    }
                 }
+                Some(cqs::daemon_translate::SlimEnvelope::Error { code, message }) => {
+                    // Command-level failure from the daemon: surface as a real
+                    // error (non-zero exit), matching the in-process path,
+                    // instead of printing an error envelope with exit 0.
+                    return Err(anyhow::anyhow!(
+                        "daemon error: {code}: {message}\nhint: set CQS_NO_DAEMON=1 to bypass the daemon"
+                    ));
+                }
+                None => match serde_json::to_string_pretty(other) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            stage = "parse",
+                            "Daemon ok response missing/unserializable output — falling back to CLI"
+                        );
+                        return Ok(None);
+                    }
+                },
             },
         };
         return Ok(Some(text));

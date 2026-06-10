@@ -493,6 +493,51 @@ fn emit_bare_payload_stdout<T: Serialize>(value: &T) -> Result<()> {
 /// Same retry-on-NaN guarantee as [`emit_json`]. Accepts `&str` for the
 /// code so legacy callers using `error_codes::FOO` keep working; new code
 /// should prefer [`ErrorCode::as_str`] for compile-checked emission.
+/// Render a daemon slim-envelope payload exactly as the in-process CLI
+/// would have presented it: bare pretty-printed payload under the V2Bare
+/// default (with the daemon's `_meta` spliced into object payloads, mirroring
+/// [`emit_json`]'s bare path), or the full v1 envelope under
+/// `CQS_OUTPUT_FORMAT=v1`. This keeps the CLI's wire shape independent of
+/// whether a daemon happened to serve the query.
+///
+/// Non-object payloads can't carry `_meta`; the operational signal degrades
+/// to a `tracing::warn!`, same as the in-process bare path.
+pub fn daemon_payload_to_cli_text(
+    payload: &serde_json::Value,
+    meta: Option<&serde_json::Value>,
+) -> Result<String> {
+    daemon_payload_to_cli_text_with(OutputFormat::current(), payload, meta)
+}
+
+/// Format-explicit core of [`daemon_payload_to_cli_text`], split out so tests
+/// can pin both branches without racing the process-cached env read.
+fn daemon_payload_to_cli_text_with(
+    format: OutputFormat,
+    payload: &serde_json::Value,
+    meta: Option<&serde_json::Value>,
+) -> Result<String> {
+    if format.emits_bare_payload() {
+        let mut v = payload.clone();
+        if let Some(m) = meta {
+            match v {
+                serde_json::Value::Object(ref mut map) => {
+                    map.insert("_meta".to_string(), m.clone());
+                }
+                _ => tracing::warn!(
+                    "daemon _meta dropped: bare payload is not a JSON object \
+                     (signal preserved on the daemon side; see daemon logs)"
+                ),
+            }
+        }
+        // Trailing newline for parity with the in-process `println!` paths.
+        Ok(format!("{}\n", serde_json::to_string_pretty(&v)?))
+    } else {
+        let env = Envelope::ok(payload);
+        let buf = serde_json::to_value(&env)?;
+        Ok(format!("{}\n", format_envelope_to_string(&buf)?))
+    }
+}
+
 pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
     let env = Envelope::<serde_json::Value>::err(code, message);
     let buf = serde_json::to_value(&env)?;
@@ -1104,5 +1149,41 @@ mod tests {
         // find their fields.
         assert_eq!(second_wrap["data"]["data"]["name"], "foo");
         assert_eq!(second_wrap["data"]["data"]["count"], 3);
+    }
+
+    #[test]
+    fn daemon_payload_bare_splices_meta_into_object() {
+        let payload = serde_json::json!({"query": "q", "results": []});
+        let meta = serde_json::json!({"worktree_stale": true});
+        let s = daemon_payload_to_cli_text_with(OutputFormat::V2Bare, &payload, Some(&meta))
+            .expect("render");
+        assert!(s.ends_with('\n'), "trailing newline for println parity");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(v["query"], "q");
+        assert_eq!(v["_meta"]["worktree_stale"], true);
+        assert!(
+            v.get("data").is_none(),
+            "no envelope key on the bare surface"
+        );
+    }
+
+    #[test]
+    fn daemon_payload_bare_array_drops_meta_with_shape_intact() {
+        let payload = serde_json::json!([1, 2, 3]);
+        let meta = serde_json::json!({"worktree_stale": true});
+        let s = daemon_payload_to_cli_text_with(OutputFormat::V2Bare, &payload, Some(&meta))
+            .expect("render");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(v, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn daemon_payload_v1_rebuilds_full_envelope() {
+        let payload = serde_json::json!({"k": 1});
+        let s = daemon_payload_to_cli_text_with(OutputFormat::V1Envelope, &payload, None)
+            .expect("render");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(v["data"]["k"], 1);
+        assert!(v.get("version").is_some(), "v1 envelope carries version");
     }
 }

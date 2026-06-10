@@ -148,6 +148,53 @@ pub fn resolve_daemon_timeout_ms() -> std::time::Duration {
 /// Extract the value of `--model` from the raw argv, if present. Used by the
 /// caller to emit a "daemon ignores your --model" warning without duplicating
 /// the arg-scanning logic here. Supports both `--model VAL` and `--model=VAL`.
+/// Classification of a daemon dispatch output against the slim batch
+/// envelope contract (`wrap_value` / `wrap_error` in `json_envelope`):
+/// `{"data": <payload>}` or `{"error": {"code","message"}}`, each with an
+/// optional `_meta` sibling and NO other keys. Full v1 envelopes (which
+/// carry `version`) and payloads that merely contain a `data` field among
+/// other keys deliberately do not match — they pass through verbatim.
+pub enum SlimEnvelope<'a> {
+    /// Success: the inner payload plus the daemon's `_meta`, if any.
+    Data {
+        payload: &'a serde_json::Value,
+        meta: Option<&'a serde_json::Value>,
+    },
+    /// Failure: redacted code + message from the slim error object.
+    Error { code: String, message: String },
+}
+
+/// Match `v` against the slim envelope shapes. Returns `None` for anything
+/// that isn't exactly a slim envelope, so callers print unrecognized output
+/// unchanged.
+pub fn classify_slim_envelope(v: &serde_json::Value) -> Option<SlimEnvelope<'_>> {
+    let obj = v.as_object()?;
+    if obj.is_empty()
+        || !obj
+            .keys()
+            .all(|k| k == "data" || k == "error" || k == "_meta")
+    {
+        return None;
+    }
+    let meta = obj.get("_meta");
+    match (obj.get("data"), obj.get("error")) {
+        (Some(payload), None) => Some(SlimEnvelope::Data { payload, meta }),
+        (None, Some(err)) => Some(SlimEnvelope::Error {
+            code: err
+                .get("code")
+                .and_then(|c| c.as_str())
+                .unwrap_or("internal")
+                .to_string(),
+            message: err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("daemon error")
+                .to_string(),
+        }),
+        _ => None,
+    }
+}
+
 pub fn stripped_model_value(raw: &[String]) -> Option<String> {
     let mut it = raw.iter();
     while let Some(arg) = it.next() {
@@ -1971,5 +2018,60 @@ mod tests {
             serde_json::Value::Null,
             "the data:null payload is returned verbatim; the error field is dropped",
         );
+    }
+
+    #[test]
+    fn classify_slim_data_envelope() {
+        let v = serde_json::json!({"data": {"x": 1}});
+        match classify_slim_envelope(&v) {
+            Some(SlimEnvelope::Data { payload, meta }) => {
+                assert_eq!(payload, &serde_json::json!({"x": 1}));
+                assert!(meta.is_none());
+            }
+            other => panic!("expected Data, got {:?}", other.is_some()),
+        }
+        let v = serde_json::json!({"data": [1, 2], "_meta": {"worktree_stale": true}});
+        match classify_slim_envelope(&v) {
+            Some(SlimEnvelope::Data { payload, meta }) => {
+                assert_eq!(payload, &serde_json::json!([1, 2]));
+                assert!(meta.is_some());
+            }
+            _ => panic!("expected Data with meta"),
+        }
+    }
+
+    #[test]
+    fn classify_slim_error_envelope() {
+        let v = serde_json::json!({"error": {"code": "not_found", "message": "nope"}});
+        match classify_slim_envelope(&v) {
+            Some(SlimEnvelope::Error { code, message }) => {
+                assert_eq!(code, "not_found");
+                assert_eq!(message, "nope");
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn classify_rejects_non_slim_shapes() {
+        // Full v1 envelope (has version) passes through untouched.
+        assert!(classify_slim_envelope(&serde_json::json!(
+            {"data": null, "error": null, "version": 1}
+        ))
+        .is_none());
+        // Payload that merely contains a data field among other keys.
+        assert!(classify_slim_envelope(&serde_json::json!(
+            {"data": 1, "other": 2}
+        ))
+        .is_none());
+        // Arrays, scalars, empty objects.
+        assert!(classify_slim_envelope(&serde_json::json!([1])).is_none());
+        assert!(classify_slim_envelope(&serde_json::json!(7)).is_none());
+        assert!(classify_slim_envelope(&serde_json::json!({})).is_none());
+        // data AND error together is not the slim contract.
+        assert!(classify_slim_envelope(&serde_json::json!(
+            {"data": 1, "error": {"code": "x", "message": "y"}}
+        ))
+        .is_none());
     }
 }
