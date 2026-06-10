@@ -1921,3 +1921,19 @@ mentions = [
     "evals/queries",
     "src/cli/commands/eval/runner.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Dispatch prompts saying 'implement issue #N' make agents cite #N in code comments, tripping the provenance lint — 3 fixup rounds in one day (#1718, #1720, #1722). The rule lives in .claude/agents/implementer.md now; when writing one-off agent prompts, include the no-issue-refs warning explicitly."
+mentions = [
+    ".claude/agents/implementer.md",
+    "scripts/check_comment_provenance.py",
+]
+
+[[note]]
+sentiment = 0.0
+text = "cuVS 26.06 CAGRA with InnerProduct metric returns the RAW inner product ordered best-first — not a negated/expanded distance. score = dist directly. First conversion hypothesis (negated IP) was wrong; only the failing GPU test caught it. Distance-to-score conversions per metric are pinned in test_dot_product_build_and_search."
+mentions = [
+    "src/cagra.rs",
+    "DistanceMetric",
+]

@@ -159,7 +159,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Conventions:**
 - Name teams by purpose: `audit-batch-1`, `feat-streaming`, `refactor-errors`
-- Use `opus` for all agent dispatches
+- Use `fable` for all agent dispatches (opus is an acceptable alternative)
 - Always clean up teams when done (`Teammate cleanup`)
 - Teammates can't see your text output — use `SendMessage` to communicate
 

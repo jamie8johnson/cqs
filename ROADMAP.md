@@ -187,10 +187,10 @@ Core finding: R@5 is alpha-insensitive on this corpus state across [0, 1]. The O
 The biggest gap between cqs and similar code-intelligence tools: *easy to index, hard to keep indexed between turns*. IDEs solve "between keystrokes" (continuous time, editor consumer); Sourcegraph solves "between pushes" (discrete time, server consumer); cqs needs to solve "between turns" (discrete time, agent consumer). Different consistency models for different consumers — and cqs is the first tool in the space whose primary consumer is the agent, so it's the first that needs the turn-shaped consistency model. Items below are ordered by leverage.
 
 - [x] **#1182 — perfect watch mode (3-layer reconciliation).** Filed 2026-04-28. The closing-the-gap item. Three layers compose: (1) `.git/hooks/post-{checkout,merge,rewrite}` post a `reconcile` message to the daemon socket, (2) periodic full-tree fingerprint reconciliation every `CQS_WATCH_RECONCILE_SECS` (default 30s) catches what hooks + inotify miss, (3) `cqs status --watch-fresh --wait` exposes a freshness contract — eval-runner just calls `--wait` and stops caring. Promise: bounded eventual consistency, agent can either trust `fresh` or block. **Positioning differentiator. Layers 1-4 shipped #1189/#1191/#1193/#1194; 47-file bulk-delta acceptance test landed in #1196.**
-- [ ] **Adaptive debounce — idle-flush instead of fixed window.** Today: 500ms (1500ms on WSL/poll) regardless of event burstiness. Replace with "flush after N ms of no events." A bulk `git checkout` (200 files in 50ms) gets one cycle; a slow typist on one file still gets snappy ~500ms. Pre-drain decision in `src/cli/watch/events.rs::collect_events` — `process_file_changes` already drains atomically.
-- [ ] **`cqs status --watch`.** Daemon already tracks queue depth, last-reindex latency, cache hit rate, HNSW dirty duration, in-flight clients, last error — operators currently grep `journalctl --user-unit cqs-watch` for them. Expose as a single status command via the existing daemon socket. (Pairs with #1182's freshness API; same command with `--watch-fresh` flag.)
+- [x] **Adaptive debounce — shipped #1724 (2026-06-10).** Idle-flush: pending set flushes after a quiet gap (`CQS_WATCH_DEBOUNCE_MS`, WSL auto-bump preserved) with a max-latency cap (`CQS_WATCH_MAX_DEBOUNCE_MS`, default 6× gap). A bulk checkout gets one cycle fired after the burst ends. Bonus fix: the old flush decision lived only in the recv-timeout arm, so event streams faster than 100ms starved flushing entirely.
+- [x] **`cqs status --watch` — shipped #1720 (2026-06-10).** `WatchOpsStats` over the existing socket: queue depth, dropped events, in-flight clients, reconcile state, last-reindex latency, sticky last error, per-slot vec (extended per-slot by #1727). Composes with `--watch-fresh`/`--wait`. Cache hit rate deliberately omitted (no live counters on the reindex path; `cqs cache stats` answers offline).
 - [x] **Whitespace/comment-canonical hash for cache lookup — shipped as schema v28 `chunks.canonical_hash` (v1.42.0).** Comment-stripped/whitespace-collapsed blake3 keys both embedding-reuse paths (store-side and global cache; unified in #1701's `resolve_reuse`), so comment-only edits and `cargo fmt` runs no longer re-embed. Full content_hash retained for store identity.
-- [ ] **Parallel reindex across slots.** A save event today reindexes only the active slot. Slots share `content_hash` and the global embedding cache (#1129), so parallel reindex of all slots is near-free with a warm cache — keeps inactive slots from rotting between A/Bs and removes the manual `cqs index --slot` step.
+- [x] **Parallel reindex across slots — shipped #1727 (2026-06-10) as delta propagation.** The active reindex enqueues its file-delta per sibling slot (one event pipeline, no per-slot scans); same-model siblings drain as pure cache hits by construction (active-first ordering populates the global cache), foreign-model slots batch with hysteresis behind `CQS_WATCH_ALL_SLOTS` opt-in; durability via slot-aware #1182 reconcile; per-slot freshness via `cqs status --watch-fresh --slot X`.
 - [ ] **Kill the periodic full HNSW rebuild.** Today, after `hnsw_rebuild_threshold` inserts the watch loop spawns a background thread to rebuild from scratch (`PendingRebuild` + delta replay in `src/cli/watch/rebuild.rs`). Implement true delete-and-update on the HNSW (mark stale entries, prune in-place) so the rebuild path goes away. Bigger refactor, but the entire content-hash-aware-drain (#1124) machinery exists *only* to bridge this gap.
 
 **Features (queued, no immediate work):**
@@ -251,20 +251,15 @@ Two designs, both docs landed and reviewable, no implementation yet:
 
 ## Open Issues
 
-Re-audited 2026-06-09 against GitHub state. The v1.39–v1.41 audit cycles closed nearly everything filed from v1.33.0: of the 25 medium-effort tracking issues (#1337–#1377), only #1350 and #1351 remain open. Perf tier-3 lost #1244/#1229/#1228 (closed); refactor tier-3 lost #1216 (closed).
+Re-audited 2026-06-10. The v1.39–v1.41 audit cycles closed nearly everything filed from v1.33.0, and the 2026-06-10 implementation campaign closed the last two medium-effort tracking issues: #1350 (ScoreSignal trait, PR #1719) and #1351 (DistanceMetric, PR #1722). Perf tier-3 lost #1244/#1229/#1228 (closed); refactor tier-3 lost #1216 (closed).
 
-**v1.33.0 audit follow-ups still open:**
-
-| # | Finding |
-|---|---------|
-| [#1350](https://github.com/jamie8johnson/cqs/issues/1350) | P4-14: `apply_scoring_pipeline` hand-coded — adding a third signal means editing two paths |
-| [#1351](https://github.com/jamie8johnson/cqs/issues/1351) | P4-15: HNSW distance metric type-baked as `DistCosine`; switching needs a persist migration |
+**v1.33.0 audit follow-ups: all closed** (#1350 via PR #1719, #1351 via PR #1722, both 2026-06-10).
 
 **v1.40.0 audit cycle — deferred P1s (rationale in CHANGELOG v1.41.0):**
 
 | Finding | Status |
 |---------|--------|
-| DS-V1.40-1: daemon Store cache invalidation via `PRAGMA data_version` | Symptom rare; caches reload on the 100ms staleness check. Cluster D bundling deferred to the v1.42 cycle |
+| DS-V1.40-1: daemon Store cache invalidation via `PRAGMA data_version` | **FIXED** in PR #1718 (2026-06-10) — dedicated probe connection, WAL-write-no-checkpoint test |
 | DS-V1.40-7: sentiment column CHECK constraint (schema v28) | Single-user discrete-value compliance is reliable; migration cost > benefit unless telemetry shows misuse |
 
 **Perf tier-3 (real wins, but each ≥1hr):**
