@@ -226,7 +226,7 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         return;
     }
     // Wall-clock the reindex pass so `cqs status --watch` can report
-    // last-reindex latency (#1715) — previously only visible as a
+    // last-reindex latency — previously only visible as a
     // tracing span duration in journalctl.
     let reindex_started = std::time::Instant::now();
     match reindex_files(
@@ -239,7 +239,7 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         cfg.quiet,
     ) {
         Ok((count, content_hashes)) => {
-            // Publish-side stats for `cqs status --watch` (#1715): a
+            // Publish-side stats for `cqs status --watch`: a
             // timestamp + duration pair the snapshot publisher reads
             // every tick.
             state.last_reindex = Some(cqs::watch_status::ReindexLatency {
@@ -484,7 +484,7 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         }
         Err(e) => {
             warn!(error = %e, "Reindex error");
-            // Surface the failure to `cqs status --watch` (#1715) so
+            // Surface the failure to `cqs status --watch` so
             // operators don't need journalctl to see why the index is
             // behind. Sticky — see `WatchErrorInfo` docs.
             state.last_error = Some(cqs::watch_status::WatchErrorInfo {
@@ -511,7 +511,7 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
 /// Process notes.toml changes: parse and store notes (no embedding needed).
 ///
 /// Takes `&mut WatchState` so a notes-reindex failure lands in
-/// `state.last_error` for `cqs status --watch` (#1715), same as the
+/// `state.last_error` for `cqs status --watch`, same as the
 /// file-reindex path.
 pub(super) fn process_note_changes(
     root: &Path,

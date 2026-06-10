@@ -101,7 +101,7 @@ pub struct WatchErrorInfo {
 /// Per-slot freshness entry inside [`WatchOpsStats::slots`].
 ///
 /// Today the daemon serves exactly one slot, so the vec carries one
-/// entry (the active slot). Slot-parallel work (#1717) extends the vec
+/// entry (the active slot). Slot-parallel work extends the vec
 /// with additional entries rather than reshaping the output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotWatchStatus {
@@ -116,7 +116,7 @@ pub struct SlotWatchStatus {
     pub last_reindex: Option<ReindexLatency>,
 }
 
-/// Operational stats block for `cqs status --watch` (#1715).
+/// Operational stats block for `cqs status --watch`.
 ///
 /// Composes with the freshness fields already on [`WatchSnapshot`]:
 /// queue depth is `modified_files`, dropped events is
@@ -146,7 +146,7 @@ pub struct WatchOpsStats {
     /// subsequent successes — see [`WatchErrorInfo`].
     pub last_error: Option<WatchErrorInfo>,
     /// Per-slot freshness. Exactly one entry today (the active slot);
-    /// #1717 extends this vec.
+    /// The slot-parallel reindex work extends this vec.
     pub slots: Vec<SlotWatchStatus>,
 }
 
@@ -214,7 +214,7 @@ pub struct WatchSnapshot {
     /// daemon hasn't published a snapshot yet (still ramping up).
     #[serde(default)]
     pub active_slot: Option<String>,
-    /// Operational stats for `cqs status --watch` (#1715). `None` when
+    /// Operational stats for `cqs status --watch`. `None` when
     /// the snapshot came from a daemon that predates the field (older
     /// binary) or from the initial `unknown()` placeholder — lets the
     /// CLI distinguish "stats unavailable" from real zeros.
@@ -471,7 +471,7 @@ impl<'a> WatchSnapshotInput<'a> {
     }
 
     /// Builder-style chain for the `cqs status --watch` ops block
-    /// (#1715). The watch loop samples the daemon's in-flight counter
+    ///. The watch loop samples the daemon's in-flight counter
     /// and the reconcile signal each tick, and borrows the
     /// last-reindex/last-error records off its owned `WatchState`.
     pub fn with_ops(
@@ -543,8 +543,8 @@ impl WatchSnapshot {
         // without rebuilding the state-machine inputs.
         tracing::trace!(state = %state, "compute decision");
 
-        // Ops block (#1715). The per-slot vec carries exactly the
-        // active slot today; #1717 extends it. Built whenever the slot
+        // Ops block. The per-slot vec carries exactly the
+        // active slot today; the slot-parallel reindex work extends it. Built whenever the slot
         // name is known — `active_slot == None` only happens for
         // synthetic inputs that never reach the daemon wire.
         let slots = input
@@ -773,7 +773,7 @@ mod tests {
         assert!(!s.load(Ordering::Acquire));
     }
 
-    // ===== #1715: cqs status --watch ops block =====
+    // ===== cqs status --watch ops block =====
 
     fn full_ops_input<'a>(
         last_reindex: &'a ReindexLatency,
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(ops.last_reindex.as_ref(), Some(&lr));
         assert_eq!(ops.last_error.as_ref(), Some(&le));
         // Per-slot vec carries exactly the active slot, populated now —
-        // not a dead placeholder for #1717.
+        // not a dead placeholder.
         assert_eq!(ops.slots.len(), 1);
         let slot = &ops.slots[0];
         assert_eq!(slot.name, "default");
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(back.ops, snap.ops);
     }
 
-    /// Back-compat: a snapshot from a daemon that predates #1715 (no
+    /// Back-compat: a snapshot from a daemon that predates the ops block (no
     /// `ops` key on the wire) must deserialize with `ops == None`, not
     /// error — `cqs status --watch` against an old daemon degrades to
     /// "stats unavailable" instead of a BadResponse.

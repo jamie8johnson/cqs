@@ -606,7 +606,7 @@ fn test_ping_no_daemon_exits_one() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #1715: `cqs status --watch` against a mock daemon.
+// `cqs status --watch` against a mock daemon.
 //
 // Same fixture pattern as PingMockDaemon: bind a UnixListener at the exact
 // socket path the CLI computes, reply with a canned WatchSnapshot whose
@@ -616,7 +616,7 @@ fn test_ping_no_daemon_exits_one() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Mock daemon replying to the `status` command with a canned
-/// `WatchSnapshot` carrying a fully-populated `ops` block (#1715).
+/// `WatchSnapshot` carrying a fully-populated `ops` block.
 struct StatusMockDaemon {
     conn_count: Arc<AtomicUsize>,
     last_request: Arc<std::sync::Mutex<String>>,
@@ -743,7 +743,7 @@ impl Drop for StatusMockDaemon {
 fn test_status_watch_json_round_trip_returns_all_ops_fields() {
     // `cqs status --watch --json` must connect to the daemon, issue the
     // `status` command, and emit the full WatchSnapshot — including every
-    // ops-block field (#1715 gate: "returning all fields").
+    // ops-block field (gate: every field returned).
     let (dir, sock_path) = setup_project();
     let mock = StatusMockDaemon::new(sock_path.clone());
 

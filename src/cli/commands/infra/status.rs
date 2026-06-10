@@ -6,7 +6,7 @@
 //! checks. The CLI sits next to `cqs ping`: same socket, same envelope,
 //! different command name.
 //!
-//! Two report flags compose over the same snapshot query (#1715):
+//! Two report flags compose over the same snapshot query:
 //!
 //! - `--watch-fresh` — the freshness state machine (canonical since #1182).
 //! - `--watch` — the daemon's operational stats block (in-flight clients,
@@ -147,7 +147,7 @@ fn emit_snapshot(
 ) -> Result<()> {
     if json {
         // The JSON shape is the full WatchSnapshot either way — the `ops`
-        // block ships on every daemon publish since #1715, so `--watch`
+        // block ships on every daemon publish since the ops block shipped, so `--watch`
         // and `--watch-fresh` consumers parse one schema.
         crate::cli::json_envelope::emit_json(snap)?;
     } else {
@@ -191,7 +191,7 @@ fn print_text(snap: &cqs::watch_status::WatchSnapshot, show_ops: bool) {
     }
 }
 
-/// Render the `--watch` operational block (#1715). Grep-friendly
+/// Render the `--watch` operational block. Grep-friendly
 /// `key=value` lines, same convention as the counters line above.
 #[cfg(unix)]
 fn print_ops_text(snap: &cqs::watch_status::WatchSnapshot) {

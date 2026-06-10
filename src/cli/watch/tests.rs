@@ -2030,10 +2030,10 @@ fn run_daemon_periodic_gc_prunes_missing_files() {
     );
 }
 
-// ===== #1715: publish_watch_snapshot ops block =====
+// ===== publish_watch_snapshot ops block =====
 
 /// The watch loop's snapshot publisher must carry the operational stats
-/// (#1715): the daemon's in-flight counter, the undrained reconcile
+/// the daemon's in-flight counter, the undrained reconcile
 /// signal, and the state-recorded last-reindex/last-error pair — plus a
 /// per-slot vec populated with the active slot. This drives the real
 /// producer (`publish_watch_snapshot`) end-to-end into the shared

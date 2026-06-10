@@ -177,11 +177,11 @@ struct WatchState {
     /// Owned String rather than borrow because `WatchState` outlives the
     /// per-tick `WatchSnapshotInput`.
     active_slot: String,
-    /// Latency of the most recent completed reindex pass (#1715).
+    /// Latency of the most recent completed reindex pass.
     /// Recorded in `process_file_changes` where `reindex_files` returns
     /// Ok; published every snapshot tick for `cqs status --watch`.
     last_reindex: Option<cqs::watch_status::ReindexLatency>,
-    /// Most recent reindex/notes-reindex error (#1715). Sticky across
+    /// Most recent reindex/notes-reindex error. Sticky across
     /// subsequent successes — the timestamp disambiguates. Recorded
     /// where the watch loop currently logs `Reindex error` /
     /// `Notes reindex error`.
@@ -208,7 +208,7 @@ const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(
 /// `in_flight_clients` is the daemon accept loop's shared counter
 /// (always 0 without `--serve`); `reconcile_signal` is sampled with a
 /// plain `load` (never `swap` — draining it is the loop body's job).
-/// Both feed the `cqs status --watch` ops block (#1715).
+/// Both feed the `cqs status --watch` ops block.
 fn publish_watch_snapshot(
     handle: &cqs::watch_status::SharedWatchSnapshot,
     fresh_notifier: &cqs::watch_status::SharedFreshNotifier,
@@ -728,7 +728,7 @@ pub fn cmd_watch(
     let fresh_notifier_handle: cqs::watch_status::SharedFreshNotifier =
         cqs::watch_status::shared_fresh_notifier();
 
-    // Shared in-flight client counter (#1715). The daemon accept loop
+    // Shared in-flight client counter. The daemon accept loop
     // increments/decrements it per connection; the watch loop samples it
     // every snapshot publish so `cqs status --watch` can report it.
     // Stays at 0 when `--serve` is off (no daemon thread to count).
@@ -793,7 +793,7 @@ pub fn cmd_watch(
             let daemon_fresh_notifier = Arc::clone(&fresh_notifier_handle);
             // Clone the in-flight counter so the accept loop's
             // per-connection bookkeeping is visible to the watch loop's
-            // snapshot publisher (#1715).
+            // snapshot publisher.
             let daemon_in_flight = Arc::clone(&in_flight_clients_handle);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM.

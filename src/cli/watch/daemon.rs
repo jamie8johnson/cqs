@@ -39,7 +39,7 @@ use super::{
 ///
 /// `in_flight`: the shared per-connection counter. Owned by the outer
 /// `cmd_watch` scope (not local to this thread) so the watch loop can
-/// sample it into the `cqs status --watch` ops block (#1715). This
+/// sample it into the `cqs status --watch` ops block. This
 /// thread is the only writer; the watch loop only `load`s.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_daemon_thread(
@@ -121,7 +121,7 @@ pub(super) fn spawn_daemon_thread(
         // long handler.
         let ctx = Arc::new(Mutex::new(ctx));
         // `in_flight` arrives as a parameter — shared with the watch
-        // loop's snapshot publisher (#1715).
+        // loop's snapshot publisher.
         // Resolve cap once at startup so a `CQS_MAX_DAEMON_CLIENTS` change
         // requires daemon restart (matches the rest of the env-var surface —
         // config reload is not a goal for caps).

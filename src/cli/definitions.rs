@@ -866,7 +866,7 @@ pub(super) enum Commands {
     /// `--watch-fresh` is the canonical freshness flag; `--watch` adds
     /// the daemon's operational stats (queue depth, in-flight clients,
     /// dropped events, last-reindex latency, last error, per-slot
-    /// freshness) — the journalctl-grep replacement (#1715). The two
+    /// freshness) — the journalctl-grep replacement. The two
     /// flags compose: both hit the same snapshot query.
     ///
     /// `--wait` polls until the snapshot reports `state == fresh` or the
