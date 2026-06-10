@@ -188,7 +188,7 @@ Keep your index up to date automatically:
 ```bash
 cqs watch              # Watch for changes and reindex (foreground)
 cqs watch --serve      # + listen on Unix socket so CLI commands hit the daemon (3-19 ms vs 2 s startup)
-cqs watch --debounce 1000  # Custom debounce (ms)
+cqs watch --debounce 1000  # Custom quiet gap (ms) — changes flush after this much event silence
 ```
 
 Watch mode respects `.gitignore` by default. Use `--no-ignore` to index ignored files.
@@ -944,8 +944,9 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |
 | `CQS_WAL_AUTOCHECKPOINT_PAGES` | `1000` | SQLite `wal_autocheckpoint` ceiling (pages) applied via every connection's `after_connect` hook. Caps WAL growth between commits so an abrupt shutdown leaves a bounded recovery walk. Lower for tighter WAL bounds; raise on long write-heavy reindex sessions to amortize checkpoint cost. (P2-25 / DS-V1.33-8) |
-| `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
+| `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch quiet gap (milliseconds): pending changes flush after this much event *silence*, so an event burst (e.g. `git checkout`) coalesces into one reindex cycle fired just after the burst ends, while a single save flushes at this latency. Takes precedence over `--debounce`. |
 | `CQS_WATCH_INCREMENTAL_SPLADE` | `1` | Set to `0` to disable inline SPLADE encoding in `cqs watch`. Daemon then runs dense-only and sparse coverage drifts until a manual `cqs index`. |
+| `CQS_WATCH_MAX_DEBOUNCE_MS` | 6× quiet gap (`3000` at the inotify default) | Max-latency cap (milliseconds) on the idle-flush debounce: an event stream that never goes quiet for a full `CQS_WATCH_DEBOUNCE_MS` still flushes within this much of its first pending event. Clamped to at least the quiet gap. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_POLL_MS` | `5000` | Poll-watcher tick interval (milliseconds). Only used on WSL `/mnt/c/` and other non-inotify filesystems where notify-rs falls back to polling. Lower = faster reaction; higher = less idle CPU walking the tree. Min 100. |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |

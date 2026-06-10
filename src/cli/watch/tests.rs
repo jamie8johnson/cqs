@@ -85,6 +85,7 @@ fn test_watch_state() -> WatchState {
         pending_files: HashSet::new(),
         pending_notes: false,
         last_event: std::time::Instant::now(),
+        first_pending_event: None,
         last_indexed_mtime: HashMap::new(),
         hnsw_index: None,
         incremental_count: 0,
@@ -2120,4 +2121,234 @@ fn publish_watch_snapshot_ops_zeros_without_daemon() {
     assert!(ops.last_reindex.is_none());
     assert!(ops.last_error.is_none());
     assert_eq!(ops.slots.len(), 1, "active slot entry is always present");
+}
+
+// ===== Idle-flush debounce tests =====
+//
+// The watch loop flushes the pending sets when EITHER the quiet gap
+// elapses since the last accepted event OR the oldest pending event has
+// waited out the max-latency cap. These tests pin the pure decision
+// (`flush_due`) and the knob resolution (`resolve_debounce`) without
+// touching the filesystem or sleeping.
+
+fn dbc(gap_ms: u64, max_ms: u64) -> DebounceConfig {
+    DebounceConfig {
+        quiet_gap: Duration::from_millis(gap_ms),
+        max_latency: Duration::from_millis(max_ms),
+    }
+}
+
+fn backdate(ms: u64) -> std::time::Instant {
+    std::time::Instant::now()
+        .checked_sub(Duration::from_millis(ms))
+        .expect("test instant backdate")
+}
+
+#[test]
+fn resolve_debounce_defaults() {
+    let cfg = resolve_debounce(500, false, None, None);
+    assert_eq!(cfg.quiet_gap, Duration::from_millis(500));
+    assert_eq!(
+        cfg.max_latency,
+        Duration::from_millis(500 * u64::from(MAX_DEBOUNCE_FACTOR))
+    );
+}
+
+#[test]
+fn resolve_debounce_wsl_poll_auto_bump_applies_to_quiet_gap() {
+    let cfg = resolve_debounce(500, true, None, None);
+    assert_eq!(cfg.quiet_gap, Duration::from_millis(1500));
+    assert_eq!(
+        cfg.max_latency,
+        Duration::from_millis(1500 * u64::from(MAX_DEBOUNCE_FACTOR))
+    );
+}
+
+#[test]
+fn resolve_debounce_env_gap_overrides_flag_and_suppresses_bump() {
+    let cfg = resolve_debounce(500, true, Some(800), None);
+    assert_eq!(cfg.quiet_gap, Duration::from_millis(800));
+    assert_eq!(
+        cfg.max_latency,
+        Duration::from_millis(800 * u64::from(MAX_DEBOUNCE_FACTOR))
+    );
+}
+
+#[test]
+fn resolve_debounce_explicit_flag_suppresses_bump() {
+    let cfg = resolve_debounce(1000, true, None, None);
+    assert_eq!(cfg.quiet_gap, Duration::from_millis(1000));
+}
+
+#[test]
+fn resolve_debounce_env_max_override() {
+    let cfg = resolve_debounce(500, false, None, Some(2000));
+    assert_eq!(cfg.max_latency, Duration::from_millis(2000));
+}
+
+#[test]
+fn resolve_debounce_max_clamped_to_at_least_quiet_gap() {
+    let cfg = resolve_debounce(500, false, None, Some(100));
+    assert_eq!(
+        cfg.max_latency,
+        Duration::from_millis(500),
+        "a cap below the quiet gap would invert the two knobs' contract"
+    );
+}
+
+#[test]
+fn flush_due_no_pending_never_flushes() {
+    let mut state = test_watch_state();
+    // Even with a long-stale last event and an armed burst clock,
+    // empty pending sets never flush.
+    state.last_event = backdate(60_000);
+    state.first_pending_event = Some(backdate(60_000));
+    assert!(!flush_due(&state, &dbc(500, 3000)));
+}
+
+#[test]
+fn flush_due_single_save_flushes_at_quiet_gap() {
+    // Gate: single-save latency no worse than the old fixed window —
+    // one event flushes exactly one quiet gap after it arrived.
+    let mut state = test_watch_state();
+    state.pending_files.insert(PathBuf::from("src/lib.rs"));
+    state.last_event = backdate(499);
+    state.first_pending_event = Some(backdate(499));
+    assert!(
+        !flush_due(&state, &dbc(500, 3000)),
+        "not yet — quiet gap has not elapsed"
+    );
+    state.last_event = backdate(500);
+    state.first_pending_event = Some(backdate(500));
+    assert!(flush_due(&state, &dbc(500, 3000)));
+}
+
+#[test]
+fn flush_due_burst_fires_quiet_gap_after_last_event_not_first() {
+    // Gate: a multi-file burst produces one flush fired ~quiet-gap
+    // after the LAST event. Simulated burst: first event 600 ms ago
+    // (already past one full quiet gap), last event 100 ms ago.
+    let mut state = test_watch_state();
+    for i in 0..200 {
+        state
+            .pending_files
+            .insert(PathBuf::from(format!("f{i}.rs")));
+    }
+    state.first_pending_event = Some(backdate(600));
+    state.last_event = backdate(100);
+    assert!(
+        !flush_due(&state, &dbc(500, 3000)),
+        "burst still hot — quiet gap restarts on every event"
+    );
+    state.last_event = backdate(500);
+    assert!(
+        flush_due(&state, &dbc(500, 3000)),
+        "quiet gap elapsed since the last event of the burst"
+    );
+}
+
+#[test]
+fn flush_due_disarmed_after_flush_does_not_refire() {
+    // Gate: ONE flush per burst. After the flush block drains the
+    // pending sets and clears `first_pending_event`, a stale
+    // `last_event` alone must not refire.
+    let mut state = test_watch_state();
+    state.last_event = backdate(10_000);
+    state.first_pending_event = None;
+    state.pending_files.clear();
+    state.pending_notes = false;
+    assert!(!flush_due(&state, &dbc(500, 3000)));
+}
+
+#[test]
+fn flush_due_continuous_stream_capped_by_max_latency() {
+    // Gate: a stream that never goes quiet still flushes within the
+    // cap. The quiet-gap timer keeps restarting (last_event is fresh)
+    // but the burst clock has hit the cap.
+    let mut state = test_watch_state();
+    state.pending_files.insert(PathBuf::from("gen.rs"));
+    state.last_event = backdate(50);
+    state.first_pending_event = Some(backdate(3000));
+    assert!(flush_due(&state, &dbc(500, 3000)));
+}
+
+#[test]
+fn flush_due_continuous_stream_below_cap_waits() {
+    let mut state = test_watch_state();
+    state.pending_files.insert(PathBuf::from("gen.rs"));
+    state.last_event = backdate(50);
+    state.first_pending_event = Some(backdate(2000));
+    assert!(!flush_due(&state, &dbc(500, 3000)));
+}
+
+#[test]
+fn flush_due_notes_only_pending_flushes() {
+    let mut state = test_watch_state();
+    state.pending_notes = true;
+    state.last_event = backdate(500);
+    state.first_pending_event = Some(backdate(500));
+    assert!(flush_due(&state, &dbc(500, 3000)));
+}
+
+#[test]
+fn collect_events_arms_burst_clock_once_per_burst() {
+    // `first_pending_event` is sticky: the first accepted event arms
+    // it, later events in the same burst leave it untouched (only
+    // `last_event` keeps advancing). The flush block disarms it.
+    let root = PathBuf::from("/tmp/test_project");
+    let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+    let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+    let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+    let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+    let mut state = test_watch_state();
+    assert!(state.first_pending_event.is_none());
+
+    let kind = EventKind::Modify(notify::event::ModifyKind::Data(
+        notify::event::DataChange::Content,
+    ));
+    collect_events(
+        &make_event(vec![PathBuf::from("/tmp/test_project/a.rs")], kind),
+        &cfg,
+        &mut state,
+    );
+    let armed = state
+        .first_pending_event
+        .expect("first accepted event arms the burst clock");
+
+    collect_events(
+        &make_event(vec![PathBuf::from("/tmp/test_project/b.rs")], kind),
+        &cfg,
+        &mut state,
+    );
+    assert_eq!(
+        state.first_pending_event,
+        Some(armed),
+        "second event of the burst must not restart the burst clock"
+    );
+    assert_eq!(state.pending_files.len(), 2);
+}
+
+#[test]
+fn collect_events_filtered_event_does_not_arm_burst_clock() {
+    let root = PathBuf::from("/tmp/test_project");
+    let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+    let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+    let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+    let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+    let mut state = test_watch_state();
+
+    collect_events(
+        &make_event(
+            vec![PathBuf::from("/tmp/test_project/readme.txt")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        ),
+        &cfg,
+        &mut state,
+    );
+    assert!(
+        state.first_pending_event.is_none(),
+        "filtered events queue nothing and must not arm the burst clock"
+    );
 }

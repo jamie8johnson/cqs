@@ -79,6 +79,9 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
         if norm_path == norm_notes {
             state.pending_notes = true;
             state.last_event = std::time::Instant::now();
+            if state.first_pending_event.is_none() {
+                state.first_pending_event = Some(state.last_event);
+            }
             continue;
         }
 
@@ -154,6 +157,13 @@ pub(super) fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &m
                 );
             }
             state.last_event = std::time::Instant::now();
+            // Arm the max-latency clock on the first event of a burst.
+            // `last_event` restarts the quiet-gap timer on every event;
+            // this one is sticky until the flush drains the pending
+            // sets, bounding total delay under a never-quiet stream.
+            if state.first_pending_event.is_none() {
+                state.first_pending_event = Some(state.last_event);
+            }
         }
     }
 }
