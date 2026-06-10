@@ -31,15 +31,15 @@ pub use persist::{verify_hnsw_checksums, HNSW_ALL_EXTENSIONS};
 
 use std::cell::UnsafeCell;
 
-use hnsw_rs::anndists::dist::distances::DistCosine;
+use hnsw_rs::anndists::dist::distances::{DistCosine, DistDot};
 use hnsw_rs::api::AnnT;
-use hnsw_rs::hnsw::Hnsw;
+use hnsw_rs::hnsw::{Hnsw, Neighbour};
 use hnsw_rs::hnswio::HnswIo;
 use self_cell::self_cell;
 use thiserror::Error;
 
 use crate::embedder::Embedding;
-use crate::index::{IndexResult, VectorIndex};
+use crate::index::{DistanceMetric, IndexResult, VectorIndex};
 
 // HNSW tuning parameters
 //
@@ -230,13 +230,139 @@ pub enum HnswError {
         expected: String,
         actual: String,
     },
+    /// The index on disk was built with one distance metric, but
+    /// `CQS_DISTANCE_METRIC` explicitly requests a different one. The stored
+    /// metric always wins for an existing index; a conflicting explicit
+    /// request is surfaced as this typed error rather than silently
+    /// reinterpreting distances. Mirrors `Store::stored_model_name()`.
+    #[error(
+        "Distance metric mismatch: index was built with '{stored}' but CQS_DISTANCE_METRIC \
+         requests '{requested}'. Unset CQS_DISTANCE_METRIC to use the stored metric, or run \
+         'cqs index --force' to rebuild with '{requested}'."
+    )]
+    MetricMismatch {
+        stored: DistanceMetric,
+        requested: DistanceMetric,
+    },
 }
 
 // Note: Uses crate::index::IndexResult instead of a separate HnswResult type
 // since they have identical structure (id: String, score: f32)
 
-/// Type alias for the HNSW graph — needed by the `self_cell!` macro.
-type HnswGraph<'a> = Hnsw<'a, f32, DistCosine>;
+/// Metric-dispatching wrapper over the concrete `Hnsw<f32, D>` types.
+///
+/// hnsw_rs bakes the distance into the type parameter (`Hnsw<'a, f32, D>`),
+/// and its API doesn't lend itself to `dyn Distance` erasure, so metric
+/// polymorphism is an enum over the concrete dist types with forwarding
+/// methods (#1351). One variant per [`DistanceMetric`] — both must stay
+/// buildable AND loadable, since the load path instantiates the variant
+/// from the persisted `{basename}.hnsw.meta` header.
+///
+/// Also the dependent type of the `self_cell!` below, which is why it must
+/// carry exactly one lifetime parameter.
+pub(crate) enum HnswGraph<'a> {
+    /// `DistCosine` — the default metric.
+    Cosine(Hnsw<'a, f32, DistCosine>),
+    /// `DistDot` (`dist = 1 − a·b`). NOTE: anndists asserts `a·b <= 1`, so
+    /// this variant expects unit-norm (or sub-unit-dot) embeddings.
+    Dot(Hnsw<'a, f32, DistDot>),
+}
+
+/// Dispatch a method body across every [`HnswGraph`] variant. Local macro
+/// (not a visitor trait): the body is monomorphized per concrete dist type,
+/// which is exactly what hnsw_rs's generic API requires.
+macro_rules! with_graph {
+    ($graph:expr, $h:ident => $body:expr) => {
+        match $graph {
+            HnswGraph::Cosine($h) => $body,
+            HnswGraph::Dot($h) => $body,
+        }
+    };
+}
+
+impl<'a> HnswGraph<'a> {
+    /// Construct an empty graph for `metric` with the given hnsw_rs
+    /// parameters (mirrors `Hnsw::new`'s argument order).
+    pub(crate) fn new(
+        metric: DistanceMetric,
+        max_nb_connection: usize,
+        nb_elem: usize,
+        max_layer: usize,
+        ef_construction: usize,
+    ) -> Self {
+        match metric {
+            DistanceMetric::Cosine => HnswGraph::Cosine(Hnsw::new(
+                max_nb_connection,
+                nb_elem,
+                max_layer,
+                ef_construction,
+                DistCosine,
+            )),
+            DistanceMetric::DotProduct => HnswGraph::Dot(Hnsw::new(
+                max_nb_connection,
+                nb_elem,
+                max_layer,
+                ef_construction,
+                DistDot,
+            )),
+        }
+    }
+
+    /// Load a graph from `io`, instantiating the dist type recorded in the
+    /// persisted meta header. hnsw_rs independently verifies the distance
+    /// name embedded in the `.hnsw.graph` file against the requested type,
+    /// so a meta/graph disagreement fails loudly here.
+    pub(crate) fn load(io: &'a mut HnswIo, metric: DistanceMetric) -> Result<Self, HnswError> {
+        match metric {
+            DistanceMetric::Cosine => io.load_hnsw::<f32, DistCosine>().map(HnswGraph::Cosine),
+            DistanceMetric::DotProduct => io.load_hnsw::<f32, DistDot>().map(HnswGraph::Dot),
+        }
+        .map_err(|e| HnswError::Internal(format!("Failed to load HNSW: {}", e)))
+    }
+
+    /// The metric this graph was built with.
+    pub(crate) fn metric(&self) -> DistanceMetric {
+        match self {
+            HnswGraph::Cosine(_) => DistanceMetric::Cosine,
+            HnswGraph::Dot(_) => DistanceMetric::DotProduct,
+        }
+    }
+
+    /// Number of points in the graph.
+    pub(crate) fn get_nb_point(&self) -> usize {
+        with_graph!(self, h => h.get_nb_point())
+    }
+
+    /// Dump graph + data files via `AnnT::file_dump`.
+    pub(crate) fn file_dump(
+        &self,
+        dir: &std::path::Path,
+        basename: &str,
+    ) -> Result<String, String> {
+        with_graph!(self, h => h.file_dump(dir, basename).map_err(|e| e.to_string()))
+    }
+
+    /// Parallel insert (used by both the build and incremental paths).
+    pub(crate) fn parallel_insert_data(&mut self, data: &[(&Vec<f32>, usize)]) {
+        with_graph!(self, h => h.parallel_insert_data(data))
+    }
+
+    /// Unfiltered k-NN search.
+    pub(crate) fn search_neighbours(&self, query: &[f32], k: usize, ef: usize) -> Vec<Neighbour> {
+        with_graph!(self, h => h.search_neighbours(query, k, ef))
+    }
+
+    /// Traversal-time filtered k-NN search.
+    pub(crate) fn search_filter(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        filter: Option<&dyn hnsw_rs::filter::FilterT>,
+    ) -> Vec<Neighbour> {
+        with_graph!(self, h => h.search_filter(query, k, ef, filter))
+    }
+}
 
 /// Wrapper to allow `&mut HnswIo` access from self_cell's `&Owner` builder.
 ///
@@ -268,7 +394,8 @@ self_cell!(
 
 // SAFETY: LoadedHnsw is Send+Sync because:
 // - HnswIoCell wraps HnswIo (file paths + data buffers)
-// - Hnsw<f32, DistCosine> contains read-only graph data
+// - HnswGraph wraps Hnsw<f32, D> (read-only graph data; the dist types
+//   DistCosine/DistDot are stateless unit structs)
 // - After construction, only immutable search access occurs
 unsafe impl Send for LoadedHnsw {}
 unsafe impl Sync for LoadedHnsw {}
@@ -316,7 +443,7 @@ pub struct HnswIndex {
 /// Internal HNSW state
 pub(crate) enum HnswInner {
     /// Built in memory - owns its data with 'static lifetime
-    Owned(Hnsw<'static, f32, DistCosine>),
+    Owned(HnswGraph<'static>),
     /// Loaded from disk - self-referential via self_cell
     Loaded(LoadedHnsw),
 }
@@ -325,8 +452,10 @@ impl HnswInner {
     /// Access the underlying HNSW graph regardless of variant.
     ///
     /// Uses a closure because `Hnsw` is invariant over its lifetime parameter,
-    /// so `self_cell` cannot provide a direct reference accessor.
-    pub(crate) fn with_hnsw<R>(&self, f: impl FnOnce(&Hnsw<'_, f32, DistCosine>) -> R) -> R {
+    /// so `self_cell` cannot provide a direct reference accessor. The closure
+    /// receives the metric-dispatching [`HnswGraph`] wrapper; call its
+    /// forwarding methods rather than matching on variants.
+    pub(crate) fn with_hnsw<R>(&self, f: impl FnOnce(&HnswGraph<'_>) -> R) -> R {
         match self {
             HnswInner::Owned(hnsw) => f(hnsw),
             HnswInner::Loaded(loaded) => loaded.with_dependent(|_, hnsw| f(hnsw)),
@@ -338,6 +467,13 @@ impl HnswIndex {
     /// Override the ef_search parameter (from config)
     pub fn set_ef_search(&mut self, ef: usize) {
         self.ef_search = ef;
+    }
+
+    /// The distance metric this index was built (or loaded) with. Single
+    /// source of truth is the graph variant itself — there is no separate
+    /// field that could drift.
+    pub fn metric(&self) -> DistanceMetric {
+        self.inner.with_hnsw(|g| g.metric())
     }
 
     /// Get the number of vectors in the index
@@ -621,6 +757,28 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Hn
 /// HNSW test.
 #[cfg(test)]
 pub(crate) static HNSW_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RAII guard pairing `set_var` with `remove_var` on drop, so an assertion
+/// failure mid-test cannot leak a process-global env var into later tests.
+/// Use together with [`HNSW_ENV_LOCK`] for any var the HNSW build/load
+/// paths read (`CQS_HNSW_*`, `CQS_DISTANCE_METRIC`).
+#[cfg(test)]
+pub(crate) struct EnvVarGuard(&'static str);
+
+#[cfg(test)]
+impl EnvVarGuard {
+    pub(crate) fn set(key: &'static str, value: &str) -> Self {
+        std::env::set_var(key, value);
+        Self(key)
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        std::env::remove_var(self.0);
+    }
+}
 
 /// Shared test helper: create a deterministic normalized embedding from a seed.
 /// Uses sin-based values for reproducible but varied vectors.
@@ -965,23 +1123,10 @@ mod env_override_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// RAII guard pairing `set_var` with `remove_var` on drop, so an
-    /// assertion failure mid-test cannot leak a CQS_HNSW_* var into later
-    /// tests (these tests assert while holding the env lock).
-    struct EnvVarGuard(&'static str);
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            std::env::set_var(key, value);
-            Self(key)
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            std::env::remove_var(self.0);
-        }
-    }
+    /// RAII guard pairing `set_var` with `remove_var` on drop — shared
+    /// definition in `hnsw/mod.rs` (these tests assert while holding the
+    /// env lock).
+    use super::EnvVarGuard;
 
     #[test]
     fn test_m_default() {
@@ -1044,5 +1189,24 @@ mod env_override_tests {
         let _lock = lock();
         let _var = EnvVarGuard::set("CQS_HNSW_EF_SEARCH", "");
         assert_eq!(super::ef_search(), 100);
+    }
+
+    /// Unset env → cosine default on the env-resolving build wrapper.
+    ///
+    /// NOTE (#1351 test discipline): no test sets `CQS_DISTANCE_METRIC` to a
+    /// non-"cosine" value — concurrent unlocked loads would observe it and
+    /// fail with a metric mismatch. Non-default metrics are exercised
+    /// through the explicit `*_and_metric` builders; the env *parse* logic
+    /// is covered by the pure `parse_env_value` tests in `index.rs`.
+    #[test]
+    fn test_distance_metric_default_build_is_cosine() {
+        let _lock = lock();
+        std::env::remove_var("CQS_DISTANCE_METRIC");
+        let idx = super::HnswIndex::build_with_dim(
+            vec![("a".to_string(), crate::hnsw::make_test_embedding(1))],
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
+        assert_eq!(idx.metric(), crate::index::DistanceMetric::Cosine);
     }
 }

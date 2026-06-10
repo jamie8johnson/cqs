@@ -14,6 +14,115 @@ use crate::store::{ClearHnswDirty, Store, StoreError};
 // `Ok(None)`. `anyhow::Result<_>` consumes it via `?` because
 // `StoreError: std::error::Error`.
 
+/// Distance metric a vector index is built and searched with.
+///
+/// The metric is an **index-time** choice: it is resolved from
+/// `CQS_DISTANCE_METRIC` when an index is built, persisted alongside the
+/// index (HNSW: `{basename}.hnsw.meta`; CAGRA: the `.cagra.meta` sidecar),
+/// and the stored value wins on every subsequent load. Loading with
+/// `CQS_DISTANCE_METRIC` explicitly set to a *different* metric is a typed
+/// error ([`crate::hnsw::HnswError::MetricMismatch`]) — never a silent
+/// reinterpretation. This mirrors how the embedding model is selected at
+/// index time and pinned thereafter (`Store::stored_model_name()`).
+///
+/// ## Variants and backend support
+///
+/// - [`Cosine`](Self::Cosine) (default): HNSW uses `DistCosine`; CAGRA keeps
+///   cuVS's default `L2Expanded`, which is rank-equivalent to cosine on the
+///   unit-norm embeddings cqs produces (`d² = 2 − 2·cos`).
+/// - [`DotProduct`](Self::DotProduct): HNSW uses `DistDot`
+///   (`dist = 1 − a·b`); CAGRA sets cuVS `InnerProduct`. Note hnsw_rs's
+///   `DistDot` asserts `a·b <= 1`, so un-normalized embedding models whose
+///   pairwise dot products exceed 1 are not usable on the HNSW backend
+///   without a scaling pass.
+///
+/// `L2` is deliberately absent: both score-conversion paths
+/// (`1 − dist` for HNSW, `1 − d²/2` for CAGRA) are cosine-similarity-shaped
+/// and an L2 variant needs its own score normalization design before it can
+/// honor the documented 0..1 score contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DistanceMetric {
+    /// Cosine similarity (the cqs default since v0.1).
+    #[default]
+    Cosine,
+    /// Inner product / dot product. For models whose reference
+    /// implementations score with un-normalized dot product
+    /// (e.g. CodeRankEmbed) or Matryoshka-truncated embeddings.
+    DotProduct,
+}
+
+impl DistanceMetric {
+    /// Stable on-disk / display name. The persisted index headers store this
+    /// string; keep values stable across releases.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DistanceMetric::Cosine => "cosine",
+            DistanceMetric::DotProduct => "dot",
+        }
+    }
+
+    /// Read `CQS_DISTANCE_METRIC` if set. `Ok(None)` when unset; a set but
+    /// unparseable value is a hard error — a typo must not silently build a
+    /// cosine index when the operator asked for dot product.
+    ///
+    /// TEST DISCIPLINE: load paths call this, so a test that sets
+    /// `CQS_DISTANCE_METRIC` to anything other than `"cosine"` makes every
+    /// concurrent cosine load in the suite fail with a metric mismatch.
+    /// Tests cover the parse/error behavior through the pure
+    /// [`Self::parse_env_value`] instead, and only ever set the var to
+    /// `"cosine"` (observationally identical to unset), under
+    /// `HNSW_ENV_LOCK`.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let _span = tracing::info_span!("distance_metric_from_env").entered();
+        match std::env::var("CQS_DISTANCE_METRIC") {
+            Ok(raw) => Self::parse_env_value(&raw).map(Some),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("CQS_DISTANCE_METRIC is not valid UTF-8".to_string())
+            }
+        }
+    }
+
+    /// Pure parse of a `CQS_DISTANCE_METRIC` value, factored out of
+    /// [`Self::from_env`] so tests can pin the error mapping without
+    /// mutating process-global env (see the test-discipline note above).
+    fn parse_env_value(raw: &str) -> Result<Self, String> {
+        raw.parse::<Self>().map_err(|e| {
+            tracing::warn!(value = %raw, error = %e, "Invalid CQS_DISTANCE_METRIC");
+            format!("Invalid CQS_DISTANCE_METRIC={raw:?}: {e}")
+        })
+    }
+
+    /// Build-time resolution: `CQS_DISTANCE_METRIC` if set, else
+    /// [`Cosine`](Self::Cosine). Load paths must NOT use this to pick the
+    /// metric — the stored value wins there; they use [`Self::from_env`]
+    /// only to detect an explicit conflict.
+    pub fn resolve() -> Result<Self, String> {
+        Ok(Self::from_env()?.unwrap_or_default())
+    }
+}
+
+impl std::fmt::Display for DistanceMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for DistanceMetric {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cosine" => Ok(DistanceMetric::Cosine),
+            "dot" | "dotproduct" | "dot_product" | "dot-product" | "innerproduct"
+            | "inner_product" | "ip" => Ok(DistanceMetric::DotProduct),
+            other => Err(format!(
+                "unknown distance metric {other:?} (supported: cosine, dot)"
+            )),
+        }
+    }
+}
+
 /// Result from a vector index search
 #[derive(Debug, Clone)]
 pub struct IndexResult {
@@ -378,5 +487,77 @@ mod tests {
         assert_eq!(backends.last().unwrap().name(), "hnsw");
         #[cfg(feature = "cuda-index")]
         assert_eq!(backends[0].name(), "cagra");
+    }
+
+    // ===== DistanceMetric (#1351) =====
+
+    #[test]
+    fn test_distance_metric_default_is_cosine() {
+        assert_eq!(DistanceMetric::default(), DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn test_distance_metric_parse_and_roundtrip() {
+        for (raw, want) in [
+            ("cosine", DistanceMetric::Cosine),
+            ("Cosine", DistanceMetric::Cosine),
+            ("dot", DistanceMetric::DotProduct),
+            ("DotProduct", DistanceMetric::DotProduct),
+            ("dot_product", DistanceMetric::DotProduct),
+            ("dot-product", DistanceMetric::DotProduct),
+            ("ip", DistanceMetric::DotProduct),
+        ] {
+            assert_eq!(raw.parse::<DistanceMetric>().unwrap(), want, "raw={raw}");
+        }
+        // as_str → parse roundtrip (the on-disk header contract).
+        for m in [DistanceMetric::Cosine, DistanceMetric::DotProduct] {
+            assert_eq!(m.as_str().parse::<DistanceMetric>().unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn test_distance_metric_parse_rejects_unknown() {
+        let err = "euclidean".parse::<DistanceMetric>().unwrap_err();
+        assert!(
+            err.contains("euclidean"),
+            "error should name the value: {err}"
+        );
+        assert!("l2".parse::<DistanceMetric>().is_err());
+        assert!("".parse::<DistanceMetric>().is_err());
+    }
+
+    /// Env-value handling, via the pure `parse_env_value` seam (no
+    /// process-global env mutation — see the test-discipline note on
+    /// `from_env`: a non-"cosine" value would fail concurrent loads).
+    #[test]
+    fn test_distance_metric_parse_env_value() {
+        assert_eq!(
+            DistanceMetric::parse_env_value("dot").unwrap(),
+            DistanceMetric::DotProduct
+        );
+        assert_eq!(
+            DistanceMetric::parse_env_value("cosine").unwrap(),
+            DistanceMetric::Cosine
+        );
+        // Unparseable value is a hard error, not a silent cosine fallback,
+        // and the error names the env var for the operator.
+        let err = DistanceMetric::parse_env_value("manhattan").unwrap_err();
+        assert!(
+            err.contains("CQS_DISTANCE_METRIC") && err.contains("manhattan"),
+            "error should name the var and value: {err}"
+        );
+    }
+
+    /// `from_env`/`resolve` with the var unset (the suite-wide steady
+    /// state): `None` / cosine. Held under the shared HNSW env lock so a
+    /// concurrent "cosine"-setting test can't perturb the read.
+    #[test]
+    fn test_distance_metric_env_unset_resolves_cosine() {
+        let _lock = crate::hnsw::HNSW_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::remove_var("CQS_DISTANCE_METRIC");
+        assert_eq!(DistanceMetric::from_env().unwrap(), None);
+        assert_eq!(DistanceMetric::resolve().unwrap(), DistanceMetric::Cosine);
     }
 }

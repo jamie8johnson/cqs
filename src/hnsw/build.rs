@@ -1,12 +1,9 @@
 //! HNSW index construction
 
-use hnsw_rs::anndists::dist::distances::DistCosine;
-use hnsw_rs::api::AnnT;
-use hnsw_rs::hnsw::Hnsw;
-
 use crate::embedder::Embedding;
+use crate::index::DistanceMetric;
 
-use super::{HnswError, HnswIndex, HnswInner, MAX_LAYER};
+use super::{HnswError, HnswGraph, HnswIndex, HnswInner, MAX_LAYER};
 
 impl HnswIndex {
     /// Build a new HNSW index from embeddings (single-pass).
@@ -35,22 +32,37 @@ impl HnswIndex {
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
     /// * `dim` - Expected embedding dimension
+    ///
+    /// The distance metric is resolved from `CQS_DISTANCE_METRIC` (default
+    /// cosine) — see [`DistanceMetric::resolve`]. Use
+    /// [`Self::build_with_dim_and_metric`] to pin it explicitly.
     pub fn build_with_dim(
         embeddings: Vec<(String, Embedding)>,
         dim: usize,
     ) -> Result<Self, HnswError> {
-        let _span = tracing::debug_span!("hnsw_build").entered();
+        let metric = DistanceMetric::resolve().map_err(HnswError::Build)?;
+        Self::build_with_dim_and_metric(embeddings, dim, metric)
+    }
+
+    /// [`Self::build_with_dim`] with an explicit [`DistanceMetric`] instead
+    /// of the `CQS_DISTANCE_METRIC` env resolution.
+    pub fn build_with_dim_and_metric(
+        embeddings: Vec<(String, Embedding)>,
+        dim: usize,
+        metric: DistanceMetric,
+    ) -> Result<Self, HnswError> {
+        let _span = tracing::debug_span!("hnsw_build", metric = %metric).entered();
         if dim == 0 {
             return Err(HnswError::Build("Embedding dimension must be > 0".into()));
         }
         if embeddings.is_empty() {
             // Create empty index — fall back to the small-tier default.
-            let hnsw = Hnsw::new(
+            let hnsw = HnswGraph::new(
+                metric,
                 super::max_nb_connection_for(0),
                 1,
                 MAX_LAYER,
                 super::ef_construction_for(0),
-                DistCosine,
             );
             return Ok(Self {
                 inner: HnswInner::Owned(hnsw),
@@ -63,16 +75,16 @@ impl HnswIndex {
 
         let (id_map, data, nb_elem) = super::prepare_index_data(embeddings, dim)?;
 
-        tracing::info!(count = nb_elem, "Building HNSW index");
+        tracing::info!(count = nb_elem, metric = %metric, "Building HNSW index");
 
         // Corpus-size-aware tier defaults. Env overrides still win — see
         // `hnsw_tier_defaults` for the table.
-        let mut hnsw = Hnsw::new(
+        let mut hnsw = HnswGraph::new(
+            metric,
             super::max_nb_connection_for(nb_elem),
             nb_elem,
             MAX_LAYER,
             super::ef_construction_for(nb_elem),
-            DistCosine,
         );
 
         // Test-only path: allocates the full Vec<Vec<f32>> double-buffer here.
@@ -134,24 +146,42 @@ impl HnswIndex {
         I: Iterator<Item = Result<Vec<(String, Embedding)>, E>>,
         E: std::fmt::Display,
     {
-        let _span = tracing::debug_span!("hnsw_build_batched", estimated_total).entered();
+        let metric = DistanceMetric::resolve().map_err(HnswError::Build)?;
+        Self::build_batched_with_dim_and_metric(batches, estimated_total, dim, metric)
+    }
+
+    /// [`Self::build_batched_with_dim`] with an explicit [`DistanceMetric`]
+    /// instead of the `CQS_DISTANCE_METRIC` env resolution.
+    pub fn build_batched_with_dim_and_metric<I, E>(
+        batches: I,
+        estimated_total: usize,
+        dim: usize,
+        metric: DistanceMetric,
+    ) -> Result<Self, HnswError>
+    where
+        I: Iterator<Item = Result<Vec<(String, Embedding)>, E>>,
+        E: std::fmt::Display,
+    {
+        let _span =
+            tracing::debug_span!("hnsw_build_batched", estimated_total, metric = %metric).entered();
         if dim == 0 {
             return Err(HnswError::Build("Embedding dimension must be > 0".into()));
         }
         let capacity = estimated_total.max(1);
         tracing::info!(
+            metric = %metric,
             "Building HNSW index incrementally (estimated {} vectors)",
             capacity
         );
 
         // Tier defaults read from `capacity`, the estimated vector count
         // for this build.
-        let mut hnsw = Hnsw::new(
+        let mut hnsw = HnswGraph::new(
+            metric,
             super::max_nb_connection_for(capacity),
             capacity,
             MAX_LAYER,
             super::ef_construction_for(capacity),
-            DistCosine,
         );
 
         let mut id_map: Vec<Box<str>> = Vec::with_capacity(capacity);
@@ -218,12 +248,12 @@ impl HnswIndex {
         if id_map.is_empty() {
             tracing::info!("HNSW index built (empty)");
             return Ok(Self {
-                inner: HnswInner::Owned(Hnsw::new(
+                inner: HnswInner::Owned(HnswGraph::new(
+                    metric,
                     super::max_nb_connection_for(0),
                     1,
                     MAX_LAYER,
                     super::ef_construction_for(0),
-                    DistCosine,
                 )),
                 id_map: Vec::new(),
                 ef_search: super::ef_search_for(0),
