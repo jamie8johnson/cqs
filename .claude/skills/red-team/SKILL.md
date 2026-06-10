@@ -18,7 +18,7 @@ Adversarial security audit — attacker mindset, PoC-required, end-to-end attack
 ### Execution
 
 5. **Create team**: `red-team`
-6. **Spawn 4 opus agents** (one per category below)
+6. **Spawn 4 opus agents** (one per category below). Opus is deliberate here, not legacy: adversarial security testing is the lane where Fable has no documented bug-finding advantage and its cyber classifiers can false-positive on benign security tooling — a mid-run refusal silently drops a category. Do not switch these to fable in a future model sweep.
 7. **Each agent prompt must include**:
    - The threat model section (below) — calibrated from SECURITY.md
    - Their category scope, goal, key question, targets, and files
