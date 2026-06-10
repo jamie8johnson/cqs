@@ -2,6 +2,19 @@
 
 ## Right Now
 
+**Code review + fixes + recall gate: CLOSED (2026-06-10 afternoon).** High-effort multi-agent review (Fable agents per user request) of the taste-debt queue PRs #1701-#1706: 7 finder angles → 15 verified findings (14 CONFIRMED, 1 PLAUSIBLE, 0 refuted). All 15 fixed across 5 PRs, all merged:
+- **#1707** (reuse): resolve_reuse returns Result — watch path restored to fail-and-retry (a SQLite error was silently becoming a full-corpus GPU re-embed per tick); `canon_key_ref(&Chunk) -> &str` is now THE key function for read + all 3 write-back sites (drift hazard + hot-path alloc gone); model_fingerprint gated on cache presence (was paying a ~550MB blake3 on the cache-disabled path).
+- **#1708** (docs): ULTRASECURITY removal annotations for the files #1703's sweep missed (ROADMAP, json-snr-restoration banner, json-noise-audit, polymorphic-routing, audit-triage, plan doc, tears); display.rs "posture-gated" → "skip-when-default".
+- **#1709** (tests): the 33-file copy-pasted `fn cqs()` v1-pin helper → single `tests/common::cqs_v1` (net −339 lines); REMOVED_VARS guard now token-bounded + single-pass.
+- **#1710** (hnsw): #1702 containment extended to the 3 missed single-build recall asserts (incl. integration binary via local helper); all HNSW_ENV_LOCK sites poison-safe (`PoisonError::into_inner`) + EnvVarGuard RAII; retry helper promoted to shared cfg(test) block, 4 hand-rolled copies deleted.
+- **#1711** (dedup): `connect_cache_pool` extraction (the mod.rs TODO); dead `pad_2d_i64` deleted with coverage ported to `_from_encodings`; meta_json_fragment calls meta_value_for_envelope; **src/posture.rs → src/output_format.rs**; `BatchContext::new` replaces raw struct literals.
+
+**Recall gate (user-requested, default settings):** raw run looked like −1.9pp agg R@5 — classified before believing: 12/218 golds had DEAD origins (10 from #1704's file splits, 2 stale worktree paths from fixture generation). NOTE: the eval matcher is `(origin, name)` — line_start was dropped from the key (memory note was stale, now fixed). Re-pinned all 12 (disambiguated via `git show 9e4980db:src/cache.rs` impl blocks), re-ran: **agg R@1 47.7 (+1.4) / R@5 74.8 (±0.0) / R@20 88.5 (+2.3) vs 2026-05-08 baseline — NO recall regression.** Re-pin is PR #1712 (this branch).
+
+**Mid-session WSL crash** (~14:00): lost zero work — 2 branches were already pushed, 1 committed in its worktree, 2 worktrees had complete uncommitted diffs that finisher agents verified and landed. Worktrees + branches cleaned after merge. Binary rebuilt/installed post-merge (1.42.0+main, daemon active, index reconciled 19:25).
+
+**Pending:** #1712 merge on green. v4 fixtures (1526/split) NOT re-pinned — same origin-death class applies if they're ever used for A/Bs.
+
 **v1.42.0 RELEASED — 2026-06-09.** Tagged, crates.io published, GitHub release binaries built, local binary + daemon on 1.42.0, target dir cleaned (166 GiB). Schema v28 (canonical_hash). Toolchain 1.96.0 local + CI.
 
 **cuvs upstream contribution fleet — COMPLETE, all 5 PRs submitted, awaiting maintainer review (2026-06-09/10):**
