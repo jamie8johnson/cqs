@@ -4,12 +4,13 @@
 
 **v1.42.0 RELEASED — 2026-06-09.** Tagged, crates.io published, GitHub release binaries built, local binary + daemon on 1.42.0, target dir cleaned (166 GiB). Schema v28 (canonical_hash). Toolchain 1.96.0 local + CI.
 
-**cuvs upstream contribution fleet (2026-06-09/10):**
-- **PRs open on rapidsai/cuvs:** #2229 IVF-SQ bindings (cqs #1678), #2230 refine (cqs #1684), #2231 brute_force serialize (cqs #1682). All implemented by agents in isolated worktrees (~/cuvs-wt-*), code-reviewed to maintainer standards, GPU-tested single-threaded.
-- **In flight:** scalar quantizer (review running, worktree ~/cuvs-wt-quant, cqs #1683), tiered index (implementing, ~/cuvs-wt-tiered, cqs #1685 — the upstream half of "kill the periodic HNSW rebuild").
+**cuvs upstream contribution fleet — COMPLETE, all 5 PRs submitted, awaiting maintainer review (2026-06-09/10):**
+- **PRs open on rapidsai/cuvs:** #2229 IVF-SQ (cqs #1678), #2230 refine (cqs #1684), #2231 brute_force serialize (cqs #1682), #2234 scalar quantizer (cqs #1683), #2235 tiered index (cqs #1685 — the upstream half of "kill the periodic HNSW rebuild"). All agent-implemented in isolated worktrees (~/cuvs-wt-*), code-reviewed to maintainer standards, GPU-tested single-threaded.
+- **All CodeRabbit bot feedback resolved** (~9 follow-up commits, never force-pushed): unique temp filenames (#2229/#2231), full top-k ordering assert (#2230), i8 dtype guards on transform/inverse + guard-specific test asserts + non-panicking Drops (#2234), backend-aware SearchParams enum + safe bitset filter API (#2235 — fixed a Critical soundness hole: raw cuvsFilter in a safe fn). Quantile-range nitpick declined on-record (matches C + sibling conventions). Committed PR-body artifact removed from #2231's tree.
+- **Gate:** copy-pr-bot vetting blocks NVIDIA CI on all five until a maintainer approves. Expect months (prior PR #2019: ~2 months).
 - **Issues filed upstream with recommended fixes:** rapidsai/cuvs#2232 (ManagedTensor borrows host ndarray shape storage — dangling pointer at Drop if host array dies first; fix: owned Box<[i64]> dims), #2233 (parallel cargo test SIGSEGVs on GPU tests; fix: harness-level serialization + Resources thread-safety audit). Both offer follow-up PRs.
-- **Maintenance rule for our PRs:** overlapping lib.rs/bindings.rs edits — merge main into branches as siblings land, NEVER rebase after review starts (their guideline).
-- **Monthly cloud routine `cuvs-prs-follow`** (trig_013tdB4kKRZBeFX2UQjk1A9g, 3rd of month 14:17 UTC): enumerates all our open cuvs PRs live, follow-only (no posting — user posts nudges manually), next run Jul 3.
+- **Maintenance rule for our PRs:** overlapping lib.rs/bindings.rs edits — merge main into branches as siblings land, NEVER rebase after review starts (their guideline). Version-pin dance for local testing: sed workspace 26.8.0→26.6.0, test against conda libcuvs 26.06, revert before commit.
+- **Monthly cloud routine `cuvs-prs-follow`** (trig_013tdB4kKRZBeFX2UQjk1A9g, 3rd of month 14:17 UTC): enumerates all our open cuvs PRs live, follow-only (no posting — user posts nudges manually), next run Jul 3. Validated by a manual smoke run (it correctly reported pre-submission state and surfaced the C-API-prerequisite timeline unprompted).
 
 **Standing fix loop** (session cron efc9e985, 5h): merges green PRs, continues ongoing work, else pulls from the verified audit queue (`docs/audit-triage.md` § Verification 2026-06-09 — 24 confirmed-open, priority-ordered) or fixable issues (#1680 MSRV 1.96 + assert_matches sweep, #1350, #1351).
 
