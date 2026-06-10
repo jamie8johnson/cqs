@@ -147,7 +147,7 @@ pub(crate) struct BatchContext {
     /// probe connection (see [`DataVersionProbe`]). Catches WAL-mode
     /// incremental writes (watch loop → `index.db-wal`) that leave the main
     /// file's identity untouched until checkpoint — the false-negative class
-    /// `index_id` alone cannot see (DS-V1.40-1 / #1714).
+    /// `index_id` alone cannot see.
     ///
     /// `None` when the probe couldn't be opened (warned, identity-only
     /// fallback); re-opened lazily on the next staleness check.
@@ -374,7 +374,7 @@ impl BatchContext {
     ///    WAL-mode incremental writes: the watch loop's commits land in
     ///    `index.db-wal`, leaving the main file's identity unchanged until
     ///    checkpoint — identity alone would serve stale caches through any
-    ///    number of incremental reindexes (DS-V1.40-1 / #1714).
+    ///    number of incremental reindexes.
     ///
     /// False positives cost one cache reload; false negatives are the bug,
     /// so the probe falls back to identity-only (with a warn) rather than

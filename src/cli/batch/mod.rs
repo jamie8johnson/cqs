@@ -577,7 +577,7 @@ mod tests {
         );
     }
 
-    /// DS-V1.40-1 / #1714: the daemon runs WAL mode — the watch loop's
+    /// The daemon runs WAL mode — the watch loop's
     /// incremental writes go to `index.db-wal`, and the main file's identity
     /// (inode/size/mtime) doesn't change until checkpoint. Identity alone
     /// would serve stale caches through any number of incremental reindexes.
