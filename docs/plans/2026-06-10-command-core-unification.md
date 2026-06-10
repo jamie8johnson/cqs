@@ -348,7 +348,7 @@ implementation phases of the campaign.
   (`Envelope::ok_with_posture`/`err_with_posture`, `wrap_value_with_posture`,
   `emit_json_error_with_data_and_posture`, used by the batch JSONL surface)
   stay. The `CQS_ULTRASECURITY` env knob is left intact (its deletion is #1690's
-  own PR). Closes CQ-V1.40-5/6.
+  own PR — since shipped as #1703). Closes CQ-V1.40-5/6.
 - [x] Final greps: no Phase-4-touched `dispatch_*` carries duplicated business
   logic (dead/health/review/ci/plan/task are all thin adapters now; the
   remaining >20-line dispatchers are doc-comment-heavy adapters or Phase-2b

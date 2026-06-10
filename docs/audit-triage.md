@@ -39,7 +39,7 @@ All findings still marked open after the v1.41.0 cycle were re-verified against 
 4. **Cluster C architecture refactor** (CQ-V1.40-1/2/4/9, API-V1.40-1/2/4, RM-V1.40-1, EXT-V1.40-1): adopt `detect_kind_for_store` at its 8 inlined call sites; unify the 6 dispatcher signatures (`&OutputFormat` vs `json: bool`); split Kind vs KindResolution; replace `_ => {}` fallthroughs with exhaustive matches; delete `cmd_impact_const_fallback` (hand-rolled duplicate); single source of truth for the ~24 redirect-note strings. One refactor PR. Medium.
 5. **DS-V1.40-1**: daemon Store cache invalidation via `PRAGMA data_version` (identity check is inode/size/mtime only, batch/mod.rs:441-509). Medium.
 6. **DS-V1.40-8/10**: kind-detect + real query share no read snapshot. Medium; consider folding into 4.
-7. **Test backfill** (TC-ADV-V1.40-4, TC-HAP-V1.40-3, TC-ADV-V1.40-9, TC-ADV-V1.40-1 remainder): daemon try_kind_fallback has zero tests for any kind; no CLI integration tests for fallback kinds; V2Bare default + ULTRASECURITY×OUTPUT_FORMAT compose untested at binary boundary (every integration test pins CQS_OUTPUT_FORMAT=v1). Medium.
+7. **Test backfill** (TC-ADV-V1.40-4, TC-HAP-V1.40-3, TC-ADV-V1.40-9, TC-ADV-V1.40-1 remainder): daemon try_kind_fallback has zero tests for any kind; no CLI integration tests for fallback kinds; V2Bare default + ULTRASECURITY×OUTPUT_FORMAT compose untested at binary boundary (every integration test pins CQS_OUTPUT_FORMAT=v1). Medium. *(ULTRASECURITY removed in #1703 — the compose-contract half is moot; V2Bare binary-boundary tests landed in the same PR.)*
 8. **Observability bundle** (OB-V1.40-1/2/5/6): fallback-fired tracing events, telemetry category (Phase 2 prioritization signal), kind.rs entry spans, Tier 2b drop counter. Easy.
 9. **Perf bundle**: Cluster A2 N+1 GLOB scans in `filter_invoked_macros` (dead_code.rs:189-199, correctness fixed by #1627 but still per-macro full scans); daemon `dispatch_value` refactor (TODO P2 #62, socket.rs:270) + `emit_json` double-serialization; PERF-V1.40-7 build_test_map inversion (modest — loop body is O(1)). Medium.
 10. **Cleanup tier**: PERF-V1.40-8 fragment caching — NOTE the proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale fields); cache only the static part. CQ-V1.40-5/6 `_with_posture` plumbing — ✅ resolved (command-core campaign phase 4 deleted the dead plumbing; OnceLock-cached shim is the design, wiring would add indirection for byte-identical output). AC-V1.40-6/7, EH-V1.40-3 (trace macro/Multiple/target-validation). SEC-V1.40-8 walk caps. PB-V1.40-9 WAL-on-9P detection. RM-V1.40-4 SQL string const. RM-V1.40-6/7 cross-project graph caching. Easy-medium each.
@@ -114,7 +114,7 @@ Per CLAUDE.md memory: docs that promise behavior the code doesn't deliver are co
 
 ### Cluster F — V2Bare default test gap (TC-ADV + TC-HAP)
 SNR Phase 4 (this commit) flipped CLI direct default to bare payload. 38 integration tests pin `CQS_OUTPUT_FORMAT=v1`; nothing exercises the new default path end-to-end.
-- TC-ADV-V1.40-1 / TC-HAP-V1.40-1 / TC-HAP-V1.40-8 / TC-HAP-V1.40-9 (V2Bare default emission untested; `emit_json` itself untested at binary boundary; compose contract `CQS_ULTRASECURITY` × `CQS_OUTPUT_FORMAT` unverified)
+- TC-ADV-V1.40-1 / TC-HAP-V1.40-1 / TC-HAP-V1.40-8 / TC-HAP-V1.40-9 (V2Bare default emission untested; `emit_json` itself untested at binary boundary; compose contract `CQS_ULTRASECURITY` × `CQS_OUTPUT_FORMAT` unverified — compose half moot since #1703 removed ULTRASECURITY)
 - SEC-V1.40-1 (V2Bare drops `_meta.worktree_stale` — silent operational degradation)
 
 ### Cluster G — Phase 1 dispatch observability (OB + TC)
@@ -208,7 +208,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 
 | ID(s) | Title | Effort | Status |
 |---|---|---|---|
-| TC-ADV-V1.40-1 + TC-HAP-V1.40-1 + TC-HAP-V1.40-8 + TC-HAP-V1.40-9 | V2Bare default emission untested at binary boundary; `emit_json` untested; compose contract `CQS_ULTRASECURITY × CQS_OUTPUT_FORMAT` unverified (Cluster F) | easy-medium | TODO |
+| TC-ADV-V1.40-1 + TC-HAP-V1.40-1 + TC-HAP-V1.40-8 + TC-HAP-V1.40-9 | V2Bare default emission untested at binary boundary; `emit_json` untested; compose contract `CQS_ULTRASECURITY × CQS_OUTPUT_FORMAT` unverified (Cluster F; compose half moot since #1703 removed ULTRASECURITY) | easy-medium | TODO |
 | TC-ADV-V1.40-4 + TC-HAP-V1.40-3 | Daemon-path `try_kind_fallback` zero tests for any kind; daemon `dispatch_test_map/trace/deps/impact` zero kind-fallback tests | medium | TODO |
 | TC-ADV-V1.40-5 + TC-HAP-V1.40-2 | `filter_invoked_macros` zero tests (happy path + adversarial — pin EH-V1.40-1 fix) | easy | ✅ Cluster A PR (tests added) |
 | TC-ADV-V1.40-9 | CLI graph commands' Const/Type/Module/Ambiguous have unit-shape tests but zero CLI integration tests | medium | TODO |
