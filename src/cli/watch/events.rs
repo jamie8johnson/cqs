@@ -225,6 +225,10 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         tracing::warn!(error = %e, "Cannot set base HNSW dirty flag — skipping reindex to prevent stale index on crash");
         return;
     }
+    // Wall-clock the reindex pass so `cqs status --watch` can report
+    // last-reindex latency — previously only visible as a
+    // tracing span duration in journalctl.
+    let reindex_started = std::time::Instant::now();
     match reindex_files(
         cfg.root,
         store,
@@ -235,6 +239,15 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         cfg.quiet,
     ) {
         Ok((count, content_hashes)) => {
+            // Publish-side stats for `cqs status --watch`: a
+            // timestamp + duration pair the snapshot publisher reads
+            // every tick.
+            state.last_reindex = Some(cqs::watch_status::ReindexLatency {
+                at_unix_secs: cqs::unix_secs_i64().unwrap_or(0),
+                duration_ms: u64::try_from(reindex_started.elapsed().as_millis())
+                    .unwrap_or(u64::MAX),
+                files: u64::try_from(files.len()).unwrap_or(u64::MAX),
+            });
             // Record mtimes to skip duplicate events
             for (file, mtime) in pre_mtimes {
                 state.last_indexed_mtime.insert(file, mtime);
@@ -471,6 +484,13 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
         }
         Err(e) => {
             warn!(error = %e, "Reindex error");
+            // Surface the failure to `cqs status --watch` so
+            // operators don't need journalctl to see why the index is
+            // behind. Sticky — see `WatchErrorInfo` docs.
+            state.last_error = Some(cqs::watch_status::WatchErrorInfo {
+                at_unix_secs: cqs::unix_secs_i64().unwrap_or(0),
+                message: format!("reindex failed: {e}"),
+            });
             // The dirty flag was set before the reindex attempt and the
             // success path's `clear_hnsw_dirty_with_retry` is unreachable
             // from this arm. Surface that the HNSW stays marked dirty on
@@ -489,7 +509,16 @@ pub(super) fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut
 }
 
 /// Process notes.toml changes: parse and store notes (no embedding needed).
-pub(super) fn process_note_changes(root: &Path, store: &Store, quiet: bool) {
+///
+/// Takes `&mut WatchState` so a notes-reindex failure lands in
+/// `state.last_error` for `cqs status --watch`, same as the
+/// file-reindex path.
+pub(super) fn process_note_changes(
+    root: &Path,
+    store: &Store,
+    quiet: bool,
+    state: &mut WatchState,
+) {
     if !quiet {
         println!("\nNotes changed, reindexing...");
     }
@@ -501,6 +530,10 @@ pub(super) fn process_note_changes(root: &Path, store: &Store, quiet: bool) {
         }
         Err(e) => {
             warn!(error = %e, "Notes reindex error");
+            state.last_error = Some(cqs::watch_status::WatchErrorInfo {
+                at_unix_secs: cqs::unix_secs_i64().unwrap_or(0),
+                message: format!("notes reindex failed: {e}"),
+            });
         }
     }
 }

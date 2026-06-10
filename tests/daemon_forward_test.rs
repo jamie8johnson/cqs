@@ -604,3 +604,287 @@ fn test_ping_no_daemon_exits_one() {
         "expected friendly 'no daemon running' message; stderr=<{stderr}>"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `cqs status --watch` against a mock daemon.
+//
+// Same fixture pattern as PingMockDaemon: bind a UnixListener at the exact
+// socket path the CLI computes, reply with a canned WatchSnapshot whose
+// `ops` block is fully populated, and assert the CLI surfaces every field.
+// The daemon-absent path must return the structured error (exit 1 +
+// error envelope), matching `--watch-fresh`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Mock daemon replying to the `status` command with a canned
+/// `WatchSnapshot` carrying a fully-populated `ops` block.
+struct StatusMockDaemon {
+    conn_count: Arc<AtomicUsize>,
+    last_request: Arc<std::sync::Mutex<String>>,
+    stop: Arc<AtomicBool>,
+    sock_path: PathBuf,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl StatusMockDaemon {
+    fn new(sock_path: PathBuf) -> Self {
+        let listener = UnixListener::bind(&sock_path)
+            .unwrap_or_else(|e| panic!("bind {} failed: {e}", sock_path.display()));
+        listener
+            .set_nonblocking(true)
+            .expect("set_nonblocking on mock listener");
+
+        let conn_count = Arc::new(AtomicUsize::new(0));
+        let last_request = Arc::new(std::sync::Mutex::new(String::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let c2 = Arc::clone(&conn_count);
+        let r2 = Arc::clone(&last_request);
+        let s2 = Arc::clone(&stop);
+
+        // Canned WatchSnapshot. Field values pinned by the assertions in
+        // the round-trip tests below — this is the daemon-side wire shape
+        // `dispatch_status` produces by serializing the shared snapshot.
+        let payload = serde_json::json!({
+            "state": "fresh",
+            "modified_files": 4,
+            "pending_notes": false,
+            "rebuild_in_flight": false,
+            "delta_saturated": false,
+            "incremental_count": 12,
+            "dropped_this_cycle": 1,
+            "last_event_unix_secs": 1_750_000_000_i64,
+            "last_synced_at": 1_750_000_050_i64,
+            "snapshot_at": 1_750_000_060_i64,
+            "active_slot": "default",
+            "ops": {
+                "in_flight_clients": 3,
+                "reconcile_pending": true,
+                "last_reindex": {
+                    "at_unix_secs": 1_750_000_050_i64,
+                    "duration_ms": 842,
+                    "files": 4,
+                },
+                "last_error": {
+                    "at_unix_secs": 1_749_999_000_i64,
+                    "message": "reindex failed: synthetic disk full",
+                },
+                "slots": [{
+                    "name": "default",
+                    "state": "fresh",
+                    "last_synced_at": 1_750_000_050_i64,
+                    "last_reindex": {
+                        "at_unix_secs": 1_750_000_050_i64,
+                        "duration_ms": 842,
+                        "files": 4,
+                    },
+                }],
+            },
+        })
+        .to_string();
+        // String-payload transport form, same as PingMockDaemon.
+        let envelope = format!(
+            r#"{{"status":"ok","output":{}}}"#,
+            serde_json::to_string(&payload).unwrap()
+        );
+
+        let handle = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !s2.load(Ordering::SeqCst) && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => {
+                        c2.fetch_add(1, Ordering::SeqCst);
+                        let mut buf = String::new();
+                        let _ = BufReader::new(&stream).read_line(&mut buf);
+                        if let Ok(mut g) = r2.lock() {
+                            *g = buf.clone();
+                        }
+                        let _ = writeln!(stream, "{envelope}");
+                        let _ = stream.flush();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            conn_count,
+            last_request,
+            stop,
+            sock_path,
+            handle: Some(handle),
+        }
+    }
+
+    fn conn_count(&self) -> usize {
+        self.conn_count.load(Ordering::SeqCst)
+    }
+
+    fn last_request(&self) -> String {
+        self.last_request
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for StatusMockDaemon {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        let _ = std::fs::remove_file(&self.sock_path);
+    }
+}
+
+#[test]
+fn test_status_watch_json_round_trip_returns_all_ops_fields() {
+    // `cqs status --watch --json` must connect to the daemon, issue the
+    // `status` command, and emit the full WatchSnapshot — including every
+    // ops-block field (gate: every field returned).
+    let (dir, sock_path) = setup_project();
+    let mock = StatusMockDaemon::new(sock_path.clone());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["status", "--watch", "--json"]);
+
+    let output = cmd.output().expect("cqs status spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs status --watch --json` failed; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "expected exactly one daemon connection"
+    );
+    let req = mock.last_request();
+    assert!(
+        req.contains("\"command\":\"status\""),
+        "expected status command in request, got: {req}"
+    );
+
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("CLI did not print valid JSON; stdout=<{stdout}> err={e}"));
+    let data = &parsed["data"];
+    // Freshness core (queue depth = modified_files, dropped events).
+    assert_eq!(data["state"], "fresh");
+    assert_eq!(data["modified_files"], 4);
+    assert_eq!(data["dropped_this_cycle"], 1);
+    // Ops block: every field from the issue's list.
+    let ops = &data["ops"];
+    assert_eq!(ops["in_flight_clients"], 3);
+    assert_eq!(ops["reconcile_pending"], true);
+    assert_eq!(ops["last_reindex"]["at_unix_secs"], 1_750_000_050_i64);
+    assert_eq!(ops["last_reindex"]["duration_ms"], 842);
+    assert_eq!(ops["last_reindex"]["files"], 4);
+    assert_eq!(
+        ops["last_error"]["message"],
+        "reindex failed: synthetic disk full"
+    );
+    assert_eq!(ops["last_error"]["at_unix_secs"], 1_749_999_000_i64);
+    // Per-slot vec carries the active slot.
+    assert_eq!(ops["slots"][0]["name"], "default");
+    assert_eq!(ops["slots"][0]["state"], "fresh");
+    assert_eq!(ops["slots"][0]["last_synced_at"], 1_750_000_050_i64);
+}
+
+#[test]
+fn test_status_watch_text_renders_ops_block() {
+    // Text mode appends the grep-friendly ops lines after the freshness
+    // summary. Pins the structurally load-bearing keys, not the full
+    // formatting.
+    let (dir, sock_path) = setup_project();
+    let _mock = StatusMockDaemon::new(sock_path.clone());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["status", "--watch"]);
+
+    let output = cmd.output().expect("cqs status spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs status --watch` failed; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert!(
+        stdout.contains("state: fresh"),
+        "freshness line first: {stdout}"
+    );
+    assert!(
+        stdout.contains("clients_in_flight=3"),
+        "in-flight clients missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("reconcile_pending=true"),
+        "reconcile state missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("last_reindex_ms=842"),
+        "reindex latency missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("last_error=reindex failed: synthetic disk full"),
+        "last error missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("slot=default state=fresh"),
+        "per-slot line missing: {stdout}"
+    );
+}
+
+#[test]
+fn test_status_watch_no_daemon_exits_one_with_structured_error() {
+    // Daemon-absent path: `--watch` must match `--watch-fresh` — exit 1,
+    // friendly stderr in text mode, error envelope in JSON mode.
+    let (dir, _sock_path) = setup_project();
+    // No mock bound — socket file is absent.
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+
+    // Text mode.
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["status", "--watch"]);
+    let output = cmd.output().expect("cqs status spawn");
+    assert_eq!(output.status.code(), Some(1), "no daemon must exit 1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cqs:") || stderr.contains("daemon"),
+        "stderr should describe the no-daemon condition, got: {stderr}"
+    );
+
+    // JSON mode: structured error envelope.
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .env("CQS_OUTPUT_FORMAT", "v1")
+        .current_dir(&canonical_dir)
+        .args(["status", "--watch", "--json"]);
+    let output = cmd.output().expect("cqs status spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"error\"") || stdout.contains("\"code\""),
+        "stdout should contain a JSON error envelope, got: {stdout}"
+    );
+}

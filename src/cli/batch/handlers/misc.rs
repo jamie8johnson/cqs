@@ -608,6 +608,7 @@ mod tests {
             last_synced_at: Some(1_700_000_000),
             snapshot_at: Some(1_700_000_001),
             active_slot: None,
+            ops: None,
         };
         // Reach into the lock through the view's clone of the Arc.
         // (Tests under `cqs::watch_status` write directly; here we
@@ -661,6 +662,7 @@ mod tests {
                 last_synced_at: Some(1_700_000_000),
                 snapshot_at: Some(1_700_000_002),
                 active_slot: None,
+                ops: None,
             };
             *snap_handle_for_publisher
                 .write()
@@ -706,6 +708,7 @@ mod tests {
             last_synced_at: Some(1_700_000_000),
             snapshot_at: Some(1_700_000_003),
             active_slot: None,
+            ops: None,
         };
         view.test_overwrite_watch_snapshot(stale);
 

@@ -36,6 +36,12 @@ use super::{
 /// via [`crate::cli::batch::BatchContext::adopt_reconcile_signal`] so the
 /// daemon's `dispatch_reconcile` handler flips a flag the watch loop is
 /// actually reading.
+///
+/// `in_flight`: the shared per-connection counter. Owned by the outer
+/// `cmd_watch` scope (not local to this thread) so the watch loop can
+/// sample it into the `cqs status --watch` ops block. This
+/// thread is the only writer; the watch loop only `load`s.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_daemon_thread(
     listener: UnixListener,
     daemon_embedder: Arc<OnceLock<Arc<Embedder>>>,
@@ -44,6 +50,7 @@ pub(super) fn spawn_daemon_thread(
     daemon_watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
     daemon_reconcile_signal: cqs::watch_status::SharedReconcileSignal,
     daemon_fresh_notifier: cqs::watch_status::SharedFreshNotifier,
+    in_flight: Arc<AtomicUsize>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         // BatchContext created inside the thread — RefCell is !Send
@@ -113,7 +120,8 @@ pub(super) fn spawn_daemon_thread(
         // try_lock / brief lock semantics — they never block on a
         // long handler.
         let ctx = Arc::new(Mutex::new(ctx));
-        let in_flight = Arc::new(AtomicUsize::new(0));
+        // `in_flight` arrives as a parameter — shared with the watch
+        // loop's snapshot publisher.
         // Resolve cap once at startup so a `CQS_MAX_DAEMON_CLIENTS` change
         // requires daemon restart (matches the rest of the env-var surface —
         // config reload is not a goal for caps).
