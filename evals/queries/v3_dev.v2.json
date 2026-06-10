@@ -230,6 +230,13 @@
           "old_line_start": 49,
           "new_origin": "src/cache.rs",
           "new_line_start": 203
+        },
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": "src/cache.rs",
+          "old_line_start": 203,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_line_start": 15
         }
       },
       "judges": {
@@ -277,11 +284,11 @@
       "gold_chunk": {
         "id": "src/cache.rs:203:regen",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 203,
-        "line_end": 1047
+        "line_start": 15,
+        "line_end": 24
       },
       "gold_chunk_source": "consensus"
     },
@@ -1577,6 +1584,13 @@
           "old_line_start": 51,
           "new_origin": "src/cache.rs",
           "new_line_start": 215
+        },
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": "src/cache.rs",
+          "old_line_start": 215,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_line_start": 36
         }
       },
       "judges": {
@@ -1624,11 +1638,11 @@
       "gold_chunk": {
         "id": "src/cache.rs:215:regen",
         "name": "default_path",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 215,
-        "line_end": 223
+        "line_start": 36,
+        "line_end": 44
       },
       "gold_chunk_source": "consensus"
     },
@@ -1709,6 +1723,13 @@
           "old_line_start": 40,
           "new_origin": "src/cache.rs",
           "new_line_start": 189
+        },
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": "src/cache.rs",
+          "old_line_start": 189,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_line_start": 15
         }
       },
       "judges": {
@@ -1754,11 +1775,11 @@
       "gold_chunk": {
         "id": "src/cache.rs:189:regen",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 189,
-        "line_end": 201
+        "line_start": 15,
+        "line_end": 24
       },
       "gold_chunk_source": "consensus"
     },
@@ -4792,6 +4813,13 @@
           "old_line_start": 28,
           "new_origin": "src/cache.rs",
           "new_line_start": 84
+        },
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": "src/cache.rs",
+          "old_line_start": 84,
+          "new_origin": "src/cache/mod.rs",
+          "new_line_start": 78
         }
       },
       "judges": {
@@ -4839,11 +4867,11 @@
       "gold_chunk": {
         "id": "src/cache.rs:84:regen",
         "name": "CacheStats",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/mod.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 84,
-        "line_end": 90
+        "line_start": 78,
+        "line_end": 84
       },
       "gold_chunk_source": "consensus"
     },
@@ -6012,6 +6040,13 @@
           "old_line_start": 349,
           "new_origin": "src/embedder/mod.rs",
           "new_line_start": 487
+        },
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": "src/embedder/mod.rs",
+          "old_line_start": 487,
+          "new_origin": "src/embedder/core.rs",
+          "new_line_start": 252
         }
       },
       "judges": {
@@ -6059,11 +6094,11 @@
       "gold_chunk": {
         "id": "src/embedder/mod.rs:487:regen",
         "name": "model_fingerprint",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 487,
-        "line_end": 639
+        "line_start": 252,
+        "line_end": 395
       },
       "gold_chunk_source": "consensus"
     },
@@ -6536,6 +6571,13 @@
           "old_line_start": 373,
           "new_origin": "src/cache.rs",
           "new_line_start": 784
+        },
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": "src/cache.rs",
+          "old_line_start": 784,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_line_start": 510
         }
       },
       "judges": {
@@ -6583,11 +6625,11 @@
       "gold_chunk": {
         "id": "src/cache.rs:784:regen",
         "name": "stats",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 784,
-        "line_end": 821
+        "line_start": 510,
+        "line_end": 547
       },
       "gold_chunk_source": "consensus"
     },
@@ -6597,7 +6639,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031616,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "repinned_2026_06_10": {
+          "reason": "origin file split/moved (#1704 monolith splits; 2 were stale worktree paths)",
+          "old_origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+          "old_line_start": 170,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_line_start": 34
+        }
       },
       "judges": {
         "claude": {
@@ -6642,11 +6691,11 @@
       "gold_chunk": {
         "id": null,
         "name": "BatchContext",
-        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 170,
-        "line_end": 231
+        "line_start": 34,
+        "line_end": 163
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -7038,5 +7087,6 @@
     "basename": 1,
     "name": 71,
     "none": 4
-  }
+  },
+  "repinned_at": "2026-06-10"
 }

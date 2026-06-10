@@ -1913,3 +1913,11 @@ mentions = [
     "scripts/check_comment_provenance.py",
     "refactoring",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Eval gold origins die when files split/rename: matcher keys on (origin,name) — line drift is harmless, but a monolith split orphans every gold pointing at the old path, capping R@K and mimicking a recall regression. Check dead golds (SELECT 1 FROM chunks WHERE origin=? AND name=?) before suspecting retrieval; re-pin golds in the same PR as the split."
+mentions = [
+    "evals/queries",
+    "src/cli/commands/eval/runner.rs",
+]
