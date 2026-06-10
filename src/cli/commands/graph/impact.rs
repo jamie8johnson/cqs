@@ -11,15 +11,151 @@
 
 use anyhow::Result;
 
-use cqs::kind::{classify_hits, Kind, KindHit};
+use cqs::store::{ReadOnly, Store};
 use cqs::{
     analyze_impact, format_test_suggestions, impact_to_json, impact_to_mermaid, suggest_tests,
-    ImpactOptions,
+    ImpactOptions, ImpactResult, TestSuggestion,
 };
 
-use super::chunks_to_definitions;
+use super::notes_text;
+use super::KindFallbackOutput;
 use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
+
+// ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
+
+/// Input for [`impact_core`]. Cross-project impact lives in the adapters
+/// (separate cross-project analyzer); the core covers the single-project
+/// path both surfaces share.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct ImpactArgs {
+    /// Function name or `file:function`.
+    pub name: String,
+    /// Caller depth (1=direct, 2+=transitive); clamped 1..=10 in the core.
+    pub depth: usize,
+    /// Per-section truncation cap; clamped 1..=100 in the core.
+    pub limit: usize,
+    /// Suggest tests for untested callers.
+    pub suggest_tests: bool,
+    /// Include type-impacted functions (shared type dependencies).
+    pub include_types: bool,
+}
+
+// ─── Core output ────────────────────────────────────────────────────────────
+
+/// Single source of truth for `cqs impact <name>` output. The function
+/// path keeps the typed [`ImpactResult`] + suggestions so the CLI's text
+/// rendering reads structured data; [`ImpactCoreOutput::to_value`] is the
+/// single JSON projection (lib `impact_to_json` + injected `kind:
+/// "function"` + optional `test_suggestions`). A kind mismatch carries the
+/// shared fallback object.
+///
+/// This enum can't simply derive `Serialize` because the function path's
+/// JSON is produced by the lib's `impact_to_json` transform, not a field
+/// projection — `to_value` is the explicit serializer both surfaces use.
+pub(crate) enum ImpactCoreOutput {
+    /// Function path: the impact analysis result plus any test suggestions.
+    /// `suggest_tests` records whether suggestions were *requested* so the
+    /// JSON projection emits `test_suggestions` (possibly empty) exactly
+    /// when the flag was set — matching the historical wire shape.
+    Function {
+        result: ImpactResult,
+        suggestions: Vec<TestSuggestion>,
+        suggest_tests: bool,
+    },
+    /// Kind mismatch (const/type/module/ambiguous): shared fallback object.
+    Fallback(KindFallbackOutput),
+}
+
+impl ImpactCoreOutput {
+    /// Project to the JSON value both surfaces emit. Function path:
+    /// `impact_to_json(result)` with `kind: "function"` injected and, when
+    /// test suggestions were requested, a `test_suggestions` array (empty
+    /// if none were found). Fallback: the serialized [`KindFallbackOutput`].
+    pub(crate) fn to_value(&self) -> Result<serde_json::Value> {
+        match self {
+            ImpactCoreOutput::Function {
+                result,
+                suggestions,
+                suggest_tests,
+            } => {
+                let mut json = impact_to_json(result)?;
+                if let Some(obj) = json.as_object_mut() {
+                    obj.insert("kind".into(), serde_json::json!("function"));
+                    if *suggest_tests {
+                        let suggestions_json = format_test_suggestions(suggestions);
+                        obj.insert(
+                            "test_suggestions".into(),
+                            serde_json::json!(suggestions_json),
+                        );
+                    }
+                }
+                Ok(json)
+            }
+            ImpactCoreOutput::Fallback(fb) => Ok(serde_json::to_value(fb)?),
+        }
+    }
+}
+
+// ─── Core ───────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs impact <name>` (single-project).
+///
+/// Classifies the name, then either runs the call-graph impact analysis
+/// (Function / Multiple / Other / NotFound — Multiple resolves
+/// deterministically, NotFound surfaces a not-found error from
+/// `resolve_target`) or returns a kind-labeled fallback (Const / Type /
+/// Module / Ambiguous). Test suggestions are computed off the
+/// un-truncated result so the engine sees every untested caller; the
+/// per-section cap is applied immediately after.
+pub(crate) fn impact_core(
+    store: &Store<ReadOnly>,
+    root: &std::path::Path,
+    args: &ImpactArgs,
+) -> Result<ImpactCoreOutput> {
+    let _span = tracing::info_span!("impact_core", name = %args.name, limit = args.limit).entered();
+    let depth = args.depth.clamp(1, 10);
+    let limit = args.limit.clamp(1, 100);
+
+    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::impact(fk);
+        return Ok(ImpactCoreOutput::Fallback(KindFallbackOutput::new(
+            &args.name, &chunks, fk, "impact", &text,
+        )));
+    }
+
+    // Resolve target + run shared impact analysis.
+    let resolved = resolve_target(store, &args.name)?;
+    let chunk = resolved.chunk;
+    let mut result = analyze_impact(
+        store,
+        &chunk.name,
+        root,
+        &ImpactOptions {
+            depth,
+            include_types: args.include_types,
+        },
+    )?;
+
+    // Compute suggestions BEFORE truncation so the engine sees every
+    // untested caller, not just the first N.
+    let suggestions = if args.suggest_tests {
+        suggest_tests(store, &result, root)
+    } else {
+        Vec::new()
+    };
+
+    truncate_impact_sections(&mut result, limit);
+
+    Ok(ImpactCoreOutput::Function {
+        result,
+        suggestions,
+        suggest_tests: args.suggest_tests,
+    })
+}
+
+// ─── CLI command (thin adapter over the core) ──────────────────────────────
 
 // The CLI dispatcher inflates a shared arg struct rather than calling this
 // directly, so we accept the lint here instead of forcing every call site
@@ -38,14 +174,10 @@ pub(crate) fn cmd_impact(
     let _span = tracing::info_span!("cmd_impact", name, limit, cross_project).entered();
     let store = &ctx.store;
     let root = &ctx.root;
-    let depth = depth.clamp(1, 10);
-    // Per-section truncation cap. Default 5 from `LimitArg`. The analyzer
-    // returns the full result; we apply the cap at render time so the
-    // underlying graph data is unaffected (other consumers — mermaid,
-    // suggest_tests — still see the full set).
-    let limit = limit.clamp(1, 100);
 
     if cross_project {
+        let depth = depth.clamp(1, 10);
+        let limit = limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(root)?;
         let mut result = cqs::cross_project::analyze_impact_cross(
             &mut cross_ctx,
@@ -63,8 +195,15 @@ pub(crate) fn cmd_impact(
                 println!("{}", impact_to_mermaid(&result));
             }
             OutputFormat::Json => {
-                let json = impact_to_json_with_kind(&result, "function")?;
-                crate::cli::json_envelope::emit_json(&json)?;
+                // Cross-project JSON never emitted test_suggestions (the
+                // historical path called `impact_to_json` directly), so
+                // request=false keeps the wire shape.
+                let out = ImpactCoreOutput::Function {
+                    result,
+                    suggestions: Vec::new(),
+                    suggest_tests: false,
+                };
+                crate::cli::json_envelope::emit_json(&out.to_value()?)?;
             }
             OutputFormat::Text => {
                 let rel_file = "(cross-project)";
@@ -74,306 +213,92 @@ pub(crate) fn cmd_impact(
         return Ok(());
     }
 
-    // Polymorphic-routing kind detection. Read once up-front so the
-    // dispatcher branch happens before the resolve-+-analyze flow that
-    // assumes a function. Hits double-duty as the input to the kind-
-    // mismatch fallbacks below — one SQL query covers all.
-    //
-    // Per-kind routing:
-    // - Function: call-graph impact analysis (with `kind: "function"` label)
-    // - Const: kind-labeled definition list + redirect note
-    // - Type: kind-labeled definition list + redirect to `cqs deps <type>`
-    // - Module: kind-labeled definition list + redirect to file-import search
-    // - Ambiguous: aggregate across kinds with `kind` per result
-    // - Multiple, NotFound, Other: fall through to the call-graph flow
-    //   (which may resolve via FTS or return "not found")
-    let chunks = store.lookup_by_name(name)?;
-    let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-    let kind = classify_hits(&hits);
-    match kind {
-        Kind::Const => return cmd_impact_const_fallback(name, &chunks, format),
-        Kind::Type => return cmd_impact_type_fallback(name, &chunks, format),
-        Kind::Module => return cmd_impact_module_fallback(name, &chunks, format),
-        Kind::Ambiguous => return cmd_impact_ambiguous_fallback(name, &chunks, format),
-        // Function | Multiple | Other | NotFound: fall through to the
-        // resolve_target + analyze_impact flow. Multiple is safe
-        // because resolve_target picks the first / best match;
-        // NotFound surfaces a "not found" error from resolve_target.
-        _ => {}
-    }
-
-    // Resolve target
-    let resolved = resolve_target(store, name)?;
-    let chunk = resolved.chunk;
-
-    // Run shared impact analysis
-    let mut result = analyze_impact(
-        store,
-        &chunk.name,
-        root,
-        &ImpactOptions {
-            depth,
-            include_types,
-        },
-    )?;
-
-    // Compute test suggestions if requested (BEFORE truncation so the
-    // suggestion engine sees every untested caller, not just the first N).
-    let suggestions = if do_suggest_tests {
-        suggest_tests(store, &result, root)
-    } else {
-        Vec::new()
+    let args = ImpactArgs {
+        name: name.to_string(),
+        depth,
+        limit,
+        suggest_tests: do_suggest_tests,
+        include_types,
     };
+    let output = impact_core(store, root, &args)?;
 
-    truncate_impact_sections(&mut result, limit);
-
-    match format {
-        OutputFormat::Mermaid => {
-            println!("{}", impact_to_mermaid(&result));
-        }
-        OutputFormat::Json => {
-            let mut json = impact_to_json_with_kind(&result, "function")?;
-            if do_suggest_tests {
-                let suggestions_json = format_test_suggestions(&suggestions);
-                if let Some(obj) = json.as_object_mut() {
-                    obj.insert(
-                        "test_suggestions".into(),
-                        serde_json::json!(suggestions_json),
-                    );
+    match &output {
+        ImpactCoreOutput::Fallback(fb) => match format {
+            OutputFormat::Json => {
+                crate::cli::json_envelope::emit_json(&output.to_value()?)?;
+                let _ = fb;
+            }
+            OutputFormat::Text | OutputFormat::Mermaid => {
+                render_impact_fallback_text(name, store)?;
+            }
+        },
+        ImpactCoreOutput::Function {
+            result,
+            suggestions,
+            suggest_tests: _,
+        } => match format {
+            OutputFormat::Mermaid => {
+                println!("{}", impact_to_mermaid(result));
+            }
+            OutputFormat::Json => {
+                crate::cli::json_envelope::emit_json(&output.to_value()?)?;
+            }
+            OutputFormat::Text => {
+                // Re-resolve for the relative file label the text header
+                // prints. The core already validated resolution, so this
+                // is an indexed lookup that can't meaningfully fail; on the
+                // off chance it does, fall back to the bare function name.
+                let rel_file = resolve_target(store, name)
+                    .map(|r| cqs::rel_display(&r.chunk.file, root))
+                    .unwrap_or_else(|_| result.function_name.clone());
+                display_impact_text(result, root, &rel_file);
+                if do_suggest_tests && !suggestions.is_empty() {
+                    display_test_suggestions(suggestions);
                 }
             }
-            crate::cli::json_envelope::emit_json(&json)?;
-        }
-        OutputFormat::Text => {
-            let rel_file = cqs::rel_display(&chunk.file, root);
-            display_impact_text(&result, root, &rel_file);
-
-            if do_suggest_tests && !suggestions.is_empty() {
-                display_test_suggestions(&suggestions);
-            }
-        }
+        },
     }
 
     Ok(())
 }
 
-/// Wrap [`cqs::impact_to_json`] with a top-level `kind` field so agents
-/// can detect whether the response came from the function-shaped happy
-/// path or a kind-mismatch fallback.
-fn impact_to_json_with_kind(result: &cqs::ImpactResult, kind: &str) -> Result<serde_json::Value> {
-    let mut json = impact_to_json(result)?;
-    if let Some(obj) = json.as_object_mut() {
-        obj.insert("kind".into(), serde_json::json!(kind));
-    }
-    Ok(json)
-}
-
-/// Generic kind-mismatch fallback JSON builder. Every non-Function kind
-/// that lands on `cqs impact <name>` gets a response of this shape:
-///
-/// ```json
-/// {
-///   "kind": "<const|type|module|ambiguous>",
-///   "fallback_from": "impact",
-///   "name": "<queried>",
-///   "definitions": [{...}, ...],
-///   "note": "<kind-specific redirect>"
-/// }
-/// ```
-///
-/// `kind_label` and `note` parameterize the per-kind message; the
-/// `definitions` array is the same shape every cell emits so consumer
-/// agents only learn one schema.
-fn build_impact_kind_fallback_json(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    kind_label: &str,
-    note: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "kind": kind_label,
-        "fallback_from": "impact",
-        "name": name,
-        "definitions": chunks_to_definitions(chunks),
-        "note": note,
-    })
-}
-
-/// Const-specific JSON builder. Thin wrapper around
-/// [`build_impact_kind_fallback_json`]; the canonical const constructor
-/// for the test suite and the path the [`cmd_impact_const_fallback`]
-/// dispatcher calls, so a regression to the generic helper surfaces here
-/// where the per-kind tests live.
-fn build_impact_const_fallback_json(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-) -> serde_json::Value {
-    build_impact_kind_fallback_json(
-        name,
-        chunks,
-        "const",
-        "consts don't have call-graph impact; here are the definition sites. \
-         Use `cqs <name>` or `cqs search <name>` to find references.",
-    )
-}
-
-/// Generic kind-mismatch fallback dispatcher. Emits the JSON shape via
-/// `emit_json` (which honors the active `OutputFormat::current()`);
-/// Text/Mermaid surfaces print a plain-text equivalent with the same
-/// kind-specific redirect.
-///
-/// `text_lead` is the first line printed for Text/Mermaid (e.g.
-/// `"(impact) `{name}` is a const, not a function — ..."`).
-/// `text_redirect` is the trailing redirect (e.g.
-/// `"Use `cqs <name>`..."`).
-fn cmd_impact_kind_fallback(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    format: &OutputFormat,
-    kind_label: &str,
-    note: &str,
-    text_lead: &str,
-    text_redirect: &str,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Kind fallback called with no hits — caller must classify before dispatching"
-    );
-    match format {
-        OutputFormat::Json => {
-            let json = build_impact_kind_fallback_json(name, chunks, kind_label, note);
-            crate::cli::json_envelope::emit_json(&json)?;
-        }
-        OutputFormat::Text | OutputFormat::Mermaid => {
-            println!("{text_lead}");
-            println!();
-            println!("Definitions:");
-            for c in chunks {
-                println!(
-                    "  {}:{}-{} ({} {})",
-                    cqs::normalize_path(&c.file),
-                    c.line_start,
-                    c.line_end,
-                    c.language,
-                    c.chunk_type
-                );
-                if !c.signature.is_empty() {
-                    println!("    {}", c.signature);
-                }
-            }
-            println!();
-            println!("{text_redirect}");
-        }
+/// Plain-text/mermaid impact fallback renderer. The core decided a
+/// fallback fires; for text the adapter re-runs `detect_fallback` (cheap
+/// indexed lookup) to print the definition list.
+fn render_impact_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
+    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::impact(fk);
+        let lead = notes_text::impact_lead(fk, name);
+        super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");
     }
     Ok(())
-}
-
-/// Kind-mismatch fallback: `cqs impact <const>` returns a kind-labeled
-/// definition list + redirect note instead of empty. Consts aren't
-/// tracked by the call-graph layer, so call-graph impact analysis would
-/// otherwise return zero callers and leave the agent with nothing
-/// actionable.
-fn cmd_impact_const_fallback(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    format: &OutputFormat,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Const fallback called with no hits — caller must check Kind::Const before dispatching"
-    );
-    match format {
-        OutputFormat::Json => {
-            let json = build_impact_const_fallback_json(name, chunks);
-            crate::cli::json_envelope::emit_json(&json)?;
-        }
-        OutputFormat::Text | OutputFormat::Mermaid => {
-            println!(
-                "(impact) `{name}` is a const, not a function — call-graph impact analysis doesn't apply."
-            );
-            println!();
-            println!("Definitions:");
-            for c in chunks {
-                println!(
-                    "  {}:{}-{} ({} {})",
-                    cqs::normalize_path(&c.file),
-                    c.line_start,
-                    c.line_end,
-                    c.language,
-                    c.chunk_type
-                );
-                if !c.signature.is_empty() {
-                    println!("    {}", c.signature);
-                }
-            }
-            println!();
-            println!("Use `cqs <name>` or `cqs search <name>` to find references.");
-        }
-    }
-    Ok(())
-}
-
-/// Kind-mismatch fallback: `cqs impact <type>` (struct, enum,
-/// trait, class, interface, type alias, ...). Returns the type's
-/// definition site(s) + a redirect to `cqs deps <type>` for type-
-/// dependency analysis (the closest analogue to "what breaks if you
-/// change this" for a type).
-fn cmd_impact_type_fallback(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    format: &OutputFormat,
-) -> Result<()> {
-    cmd_impact_kind_fallback(
-        name, chunks, format, "type",
-        "types don't have call-graph impact; here are the definition sites. \
-         Use `cqs deps <name>` for type-dependency analysis or `cqs <name>` to find usage references.",
-        &format!("(impact) `{name}` is a type, not a function — call-graph impact analysis doesn't apply."),
-        "Use `cqs deps <name>` for type-dependency analysis or `cqs <name>` to find usage references.",
-    )
-}
-
-/// Kind-mismatch fallback: `cqs impact <module>` (Rust mod, C++
-/// namespace, package, ...). Returns the module's declaration site(s)
-/// + a redirect to find files importing the module.
-fn cmd_impact_module_fallback(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    format: &OutputFormat,
-) -> Result<()> {
-    cmd_impact_kind_fallback(
-        name, chunks, format, "module",
-        "modules don't have call-graph impact; here are the declaration sites. \
-         Use `cqs <name>` to find files that reference this module.",
-        &format!("(impact) `{name}` is a module/namespace, not a function — call-graph impact analysis doesn't apply."),
-        "Use `cqs <name>` to find files that reference this module.",
-    )
-}
-
-/// Kind-mismatch fallback: `cqs impact <ambiguous-name>` (name
-/// resolves across multiple kinds — e.g. `len` is both a method and
-/// a const in some codebases). Returns all matched chunks. The
-/// per-definition `chunk_type` field tells the consumer which entry
-/// is the function/method vs. the type vs. the const.
-fn cmd_impact_ambiguous_fallback(
-    name: &str,
-    chunks: &[cqs::store::ChunkSummary],
-    format: &OutputFormat,
-) -> Result<()> {
-    cmd_impact_kind_fallback(
-        name, chunks, format, "ambiguous",
-        "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
-         Re-run `cqs impact <name>` against a more specific name (e.g. `Type::method`) or use `cqs <name>` to disambiguate by content.",
-        &format!("(impact) `{name}` is ambiguous — matches multiple chunk kinds."),
-        "Re-run with a more specific name (e.g. `Type::method`) or use `cqs <name>` to disambiguate.",
-    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{KIND_FALLBACK_MAX_CONTENT_BYTES, KIND_FALLBACK_MAX_DEFINITIONS};
+    use super::super::notes_text::FallbackKind;
+    use super::super::{
+        chunks_to_definitions, KindFallbackOutput, KIND_FALLBACK_MAX_CONTENT_BYTES,
+        KIND_FALLBACK_MAX_DEFINITIONS,
+    };
     use super::*;
     use cqs::store::ChunkSummary;
     use std::path::PathBuf;
+
+    /// Build the serialized impact kind-fallback object the same way the
+    /// core does, for shape assertions. Mirrors the per-kind notes via
+    /// `notes_text::impact` so the test pins the production path, not a
+    /// hand-rolled literal.
+    fn impact_fallback_value(
+        name: &str,
+        chunks: &[ChunkSummary],
+        fk: FallbackKind,
+    ) -> serde_json::Value {
+        let text = notes_text::impact(fk);
+        let out = KindFallbackOutput::new(name, chunks, fk, "impact", &text);
+        serde_json::to_value(&out).unwrap()
+    }
 
     fn make_const_chunk(name: &str, file: &str, line: u32) -> ChunkSummary {
         ChunkSummary {
@@ -399,7 +324,7 @@ mod tests {
     #[test]
     fn impact_const_fallback_emits_kind_and_fallback_from() {
         let chunk = make_const_chunk("HANDLING_ADVICE", "src/json.rs", 73);
-        let json = build_impact_const_fallback_json("HANDLING_ADVICE", &[chunk]);
+        let json = impact_fallback_value("HANDLING_ADVICE", &[chunk], FallbackKind::Const);
 
         assert_eq!(json["kind"], "const");
         assert_eq!(json["fallback_from"], "impact");
@@ -418,7 +343,7 @@ mod tests {
     #[test]
     fn impact_const_fallback_definitions_carry_file_and_content() {
         let chunk = make_const_chunk("X", "src/foo.rs", 42);
-        let json = build_impact_const_fallback_json("X", &[chunk]);
+        let json = impact_fallback_value("X", &[chunk], FallbackKind::Const);
         let def = &json["definitions"][0];
 
         assert_eq!(def["file"], "src/foo.rs");
@@ -437,7 +362,7 @@ mod tests {
         let c1 = make_const_chunk("VERSION", "src/lib.rs", 5);
         let mut c2 = make_const_chunk("VERSION", "include/version.h", 10);
         c2.language = cqs::parser::Language::C;
-        let json = build_impact_const_fallback_json("VERSION", &[c1, c2]);
+        let json = impact_fallback_value("VERSION", &[c1, c2], FallbackKind::Const);
 
         let defs = json["definitions"].as_array().unwrap();
         assert_eq!(defs.len(), 2);
@@ -446,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn impact_to_json_with_kind_injects_function_label() {
+    fn impact_function_path_injects_function_label() {
         // Pin the function-path label so a future schema audit catches
         // a regression that drops the `kind` field on the happy path.
         let result = cqs::ImpactResult {
@@ -457,8 +382,41 @@ mod tests {
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let json = impact_to_json_with_kind(&result, "function").unwrap();
+        let out = ImpactCoreOutput::Function {
+            result,
+            suggestions: Vec::new(),
+            suggest_tests: false,
+        };
+        let json = out.to_value().unwrap();
         assert_eq!(json["kind"], "function");
+        assert!(
+            json.get("test_suggestions").is_none(),
+            "no test_suggestions key when suggest_tests not requested"
+        );
+    }
+
+    #[test]
+    fn impact_function_path_emits_empty_test_suggestions_when_requested() {
+        // When --suggest-tests is set but no suggestions are found, the
+        // historical wire shape carried an empty `test_suggestions` array.
+        let result = cqs::ImpactResult {
+            function_name: "foo".to_string(),
+            callers: Vec::new(),
+            transitive_callers: Vec::new(),
+            tests: Vec::new(),
+            type_impacted: Vec::new(),
+            degraded: false,
+        };
+        let out = ImpactCoreOutput::Function {
+            result,
+            suggestions: Vec::new(),
+            suggest_tests: true,
+        };
+        let json = out.to_value().unwrap();
+        assert!(
+            json["test_suggestions"].is_array(),
+            "test_suggestions must be present (empty array) when requested"
+        );
     }
 
     // Type / Module / Ambiguous cells of the impact × kind matrix. Each
@@ -496,20 +454,18 @@ mod tests {
     fn impact_type_fallback_emits_kind_type() {
         let chunk =
             make_chunk_of_type(cqs::parser::ChunkType::Struct, "MyStruct", "src/foo.rs", 10);
-        let json =
-            build_impact_kind_fallback_json("MyStruct", &[chunk], "type", "test note for type");
+        let json = impact_fallback_value("MyStruct", &[chunk], FallbackKind::Type);
         assert_eq!(json["kind"], "type");
         assert_eq!(json["fallback_from"], "impact");
         assert_eq!(json["name"], "MyStruct");
         assert_eq!(json["definitions"].as_array().unwrap().len(), 1);
-        assert_eq!(json["note"], "test note for type");
+        assert!(json["note"].as_str().unwrap().contains("cqs deps"));
     }
 
     #[test]
     fn impact_module_fallback_emits_kind_module() {
         let chunk = make_chunk_of_type(cqs::parser::ChunkType::Module, "my_mod", "src/lib.rs", 5);
-        let json =
-            build_impact_kind_fallback_json("my_mod", &[chunk], "module", "test note for module");
+        let json = impact_fallback_value("my_mod", &[chunk], FallbackKind::Module);
         assert_eq!(json["kind"], "module");
         assert_eq!(json["fallback_from"], "impact");
         assert_eq!(json["name"], "my_mod");
@@ -522,8 +478,7 @@ mod tests {
         // chunk_type values so the consumer can disambiguate.
         let m = make_chunk_of_type(cqs::parser::ChunkType::Method, "len", "src/a.rs", 10);
         let c = make_chunk_of_type(cqs::parser::ChunkType::Constant, "len", "src/b.rs", 5);
-        let json =
-            build_impact_kind_fallback_json("len", &[m, c], "ambiguous", "test ambiguous note");
+        let json = impact_fallback_value("len", &[m, c], FallbackKind::Ambiguous);
         assert_eq!(json["kind"], "ambiguous");
         assert_eq!(json["fallback_from"], "impact");
         let defs = json["definitions"].as_array().unwrap();
@@ -538,13 +493,13 @@ mod tests {
     }
 
     #[test]
-    fn build_impact_kind_fallback_json_shape_invariants() {
+    fn impact_kind_fallback_shape_invariants() {
         // Every fallback shape carries the same five top-level keys
         // regardless of kind. Pin so a future "drop fallback_from" or
         // "rename note → message" decision is a deliberate test-failing
         // change, not an accidental drift.
         let chunk = make_chunk_of_type(cqs::parser::ChunkType::Class, "MyClass", "src/foo.rs", 10);
-        let json = build_impact_kind_fallback_json("MyClass", &[chunk], "type", "n/a");
+        let json = impact_fallback_value("MyClass", &[chunk], FallbackKind::Type);
         let obj = json.as_object().unwrap();
         let keys: std::collections::HashSet<&str> = obj.keys().map(|k| k.as_str()).collect();
         let expected: std::collections::HashSet<&str> =

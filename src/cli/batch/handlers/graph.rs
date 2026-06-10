@@ -14,85 +14,25 @@
 
 use anyhow::Result;
 
-use cqs::kind::{classify_hits, Kind, KindHit};
-use cqs::store::ChunkSummary;
-
 use super::super::BatchView;
 use crate::cli::args::{
     CallersArgs, DepsArgs, ImpactArgs, ImpactDiffArgs, RelatedArgs, TestMapArgs, TraceArgs,
 };
+use crate::cli::commands::{
+    callees_core, callers_core, deps_core, impact_core, test_map_core, trace_core,
+    CalleesArgs as CoreCalleesArgs, CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs,
+    TraceCoreArgs,
+};
 
-// ─── Polymorphic-routing kind-mismatch fallback (daemon path) ──────────────
-
-/// Build the kind-labeled fallback value emitted by every dispatch_*
-/// function for non-Function kinds. Mirrors the per-command shape that
-/// the cmd_* CLI handlers ship in `cli::commands::graph::*`.
-fn build_kind_fallback_value(
-    name: &str,
-    chunks: &[ChunkSummary],
-    kind_label: &str,
-    fallback_from: &str,
-    note: &str,
-) -> serde_json::Value {
-    // Cap definitions at KIND_FALLBACK_MAX_DEFINITIONS and truncate per-chunk
-    // content via the shared helper. Hot names like `Result` / `Error` match
-    // hundreds of chunks; without the cap, the daemon writes multi-MB JSONL
-    // lines that peg both the wire and the receiver's parse buffer. The cap
-    // mirrors the `clamp(1, 100)` discipline the happy-path graph dispatchers
-    // use.
-    let definitions = crate::cli::commands::chunks_to_definitions(chunks);
-    serde_json::json!({
-        "kind": kind_label,
-        "fallback_from": fallback_from,
-        "name": name,
-        "definitions": definitions,
-        "note": note,
-    })
-}
-
-/// Detect the name's kind via `Store::lookup_by_name` + `classify_hits`.
-/// Returns the kind-labeled fallback value when the name resolves to a
-/// non-Function/Multiple/Other/NotFound kind that the dispatch handler
-/// can't process meaningfully (Const/Type/Module/Ambiguous). Returns
-/// `None` for the kinds where the existing flow is appropriate.
-///
-/// `notes` carries the per-command-specific text for each fallback kind
-/// — keeps the per-(command × kind) cell content adjacent to the call
-/// site without forcing the helper to know every redirect message.
-struct KindNotes<'a> {
-    const_note: &'a str,
-    type_note: &'a str,
-    module_note: &'a str,
-    ambiguous_note: &'a str,
-}
-
-fn try_kind_fallback(
-    ctx: &BatchView,
-    name: &str,
-    fallback_from: &str,
-    notes: KindNotes<'_>,
-) -> Result<Option<serde_json::Value>> {
-    let chunks = ctx.store().lookup_by_name(name)?;
-    let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-    let kind = classify_hits(&hits);
-    let (label, note) = match kind {
-        Kind::Const => ("const", notes.const_note),
-        Kind::Type => ("type", notes.type_note),
-        Kind::Module => ("module", notes.module_note),
-        Kind::Ambiguous => ("ambiguous", notes.ambiguous_note),
-        // Function | Multiple | Other | NotFound: existing flow handles
-        // these — Function is the happy path, Multiple resolves
-        // deterministically, NotFound surfaces an empty result.
-        _ => return Ok(None),
-    };
-    Ok(Some(build_kind_fallback_value(
-        name,
-        &chunks,
-        label,
-        fallback_from,
-        note,
-    )))
-}
+// ─── Daemon dispatch handlers ──────────────────────────────────────────────
+//
+// Every graph dispatcher is a thin adapter over a surface-agnostic core in
+// `cli::commands::graph::*`: parse the wire args into the core's `*Args`,
+// call the core, serialize the typed output. The kind-mismatch fallback,
+// cap discipline, and SQL → JSON translation all live in the cores so the
+// CLI-direct and daemon paths can't drift. Cross-project requests keep
+// their adapter-side branch (separate cross-project context, no
+// kind-fallback).
 
 /// Dispatches a dependency query for a given name, returning either the types used by it or the code locations that use it.
 ///
@@ -129,55 +69,14 @@ pub(in crate::cli::batch) fn dispatch_deps(
     if cross_project {
         tracing::warn!("cross-project deps not yet supported, returning local result");
     }
-    // Shared cap with `cmd_deps`. Truncates after fetch so the fetched set is
-    // bounded by the same value the CLI path would.
-    let limit = args.limit_arg.limit.clamp(1, 100);
 
-    // Polymorphic-routing kind detection. Function and Type both have
-    // valid deps semantics in their respective modes (reverse / forward);
-    // Const/Module/Ambiguous fall back since deps' "uses-of-X" model
-    // doesn't fit those kinds. Inline kind dispatch (rather than
-    // `try_kind_fallback`) so Type passes through to the existing
-    // forward-mode query without producing a fallback shape.
-    {
-        let chunks = ctx.store().lookup_by_name(name)?;
-        let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-        let kind = classify_hits(&hits);
-        let (label, note) = match kind {
-            Kind::Const => (
-                "const",
-                "consts don't have type dependencies in either direction; here are the definition sites. Use `cqs <name>` to find references to this const.",
-            ),
-            Kind::Module => (
-                "module",
-                "modules don't have type dependencies in this view; here are the declaration sites. Use `cqs deps <type-or-function-in-module>` for an item-level analysis.",
-            ),
-            Kind::Ambiguous => (
-                "ambiguous",
-                "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
-            ),
-            // Function | Type | Multiple | Other | NotFound: continue
-            // to existing flow. Function with --reverse and Type forward
-            // both have valid semantics.
-            _ => ("", ""),
-        };
-        if !label.is_empty() {
-            return Ok(build_kind_fallback_value(
-                name, &chunks, label, "deps", note,
-            ));
-        }
-    }
-
-    if reverse {
-        // Bind the limit at SQL time.
-        let types = ctx.store().get_types_used_by(name, limit)?;
-        let output = crate::cli::commands::build_deps_reverse(name, &types);
-        Ok(serde_json::to_value(&output)?)
-    } else {
-        let users = ctx.store().get_type_users(name, limit)?;
-        let output = crate::cli::commands::build_deps_forward(&users, &ctx.root);
-        Ok(serde_json::to_value(&output)?)
-    }
+    let core_args = DepsCoreArgs {
+        name: name.to_string(),
+        reverse,
+        limit: args.limit_arg.limit,
+    };
+    let output = deps_core(&ctx.store(), &ctx.root, &core_args)?;
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Retrieves and serializes caller information for a given function name.
@@ -205,33 +104,20 @@ pub(in crate::cli::batch) fn dispatch_callers(
         cross_project
     )
     .entered();
-    // Shared cap with `cmd_callers`. Truncate before serialization.
-    let limit = args.limit_arg.limit.clamp(1, 100);
-
     if cross_project {
+        // Shared cap with the core. Truncate before serialization.
+        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let mut callers = cross_ctx.get_callers_cross(name)?;
         callers.truncate(limit);
         return Ok(serde_json::to_value(&callers)?);
     }
 
-    if let Some(fallback) = try_kind_fallback(
-        ctx,
-        name,
-        "callers",
-        KindNotes {
-            const_note: "consts don't have callers; here are the definition sites. Use `cqs <name>` or `cqs search <name>` to find references.",
-            type_note: "types don't have callers in the call-graph sense; here are the definition sites. Use `cqs deps <name>` for type-dependency callers or `cqs <name>` to find usage references.",
-            module_note: "modules don't have callers in the call-graph sense; here are the declaration sites. Use `cqs <name>` to find files that reference this module.",
-            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
-        },
-    )? {
-        return Ok(fallback);
-    }
-
-    let mut callers = ctx.store().get_callers_full(name)?;
-    callers.truncate(limit);
-    let output = crate::cli::commands::build_callers(&callers);
+    let core_args = CallersCoreArgs {
+        name: name.to_string(),
+        limit: args.limit_arg.limit,
+    };
+    let output = callers_core(&ctx.store(), &core_args)?;
     Ok(serde_json::to_value(&output)?)
 }
 
@@ -265,33 +151,20 @@ pub(in crate::cli::batch) fn dispatch_callees(
         cross_project
     )
     .entered();
-    // Shared cap with `cmd_callees`.
-    let limit = args.limit_arg.limit.clamp(1, 100);
-
     if cross_project {
+        // Shared cap with the core.
+        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let mut callees = cross_ctx.get_callees_cross(name)?;
         callees.truncate(limit);
         return Ok(serde_json::to_value(&callees)?);
     }
 
-    if let Some(fallback) = try_kind_fallback(
-        ctx,
-        name,
-        "callees",
-        KindNotes {
-            const_note: "consts don't have callees; the const's value is its content. Use `cqs explain <name>` or `cqs read --focus <name>` to inspect.",
-            type_note: "types don't have callees; here are the definition sites. Use `cqs deps <name>` for the type's type dependencies or `cqs callees <Type::method>` for a specific method's callees.",
-            module_note: "modules don't have callees; here are the declaration sites. Use `cqs callees <function-in-module>` for a specific function's callees.",
-            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
-        },
-    )? {
-        return Ok(fallback);
-    }
-
-    let mut callees = ctx.store().get_callees_full(name, None)?;
-    callees.truncate(limit);
-    let output = crate::cli::commands::build_callees(name, &callees);
+    let core_args = CoreCalleesArgs {
+        name: name.to_string(),
+        limit: args.limit_arg.limit,
+    };
+    let output = callees_core(&ctx.store(), &core_args)?;
     Ok(serde_json::to_value(&output)?)
 }
 
@@ -327,13 +200,9 @@ pub(in crate::cli::batch) fn dispatch_impact(
         cross_project
     )
     .entered();
-    let depth = args.depth.clamp(1, 10);
-    // Shared per-section cap with `cmd_impact`. Test suggestions are computed
-    // off the un-truncated result so the engine sees every untested caller;
-    // truncation happens immediately before serialization.
-    let limit = args.limit_arg.limit.clamp(1, 100);
-
     if cross_project {
+        let depth = args.depth.clamp(1, 10);
+        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let mut result = cqs::cross_project::analyze_impact_cross(
             &mut cross_ctx,
@@ -342,68 +211,26 @@ pub(in crate::cli::batch) fn dispatch_impact(
             do_suggest_tests,
             include_types,
         )?;
-        truncate_impact_sections(&mut result, limit);
+        result.callers.truncate(limit);
+        result.transitive_callers.truncate(limit);
+        result.tests.truncate(limit);
+        result.type_impacted.truncate(limit);
+        // Cross-project JSON never carried `kind` / `test_suggestions`
+        // (the historical path called `impact_to_json` directly). Preserve
+        // that wire shape.
         let json = cqs::impact_to_json(&result)?;
         return Ok(json);
     }
 
-    if let Some(fallback) = try_kind_fallback(
-        ctx,
-        name,
-        "impact",
-        KindNotes {
-            const_note: "consts don't have call-graph impact; here are the definition sites. Use `cqs <name>` or `cqs search <name>` to find references.",
-            type_note: "types don't have call-graph impact; here are the definition sites. Use `cqs deps <name>` for type-dependency analysis or `cqs <name>` to find usage references.",
-            module_note: "modules don't have call-graph impact; here are the declaration sites. Use `cqs <name>` to find files that reference this module.",
-            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
-        },
-    )? {
-        return Ok(fallback);
-    }
-
-    let resolved = cqs::resolve_target(&ctx.store(), name)?;
-    let chunk = &resolved.chunk;
-
-    let mut result = cqs::analyze_impact(
-        &ctx.store(),
-        &chunk.name,
-        &ctx.root,
-        &cqs::ImpactOptions {
-            depth,
-            include_types,
-        },
-    )?;
-
-    let suggestions = if do_suggest_tests {
-        cqs::suggest_tests(&ctx.store(), &result, &ctx.root)
-    } else {
-        Vec::new()
+    let core_args = ImpactCoreArgs {
+        name: name.to_string(),
+        depth: args.depth,
+        limit: args.limit_arg.limit,
+        suggest_tests: do_suggest_tests,
+        include_types,
     };
-
-    truncate_impact_sections(&mut result, limit);
-
-    let mut json = cqs::impact_to_json(&result)?;
-
-    if do_suggest_tests {
-        let suggestions_json = cqs::format_test_suggestions(&suggestions);
-        if let Some(obj) = json.as_object_mut() {
-            obj.insert(
-                "test_suggestions".into(),
-                serde_json::json!(suggestions_json),
-            );
-        }
-    }
-
-    Ok(json)
-}
-
-/// Per-section truncation for `ImpactResult`. Mirrors the helper in
-/// `cli::commands::graph::impact` so both code paths apply the same cap.
-fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
-    result.callers.truncate(limit);
-    result.transitive_callers.truncate(limit);
-    result.tests.truncate(limit);
-    result.type_impacted.truncate(limit);
+    let output = impact_core(&ctx.store(), &ctx.root, &core_args)?;
+    output.to_value()
 }
 
 /// Performs a reverse breadth-first search through the call graph to find all test chunks that call a specified target chunk, up to a maximum depth.
@@ -435,10 +262,8 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         cross_project
     )
     .entered();
-    // Shared cap with `cmd_test_map`.
-    let limit = args.limit_arg.limit.clamp(1, 100);
-
     if cross_project {
+        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let test_chunks = cross_ctx.find_test_chunks_cross()?;
         let graph = cross_ctx.merged_call_graph()?;
@@ -452,35 +277,17 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         return Ok(serde_json::to_value(&output)?);
     }
 
-    if let Some(fallback) = try_kind_fallback(
-        ctx,
-        name,
-        "test-map",
-        KindNotes {
-            const_note: "consts don't have a call-graph; tests don't 'cover' a const value the way they cover a function. Use `cqs <name>` to find tests that reference this const by name.",
-            type_note: "types don't have a call-graph in the same sense; here are the type's definition sites. Use `cqs <name>` to find tests that reference this type, or `cqs test-map <Type::method>` for a specific method's coverage.",
-            module_note: "modules don't have a call-graph; tests cover specific functions inside the module, not the module itself. Use `cqs <name>` to find tests in this module's files.",
-            ambiguous_note: "name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name (e.g. `Type::method`).",
-        },
-    )? {
-        return Ok(fallback);
-    }
-
-    let resolved = cqs::resolve_target(&ctx.store(), name)?;
-    let target_name = resolved.chunk.name.clone();
-
+    // Pass the snapshot's cached graph + test chunks into the core so the
+    // daemon keeps its checkout-time caching while sharing all logic with
+    // the CLI path.
     let graph = ctx.call_graph()?;
-    let test_chunks = ctx.store().find_test_chunks()?;
-
-    let mut matches = crate::cli::commands::build_test_map(
-        &target_name,
-        &graph,
-        &test_chunks,
-        &ctx.root,
+    let test_chunks = ctx.test_chunks()?;
+    let core_args = TestMapCoreArgs {
+        name: name.to_string(),
         max_depth,
-    );
-    matches.truncate(limit);
-    let output = crate::cli::commands::build_test_map_output(&target_name, &matches);
+        limit: args.limit_arg.limit,
+    };
+    let output = test_map_core(&ctx.store(), &graph, &test_chunks, &ctx.root, &core_args)?;
     Ok(serde_json::to_value(&output)?)
 }
 
@@ -527,56 +334,14 @@ pub(in crate::cli::batch) fn dispatch_trace(
         return Ok(serde_json::to_value(&trace_result)?);
     }
 
-    // Polymorphic-routing kind detection on the source name. The trace
-    // BFS requires a callable starting node; if `source` is non-Function
-    // dispatch the kind-labeled fallback. Target's kind is left to
-    // `resolve_target` to surface its own typed error if missing.
-    if let Some(fallback) = try_kind_fallback(
-        ctx,
-        source,
-        "trace",
-        KindNotes {
-            const_note: "consts don't participate in the call-graph; no call path can originate from a const value. Use `cqs <source>` to find references and trace from the calling functions.",
-            type_note: "types don't have call chains; here are the type's definition sites. Use `cqs <source>` to find usage references or trace from a specific method.",
-            module_note: "modules don't participate in the call-graph as nodes. Use `cqs trace <function-in-module> <target>` for a specific function.",
-            ambiguous_note: "source name resolves across multiple kinds (function/type/const/etc.); here are all matches. Re-run with a more specific name.",
-        },
-    )? {
-        return Ok(fallback);
-    }
-
-    let source_resolved = cqs::resolve_target(&ctx.store(), source)?;
-    let target_resolved = cqs::resolve_target(&ctx.store(), target)?;
-    let source_name = source_resolved.chunk.name.clone();
-    let target_name = target_resolved.chunk.name.clone();
-
-    if source_name == target_name {
-        let trivial_path = vec![source_name.clone()];
-        let output = crate::cli::commands::trace::build_trace_output(
-            &ctx.store(),
-            &source_name,
-            &target_name,
-            Some(&trivial_path),
-            &ctx.root,
-        )?;
-        return Ok(serde_json::to_value(&output)?);
-    }
-
+    // Pass the snapshot's cached graph into the core (same as test-map).
     let graph = ctx.call_graph()?;
-    let found_path = crate::cli::commands::trace::bfs_shortest_path(
-        &graph.forward,
-        &source_name,
-        &target_name,
+    let core_args = TraceCoreArgs {
+        source: source.to_string(),
+        target: target.to_string(),
         max_depth,
-    );
-
-    let output = crate::cli::commands::trace::build_trace_output(
-        &ctx.store(),
-        &source_name,
-        &target_name,
-        found_path.as_deref(),
-        &ctx.root,
-    )?;
+    };
+    let output = trace_core(&ctx.store(), &graph, &ctx.root, &core_args)?;
     Ok(serde_json::to_value(&output)?)
 }
 
@@ -810,5 +575,252 @@ mod tests {
             stdin: false,
         };
         let _ = dispatch_impact_diff(&ctx.build_view(None), &args);
+    }
+
+    // ─── Surface-parity tests ──────────────────────────────────────────────
+    //
+    // The structural payoff of the command-core refactor: the daemon
+    // dispatch adapter and a direct core call produce byte-identical
+    // `serde_json::Value` for identical inputs. These seed a const (so the
+    // kind-fallback path fires) and exercise every graph command on both a
+    // happy-path name (`callee_fn`/`caller_fn`) and the const.
+
+    /// Seed a const chunk named `MAX_LEN` so the kind-fallback path is
+    /// reachable. Returns a fresh context with the call-graph fixture plus
+    /// the const.
+    fn seed_with_const() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let mut const_chunk = make_chunk("src/lib.rs:9:max", "MAX_LEN");
+            const_chunk.chunk_type = ChunkType::Constant;
+            const_chunk.signature = "pub const MAX_LEN: usize = 100;".into();
+            const_chunk.content = "pub const MAX_LEN: usize = 100;".into();
+            let chunks = vec![
+                (
+                    make_chunk("src/lib.rs:1:caller", "caller_fn"),
+                    embedding.clone(),
+                ),
+                (
+                    make_chunk("src/lib.rs:2:callee", "callee_fn"),
+                    embedding.clone(),
+                ),
+                (const_chunk, embedding.clone()),
+            ];
+            store
+                .upsert_chunks_batch(&chunks, Some(0))
+                .expect("upsert chunks");
+            let fc = FunctionCalls {
+                name: "caller_fn".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "callee_fn".to_string(),
+                    line_number: 3,
+                }],
+            };
+            store
+                .upsert_function_calls(Path::new("src/lib.rs"), &[fc])
+                .expect("upsert function call");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn parity_callers_daemon_matches_core() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let store = view.store();
+        for name in ["callee_fn", "MAX_LEN"] {
+            let wire = CallersArgs {
+                name: name.into(),
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            };
+            let daemon = dispatch_callers(&view, &wire).expect("dispatch_callers");
+            let core = serde_json::to_value(
+                callers_core(
+                    &store,
+                    &CallersCoreArgs {
+                        name: name.into(),
+                        limit: 5,
+                    },
+                )
+                .expect("callers_core"),
+            )
+            .unwrap();
+            assert_eq!(daemon, core, "callers parity mismatch for {name}");
+        }
+    }
+
+    #[test]
+    fn parity_callees_daemon_matches_core() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let store = view.store();
+        for name in ["caller_fn", "MAX_LEN"] {
+            let wire = CallersArgs {
+                name: name.into(),
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            };
+            let daemon = dispatch_callees(&view, &wire).expect("dispatch_callees");
+            let core = serde_json::to_value(
+                callees_core(
+                    &store,
+                    &CoreCalleesArgs {
+                        name: name.into(),
+                        limit: 5,
+                    },
+                )
+                .expect("callees_core"),
+            )
+            .unwrap();
+            assert_eq!(daemon, core, "callees parity mismatch for {name}");
+        }
+    }
+
+    #[test]
+    fn parity_deps_daemon_matches_core() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let store = view.store();
+        for (name, reverse) in [
+            ("caller_fn", true),
+            ("callee_fn", false),
+            ("MAX_LEN", false),
+        ] {
+            let wire = DepsArgs {
+                name: name.into(),
+                reverse,
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            };
+            let daemon = dispatch_deps(&view, &wire).expect("dispatch_deps");
+            let core = serde_json::to_value(
+                deps_core(
+                    &store,
+                    &view.root,
+                    &DepsCoreArgs {
+                        name: name.into(),
+                        reverse,
+                        limit: 5,
+                    },
+                )
+                .expect("deps_core"),
+            )
+            .unwrap();
+            assert_eq!(daemon, core, "deps parity mismatch for {name}");
+        }
+    }
+
+    #[test]
+    fn parity_test_map_daemon_matches_core() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let store = view.store();
+        let graph = view.call_graph().expect("call_graph");
+        let test_chunks = view.test_chunks().expect("test_chunks");
+        for name in ["callee_fn", "MAX_LEN"] {
+            let wire = TestMapArgs {
+                name: name.into(),
+                depth: 5,
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            };
+            let daemon = dispatch_test_map(&view, &wire).expect("dispatch_test_map");
+            let core = serde_json::to_value(
+                test_map_core(
+                    &store,
+                    &graph,
+                    &test_chunks,
+                    &view.root,
+                    &TestMapCoreArgs {
+                        name: name.into(),
+                        max_depth: 5,
+                        limit: 5,
+                    },
+                )
+                .expect("test_map_core"),
+            )
+            .unwrap();
+            assert_eq!(daemon, core, "test-map parity mismatch for {name}");
+        }
+    }
+
+    #[test]
+    fn parity_trace_daemon_matches_core() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let store = view.store();
+        let graph = view.call_graph().expect("call_graph");
+        // (source, target): a real path, and a const-source fallback.
+        for (source, target) in [("caller_fn", "callee_fn"), ("MAX_LEN", "callee_fn")] {
+            let wire = TraceArgs {
+                source: source.into(),
+                target: target.into(),
+                max_depth: 10,
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            };
+            let daemon = dispatch_trace(&view, &wire).expect("dispatch_trace");
+            let core = serde_json::to_value(
+                trace_core(
+                    &store,
+                    &graph,
+                    &view.root,
+                    &TraceCoreArgs {
+                        source: source.into(),
+                        target: target.into(),
+                        max_depth: 10,
+                    },
+                )
+                .expect("trace_core"),
+            )
+            .unwrap();
+            assert_eq!(daemon, core, "trace parity mismatch for {source}->{target}");
+        }
+    }
+
+    #[test]
+    fn parity_impact_daemon_matches_core() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let store = view.store();
+        for name in ["caller_fn", "MAX_LEN"] {
+            let wire = ImpactArgs {
+                name: name.into(),
+                depth: 1,
+                suggest_tests: false,
+                type_impact: false,
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            };
+            let daemon = dispatch_impact(&view, &wire).expect("dispatch_impact");
+            let core = impact_core(
+                &store,
+                &view.root,
+                &ImpactCoreArgs {
+                    name: name.into(),
+                    depth: 1,
+                    limit: 5,
+                    suggest_tests: false,
+                    include_types: false,
+                },
+            )
+            .expect("impact_core")
+            .to_value()
+            .expect("to_value");
+            assert_eq!(daemon, core, "impact parity mismatch for {name}");
+        }
     }
 }

@@ -15,10 +15,26 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 
-use cqs::kind::{classify_hits, Kind, KindHit};
-use cqs::store::{CallGraph, ChunkSummary};
+use cqs::store::{CallGraph, ChunkSummary, ReadOnly, Store};
 
+use super::notes_text;
+use super::KindFallbackOutput;
 use crate::cli::commands::resolve::resolve_target;
+
+// ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
+
+/// Input for [`test_map_core`]. Cross-project test-map lives in the
+/// adapters (it has no kind-fallback and a merged-graph context); the core
+/// covers the single-project path both surfaces share.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct TestMapArgs {
+    /// Function name or `file:function`.
+    pub name: String,
+    /// Max reverse-BFS call-chain depth.
+    pub max_depth: usize,
+    /// Cap on test matches returned (clamped 1..=100 inside the core).
+    pub limit: usize,
+}
 
 // ─── Shared data structures ─────────────────────────────────────────────────
 
@@ -47,6 +63,17 @@ pub(crate) struct TestMapOutput {
     pub name: String,
     pub tests: Vec<TestMapEntry>,
     pub count: usize,
+}
+
+/// Single JSON-schema source for `cqs test-map <name>`. Happy path is the
+/// `{name, tests, count}` object; a kind mismatch is the shared fallback.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum TestMapCoreOutput {
+    /// Function path: `{name, tests, count}`.
+    Tests(TestMapOutput),
+    /// Kind mismatch: `{kind, fallback_from, name, definitions, note}`.
+    Fallback(KindFallbackOutput),
 }
 
 // ─── Shared core ────────────────────────────────────────────────────────────
@@ -199,7 +226,49 @@ pub(crate) fn build_test_map_output(target_name: &str, matches: &[TestMatch]) ->
     }
 }
 
-// ─── CLI command ────────────────────────────────────────────────────────────
+// ─── Core ───────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs test-map <name>` (single-project).
+///
+/// The call graph and test chunks are passed in rather than fetched
+/// internally so each adapter supplies its own cached source (the daemon's
+/// snapshot Arc, the CLI's store-cached Arc) without the core knowing which
+/// surface it runs on. Const/Type/Module/Ambiguous names fall back before
+/// the BFS — for those the passed-in graph is unused but already cheaply
+/// cloned by both surfaces.
+pub(crate) fn test_map_core(
+    store: &Store<ReadOnly>,
+    graph: &CallGraph,
+    test_chunks: &[ChunkSummary],
+    root: &Path,
+    args: &TestMapArgs,
+) -> Result<TestMapCoreOutput> {
+    let _span =
+        tracing::info_span!("test_map_core", name = %args.name, limit = args.limit).entered();
+    // Cap on rendered matches. Truncates the BFS-derived matches AFTER
+    // sorting so the "closest" tests rank first.
+    let limit = args.limit.clamp(1, 100);
+
+    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::test_map(fk);
+        return Ok(TestMapCoreOutput::Fallback(KindFallbackOutput::new(
+            &args.name, &chunks, fk, "test-map", &text,
+        )));
+    }
+
+    let resolved = resolve_target(store, &args.name)?;
+    let target_name = resolved.chunk.name.clone();
+
+    let mut matches = build_test_map(&target_name, graph, test_chunks, root, args.max_depth);
+    matches.truncate(limit);
+    Ok(TestMapCoreOutput::Tests(build_test_map_output(
+        &target_name,
+        &matches,
+    )))
+}
+
+// ─── CLI command (thin adapter over the core) ──────────────────────────────
 
 pub(crate) fn cmd_test_map(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -250,54 +319,10 @@ pub(crate) fn cmd_test_map(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // Polymorphic-routing kind detection. Same dispatch pattern as
-    // cmd_impact / cmd_callers / cmd_callees.
-    let chunks = store.lookup_by_name(name)?;
-    let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-    let kind = classify_hits(&hits);
-    match kind {
-        Kind::Const => {
-            return test_map_kind_fallback(
-                name, &chunks, json, "const",
-                "consts don't have a call-graph; tests don't 'cover' a const value the way they cover a function. \
-                 Use `cqs <name>` to find tests that reference this const by name.",
-                &format!("(test-map) `{name}` is a const, not a function — call-graph test-map analysis doesn't apply."),
-                "Use `cqs <name>` to find tests that reference this const by name.",
-            );
-        }
-        Kind::Type => {
-            return test_map_kind_fallback(
-                name, &chunks, json, "type",
-                "types don't have a call-graph in the same sense; here are the type's definition sites. \
-                 Use `cqs <name>` to find tests that reference this type, or `cqs test-map <Type::method>` for a specific method's coverage.",
-                &format!("(test-map) `{name}` is a type, not a function — call-graph test-map analysis doesn't apply."),
-                "Use `cqs <name>` to find tests that reference this type or call against a specific method.",
-            );
-        }
-        Kind::Module => {
-            return test_map_kind_fallback(
-                name, &chunks, json, "module",
-                "modules don't have a call-graph; tests cover specific functions inside the module, not the module itself. \
-                 Use `cqs <name>` to find tests in this module's files.",
-                &format!("(test-map) `{name}` is a module/namespace, not a function — call-graph test-map analysis doesn't apply."),
-                "Use `cqs <name>` to find tests in the module's files.",
-            );
-        }
-        Kind::Ambiguous => {
-            return test_map_kind_fallback(
-                name, &chunks, json, "ambiguous",
-                "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
-                 Re-run `cqs test-map <name>` against a more specific name (e.g. `Type::method`).",
-                &format!("(test-map) `{name}` is ambiguous — matches multiple chunk kinds."),
-                "Re-run with a more specific name (e.g. `Type::method`).",
-            );
-        }
-        _ => {}
-    }
-
-    let resolved = resolve_target(store, name)?;
-    let target_name = resolved.chunk.name.clone();
-
+    // Fetch graph + test chunks up-front so the core stays surface-
+    // agnostic (the daemon adapter passes its snapshot Arcs instead). Both
+    // are cached at the store level, so this is cheap even when a fallback
+    // fires and the graph goes unused.
     let graph = store
         .get_call_graph()
         .context("Failed to load call graph")?;
@@ -305,77 +330,55 @@ pub(crate) fn cmd_test_map(
         .find_test_chunks()
         .context("Failed to find test chunks")?;
 
-    let mut matches = build_test_map(&target_name, &graph, &test_chunks, root, max_depth);
-    matches.truncate(limit);
-
-    if json {
-        let output = build_test_map_output(&target_name, &matches);
-        crate::cli::json_envelope::emit_json(&output)?;
-    } else {
-        use colored::Colorize;
-        println!("{} {}", "Tests for:".cyan(), target_name.bold());
-        if matches.is_empty() {
-            println!("  No tests found");
-        } else {
-            for m in &matches {
-                println!("  {} ({}:{}) [depth {}]", m.name, m.file, m.line, m.depth);
-                if m.chain.len() > 2 {
-                    println!("    chain: {}", m.chain.join(" -> "));
+    let args = TestMapArgs {
+        name: name.to_string(),
+        max_depth,
+        limit,
+    };
+    match test_map_core(store, &graph, &test_chunks, root, &args)? {
+        TestMapCoreOutput::Fallback(fb) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&fb)?;
+            } else {
+                render_test_map_fallback_text(name, store)?;
+            }
+        }
+        TestMapCoreOutput::Tests(output) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&output)?;
+            } else {
+                use colored::Colorize;
+                println!("{} {}", "Tests for:".cyan(), output.name.bold());
+                if output.tests.is_empty() {
+                    println!("  No tests found");
+                } else {
+                    for t in &output.tests {
+                        println!(
+                            "  {} ({}:{}) [depth {}]",
+                            t.name, t.file, t.line_start, t.call_depth
+                        );
+                        if t.call_chain.len() > 2 {
+                            println!("    chain: {}", t.call_chain.join(" -> "));
+                        }
+                    }
+                    println!("\n{} tests found", output.count);
                 }
             }
-            println!("\n{} tests found", matches.len());
         }
     }
 
     Ok(())
 }
 
-/// Polymorphic-routing kind-mismatch fallback for `cqs test-map <name>`.
-/// Same shape as the impact / callers / callees fallbacks — emits a
-/// `{kind, fallback_from: "test-map", name, definitions, note}` object
-/// under JSON, plain-text definitions + redirect under text mode.
-fn test_map_kind_fallback(
-    name: &str,
-    chunks: &[ChunkSummary],
-    json: bool,
-    kind_label: &str,
-    note: &str,
-    text_lead: &str,
-    text_redirect: &str,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Kind fallback called with no hits — caller must classify before dispatching"
-    );
-    if json {
-        let definitions = super::chunks_to_definitions(chunks);
-        let payload = serde_json::json!({
-            "kind": kind_label,
-            "fallback_from": "test-map",
-            "name": name,
-            "definitions": definitions,
-            "note": note,
-        });
-        crate::cli::json_envelope::emit_json(&payload)?;
-    } else {
-        println!("{text_lead}");
-        println!();
-        println!("Definitions:");
-        for c in chunks {
-            println!(
-                "  {}:{}-{} ({} {})",
-                cqs::normalize_path(&c.file),
-                c.line_start,
-                c.line_end,
-                c.language,
-                c.chunk_type
-            );
-            if !c.signature.is_empty() {
-                println!("    {}", c.signature);
-            }
-        }
-        println!();
-        println!("{text_redirect}");
+/// Plain-text test-map fallback renderer. The core decided a fallback
+/// fires; for text the adapter re-runs `detect_fallback` (cheap indexed
+/// lookup) to print the definition list.
+fn render_test_map_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
+    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::test_map(fk);
+        let lead = notes_text::test_map_lead(fk, name);
+        super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");
     }
     Ok(())
 }
@@ -439,16 +442,14 @@ mod output_tests {
 
     #[test]
     fn test_map_fallback_payload_shape() {
-        // Pin the {kind, fallback_from: "test-map", name, definitions, note} shape.
+        // Pin the {kind, fallback_from: "test-map", name, definitions, note}
+        // shape via the typed builder the core emits.
+        use super::super::notes_text::FallbackKind;
+        use super::super::KindFallbackOutput;
         let chunk = make_chunk(cqs::parser::ChunkType::Constant, "X", "src/a.rs", 5);
-        let definitions = super::super::chunks_to_definitions(&[chunk]);
-        let payload = serde_json::json!({
-            "kind": "const",
-            "fallback_from": "test-map",
-            "name": "X",
-            "definitions": definitions,
-            "note": "test note",
-        });
+        let text = super::notes_text::test_map(FallbackKind::Const);
+        let out = KindFallbackOutput::new("X", &[chunk], FallbackKind::Const, "test-map", &text);
+        let payload = serde_json::to_value(&out).unwrap();
         assert_eq!(payload["kind"], "const");
         assert_eq!(payload["fallback_from"], "test-map");
         assert_eq!(payload["name"], "X");

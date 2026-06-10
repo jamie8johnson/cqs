@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Command-core unification for graph commands (internal).** The six graph
+  commands (`callers`, `callees`, `deps`, `test-map`, `trace`, `impact`) now
+  route both the CLI-direct path and the daemon dispatch path through a single
+  surface-agnostic core per command. Each core owns all logic — kind
+  classification, fallback selection, cap discipline, and SQL→JSON
+  translation — and returns a typed output that is the one JSON-schema source;
+  the `cmd_*` and `dispatch_*` functions are thin adapters that render or
+  serialize it. Kind-mismatch redirect strings are de-duplicated into a single
+  `notes_text` table shared by both surfaces, and kind classification flows
+  through one helper (`detect_kind_for_store`). No JSON field was removed or
+  renamed; the function-path impact response gains nothing new, and the
+  `--suggest-tests` `test_suggestions` array is still emitted (possibly empty)
+  exactly when requested. The structural payoff is pinned by per-command
+  parity tests asserting the daemon adapter and the core produce identical
+  values.
+
 ### Fixed
 
 - **Kind-fallback cap parity across all graph commands.** The

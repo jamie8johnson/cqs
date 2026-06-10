@@ -15,9 +15,32 @@
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use cqs::kind::{classify_hits, Kind, KindHit};
 use cqs::normalize_path;
-use cqs::store::{CallerInfo, ChunkSummary};
+use cqs::store::{CallerInfo, ReadOnly, Store};
+
+use super::notes_text;
+use super::KindFallbackOutput;
+
+// ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
+
+/// Input for [`callers_core`] / [`callees_core`]. Both commands take the
+/// same shape, so they share one struct.
+///
+/// Cross-project resolution lives in the CLI / daemon adapters, not the
+/// core: the cross-project path has its own (multi-index) semantics and no
+/// kind-fallback. The core covers the single-project path both surfaces
+/// share.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct CallersArgs {
+    /// Function name to analyze.
+    pub name: String,
+    /// Max callers/callees returned (clamped 1..=100 inside the core).
+    pub limit: usize,
+}
+
+/// Alias so `callees` reads naturally at call sites. Same shape as
+/// [`CallersArgs`].
+pub(crate) type CalleesArgs = CallersArgs;
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
@@ -39,6 +62,31 @@ pub(crate) struct CalleesOutput {
     pub name: String,
     pub calls: Vec<CalleeEntry>,
     pub count: usize,
+}
+
+/// Single JSON-schema source for `cqs callers <name>`. The happy path is
+/// a flat array of caller entries (possibly empty); a kind mismatch yields
+/// the shared fallback object. `#[serde(untagged)]` reproduces the
+/// historical "array ⇒ function path, object ⇒ fallback" shape agents
+/// already discriminate on by type.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum CallersCoreOutput {
+    /// Function path: flat array of callers (empty array when none).
+    Callers(Vec<CallerEntry>),
+    /// Kind mismatch: `{kind, fallback_from, name, definitions, note}`.
+    Fallback(KindFallbackOutput),
+}
+
+/// Single JSON-schema source for `cqs callees <name>`. Happy path is the
+/// `{name, calls, count}` object; kind mismatch is the shared fallback.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum CalleesCoreOutput {
+    /// Function path: `{name, calls, count}`.
+    Callees(CalleesOutput),
+    /// Kind mismatch: `{kind, fallback_from, name, definitions, note}`.
+    Fallback(KindFallbackOutput),
 }
 
 // ─── Shared JSON builders ──────────────────────────────────────────────────
@@ -72,60 +120,68 @@ pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOut
     }
 }
 
-// ─── Polymorphic-routing fallbacks ─────────────────────────────────────────
+// ─── Cores ──────────────────────────────────────────────────────────────────
 
-use super::chunks_to_definitions;
+/// Surface-agnostic core for `cqs callers <name>` (single-project).
+///
+/// All logic lives here: cap normalization, kind classification, fallback
+/// vs. function-path selection, and the SQL → typed-output translation.
+/// Never prints, reads env, or branches on surface — the CLI and daemon
+/// adapters render the returned [`CallersCoreOutput`].
+pub(crate) fn callers_core(
+    store: &Store<ReadOnly>,
+    args: &CallersArgs,
+) -> Result<CallersCoreOutput> {
+    let _span =
+        tracing::info_span!("callers_core", name = %args.name, limit = args.limit).entered();
+    // Standardised cap. The store query returns every caller; we truncate
+    // before rendering so the user can paginate via repeated calls.
+    let limit = args.limit.clamp(1, 100);
 
-/// Generic kind-mismatch fallback dispatcher for `cqs callers <name>`.
-/// Same shape as the impact-side fallbacks. JSON path emits an object
-/// with `{kind, fallback_from, name, definitions, note}`; text path
-/// prints the lead, definitions, and redirect note.
-fn callers_kind_fallback(
-    name: &str,
-    chunks: &[ChunkSummary],
-    json: bool,
-    kind_label: &str,
-    note: &str,
-    text_lead: &str,
-    text_redirect: &str,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Kind fallback called with no hits — caller must classify before dispatching"
-    );
-    if json {
-        let payload = serde_json::json!({
-            "kind": kind_label,
-            "fallback_from": "callers",
-            "name": name,
-            "definitions": chunks_to_definitions(chunks),
-            "note": note,
-        });
-        crate::cli::json_envelope::emit_json(&payload)?;
-    } else {
-        println!("{text_lead}");
-        println!();
-        println!("Definitions:");
-        for c in chunks {
-            println!(
-                "  {}:{}-{} ({} {})",
-                cqs::normalize_path(&c.file),
-                c.line_start,
-                c.line_end,
-                c.language,
-                c.chunk_type
-            );
-            if !c.signature.is_empty() {
-                println!("    {}", c.signature);
-            }
-        }
-        println!();
-        println!("{text_redirect}");
+    // Polymorphic-routing kind detection. Dispatch the kind-mismatch
+    // fallback before the call-graph query.
+    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::callers(fk);
+        return Ok(CallersCoreOutput::Fallback(KindFallbackOutput::new(
+            &args.name, &chunks, fk, "callers", &text,
+        )));
     }
-    Ok(())
+
+    let mut callers = store
+        .get_callers_full(&args.name)
+        .context("Failed to load callers")?;
+    callers.truncate(limit);
+    Ok(CallersCoreOutput::Callers(build_callers(&callers)))
 }
 
-// ─── CLI commands ──────────────────────────────────────────────────────────
+/// Surface-agnostic core for `cqs callees <name>` (single-project).
+pub(crate) fn callees_core(
+    store: &Store<ReadOnly>,
+    args: &CalleesArgs,
+) -> Result<CalleesCoreOutput> {
+    let _span =
+        tracing::info_span!("callees_core", name = %args.name, limit = args.limit).entered();
+    let limit = args.limit.clamp(1, 100);
+
+    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::callees(fk);
+        return Ok(CalleesCoreOutput::Fallback(KindFallbackOutput::new(
+            &args.name, &chunks, fk, "callees", &text,
+        )));
+    }
+
+    let mut callees = store
+        .get_callees_full(&args.name, None)
+        .context("Failed to load callees")?;
+    callees.truncate(limit);
+    Ok(CalleesCoreOutput::Callees(build_callees(
+        &args.name, &callees,
+    )))
+}
+
+// ─── CLI commands (thin adapters over the cores) ───────────────────────────
 
 /// Find functions that call the specified function
 pub(crate) fn cmd_callers(
@@ -137,61 +193,7 @@ pub(crate) fn cmd_callers(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name, limit, cross_project).entered();
     let store = &ctx.store;
-    // Standardised cap. The store query returns every caller; we truncate
-    // before rendering so the user can paginate via repeated calls (no offset
-    // surfaced — by design, agents pass `--limit N` once and ask for more by
-    // name if needed).
     let limit = limit.clamp(1, 100);
-
-    // Polymorphic-routing kind detection. Dispatch kind-mismatch fallbacks
-    // before the call-graph query, except on the cross-project path which has
-    // its own (cross-project) resolution semantics.
-    if !cross_project {
-        let chunks = store.lookup_by_name(name)?;
-        let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-        let kind = classify_hits(&hits);
-        match kind {
-            Kind::Const => {
-                return callers_kind_fallback(
-                    name, &chunks, json, "const",
-                    "consts don't have callers; here are the definition sites. \
-                     Use `cqs <name>` or `cqs search <name>` to find references.",
-                    &format!("(callers) `{name}` is a const, not a function — call-graph callers analysis doesn't apply."),
-                    "Use `cqs <name>` or `cqs search <name>` to find references.",
-                );
-            }
-            Kind::Type => {
-                return callers_kind_fallback(
-                    name, &chunks, json, "type",
-                    "types don't have callers in the call-graph sense; here are the definition sites. \
-                     Use `cqs deps <name>` for type-dependency callers or `cqs <name>` to find usage references.",
-                    &format!("(callers) `{name}` is a type, not a function — call-graph callers analysis doesn't apply."),
-                    "Use `cqs deps <name>` for type-dependency analysis or `cqs <name>` to find usage references.",
-                );
-            }
-            Kind::Module => {
-                return callers_kind_fallback(
-                    name, &chunks, json, "module",
-                    "modules don't have callers in the call-graph sense; here are the declaration sites. \
-                     Use `cqs <name>` to find files that reference this module.",
-                    &format!("(callers) `{name}` is a module/namespace, not a function — call-graph callers analysis doesn't apply."),
-                    "Use `cqs <name>` to find files that reference this module.",
-                );
-            }
-            Kind::Ambiguous => {
-                return callers_kind_fallback(
-                    name, &chunks, json, "ambiguous",
-                    "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
-                     Re-run `cqs callers <name>` against a more specific name (e.g. `Type::method`) or use `cqs <name>` to disambiguate.",
-                    &format!("(callers) `{name}` is ambiguous — matches multiple chunk kinds."),
-                    "Re-run with a more specific name (e.g. `Type::method`) or use `cqs <name>` to disambiguate.",
-                );
-            }
-            // Function | Multiple | Other | NotFound: fall through to
-            // the existing call-graph query.
-            _ => {}
-        }
-    }
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -229,84 +231,56 @@ pub(crate) fn cmd_callers(
         return Ok(());
     }
 
-    // Standard single-project path
-    let mut callers = store
-        .get_callers_full(name)
-        .context("Failed to load callers")?;
-    callers.truncate(limit);
-
-    if callers.is_empty() {
-        if json {
-            crate::cli::json_envelope::emit_json(&serde_json::json!([]))?;
-        } else {
-            println!("No callers found for '{}'", name);
+    // Standard single-project path — delegate to the shared core.
+    match callers_core(
+        store,
+        &CallersArgs {
+            name: name.to_string(),
+            limit,
+        },
+    )? {
+        CallersCoreOutput::Fallback(fb) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&fb)?;
+            } else {
+                render_callers_fallback_text(name, store)?;
+            }
         }
-        return Ok(());
-    }
-
-    if json {
-        let output = build_callers(&callers);
-        crate::cli::json_envelope::emit_json(&output)?;
-    } else {
-        println!("Functions that call '{}':", name);
-        println!();
-        for caller in &callers {
-            println!(
-                "  {} ({}:{})",
-                caller.name.cyan(),
-                caller.file.display(),
-                caller.line
-            );
+        CallersCoreOutput::Callers(callers) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&callers)?;
+            } else if callers.is_empty() {
+                println!("No callers found for '{}'", name);
+            } else {
+                println!("Functions that call '{}':", name);
+                println!();
+                for caller in &callers {
+                    println!(
+                        "  {} ({}:{})",
+                        caller.name.cyan(),
+                        caller.file,
+                        caller.line_start
+                    );
+                }
+                println!();
+                println!("Total: {} caller(s)", callers.len());
+            }
         }
-        println!();
-        println!("Total: {} caller(s)", callers.len());
     }
-
     Ok(())
 }
 
-/// Generic kind-mismatch fallback dispatcher for `cqs callees <name>`.
-fn callees_kind_fallback(
-    name: &str,
-    chunks: &[ChunkSummary],
-    json: bool,
-    kind_label: &str,
-    note: &str,
-    text_lead: &str,
-    text_redirect: &str,
-) -> Result<()> {
-    debug_assert!(
-        !chunks.is_empty(),
-        "Kind fallback called with no hits — caller must classify before dispatching"
-    );
-    if json {
-        let payload = serde_json::json!({
-            "kind": kind_label,
-            "fallback_from": "callees",
-            "name": name,
-            "definitions": chunks_to_definitions(chunks),
-            "note": note,
-        });
-        crate::cli::json_envelope::emit_json(&payload)?;
-    } else {
-        println!("{text_lead}");
-        println!();
-        println!("Definitions:");
-        for c in chunks {
-            println!(
-                "  {}:{}-{} ({} {})",
-                cqs::normalize_path(&c.file),
-                c.line_start,
-                c.line_end,
-                c.language,
-                c.chunk_type
-            );
-            if !c.signature.is_empty() {
-                println!("    {}", c.signature);
-            }
-        }
-        println!();
-        println!("{text_redirect}");
+/// Re-classify and render the plain-text callers fallback. The core
+/// already decided a fallback fires; for text rendering the adapter needs
+/// the chunks + kind to print the definition list, so it re-runs
+/// `detect_fallback` (cheap indexed lookup). JSON callers render the typed
+/// [`KindFallbackOutput`] directly and skip this.
+fn render_callers_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
+    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::callers(fk);
+        let lead = notes_text::callers_lead(fk, name);
+        super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");
     }
     Ok(())
 }
@@ -323,53 +297,6 @@ pub(crate) fn cmd_callees(
     let store = &ctx.store;
     // See cmd_callers — same clamp range.
     let limit = limit.clamp(1, 100);
-
-    // Polymorphic-routing kind detection. Same dispatch pattern as
-    // cmd_callers above.
-    if !cross_project {
-        let chunks = store.lookup_by_name(name)?;
-        let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-        let kind = classify_hits(&hits);
-        match kind {
-            Kind::Const => {
-                return callees_kind_fallback(
-                    name, &chunks, json, "const",
-                    "consts don't have callees; the const's value is its content. \
-                     Use `cqs explain <name>` or `cqs read --focus <name>` to inspect.",
-                    &format!("(callees) `{name}` is a const, not a function — call-graph callees analysis doesn't apply."),
-                    "Use `cqs explain <name>` or `cqs read --focus <name>` to inspect the value.",
-                );
-            }
-            Kind::Type => {
-                return callees_kind_fallback(
-                    name, &chunks, json, "type",
-                    "types don't have callees; here are the definition sites. \
-                     Use `cqs deps <name>` for the type's type dependencies or `cqs callees <Type::method>` for a specific method's callees.",
-                    &format!("(callees) `{name}` is a type, not a function — call-graph callees analysis doesn't apply."),
-                    "Use `cqs deps <name>` for type-dependency analysis or call against a specific method (`Type::method`).",
-                );
-            }
-            Kind::Module => {
-                return callees_kind_fallback(
-                    name, &chunks, json, "module",
-                    "modules don't have callees; here are the declaration sites. \
-                     Use `cqs callees <function-in-module>` for a specific function's callees.",
-                    &format!("(callees) `{name}` is a module/namespace, not a function — call-graph callees analysis doesn't apply."),
-                    "Use `cqs callees <function-in-module>` for a specific function's callees.",
-                );
-            }
-            Kind::Ambiguous => {
-                return callees_kind_fallback(
-                    name, &chunks, json, "ambiguous",
-                    "name resolves across multiple kinds (function/type/const/etc.); here are all matches. \
-                     Re-run `cqs callees <name>` against a more specific name (e.g. `Type::method`).",
-                    &format!("(callees) `{name}` is ambiguous — matches multiple chunk kinds."),
-                    "Re-run with a more specific name (e.g. `Type::method`).",
-                );
-            }
-            _ => {}
-        }
-    }
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -396,35 +323,58 @@ pub(crate) fn cmd_callees(
         return Ok(());
     }
 
-    // Standard single-project path
-    let mut callees = store
-        .get_callees_full(name, None)
-        .context("Failed to load callees")?;
-    callees.truncate(limit);
-
-    if json {
-        let output = build_callees(name, &callees);
-        crate::cli::json_envelope::emit_json(&output)?;
-    } else {
-        println!("Functions called by '{}':", name.cyan());
-        println!();
-        if callees.is_empty() {
-            println!("  (no function calls found)");
-        } else {
-            for (callee_name, _line) in &callees {
-                println!("  {}", callee_name);
+    // Standard single-project path — delegate to the shared core.
+    match callees_core(
+        store,
+        &CalleesArgs {
+            name: name.to_string(),
+            limit,
+        },
+    )? {
+        CalleesCoreOutput::Fallback(fb) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&fb)?;
+            } else {
+                render_callees_fallback_text(name, store)?;
             }
         }
-        println!();
-        println!("Total: {} call(s)", callees.len());
+        CalleesCoreOutput::Callees(output) => {
+            if json {
+                crate::cli::json_envelope::emit_json(&output)?;
+            } else {
+                println!("Functions called by '{}':", name.cyan());
+                println!();
+                if output.calls.is_empty() {
+                    println!("  (no function calls found)");
+                } else {
+                    for callee in &output.calls {
+                        println!("  {}", callee.name);
+                    }
+                }
+                println!();
+                println!("Total: {} call(s)", output.count);
+            }
+        }
     }
+    Ok(())
+}
 
+/// Plain-text callees fallback renderer. See [`render_callers_fallback_text`].
+fn render_callees_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
+    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    if let Some(fk) = fallback {
+        let text = notes_text::callees(fk);
+        let lead = notes_text::callees_lead(fk, name);
+        super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::chunks_to_definitions;
     use super::*;
+    use cqs::store::ChunkSummary;
 
     #[test]
     fn test_caller_entry_field_names() {
@@ -520,18 +470,14 @@ mod tests {
     /// different `fallback_from` value.
     #[test]
     fn test_callers_fallback_payload_shape() {
-        // Build the payload by mimicking what `callers_kind_fallback`
-        // assembles before calling `emit_json`. Direct unit test of the
-        // dispatcher would need stdout capture; this asserts the shape
-        // contract instead.
+        // Build the typed `KindFallbackOutput` the core emits and serialize
+        // it (rather than a hand-rolled `json!` literal), so this pins the
+        // production fallback shape.
+        use super::super::notes_text::FallbackKind;
         let chunk = make_chunk(cqs::parser::ChunkType::Constant, "X", "src/a.rs", 5);
-        let payload = serde_json::json!({
-            "kind": "const",
-            "fallback_from": "callers",
-            "name": "X",
-            "definitions": chunks_to_definitions(&[chunk]),
-            "note": "test note",
-        });
+        let text = notes_text::callers(FallbackKind::Const);
+        let out = KindFallbackOutput::new("X", &[chunk], FallbackKind::Const, "callers", &text);
+        let payload = serde_json::to_value(&out).unwrap();
         assert_eq!(payload["kind"], "const");
         assert_eq!(payload["fallback_from"], "callers");
         assert_eq!(payload["name"], "X");
@@ -540,15 +486,14 @@ mod tests {
 
     #[test]
     fn test_callees_fallback_payload_shape() {
-        // Mirror of the callers payload, with `fallback_from: "callees"`.
+        // Mirror of the callers payload via the typed builder, with
+        // `fallback_from: "callees"`.
+        use super::super::notes_text::FallbackKind;
         let chunk = make_chunk(cqs::parser::ChunkType::Class, "MyClass", "src/a.rs", 5);
-        let payload = serde_json::json!({
-            "kind": "type",
-            "fallback_from": "callees",
-            "name": "MyClass",
-            "definitions": chunks_to_definitions(&[chunk]),
-            "note": "test note",
-        });
+        let text = notes_text::callees(FallbackKind::Type);
+        let out =
+            KindFallbackOutput::new("MyClass", &[chunk], FallbackKind::Type, "callees", &text);
+        let payload = serde_json::to_value(&out).unwrap();
         assert_eq!(payload["fallback_from"], "callees");
         assert_eq!(payload["definitions"][0]["chunk_type"], "class");
     }
