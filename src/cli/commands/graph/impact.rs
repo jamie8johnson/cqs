@@ -117,7 +117,7 @@ pub(crate) fn impact_core(
     let depth = args.depth.clamp(1, 10);
     let limit = args.limit.clamp(1, 100);
 
-    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::impact(fk);
         return Ok(ImpactCoreOutput::Fallback(KindFallbackOutput::new(
@@ -266,7 +266,7 @@ pub(crate) fn cmd_impact(
 /// fallback fires; for text the adapter re-runs `detect_fallback` (cheap
 /// indexed lookup) to print the definition list.
 fn render_impact_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    let (chunks, fallback) = super::detect_fallback(store, name);
     if let Some(fk) = fallback {
         let text = notes_text::impact(fk);
         let lead = notes_text::impact_lead(fk, name);

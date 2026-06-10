@@ -178,7 +178,7 @@ pub(crate) fn trace_core(
     // requires a callable starting node; a non-Function source dispatches a
     // kind-labeled fallback. The target's kind is left to `resolve_target`
     // to surface its own error if missing.
-    let (chunks, fallback) = super::detect_fallback(store, &args.source)?;
+    let (chunks, fallback) = super::detect_fallback(store, &args.source);
     if let Some(fk) = fallback {
         let text = notes_text::trace(fk);
         return Ok(TraceCoreOutput::Fallback(TraceKindFallbackOutput {
@@ -462,7 +462,7 @@ fn render_trace_output(
 /// `detect_fallback` (cheap indexed lookup) to print the source
 /// definition list with a "Source definitions:" heading.
 fn render_trace_fallback_text(source: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, source)?;
+    let (chunks, fallback) = super::detect_fallback(store, source);
     if let Some(fk) = fallback {
         let text = notes_text::trace(fk);
         let lead = notes_text::trace_lead(fk, source);

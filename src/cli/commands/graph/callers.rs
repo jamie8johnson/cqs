@@ -140,7 +140,7 @@ pub(crate) fn callers_core(
 
     // Polymorphic-routing kind detection. Dispatch the kind-mismatch
     // fallback before the call-graph query.
-    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callers(fk);
         return Ok(CallersCoreOutput::Fallback(KindFallbackOutput::new(
@@ -164,7 +164,7 @@ pub(crate) fn callees_core(
         tracing::info_span!("callees_core", name = %args.name, limit = args.limit).entered();
     let limit = args.limit.clamp(1, 100);
 
-    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callees(fk);
         return Ok(CalleesCoreOutput::Fallback(KindFallbackOutput::new(
@@ -276,7 +276,7 @@ pub(crate) fn cmd_callers(
 /// `detect_fallback` (cheap indexed lookup). JSON callers render the typed
 /// [`KindFallbackOutput`] directly and skip this.
 fn render_callers_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    let (chunks, fallback) = super::detect_fallback(store, name);
     if let Some(fk) = fallback {
         let text = notes_text::callers(fk);
         let lead = notes_text::callers_lead(fk, name);
@@ -361,7 +361,7 @@ pub(crate) fn cmd_callees(
 
 /// Plain-text callees fallback renderer. See [`render_callers_fallback_text`].
 fn render_callees_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    let (chunks, fallback) = super::detect_fallback(store, name);
     if let Some(fk) = fallback {
         let text = notes_text::callees(fk);
         let lead = notes_text::callees_lead(fk, name);

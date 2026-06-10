@@ -118,6 +118,57 @@ fn callees_without_index_fails() {
 }
 
 #[test]
+fn callers_const_name_emits_kind_fallback_json_shape() {
+    // Polymorphic routing at the CLI surface: `cqs callers <CONST>` must
+    // emit the kind-labeled `{kind, fallback_from, name, definitions,
+    // note}` fallback object instead of a misrouted empty caller list.
+    // The index is seeded in-process via the lib (no embedder needed —
+    // callers is SQL-only and the binary stays on the cheap path), then
+    // the real binary pins the end-to-end JSON shape under the default
+    // (bare) output format.
+    let dir = TempDir::new().unwrap();
+    let cqs_subdir = dir.path().join(".cqs");
+    std::fs::create_dir_all(&cqs_subdir).unwrap();
+    {
+        let store = ::cqs::store::Store::open(&cqs_subdir.join(::cqs::INDEX_DB_FILENAME)).unwrap();
+        store.init(&::cqs::store::ModelInfo::default()).unwrap();
+        let mut chunk = common::test_chunk("MAX_RETRIES", "pub const MAX_RETRIES: u32 = 3;");
+        chunk.chunk_type = ::cqs::parser::ChunkType::Constant;
+        store
+            .upsert_chunks_batch(&[(chunk, common::mock_embedding(1.0))], Some(0))
+            .unwrap();
+    }
+
+    #[allow(deprecated)]
+    let output = assert_cmd::Command::cargo_bin("cqs")
+        .expect("cqs binary")
+        .args(["callers", "MAX_RETRIES", "--json"])
+        .env("CQS_NO_DAEMON", "1")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).expect("utf8 stdout");
+    let payload: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("bare JSON payload");
+
+    assert_eq!(payload["kind"], "const", "got: {payload}");
+    assert_eq!(payload["fallback_from"], "callers", "got: {payload}");
+    assert_eq!(payload["name"], "MAX_RETRIES", "got: {payload}");
+    let defs = payload["definitions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("definitions must be an array, got: {payload}"));
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0]["chunk_type"], "constant");
+    assert!(
+        payload["note"].as_str().is_some_and(|n| !n.is_empty()),
+        "note must be a non-empty string, got: {payload}"
+    );
+}
+
+#[test]
 fn gc_without_index_fails() {
     let dir = TempDir::new().unwrap();
     cqs()

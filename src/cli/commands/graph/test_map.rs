@@ -259,7 +259,7 @@ pub(crate) fn test_map_core(
     // sorting so the "closest" tests rank first.
     let limit = args.limit.clamp(1, 100);
 
-    let (chunks, fallback) = super::detect_fallback(store, &args.name)?;
+    let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::test_map(fk);
         return Ok(TestMapCoreOutput::Fallback(KindFallbackOutput::new(
@@ -400,7 +400,7 @@ pub(crate) fn cmd_test_map(
 /// fires; for text the adapter re-runs `detect_fallback` (cheap indexed
 /// lookup) to print the definition list.
 fn render_test_map_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, name)?;
+    let (chunks, fallback) = super::detect_fallback(store, name);
     if let Some(fk) = fallback {
         let text = notes_text::test_map(fk);
         let lead = notes_text::test_map_lead(fk, name);

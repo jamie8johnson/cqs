@@ -24,7 +24,7 @@ pub(crate) use test_map::{
 pub(crate) use trace::{cmd_trace, trace_core, trace_max_nodes, TraceArgs as TraceCoreArgs};
 
 use cqs::kind::{detect_kind_for_store, Kind};
-use cqs::store::{ChunkSummary, ReadOnly, Store, StoreError};
+use cqs::store::{ChunkSummary, ReadOnly, Store};
 use notes_text::FallbackKind;
 
 /// Classify a name against the indexed corpus and decide whether a graph
@@ -38,19 +38,50 @@ use notes_text::FallbackKind;
 /// incantation each command (and the daemon's `try_kind_fallback`) used to
 /// carry independently.
 ///
+/// Kind detection is a best-effort routing hint layered in front of every
+/// graph command — a store error here must not kill the request. Both
+/// surfaces (CLI direct and daemon dispatch) route through this function,
+/// so a store hiccup during classification degrades to the command's
+/// normal path on both: warn, return `(empty, None)`, and let the normal
+/// flow run its own queries and report its own errors.
+///
 /// Classification goes through [`detect_kind_for_store`] — the lib's
 /// routing classifier, which reads only `chunk_type` per hit (no
 /// `ChunkSummary` clones). The fallback rendering still needs the full
-/// summaries (`content`, `signature`, `line_end`, …) that [`KindHit`]
-/// drops, so this fetches them via `lookup_by_name`; the two reads hit the
-/// same indexed `WHERE name = ?` row set.
+/// summaries (`content`, `signature`, `line_end`, …) that
+/// [`cqs::kind::KindHit`] drops, so when (and only when) a fallback
+/// fires, this re-fetches them via `lookup_by_name`; the two reads hit
+/// the same indexed `WHERE name = ?` row set.
 pub(crate) fn detect_fallback(
     store: &Store<ReadOnly>,
     name: &str,
-) -> Result<(Vec<ChunkSummary>, Option<FallbackKind>), StoreError> {
-    let (kind, _hits) = detect_kind_for_store(store, name)?;
-    let chunks = store.lookup_by_name(name)?;
-    Ok((chunks, fallback_kind(kind)))
+) -> (Vec<ChunkSummary>, Option<FallbackKind>) {
+    let kind = match detect_kind_for_store(store, name) {
+        Ok((kind, _hits)) => kind,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                name,
+                "kind detection failed; falling through to the normal command path"
+            );
+            return (Vec::new(), None);
+        }
+    };
+    let Some(fk) = fallback_kind(kind) else {
+        // Normal flow — skip the summary re-fetch entirely.
+        return (Vec::new(), None);
+    };
+    match store.lookup_by_name(name) {
+        Ok(chunks) => (chunks, Some(fk)),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                name,
+                "fallback definition lookup failed; falling through to the normal command path"
+            );
+            (Vec::new(), None)
+        }
+    }
 }
 
 /// Map a routing-level [`Kind`] to the [`FallbackKind`] that drives a
