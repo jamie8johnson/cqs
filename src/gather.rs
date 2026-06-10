@@ -200,7 +200,9 @@ impl Default for GatherOptions {
 }
 
 /// Direction of call graph expansion
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum,
+)]
 pub enum GatherDirection {
     Both,
     Callers,

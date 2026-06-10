@@ -1,4 +1,13 @@
 //! Diff command — semantic diff between indexed snapshots
+//!
+//! ## Command-core split (Phase 2b)
+//!
+//! [`diff_core`] owns the surface-agnostic diff logic: it takes the two
+//! already-resolved stores plus a typed [`DiffArgs`] and returns the typed
+//! [`DiffOutput`] (the single JSON-schema source). Store resolution
+//! (`project` vs. a named reference) needs config load + the reference LRU, so
+//! it stays in each adapter (CLI [`cmd_diff`] / daemon `dispatch_diff`); both
+//! drive the same core afterward, so the wire shape is identical.
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
@@ -9,12 +18,49 @@ use cqs::{normalize_path, semantic_diff, DiffResult};
 use crate::cli::find_project_root;
 
 // ---------------------------------------------------------------------------
+// Args (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`diff_core`] — the diff knobs both the CLI and a future MCP
+/// `diff` tool deserialize into. Store resolution (which reference / project)
+/// is the adapter's job; the core takes the resolved stores plus these
+/// settings.
+///
+/// `#[serde(default)]` so a wire caller can omit `target`/`lang` and inherit
+/// the production defaults; `threshold` defaults to the clap value.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct DiffArgs {
+    /// Source reference name (echoed into the output label).
+    pub source: String,
+    /// Target label — `project` or another reference name.
+    pub target: String,
+    /// Similarity threshold for the "modified" bucket: pairs above are
+    /// unchanged, below are modified.
+    pub threshold: f32,
+    /// Restrict the comparison to this language (e.g. `rust`).
+    pub lang: Option<String>,
+}
+
+impl Default for DiffArgs {
+    fn default() -> Self {
+        // Mirrors clap's `DiffArgs` defaults (threshold 0.95, target "project").
+        DiffArgs {
+            source: String::new(),
+            target: "project".to_string(),
+            threshold: 0.95,
+            lang: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Output structs
 // ---------------------------------------------------------------------------
 
 /// A single entry in the diff output (added, removed, or modified).
 #[derive(Debug, serde::Serialize)]
-struct DiffEntryOutput {
+pub(crate) struct DiffEntryOutput {
     name: String,
     file: String,
     #[serde(rename = "type")]
@@ -25,16 +71,17 @@ struct DiffEntryOutput {
 
 /// Summary counts for the diff.
 #[derive(Debug, serde::Serialize)]
-struct DiffSummary {
+pub(crate) struct DiffSummary {
     added: usize,
     removed: usize,
     modified: usize,
     unchanged: usize,
 }
 
-/// Top-level JSON output for the diff command.
+/// Top-level JSON output for the diff command — the single JSON-schema source
+/// shared by the CLI and daemon adapters.
 #[derive(Debug, serde::Serialize)]
-struct DiffOutput {
+pub(crate) struct DiffOutput {
     source: String,
     target: String,
     added: Vec<DiffEntryOutput>,
@@ -79,6 +126,33 @@ fn build_diff_output(result: &DiffResult) -> DiffOutput {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Core
+// ---------------------------------------------------------------------------
+
+/// Surface-agnostic core for `cqs diff`. Takes the two already-resolved stores
+/// (the adapter owns reference/project resolution) plus a [`DiffArgs`], runs
+/// the `semantic_diff` primitive, and assembles the typed [`DiffOutput`].
+/// Reads no env and never prints — the adapter renders text or JSON from the
+/// returned struct.
+pub(crate) fn diff_core<Mode1, Mode2>(
+    source_store: &Store<Mode1>,
+    target_store: &Store<Mode2>,
+    args: &DiffArgs,
+) -> Result<DiffOutput> {
+    let _span =
+        tracing::info_span!("diff_core", source = %args.source, target = %args.target).entered();
+    let result = semantic_diff(
+        source_store,
+        target_store,
+        &args.source,
+        &args.target,
+        args.threshold,
+        args.lang.as_deref(),
+    )?;
+    Ok(build_diff_output(&result))
+}
+
 pub(crate) fn cmd_diff(
     source: &str,
     target: Option<&str>,
@@ -106,72 +180,59 @@ pub(crate) fn cmd_diff(
         crate::cli::commands::resolve::resolve_reference_store(&root, target_label)?
     };
 
-    let result = semantic_diff(
-        &source_store,
-        &target_store,
-        source,
-        target_label,
+    let args = DiffArgs {
+        source: source.to_string(),
+        target: target_label.to_string(),
         threshold,
-        lang,
-    )?;
+        lang: lang.map(str::to_string),
+    };
+    let output = diff_core(&source_store, &target_store, &args)?;
 
     if json {
-        display_diff_json(&result)?;
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
-        display_diff(&result)?;
+        display_diff_from_output(&output);
     }
 
     Ok(())
 }
 
-/// Displays a formatted diff report showing changes between two versions.
-fn display_diff(result: &DiffResult) -> Result<()> {
-    println!("Diff: {} → {}", result.source.bold(), result.target.bold());
+/// Displays a formatted diff report from the typed [`DiffOutput`] — the same
+/// struct the JSON path serializes, so text and JSON share one data source.
+fn display_diff_from_output(output: &DiffOutput) {
+    println!("Diff: {} → {}", output.source.bold(), output.target.bold());
     println!();
 
-    if !result.added.is_empty() {
-        println!("{} ({}):", "Added".green().bold(), result.added.len());
-        for entry in &result.added {
-            println!(
-                "  + {} {} ({})",
-                entry.chunk_type,
-                entry.name,
-                entry.file.display()
-            );
+    if !output.added.is_empty() {
+        println!("{} ({}):", "Added".green().bold(), output.added.len());
+        for entry in &output.added {
+            println!("  + {} {} ({})", entry.chunk_type, entry.name, entry.file);
         }
         println!();
     }
 
-    if !result.removed.is_empty() {
-        println!("{} ({}):", "Removed".red().bold(), result.removed.len());
-        for entry in &result.removed {
-            println!(
-                "  - {} {} ({})",
-                entry.chunk_type,
-                entry.name,
-                entry.file.display()
-            );
+    if !output.removed.is_empty() {
+        println!("{} ({}):", "Removed".red().bold(), output.removed.len());
+        for entry in &output.removed {
+            println!("  - {} {} ({})", entry.chunk_type, entry.name, entry.file);
         }
         println!();
     }
 
-    if !result.modified.is_empty() {
+    if !output.modified.is_empty() {
         println!(
             "{} ({}):",
             "Modified".yellow().bold(),
-            result.modified.len()
+            output.modified.len()
         );
-        for entry in &result.modified {
+        for entry in &output.modified {
             let sim = entry
                 .similarity
                 .map(|s| format!("[{:.2}]", s))
                 .unwrap_or_else(|| "[?]".to_string());
             println!(
                 "  ~ {} {} ({}) {}",
-                entry.chunk_type,
-                entry.name,
-                entry.file.display(),
-                sim
+                entry.chunk_type, entry.name, entry.file, sim
             );
         }
         println!();
@@ -179,20 +240,11 @@ fn display_diff(result: &DiffResult) -> Result<()> {
 
     println!(
         "Summary: {} added, {} removed, {} modified, {} unchanged",
-        result.added.len(),
-        result.removed.len(),
-        result.modified.len(),
-        result.unchanged_count,
+        output.summary.added,
+        output.summary.removed,
+        output.summary.modified,
+        output.summary.unchanged,
     );
-
-    Ok(())
-}
-
-/// Formats and outputs a diff result as a formatted JSON document to stdout.
-fn display_diff_json(result: &DiffResult) -> Result<()> {
-    let output = build_diff_output(result);
-    crate::cli::json_envelope::emit_json(&output)?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +254,50 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wire/MCP caller can supply only `source` and inherit the production
+    /// defaults via `#[serde(default)]`.
+    #[test]
+    fn diff_args_deserialize_minimal() {
+        let args: DiffArgs = serde_json::from_str(r#"{"source": "v1.0"}"#).unwrap();
+        assert_eq!(args.source, "v1.0");
+        assert_eq!(args.target, "project");
+        assert!((args.threshold - 0.95).abs() < 1e-6);
+        assert!(args.lang.is_none());
+    }
+
+    /// `DiffArgs::default` must match the clap `DiffArgs` defaults exactly so
+    /// the wire surface and the CLI agree on omitted-field behavior. Parses a
+    /// real minimal CLI invocation (`cqs diff <source>`) via a throwaway
+    /// `clap::Parser` wrapper around the shared clap `DiffArgs`; a changed clap
+    /// default breaks this test instead of silently diverging.
+    #[test]
+    fn diff_args_default_matches_clap_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: crate::cli::args::DiffArgs,
+        }
+
+        let clap_args = Wrap::try_parse_from(["cqs-diff", "v1.0"]).unwrap().args;
+        // Build the surface-agnostic args the way the adapter does.
+        let core = DiffArgs {
+            source: clap_args.source.clone(),
+            target: clap_args.target.clone().unwrap_or_else(|| "project".into()),
+            threshold: clap_args.threshold,
+            lang: clap_args.lang.clone(),
+        };
+        let expected = DiffArgs {
+            source: "v1.0".to_string(),
+            ..DiffArgs::default()
+        };
+        assert_eq!(
+            core, expected,
+            "clap diff defaults drifted from DiffArgs::default — update both together"
+        );
+    }
 
     #[test]
     fn diff_output_empty() {

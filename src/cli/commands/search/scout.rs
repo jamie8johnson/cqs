@@ -9,6 +9,68 @@ use anyhow::Result;
 use colored::Colorize;
 
 use cqs::scout;
+use cqs::store::{ReadOnly, Store};
+use cqs::Embedder;
+
+// ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
+
+/// Input for [`scout_core`] — the scout knobs both the CLI and a future MCP
+/// `scout` tool deserialize into. The core takes the store/embedder/root from
+/// the adapter; these are the request-shaped settings.
+///
+/// `#[serde(default)]` so a wire caller can supply just `query` and inherit the
+/// production defaults (limit mirrors clap's `LimitArg`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct ScoutArgs {
+    /// Search query to investigate.
+    pub query: String,
+    /// Max file groups to return (clamped to `SCOUT_LIMIT_MAX`).
+    pub limit: usize,
+    /// Token budget — when set, packs chunk content into the budget.
+    pub tokens: Option<usize>,
+}
+
+impl Default for ScoutArgs {
+    fn default() -> Self {
+        ScoutArgs {
+            query: String::new(),
+            // Mirrors clap `LimitArg` default (5).
+            limit: 5,
+            tokens: None,
+        }
+    }
+}
+
+// ─── Core ───────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs scout` (JSON path). Runs the `scout` lib
+/// primitive, optionally token-packs chunk content, and assembles the shared
+/// JSON via [`build_scout_output`]. Returns the assembled `(value, token_info)`
+/// so the CLI adapter can also drive its text rendering; the daemon takes only
+/// the value. Reads no env (the limit clamp uses the `SCOUT_LIMIT_MAX` const).
+pub(crate) fn scout_core(
+    store: &Store<ReadOnly>,
+    embedder: &Embedder,
+    root: &std::path::Path,
+    args: &ScoutArgs,
+) -> Result<(serde_json::Value, Option<(usize, usize)>)> {
+    let _span = tracing::info_span!("scout_core", query = %args.query).entered();
+    let limit = args.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
+    let result = scout(store, embedder, &args.query, root, limit)?;
+
+    let (content_map, token_info) = if let Some(budget) = args.tokens {
+        let named_items = crate::cli::commands::scout_scored_names(&result);
+        let (cmap, used) =
+            crate::cli::commands::fetch_and_pack_content(store, embedder, &named_items, budget);
+        (Some(cmap), Some((used, budget)))
+    } else {
+        (None, None)
+    };
+
+    let output = build_scout_output(&result, content_map.as_ref(), token_info)?;
+    Ok((output, token_info))
+}
 
 /// Build the typed scout JSON object shared between CLI and batch.
 ///
@@ -49,8 +111,22 @@ pub(crate) fn cmd_scout(
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
-    // Clamp via shared constant so CLI and batch return the same number of
-    // groups.
+
+    // JSON path routes through the shared `scout_core` (same code the daemon
+    // runs), so the wire shape is identical across surfaces.
+    if json {
+        let args = ScoutArgs {
+            query: task.to_string(),
+            limit,
+            tokens: max_tokens,
+        };
+        let (output, _token_info) = scout_core(store, embedder, root, &args)?;
+        crate::cli::json_envelope::emit_json(&output)?;
+        return Ok(());
+    }
+
+    // Text path keeps the raw `ScoutResult` for rendering. Clamp via the shared
+    // constant so it returns the same number of groups as the core.
     let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
 
     let result = scout(store, embedder, task, root, limit)?;
@@ -65,10 +141,7 @@ pub(crate) fn cmd_scout(
         (None, None)
     };
 
-    if json {
-        let output = build_scout_output(&result, content_map.as_ref(), token_info)?;
-        crate::cli::json_envelope::emit_json(&output)?;
-    } else {
+    {
         let token_label = match token_info {
             Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),
             None => String::new(),
@@ -186,6 +259,43 @@ pub(crate) fn cmd_scout(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// A wire/MCP caller can supply only `query` and inherit defaults.
+    #[test]
+    fn scout_args_deserialize_minimal() {
+        let args: super::ScoutArgs = serde_json::from_str(r#"{"query": "auth flow"}"#).unwrap();
+        assert_eq!(args.query, "auth flow");
+        assert_eq!(args.limit, 5);
+        assert!(args.tokens.is_none());
+    }
+
+    /// `ScoutArgs::default` must match the clap `ScoutArgs` defaults exactly.
+    /// Parses `cqs scout <query>` via a throwaway `clap::Parser` wrapper.
+    #[test]
+    fn scout_args_default_matches_clap_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: crate::cli::args::ScoutArgs,
+        }
+
+        let clap_args = Wrap::try_parse_from(["cqs-scout", "q"]).unwrap().args;
+        let core = super::ScoutArgs {
+            query: clap_args.query.clone(),
+            limit: clap_args.limit_arg.limit,
+            tokens: clap_args.tokens,
+        };
+        let expected = super::ScoutArgs {
+            query: "q".to_string(),
+            ..super::ScoutArgs::default()
+        };
+        assert_eq!(
+            core, expected,
+            "clap scout defaults drifted from ScoutArgs::default — update both together"
+        );
+    }
 
     // ===== inject_content_into_scout_json tests =====
 

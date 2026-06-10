@@ -1,14 +1,65 @@
 //! Blame command — semantic git blame for a function
 //!
-//! Core logic is in `build_blame_data()` so batch mode can reuse it.
+//! ## Command-core split (Phase 2b)
+//!
+//! Blame is display-oriented: the surface-agnostic logic is
+//! [`build_blame_data`] (resolve target → `git log -L` → parse → optional
+//! callers) and the single JSON-schema source is [`blame_to_json`] (via the
+//! borrowing `BlameOutput`). [`blame_core`] is the named entry point both the
+//! CLI [`cmd_blame`] and the daemon `dispatch_blame` drive; it takes a typed
+//! [`BlameArgs`] and returns the [`BlameData`] the serializer + terminal
+//! renderer share. Reads no env.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use cqs::store::{CallerInfo, ChunkSummary, Store};
+use cqs::store::{CallerInfo, ChunkSummary, ReadOnly, Store};
 use cqs::{normalize_path, rel_display, resolve_target};
+
+// ─── Args (surface-agnostic, MCP-ready) ──────────────────────────────────────
+
+/// Input for [`blame_core`] — the blame knobs both the CLI and a future MCP
+/// `blame` tool deserialize into. Store/root come from the adapter.
+///
+/// `#[serde(default)]` so a wire caller can supply just `name` and inherit the
+/// production defaults (commits mirrors clap's `--commits` default of 10).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct BlameArgs {
+    /// Function name or `file:function` to blame.
+    pub name: String,
+    /// Max commits to show from `git log -L`.
+    pub commits: usize,
+    /// Also resolve and show the function's callers.
+    pub callers: bool,
+}
+
+impl Default for BlameArgs {
+    fn default() -> Self {
+        BlameArgs {
+            name: String::new(),
+            commits: 10,
+            callers: false,
+        }
+    }
+}
+
+// ─── Core ─────────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs blame`. Thin wrapper over
+/// [`build_blame_data`] keyed on the typed [`BlameArgs`]; returns the
+/// [`BlameData`] both the JSON serializer ([`blame_to_json`]) and the terminal
+/// renderer consume. Reads no env and never prints.
+pub(crate) fn blame_core(
+    store: &Store<ReadOnly>,
+    root: &Path,
+    args: &BlameArgs,
+) -> Result<BlameData> {
+    let _span = tracing::info_span!("blame_core", name = %args.name).entered();
+    build_blame_data(store, root, &args.name, args.commits, args.callers)
+}
 
 // ─── Data structures ─────────────────────────────────────────────────────────
 
@@ -306,7 +357,12 @@ pub(crate) fn cmd_blame(
 
     let store = &ctx.store;
     let root = &ctx.root;
-    let data = build_blame_data(store, root, target, commits, show_callers)?;
+    let args = BlameArgs {
+        name: target.to_string(),
+        commits,
+        callers: show_callers,
+    };
+    let data = blame_core(store, root, &args)?;
 
     if json {
         let value = blame_to_json(&data, root);
@@ -324,6 +380,43 @@ pub(crate) fn cmd_blame(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A wire/MCP caller can supply only `name` and inherit defaults.
+    #[test]
+    fn blame_args_deserialize_minimal() {
+        let args: BlameArgs = serde_json::from_str(r#"{"name": "my_fn"}"#).unwrap();
+        assert_eq!(args.name, "my_fn");
+        assert_eq!(args.commits, 10);
+        assert!(!args.callers);
+    }
+
+    /// `BlameArgs::default` must match the clap `BlameArgs` defaults.
+    /// Parses `cqs blame <name>` via a throwaway `clap::Parser` wrapper.
+    #[test]
+    fn blame_args_default_matches_clap_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: crate::cli::args::BlameArgs,
+        }
+
+        let clap_args = Wrap::try_parse_from(["cqs-blame", "my_fn"]).unwrap().args;
+        let core = BlameArgs {
+            name: clap_args.name.clone(),
+            commits: clap_args.commits,
+            callers: clap_args.callers,
+        };
+        let expected = BlameArgs {
+            name: "my_fn".to_string(),
+            ..BlameArgs::default()
+        };
+        assert_eq!(
+            core, expected,
+            "clap blame defaults drifted from BlameArgs::default — update both together"
+        );
+    }
 
     #[test]
     fn test_parse_git_log_output_single() {
