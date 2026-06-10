@@ -1369,41 +1369,27 @@ mod tests {
     #[test]
     fn test_save_and_load() {
         // This test pins the save → exists → load roundtrip. The recall check
-        // (chunk1 reachable post-load) retries the build to absorb the rare
-        // degenerate concurrent-build graph: `parallel_insert_data`
-        // under CPU contention can make even the cosine-distance-0 self-match
-        // unreachable on ~1-2% of builds. The roundtrip itself (exists/len) is
-        // asserted unconditionally on every build.
-        let mut found = false;
-        let mut last_ids = Vec::new();
-        for _ in 0..8 {
+        // (chunk1 reachable post-load) goes through the shared
+        // `assert_self_match_reachable` helper, which retries the build to
+        // absorb the rare degenerate concurrent-build graph (see the helper
+        // docs in hnsw/mod.rs). The roundtrip itself (exists/len) is asserted
+        // unconditionally on every build inside the closure.
+        let build = || {
             let tmp = TempDir::new().unwrap();
             let embeddings = vec![
                 ("chunk1".to_string(), make_embedding(1)),
                 ("chunk2".to_string(), make_embedding(2)),
             ];
-            // Env lock scoped to the build: build_with_dim reads CQS_HNSW_*
-            // and must not race a concurrent env-override test.
-            let index = {
-                let _env = crate::hnsw::HNSW_ENV_LOCK.lock().unwrap();
-                HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap()
-            };
+            let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
             index.save(tmp.path(), "index").unwrap();
             assert!(HnswIndex::exists(tmp.path(), "index"));
             let loaded =
                 HnswIndex::load_with_dim(tmp.path(), "index", crate::EMBEDDING_DIM).unwrap();
             assert_eq!(loaded.len(), 2);
-            let results = loaded.search(&make_embedding(1), 2);
-            last_ids = results.iter().map(|r| r.id.clone()).collect();
-            if results.iter().any(|r| r.id == "chunk1") {
-                found = true;
-                break;
-            }
-        }
-        assert!(
-            found,
-            "chunk1 unreachable post-load across 8 builds (real recall bug, not noise); last top-2 = {last_ids:?}"
-        );
+            // TempDir drops here; the loaded index is self-contained.
+            loaded
+        };
+        crate::hnsw::assert_self_match_reachable(build, &make_embedding(1), "chunk1", 2);
     }
 
     // ===== multi-model dim-threading (HNSW persist) =====
@@ -1428,46 +1414,30 @@ mod tests {
         // Save a 1024-dim HNSW index, load with load_with_dim(1024),
         // verify it loads and searches correctly.
         //
-        // The save/load roundtrip (dim + len) is asserted on every build. The
-        // recall check (vec1 reachable post-load) retries the build to absorb
-        // the rare degenerate concurrent-build graph: the five
-        // sin-derived vectors are near-parallel (adjacent seeds ~0.995 cosine)
-        // and `parallel_insert_data` under CPU contention can make even the
-        // exact-match vector unreachable on ~1-2% of builds. A systematic
-        // recall bug (miss on every build) still fails deterministically.
+        // The save/load roundtrip (dim + len) is asserted on every build
+        // inside the closure. The recall check (vec1 reachable post-load)
+        // goes through the shared `assert_self_match_reachable` helper, which
+        // retries the build to absorb the rare degenerate concurrent-build
+        // graph (see the helper docs in hnsw/mod.rs): the five sin-derived
+        // vectors are near-parallel (adjacent seeds ~0.995 cosine), making
+        // them especially exposed to it.
         let basename = "test_1024";
-        let mut found = false;
-        let mut last_ids = Vec::new();
-        for _ in 0..8 {
+        let build = || {
             let tmp = TempDir::new().unwrap();
             let embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=5)
                 .map(|i| (format!("vec{}", i), make_embedding_dim(i, 1024)))
                 .collect();
-            // Env lock scoped to the build: build_with_dim reads CQS_HNSW_*
-            // and must not race a concurrent env-override test.
-            let index = {
-                let _env = crate::hnsw::HNSW_ENV_LOCK.lock().unwrap();
-                HnswIndex::build_with_dim(embeddings, 1024).unwrap()
-            };
+            let index = HnswIndex::build_with_dim(embeddings, 1024).unwrap();
             assert_eq!(index.dim, 1024);
             index.save(tmp.path(), basename).unwrap();
 
             let loaded = HnswIndex::load_with_dim(tmp.path(), basename, 1024).unwrap();
             assert_eq!(loaded.len(), 5, "Loaded index should have 5 vectors");
             assert_eq!(loaded.dim, 1024, "Loaded index dim should be 1024");
-
-            let results = loaded.search(&make_embedding_dim(1, 1024), 3);
-            assert!(!results.is_empty(), "Search should return results");
-            last_ids = results.iter().map(|r| r.id.clone()).collect();
-            if results.iter().any(|r| r.id == "vec1") {
-                found = true;
-                break;
-            }
-        }
-        assert!(
-            found,
-            "exact-match vec1 unreachable post-load across 8 builds (real recall bug, not noise); last top-3 = {last_ids:?}"
-        );
+            // TempDir drops here; the loaded index is self-contained.
+            loaded
+        };
+        crate::hnsw::assert_self_match_reachable(build, &make_embedding_dim(1, 1024), "vec1", 3);
     }
 
     #[test]

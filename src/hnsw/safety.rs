@@ -92,7 +92,9 @@ mod tests {
         // Env lock scoped to the build: build_with_dim reads CQS_HNSW_*
         // and must not race a concurrent env-override test.
         {
-            let _env = crate::hnsw::HNSW_ENV_LOCK.lock().unwrap();
+            let _env = crate::hnsw::HNSW_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM)
                 .unwrap()
                 .save(tmp.path(), "lifecycle")

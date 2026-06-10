@@ -607,12 +607,18 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Hn
 ///
 /// Holders: the env-mutating tests (`env_override_tests`,
 /// `test_hnsw_for_helpers_pick_tier`) hold it across their set/read/remove
-/// sequence; the hardened recall/lifecycle tests (`assert_self_match_reachable`
-/// in `build.rs`, the retry loops in `persist.rs`, the lifecycle test in
-/// `safety.rs`) hold it just around the `build_with_dim` /
-/// `build_batched_with_dim` call so their graph params cannot be perturbed
+/// sequence; the hardened recall tests hold it via the shared
+/// `assert_self_match_reachable` helper (below), which takes it around each
+/// `build()` closure, and the lifecycle test in `safety.rs` holds it just
+/// around its `build_with_dim` call — so graph params cannot be perturbed
 /// mid-build, while search phases stay parallel. Other build sites tolerate a
 /// transient env override (graph params change, soundness does not).
+///
+/// All acquisitions are poison-safe
+/// (`.lock().unwrap_or_else(PoisonError::into_inner)`): the lock guards
+/// process-global env vars with no data invariant, and a single test failure
+/// while holding it must not cascade PoisonError panics into every later
+/// HNSW test.
 #[cfg(test)]
 pub(crate) static HNSW_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -631,6 +637,49 @@ pub(crate) fn make_test_embedding(seed: u32) -> Embedding {
         }
     }
     Embedding::new(v)
+}
+
+/// Shared test helper: assert that the exact-match vector `want` is reachable
+/// in the top-`k` results of an index produced by `build`, retrying the build
+/// to absorb the rare degenerate concurrent-build graph. `parallel_insert_data`
+/// under CPU contention yields a self-unreachable node on ~1-2% of builds
+/// (measured 52/3000 under 16-core load vs 0/3000 sequential — an hnsw_rs
+/// concurrent-build characteristic, filed upstream as hnswlib-rs#32, not a cqs
+/// bug); at 8 retries a transient miss is ~2.5e-14 while a systematic recall
+/// bug (miss on every build) still fails deterministically.
+///
+/// The `build` closure returns the searchable index, so save/load roundtrips
+/// (and any per-build invariant asserts) live inside the closure and are
+/// re-exercised on every retry. Returns the matched result's score so callers
+/// can additionally pin the self-match score.
+///
+/// Each `build()` call runs under `HNSW_ENV_LOCK` so a concurrent env-override
+/// test cannot perturb the CQS_HNSW_* graph params mid-build; the search phase
+/// runs unlocked. (Only `build_with_dim` reads CQS_HNSW_* vars, so holding the
+/// lock across an in-closure save/load roundtrip is harmless.)
+#[cfg(test)]
+pub(crate) fn assert_self_match_reachable(
+    build: impl Fn() -> HnswIndex,
+    query: &Embedding,
+    want: &str,
+    k: usize,
+) -> f32 {
+    let mut last_ids = Vec::new();
+    for _ in 0..8 {
+        let index = {
+            let _env = HNSW_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            build()
+        };
+        let results = index.search(query, k);
+        assert!(!results.is_empty(), "search returned no results");
+        last_ids = results.iter().map(|r| r.id.clone()).collect();
+        if let Some(r) = results.iter().find(|r| r.id == want) {
+            return r.score;
+        }
+    }
+    panic!("{want:?} unreachable across 8 builds (real recall bug, not noise); last top-{k} = {last_ids:?}");
 }
 
 #[cfg(test)]
@@ -708,7 +757,9 @@ mod send_sync_tests {
     fn test_hnsw_for_helpers_pick_tier() {
         // Serialize against env_override_tests — these vars are process-global
         // and read by max_nb_connection_for / ef_*_for.
-        let _lock = super::HNSW_ENV_LOCK.lock().unwrap();
+        let _lock = super::HNSW_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // No env override: helper returns the tier value verbatim.
         std::env::remove_var("CQS_HNSW_M");
         std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
@@ -731,34 +782,37 @@ mod insert_batch_tests {
 
     #[test]
     fn test_insert_batch_on_owned() {
-        // Build a small Owned HNSW index
-        let embeddings: Vec<(String, Embedding)> = (0..5)
-            .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
-            .collect();
+        // Both the initial build and insert_batch go through
+        // parallel_insert_data, so the recall assert (chunk_6 reachable) uses
+        // the shared retry helper rather than a single un-retried build. The
+        // insert-count invariants are asserted on every build.
+        let build = || {
+            // Build a small Owned HNSW index
+            let embeddings: Vec<(String, Embedding)> = (0..5)
+                .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
+                .collect();
 
-        let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
-        let initial_len = index.len();
-        assert_eq!(initial_len, 5);
+            let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+            let initial_len = index.len();
+            assert_eq!(initial_len, 5);
 
-        // Insert new items
-        let new_embeddings: Vec<(String, Embedding)> = (5..8)
-            .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
-            .collect();
-        let refs: Vec<(String, &[f32])> = new_embeddings
-            .iter()
-            .map(|(id, emb)| (id.clone(), emb.as_slice()))
-            .collect();
+            // Insert new items
+            let new_embeddings: Vec<(String, Embedding)> = (5..8)
+                .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
+                .collect();
+            let refs: Vec<(String, &[f32])> = new_embeddings
+                .iter()
+                .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                .collect();
 
-        let inserted = index.insert_batch(&refs).unwrap();
-        assert_eq!(inserted, 3);
-        assert_eq!(index.len(), initial_len + 3);
+            let inserted = index.insert_batch(&refs).unwrap();
+            assert_eq!(inserted, 3);
+            assert_eq!(index.len(), initial_len + 3);
+            index
+        };
 
-        // Search should find both original and newly inserted items
-        let query = make_test_embedding(6);
-        let results = index.search(&query, 3);
-        assert!(!results.is_empty());
-        // chunk_6 should be in top results
-        assert!(results.iter().any(|r| r.id == "chunk_6"));
+        // Search should find the newly inserted chunk_6 in top results.
+        assert_self_match_reachable(build, &make_test_embedding(6), "chunk_6", 3);
     }
 
     #[test]
@@ -899,75 +953,96 @@ mod insert_batch_tests {
 mod env_override_tests {
     /// Serialize tests that manipulate CQS_HNSW_* env vars. Uses the shared
     /// module-level lock so tier-default / build tests in other modules also
-    /// serialize against these process-global mutations.
+    /// serialize against these process-global mutations. Acquisition is
+    /// poison-safe (`PoisonError::into_inner`): the lock guards a process
+    /// global with no invariant of its own, and a poisoned static would
+    /// otherwise cascade panics into every later HNSW test.
     use super::HNSW_ENV_LOCK as ENV_MUTEX;
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// RAII guard pairing `set_var` with `remove_var` on drop, so an
+    /// assertion failure mid-test cannot leak a CQS_HNSW_* var into later
+    /// tests (these tests assert while holding the env lock).
+    struct EnvVarGuard(&'static str);
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            std::env::set_var(key, value);
+            Self(key)
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
 
     #[test]
     fn test_m_default() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = lock();
         std::env::remove_var("CQS_HNSW_M");
         assert_eq!(super::max_nb_connection(), 24);
     }
 
     #[test]
     fn test_m_override() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("CQS_HNSW_M", "32");
+        let _lock = lock();
+        let _var = EnvVarGuard::set("CQS_HNSW_M", "32");
         assert_eq!(super::max_nb_connection(), 32);
-        std::env::remove_var("CQS_HNSW_M");
     }
 
     #[test]
     fn test_m_invalid_falls_back() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("CQS_HNSW_M", "not_a_number");
+        let _lock = lock();
+        let _var = EnvVarGuard::set("CQS_HNSW_M", "not_a_number");
         assert_eq!(super::max_nb_connection(), 24);
-        std::env::remove_var("CQS_HNSW_M");
     }
 
     #[test]
     fn test_ef_construction_default() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = lock();
         std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
         assert_eq!(super::ef_construction(), 200);
     }
 
     #[test]
     fn test_ef_construction_override() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("CQS_HNSW_EF_CONSTRUCTION", "400");
+        let _lock = lock();
+        let _var = EnvVarGuard::set("CQS_HNSW_EF_CONSTRUCTION", "400");
         assert_eq!(super::ef_construction(), 400);
-        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
     }
 
     #[test]
     fn test_ef_construction_invalid_falls_back() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("CQS_HNSW_EF_CONSTRUCTION", "xyz");
+        let _lock = lock();
+        let _var = EnvVarGuard::set("CQS_HNSW_EF_CONSTRUCTION", "xyz");
         assert_eq!(super::ef_construction(), 200);
-        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
     }
 
     #[test]
     fn test_ef_search_default() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = lock();
         std::env::remove_var("CQS_HNSW_EF_SEARCH");
         assert_eq!(super::ef_search(), 100);
     }
 
     #[test]
     fn test_ef_search_override() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("CQS_HNSW_EF_SEARCH", "250");
+        let _lock = lock();
+        let _var = EnvVarGuard::set("CQS_HNSW_EF_SEARCH", "250");
         assert_eq!(super::ef_search(), 250);
-        std::env::remove_var("CQS_HNSW_EF_SEARCH");
     }
 
     #[test]
     fn test_ef_search_invalid_falls_back() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("CQS_HNSW_EF_SEARCH", "");
+        let _lock = lock();
+        let _var = EnvVarGuard::set("CQS_HNSW_EF_SEARCH", "");
         assert_eq!(super::ef_search(), 100);
-        std::env::remove_var("CQS_HNSW_EF_SEARCH");
     }
 }

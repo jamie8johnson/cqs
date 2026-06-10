@@ -248,46 +248,27 @@ impl HnswIndex {
 mod tests {
     use super::*;
 
+    use crate::hnsw::assert_self_match_reachable;
     use crate::hnsw::make_test_embedding as make_embedding;
 
     #[test]
     fn test_build_and_search() {
         // Recall-intent test: a correctly-built index returns the exact-match
-        // vector in its top-k. HNSW is built via `parallel_insert_data`
-        // (rayon) over an OS-seeded layer RNG, and under CPU contention ~1-2%
-        // of builds are degenerate enough that even the cosine-distance-0
-        // self-match is unreachable (measured 52/3000 under 16-core load vs
-        // 0/3000 sequential). That is an hnsw_rs concurrent-build
-        // characteristic, not a cqs bug — so we retry the build a bounded
-        // number of times rather than assert exact rank-1 on a single build.
+        // vector in its top-k. `assert_self_match_reachable` retries the build
+        // (and takes HNSW_ENV_LOCK around it) to absorb the rare degenerate
+        // concurrent-build graph — see the helper docs in hnsw/mod.rs.
         let build = || {
-            // Hold the env lock for the build only: build_with_dim reads
-            // CQS_HNSW_* and must not race a concurrent env-override test.
-            let _env = crate::hnsw::HNSW_ENV_LOCK.lock().unwrap();
             let embeddings = vec![
                 ("chunk1".to_string(), make_embedding(1)),
                 ("chunk2".to_string(), make_embedding(2)),
                 ("chunk3".to_string(), make_embedding(3)),
             ];
-            HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap()
+            let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+            assert_eq!(index.len(), 3);
+            index
         };
 
-        let mut last_ids = Vec::new();
-        let mut hit = None;
-        for _ in 0..8 {
-            let index = build();
-            assert_eq!(index.len(), 3);
-            let results = index.search(&make_embedding(1), 3);
-            assert!(!results.is_empty());
-            last_ids = results.iter().map(|r| r.id.clone()).collect();
-            if let Some(r) = results.iter().find(|r| r.id == "chunk1") {
-                hit = Some(r.score);
-                break;
-            }
-        }
-        let self_score = hit.unwrap_or_else(|| {
-            panic!("chunk1 unreachable across 8 builds (real recall bug, not noise); last top-3 = {last_ids:?}")
-        });
+        let self_score = assert_self_match_reachable(build, &make_embedding(1), "chunk1", 3);
         // Self-match score must be high (cosine distance ~0).
         assert!(
             self_score > 0.9,
@@ -404,38 +385,6 @@ mod tests {
             }
         }
         Embedding::new(v)
-    }
-
-    /// Assert that the exact-match vector `want` is reachable in the top-`k`
-    /// results of an index produced by `build`, retrying the build to absorb
-    /// the rare degenerate concurrent-build graph. `parallel_insert_data`
-    /// under CPU contention yields a self-unreachable node on ~1-2% of builds;
-    /// at 8 retries a transient miss is ~2.5e-14 while a systematic recall bug
-    /// (miss on every build) still fails deterministically.
-    ///
-    /// Each `build()` call runs under `HNSW_ENV_LOCK` so a concurrent
-    /// env-override test cannot perturb the CQS_HNSW_* graph params
-    /// mid-build; the search phase runs unlocked.
-    fn assert_self_match_reachable(
-        build: impl Fn() -> HnswIndex,
-        query: &Embedding,
-        want: &str,
-        k: usize,
-    ) {
-        let mut last_ids = Vec::new();
-        for _ in 0..8 {
-            let index = {
-                let _env = crate::hnsw::HNSW_ENV_LOCK.lock().unwrap();
-                build()
-            };
-            let results = index.search(query, k);
-            assert!(!results.is_empty(), "search returned no results");
-            last_ids = results.iter().map(|r| r.id.clone()).collect();
-            if results.iter().any(|r| r.id == want) {
-                return;
-            }
-        }
-        panic!("{want:?} unreachable across 8 builds (real recall bug, not noise); last top-{k} = {last_ids:?}");
     }
 
     #[test]

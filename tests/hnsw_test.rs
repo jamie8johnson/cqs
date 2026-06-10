@@ -22,6 +22,35 @@ fn make_embedding(seed: u32) -> Embedding {
     Embedding::new(v)
 }
 
+/// Local mirror of the lib-side `assert_self_match_reachable` policy (the
+/// crate-private helper in `src/hnsw/mod.rs` is unreachable from this
+/// integration binary): assert that the exact-match vector `want` is
+/// reachable in the top-`k` results of an index produced by `build`,
+/// retrying the build up to 8 times to absorb the rare degenerate
+/// concurrent-build graph (`parallel_insert_data` under CPU contention
+/// yields a self-unreachable node on ~1-2% of builds — hnswlib-rs#32).
+/// A systematic recall bug (miss on every build) still fails
+/// deterministically. No env lock needed here: nothing in this test binary
+/// mutates CQS_HNSW_* vars, and lib tests run in a separate process.
+fn assert_self_match_reachable(
+    build: impl Fn() -> HnswIndex,
+    query: &Embedding,
+    want: &str,
+    k: usize,
+) {
+    let mut last_ids = Vec::new();
+    for _ in 0..8 {
+        let index = build();
+        let results = index.search(query, k);
+        assert!(!results.is_empty(), "search returned no results");
+        last_ids = results.iter().map(|r| r.id.clone()).collect();
+        if results.iter().any(|r| r.id == want) {
+            return;
+        }
+    }
+    panic!("{want:?} unreachable across 8 builds (real recall bug, not noise); last top-{k} = {last_ids:?}");
+}
+
 #[test]
 fn test_truncated_data_file_detected() {
     let tmp = TempDir::new().unwrap();
@@ -270,20 +299,23 @@ fn test_build_batched_handles_rebuild_after_initial_build() {
     assert_eq!(index1.len(), 2);
 
     // Second build with different data (simulates rebuild)
-    let batch2: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![Ok(vec![
-        ("chunk3".to_string(), make_embedding(3)),
-        ("chunk4".to_string(), make_embedding(4)),
-        ("chunk5".to_string(), make_embedding(5)),
-    ])];
+    let build = || {
+        let batch2: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![Ok(vec![
+            ("chunk3".to_string(), make_embedding(3)),
+            ("chunk4".to_string(), make_embedding(4)),
+            ("chunk5".to_string(), make_embedding(5)),
+        ])];
 
-    let index2 =
-        HnswIndex::build_batched_with_dim(batch2.into_iter(), 3, cqs::EMBEDDING_DIM).unwrap();
-    assert_eq!(index2.len(), 3);
+        let index2 =
+            HnswIndex::build_batched_with_dim(batch2.into_iter(), 3, cqs::EMBEDDING_DIM).unwrap();
+        assert_eq!(index2.len(), 3);
+        index2
+    };
 
-    // Verify search works on rebuilt index
-    let query = make_embedding(3);
-    let results = index2.search(&query, 1);
-    assert_eq!(results[0].id, "chunk3");
+    // Verify search works on rebuilt index: the exact-match query must win
+    // rank-1 (k=1 containment). Retried via the helper because a single
+    // un-retried parallel build can be degenerate (self-match unreachable).
+    assert_self_match_reachable(build, &make_embedding(3), "chunk3", 1);
 }
 
 #[test]
@@ -315,34 +347,38 @@ fn test_build_batched_large_number_of_batches() {
 #[test]
 fn test_build_batched_uneven_batch_sizes() {
     // Test with varying batch sizes (realistic scenario)
-    let batches: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![
-        Ok(vec![
-            ("a".to_string(), make_embedding(1)),
-            ("b".to_string(), make_embedding(2)),
-            ("c".to_string(), make_embedding(3)),
-        ]),
-        Ok(vec![("d".to_string(), make_embedding(4))]), // Small batch
-        Ok(vec![
-            ("e".to_string(), make_embedding(5)),
-            ("f".to_string(), make_embedding(6)),
-            ("g".to_string(), make_embedding(7)),
-            ("h".to_string(), make_embedding(8)),
-            ("i".to_string(), make_embedding(9)),
-        ]), // Large batch
-        Ok(vec![
-            ("j".to_string(), make_embedding(10)),
-            ("k".to_string(), make_embedding(11)),
-        ]),
-    ];
+    let build = || {
+        let batches: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![
+            Ok(vec![
+                ("a".to_string(), make_embedding(1)),
+                ("b".to_string(), make_embedding(2)),
+                ("c".to_string(), make_embedding(3)),
+            ]),
+            Ok(vec![("d".to_string(), make_embedding(4))]), // Small batch
+            Ok(vec![
+                ("e".to_string(), make_embedding(5)),
+                ("f".to_string(), make_embedding(6)),
+                ("g".to_string(), make_embedding(7)),
+                ("h".to_string(), make_embedding(8)),
+                ("i".to_string(), make_embedding(9)),
+            ]), // Large batch
+            Ok(vec![
+                ("j".to_string(), make_embedding(10)),
+                ("k".to_string(), make_embedding(11)),
+            ]),
+        ];
 
-    let index =
-        HnswIndex::build_batched_with_dim(batches.into_iter(), 11, cqs::EMBEDDING_DIM).unwrap();
-    assert_eq!(index.len(), 11);
+        let index =
+            HnswIndex::build_batched_with_dim(batches.into_iter(), 11, cqs::EMBEDDING_DIM).unwrap();
+        assert_eq!(index.len(), 11);
+        index
+    };
 
-    // Verify IDs are correctly mapped
-    let query = make_embedding(5);
-    let results = index.search(&query, 1);
-    assert_eq!(results[0].id, "e");
+    // Verify IDs are correctly mapped across uneven batches: the exact-match
+    // query for "e" (mid-large-batch) must win rank-1 (k=1 containment).
+    // Retried via the helper because a single un-retried parallel build can
+    // be degenerate (self-match unreachable).
+    assert_self_match_reachable(build, &make_embedding(5), "e", 1);
 }
 
 #[test]
