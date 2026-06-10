@@ -4,9 +4,9 @@
 //! watch/daemon incremental path (`watch::reindex::reindex_files`) need the
 //! same three-step reuse decision: read the project-scoped global embedding
 //! cache, fall back to the per-slot store cache, then split chunks into
-//! "reuse a cached embedding" vs "embed fresh". Before #1692 this logic lived
-//! in two places, so the canonical_hash key swap (#1677) had to be patched
-//! twice and any future reuse-semantics change pays the dual-edit tax.
+//! "reuse a cached embedding" vs "embed fresh". Keeping the decision in one
+//! place means a change to reuse semantics (keys, purposes, precedence) has
+//! exactly one edit site instead of a per-caller copy that can drift.
 //!
 //! This module owns the reuse DECISION only. Each caller keeps its own
 //! batching/threading/windowing and maps the returned index split into its own
@@ -30,9 +30,9 @@ use cqs::{Chunk, Embedding, Store};
 ///
 /// A chunk with an empty `canonical_hash` (a hydrated round-trip Chunk —
 /// shouldn't occur on the index path, but guard anyway) falls back to its
-/// `content_hash` so it still gets a usable, content-exact key. This is the
-/// NULL/empty-canonical fallback the #1677 review verified at every site;
-/// having it in one place is the point of this module.
+/// `content_hash` so it still gets a usable, content-exact key — the
+/// NULL/empty-canonical fallback every reuse site must share; having it in
+/// one place is the point of this module.
 pub(crate) fn canon_key(c: &Chunk) -> String {
     if c.canonical_hash.is_empty() {
         c.content_hash.clone()
