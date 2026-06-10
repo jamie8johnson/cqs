@@ -1,5 +1,7 @@
 # Audit Findings — v1.15.1 (post-schema-migration)
 
+> **Frozen snapshot.** This is a historical audit record from 2026-04-02. Findings (locations, line numbers, JSON shapes such as the daemon suggest `total` field in AD-18) describe the codebase as it was then and are not kept current. For present-day state see `docs/audit-triage.md`.
+
 Audit date: 2026-04-02
 Scope: Multiple categories — edge-case/sad-path test coverage gaps, robustness (unwrap/expect/panic paths).
 

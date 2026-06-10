@@ -157,8 +157,8 @@ src/
     commands/   - Command implementations (organized by category)
       mod.rs      - Top-level re-exports
       resolve.rs  - Target resolution (function name → chunk)
-      search/     - query, gather, similar, related, where_cmd, scout, onboard, neighbors
-      graph/      - callers, deps, explain, impact, impact_diff, test_map, trace
+      search/     - query, gather, similar, related, where_cmd, scout, onboard, neighbors; search_ctx.rs (SearchCtx trait — the surface-agnostic search context implemented by both CommandContext and the daemon's BatchView, so query_core runs unchanged on either)
+      graph/      - callers, deps, explain, impact, impact_diff, test_map, trace; notes_text.rs (shared kind-fallback/redirect note + text consts referenced by both CLI and daemon surfaces)
       review/     - diff_review, ci, dead, health, suggest, affected
       index/      - build, gc, stale, stats, umap
       io/         - blame, brief, context, diff, drift, notes, read, reconstruct
@@ -170,8 +170,8 @@ src/
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
       mod.rs      - BatchContext, vector index builder, main loop
       commands.rs - BatchInput/BatchCmd parsing, dispatch router
-      handlers/ - Handler functions (one per command)
-        mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs
+      handlers/ - Daemon dispatch adapters (one per command); each `dispatch_*` is a thin wrapper that parses the wire request into the command's typed `*Args` and calls the shared `*_core`
+        mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs, dispatch_tests.rs (cross-surface parity tests: daemon dispatch == direct core)
       pipeline.rs - Pipeline execution (pipe chaining via `|`)
     args.rs     - Shared CLI/batch arg structs via #[command(flatten)]
     config.rs   - Configuration file loading
@@ -361,7 +361,7 @@ src/
 
 Checklist for every new command:
 
-1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/)
+1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/). Follow the surface-agnostic core pattern established by the command-core unification (#1688–#1698): a typed `<Name>Args` (input, derives `Deserialize`), a typed `<Name>Output` (the single JSON schema, derives `Serialize`), and a `<name>_core(ctx, args) -> Result<<Name>Output>` holding all logic and never printing or reading env posture. The CLI `cmd_<name>` and, where one exists, the daemon `dispatch_<name>` are thin adapters that build `Args`, call the core, and render. Logic lives in the core, not the adapters.
 2. **Category mod.rs** — add `mod <name>;` + `pub(crate) use <name>::*;` in `src/cli/commands/<category>/mod.rs`
 3. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
 4. **Derive surfaces** — `Commands` enum variants pick up dispatch + `variant_name()` + `batch_support()` from `#[derive(cqs_macros::CqsCommands)]` automatically (PR #1495 / #1500). Per-variant attribute knobs: `#[cqs(handler = "cmd_foo")]` for the dispatch fn, `#[cqs(batch_support = "yes")]` to opt into batch mode. See existing variants in `src/cli/definitions.rs` and the macro in `cqs-macros/`. A missing handler is a compile error from the derive expansion.

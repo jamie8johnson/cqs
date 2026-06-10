@@ -29,7 +29,7 @@ Also: `cqs chat` honors `CQS_OUTPUT_FORMAT=v1` (#1650, first external-contributo
 | trace | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
 | deps | ✓ | ✓ | ✓ | ✓ | ✓ (#1618) |
 
-**60/60 Phase 1 dispatch points.** CLI-direct (`cmd_*`, 30 cells) shipped #1612, #1616, #1617, #1618. Daemon-path (`dispatch_*` in `src/cli/batch/handlers/`, 30 cells) shipped #1620 with shared `try_kind_fallback` + `build_kind_fallback_value` helpers. Both surfaces now consult `cqs::kind::classify_hits` against an exact-name lookup before their happy-path query.
+**60/60 Phase 1 dispatch points.** CLI-direct (`cmd_*`, 30 cells) shipped #1612, #1616, #1617, #1618. Daemon-path (`dispatch_*` in `src/cli/batch/handlers/`, 30 cells) shipped #1620, originally with shared `try_kind_fallback` + `build_kind_fallback_value` helpers. Both surfaces consult `cqs::kind::classify_hits` against an exact-name lookup before their happy-path query. (The command-core unification, #1689, later collapsed both surfaces onto a single `*_core` per command; the `try_kind_fallback` / `build_kind_fallback_value` / `KindNotes` helpers named above were deleted in that refactor, replaced by `graph/mod.rs::detect_fallback` + the shared `KindFallbackOutput`.)
 
 **`cqs dead` false-positive reduction (issue #1573):**
 

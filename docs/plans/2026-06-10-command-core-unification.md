@@ -102,9 +102,9 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
   eval path) reproduces the identical shift.
 
 #### Phase 2b — search half (daemon + schema)
-- [~] Cores + typed outputs for the io commands (read, context, gather, scout,
+- [x] Cores + typed outputs for the io commands (read, context, gather, scout,
   onboard, brief, notes, diff, blame, drift, reconstruct). *(io half — separate
-  PR.)* **Landed 2026-06-10 (branch `refactor/command-cores-io`):**
+  PR.)* **Merged 2026-06-10 (#1696, branch `refactor/command-cores-io`):**
   - **Cored + daemon-routed** (typed `*Args` w/ Deserialize + `#[serde(default)]`
     clap-pinned, named `*_core`, both surfaces drive it): `diff` (`diff_core`),
     `drift` (`drift_core`), `scout` (`scout_core`), `onboard` (`onboard_core`),
@@ -192,10 +192,10 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
   `dispatch_search` is byte-equal to `build_unified_results_value(query_core(
   view, daemon_args))` for happy + empty + the converged trust-labeled schema
   (name-only surface, embedder-free).
-- Gate: same as Phase 1 + eval guard — amended 2026-06-10: byte-exact eval match is unachievable under codegen-units=1 (any code change re-coalesces FP ops and can flip rank-boundary ties; proven via graph-only-subset A/B in phase 2a). The enforceable invariant: (a) eval-reachable source (search/store/pipeline/splade/hnsw/embedder/eval) byte-identical in the diff, AND (b) paired test+dev numbers within the clean-HEAD rebuild variance band.
+- Gate: same as Phase 1 + eval guard — amended 2026-06-10: byte-exact eval match is unachievable under codegen-units=1 (any code change re-coalesces FP ops and can flip rank-boundary ties; proven via graph-only-subset A/B in phase 2a). The enforceable invariant: (a) **eval-reachable source byte-identical in the diff** — defined as the retrieval/scoring dirs `src/search/`, `src/store/`, `src/cli/pipeline/`, `src/splade/`, `src/hnsw/`, `src/embedder/` plus the eval matcher/scorer, which lives at `src/cli/commands/eval/runner.rs` (the `(file, name)` rank match + R@K accumulation), NOT `src/eval/` — `src/eval/` holds only the gold/query schema types (`EvalQuery`/`GoldChunk` in `schema.rs`), so a `src/eval/` edit is only eval-reachable if it changes those types — AND (b) paired test+dev numbers within the clean-HEAD rebuild variance band.
 
 ### Phase 3 — infra/index commands (index, gc, stats, doctor, status, slot, cache, model, reference, hook, telemetry, audit-mode, init, ping, watch-adjacent)
-- [~] Cores + typed outputs; daemon adapters. **Landed 2026-06-10 (branch
+- [x] Cores + typed outputs; daemon adapters. **Merged 2026-06-10 (#1697, branch
   `refactor/command-cores-infra`):**
   - **Group 1 — read-query, cored + (where a dispatcher exists) daemon-routed
     + parity:**
@@ -364,13 +364,13 @@ implementation phases of the campaign.
   retrieval cannot move (amended Phase-2/3 gate).
 
 ### Campaign status (phases 0–4)
-- **Phase 0** — ✅ merged (`fix/kind-fallback-cap-parity`). Cap parity + helper hoist.
-- **Phase 1** — ✅ merged. 6 graph commands × 2 surfaces cored.
-- **Phase 2a** — ✅ merged. Search core (`query_core`) + request-scoped config pattern.
-- **Phase 2b** — ✅ landed (`refactor/command-cores-io` + search-half). io commands + daemon `dispatch_search` → `query_core` + schema reconciliation.
-- **Phase 3** — ✅ landed (`refactor/command-cores-infra`). infra/index commands.
-- **Phase 4** — ✅ landed (`refactor/command-cores-phase4`, this entry). review/train/eval + `_with_posture` delete. **Implementation phases complete.**
-- **Post-campaign docs truth sweep** — ⏳ pending (see below).
+- **Phase 0** — ✅ merged (#1688, `fix/kind-fallback-cap-parity`). Cap parity + helper hoist.
+- **Phase 1** — ✅ merged (#1689). 6 graph commands × 2 surfaces cored.
+- **Phase 2a** — ✅ merged (#1694). Search core (`query_core`) + request-scoped config pattern.
+- **Phase 2b** — ✅ merged (#1695 search-half + #1696 io-half). io commands + daemon `dispatch_search` → `query_core` + schema reconciliation.
+- **Phase 3** — ✅ merged (#1697, `refactor/command-cores-infra`). infra/index commands.
+- **Phase 4** — ✅ merged (#1698, `refactor/command-cores-phase4`, this entry). review/train/eval + `_with_posture` delete. **Implementation phases complete.**
+- **Post-campaign docs truth sweep** — 🔄 in progress (this PR; see below).
 
 ## Post-campaign deferred ledger
 
@@ -396,7 +396,7 @@ one schema per command); each is a deliberate scope boundary.
 
 ### Post-campaign — docs truth sweep
 Reviewer-supplied hunts (phase-4 review): (1) audit-triage CQ-V1.40-5/6 marked resolved — verify nothing else in that doc claims _with_posture is pending; (2) docs/audit-findings-v1.15.1.md:379 describes daemon suggest `total` — historical doc, flag as frozen-not-current; (3) pin the exact eval-runner path (src/cli/commands/eval/runner.rs vs src/eval/) wherever "eval-reachable" is defined; (4) confirm the plan's phase-status lines reflect merged state, not working-tree state.
-- [ ] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview)
+- [~] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview). *(In progress 2026-06-10 — branch `docs/post-campaign-truth-sweep`.)*
 - [ ] Fix drift in one docs PR; docs-lying-is-P1 severity applies
 
 ## Invariants for every phase
