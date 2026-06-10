@@ -1,6 +1,9 @@
 # Command-Core Unification (agentic navigability refactor)
 
-Status: **Phase 0 in flight** — update the per-phase checkboxes as work lands; this doc is the resume point if the session dies.
+Status: **Implementation phases complete (0–4 landed 2026-06-10).** Only the
+post-campaign docs truth sweep remains. See "Campaign status (phases 0–4)" and
+the "Post-campaign deferred ledger" near the bottom for the full state. This
+doc is the resume point if the session dies.
 
 ## Motivation (evidence, 2026-06-09/10)
 
@@ -277,11 +280,122 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
 - Gate: full suite + `/cqs-verify` pass.
 
 ### Phase 4 — review/train/eval commands + sweep
-- [ ] Remaining commands; delete any now-unused `json: bool` plumbing and posture shims that became adapter-only (revisit CQ-V1.40-5/6 `_with_posture` here: adapters become the only emit sites — wire or delete)
-- [ ] Final: grep for `dispatch_.*{` bodies >20 lines (should be none); grep inline `serde_json::json!({` in command code (should be near-zero outside adapters)
+**Landed 2026-06-10 (branch `refactor/command-cores-phase4`).** This closes the
+implementation phases of the campaign.
+- [x] **review group** — cores + typed Args/Output, daemon adapters + parity:
+  - `dead` (`dead_core` + `DeadArgs`): both surfaces route through it; daemon
+    `dispatch_dead` reduced to a 6-line adapter. `DeadArgs` derives
+    `Deserialize` with a local `de_confidence` helper so the lib enum
+    `DeadConfidence` stays `Serialize`-only (no eval-reachable source touched).
+  - `health` (`health_core` + `HealthArgs`): adapter owns file enumeration
+    (CLI builds the set via `enumerate_for_health`; daemon passes its cached
+    `file_set`), mirroring the `stale_core` split. `dispatch_health` routes
+    through the core.
+  - `suggest` (`suggest_core` + `SuggestArgs`): read side cored; the `--apply`
+    write stays CLI-only (writable store). **Daemon schema converged onto the
+    CLI's typed `SuggestOutput` — `count` replaces the old `total`.**
+  - `review` (`review_core` + `ReviewArgs` + `ReviewOutput`): flattens the lib
+    `ReviewResult` + optional `token_count`/`token_budget`. CLI JSON + daemon
+    drive the core; CLI text keeps its `json=false` budgeting + dashboard. The
+    daemon empty-diff case now emits the full CLI shape (additive
+    `relevant_notes`/`stale_warning`). Deleted dead `apply_token_budget_public`
+    + `empty_review_json`.
+  - `ci` (`ci_core` + `CiArgs` + `CiOutput`): flattens the lib `CiReport` +
+    token telemetry. CLI JSON + daemon drive the core; the gate-failure
+    `process::exit` stays adapter-owned (the core only reports `gate.passed`).
+    Deleted dead `apply_ci_token_budget`.
+  - `affected` (`affected_core` + `AffectedArgs` + `AffectedOutput`): CLI-only
+    today (no dispatcher) but daemon-ready by construction. `AffectedOutput` is
+    a thin `Serialize` newtype over the lib-owned `diff_impact_to_json`
+    projection + the command-specific `overall_risk` field.
+  - Parity tests (`analysis::parity_tests`): `parity_dead_dispatch_equals_core`,
+    `parity_health_dispatch_equals_core`, `parity_suggest_dispatch_equals_core`
+    (byte-equal daemon vs core; suggest test also guards `count`-not-`total`).
+    `review`/`ci` acquire their diff via `run_git_diff` (needs a real repo
+    diff), so their core-equivalence is pinned at the core level via
+    `review_core_empty_diff_converged_shape` / `ci_core_empty_diff_shape`; the
+    dispatchers are parity-by-construction (they call the core with
+    `run_git_diff` output then `to_value`). Per-Args minimal-deserialize tests
+    added for Dead/Review/Ci/Plan.
+- [x] **train group** — orchestration-heavy → typed-output-only for most;
+  cored the genuine pure queries:
+  - `plan` (`plan_core` + `PlanArgs` + `PlanOutput`): pure read query (store +
+    embedder), dual-surface; `dispatch_plan` routes through it.
+  - `task` (`task_json_core`): the genuinely-shared JSON projection (waterfall
+    budget when `--tokens`, else full serialize) both surfaces previously
+    duplicated as an inline `if tokens { … } else { … }` branch. Resource
+    *provisioning* stays per-surface (CLI `task()` builds resources internally;
+    daemon `task_with_resources()` injects cached `graph`/`test_chunks` for
+    perf — the same per-surface split the plan blessed for `stale_core`).
+  - `train-data`, `train-pairs`, `export-model`: left adapter-owned — git
+    history walk / JSONL file writer / `optimum.exporters.onnx` subprocess.
+    Not pure queries; cores would force side effects into a "core".
+- [x] **eval command adapter** — already conformant: `EvalReport` (runner.rs)
+  is the typed Output serialized via `emit_json`; `EvalArgs` (`clap::Args`) is
+  the typed input; the error path uses `emit_json_error`. `runner.rs`
+  matcher/scoring is eval-reachable and was **not** touched (verified
+  byte-identical in the diff).
+- [x] **`_with_posture` wire-or-delete → DELETE.** `emit_json_with_posture` /
+  `emit_json_error_with_posture` had zero callers (`#[allow(dead_code)]`).
+  Decision: **delete**, per the plan's stated preference ("delete preferred if
+  wiring adds indirection without behavior"). Justification: `Posture::current()`
+  is `OnceLock`-cached and read once cheaply inside `emit_json`; the daemon-flip
+  risk is already foreclosed by the cache pinning the posture for the process
+  lifetime. Wiring an explicit `Posture` through every review/train/eval adapter
+  would thread a value purely to call a variant that produces **byte-identical**
+  output to what `emit_json` already emits — pure indirection, zero behavior
+  change. The live posture-threaded variants that DO have callers
+  (`Envelope::ok_with_posture`/`err_with_posture`, `wrap_value_with_posture`,
+  `emit_json_error_with_data_and_posture`, used by the batch JSONL surface)
+  stay. The `CQS_ULTRASECURITY` env knob is left intact (its deletion is #1690's
+  own PR). Closes CQ-V1.40-5/6.
+- [x] Final greps: no Phase-4-touched `dispatch_*` carries duplicated business
+  logic (dead/health/review/ci/plan/task are all thin adapters now; the
+  remaining >20-line dispatchers are doc-comment-heavy adapters or Phase-2b
+  deferrals like `dispatch_notes`/`dispatch_gather`). Inline `serde_json::json!`
+  in review/train command code is test fixtures + the documented lib-owned
+  `affected` projection boundary only.
+- Gate: build + clippy + fmt clean; targeted review/train/eval + 5 new parity
+  tests green. **Eval-reachable source byte-identical** — the diff is confined
+  to `src/cli/commands/{review,train}/`, `src/cli/batch/handlers/{analysis,misc}.rs`,
+  the two mod re-export files, and `src/cli/json_envelope.rs`. Paired v3 eval
+  run **provably skipped**: no eval-reachable dir
+  (search/store/pipeline/splade/hnsw/embedder/eval) appears in the diff, so
+  retrieval cannot move (amended Phase-2/3 gate).
+
+### Campaign status (phases 0–4)
+- **Phase 0** — ✅ merged (`fix/kind-fallback-cap-parity`). Cap parity + helper hoist.
+- **Phase 1** — ✅ merged. 6 graph commands × 2 surfaces cored.
+- **Phase 2a** — ✅ merged. Search core (`query_core`) + request-scoped config pattern.
+- **Phase 2b** — ✅ landed (`refactor/command-cores-io` + search-half). io commands + daemon `dispatch_search` → `query_core` + schema reconciliation.
+- **Phase 3** — ✅ landed (`refactor/command-cores-infra`). infra/index commands.
+- **Phase 4** — ✅ landed (`refactor/command-cores-phase4`, this entry). review/train/eval + `_with_posture` delete. **Implementation phases complete.**
+- **Post-campaign docs truth sweep** — ⏳ pending (see below).
+
+## Post-campaign deferred ledger
+
+Consolidated list of every deferral made across the campaign, with its reason
+and tracking. None block the campaign's structural goal (one core per behavior,
+one schema per command); each is a deliberate scope boundary.
+
+| Item | Phase | Reason deferred | Tracking |
+|------|-------|-----------------|----------|
+| `read` full/focused union-schema | 2b | Daemon emits `notes_injected`+`trust_level` the CLI omits; CLI focused emits `injection_flags` the daemon omits; daemon does vendored-path detection the CLI doesn't. Needs a union-schema decision (which fields win) — its own schema-change PR. | dedicated schema PR |
+| `notes` list union-schema | 2b | CLI list reads `docs/notes.toml` (emits `id`+`type`); daemon reads store-cached notes (emits `sentiment_label`, no shared `id`). A surface-agnostic core needs a unified data source + union schema first. | dedicated schema PR |
+| `brief`, `reconstruct` cores | 2b | Single positional `path`, trivial display logic, no daemon path, no defaults to drift → a clap-pin would be vacuous. Typed `*Output` already present. | none (typed-output-only is correct) |
+| `--ref`/`--include-refs`/ref-name-only full core-extraction | 2b | Reference-index resolution needs config load + multi-store fan-out; doesn't fit the single-store `SearchCtx`. Both surfaces already serialize through the shared `SearchResultOutput` schema. | multi-store search-context abstraction (out of scope) |
+| `ping` / `status` shared core | 3 | CLI `cmd_ping`/`cmd_status` are *socket clients*; daemon `dispatch_ping`/`dispatch_status` are *server snapshots* (`PingResponse`/`WatchSnapshot` already shared schema). Not the same logic on two surfaces — no core to extract. | none (correct as-is) |
+| `gc` daemon path | 3 | `dispatch_gc` intentionally bails — a writable store can't be shared with the serving snapshot (typestate-enforced). No daemon adapter to wire. | none (correct as-is) |
+| `doctor`, `hook`, `umap`, `model swap`, `reference update` cores | 3 | Env/hardware probes, install orchestration, python subprocess, daemon-stop→reindex→restart, full enrichment pipeline respectively. Process/subprocess/multi-store side effects belong in adapters, not cores. Typed outputs already present where JSON is emitted. | none (typed-output-only / adapter-owned is correct) |
+| `index/build` line-266 reconcile early-return envelope | 3 | Hand-rolls the full `{data,version,error}` wrapper for a special-case return; left as-is to bound risk on the index adapter. | low-value typed-shape cleanup |
+| `train-data`/`train-pairs`/`export-model` cores | 4 | Git-history walk / JSONL file writer / `optimum` subprocess — orchestration, not pure queries. | none (adapter-owned is correct) |
+| `CQS_ULTRASECURITY` env knob removal | 4 | Confirmed for deletion but owned by #1690's own PR; not removed here to keep this diff scoped. | #1690 |
+| Docs truth sweep | post | `/docs-review` across README/CONTRIBUTING/SECURITY/PRIVACY/lib.rs/Cargo.toml + repo description for campaign-stale claims and legacy references. | post-campaign docs PR |
+
 - Gate: full suite, eval paired check, `cqs health` no new dead code, CHANGELOG.
 
 ### Post-campaign — docs truth sweep
+Reviewer-supplied hunts (phase-4 review): (1) audit-triage CQ-V1.40-5/6 marked resolved — verify nothing else in that doc claims _with_posture is pending; (2) docs/audit-findings-v1.15.1.md:379 describes daemon suggest `total` — historical doc, flag as frozen-not-current; (3) pin the exact eval-runner path (src/cli/commands/eval/runner.rs vs src/eval/) wherever "eval-reachable" is defined; (4) confirm the plan's phase-status lines reflect merged state, not working-tree state.
 - [ ] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview)
 - [ ] Fix drift in one docs PR; docs-lying-is-P1 severity applies
 

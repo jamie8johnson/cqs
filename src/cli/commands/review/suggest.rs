@@ -26,6 +26,34 @@ pub(crate) struct SuggestOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Args + core (surface-agnostic, MCP-ready)
+// ---------------------------------------------------------------------------
+
+/// Input for [`suggest_core`]. The core only computes the read-only suggestion
+/// set; the `--apply` side-effect (write notes + reindex) needs a writable
+/// store and is adapter-owned (CLI only), so it is not a core input. The struct
+/// exists to match the established `*Args` shape and can grow Deserialize-able
+/// fields without a signature change (MCP-ready).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct SuggestArgs {}
+
+/// Surface-agnostic core for `cqs suggest`. Detects note-worthy patterns and
+/// returns the typed [`SuggestOutput`] with `applied: false` — applying the
+/// suggestions writes notes + reindexes, which needs a writable store and so
+/// stays adapter-owned (CLI only). Both the CLI (`cmd_suggest`) and daemon
+/// (`dispatch_suggest`) drive this for the read side, so the suggest schema
+/// has one definition site.
+pub(crate) fn suggest_core(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &std::path::Path,
+    _args: &SuggestArgs,
+) -> Result<SuggestOutput> {
+    let _span = tracing::info_span!("suggest_core").entered();
+    let suggestions = cqs::suggest::suggest_notes(store, root)?;
+    Ok(build_suggest_output(&suggestions, false))
+}
+
+// ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
 
@@ -72,13 +100,14 @@ pub(crate) fn cmd_suggest(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_suggest", apply).entered();
 
-    let store = &ctx.store;
     let root = &ctx.root;
-    let suggestions = cqs::suggest::suggest_notes(store, root)?;
 
-    if suggestions.is_empty() {
+    // Read side through the shared core (read-only). The apply side-effect is
+    // adapter-owned because it needs a writable store.
+    let mut output = suggest_core(&ctx.store, root, &SuggestArgs::default())?;
+
+    if output.suggestions.is_empty() {
         if json {
-            let output = build_suggest_output(&suggestions, false);
             crate::cli::json_envelope::emit_json(&output)?;
         } else {
             println!("No suggestions — codebase looks clean.");
@@ -86,24 +115,24 @@ pub(crate) fn cmd_suggest(
         return Ok(());
     }
 
+    if apply {
+        apply_suggestions(&output, root, &ctx.cqs_dir)?;
+        output.applied = true;
+    }
+
     if json {
-        if apply {
-            apply_suggestions(&suggestions, root, &ctx.cqs_dir)?;
-        }
-        let output = build_suggest_output(&suggestions, apply);
         crate::cli::json_envelope::emit_json(&output)?;
     } else if apply {
-        apply_suggestions(&suggestions, root, &ctx.cqs_dir)?;
         println!(
             "Applied {} suggestion{}.",
-            suggestions.len(),
-            if suggestions.len() == 1 { "" } else { "s" }
+            output.count,
+            if output.count == 1 { "" } else { "s" }
         );
     } else {
-        // Dry-run: display suggestions
-        println!("{} ({}):", "Suggested notes".bold(), suggestions.len());
+        // Dry-run: display suggestions from the typed output.
+        println!("{} ({}):", "Suggested notes".bold(), output.count);
         println!();
-        for s in &suggestions {
+        for s in &output.suggestions {
             let sentiment_str = match s.sentiment {
                 v if v <= -0.5 => format!("[{}]", format!("{:.1}", v).red()),
                 v if v >= 0.5 => format!("[{}]", format!("{:.1}", v).green()),
@@ -131,16 +160,17 @@ pub(crate) fn cmd_suggest(
 /// promote the store; an accidental call to a write method on `ctx.store`
 /// is now a compile error.
 fn apply_suggestions(
-    suggestions: &[cqs::suggest::SuggestedNote],
+    output: &SuggestOutput,
     root: &std::path::Path,
     cqs_dir: &std::path::Path,
 ) -> Result<()> {
     let notes_path = root.join("docs/notes.toml");
 
-    let entries: Vec<cqs::NoteEntry> = suggestions
+    let entries: Vec<cqs::NoteEntry> = output
+        .suggestions
         .iter()
         .map(|s| cqs::NoteEntry {
-            sentiment: s.sentiment,
+            sentiment: s.sentiment as f32,
             text: s.text.clone(),
             mentions: s.mentions.clone(),
             kind: None,

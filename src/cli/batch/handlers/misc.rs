@@ -3,7 +3,7 @@
 //! Handlers take a single `&XArgs` argument so the macro-driven
 //! `BatchCmd::dispatch` calls every row uniformly.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::super::commands::BatchInput;
 use super::super::BatchView;
@@ -199,14 +199,9 @@ pub(in crate::cli::batch) fn dispatch_task(
         &test_chunks,
     )?;
 
-    // Full waterfall budgeting (same as CLI) when --tokens is specified
-    let json = if let Some(budget) = tokens {
-        crate::cli::commands::task::task_to_budgeted_json(&result, embedder, budget)?
-    } else {
-        serde_json::to_value(&result)?
-    };
-
-    Ok(json)
+    // Shared projection: waterfall budgeting when `--tokens` is set, else full
+    // serialization. Identical to the CLI's non-brief JSON path.
+    crate::cli::commands::task::task_json_core(&result, embedder, tokens)
 }
 
 /// Performs a scout search query with optional token budget packing.
@@ -360,20 +355,15 @@ pub(in crate::cli::batch) fn dispatch_plan(
     let _span = tracing::info_span!("batch_plan", description).entered();
 
     let embedder = ctx.embedder()?;
-    let result = cqs::plan::plan(
-        &ctx.store(),
-        embedder,
-        description,
-        &ctx.root,
-        args.limit_arg.limit,
-    )
-    .context("Plan generation failed")?;
-
-    let mut json = serde_json::to_value(&result)?;
-    if let Some(budget) = tokens {
-        json["token_budget"] = serde_json::json!(budget);
-    }
-    Ok(json)
+    // Thin adapter over the shared `plan_core` — identical JSON shape across
+    // the CLI and daemon surfaces.
+    let core_args = crate::cli::commands::PlanArgs {
+        description: description.to_string(),
+        limit: args.limit_arg.limit,
+        tokens,
+    };
+    let output = crate::cli::commands::plan_core(&ctx.store(), embedder, &ctx.root, &core_args)?;
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Runs garbage collection on the index.

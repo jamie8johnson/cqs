@@ -330,7 +330,9 @@ pub(crate) fn cmd_task(
     } else if let Some(budget) = max_tokens {
         output_with_budget(&result, root, embedder, budget, json)?;
     } else if json {
-        let output = serde_json::to_value(&result)?;
+        // Plain JSON (no budget) goes through the shared `task_json_core` —
+        // same projection the daemon emits.
+        let output = task_json_core(&result, embedder, None)?;
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
         output_text(&result, root);
@@ -594,6 +596,25 @@ pub(crate) fn waterfall_pack(
         notes: note_indices,
         total_used,
         budget,
+    }
+}
+
+/// Surface-agnostic JSON projection for `cqs task`. Given an already-computed
+/// [`cqs::TaskResult`] (provisioning differs per surface — the CLI builds
+/// resources internally via `task()`, the daemon injects cached `graph` +
+/// `test_chunks` via `task_with_resources()` for perf), produce the final JSON:
+/// waterfall-budgeted when `tokens` is set, else the full serialization. This
+/// is the genuinely-shared projection both surfaces previously duplicated as an
+/// inline `if tokens { … } else { … }` branch.
+pub(crate) fn task_json_core(
+    result: &cqs::TaskResult,
+    embedder: &Embedder,
+    tokens: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("task_json_core", ?tokens).entered();
+    match tokens {
+        Some(budget) => task_to_budgeted_json(result, embedder, budget),
+        None => serde_json::to_value(result).context("Failed to serialize task output"),
     }
 }
 

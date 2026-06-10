@@ -610,18 +610,6 @@ fn emit_bare_payload_stdout<T: Serialize>(value: &T, posture: Posture) -> Result
     Ok(())
 }
 
-/// Posture-aware variant of [`emit_json`]. CLI handler entry points
-/// resolve a [`Posture`] once at dispatch and pass it down the call
-/// chain so leaf serializers don't read process env independently.
-#[allow(dead_code)]
-pub fn emit_json_with_posture<T: Serialize>(value: &T, posture: Posture) -> Result<()> {
-    let env = Envelope::ok_with_posture(value, posture);
-    let buf = serde_json::to_value(&env)?;
-    let s = format_envelope_to_string(&buf)?;
-    println!("{s}");
-    Ok(())
-}
-
 /// Print an error envelope as pretty-printed JSON. Used by `cqs ping --json`
 /// (daemon-not-running path) and `cqs eval --baseline ... --json` (regression-
 /// past-tolerance path) so JSON consumers always get the published failure
@@ -633,16 +621,6 @@ pub fn emit_json_with_posture<T: Serialize>(value: &T, posture: Posture) -> Resu
 /// should prefer [`ErrorCode::as_str`] for compile-checked emission.
 pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
     let env = Envelope::<serde_json::Value>::err(code, message);
-    let buf = serde_json::to_value(&env)?;
-    let s = format_envelope_to_string(&buf)?;
-    println!("{s}");
-    Ok(())
-}
-
-/// Posture-aware variant of [`emit_json_error`].
-#[allow(dead_code)]
-pub fn emit_json_error_with_posture(code: &str, message: &str, posture: Posture) -> Result<()> {
-    let env = Envelope::<serde_json::Value>::err_with_posture(code, message, posture);
     let buf = serde_json::to_value(&env)?;
     let s = format_envelope_to_string(&buf)?;
     println!("{s}");
