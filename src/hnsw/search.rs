@@ -124,7 +124,7 @@ impl HnswIndex {
                     // Distance → similarity. Holds for both supported
                     // metrics: DistCosine returns 1 − cos (score = cos) and
                     // DistDot returns 1 − a·b (score = a·b) — see
-                    // `DistanceMetric` (#1351).
+                    // `DistanceMetric`.
                     let score = 1.0 - n.distance;
                     if !score.is_finite() {
                         tracing::warn!(

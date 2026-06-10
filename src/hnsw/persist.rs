@@ -109,7 +109,7 @@ pub const HNSW_ALL_EXTENSIONS: &[&str] = &[
     "hnsw.lock",
 ];
 
-/// Magic string for the `{basename}.hnsw.meta` JSON header (#1351). A
+/// Magic string for the `{basename}.hnsw.meta` JSON header. A
 /// mismatch is a typed load error, not a silent default.
 const HNSW_META_MAGIC: &str = "CQSHNSW";
 
@@ -936,7 +936,7 @@ impl HnswIndex {
         tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
         verify_hnsw_checksums(dir, basename)?;
 
-        // Resolve the distance metric (#1351). The stored value (meta
+        // Resolve the distance metric. The stored value (meta
         // header; legacy indexes without one are cosine) always wins — but
         // an *explicit* conflicting CQS_DISTANCE_METRIC is a typed error
         // rather than a silent reinterpretation of distances.
@@ -1112,7 +1112,7 @@ impl HnswIndex {
     }
 
     /// Read the stored distance metric for a persisted index without
-    /// loading it (#1351). Missing meta header → `Cosine` (legacy indexes,
+    /// loading it. Missing meta header → `Cosine` (legacy indexes,
     /// and the build default when no index exists yet). Used by derived
     /// backends (CAGRA rebuild path) to stay consistent with the slot's
     /// HNSW metric when `CQS_DISTANCE_METRIC` is unset.
@@ -1857,7 +1857,7 @@ mod tests {
         );
     }
 
-    // ===== distance metric persistence (#1351) =====
+    // ===== distance metric persistence =====
 
     /// Roundtrip: build with DotProduct → save → load → metric preserved
     /// and search still finds the self-match with a near-1 score (the
@@ -1945,7 +1945,7 @@ mod tests {
     /// metric than the stored one is a typed `MetricMismatch` error, never
     /// a silent reinterpretation.
     ///
-    /// Test discipline (#1351): the env var is only ever set to "cosine" —
+    /// Test discipline: the env var is only ever set to "cosine" —
     /// a concurrent unlocked test loading a cosine index then still sees
     /// `requested == stored` and is unaffected. The conflict is created by
     /// the *stored* side (a DotProduct index built via the explicit-metric

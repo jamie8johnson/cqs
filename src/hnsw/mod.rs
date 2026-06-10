@@ -254,7 +254,7 @@ pub enum HnswError {
 /// hnsw_rs bakes the distance into the type parameter (`Hnsw<'a, f32, D>`),
 /// and its API doesn't lend itself to `dyn Distance` erasure, so metric
 /// polymorphism is an enum over the concrete dist types with forwarding
-/// methods (#1351). One variant per [`DistanceMetric`] — both must stay
+/// methods. One variant per [`DistanceMetric`] — both must stay
 /// buildable AND loadable, since the load path instantiates the variant
 /// from the persisted `{basename}.hnsw.meta` header.
 ///

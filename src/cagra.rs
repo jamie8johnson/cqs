@@ -193,7 +193,7 @@ fn cagra_itopk_max_default(n_vectors: usize) -> usize {
 /// graph degree. Both map to the corresponding cuVS `IndexParams` setters.
 /// Returns `IndexParams` with those setters applied (and traces the choice).
 ///
-/// `metric` threads the cqs [`DistanceMetric`] into cuVS (#1351):
+/// `metric` threads the cqs [`DistanceMetric`] into cuVS:
 /// - `Cosine` keeps cuVS's default `L2Expanded`, which is rank-equivalent to
 ///   cosine on the unit-norm embeddings cqs produces (`d² = 2 − 2·cos`) and
 ///   is exactly what every pre-#1351 build used.
@@ -244,7 +244,7 @@ fn cagra_build_params(metric: DistanceMetric) -> Result<cuvs::cagra::IndexParams
 pub struct CagraIndex {
     /// Embedding dimensionality (runtime, from model config)
     dim: usize,
-    /// Distance metric the index was built with (#1351). Drives the
+    /// Distance metric the index was built with. Drives the
     /// distance → similarity conversion in `search_impl` and is stamped
     /// into the persisted sidecar.
     metric: DistanceMetric,
@@ -593,7 +593,7 @@ impl CagraIndex {
             return Vec::new();
         }
 
-        // Convert results: distance → similarity, per build metric (#1351).
+        // Convert results: distance → similarity, per build metric.
         // - Cosine: the index is built with cuVS's default L2Expanded
         //   (squared L2). For unit-norm vectors d = 2 - 2*cos_sim, so
         //   cos_sim = 1 - d/2.
@@ -960,7 +960,7 @@ struct CagraMeta {
     id_map: Vec<String>,
     /// Blake3 checksum over the `.cagra` binary blob as a hex string.
     blake3: String,
-    /// [`DistanceMetric::as_str`] value the index was built with (#1351).
+    /// [`DistanceMetric::as_str`] value the index was built with.
     /// Legacy sidecars (pre-#1351) omit the field and default to cosine —
     /// which is what every legacy build used.
     #[serde(default = "default_metric_string")]
@@ -1283,7 +1283,7 @@ impl CagraIndex {
             )));
         }
 
-        // Distance metric (#1351): the stored value wins; an explicitly set,
+        // Distance metric: the stored value wins; an explicitly set,
         // conflicting CQS_DISTANCE_METRIC marks the blob stale so the caller
         // rebuilds with the requested metric (CAGRA is a derived index — the
         // rebuild path is the remedy, unlike HNSW where the same conflict is
@@ -1695,7 +1695,7 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Ca
             }
         }
 
-        // Resolve the metric for a fresh build (#1351): explicit env wins;
+        // Resolve the metric for a fresh build: explicit env wins;
         // otherwise follow the slot's stored HNSW metric so the two backends
         // can't drift apart; cosine when neither exists. An invalid env
         // value falls through to HNSW, whose load/build path surfaces the
@@ -2338,7 +2338,7 @@ mod tests {
         let _: bool = enabled;
     }
 
-    // ===== distance metric (#1351) =====
+    // ===== distance metric =====
 
     /// DotProduct build + search on the GPU backend. The self-match score
     /// pins the InnerProduct distance → similarity conversion in

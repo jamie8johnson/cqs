@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(backends[0].name(), "cagra");
     }
 
-    // ===== DistanceMetric (#1351) =====
+    // ===== DistanceMetric =====
 
     #[test]
     fn test_distance_metric_default_is_cosine() {
