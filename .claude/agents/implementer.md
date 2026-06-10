@@ -35,16 +35,17 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 5. After each significant edit, run `cqs test-map FUNCTION_NAME --json` on modified functions
 6. Ensure all new public functions have `tracing::info_span!` at entry
 7. No `unwrap()` outside tests
-8. **Long-runner discipline**: any script you write that may run >10 minutes (eval, training, corpus build, labeling) MUST be observable + robust + resumable per `feedback_orr_default` memory. Append-only `events.jsonl`, periodic heartbeat, SIGINT-safe, resume from output checkpoint.
+8. **No issue/PR/audit IDs in code comments** (`#1234`, `DS-V1.40-1`, etc.) — CI's provenance lint rejects them. Comments describe what the code does now; provenance goes in the commit message. TODO/FIXME with a tracking ID is the only exception.
+9. **Long-runner discipline**: any script you write that may run >10 minutes (eval, training, corpus build, labeling) MUST be observable + robust + resumable per `feedback_orr_default` memory. Append-only `events.jsonl`, periodic heartbeat, SIGINT-safe, resume from output checkpoint.
 
 ### After implementation (always run these, even for trivial fixes)
 
-9. Run `cargo fmt`
-10. Run `cargo build --features cuda-index` — fix any errors
-11. Run `cargo clippy --features cuda-index -- -D warnings` — fix warnings
-12. Run **targeted** tests only: `cargo test --features cuda-index -- test_name` for functions you changed
-13. For Standard or Risky scope: run `cqs review --json` to check the diff for risk
-14. Commit your changes
+10. Run `cargo fmt`
+11. Run `cargo build --features cuda-index` — fix any errors
+12. Run `cargo clippy --features cuda-index -- -D warnings` — fix warnings
+13. Run **targeted** tests only: `cargo test --features cuda-index -- test_name` for functions you changed
+14. For Standard or Risky scope: run `cqs review --json` to check the diff for risk
+15. Commit your changes
 
 ## Rules
 
