@@ -31,7 +31,7 @@
           "gold_chunk": {
             "id": null,
             "name": "embed_batch",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 751,
@@ -50,7 +50,7 @@
           "gold_chunk": {
             "id": null,
             "name": "embed_batch",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 751,
@@ -70,7 +70,7 @@
       "gold_chunk": {
         "id": null,
         "name": "embed_batch",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
         "line_start": 751,
@@ -208,9 +208,9 @@
         "claude": {
           "verified": true,
           "gold_chunk": {
-            "id": "src/cache.rs:49:60be9eb0:w5",
+            "id": "src/cache/embedding_cache.rs:49:60be9eb0:w5",
             "name": "EmbeddingCache",
-            "origin": "src/cache.rs",
+            "origin": "src/cache/embedding_cache.rs",
             "language": "rust",
             "chunk_type": "impl",
             "line_start": 49,
@@ -227,9 +227,9 @@
         "gemma": {
           "verified": true,
           "gold_chunk": {
-            "id": "src/cache.rs:49:60be9eb0:w5",
+            "id": "src/cache/embedding_cache.rs:49:60be9eb0:w5",
             "name": "EmbeddingCache",
-            "origin": "src/cache.rs",
+            "origin": "src/cache/embedding_cache.rs",
             "language": "rust",
             "chunk_type": "impl",
             "line_start": 49,
@@ -247,9 +247,9 @@
       "pool_size": 7,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/cache.rs:49:60be9eb0:w5",
+        "id": "src/cache/embedding_cache.rs:49:60be9eb0:w5",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
         "line_start": 49,
@@ -2234,7 +2234,7 @@
           "gold_chunk": {
             "id": null,
             "name": "embed_query",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 615,
@@ -2253,7 +2253,7 @@
           "gold_chunk": {
             "id": null,
             "name": "embed_query",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 615,
@@ -2273,7 +2273,7 @@
       "gold_chunk": {
         "id": null,
         "name": "embed_query",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
         "line_start": 615,
@@ -3310,7 +3310,7 @@
           "gold_chunk": {
             "id": null,
             "name": "verify_checksum",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/download.rs",
             "language": "rust",
             "chunk_type": "function",
             "line_start": 970,
@@ -3329,7 +3329,7 @@
           "gold_chunk": {
             "id": null,
             "name": "verify_checksum",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/download.rs",
             "language": "rust",
             "chunk_type": "function",
             "line_start": 970,
@@ -3349,7 +3349,7 @@
       "gold_chunk": {
         "id": null,
         "name": "verify_checksum",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/download.rs",
         "language": "rust",
         "chunk_type": "function",
         "line_start": 970,
@@ -4447,7 +4447,7 @@
           "gold_chunk": {
             "id": null,
             "name": "CacheStats",
-            "origin": "src/cache.rs",
+            "origin": "src/cache/mod.rs",
             "language": "rust",
             "chunk_type": "struct",
             "line_start": 28,
@@ -4466,7 +4466,7 @@
           "gold_chunk": {
             "id": null,
             "name": "CacheStats",
-            "origin": "src/cache.rs",
+            "origin": "src/cache/mod.rs",
             "language": "rust",
             "chunk_type": "struct",
             "line_start": 28,
@@ -4486,7 +4486,7 @@
       "gold_chunk": {
         "id": null,
         "name": "CacheStats",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/mod.rs",
         "language": "rust",
         "chunk_type": "struct",
         "line_start": 28,
@@ -5574,9 +5574,9 @@
         "claude": {
           "verified": true,
           "gold_chunk": {
-            "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+            "id": "src/embedder/core.rs:349:3a5cb4fc:w1",
             "name": "model_fingerprint",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 349,
@@ -5593,9 +5593,9 @@
         "gemma": {
           "verified": true,
           "gold_chunk": {
-            "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+            "id": "src/embedder/core.rs:349:3a5cb4fc:w1",
             "name": "model_fingerprint",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 349,
@@ -5613,9 +5613,9 @@
       "pool_size": 23,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+        "id": "src/embedder/core.rs:349:3a5cb4fc:w1",
         "name": "model_fingerprint",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
         "line_start": 349,
@@ -5637,7 +5637,7 @@
           "gold_chunk": {
             "id": null,
             "name": "session",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 432,
@@ -5656,7 +5656,7 @@
           "gold_chunk": {
             "id": null,
             "name": "session",
-            "origin": "src/embedder/mod.rs",
+            "origin": "src/embedder/core.rs",
             "language": "rust",
             "chunk_type": "method",
             "line_start": 432,
@@ -5676,7 +5676,7 @@
       "gold_chunk": {
         "id": null,
         "name": "session",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
         "line_start": 432,

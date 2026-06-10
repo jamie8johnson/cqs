@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **Split three big-with-logic monoliths into directories (#1691).** Pure code
+  motion along existing seams — no behavior change. `src/cache.rs` (2,919 lines)
+  → `cache/{mod,embedding_cache,query_cache}.rs`; `src/embedder/mod.rs` (2,855)
+  → `embedder/{mod,core,download,pooling}.rs` (alongside the existing
+  `models.rs` / `provider.rs`); `src/cli/batch/mod.rs` (3,479) →
+  `batch/{mod,context,view,session}.rs` (alongside `commands.rs` /
+  `handlers/` / `pipeline.rs`). Each `mod.rs` retains the shared types and
+  re-exports, so callers don't churn. Cross-submodule construction
+  (`BatchContext::build_view` ↔ `BatchView`, `create_context` ↔ `BatchContext`)
+  uses `pub(super)` field visibility — the documented v0.9.0 directory-split
+  pattern. The eval gold fixtures (`v3_test`, `v3_dev`) match on `(file, name)`,
+  so the 10 gold entries whose chunks moved had their `origin` paths refreshed
+  in the same change (3 in test, 7 in dev); a stale-origin vs refreshed-origin
+  A/B confirms the refresh recovers the matches re-chunking would otherwise lose
+  (TEST R@20 0.798→0.817, DEV R@5 0.706→0.743). Residual sub-2pp drift vs the
+  pre-split baseline is corpus re-chunking shifting non-moved queries' retrieval
+  pools, not a fixture error.
+
 ### Removed
 
 - **`CQS_ULTRASECURITY` env knob removed (breaking; #1690).** The
