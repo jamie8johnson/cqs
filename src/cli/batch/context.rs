@@ -8,6 +8,30 @@
 
 use super::*;
 
+// ─── Data-version probe ──────────────────────────────────────────────────────
+
+/// Long-lived `PRAGMA data_version` probe connection.
+///
+/// `data_version` is a per-connection counter that SQLite bumps when *another*
+/// connection (including one in the same process — e.g. the watch loop's
+/// read-write Store) commits a change to the database. It moves on WAL commits
+/// that never touch the main `index.db` file, which is exactly the blind spot
+/// of the `DbFileIdentity` (inode/size/mtime) check: under WAL, incremental
+/// reindex writes land in `index.db-wal` and the main file's identity is
+/// unchanged until checkpoint.
+///
+/// The classic pitfall: the counter is only meaningful when queried repeatedly
+/// on the SAME connection — a fresh connection per check re-baselines every
+/// time and never observes a change. So the connection here must live as long
+/// as the `BatchContext` (and be re-opened when `index.db` is replaced via
+/// rename-over, since the old fd then points at the orphaned inode and its
+/// data_version never moves again).
+pub(super) struct DataVersionProbe {
+    conn: sqlx::SqliteConnection,
+    /// Last observed `PRAGMA data_version` value on `conn`.
+    last: i64,
+}
+
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
 /// Shared resources for a batch session.
@@ -25,10 +49,14 @@ use super::*;
 /// and live for the session. ONNX sessions are cleared after idle timeout.
 ///
 /// **Mutable caches** (hnsw, call_graph, test_chunks, file_set, notes_cache)
-/// use `RefCell<Option<T>>` and are auto-invalidated when the index.db mtime
-/// changes. This detects concurrent `cqs index` runs during long `cqs chat`
-/// sessions. On invalidation, the Store is also re-opened since it has its own
-/// internal `OnceLock` caches (call_graph_cache, test_chunks_cache).
+/// use `RefCell<Option<T>>` and are auto-invalidated when index.db changes —
+/// detected via file identity (inode/size/mtime) OR `PRAGMA data_version` on
+/// a long-lived probe connection (the latter catches WAL-mode incremental
+/// writes that never touch the main file; see [`Self::check_index_staleness`]).
+/// This detects concurrent `cqs index` runs and watch-loop reindexes during
+/// long daemon / `cqs chat` sessions. On invalidation, the Store is also
+/// re-opened since it has its own internal `OnceLock` caches
+/// (call_graph_cache, test_chunks_cache).
 ///
 /// Manual invalidation is available via the `refresh` batch command.
 pub(crate) struct BatchContext {
@@ -115,6 +143,15 @@ pub(crate) struct BatchContext {
     /// results from the orphaned inode. `DbFileIdentity` mixes in inode + size
     /// so sub-second replacements still register.
     pub(super) index_id: Cell<Option<DbFileIdentity>>,
+    /// Second staleness discriminator: a long-lived `PRAGMA data_version`
+    /// probe connection (see [`DataVersionProbe`]). Catches WAL-mode
+    /// incremental writes (watch loop → `index.db-wal`) that leave the main
+    /// file's identity untouched until checkpoint — the false-negative class
+    /// `index_id` alone cannot see (DS-V1.40-1 / #1714).
+    ///
+    /// `None` when the probe couldn't be opened (warned, identity-only
+    /// fallback); re-opened lazily on the next staleness check.
+    pub(super) data_version_probe: RefCell<Option<DataVersionProbe>>,
     /// When the staleness check last ran. Used to rate-limit `fs::metadata`
     /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`].
     pub(super) last_staleness_check: Cell<Option<Instant>>,
@@ -192,7 +229,7 @@ impl BatchContext {
         index_id: Option<DbFileIdentity>,
     ) -> Self {
         let runtime = Arc::clone(store.runtime());
-        Self {
+        let ctx = Self {
             // Mutex<Arc<Store>> so `checkout_view` can clone the Arc out
             // cheaply.
             store: Mutex::new(Arc::new(store)),
@@ -214,6 +251,7 @@ impl BatchContext {
             cqs_dir,
             model_config,
             index_id: Cell::new(index_id),
+            data_version_probe: RefCell::new(None),
             // None means the first staleness check runs unconditionally; the
             // rate-limit kicks in only after the first successful stat.
             last_staleness_check: Cell::new(None),
@@ -227,7 +265,14 @@ impl BatchContext {
             watch_snapshot: cqs::watch_status::shared_unknown(),
             reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
             fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
-        }
+        };
+        // Baseline the data_version probe at construction (not lazily on the
+        // first staleness check) so WAL commits landing between construction
+        // and the first check are observed as a change rather than silently
+        // absorbed into a late baseline. Failure is non-fatal — the open
+        // helper warns and the check falls back to identity-only.
+        ctx.rebaseline_data_version_probe(&cqs::resolve_index_db(&ctx.cqs_dir));
+        ctx
     }
 
     /// Check idle timeout and clear ONNX sessions if enough time has passed.
@@ -315,15 +360,25 @@ impl BatchContext {
         }
     }
 
-    /// Check if index.db identity changed since last access. If so, clear
-    /// all mutable caches and re-open the Store (which resets its internal
-    /// OnceLock caches like call_graph_cache, test_chunks_cache).
+    /// Check if index.db changed since last access. If so, clear all mutable
+    /// caches and re-open the Store (which resets its internal OnceLock
+    /// caches like call_graph_cache, test_chunks_cache).
     ///
-    /// Identity is `(inode, size, mtime)` on unix and `(size, mtime)`
-    /// elsewhere. The extra discriminators catch sub-second replacements on
-    /// filesystems with 1-s mtime resolution (WSL NTFS/DrvFS): a `cqs index
-    /// --force` rename-over yields a new inode immediately, so the batch
-    /// session invalidates even when two events share the same mtime bucket.
+    /// Two discriminators, either of which fires the invalidation:
+    ///
+    /// 1. **File identity** — `(inode, size, mtime)` on unix, `(size, mtime)`
+    ///    elsewhere. Catches replacement (`cqs index --force` rename-over,
+    ///    new inode even when two events share a 1-s WSL NTFS mtime bucket)
+    ///    and in-place rewrites of the main file.
+    /// 2. **`PRAGMA data_version`** on a long-lived probe connection. Catches
+    ///    WAL-mode incremental writes: the watch loop's commits land in
+    ///    `index.db-wal`, leaving the main file's identity unchanged until
+    ///    checkpoint — identity alone would serve stale caches through any
+    ///    number of incremental reindexes (DS-V1.40-1 / #1714).
+    ///
+    /// False positives cost one cache reload; false negatives are the bug,
+    /// so the probe falls back to identity-only (with a warn) rather than
+    /// blocking the check when it can't be opened or queried.
     ///
     /// Rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`]. Every
     /// `ctx.store()` and every `vector_index` / `file_set` / etc. accessor
@@ -355,10 +410,33 @@ impl BatchContext {
         };
 
         let last = self.index_id.get();
-        if last.is_some() && last != Some(current_id) {
+        let identity_changed = last.is_some() && last != Some(current_id);
+        // Only consult the probe when identity is unchanged: an identity
+        // change already invalidates, and the old probe fd points at the
+        // orphaned inode anyway (its data_version would never move again).
+        let data_version_changed = if identity_changed {
+            false
+        } else {
+            self.data_version_changed()
+        };
+
+        if identity_changed || data_version_changed {
             let _span = tracing::info_span!("batch_index_invalidation").entered();
-            tracing::info!("index.db identity changed, invalidating mutable caches");
+            tracing::info!(
+                identity_changed,
+                data_version_changed,
+                "index.db changed, invalidating mutable caches"
+            );
             self.invalidate_mutable_caches();
+
+            if identity_changed {
+                // The probe connection still points at the replaced (deleted)
+                // inode — re-open it against the new file. Re-baseline BEFORE
+                // the Store re-open below: a write landing between the two is
+                // then caught on the next check (false positive at worst);
+                // baselining after the re-open would silently absorb it.
+                self.rebaseline_data_version_probe(&index_path);
+            }
 
             // Re-open the Store to reset its internal OnceLock caches.
             // Reuse the shared runtime so this re-open doesn't spin up a
@@ -388,6 +466,97 @@ impl BatchContext {
             }
         }
         self.index_id.set(Some(current_id));
+    }
+
+    /// Open a fresh probe connection against `index_path` and read its
+    /// baseline `PRAGMA data_version`. Returns `None` (with a `warn!`) when
+    /// the open or the query fails — staleness detection then falls back to
+    /// identity-only rather than panicking or silently skipping the check.
+    fn open_data_version_probe(&self, index_path: &std::path::Path) -> Option<DataVersionProbe> {
+        use sqlx::ConnectOptions;
+        let result = self.runtime.block_on(async {
+            // Mirror the Store's read-only open shape (filename + read_only +
+            // WAL) so the probe sees the same journal-mode view of the DB.
+            let mut conn = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(index_path)
+                .read_only(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .connect()
+                .await?;
+            let last: i64 = sqlx::query_scalar("PRAGMA data_version")
+                .fetch_one(&mut conn)
+                .await?;
+            Ok::<_, sqlx::Error>(DataVersionProbe { conn, last })
+        });
+        match result {
+            Ok(probe) => Some(probe),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %index_path.display(),
+                    "Failed to open data_version probe — falling back to identity-only staleness detection"
+                );
+                None
+            }
+        }
+    }
+
+    /// Query `PRAGMA data_version` on the long-lived probe connection and
+    /// compare against the last observed value. Returns `true` when another
+    /// connection (e.g. the watch loop's read-write Store) has committed
+    /// since the previous observation — WAL or not.
+    ///
+    /// A missing probe (failed earlier open) is re-opened here, which
+    /// establishes a fresh baseline and returns `false` for this check. A
+    /// query failure warns, drops the probe so the next check re-opens it,
+    /// and returns `false` (identity-only fallback — never panics).
+    fn data_version_changed(&self) -> bool {
+        let mut slot = self.data_version_probe.borrow_mut();
+        match slot.as_mut() {
+            None => {
+                // Earlier open failed (or the probe was dropped after a query
+                // error) — retry. Freshly baselined, so nothing to compare.
+                *slot = self.open_data_version_probe(&cqs::resolve_index_db(&self.cqs_dir));
+                false
+            }
+            Some(probe) => {
+                let result = self.runtime.block_on(
+                    sqlx::query_scalar::<_, i64>("PRAGMA data_version").fetch_one(&mut probe.conn),
+                );
+                match result {
+                    Ok(v) => {
+                        let changed = v != probe.last;
+                        probe.last = v;
+                        changed
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "data_version probe query failed — dropping probe; will re-open on next staleness check"
+                        );
+                        *slot = None;
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drop the current probe connection (if any) and open a fresh one
+    /// against `index_path`, re-baselining `data_version`. Called when
+    /// `index.db` is replaced (rename-over): the old fd points at the
+    /// orphaned inode, so its counter would never move again. Also called at
+    /// construction and on manual `refresh`.
+    fn rebaseline_data_version_probe(&self, index_path: &std::path::Path) {
+        use sqlx::Connection;
+        let mut slot = self.data_version_probe.borrow_mut();
+        if let Some(old) = slot.take() {
+            // Explicit close so sqlite finalizes the old handle now instead
+            // of whenever Drop gets around to it. Best-effort — the fd is
+            // dead-weight either way.
+            let _ = self.runtime.block_on(old.conn.close());
+        }
+        *slot = self.open_data_version_probe(index_path);
     }
 
     /// Clear all mutable caches. Called on index identity change or manual refresh.
@@ -463,6 +632,10 @@ impl BatchContext {
 
         // Slot-aware index resolution.
         let index_path = cqs::resolve_index_db(&self.cqs_dir);
+        // Re-baseline the data_version probe before the Store re-open (same
+        // ordering rationale as check_index_staleness): a write landing
+        // between the two is caught on the next check instead of absorbed.
+        self.rebaseline_data_version_probe(&index_path);
         // Pass the shared runtime so manual refreshes keep using the same
         // worker pool as the session they're refreshing.
         let new_store =

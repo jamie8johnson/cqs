@@ -179,14 +179,15 @@ fn refs_lru_size() -> std::num::NonZeroUsize {
     std::num::NonZeroUsize::new(size).unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
 }
 
-/// Minimum interval between `fs::metadata` calls on `index.db` during a
-/// batch session. `store()` is called on virtually every handler hop, and
-/// `ctx.store()` calls `check_index_staleness` which in turn calls
-/// `fs::metadata`. Most filesystem mtime resolutions are 1 ms on Linux ext4
-/// / WSL, so polling more often than ~100 ms cannot detect anything
-/// mtime-based — we just pay a syscall per poll. 100 ms caps the syscall
-/// rate at ~10 Hz per batch session while keeping reindex detection latency
-/// well under a second.
+/// Minimum interval between staleness probes (`fs::metadata` on `index.db`
+/// plus one `PRAGMA data_version` on the long-lived probe connection) during
+/// a batch session. `store()` is called on virtually every handler hop, and
+/// `ctx.store()` calls `check_index_staleness` which runs both probes. Most
+/// filesystem mtime resolutions are 1 ms on Linux ext4 / WSL, so polling
+/// more often than ~100 ms cannot detect anything mtime-based — we just pay
+/// a syscall per poll (the pragma is a connection-local counter read,
+/// cheaper still). 100 ms caps the probe rate at ~10 Hz per batch session
+/// while keeping reindex detection latency well under a second.
 const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// A cached value paired with the instant it was loaded. The accessor
@@ -574,6 +575,148 @@ mod tests {
             ctx.notes_cache.borrow().is_none(),
             "DS-V1.25-6: rename-over replacement (same mtime, new inode) should invalidate cache"
         );
+    }
+
+    /// DS-V1.40-1 / #1714: the daemon runs WAL mode — the watch loop's
+    /// incremental writes go to `index.db-wal`, and the main file's identity
+    /// (inode/size/mtime) doesn't change until checkpoint. Identity alone
+    /// would serve stale caches through any number of incremental reindexes.
+    /// The `PRAGMA data_version` probe must catch the commit anyway.
+    #[test]
+    fn test_wal_write_without_checkpoint_invalidates_cache() {
+        use sqlx::{ConnectOptions, Connection};
+
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Populate a cache and run the first check to baseline both
+        // discriminators (identity + data_version).
+        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_some(),
+            "baseline check must not invalidate"
+        );
+
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let id_before = DbFileIdentity::from_path(&index_path).unwrap();
+
+        // Second connection, same process (the watch-loop-vs-batch-context
+        // shape): commit a write through WAL with NO checkpoint. The
+        // connection stays open across the assertions — closing the last
+        // writer would auto-checkpoint into the main file and let the
+        // identity discriminator mask the one under test.
+        let mut writer = ctx
+            .runtime
+            .block_on(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&index_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect(),
+            )
+            .unwrap();
+        ctx.runtime
+            .block_on(async {
+                sqlx::query("CREATE TABLE IF NOT EXISTS wal_poke (x INTEGER)")
+                    .execute(&mut writer)
+                    .await?;
+                sqlx::query("INSERT INTO wal_poke (x) VALUES (1)")
+                    .execute(&mut writer)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .unwrap();
+
+        // Precondition: the commit landed in the WAL, not the main file —
+        // if identity moved, this test would prove nothing about the
+        // data_version discriminator.
+        assert_eq!(
+            DbFileIdentity::from_path(&index_path).unwrap(),
+            id_before,
+            "test precondition: WAL commit must leave main-file identity unchanged"
+        );
+
+        // Clear the 100ms rate limit and re-check: data_version must fire.
+        ctx.last_staleness_check.set(None);
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_none(),
+            "DS-V1.40-1: WAL commit with no checkpoint must invalidate caches via data_version"
+        );
+
+        let _ = ctx.runtime.block_on(writer.close());
+    }
+
+    /// After a rename-over replacement (identity invalidation), the probe
+    /// connection must be re-opened against the new file — the old fd points
+    /// at the deleted inode and its data_version would never move again.
+    /// Pin the rebaseline by WAL-committing against the NEW file (no
+    /// checkpoint) and requiring a second invalidation.
+    #[cfg(unix)]
+    #[test]
+    fn test_probe_rebaselines_after_rename_over() {
+        use sqlx::{ConnectOptions, Connection};
+
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        ctx.check_index_staleness();
+        assert!(ctx.notes_cache.borrow().is_some());
+
+        // Rename-over (the `cqs index --force` shape).
+        let replacement = cqs_dir.join("index.db.replacement");
+        let store = Store::open(&replacement).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        drop(store);
+        std::fs::rename(&replacement, &index_path).unwrap();
+
+        ctx.last_staleness_check.set(None);
+        ctx.check_index_staleness(); // identity fires; probe rebaselines here
+        assert!(
+            ctx.notes_cache.borrow().is_none(),
+            "identity change must invalidate"
+        );
+
+        // Repopulate, then WAL-commit against the NEW file with no checkpoint.
+        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        let id_before = DbFileIdentity::from_path(&index_path).unwrap();
+        let mut writer = ctx
+            .runtime
+            .block_on(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&index_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect(),
+            )
+            .unwrap();
+        ctx.runtime
+            .block_on(async {
+                sqlx::query("CREATE TABLE IF NOT EXISTS wal_poke (x INTEGER)")
+                    .execute(&mut writer)
+                    .await?;
+                sqlx::query("INSERT INTO wal_poke (x) VALUES (1)")
+                    .execute(&mut writer)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .unwrap();
+        assert_eq!(
+            DbFileIdentity::from_path(&index_path).unwrap(),
+            id_before,
+            "test precondition: WAL commit must leave main-file identity unchanged"
+        );
+
+        ctx.last_staleness_check.set(None);
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_none(),
+            "probe must be re-opened against the new inode after rename-over — \
+             a stale probe fd would never observe this commit"
+        );
+
+        let _ = ctx.runtime.block_on(writer.close());
     }
 
     #[test]
