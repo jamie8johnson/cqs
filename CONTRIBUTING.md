@@ -271,7 +271,7 @@ src/
       daemon.rs - spawn_daemon_thread (the --serve accept-loop closure body)
       tests.rs  - watch unit-test bench (#[cfg(test)])
       adversarial_socket_tests.rs - adversarial coverage for handle_socket_client (#[cfg(all(test, unix))])
-  watch_status.rs - WatchSnapshot state machine + Arc<RwLock<...>> shared between watch writer and daemon reader (#1182, #1208)
+  watch_status.rs - WatchSnapshot state machine + ops-stats block (`cqs status --watch`) + Arc<RwLock<...>> shared between watch writer and daemon reader (#1182, #1208, #1715)
   daemon_translate.rs - Daemon RPC client + wait_for_fresh helper + DaemonRpcError typed enum (#1211)
   fs.rs        - atomic_replace and other FS helpers
   limits.rs    - Tunable env-var-backed limits and defaults

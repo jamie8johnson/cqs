@@ -68,6 +68,88 @@ impl std::fmt::Display for FreshnessState {
     }
 }
 
+/// Latency record for the most recent completed reindex pass.
+///
+/// Recorded by the watch loop where `reindex_files` returns (success
+/// path) — previously this only existed as a tracing span duration, so
+/// answering "how long did the last save-triggered reindex take?" meant
+/// journalctl grepping. `cqs status --watch` surfaces it instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReindexLatency {
+    /// Unix timestamp (UTC seconds) when the pass completed.
+    pub at_unix_secs: i64,
+    /// Wall-clock duration of the pass in milliseconds.
+    pub duration_ms: u64,
+    /// Number of files drained in the pass.
+    pub files: u64,
+}
+
+/// Most recent watch-loop error (reindex or notes-reindex failure).
+///
+/// Sticky: survives subsequent successful cycles so an operator polling
+/// `cqs status --watch` still sees an error that fired between polls.
+/// The timestamp disambiguates "current" from "historical" — compare
+/// against `last_reindex.at_unix_secs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchErrorInfo {
+    /// Unix timestamp (UTC seconds) when the error was observed.
+    pub at_unix_secs: i64,
+    /// Rendered error message, verbatim from the failing operation.
+    pub message: String,
+}
+
+/// Per-slot freshness entry inside [`WatchOpsStats::slots`].
+///
+/// Today the daemon serves exactly one slot, so the vec carries one
+/// entry (the active slot). Slot-parallel work (#1717) extends the vec
+/// with additional entries rather than reshaping the output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotWatchStatus {
+    /// Slot name (`default` unless `--slot`/`CQS_SLOT` selected another).
+    pub name: String,
+    /// Freshness state of this slot's index.
+    pub state: FreshnessState,
+    /// Unix timestamp (UTC seconds) of the last completed reindex for
+    /// this slot (`index.db` mtime). `None` when missing/unreadable.
+    pub last_synced_at: Option<i64>,
+    /// Latency of the most recent reindex pass against this slot.
+    pub last_reindex: Option<ReindexLatency>,
+}
+
+/// Operational stats block for `cqs status --watch` (#1715).
+///
+/// Composes with the freshness fields already on [`WatchSnapshot`]:
+/// queue depth is `modified_files`, dropped events is
+/// `dropped_this_cycle`. This block carries the daemon-operational rest
+/// — what previously required journalctl grepping.
+///
+/// Embedding-cache hit rate is intentionally absent: the watch loop's
+/// cache consultation happens inside `reindex_files` with no live
+/// counters, and `cqs cache stats` already answers the offline
+/// question. A live hit-rate counter is deferred until something needs
+/// it badly enough to justify the plumbing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchOpsStats {
+    /// Daemon socket clients currently being served (the accept loop's
+    /// in-flight counter, sampled at snapshot-publish time). Always 0
+    /// when the watch session runs without `--serve`.
+    pub in_flight_clients: u64,
+    /// Whether an out-of-band reconcile request is pending (the
+    /// [`SharedReconcileSignal`] is set but the watch loop hasn't
+    /// drained it yet). Together with [`WatchSnapshot::state`] this is
+    /// the reconcile-visible state.
+    pub reconcile_pending: bool,
+    /// Latency of the most recent completed reindex pass. `None` until
+    /// the first save-triggered reindex of the session.
+    pub last_reindex: Option<ReindexLatency>,
+    /// Most recent reindex/notes-reindex error. Sticky across
+    /// subsequent successes — see [`WatchErrorInfo`].
+    pub last_error: Option<WatchErrorInfo>,
+    /// Per-slot freshness. Exactly one entry today (the active slot);
+    /// #1717 extends this vec.
+    pub slots: Vec<SlotWatchStatus>,
+}
+
 /// Snapshot of the watch loop's view of "how fresh is the index?". The
 /// wire shape returned by `cqs status --watch-fresh --json`.
 ///
@@ -132,6 +214,12 @@ pub struct WatchSnapshot {
     /// daemon hasn't published a snapshot yet (still ramping up).
     #[serde(default)]
     pub active_slot: Option<String>,
+    /// Operational stats for `cqs status --watch` (#1715). `None` when
+    /// the snapshot came from a daemon that predates the field (older
+    /// binary) or from the initial `unknown()` placeholder — lets the
+    /// CLI distinguish "stats unavailable" from real zeros.
+    #[serde(default)]
+    pub ops: Option<WatchOpsStats>,
 }
 
 impl WatchSnapshot {
@@ -152,6 +240,7 @@ impl WatchSnapshot {
             last_synced_at: None,
             snapshot_at: now_unix_secs(),
             active_slot: None,
+            ops: None,
         }
     }
 
@@ -328,17 +417,21 @@ pub struct WatchSnapshotInput<'a> {
     /// currently serving. The lifetime ties this borrow to the watch
     /// loop's owned `WatchState` field.
     pub active_slot: Option<&'a str>,
-    /// Phantom keeps the API future-proof if we add borrow-only fields
-    /// (e.g. last-error string). No-op today.
-    pub _marker: std::marker::PhantomData<&'a ()>,
+    /// Daemon socket clients currently in flight (sampled by the watch
+    /// loop from the shared accept-loop counter). 0 without `--serve`.
+    pub in_flight_clients: usize,
+    /// Whether the shared reconcile signal is set but undrained.
+    pub reconcile_pending: bool,
+    /// Borrowed latency record of the last completed reindex pass.
+    pub last_reindex: Option<&'a ReindexLatency>,
+    /// Borrowed most-recent watch-loop error (sticky).
+    pub last_error: Option<&'a WatchErrorInfo>,
 }
 
 impl<'a> WatchSnapshotInput<'a> {
-    /// Named-field constructor so callers don't have to set
-    /// `_marker: PhantomData` themselves. The lifetime parameter remains in
-    /// case future additions take borrowed fields (e.g.
-    /// `last_error: Option<&str>`); today the marker is the only reason `'a`
-    /// exists.
+    /// Named-field constructor for the counter core; ops-block fields
+    /// default to zero/`None` and are layered on via the builder
+    /// methods below so existing call sites stay readable.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pending_files_count: usize,
@@ -360,7 +453,10 @@ impl<'a> WatchSnapshotInput<'a> {
             last_event,
             last_synced_at,
             active_slot: None,
-            _marker: std::marker::PhantomData,
+            in_flight_clients: 0,
+            reconcile_pending: false,
+            last_reindex: None,
+            last_error: None,
         }
     }
 
@@ -371,6 +467,24 @@ impl<'a> WatchSnapshotInput<'a> {
     /// don't care about slot tracking compiling unchanged.
     pub fn with_active_slot(mut self, slot: &'a str) -> Self {
         self.active_slot = Some(slot);
+        self
+    }
+
+    /// Builder-style chain for the `cqs status --watch` ops block
+    /// (#1715). The watch loop samples the daemon's in-flight counter
+    /// and the reconcile signal each tick, and borrows the
+    /// last-reindex/last-error records off its owned `WatchState`.
+    pub fn with_ops(
+        mut self,
+        in_flight_clients: usize,
+        reconcile_pending: bool,
+        last_reindex: Option<&'a ReindexLatency>,
+        last_error: Option<&'a WatchErrorInfo>,
+    ) -> Self {
+        self.in_flight_clients = in_flight_clients;
+        self.reconcile_pending = reconcile_pending;
+        self.last_reindex = last_reindex;
+        self.last_error = last_error;
         self
     }
 }
@@ -429,6 +543,29 @@ impl WatchSnapshot {
         // without rebuilding the state-machine inputs.
         tracing::trace!(state = %state, "compute decision");
 
+        // Ops block (#1715). The per-slot vec carries exactly the
+        // active slot today; #1717 extends it. Built whenever the slot
+        // name is known — `active_slot == None` only happens for
+        // synthetic inputs that never reach the daemon wire.
+        let slots = input
+            .active_slot
+            .map(|name| {
+                vec![SlotWatchStatus {
+                    name: name.to_string(),
+                    state,
+                    last_synced_at: input.last_synced_at,
+                    last_reindex: input.last_reindex.cloned(),
+                }]
+            })
+            .unwrap_or_default();
+        let ops = Some(WatchOpsStats {
+            in_flight_clients: u64::try_from(input.in_flight_clients).unwrap_or(u64::MAX),
+            reconcile_pending: input.reconcile_pending,
+            last_reindex: input.last_reindex.cloned(),
+            last_error: input.last_error.cloned(),
+            slots,
+        });
+
         Self {
             state,
             // Saturating `usize → u64`. The cast is total on every supported
@@ -445,6 +582,7 @@ impl WatchSnapshot {
             last_synced_at: input.last_synced_at,
             snapshot_at: now_unix_secs(),
             active_slot: input.active_slot.map(|s| s.to_string()),
+            ops,
         }
     }
 }
@@ -475,18 +613,16 @@ mod tests {
         pending_notes: bool,
         dropped_this_cycle: usize,
     ) -> WatchSnapshotInput<'static> {
-        WatchSnapshotInput {
+        WatchSnapshotInput::new(
             pending_files_count,
             pending_notes,
             rebuild_in_flight,
-            delta_saturated: false,
-            incremental_count: 0,
+            false,
+            0,
             dropped_this_cycle,
-            last_event: std::time::Instant::now(),
-            last_synced_at: None,
-            active_slot: None,
-            _marker: std::marker::PhantomData,
-        }
+            std::time::Instant::now(),
+            None,
+        )
     }
 
     #[test]
@@ -553,18 +689,16 @@ mod tests {
     /// rebuild.
     #[test]
     fn delta_saturated_marks_stale_when_no_other_work() {
-        let snap = WatchSnapshot::compute(WatchSnapshotInput {
-            pending_files_count: 0,
-            pending_notes: false,
-            rebuild_in_flight: false,
-            delta_saturated: true,
-            incremental_count: 0,
-            dropped_this_cycle: 0,
-            last_event: std::time::Instant::now(),
-            last_synced_at: None,
-            active_slot: None,
-            _marker: std::marker::PhantomData,
-        });
+        let snap = WatchSnapshot::compute(WatchSnapshotInput::new(
+            0,
+            false,
+            false,
+            true,
+            0,
+            0,
+            std::time::Instant::now(),
+            None,
+        ));
         assert_eq!(snap.state, FreshnessState::Stale);
         assert!(snap.delta_saturated);
     }
@@ -574,18 +708,16 @@ mod tests {
     /// drains and `rebuild_in_flight` flips to false.
     #[test]
     fn rebuild_in_flight_dominates_over_delta_saturated() {
-        let snap = WatchSnapshot::compute(WatchSnapshotInput {
-            pending_files_count: 0,
-            pending_notes: false,
-            rebuild_in_flight: true,
-            delta_saturated: true,
-            incremental_count: 0,
-            dropped_this_cycle: 0,
-            last_event: std::time::Instant::now(),
-            last_synced_at: None,
-            active_slot: None,
-            _marker: std::marker::PhantomData,
-        });
+        let snap = WatchSnapshot::compute(WatchSnapshotInput::new(
+            0,
+            false,
+            true,
+            true,
+            0,
+            0,
+            std::time::Instant::now(),
+            None,
+        ));
         assert_eq!(snap.state, FreshnessState::Rebuilding);
     }
 
@@ -639,5 +771,114 @@ mod tests {
         let was_pending = s.swap(false, Ordering::AcqRel);
         assert!(was_pending);
         assert!(!s.load(Ordering::Acquire));
+    }
+
+    // ===== #1715: cqs status --watch ops block =====
+
+    fn full_ops_input<'a>(
+        last_reindex: &'a ReindexLatency,
+        last_error: &'a WatchErrorInfo,
+    ) -> WatchSnapshotInput<'a> {
+        WatchSnapshotInput::new(
+            2,
+            false,
+            false,
+            false,
+            7,
+            0,
+            std::time::Instant::now(),
+            Some(1_750_000_000),
+        )
+        .with_active_slot("default")
+        .with_ops(3, true, Some(last_reindex), Some(last_error))
+    }
+
+    #[test]
+    fn compute_populates_ops_block() {
+        let lr = ReindexLatency {
+            at_unix_secs: 1_750_000_100,
+            duration_ms: 842,
+            files: 4,
+        };
+        let le = WatchErrorInfo {
+            at_unix_secs: 1_749_999_000,
+            message: "Reindex error: disk full".to_string(),
+        };
+        let snap = WatchSnapshot::compute(full_ops_input(&lr, &le));
+
+        let ops = snap.ops.as_ref().expect("compute must populate ops");
+        assert_eq!(ops.in_flight_clients, 3);
+        assert!(ops.reconcile_pending);
+        assert_eq!(ops.last_reindex.as_ref(), Some(&lr));
+        assert_eq!(ops.last_error.as_ref(), Some(&le));
+        // Per-slot vec carries exactly the active slot, populated now —
+        // not a dead placeholder for #1717.
+        assert_eq!(ops.slots.len(), 1);
+        let slot = &ops.slots[0];
+        assert_eq!(slot.name, "default");
+        assert_eq!(slot.state, snap.state);
+        assert_eq!(slot.last_synced_at, Some(1_750_000_000));
+        assert_eq!(slot.last_reindex.as_ref(), Some(&lr));
+    }
+
+    #[test]
+    fn compute_default_ops_is_zeroed_not_missing() {
+        // Without `.with_ops(...)` the block still serializes (real
+        // zeros), distinguishing "daemon publishes, nothing happened
+        // yet" from "daemon predates the field" (`ops: None`).
+        let snap = WatchSnapshot::compute(input(0, false, false, 0).with_active_slot("default"));
+        let ops = snap.ops.expect("ops present on every computed snapshot");
+        assert_eq!(ops.in_flight_clients, 0);
+        assert!(!ops.reconcile_pending);
+        assert!(ops.last_reindex.is_none());
+        assert!(ops.last_error.is_none());
+        assert_eq!(ops.slots.len(), 1);
+    }
+
+    /// CLI==daemon parity pin: both surfaces serialize/deserialize the
+    /// same `WatchSnapshot` type (daemon's `dispatch_status` writes it,
+    /// CLI's `daemon_status` reads it). A lossless serde round-trip of
+    /// a fully-populated snapshot guarantees the two adapters can't
+    /// disagree on the wire shape.
+    #[test]
+    fn ops_snapshot_serde_round_trip_is_lossless() {
+        let lr = ReindexLatency {
+            at_unix_secs: 1_750_000_100,
+            duration_ms: 842,
+            files: 4,
+        };
+        let le = WatchErrorInfo {
+            at_unix_secs: 1_749_999_000,
+            message: "Reindex error: disk full".to_string(),
+        };
+        let snap = WatchSnapshot::compute(full_ops_input(&lr, &le));
+        let wire = serde_json::to_value(&snap).expect("serialize");
+        let back: WatchSnapshot = serde_json::from_value(wire.clone()).expect("deserialize");
+        let wire_again = serde_json::to_value(&back).expect("re-serialize");
+        assert_eq!(wire, wire_again, "round trip must be lossless");
+        assert_eq!(back.ops, snap.ops);
+    }
+
+    /// Back-compat: a snapshot from a daemon that predates #1715 (no
+    /// `ops` key on the wire) must deserialize with `ops == None`, not
+    /// error — `cqs status --watch` against an old daemon degrades to
+    /// "stats unavailable" instead of a BadResponse.
+    #[test]
+    fn snapshot_without_ops_key_deserializes_to_none() {
+        let old_wire = serde_json::json!({
+            "state": "fresh",
+            "modified_files": 0,
+            "pending_notes": false,
+            "rebuild_in_flight": false,
+            "delta_saturated": false,
+            "incremental_count": 0,
+            "dropped_this_cycle": 0,
+            "last_event_unix_secs": 1_750_000_000_i64,
+            "last_synced_at": null,
+            "snapshot_at": 1_750_000_001_i64,
+        });
+        let snap: WatchSnapshot = serde_json::from_value(old_wire).expect("old wire shape");
+        assert!(snap.ops.is_none());
+        assert!(snap.active_slot.is_none());
     }
 }

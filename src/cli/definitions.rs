@@ -863,18 +863,26 @@ pub(super) enum Commands {
     /// agent loops that want to gate work on freshness (eval runners,
     /// pre-query checks). Exits 1 if no daemon is running.
     ///
-    /// `--watch-fresh` is the canonical flag — kept explicit (not the
-    /// implied default) so future siblings (`--last-error`, `--clients`)
-    /// can join cleanly.
+    /// `--watch-fresh` is the canonical freshness flag; `--watch` adds
+    /// the daemon's operational stats (queue depth, in-flight clients,
+    /// dropped events, last-reindex latency, last error, per-slot
+    /// freshness) — the journalctl-grep replacement (#1715). The two
+    /// flags compose: both hit the same snapshot query.
     ///
     /// `--wait` polls until the snapshot reports `state == fresh` or the
     /// `--wait-secs` budget expires. Polling happens client-side so the
     /// daemon thread is never pinned by a long wait.
     #[cqs_cmd(group = "a", batch = "cli")]
     Status {
-        /// Report watch-mode freshness (currently the only mode).
+        /// Report watch-mode freshness.
         #[arg(long)]
         watch_fresh: bool,
+        /// Report daemon operational stats: in-flight clients, queue
+        /// depth, dropped events, last-reindex latency, reconcile
+        /// state, last error, per-slot freshness. Composes with
+        /// `--watch-fresh` (same snapshot, extra output block).
+        #[arg(long)]
+        watch: bool,
         /// Block until the snapshot reports `state == fresh` (or until the
         /// `--wait-secs` budget expires). Requires `--watch-fresh`.
         #[arg(long)]

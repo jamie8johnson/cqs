@@ -177,6 +177,15 @@ struct WatchState {
     /// Owned String rather than borrow because `WatchState` outlives the
     /// per-tick `WatchSnapshotInput`.
     active_slot: String,
+    /// Latency of the most recent completed reindex pass (#1715).
+    /// Recorded in `process_file_changes` where `reindex_files` returns
+    /// Ok; published every snapshot tick for `cqs status --watch`.
+    last_reindex: Option<cqs::watch_status::ReindexLatency>,
+    /// Most recent reindex/notes-reindex error (#1715). Sticky across
+    /// subsequent successes — the timestamp disambiguates. Recorded
+    /// where the watch loop currently logs `Reindex error` /
+    /// `Notes reindex error`.
+    last_error: Option<cqs::watch_status::WatchErrorInfo>,
 }
 
 /// How often the watch loop re-stats `index.db` for the `last_synced_at`
@@ -195,11 +204,18 @@ const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(
 /// Takes `&mut WatchState` so the `last_synced_at` stat call can be
 /// throttled via the cache. Without throttling this fires every ~100 ms
 /// tick, paying a syscall (ms-scale on WSL 9P) for whole-second wire data.
+///
+/// `in_flight_clients` is the daemon accept loop's shared counter
+/// (always 0 without `--serve`); `reconcile_signal` is sampled with a
+/// plain `load` (never `swap` — draining it is the loop body's job).
+/// Both feed the `cqs status --watch` ops block (#1715).
 fn publish_watch_snapshot(
     handle: &cqs::watch_status::SharedWatchSnapshot,
     fresh_notifier: &cqs::watch_status::SharedFreshNotifier,
     state: &mut WatchState,
     index_path: &std::path::Path,
+    in_flight_clients: &std::sync::atomic::AtomicUsize,
+    reconcile_signal: &std::sync::atomic::AtomicBool,
 ) {
     // Only re-stat when the cache has expired. Snapshots fire every ~100 ms
     // but `last_synced_at` is whole-second resolution — re-stating every
@@ -234,7 +250,13 @@ fn publish_watch_snapshot(
             state.last_event,
             last_synced_at,
         )
-        .with_active_slot(&state.active_slot),
+        .with_active_slot(&state.active_slot)
+        .with_ops(
+            in_flight_clients.load(std::sync::atomic::Ordering::Acquire),
+            reconcile_signal.load(std::sync::atomic::Ordering::Acquire),
+            state.last_reindex.as_ref(),
+            state.last_error.as_ref(),
+        ),
     );
     // Poison-recovery: another writer panicking shouldn't silently stop
     // freshness publishing. Recover and overwrite.
@@ -706,6 +728,13 @@ pub fn cmd_watch(
     let fresh_notifier_handle: cqs::watch_status::SharedFreshNotifier =
         cqs::watch_status::shared_fresh_notifier();
 
+    // Shared in-flight client counter (#1715). The daemon accept loop
+    // increments/decrements it per connection; the watch loop samples it
+    // every snapshot publish so `cqs status --watch` can report it.
+    // Stays at 0 when `--serve` is off (no daemon thread to count).
+    let in_flight_clients_handle: Arc<std::sync::atomic::AtomicUsize> =
+        Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     // Pick up a leftover `.cqs/.dirty` marker from a previous session where
     // a git hook fired without a daemon listening.
     // The hook touches this file as a fallback; on next daemon start we
@@ -762,6 +791,10 @@ pub fn cmd_watch(
             // handler shares the same notifier the watch loop publishes
             // through.
             let daemon_fresh_notifier = Arc::clone(&fresh_notifier_handle);
+            // Clone the in-flight counter so the accept loop's
+            // per-connection bookkeeping is visible to the watch loop's
+            // snapshot publisher (#1715).
+            let daemon_in_flight = Arc::clone(&in_flight_clients_handle);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM.
             let thread = daemon::spawn_daemon_thread(
@@ -772,6 +805,7 @@ pub fn cmd_watch(
                 daemon_watch_snapshot,
                 daemon_reconcile_signal,
                 daemon_fresh_notifier,
+                daemon_in_flight,
             );
             Some(thread)
         } else {
@@ -1162,6 +1196,8 @@ pub fn cmd_watch(
             .unwrap_or_else(std::time::Instant::now),
         cached_last_synced_at: None,
         active_slot: active_slot.name.clone(),
+        last_reindex: None,
+        last_error: None,
     };
 
     let mut cycles_since_clear: u32 = 0;
@@ -1329,7 +1365,7 @@ pub fn cmd_watch(
 
                     if state.pending_notes {
                         state.pending_notes = false;
-                        process_note_changes(&root, &store, cli.quiet);
+                        process_note_changes(&root, &store, cli.quiet, &mut state);
                     }
 
                     // Clear stale OnceLock caches (call_graph_cache,
@@ -1597,6 +1633,8 @@ pub fn cmd_watch(
             &fresh_notifier_handle,
             &mut state,
             &index_path,
+            &in_flight_clients_handle,
+            &reconcile_signal_handle,
         );
 
         if check_interrupted() {

@@ -583,7 +583,6 @@ mod tests {
     fn reconcile_detects_bulk_modify_burst() {
         use cqs::parser::{Chunk, ChunkType, Language};
         use cqs::watch_status::{FreshnessState, WatchSnapshot, WatchSnapshotInput};
-        use std::marker::PhantomData;
 
         // 47 files mirrors the acceptance test scenario. Big enough to
         // model a real branch switch; small enough to run in milliseconds
@@ -658,18 +657,16 @@ mod tests {
         // surfaced as `modified_files`. This is what
         // `cqs status --watch-fresh` and `cqs eval --require-fresh`
         // observe through the `Arc<RwLock<WatchSnapshot>>`.
-        let snap = WatchSnapshot::compute(WatchSnapshotInput {
-            pending_files_count: pending.len(),
-            pending_notes: false,
-            rebuild_in_flight: false,
-            delta_saturated: false,
-            incremental_count: 0,
-            dropped_this_cycle: 0,
-            last_event: std::time::Instant::now(),
-            last_synced_at: None,
-            active_slot: None,
-            _marker: PhantomData,
-        });
+        let snap = WatchSnapshot::compute(WatchSnapshotInput::new(
+            pending.len(),
+            false,
+            false,
+            false,
+            0,
+            0,
+            std::time::Instant::now(),
+            None,
+        ));
         assert_eq!(snap.state, FreshnessState::Stale);
         assert_eq!(snap.modified_files, N as u64);
         assert!(!snap.is_fresh());

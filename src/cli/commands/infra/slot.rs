@@ -719,6 +719,7 @@ mod tests {
             last_synced_at: Some(0),
             snapshot_at: Some(0),
             active_slot: slot.map(|s| s.to_string()),
+            ops: None,
         };
         let inner = serde_json::json!({
             "data": serde_json::to_value(&snap).unwrap(),

@@ -99,6 +99,8 @@ fn test_watch_state() -> WatchState {
             .unwrap_or_else(std::time::Instant::now),
         cached_last_synced_at: None,
         active_slot: cqs::slot::DEFAULT_SLOT.to_string(),
+        last_reindex: None,
+        last_error: None,
     }
 }
 
@@ -2026,4 +2028,96 @@ fn run_daemon_periodic_gc_prunes_missing_files() {
         1,
         "periodic GC must prune missing-file chunks (ghost.rs)"
     );
+}
+
+// ===== #1715: publish_watch_snapshot ops block =====
+
+/// The watch loop's snapshot publisher must carry the operational stats
+/// (#1715): the daemon's in-flight counter, the undrained reconcile
+/// signal, and the state-recorded last-reindex/last-error pair — plus a
+/// per-slot vec populated with the active slot. This drives the real
+/// producer (`publish_watch_snapshot`) end-to-end into the shared
+/// `Arc<RwLock<WatchSnapshot>>` the daemon's `dispatch_status` reads.
+#[test]
+fn publish_watch_snapshot_carries_ops_block() {
+    let tmp = tempfile::tempdir().unwrap();
+    let handle = cqs::watch_status::shared_unknown();
+    let notifier = cqs::watch_status::shared_fresh_notifier();
+    let in_flight = std::sync::atomic::AtomicUsize::new(2);
+    let reconcile = std::sync::atomic::AtomicBool::new(true);
+
+    let mut state = test_watch_state();
+    state.last_reindex = Some(cqs::watch_status::ReindexLatency {
+        at_unix_secs: 1_750_000_100,
+        duration_ms: 1234,
+        files: 3,
+    });
+    state.last_error = Some(cqs::watch_status::WatchErrorInfo {
+        at_unix_secs: 1_749_999_000,
+        message: "reindex failed: synthetic".to_string(),
+    });
+
+    publish_watch_snapshot(
+        &handle,
+        &notifier,
+        &mut state,
+        &tmp.path().join("missing-index.db"),
+        &in_flight,
+        &reconcile,
+    );
+
+    let snap = handle.read().unwrap().clone();
+    let ops = snap.ops.as_ref().expect("publish must populate ops");
+    assert_eq!(ops.in_flight_clients, 2);
+    assert!(ops.reconcile_pending, "undrained signal must surface");
+    assert_eq!(
+        ops.last_reindex.as_ref().map(|l| (l.duration_ms, l.files)),
+        Some((1234, 3))
+    );
+    assert_eq!(
+        ops.last_error.as_ref().map(|e| e.message.as_str()),
+        Some("reindex failed: synthetic")
+    );
+    // Per-slot vec: exactly the active slot, named, with matching state.
+    assert_eq!(ops.slots.len(), 1);
+    assert_eq!(ops.slots[0].name, cqs::slot::DEFAULT_SLOT);
+    assert_eq!(ops.slots[0].state, snap.state);
+    assert_eq!(
+        ops.slots[0].last_reindex.as_ref().map(|l| l.duration_ms),
+        Some(1234)
+    );
+    // Sampling must not drain the reconcile signal — the loop body owns
+    // the swap-to-false.
+    assert!(reconcile.load(std::sync::atomic::Ordering::Acquire));
+}
+
+/// Without a daemon (`--serve` off) the in-flight counter stays 0 and the
+/// reconcile signal false — the ops block reports real zeros, not `None`,
+/// so `cqs status --watch` against a non-serve watch session still
+/// renders a complete block.
+#[test]
+fn publish_watch_snapshot_ops_zeros_without_daemon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let handle = cqs::watch_status::shared_unknown();
+    let notifier = cqs::watch_status::shared_fresh_notifier();
+    let in_flight = std::sync::atomic::AtomicUsize::new(0);
+    let reconcile = std::sync::atomic::AtomicBool::new(false);
+
+    let mut state = test_watch_state();
+    publish_watch_snapshot(
+        &handle,
+        &notifier,
+        &mut state,
+        &tmp.path().join("missing-index.db"),
+        &in_flight,
+        &reconcile,
+    );
+
+    let snap = handle.read().unwrap().clone();
+    let ops = snap.ops.expect("ops present even without --serve");
+    assert_eq!(ops.in_flight_clients, 0);
+    assert!(!ops.reconcile_pending);
+    assert!(ops.last_reindex.is_none());
+    assert!(ops.last_error.is_none());
+    assert_eq!(ops.slots.len(), 1, "active slot entry is always present");
 }
