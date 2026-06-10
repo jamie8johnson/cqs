@@ -98,15 +98,49 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
   confirmed because a graph-only subset of this change (which cannot reach the
   eval path) reproduces the identical shift.
 
-#### Phase 2b — io commands (not started)
+#### Phase 2b — search half (daemon + schema)
 - [ ] Cores + typed outputs for the io commands (read, context, gather, scout,
-  onboard, brief, notes, diff, blame, drift, reconstruct).
-- [ ] `--ref` / `--include-refs` / ref-name-only search sub-paths adopt the
-  shared output model (lift them out of the `cmd_query` adapter).
-- [ ] Daemon `dispatch_search` → `query_core` via a shared search-context trait.
+  onboard, brief, notes, diff, blame, drift, reconstruct). *(io half — separate
+  PR; not part of the search-half landing.)*
+- [x] Daemon `dispatch_search` → `query_core` via a shared search-context trait.
+  `SearchCtx` (in `commands/search/search_ctx.rs`) is the lean common surface
+  (store / cqs_dir / root / embedder / reranker / splade_encode / splade_index /
+  vector_index / base_vector_index / audit_state); `CommandContext` and
+  `BatchView` both implement it. `dispatch_search` is now a thin adapter:
+  wire `SearchArgs` → `daemon_query_args` → `query_core` → `build_*_value`.
+  The daemon's documented semantic differences are preserved as **Args-level
+  settings, not separate logic**: `always_route: true` (always classify, even
+  with `--rrf`/`--rerank`), `fts_first: false` (no NameOnly-FTS-first
+  short-circuit), and the limit clamp 100 at the adapter boundary. SPLADE
+  `&SpladeIndex` (CLI cache borrow) vs `Arc<SpladeIndex>` (daemon snapshot) is
+  unified behind a zero-copy `SpladeIndexRef` deref handle.
+- [x] **Schema reconciliation (the 2b friction note, resolved).** The daemon no
+  longer projects per-result JSON through `ChunkOutput`; it projects through the
+  same `SearchResultOutput` / `to_json_with_origin` shape the CLI uses, built by
+  the shared `display::build_unified_results_value` /
+  `build_tagged_results_value`. `ChunkOutput` + `batch/types.rs` deleted.
+  Consumer survey (evals/*.py, scripts/, .claude/, docs/, tests/) confirmed no
+  reader of a `ChunkOutput`-only field; field-level delta CHANGELOG'd (added
+  `type`/`has_parent`; `trust_level`/`injection_flags` now skip-when-default
+  under Friendly posture; name-only now includes `content`).
+- [~] `--ref` / `--include-refs` / ref-name-only search sub-paths: **typed-output
+  convergence done, core-extraction not applicable.** Reference-index
+  resolution needs config load + multi-store fan-out, which doesn't fit the
+  single-store surface-agnostic `query_core` (a `SearchCtx` exposes one project
+  store, not the reference LRU + config). Both the CLI (`cmd_query_ref_*`,
+  `cmd_query_project`) and daemon (`dispatch_search_with_refs`) keep their
+  reference retrieval in the adapter, but **both now serialize through the
+  shared `SearchResultOutput` schema** (`display::build_tagged_results_value`),
+  so reference results carry the same per-result `trust_level` /
+  `reference_name` / `source` shape as project results. Inline daemon JSON for
+  the ref paths is gone. Full core-extraction of the multi-store path is
+  deferred (would need a multi-store search-context abstraction — out of scope
+  for the search half).
+- [x] Parity test: `parity_daemon_dispatch_equals_core_plus_serializer` asserts
+  `dispatch_search` is byte-equal to `build_unified_results_value(query_core(
+  view, daemon_args))` for happy + empty + the converged trust-labeled schema
+  (name-only surface, embedder-free).
 - Gate: same as Phase 1 + eval guard — amended 2026-06-10: byte-exact eval match is unachievable under codegen-units=1 (any code change re-coalesces FP ops and can flip rank-boundary ties; proven via graph-only-subset A/B in phase 2a). The enforceable invariant: (a) eval-reachable source (search/store/pipeline/splade/hnsw/embedder/eval) byte-identical in the diff, AND (b) paired test+dev numbers within the clean-HEAD rebuild variance band.
-
-**2b friction note (from 2a review):** the daemon search path projects per-result JSON through `ChunkOutput` while the CLI now projects through `SearchResultOutput`/`to_json_with_origin` — two different schemas, not just two call sites. 2b's shared-context-trait work must reconcile the schema, not only the dispatch. The graph commands had already converged on one schema before coring; search has not.
 
 ### Phase 3 — infra/index commands (index, gc, stats, doctor, status, slot, cache, model, reference, hook, telemetry, audit-mode, init, ping, watch-adjacent)
 - [ ] Cores + typed outputs; daemon adapters

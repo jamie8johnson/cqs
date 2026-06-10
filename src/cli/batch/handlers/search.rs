@@ -2,79 +2,34 @@
 
 use anyhow::{Context, Result};
 
-use super::super::types::ChunkOutput;
 use super::super::BatchView;
 use crate::cli::args::SearchArgs;
+use crate::cli::commands::search::query::{query_core, QueryArgs};
 
-/// Dispatches a search query and returns results as JSON.
-/// Takes the shared `SearchArgs` directly. Both CLI top-level search and batch
-/// search deserialize into the same struct, eliminating per-field drift.
-/// # Arguments
-/// * `ctx` - The batch processing context containing the store and embedder
-/// * `args` - Parsed search arguments (shared with CLI top-level)
-/// # Returns
-/// A `Result` containing a JSON object with:
-/// * `results` - Array of matching search results
-/// * `query` - The original query string
-/// * `total` - Number of results returned
-/// # Errors
-/// Returns an error if:
-/// * The embedder cannot be initialized
-/// * Query embedding fails
-/// * The language parameter is invalid
-/// * Store operations fail
-// TODO(phase-2b): route through search::query::query_core via a shared
-// context trait (CommandContext vs BatchView), and reconcile the per-result
-// schema divergence — this path emits ChunkOutput while the CLI emits the
-// typed SearchResultOutput / to_json_with_origin shape.
-pub(in crate::cli::batch) fn dispatch_search(
-    ctx: &BatchView,
-    args: &SearchArgs,
-) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_search", query = %args.query).entered();
+/// Per-result limit clamp the daemon applies. The wire surface is agent-facing
+/// and must bound an over-eager `--limit`; the CLI has no such clamp.
+const DAEMON_LIMIT_CAP: usize = 100;
 
-    // Accepted for CLI parity; batch JSON doesn't use line-context, parent
-    // expansion, include-docs, pattern, or no-stale-check yet. Assigning to
-    // `_` avoids clippy unused-field warnings while preserving forwards
-    // compat: when the batch path wires these up, removing the `_ =` line
-    // makes the compiler surface remaining call-sites.
-    let _ = (args.context, args.expand_parent, args.no_stale_check);
-    let _ = (args.include_docs, args.pattern.as_ref());
+/// Validate the textual filter args (`--lang`, `--include-type`,
+/// `--exclude-type`) with flag-specific error messages, returning the parsed
+/// `(languages, include_types, exclude_types)` for the ref path to reuse.
+///
+/// Run at the adapter boundary so a user typo fast-fails before any embedder
+/// load — invalid filter flags are user input, not model state, and the daemon
+/// contract is to name the offending flag rather than report an embedder error.
+type ParsedFilters = (
+    Option<Vec<cqs::parser::Language>>,
+    Option<Vec<cqs::parser::ChunkType>>,
+    Option<Vec<cqs::parser::ChunkType>>,
+);
 
-    if args.name_only {
-        let results = ctx
-            .store()
-            .search_by_name(&args.query, args.limit_arg.limit.clamp(1, 100))?;
-        let json_results: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| {
-                serde_json::to_value(ChunkOutput::from_search_result(r, false))
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, name = %r.chunk.name, "ChunkOutput serialization failed (NaN score?)");
-                        serde_json::json!({"error": "serialization failed", "name": r.chunk.name})
-                    })
-            })
-            .collect();
-        return Ok(serde_json::json!({
-            "results": json_results,
-            "query": args.query,
-            "total": json_results.len(),
-        }));
-    }
-
-    // Pure textual argument validation runs BEFORE embedder load —
-    // invalid `--lang` / `--include-type` / `--exclude-type` are user
-    // typos, not model state, so the user-facing error must fast-fail
-    // with the offending flag's name instead of "embed query failed"
-    // when the embedder is uncached or contended (HF Hub lock race in
-    // CI test env was the original symptom).
+fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
     let languages = match &args.lang {
         Some(l) => Some(vec![l
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid language '{}'", l))?]),
         None => None,
     };
-
     let include_types = match &args.include_type {
         Some(types) => {
             let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
@@ -91,31 +46,159 @@ pub(in crate::cli::batch) fn dispatch_search(
         }
         None => None,
     };
+    Ok((languages, include_types, exclude_types))
+}
 
-    let embedder = ctx.embedder()?;
-    let query_embedding = embedder
+/// Translate the daemon's [`SearchArgs`] into the surface-agnostic
+/// [`QueryArgs`] the shared core consumes.
+///
+/// This is where the daemon's documented semantic differences from the CLI
+/// become *settings on the core* rather than separate logic:
+/// - `always_route = true`: `cqs search` always classifies (per-category
+///   routing is the point), even alongside `--rrf` / `--rerank`.
+/// - `fts_first = false`: the daemon never had the NameOnly-FTS-first
+///   short-circuit; it stays on the dense hybrid path for non-`--name-only`
+///   queries.
+/// - limit clamped to [`DAEMON_LIMIT_CAP`].
+/// - `json_overhead` is the constant per-result envelope cost — the daemon
+///   always serializes, so token-budget packing estimates with the JSON
+///   overhead the CLI uses under `--json`.
+///
+/// `expand_parent` / `pattern` / `context` / `no_stale_check` stay at their
+/// `QueryArgs` defaults: the daemon JSON has never emitted parent context, run
+/// the pattern filter, line-context, or staleness warnings, and Phase 2b keeps
+/// that wire shape. (`SearchArgs` carries those flags for CLI parity.)
+fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
+    QueryArgs {
+        query: args.query.clone(),
+        limit: args.limit_arg.limit.clamp(1, DAEMON_LIMIT_CAP),
+        name_only: args.name_only,
+        lang: args.lang.clone(),
+        include_type: args.include_type.clone(),
+        exclude_type: args.exclude_type.clone(),
+        path: args.path.clone(),
+        // Pattern filter is not part of the daemon wire path (it discarded
+        // `args.pattern` before the refactor); leave it None so the core skips
+        // the filter, preserving the daemon's retrieval shape.
+        pattern: None,
+        include_docs: args.include_docs,
+        rrf: args.rrf,
+        rerank: args.rerank_active(),
+        splade: args.splade,
+        splade_alpha: args.splade_alpha,
+        threshold: args.threshold,
+        name_boost: args.name_boost,
+        no_demote: args.no_demote,
+        tokens: args.tokens,
+        // Parent expansion is not emitted on the daemon wire.
+        expand_parent: false,
+        force_base_index: std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1"),
+        json_overhead: crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+        // Daemon semantics — see fn doc.
+        always_route: true,
+        fts_first: false,
+    }
+}
+
+/// Dispatches a search query and returns results as JSON.
+///
+/// Phase 2b: a thin adapter over the shared [`query_core`]. The plain and
+/// `--name-only` paths build [`QueryArgs`] from the wire [`SearchArgs`], run the
+/// core through the [`BatchView`] `SearchCtx` impl, and serialize via the same
+/// `display::build_unified_results_value` the CLI uses — so the daemon and CLI
+/// now emit one schema (see CHANGELOG: the daemon dropped the `ChunkOutput`
+/// shape). The `--ref` and `--include-refs` paths keep their reference-index
+/// retrieval here (the core doesn't model the multi-store tagged path yet,
+/// Phase 2b ref-path note) but serialize through the shared
+/// `display::build_tagged_results_value`, so reference results carry the same
+/// per-result shape as project results.
+///
+/// # Errors
+/// Returns an error if the embedder cannot be initialized, query embedding
+/// fails, a filter argument (`--lang` / `--include-type` / `--exclude-type` /
+/// `--pattern`) is invalid, or a store operation fails.
+pub(in crate::cli::batch) fn dispatch_search(
+    ctx: &BatchView,
+    args: &SearchArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_search", query = %args.query).entered();
+
+    // Accepted for CLI parity; the batch JSON doesn't surface line-context,
+    // parent expansion, or staleness warnings. Assigning to `_` documents the
+    // intentional drop and keeps clippy quiet.
+    let _ = (args.context, args.expand_parent, args.no_stale_check);
+
+    // `--ref` / `--include-refs` keep their reference-index retrieval in the
+    // adapter (the core models only the single-store project path); they
+    // serialize through the shared tagged-value builder below.
+    if args.ref_name.is_some() || args.include_refs {
+        return dispatch_search_with_refs(ctx, args);
+    }
+
+    // Validate the textual filter args at the adapter boundary, BEFORE the
+    // core touches the embedder. Invalid `--lang` / `--include-type` /
+    // `--exclude-type` are user typos, not model state — the daemon's contract
+    // is to fast-fail with the offending flag's name rather than surface
+    // "embed query failed" when the embedder is uncached or contended. The core
+    // re-parses these (it must stay surface-agnostic), but a pre-pass here keeps
+    // the flag-specific error and the no-embedder-load guarantee.
+    validate_filter_args(args)?;
+
+    // Plain + name-only: one core, one schema. The `SearchCtx` impl on
+    // `BatchView` supplies the store/embedder/splade/index/reranker the core
+    // needs; `daemon_query_args` folds the daemon's always-route / no-FTS-first
+    // / limit-clamp semantics into the Args.
+    let qargs = daemon_query_args(args);
+    let output = query_core(ctx, &qargs)?;
+
+    let parents_ref = if output.parents.is_empty() {
+        None
+    } else {
+        Some(&output.parents)
+    };
+    // No-content: strip the `content` field after the core built results so the
+    // shared serializer (which always includes content) honours the daemon's
+    // `--no-content`. The CLI handles this in its own display path; the wire
+    // path mirrors it here at the adapter boundary.
+    let mut value = crate::cli::display::build_unified_results_value(
+        &output.results,
+        &output.query,
+        parents_ref,
+        output.token_info,
+    );
+    if args.no_content {
+        strip_content(&mut value);
+    }
+    Ok(value)
+}
+
+/// Reference-scoped (`--ref`) and reference-merged (`--include-refs`) search.
+///
+/// Split out of `dispatch_search` so the core path stays a clean adapter. The
+/// retrieval here is unchanged from the pre-2b daemon path; only the
+/// serialization converged onto the shared `SearchResultOutput` schema (via
+/// `build_tagged_results_value`).
+fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde_json::Value> {
+    // Textual filter validation runs BEFORE embedder load (shared with the
+    // plain path) — invalid `--lang` / `--include-type` / `--exclude-type` are
+    // user typos that must fast-fail with the offending flag's name.
+    let (languages, include_types, exclude_types) = validate_filter_args(args)?;
+
+    let limit = args.limit_arg.limit.clamp(1, DAEMON_LIMIT_CAP);
+    let threshold = args.threshold;
+
+    let query_embedding = ctx
+        .embedder()?
         .embed_query(&args.query)
         .context("Failed to embed query")?;
 
-    let limit = args.limit_arg.limit.clamp(1, 100);
-    // Shared rerank pool sizing.
-    let effective_limit = if args.rerank_active() {
-        crate::cli::limits::rerank_pool_size(limit)
-    } else {
-        limit
-    };
-
-    // Classify query for per-category routing (SPLADE alpha + base/enriched index).
+    // Classify for per-category routing (SPLADE alpha). The router always runs
+    // on the daemon surface (matches the plain path's `always_route`).
     let classification = cqs::search::router::classify_query(&args.query);
     let pre_centroid_cat = classification.category;
     let classification =
         cqs::search::router::reclassify_with_centroid(classification, query_embedding.as_slice());
     let centroid_applied = classification.category != pre_centroid_cat;
-
-    // SPLADE alpha resolution (matches cmd_query semantics):
-    //   --splade-alpha X : explicit constant α (sweeps, debug)
-    //   otherwise        : per-category router
-    //   --splade         : force on even for Unknown category
     let (use_splade, mut splade_alpha) = match args.splade_alpha {
         Some(alpha) => (true, alpha),
         None => (
@@ -126,21 +209,8 @@ pub(in crate::cli::batch) fn dispatch_search(
     if centroid_applied {
         splade_alpha = splade_alpha.max(0.7);
     }
-    // `args.splade` is retained for CLI parity but the per-category
-    // router always runs on batch queries — classify_query always
-    // returns a category (possibly Unknown), so router is always live.
     let _ = args.splade;
 
-    // Phase 5: base/enriched index routing.
-    let use_base = matches!(
-        classification.strategy,
-        cqs::search::router::SearchStrategy::DenseBase
-    ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
-
-    // mmr_lambda intentionally left at default (None) — finalize_results
-    // resolves it via CQS_MMR_LAMBDA fallback. SearchFilter is
-    // `#[non_exhaustive]`, so external-crate construction goes through
-    // `Default` + field assignment.
     let filter = {
         let mut f = cqs::SearchFilter::default();
         f.languages = languages;
@@ -158,61 +228,61 @@ pub(in crate::cli::batch) fn dispatch_search(
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
-    // --ref scoped search: search only the named reference
+    let rerank_pool = if args.rerank_active() {
+        crate::cli::limits::rerank_pool_size(limit)
+    } else {
+        limit
+    };
+
+    // --ref scoped search: search only the named reference.
     if let Some(ref ref_name) = args.ref_name {
         let ref_idx = crate::cli::commands::resolve::find_reference(&ctx.root, ref_name)?;
-        // Shared rerank pool sizing.
-        let ref_limit = if args.rerank_active() {
-            crate::cli::limits::rerank_pool_size(limit)
-        } else {
-            limit
-        };
-        let threshold = args.threshold;
         let mut results = cqs::reference::search_reference(
             &ref_idx,
             &query_embedding,
             &filter,
-            ref_limit,
+            rerank_pool,
             threshold,
             false,
         )?;
-
-        // Re-rank ref results
         if args.rerank_active() && results.len() > 1 {
-            let reranker = ctx.reranker()?;
-            reranker
+            ctx.reranker()?
                 .rerank(&args.query, &mut results, limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         }
 
-        let show_content = !args.no_content;
-        let json_results: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| {
-                // --ref scoped search — every chunk came from a single named
-                // reference, so trust_level = "reference-code" and
-                // reference_name = ref_name for all of them.
-                serde_json::to_value(ChunkOutput::from_search_result_with_origin(
-                    r,
-                    show_content,
-                    Some(ref_name),
-                ))
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, name = %r.chunk.name, "ChunkOutput serialization failed (NaN score?)");
-                    serde_json::json!({"error": "serialization failed", "name": r.chunk.name})
-                })
+        // Every chunk came from a single named reference → tag each with its
+        // source; `build_tagged_results_value` emits trust_level
+        // "reference-code" + reference_name per result and the envelope-level
+        // `source`.
+        let tagged: Vec<cqs::reference::TaggedResult> = results
+            .into_iter()
+            .map(|r| cqs::reference::TaggedResult {
+                result: cqs::store::UnifiedResult::Code(r),
+                source: Some(ref_name.clone()),
             })
             .collect();
 
-        return Ok(serde_json::json!({
-            "results": json_results,
-            "query": args.query,
-            "total": json_results.len(),
-            "source": ref_name,
-        }));
+        let (tagged, token_info) = pack_tagged(ctx, args, tagged)?;
+        let mut value = crate::cli::display::build_tagged_results_value(
+            &tagged,
+            &args.query,
+            None,
+            token_info,
+            Some(ref_name.clone()),
+        );
+        if args.no_content {
+            strip_content(&mut value);
+        }
+        return Ok(value);
     }
 
-    // SPLADE sparse encoding (if enabled by --splade flag OR per-category routing)
+    // --include-refs: project search + merged reference results.
+    let use_base = matches!(
+        classification.strategy,
+        cqs::search::router::SearchStrategy::DenseBase
+    ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
+
     let splade_query = if use_splade {
         ctx.splade_encoder()
             .and_then(|enc| match enc.encode(&args.query) {
@@ -228,37 +298,24 @@ pub(in crate::cli::batch) fn dispatch_search(
     if use_splade {
         ctx.ensure_splade_index();
     }
-
     let audit_mode = ctx.audit_state();
 
     let index = if use_base {
         match ctx.base_vector_index()? {
-            Some(base_idx) => {
-                tracing::info!(
-                    category = %classification.category,
-                    "Router selected base HNSW for non-enriched query (batch)"
-                );
-                Some(base_idx)
-            }
-            None => {
-                tracing::info!("Base HNSW unavailable — falling back to enriched index (batch)");
-                ctx.vector_index()?
-            }
+            Some(base_idx) => Some(base_idx),
+            None => ctx.vector_index()?,
         }
     } else {
         ctx.vector_index()?
     };
     let index = index.as_deref();
 
-    // borrow_splade_index returns Option<Arc<SpladeIndex>>; deref through the
-    // Arc when handing the &SpladeIndex to search_hybrid.
     let splade_index_ref = ctx.borrow_splade_index();
-
     let splade_arg = splade_query
         .as_ref()
         .and_then(|sq| splade_index_ref.as_ref().map(|si| (si.as_ref(), sq)));
 
-    let threshold = args.threshold;
+    let effective_limit = rerank_pool;
     let results = if audit_mode.is_active() || splade_arg.is_some() {
         let code_results = ctx.store().search_hybrid(
             &query_embedding,
@@ -282,7 +339,6 @@ pub(in crate::cli::batch) fn dispatch_search(
         )?
     };
 
-    // Re-rank if requested
     let results = if args.rerank_active() && results.len() > 1 {
         let mut code_results: Vec<cqs::store::SearchResult> = results
             .into_iter()
@@ -290,8 +346,7 @@ pub(in crate::cli::batch) fn dispatch_search(
                 cqs::store::UnifiedResult::Code(sr) => sr,
             })
             .collect();
-        let reranker = ctx.reranker()?;
-        reranker
+        ctx.reranker()?
             .rerank(&args.query, &mut code_results, limit)
             .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         code_results
@@ -302,106 +357,96 @@ pub(in crate::cli::batch) fn dispatch_search(
         results
     };
 
-    // --include-refs: merge reference results. Uses the BatchContext LRU so
-    // repeated `--include-refs` queries in a daemon session don't rebuild
-    // every reference Store+HNSW per call. The rayon call below uses the
-    // default global pool.
-    //
-    // The merged tagged Vec carries source info per result. We build a
-    // side-table (`origin_by_id`) keyed by chunk id so the downstream
-    // token-pack + serialize path stays a flat `Vec<UnifiedResult>` while
-    // the JSON emission can still tag each chunk's trust origin.
-    let mut origin_by_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let results = if args.include_refs {
-        let references = ctx.get_all_refs()?;
-        if !references.is_empty() {
-            use rayon::prelude::*;
-            let ref_results: Vec<_> = references
-                .par_iter()
-                .filter_map(|ref_idx| {
-                    match cqs::reference::search_reference(
-                        ref_idx,
-                        &query_embedding,
-                        &filter,
-                        limit,
-                        threshold,
-                        true,
-                    ) {
-                        Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
-                        Err(e) => {
-                            tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
-                            None
-                        }
-                        _ => None,
-                    }
-                })
-                .collect();
-            let tagged = cqs::reference::merge_results(results, ref_results, limit);
-            tagged
-                .into_iter()
-                .map(|t| {
-                    if let (Some(source), cqs::store::UnifiedResult::Code(ref sr)) =
-                        (&t.source, &t.result)
-                    {
-                        origin_by_id.insert(sr.chunk.id.clone(), source.clone());
-                    }
-                    t.result
-                })
-                .collect()
-        } else {
-            results
-        }
-    } else {
+    let references = ctx.get_all_refs()?;
+    let tagged: Vec<cqs::reference::TaggedResult> = if references.is_empty() {
         results
+            .into_iter()
+            .map(|result| cqs::reference::TaggedResult {
+                result,
+                source: None,
+            })
+            .collect()
+    } else {
+        use rayon::prelude::*;
+        let ref_results: Vec<_> = references
+            .par_iter()
+            .filter_map(|ref_idx| {
+                match cqs::reference::search_reference(
+                    ref_idx,
+                    &query_embedding,
+                    &filter,
+                    limit,
+                    threshold,
+                    true,
+                ) {
+                    Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
+                    Err(e) => {
+                        tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
+                        None
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        cqs::reference::merge_results(results, ref_results, limit)
     };
 
-    // Token-budget packing (shared with CLI search)
-    let (results, token_info) = if let Some(budget) = args.tokens {
+    let (tagged, token_info) = pack_tagged(ctx, args, tagged)?;
+    let mut value = crate::cli::display::build_tagged_results_value(
+        &tagged,
+        &args.query,
+        None,
+        token_info,
+        None,
+    );
+    if args.no_content {
+        strip_content(&mut value);
+    }
+    Ok(value)
+}
+
+/// Token-budget packing for the tagged (`--ref` / `--include-refs`) path.
+/// Returns the packed results and the `(used, budget)` token info, or the input
+/// unchanged when `--tokens` isn't set.
+type TaggedPack = (Vec<cqs::reference::TaggedResult>, Option<(usize, usize)>);
+
+fn pack_tagged(
+    ctx: &BatchView,
+    args: &SearchArgs,
+    tagged: Vec<cqs::reference::TaggedResult>,
+) -> Result<TaggedPack> {
+    if let Some(budget) = args.tokens {
         let embedder = ctx.embedder()?;
-        crate::cli::commands::token_pack_results(
-            results,
+        Ok(crate::cli::commands::token_pack_results(
+            tagged,
             budget,
             crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
             embedder,
-            |r| match r {
+            |t| match &t.result {
                 cqs::store::UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
             },
-            |r| match r {
+            |t| match &t.result {
                 cqs::store::UnifiedResult::Code(sr) => sr.score,
             },
-            "batch_search",
-        )
+            "batch_search_tagged",
+        ))
     } else {
-        (results, None)
-    };
+        Ok((tagged, None))
+    }
+}
 
-    let show_content = !args.no_content;
-    let json_results: Vec<serde_json::Value> = results
-        .iter()
-        .map(|r| match r {
-            cqs::store::UnifiedResult::Code(sr) => {
-                let ref_name = origin_by_id.get(&sr.chunk.id).map(|s| s.as_str());
-                serde_json::to_value(ChunkOutput::from_search_result_with_origin(
-                    sr,
-                    show_content,
-                    ref_name,
-                ))
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, name = %sr.chunk.name, "ChunkOutput serialization failed (NaN score?)");
-                    serde_json::json!({"error": "serialization failed", "name": sr.chunk.name})
-                })
+/// Remove the `content` field from every result object, honoring the daemon's
+/// `--no-content`. The shared `display` serializer always emits content (it's
+/// the CLI default); the daemon's `--no-content` is applied here at the adapter
+/// boundary so both surfaces keep one schema builder.
+fn strip_content(value: &mut serde_json::Value) {
+    if let Some(results) = value.get_mut("results").and_then(|r| r.as_array_mut()) {
+        for r in results {
+            if let Some(obj) = r.as_object_mut() {
+                obj.remove("content");
             }
-        })
-        .collect();
-
-    let mut response = serde_json::json!({
-        "results": json_results,
-        "query": args.query,
-        "total": json_results.len(),
-    });
-    crate::cli::commands::inject_token_info(&mut response, token_info);
-    Ok(response)
+        }
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -759,10 +804,10 @@ mod tests {
         );
     }
 
-    /// Name-only returns chunks from every inserted language. Covers
-    /// `ChunkOutput::from_search_result` rendering for
-    /// non-Rust languages — a refactor that special-cased Rust or dropped
-    /// the `language` field would break this.
+    /// Name-only returns chunks from every inserted language. Covers the shared
+    /// `SearchResultOutput` / `to_json_with_origin` rendering for non-Rust
+    /// languages — a refactor that special-cased Rust or dropped the `language`
+    /// field would break this.
     #[test]
     fn test_dispatch_search_name_only_cross_language_content() {
         let (_dir, ctx) = ctx_with_chunks(vec![
@@ -931,6 +976,98 @@ mod tests {
                 "score mismatch at rank {i}: daemon={dscore} primitive={}",
                 sr.score
             );
+        }
+    }
+
+    /// Phase 2b parity: the daemon `dispatch_search` is byte-equal to driving
+    /// `query_core` through the shared `SearchCtx` and serializing with the
+    /// shared `build_unified_results_value`. This is the load-bearing invariant
+    /// of the 2b convergence — the handler is a thin adapter, so its output
+    /// `Value` must equal `serialize(core(view, daemon_args))` exactly.
+    ///
+    /// Covers the name-only surface (embedder-free, sub-second) across:
+    /// - **happy**: a non-empty result set,
+    /// - **empty**: a no-match query (the `{results:[], total:0}` envelope),
+    /// - **trust-labeled**: the converged per-result schema carries the store
+    ///   serializer's `type: "code"` + posture-gated trust fields, identical on
+    ///   both the adapter and the direct-core path.
+    #[test]
+    fn parity_daemon_dispatch_equals_core_plus_serializer() {
+        use crate::cli::commands::search::query::query_core;
+
+        let (_dir, ctx) = ctx_with_chunks(vec![
+            make_chunk(
+                "src/lib.rs:1:9aaa0001",
+                "src/lib.rs",
+                Language::Rust,
+                ChunkType::Function,
+                "parse_config",
+                "fn parse_config() -> Config",
+                "fn parse_config() -> Config { Config::default() }",
+            ),
+            make_chunk(
+                "src/lib.rs:7:9aaa0002",
+                "src/lib.rs",
+                Language::Rust,
+                ChunkType::Function,
+                "do_parse_config",
+                "fn do_parse_config()",
+                "fn do_parse_config() { parse_config(); }",
+            ),
+        ]);
+        let view = ctx.build_view(None);
+
+        // Re-derive the QueryArgs the adapter builds, then drive the core +
+        // shared serializer directly. The adapter's output must equal this.
+        let assert_parity = |cli_args: &[&str]| {
+            let args = parse_search_args(cli_args);
+
+            let daemon = dispatch_search(&view, &args).expect("dispatch_search");
+
+            let qargs = daemon_query_args(&args);
+            let output = query_core(&view, &qargs).expect("query_core");
+            let parents_ref = if output.parents.is_empty() {
+                None
+            } else {
+                Some(&output.parents)
+            };
+            let mut expected = crate::cli::display::build_unified_results_value(
+                &output.results,
+                &output.query,
+                parents_ref,
+                output.token_info,
+            );
+            if args.no_content {
+                strip_content(&mut expected);
+            }
+
+            assert_eq!(
+                daemon, expected,
+                "daemon dispatch must be byte-equal to core+serializer for args {cli_args:?}"
+            );
+        };
+
+        // Happy: a matching name-only query.
+        assert_parity(&["parse", "--name-only"]);
+        // Empty: a no-match query yields the bare envelope on both paths.
+        assert_parity(&["zzz_no_such_symbol", "--name-only"]);
+
+        // Trust-labeled / converged schema: the daemon result objects carry the
+        // store serializer's `type: "code"` field (a field the old ChunkOutput
+        // shape never emitted). Confirms the convergence onto the CLI schema.
+        let happy = dispatch_search(&view, &parse_search_args(&["parse", "--name-only"]))
+            .expect("dispatch_search");
+        for r in happy["results"].as_array().expect("results array") {
+            assert_eq!(
+                r["type"], "code",
+                "converged daemon schema must carry the store serializer's type tag"
+            );
+            // `trust_level` is skip-when-`user-code` under the default Friendly
+            // posture; if present it must be a string, never the old
+            // always-emitted shape leaking a non-string.
+            if let Some(tl) = r.get("trust_level") {
+                assert!(tl.is_string(), "trust_level must serialize as a string");
+            }
         }
     }
 }

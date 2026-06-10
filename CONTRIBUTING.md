@@ -173,7 +173,6 @@ src/
       handlers/ - Handler functions (one per command)
         mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs
       pipeline.rs - Pipeline execution (pipe chaining via `|`)
-      types.rs    - Output types (ChunkOutput, normalize_path)
     args.rs     - Shared CLI/batch arg structs via #[command(flatten)]
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display

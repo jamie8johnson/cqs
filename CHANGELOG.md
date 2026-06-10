@@ -44,6 +44,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into the cores via args, so the cores read no env. No JSON field was removed
   or renamed.
 
+- **Command-core unification for search (Phase 2b — daemon + schema, internal).**
+  The daemon search handler (`dispatch_search`) is now a thin adapter over the
+  same `query_core` the CLI uses, via a new `SearchCtx` trait that both
+  `CommandContext` (CLI) and `BatchView` (daemon) implement. The daemon's
+  documented behavioral differences are preserved as **settings on the core**,
+  not separate logic: `always_route` (the daemon always classifies, even with
+  `--rrf`/`--rerank`), `fts_first=false` (the daemon never had the
+  NameOnly-FTS-first short-circuit), and the limit clamp to 100 at the adapter
+  boundary. A byte-equality parity test pins `dispatch_search ==
+  build_unified_results_value(query_core(view, daemon_args))`.
+
+  **Daemon search wire-schema change (agents parse — read this).** The daemon
+  search path previously projected each result through a bespoke `ChunkOutput`
+  struct; it now projects through the same `SearchResultOutput` /
+  `UnifiedResult::to_json_with_origin` shape the CLI emits, so both surfaces
+  share one schema. Field-level delta on `cqs search`/batch-search results:
+  - **Added** `type: "code"` (always present on every result — the
+    `UnifiedResult` discriminator the CLI already emitted).
+  - **Added** `has_parent: true` (only on results whose chunk has a parent;
+    skipped otherwise).
+  - **Changed presence** of `trust_level` and `injection_flags`: they were
+    *always* emitted; they are now skip-when-default under the default
+    (Friendly) posture — `trust_level` omitted when `"user-code"`,
+    `injection_flags` omitted when empty. Both still force-emit under
+    `CQS_ULTRASECURITY=1` (Adversarial), and `trust_level` is always present on
+    `vendored-code` / `reference-code` results. Reference results
+    (`--ref`/`--include-refs`) still carry `reference_name`.
+  - **Unchanged**: `file`, `name`, `line_start`, `line_end`, `language`,
+    `chunk_type`, `score`, `signature` (always present), and `content` (still
+    omitted under `--no-content`). One additive change: `--name-only` results
+    now include `content` (matching the CLI's name-only path), where the daemon
+    previously suppressed it. Daemon `--name-only` also now honors `--tokens` (token-packing previously skipped on the daemon early-return path; the embedder initializes lazily only when a budget is set).
+  No consumer (the `evals/*.py` batch-search harnesses, `scripts/`, hooks,
+  skills) reads a removed field — they read only `file`/`name`/`line_start`/
+  `line_end`/`content`/`signature`/`score`, all preserved. The internal
+  `ChunkOutput` struct and its `batch/types.rs` module were deleted.
+
 ### Fixed
 
 - **Kind-fallback cap parity across all graph commands.** The

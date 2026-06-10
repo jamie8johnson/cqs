@@ -463,13 +463,21 @@ pub fn display_unified_results(
     Ok(())
 }
 
-/// Display unified results as JSON
-pub fn display_unified_results_json(
+/// Build the unified search-results envelope as a [`serde_json::Value`] without
+/// emitting it.
+///
+/// This is the single per-result + envelope construction shared by the CLI
+/// (`display_unified_results_json` wraps it in `emit_json`) and the daemon
+/// search handler (which returns the bare `Value`). Centralizing it here keeps
+/// both surfaces on one schema — the Phase 2b convergence point: the daemon no
+/// longer projects through `ChunkOutput`, it projects through the same
+/// `SearchResultOutput` / `to_json_with_origin` shape the CLI uses.
+pub fn build_unified_results_value(
     results: &[UnifiedResult],
     query: &str,
     parents: Option<&HashMap<String, ParentContext>>,
     token_info: Option<(usize, usize)>,
-) -> Result<()> {
+) -> serde_json::Value {
     let json_results: Vec<_> = results
         .iter()
         .map(|r| {
@@ -488,6 +496,59 @@ pub fn display_unified_results_json(
         .collect();
 
     let output = SearchOutput::new(json_results, query, token_info, None);
+    // SearchOutput is a flat data struct of JSON-native fields; serialization is
+    // infallible in practice. Fall back to an explicit envelope rather than
+    // panicking if a future field breaks that.
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "SearchOutput serialization failed");
+        serde_json::json!({"results": [], "query": query, "total": 0})
+    })
+}
+
+/// Build a tagged (multi-index / `--ref`) search-results envelope as a
+/// [`serde_json::Value`] without emitting it.
+///
+/// The daemon's `--ref` and `--include-refs` paths share this with the CLI so
+/// reference-tagged results carry the same per-result `trust_level` /
+/// `reference_name` / `source` shape as a plain project result. `top_source` is
+/// the envelope-level `source` label for a `--ref`-scoped response (the CLI
+/// project path leaves it `None` and tags per-result instead).
+pub fn build_tagged_results_value(
+    results: &[TaggedResult],
+    query: &str,
+    parents: Option<&HashMap<String, ParentContext>>,
+    token_info: Option<(usize, usize)>,
+    top_source: Option<String>,
+) -> serde_json::Value {
+    let json_results: Vec<_> = results
+        .iter()
+        .map(|t| {
+            let UnifiedResult::Code(sr) = &t.result;
+            SearchResultOutput {
+                result: &t.result,
+                ref_name: t.source.as_deref(),
+                parent: parents.and_then(|p| p.get(&sr.chunk.id)),
+                source: t.source.as_deref(),
+            }
+            .to_value()
+        })
+        .collect();
+
+    let output = SearchOutput::new(json_results, query, token_info, top_source);
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "SearchOutput (tagged) serialization failed");
+        serde_json::json!({"results": [], "query": query, "total": 0})
+    })
+}
+
+/// Display unified results as JSON
+pub fn display_unified_results_json(
+    results: &[UnifiedResult],
+    query: &str,
+    parents: Option<&HashMap<String, ParentContext>>,
+    token_info: Option<(usize, usize)>,
+) -> Result<()> {
+    let output = build_unified_results_value(results, query, parents, token_info);
     super::json_envelope::emit_json(&output)?;
     Ok(())
 }
@@ -651,25 +712,11 @@ pub fn display_tagged_results_json(
     parents: Option<&HashMap<String, ParentContext>>,
     token_info: Option<(usize, usize)>,
 ) -> Result<()> {
-    let json_results: Vec<_> = results
-        .iter()
-        .map(|t| {
-            // Same per-result schema as the project path, with the reference
-            // origin threaded for trust tagging AND surfaced as the legacy
-            // `source` field. Consumers can read `source`, or prefer the typed
-            // `trust_level` + `reference_name` the store serializer emits.
-            let UnifiedResult::Code(sr) = &t.result;
-            SearchResultOutput {
-                result: &t.result,
-                ref_name: t.source.as_deref(),
-                parent: parents.and_then(|p| p.get(&sr.chunk.id)),
-                source: t.source.as_deref(),
-            }
-            .to_value()
-        })
-        .collect();
-
-    let output = SearchOutput::new(json_results, query, token_info, None);
+    // Shares the per-result + envelope builder with the daemon ref path, so the
+    // CLI `--include-refs` / `--ref` JSON and the daemon's are one schema. The
+    // top-level `source` label stays `None` here — the project + include-refs
+    // path tags per-result, not at the envelope.
+    let output = build_tagged_results_value(results, query, parents, token_info, None);
     super::json_envelope::emit_json(&output)?;
     Ok(())
 }
