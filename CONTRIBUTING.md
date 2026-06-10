@@ -109,6 +109,78 @@ Rules:
 - Use `#[serde(skip_serializing_if = "Option::is_none")]` for optional fields so absent data is omitted (not `null`).
 - When adding `--json` to a new command, follow existing output structs (e.g., `ChunkSummary`, `CallerDetail`, `ExplainOutput`) rather than inventing new field names.
 
+## Test Concurrency
+
+`cargo test` runs tests in parallel by default. Most tests are isolated (own
+`TempDir`, own `Store`), but three classes of test need explicit serialization
+or contention-tolerant assertions. Get this wrong and you ship a flake that
+passes in isolation and fails ~1% of the time in CI (#1693).
+
+### 1. GPU / CUDA-context tests → module `GPU_LOCK`
+
+CUDA contexts require serialized access. Every test in `src/cagra.rs` that
+builds or searches a `CagraIndex` takes the module-level static:
+
+```rust
+static GPU_LOCK: Mutex<()> = Mutex::new(());
+// ...
+#[test]
+fn test_search() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    if !require_gpu() { return; }
+    // ... GPU work ...
+}
+```
+
+Add `let _guard = GPU_LOCK.lock().unwrap();` as the **first line** of any new
+GPU-touching test.
+
+### 2. Env-var-mutating tests → shared lock or `#[serial]`
+
+Env vars are process-global. A test that `set_var`/`remove_var`s a key races
+every other test that *reads* that key — even across modules. Two accepted
+patterns:
+
+- **`serial_test`** (already a dev-dependency) with a **named group** so only
+  tests touching the same env are serialized:
+  ```rust
+  #[serial_test::serial(cqs_eval_require_fresh_env)]
+  ```
+  Used in `src/limits.rs`, `src/cli/commands/eval/mod.rs`.
+- **A shared module-level mutex** when several tests in one area mutate the same
+  keys. `src/hnsw/mod.rs` exposes `pub(crate) static HNSW_ENV_LOCK` for all
+  `CQS_HNSW_*` tests; `env_override_tests` and `test_hnsw_for_helpers_pick_tier`
+  both lock it. A *single* shared static is required — a per-module mutex does
+  not coordinate across modules, which is exactly the gap that caused #1693.
+
+Always restore the env (`remove_var` after `set_var`) before releasing the lock.
+
+### 3. Approximate-index recall assertions → containment + bounded build retry
+
+`HnswIndex` is built with `parallel_insert_data` (rayon) over an
+OS-entropy-seeded layer RNG, and `CagraIndex` is an approximate GPU graph.
+Under CPU saturation, `parallel_insert` produces a degenerate graph on ~1-2% of
+builds where even the cosine-distance-0 self-match vector is unreachable
+(measured: 52/3000 parallel vs 0/3000 sequential under 16-core load). Search on
+a *fixed* index is deterministic (0/100k misses) — the nondeterminism is purely
+in concurrent construction.
+
+Therefore:
+
+- **Never `assert_eq!(results[0].id, expected)`** on an HNSW/CAGRA result.
+  Assert **top-k containment** (`results.iter().any(|r| r.id == expected)`).
+- For tests whose *intent* is recall (verify the index can find the self-match),
+  **retry the build** a bounded number of times so a single degenerate graph
+  does not fail the assertion. At 8 retries a transient miss is ~2.5e-14 while a
+  systematic recall bug (miss on every build) still fails deterministically. See
+  `assert_self_match_reachable` in `src/hnsw/build.rs`.
+- For tests whose intent is **lifecycle/soundness** (e.g. `src/hnsw/safety.rs`),
+  assert only that results are non-empty and IDs are valid (no corruption) — do
+  not assert recall at all.
+
+Use unique temp paths (`TempDir::new()`, never a fixed `temp_dir().join("name")`)
+so parallel tests never collide on disk.
+
 ## Pull Request Process
 
 1. Fork the repository and create a feature branch

@@ -599,6 +599,23 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Hn
     }
 }
 
+/// Shared lock serializing tests that read or mutate the process-global
+/// `CQS_HNSW_*` env vars. A single static (rather than one per test module) is
+/// required: `max_nb_connection_for` / `ef_construction_for` / `ef_search_for`
+/// and `build_with_dim` all read these vars, so an env-override test in one
+/// module can otherwise race a tier-default or build test in another.
+///
+/// Holders: the env-mutating tests (`env_override_tests`,
+/// `test_hnsw_for_helpers_pick_tier`) hold it across their set/read/remove
+/// sequence; the hardened recall/lifecycle tests (`assert_self_match_reachable`
+/// in `build.rs`, the retry loops in `persist.rs`, the lifecycle test in
+/// `safety.rs`) hold it just around the `build_with_dim` /
+/// `build_batched_with_dim` call so their graph params cannot be perturbed
+/// mid-build, while search phases stay parallel. Other build sites tolerate a
+/// transient env override (graph params change, soundness does not).
+#[cfg(test)]
+pub(crate) static HNSW_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Shared test helper: create a deterministic normalized embedding from a seed.
 /// Uses sin-based values for reproducible but varied vectors.
 #[cfg(test)]
@@ -689,6 +706,9 @@ mod send_sync_tests {
 
     #[test]
     fn test_hnsw_for_helpers_pick_tier() {
+        // Serialize against env_override_tests — these vars are process-global
+        // and read by max_nb_connection_for / ef_*_for.
+        let _lock = super::HNSW_ENV_LOCK.lock().unwrap();
         // No env override: helper returns the tier value verbatim.
         std::env::remove_var("CQS_HNSW_M");
         std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
@@ -877,11 +897,10 @@ mod insert_batch_tests {
 
 #[cfg(test)]
 mod env_override_tests {
-    use std::sync::Mutex;
-
-    /// Mutex to serialize tests that manipulate CQS_HNSW_* env vars.
-    /// Env vars are process-global -- concurrent test threads race on set/remove.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    /// Serialize tests that manipulate CQS_HNSW_* env vars. Uses the shared
+    /// module-level lock so tier-default / build tests in other modules also
+    /// serialize against these process-global mutations.
+    use super::HNSW_ENV_LOCK as ENV_MUTEX;
 
     #[test]
     fn test_m_default() {

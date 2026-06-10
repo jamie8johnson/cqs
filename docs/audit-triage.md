@@ -53,6 +53,10 @@ Ordered for the fix loop, all positioned relative to the command-core campaign:
 3. **#1690** — posture/output-format matrix consolidation (after campaign phase 4 — same surface; subsumes the CQ-V1.40-5/6 and TC-ADV-V1.40-1 queue entries above).
 4. **#1691** — split big-with-logic monoliths with fixture-refresh discipline (after campaign phases 2-3 to avoid diff churn).
 
+### Pending user go: upstream hnsw_rs issue (2026-06-10)
+
+#1693's root-cause produced a reproducible upstream finding: hnsw_rs `parallel_insert_data` yields self-unreachable nodes on ~1-2% of builds under CPU saturation (52/3000 parallel vs 0/3000 sequential inserts; 0/100k searching a fixed index — construction-side, entry-point write race + OS-seeded layer RNG suspected). Filing an issue on the hnsw_rs repo with this data + a deterministic-seeding suggestion needs user authorization (new upstream relationship, unlike rapidsai/cuvs).
+
 ### Still deferred (unchanged decision)
 
 - **DS-V1.40-7**: partially mitigated (CLI clamps to [-1,1], rejects NaN/Inf) but `--sentiment 0.7` still accepted — no discrete-value CHECK. Stays deferred per the v1.41.0 rationale.
