@@ -48,7 +48,7 @@ State: zero open PRs, main green at c396dd8a, binary 1.41.0+main installed, daem
 **Telemetry reset twice today.** First reset at 08:27 UTC archived 4506 events for the post-SNR-Phase-1-3 baseline. Second reset at 21:46 UTC (`telemetry_20260508_214618.jsonl`, 441 events) gives a clean post-Phase-1-routing + post-Tier-2b counter starting now. The 13h between-reset window was dominated by autopilot smoke (search rate 4.6%, but `impact` 35-call spike was me exercising every kind cell, not agent behavior). Real signal needs 1-2 weeks of agent-driven coding sessions before the kind-fallback hypothesis can be tested against the 79% → 6% search-rate decline that motivated v1.40.
 
 **Headline shipped:**
-- SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613) — CLI direct defaults to bare JSON payload; `CQS_OUTPUT_FORMAT=v1` consumer-migration hedge; `CQS_ULTRASECURITY=1` adversarial override on every surface.
+- SNR restoration Phases 1-4 (#1601, #1602, #1604, #1609, #1613) — CLI direct defaults to bare JSON payload; `CQS_OUTPUT_FORMAT=v1` consumer-migration hedge; `CQS_ULTRASECURITY=1` adversarial override on every surface *(override since removed in #1703)*.
 - Polymorphic routing Phase 1 — lib plumbing (#1610) + 30 CLI-direct cells (#1612, #1616, #1617, #1618) + 30 daemon-path cells (#1620). 6 commands × 5 kinds × 2 surfaces = 60 dispatch points.
 - v3.v2 eval fixture refresh (#1607) — agg R@K +6.4 / +2.7 / +3.2 pp, above v1.36-snapshot.
 - v1.40.0 release (#1614) — tag pushed, crates.io published, GitHub Release auto-fires.

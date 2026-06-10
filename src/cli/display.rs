@@ -14,7 +14,7 @@ use cqs::store::{ParentContext, UnifiedResult};
 /// per-result shape emitted by `cqs <query> --json` (and `--name-only`,
 /// `--ref`, `--include-refs`).
 ///
-/// The base chunk fields and the posture-gated / skip-when-default behavior
+/// The base chunk fields and the skip-when-default behavior
 /// (`has_parent`, `trust_level`, `injection_flags`, `reference_name`,
 /// `type: "code"`) are owned by `UnifiedResult::to_json_with_origin` in the
 /// store layer — the single serializer for a chunk's trust-aware wire shape.
@@ -27,8 +27,8 @@ use cqs::store::{ParentContext, UnifiedResult};
 /// `to_value` reconstructs the exact historical object: chunk base via the
 /// store serializer, then the optional fields layered in the same order the
 /// previous inline `serde_json::json!` builder used. Keeping the chunk base in
-/// the store serializer guarantees the posture-gated fields stay byte-identical
-/// to every other surface that renders a chunk.
+/// the store serializer guarantees the skip-when-default trust fields stay
+/// byte-identical to every other surface that renders a chunk.
 pub struct SearchResultOutput<'a> {
     /// The matched result. Provides the canonical chunk base fields.
     result: &'a UnifiedResult,
@@ -47,7 +47,7 @@ impl<'a> SearchResultOutput<'a> {
     /// Build the per-result JSON value, preserving the exact field set and
     /// ordering of the previous inline builders.
     fn to_value(&self) -> serde_json::Value {
-        // Chunk base + posture-gated trust fields + `type: "code"` come from
+        // Chunk base + skip-when-default trust fields + `type: "code"` come from
         // the canonical store serializer so this surface can never drift from
         // the rest of the CLI on the injection/trust schema.
         let mut obj = self.result.to_json_with_origin(self.ref_name);
@@ -482,7 +482,7 @@ pub fn build_unified_results_value(
         .iter()
         .map(|r| {
             // Per-result schema lives in `SearchResultOutput`; it delegates the
-            // chunk base + posture-gated trust fields to the store serializer
+            // chunk base + skip-when-default trust fields to the store serializer
             // and layers parent context on top.
             let UnifiedResult::Code(sr) = r;
             SearchResultOutput {

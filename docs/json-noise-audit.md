@@ -1,5 +1,7 @@
 # JSON Noise Audit — Design
 
+> **Historical design doc** (superseded same day by `docs/json-snr-restoration.md`, kept for traceability). Additionally, `CQS_ULTRASECURITY` and the Posture mechanism were removed in #1703 (2026-06-10): the posture-gated force-emit column, the posture-override test contract, and every `CQS_ULTRASECURITY=1` behavior described below no longer exist. The skip-when-default serialization survives as the only behavior.
+
 **Status:** ready to execute (Phase 1+2). Phase 3 is contingent and explicitly gated; see "Phase 3 trigger" below.
 **Date:** 2026-05-08 (red-team-revised; supersedes the first cut from same day)
 **Location:** `docs/json-noise-audit.md`
