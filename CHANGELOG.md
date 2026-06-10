@@ -181,6 +181,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **HNSW/CAGRA test-concurrency hardening (#1693).** Root-caused
+  `hnsw::safety::tests::test_loaded_index_lifecycle` (flaky under full-suite
+  parallelism, passed in isolation): `HnswIndex::build_with_dim` inserts via
+  `parallel_insert_data` (rayon) over hnsw_rs's OS-entropy-seeded layer RNG, and
+  under CPU saturation the concurrent entry-point race produces a degenerate
+  graph on ~1-2% of builds where even the cosine-distance-0 self-match vector is
+  unreachable (measured 52/3000 parallel inserts vs 0/3000 sequential under
+  16-core load; search on a fixed index is deterministic at 0/100k). This is an
+  hnsw_rs concurrent-build recall characteristic, not a cqs soundness bug — the
+  self-referential `LoadedHnsw` lifecycle is sound. Fixes: (a) `safety.rs`
+  lifecycle test now asserts soundness (non-empty, valid IDs, finite scores)
+  rather than recall; (b) the recall-intent tests in `build.rs`/`persist.rs`
+  (including the #1676 `tc31_*` survivors) now assert top-k containment with a
+  bounded build retry (`assert_self_match_reachable`) instead of exact rank-1;
+  (c) CAGRA self-match tests switched from `assert_eq!(results[0].id, ...)` to
+  top-k containment. Also closed a cross-module env-var race: `CQS_HNSW_*`
+  mutations in `test_hnsw_for_helpers_pick_tier` and `env_override_tests` now
+  share a single `HNSW_ENV_LOCK` static (a per-module mutex did not coordinate
+  across modules). Test-concurrency policy documented in CONTRIBUTING.md.
+
 - **Kind-fallback cap parity across all graph commands.** The
   `callers`/`callees`, `deps`, `test-map`, and `trace` kind-mismatch
   fallbacks built their `definitions[]` arrays uncapped, so a hot name like
