@@ -173,7 +173,7 @@ pub fn run_server(
                     }
                 }
                 None => {
-                    println!("cqs serve listening on http://{actual}");
+                    println!("{}", no_auth_banner_line(actual));
                     eprintln!(
                         "WARN: --no-auth in use — anyone with network access to {actual} \
                          can read this index"
@@ -197,6 +197,31 @@ pub fn run_server(
     })?;
 
     Ok(())
+}
+
+/// URL to show in banners and hand to the `--open` browser launch.
+///
+/// Wildcard binds (`0.0.0.0`, `[::]`) are valid listen addresses but
+/// useless connect targets — browsers reject `http://0.0.0.0:8080`.
+/// Map them to the matching loopback (`127.0.0.1` / `[::1]`) for the
+/// displayed/launched URL only; the bind itself is unchanged. Concrete
+/// addresses pass through untouched.
+pub fn loopback_open_url(bind_addr: SocketAddr) -> String {
+    let mut display = bind_addr;
+    if display.ip().is_unspecified() {
+        let loopback = match display.ip() {
+            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        };
+        display.set_ip(loopback);
+    }
+    format!("http://{display}")
+}
+
+/// The no-auth "listening on" banner line. Uses [`loopback_open_url`] so
+/// a wildcard bind still prints a URL a browser will accept.
+fn no_auth_banner_line(actual: SocketAddr) -> String {
+    format!("cqs serve listening on {}", loopback_open_url(actual))
 }
 
 /// Race a signal-driven shutdown against an idle-driven shutdown. With
