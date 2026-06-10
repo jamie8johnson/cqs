@@ -74,26 +74,7 @@ pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOut
 
 // ─── Polymorphic-routing fallbacks ─────────────────────────────────────────
 
-/// Build a definitions list from chunks for kind-mismatch fallbacks.
-/// Mirrors `cmd_impact`'s `chunks_to_definitions` (per-command duplication
-/// is intentional for now — if the pattern stays stable across all 6
-/// commands, lift to a shared module in a follow-up).
-fn chunks_to_definitions(chunks: &[ChunkSummary]) -> Vec<serde_json::Value> {
-    chunks
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "file": cqs::normalize_path(&c.file),
-                "line_start": c.line_start,
-                "line_end": c.line_end,
-                "language": c.language.to_string(),
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "content": c.content,
-            })
-        })
-        .collect()
-}
+use super::chunks_to_definitions;
 
 /// Generic kind-mismatch fallback dispatcher for `cqs callers <name>`.
 /// Same shape as the impact-side fallbacks. JSON path emits an object
@@ -570,5 +551,37 @@ mod tests {
         });
         assert_eq!(payload["fallback_from"], "callees");
         assert_eq!(payload["definitions"][0]["chunk_type"], "class");
+    }
+
+    // The callers/callees kind fallback routes through the shared
+    // `chunks_to_definitions`, which caps the entry count and truncates
+    // oversized content. Without these caps, `cqs callers Result --json`
+    // on a hot name could emit unbounded multi-MB JSON.
+    #[test]
+    fn test_callers_fallback_caps_definitions_count() {
+        use super::super::KIND_FALLBACK_MAX_DEFINITIONS;
+        let chunks: Vec<ChunkSummary> = (0..(KIND_FALLBACK_MAX_DEFINITIONS + 50))
+            .map(|i| {
+                make_chunk(
+                    cqs::parser::ChunkType::Constant,
+                    &format!("X{i}"),
+                    "src/lib.rs",
+                    i as u32,
+                )
+            })
+            .collect();
+        let defs = chunks_to_definitions(&chunks);
+        assert_eq!(defs.len(), KIND_FALLBACK_MAX_DEFINITIONS);
+    }
+
+    #[test]
+    fn test_callers_fallback_truncates_oversized_content() {
+        use super::super::KIND_FALLBACK_MAX_CONTENT_BYTES;
+        let mut big = make_chunk(cqs::parser::ChunkType::Constant, "BIG", "src/lib.rs", 1);
+        big.content = "x".repeat(KIND_FALLBACK_MAX_CONTENT_BYTES * 2);
+        let defs = chunks_to_definitions(&[big]);
+        let content = defs[0]["content"].as_str().unwrap();
+        assert!(content.ends_with("... (truncated)"));
+        assert_eq!(defs[0]["truncated"], true);
     }
 }

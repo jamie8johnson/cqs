@@ -87,20 +87,7 @@ fn deps_kind_fallback(
         "Kind fallback called with no hits — caller must classify before dispatching"
     );
     if json {
-        let definitions: Vec<serde_json::Value> = chunks
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "file": cqs::normalize_path(&c.file),
-                    "line_start": c.line_start,
-                    "line_end": c.line_end,
-                    "language": c.language.to_string(),
-                    "chunk_type": c.chunk_type.to_string(),
-                    "signature": c.signature,
-                    "content": c.content,
-                })
-            })
-            .collect();
+        let definitions = super::chunks_to_definitions(chunks);
         let payload = serde_json::json!({
             "kind": kind_label,
             "fallback_from": "deps",
@@ -303,5 +290,50 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("line_start").is_some());
         assert!(json.get("line").is_none());
+    }
+
+    fn make_const_chunk(name: &str, line: u32) -> ChunkSummary {
+        ChunkSummary {
+            id: format!("src/lib.rs:{line}:abcd1234"),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: cqs::parser::Language::Rust,
+            chunk_type: cqs::parser::ChunkType::Constant,
+            name: name.to_string(),
+            signature: format!("pub const {name}: &str = \"...\";"),
+            content: format!("pub const {name}: &str = \"...\";"),
+            doc: None,
+            line_start: line,
+            line_end: line,
+            content_hash: "abcd1234".to_string(),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+            parser_version: 0,
+            vendored: false,
+        }
+    }
+
+    // The deps kind fallback routes through the shared
+    // `chunks_to_definitions`, capping entry count and truncating oversized
+    // content so a hot name can't emit unbounded JSON.
+    #[test]
+    fn test_deps_fallback_caps_definitions_count() {
+        use super::super::{chunks_to_definitions, KIND_FALLBACK_MAX_DEFINITIONS};
+        let chunks: Vec<ChunkSummary> = (0..(KIND_FALLBACK_MAX_DEFINITIONS + 50))
+            .map(|i| make_const_chunk(&format!("X{i}"), i as u32))
+            .collect();
+        let defs = chunks_to_definitions(&chunks);
+        assert_eq!(defs.len(), KIND_FALLBACK_MAX_DEFINITIONS);
+    }
+
+    #[test]
+    fn test_deps_fallback_truncates_oversized_content() {
+        use super::super::{chunks_to_definitions, KIND_FALLBACK_MAX_CONTENT_BYTES};
+        let mut big = make_const_chunk("BIG", 1);
+        big.content = "x".repeat(KIND_FALLBACK_MAX_CONTENT_BYTES * 2);
+        let defs = chunks_to_definitions(&[big]);
+        let content = defs[0]["content"].as_str().unwrap();
+        assert!(content.ends_with("... (truncated)"));
+        assert_eq!(defs[0]["truncated"], true);
     }
 }

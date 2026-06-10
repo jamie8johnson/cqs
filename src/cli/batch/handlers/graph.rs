@@ -40,11 +40,7 @@ fn build_kind_fallback_value(
     // lines that peg both the wire and the receiver's parse buffer. The cap
     // mirrors the `clamp(1, 100)` discipline the happy-path graph dispatchers
     // use.
-    let definitions: Vec<serde_json::Value> = chunks
-        .iter()
-        .take(crate::cli::commands::KIND_FALLBACK_MAX_DEFINITIONS)
-        .map(crate::cli::commands::chunk_to_definition_value)
-        .collect();
+    let definitions = crate::cli::commands::chunks_to_definitions(chunks);
     serde_json::json!({
         "kind": kind_label,
         "fallback_from": fallback_from,

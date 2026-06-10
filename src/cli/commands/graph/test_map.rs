@@ -348,20 +348,7 @@ fn test_map_kind_fallback(
         "Kind fallback called with no hits — caller must classify before dispatching"
     );
     if json {
-        let definitions: Vec<serde_json::Value> = chunks
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "file": cqs::normalize_path(&c.file),
-                    "line_start": c.line_start,
-                    "line_end": c.line_end,
-                    "language": c.language.to_string(),
-                    "chunk_type": c.chunk_type.to_string(),
-                    "signature": c.signature,
-                    "content": c.content,
-                })
-            })
-            .collect();
+        let definitions = super::chunks_to_definitions(chunks);
         let payload = serde_json::json!({
             "kind": kind_label,
             "fallback_from": "test-map",
@@ -454,19 +441,7 @@ mod output_tests {
     fn test_map_fallback_payload_shape() {
         // Pin the {kind, fallback_from: "test-map", name, definitions, note} shape.
         let chunk = make_chunk(cqs::parser::ChunkType::Constant, "X", "src/a.rs", 5);
-        let definitions: Vec<serde_json::Value> = std::iter::once(&chunk)
-            .map(|c| {
-                serde_json::json!({
-                    "file": cqs::normalize_path(&c.file),
-                    "line_start": c.line_start,
-                    "line_end": c.line_end,
-                    "language": c.language.to_string(),
-                    "chunk_type": c.chunk_type.to_string(),
-                    "signature": c.signature,
-                    "content": c.content,
-                })
-            })
-            .collect();
+        let definitions = super::super::chunks_to_definitions(&[chunk]);
         let payload = serde_json::json!({
             "kind": "const",
             "fallback_from": "test-map",
@@ -478,5 +453,36 @@ mod output_tests {
         assert_eq!(payload["fallback_from"], "test-map");
         assert_eq!(payload["name"], "X");
         assert_eq!(payload["definitions"].as_array().unwrap().len(), 1);
+    }
+
+    // The test-map kind fallback routes through the shared
+    // `chunks_to_definitions`, capping entry count and truncating
+    // oversized content so a hot name can't emit unbounded JSON.
+    #[test]
+    fn test_map_fallback_caps_definitions_count() {
+        use super::super::{chunks_to_definitions, KIND_FALLBACK_MAX_DEFINITIONS};
+        let chunks: Vec<ChunkSummary> = (0..(KIND_FALLBACK_MAX_DEFINITIONS + 50))
+            .map(|i| {
+                make_chunk(
+                    cqs::parser::ChunkType::Constant,
+                    &format!("X{i}"),
+                    "src/lib.rs",
+                    i as u32,
+                )
+            })
+            .collect();
+        let defs = chunks_to_definitions(&chunks);
+        assert_eq!(defs.len(), KIND_FALLBACK_MAX_DEFINITIONS);
+    }
+
+    #[test]
+    fn test_map_fallback_truncates_oversized_content() {
+        use super::super::{chunks_to_definitions, KIND_FALLBACK_MAX_CONTENT_BYTES};
+        let mut big = make_chunk(cqs::parser::ChunkType::Constant, "BIG", "src/lib.rs", 1);
+        big.content = "x".repeat(KIND_FALLBACK_MAX_CONTENT_BYTES * 2);
+        let defs = chunks_to_definitions(&[big]);
+        let content = defs[0]["content"].as_str().unwrap();
+        assert!(content.ends_with("... (truncated)"));
+        assert_eq!(defs[0]["truncated"], true);
     }
 }

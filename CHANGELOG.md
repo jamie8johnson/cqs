@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Kind-fallback cap parity across all graph commands.** The
+  `callers`/`callees`, `deps`, `test-map`, and `trace` kind-mismatch
+  fallbacks built their `definitions[]` arrays uncapped, so a hot name like
+  `cqs callers Result --json` could echo full chunk content for every match
+  — unbounded multi-MB JSON. They now route through the same shared
+  definition builder as `impact` and the daemon path: at most 100 entries,
+  each with content truncated at 2048 bytes (UTF-8-safe, `"... (truncated)"`
+  suffix + `truncated: true`). The count/content caps and the
+  chunk-to-definition transform are hoisted to a single shared location so
+  all five CLI graph commands and the daemon dispatch handler share one
+  implementation.
+
 ## [1.42.0] - 2026-06-09
 
 Minor release. Schema v28. Four threads: comment-canonical embedding reuse, a whole-codebase comment cleanup with a CI guard to keep it clean, retirement of the cuvs fork onto official 26.6.0, and eval-harness drift-proofing.
