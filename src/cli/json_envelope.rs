@@ -39,10 +39,10 @@ use serde::Serialize;
 /// keys) is stable across versions.
 pub const JSON_OUTPUT_VERSION: u32 = 1;
 
-/// Re-export of the lib-level [`cqs::posture::OutputFormat`] type so
+/// Re-export of the lib-level [`cqs::output_format::OutputFormat`] type so
 /// bin-level callers can write `cli::json_envelope::OutputFormat` for
 /// ergonomic locality with the envelope helpers below.
-pub use cqs::posture::OutputFormat;
+pub use cqs::output_format::OutputFormat;
 
 /// Meta block surfaced as `_meta` on every envelope.
 ///
@@ -293,20 +293,7 @@ pub fn meta_json_fragment() -> String {
         // No non-default meta fields → skip the key entirely.
         return String::new();
     }
-    let value = serde_json::to_value(&meta).unwrap_or_else(|_| {
-        // Mirrors meta_value_for_envelope's fallback shape.
-        let mut m = serde_json::Map::with_capacity(2);
-        if meta.worktree_stale {
-            m.insert("worktree_stale".to_string(), serde_json::Value::Bool(true));
-        }
-        if let Some(name) = &meta.worktree_name {
-            m.insert(
-                "worktree_name".to_string(),
-                serde_json::Value::String(name.clone()),
-            );
-        }
-        serde_json::Value::Object(m)
-    });
+    let value = meta_value_for_envelope(&meta);
     let payload = serde_json::to_string(&value).expect("Envelope meta serializes");
     format!(",\"_meta\":{payload}")
 }

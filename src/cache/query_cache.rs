@@ -57,72 +57,13 @@ impl QueryCache {
     ) -> Result<Self, CacheError> {
         let _span = tracing::info_span!("query_cache_open", path = %path.display()).entered();
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                // Best-effort parent chmod (same rationale as in
-                // `EmbeddingCache::open`). Log and continue on failure rather
-                // than refusing to open the query cache.
-                if let Err(e) =
-                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                {
-                    tracing::warn!(
-                        path = %parent.display(),
-                        error = %e,
-                        "Failed to set query cache parent dir permissions to 0o700"
-                    );
-                }
-            }
-        }
-
-        let rt: Arc<tokio::runtime::Runtime> = if let Some(rt) = runtime {
-            rt
-        } else {
-            Arc::new(
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| CacheError::Io(std::io::Error::other(e)))?,
-            )
-        };
-
-        // Query cache honours CQS_BUSY_TIMEOUT_MS too. Default 15000 — same
+        // Pool-open skeleton shared with `EmbeddingCache` via
+        // `connect_cache_pool` (the umask wrap matters here too: query text
+        // may be sensitive — user prompts, internal tooling queries — so the
+        // DB is born private). Default busy timeout 15000 ms — same
         // WAL-checkpoint contention class as the embedding cache, halved
         // because the query cache is write-lighter.
-        let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(busy_timeout_from_env(15_000))
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
-
-        // Same umask wrap as `EmbeddingCache::open_with_runtime`. Query text
-        // may be sensitive (user prompts, internal tooling queries) — a
-        // born-private DB closes the window between SQLite first-write and
-        // `apply_db_file_perms` below.
-        #[cfg(unix)]
-        let prev_umask = unsafe { libc::umask(0o077) };
-        // Cap the on-disk WAL for the query cache too. See
-        // `wal_autocheckpoint_pragma` for rationale.
-        let wal_pragma = wal_autocheckpoint_pragma();
-        let pool = rt.block_on(async {
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(1)
-                .idle_timeout(std::time::Duration::from_secs(30))
-                .after_connect(move |conn, _meta| {
-                    let wal = wal_pragma.clone();
-                    Box::pin(async move {
-                        sqlx::query(sqlx::AssertSqlSafe(wal.as_str()))
-                            .execute(&mut *conn)
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .connect_with(connect_opts)
-                .await?;
-
+        let (pool, rt) = connect_cache_pool(path, 15_000, runtime, |pool| async move {
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS query_cache (
                     query TEXT NOT NULL,
@@ -135,19 +76,8 @@ impl QueryCache {
             .execute(&pool)
             .await?;
 
-            Ok::<_, sqlx::Error>(pool)
+            Ok(())
         })?;
-        // Restore umask after pool creation.
-        #[cfg(unix)]
-        unsafe {
-            libc::umask(prev_umask);
-        }
-
-        // Restrict DB + WAL/SHM sidecar files to 0o600 to match
-        // `EmbeddingCache::open`. Belt-and-suspenders alongside the umask wrap
-        // above so a future refactor that drops the umask doesn't silently
-        // regress. Shared with `EmbeddingCache` via `apply_db_file_perms`.
-        apply_db_file_perms(path);
 
         // Surface cap from env, default 100 MB. Disk-only — no per-row
         // accounting because the cache may persist across daemon restarts.

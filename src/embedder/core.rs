@@ -1665,50 +1665,6 @@ mod tests {
         assert_eq!(EMBEDDING_DIM, 768);
     }
 
-    // ===== pad_2d_i64 tests =====
-
-    #[test]
-    fn test_pad_2d_i64_basic() {
-        let inputs = vec![vec![1, 2, 3], vec![4, 5]];
-        let result = pad_2d_i64(&inputs, 4, 0);
-        assert_eq!(result.shape(), &[2, 4]);
-        assert_eq!(result[[0, 0]], 1);
-        assert_eq!(result[[0, 1]], 2);
-        assert_eq!(result[[0, 2]], 3);
-        assert_eq!(result[[0, 3]], 0); // padded
-        assert_eq!(result[[1, 0]], 4);
-        assert_eq!(result[[1, 1]], 5);
-        assert_eq!(result[[1, 2]], 0); // padded
-        assert_eq!(result[[1, 3]], 0); // padded
-    }
-
-    #[test]
-    fn test_pad_2d_i64_truncates() {
-        let inputs = vec![vec![1, 2, 3, 4, 5]];
-        let result = pad_2d_i64(&inputs, 3, 0);
-        assert_eq!(result.shape(), &[1, 3]);
-        assert_eq!(result[[0, 0]], 1);
-        assert_eq!(result[[0, 1]], 2);
-        assert_eq!(result[[0, 2]], 3);
-        // 4 and 5 are truncated
-    }
-
-    #[test]
-    fn test_pad_2d_i64_empty_input() {
-        let inputs: Vec<Vec<i64>> = vec![];
-        let result = pad_2d_i64(&inputs, 5, 0);
-        assert_eq!(result.shape(), &[0, 5]);
-    }
-
-    #[test]
-    fn test_pad_2d_i64_custom_pad_value() {
-        let inputs = vec![vec![1]];
-        let result = pad_2d_i64(&inputs, 3, -1);
-        assert_eq!(result[[0, 0]], 1);
-        assert_eq!(result[[0, 1]], -1);
-        assert_eq!(result[[0, 2]], -1);
-    }
-
     // ===== EmbedderError tests =====
 
     #[test]

@@ -32,11 +32,6 @@ pub(crate) use pooling::{
     cls_pool, last_token_pool, mean_pool, normalize_l2, pad_2d_i64_from_encodings,
     truncate_at_char_boundary,
 };
-// Test-only: `pad_2d_i64` is exercised by unit tests but has no production
-// caller (production uses `pad_2d_i64_from_encodings`). Gating the re-export
-// keeps the non-test build warning-free.
-#[cfg(test)]
-pub(crate) use pooling::pad_2d_i64;
 
 #[derive(Error, Debug)]
 pub enum EmbedderError {

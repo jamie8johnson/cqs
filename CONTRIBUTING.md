@@ -277,7 +277,7 @@ src/
   limits.rs    - Tunable env-var-backed limits and defaults
   aux_model.rs - Auxiliary (small) model paths used by the LLM-summary pipeline
   kind.rs      - Polymorphic-routing Kind enum (Function | Type | Const | Module | Other | Ambiguous | Multiple | NotFound) + classify_chunk_type + classify_hits + detect_kind_for_store (#1610). Every function-or-type-specialized command consults this before its happy-path query.
-  posture.rs   - Wire-format selector: OutputFormat (V1Envelope | V2Bare; gated by CQS_OUTPUT_FORMAT, process-lifetime cached). Default V2Bare emits the bare payload on the CLI direct success path; v1 restores the full envelope. Consumed by emission helpers in src/cli/json_envelope.rs. (The CQS_ULTRASECURITY posture knob was removed in #1690 — security signals always emit when meaningful.)
+  output_format.rs - Wire-format selector: OutputFormat (V1Envelope | V2Bare; gated by CQS_OUTPUT_FORMAT, process-lifetime cached). Default V2Bare emits the bare payload on the CLI direct success path; v1 restores the full envelope. Consumed by emission helpers in src/cli/json_envelope.rs. (The CQS_ULTRASECURITY posture knob was removed in #1690 — security signals always emit when meaningful.)
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
     languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
