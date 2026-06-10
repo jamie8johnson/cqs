@@ -452,95 +452,27 @@ pub(super) fn reindex_files(
         return Ok((0, Vec::new()));
     }
 
-    // Cache-check chain mirrors `prepare_for_embedding`'s global-cache →
-    // store-cache → embed fallback. The global cache lets a chunk hashed in
-    // another slot (or under a previous model) skip GPU cost when
-    // `EmbeddingCache::project_default_path` already has the vector.
+    // Resolve embedding reuse (global cache → store cache → embed) via the
+    // shared resolver in `cli::pipeline::reuse` — the SAME function the bulk
+    // pipeline's `prepare_for_embedding` uses. #1692 unified the reuse DECISION
+    // (canonical-key logic, NULL/empty-canonical fallback, dim-mismatch
+    // store-cache skip, duplicate-key fallthrough) so a future reuse-semantics
+    // change is a single edit. This path keeps its own batching/order-merge
+    // below; only the cached-vs-embed split moved into the shared function.
     //
-    // The dim guard matches `prepare_for_embedding`: skip the per-slot store
-    // cache when `embedder.embedding_dim() != store.dim()` (a model swap is in
-    // progress); the global cache is dim-checked inside `read_batch` so
-    // dimension drift there is silently filtered.
+    // `resolve_reuse` returns indices into `chunks` (a borrowed slice here);
+    // we rebuild the `(usize, &Chunk)` shape the order-merge below expects so
+    // cache hits stay out of the incremental HNSW insert set.
     let dim = embedder.embedding_dim();
-    // Reuse is keyed by canonical_hash (v28) so a comment-only / formatting-only
-    // edit reuses the embedding instead of re-embedding. Mirrors
-    // `prepare_for_embedding`. Falls back to content_hash for a chunk with no
-    // canonical_hash (shouldn't occur on the parse path; guard anyway).
-    let canon_key = |c: &cqs::Chunk| -> String {
-        if c.canonical_hash.is_empty() {
-            c.content_hash.clone()
-        } else {
-            c.canonical_hash.clone()
-        }
-    };
-    let canon_hashes: Vec<String> = chunks.iter().map(&canon_key).collect();
-    let hashes: Vec<&str> = canon_hashes.iter().map(|s| s.as_str()).collect();
-
-    // Step 1: global (project-scoped, cross-slot) cache.
-    let mut global_hits: HashMap<String, Embedding> = HashMap::new();
-    if let Some(cache) = global_cache {
-        let model_fp = embedder.model_fingerprint();
-        match cache.read_batch(&hashes, &model_fp, cqs::cache::CachePurpose::Embedding, dim) {
-            Ok(hits) => {
-                if !hits.is_empty() {
-                    tracing::debug!(hits = hits.len(), "Watch global cache hits");
-                }
-                for (hash, emb_vec) in hits {
-                    if let Ok(emb) = Embedding::try_new(emb_vec) {
-                        global_hits.insert(hash, emb);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Global cache read failed (best-effort)");
-            }
-        }
-    }
-
-    // Step 2: per-slot store cache. Only query for hashes the global cache
-    // didn't satisfy, and only when the embedder's dim matches store dim — a
-    // model swap mid-watch means the stored vectors are stale.
-    let mut store_hits: HashMap<String, Embedding> = if dim == store.dim() {
-        let missed: Vec<&str> = hashes
-            .iter()
-            .copied()
-            .filter(|h| !global_hits.contains_key(*h))
-            .collect();
-        if missed.is_empty() {
-            HashMap::new()
-        } else {
-            // Keyed by canonical_hash; NULL rows (pre-v28) are skipped → clean
-            // cache miss, re-embed on first touch.
-            store.get_embeddings_by_canonical_hashes(&missed)?
-        }
-    } else {
-        tracing::info!(
-            store_dim = store.dim(),
-            embedder_dim = dim,
-            "Skipping store embedding cache in watch (dimension mismatch — model switch)"
-        );
-        HashMap::new()
-    };
-
-    let mut cached: Vec<(usize, Embedding)> = Vec::new();
-    let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
-    // Take ownership via `.remove()` instead of `.get().clone()`. Each cached
-    // embedding is ~4 KB (1024-dim BGE-large), so cloning per chunk on a
-    // thousand-chunk reindex would be 4 MB of avoidable allocation churn. Two
-    // chunks with the same content_hash within one reindex (rare — implies
-    // duplicate content across files) fall through to `to_embed` on the second
-    // hit, which is correct: one cached embedding satisfies one slot.
-    let global_hits_total = global_hits.len();
-    for (i, chunk) in chunks.iter().enumerate() {
-        let key = canon_key(chunk);
-        if let Some(emb) = global_hits.remove(&key) {
-            cached.push((i, emb));
-        } else if let Some(emb) = store_hits.remove(&key) {
-            cached.push((i, emb));
-        } else {
-            to_embed.push((i, chunk));
-        }
-    }
+    let model_fp = embedder.model_fingerprint();
+    let split = crate::cli::pipeline::resolve_reuse(&chunks, store, global_cache, dim, &model_fp);
+    let global_hits_total = split.global_hits;
+    let cached: Vec<(usize, Embedding)> = split.cached;
+    let to_embed: Vec<(usize, &cqs::Chunk)> = split
+        .to_embed
+        .into_iter()
+        .map(|i| (i, &chunks[i]))
+        .collect();
 
     // Log cache hit/miss stats for observability, surfacing global vs. store
     // cache hits independently.
@@ -586,6 +518,9 @@ pub(super) fn reindex_files(
     if let (Some(cache), false) = (global_cache, to_embed.is_empty()) {
         // Write under the canonical key (v28) so a later comment-only edit
         // reuses this embedding. Falls back to content_hash when absent.
+        // Key choice must stay in sync with `pipeline::reuse::canon_key`
+        // (inlined here as &str borrows to avoid per-entry String allocation
+        // on the write-back hot path).
         let entries: Vec<(&str, &[f32])> = to_embed
             .iter()
             .zip(new_embeddings.iter())

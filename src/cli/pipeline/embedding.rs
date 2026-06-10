@@ -41,121 +41,42 @@ pub(super) fn prepare_for_embedding(
     // nomic-coderank (2048 seq) to 25% capacity.
     let model_max_seq_len = embedder.model_config().max_seq_length;
 
-    // Step 2a: Check global embedding cache first (fastest path).
-    //
-    // Cache reuse is keyed by `canonical_hash` (comment-/whitespace-normalized
-    // content, schema v28) — NOT `content_hash`. A comment-only or
-    // formatting-only edit changes `content_hash` (store identity) but leaves
-    // `canonical_hash` stable, so the embedding is reused instead of
-    // re-embedding the whole corpus. `content_hash` is still what's persisted
-    // as the row's identity; only the lookup key changes here.
-    //
-    // Old content_hash-keyed cache rows (pre-v28) become unreachable under the
-    // new key and age out via `cqs cache prune`.
-    //
-    // A chunk with an empty `canonical_hash` (a hydrated round-trip Chunk —
-    // shouldn't occur on the index path, but guard anyway) falls back to its
-    // `content_hash` so it still gets a usable, content-exact key.
+    // Step 2: Resolve embedding reuse (global cache → store cache → embed) via
+    // the shared resolver, which owns the canonical-key logic, the
+    // NULL/empty-canonical fallback, the dim-mismatch store-cache skip, and the
+    // duplicate-key fallthrough contract. The watch incremental path
+    // (`watch::reindex::reindex_files`) calls the same function — #1692 unified
+    // the reuse DECISION so the canonical_hash key (and any future
+    // reuse-semantics change) lives in exactly one place.
     let dim = embedder.embedding_dim();
-    let canon_key = |c: &Chunk| -> String {
-        if c.canonical_hash.is_empty() {
-            c.content_hash.clone()
-        } else {
-            c.canonical_hash.clone()
-        }
-    };
-    let canon_hashes: Vec<String> = windowed_chunks.iter().map(canon_key).collect();
-    let hashes: Vec<&str> = canon_hashes.iter().map(|s| s.as_str()).collect();
-    let mut global_hits: HashMap<String, Embedding> = HashMap::new();
-    if let Some(cache) = global_cache {
-        // Pre-enrichment helper writes/reads the post-enrichment
-        // `Embedding` purpose. EmbeddingBase has no producer here yet —
-        // when enrichment caching lands it will own its own purpose.
-        match cache.read_batch(
-            &hashes,
-            model_fingerprint,
-            cqs::cache::CachePurpose::Embedding,
-            dim,
-        ) {
-            Ok(hits) => {
-                if !hits.is_empty() {
-                    tracing::debug!(hits = hits.len(), "Global cache hits");
-                }
-                for (hash, emb_vec) in hits {
-                    if let Ok(emb) = cqs::embedder::Embedding::try_new(emb_vec) {
-                        global_hits.insert(hash, emb);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Global cache read failed (best-effort)");
-            }
-        }
-    }
+    let split = crate::cli::pipeline::resolve_reuse(
+        &windowed_chunks,
+        store,
+        global_cache,
+        dim,
+        model_fingerprint,
+    );
+    let global_hits_total = split.global_hits;
 
-    // Step 2b: Check store for cached embeddings by content hash.
-    // Skip when the embedder dim differs from store dim — prevents reusing
-    // embeddings from a different model after model switching.
+    // Step 3: Map the index split into this caller's owned output shape.
+    // `resolve_reuse` returns indices into `windowed_chunks` so neither caller's
+    // ownership model is forced on the other; here we take ownership of each
+    // chunk by consuming the Vec via index lookup.
     //
-    // Only issue the store SELECT for hashes the global cache didn't already
-    // satisfy. On a warm rebuild where every chunk hits the global cache, the
-    // `missed` filter avoids a bind-heavy SELECT whose result would be thrown
-    // away, and saves a round trip when it bites.
-    let mut existing = if dim == store.dim() {
-        // Store-side reuse is also keyed by canonical_hash (v28). Rows whose
-        // canonical_hash IS NULL (pre-v28) are skipped by the helper, so they
-        // re-embed on first touch — a clean cache miss, never a wrong hit.
-        let missed: Vec<&str> = hashes
-            .iter()
-            .copied()
-            .filter(|h| !global_hits.contains_key(*h))
-            .collect();
-        if missed.is_empty() {
-            HashMap::new()
-        } else {
-            match store.get_embeddings_by_canonical_hashes(&missed) {
-                Ok(map) => map,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to fetch cached embeddings by canonical hash");
-                    HashMap::new()
-                }
+    // `cached` indices are ascending (the resolver walks chunks in order), so a
+    // single forward pass with a peekable cached-index cursor partitions the
+    // chunks without per-chunk membership tests. Both `cached` and `to_embed`
+    // preserve original chunk order.
+    let mut cached: Vec<(Chunk, Embedding)> = Vec::with_capacity(split.cached.len());
+    let mut to_embed: Vec<Chunk> = Vec::with_capacity(split.to_embed.len());
+    let mut cached_iter = split.cached.into_iter().peekable();
+    for (i, chunk) in windowed_chunks.into_iter().enumerate() {
+        match cached_iter.peek() {
+            Some((ci, _)) if *ci == i => {
+                let (_, emb) = cached_iter.next().expect("peeked Some");
+                cached.push((chunk, emb));
             }
-        }
-    } else {
-        tracing::info!(
-            store_dim = store.dim(),
-            embedder_dim = dim,
-            "Skipping store embedding cache (dimension mismatch — model switch)"
-        );
-        HashMap::new()
-    };
-
-    // Step 3: Separate into cached vs to_embed (global cache > store cache > embed).
-    //
-    // Take ownership via `.remove()` so we don't `.clone()` every cached
-    // embedding twice — once when collecting from `read_batch` and again into
-    // `cached`. Duplicate content_hashes within a single batch
-    // (rare — implies identical chunks across files) fall through to the
-    // store cache or `to_embed` on the second hit, which is correct
-    // behaviour: one cached embedding can only satisfy one slot.
-    let mut to_embed: Vec<Chunk> = Vec::new();
-    let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
-    let global_hits_total = global_hits.len();
-
-    // Look up each chunk's reused embedding by its canonical key (global cache
-    // first, then store cache). A duplicate canonical key within one batch
-    // (identical-after-normalization chunks) falls through to `to_embed` on the
-    // second hit because the first `.remove()` consumed the slot — one cached
-    // embedding satisfies exactly one chunk, preserving the v27 fallthrough
-    // contract under the new key.
-    for chunk in windowed_chunks {
-        let key = canon_key(&chunk);
-        if let Some(emb) = global_hits.remove(&key) {
-            cached.push((chunk, emb));
-        } else if let Some(emb) = existing.remove(&key) {
-            cached.push((chunk, emb));
-        } else {
-            to_embed.push(chunk);
+            _ => to_embed.push(chunk),
         }
     }
 

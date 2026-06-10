@@ -195,6 +195,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cqs ref list` no longer silently migrates a stale-schema reference index on disk during a read: both output paths open read-only, so a stale-schema ref shows 0 chunks until `cqs index` runs in that reference.
 
+### Changed
+
+- **Embedding-reuse resolution unified** (#1692). The bulk pipeline and the
+  watch/daemon incremental reindex shared ~95 duplicated lines of cache-chain
+  logic each (global cache read, dim-guarded store lookup, ordered split with
+  duplicate-canonical fallthrough); both now call one `cli/pipeline/reuse.rs::
+  resolve_reuse`. Reuse decisions are unchanged for every input. One behavior
+  alignment: a store-cache read error on the watch path now degrades to
+  re-embedding (best-effort, matching the bulk pipeline) instead of aborting
+  the reindex. Also fixed `prepare_for_embedding_store_cache_hit_skips_to_embed`,
+  which had been failing silently under #[ignore] since the canonical-hash key
+  swap (it seeded an empty canonical_hash, which the store binds as NULL and
+  the reuse lookup correctly filters out); it now exercises the real v28 key.
+
 ## [1.42.0] - 2026-06-09
 
 Minor release. Schema v28. Four threads: comment-canonical embedding reuse, a whole-codebase comment cleanup with a CI guard to keep it clean, retirement of the cuvs fork onto official 26.6.0, and eval-harness drift-proofing.
