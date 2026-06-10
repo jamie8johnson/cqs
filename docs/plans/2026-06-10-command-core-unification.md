@@ -74,6 +74,10 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
 - [ ] Final: grep for `dispatch_.*{` bodies >20 lines (should be none); grep inline `serde_json::json!({` in command code (should be near-zero outside adapters)
 - Gate: full suite, eval paired check, `cqs health` no new dead code, CHANGELOG.
 
+### Post-campaign — docs truth sweep
+- [ ] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview)
+- [ ] Fix drift in one docs PR; docs-lying-is-P1 severity applies
+
 ## Invariants for every phase
 
 1. One PR per phase (or per command-group within a phase if a phase grows); main protected, CI green before merge.
