@@ -37,7 +37,7 @@ All findings still marked open after the v1.41.0 cycle were re-verified against 
 2. **EH-V1.40-8 + PB-V1.40-7**: `try_kind_fallback` propagates `lookup_by_name` errors as fatal (`?` at handlers/graph.rs:79,147); should warn + fall through to the normal path. Easy.
 3. **SHL-V1.40-1 + AC-V1.40-9**: `lookup_by_name` (store/chunks/query.rs:271-275) — add LIMIT and routing-priority ORDER BY (currently alphabetical chunk_type, no cap; #1632's cap is downstream of the full fetch). Easy, one query.
 4. **Cluster C architecture refactor** (CQ-V1.40-1/2/4/9, API-V1.40-1/2/4, RM-V1.40-1, EXT-V1.40-1): adopt `detect_kind_for_store` at its 8 inlined call sites; unify the 6 dispatcher signatures (`&OutputFormat` vs `json: bool`); split Kind vs KindResolution; replace `_ => {}` fallthroughs with exhaustive matches; delete `cmd_impact_const_fallback` (hand-rolled duplicate); single source of truth for the ~24 redirect-note strings. One refactor PR. Medium.
-5. **DS-V1.40-1**: daemon Store cache invalidation via `PRAGMA data_version` (identity check is inode/size/mtime only, batch/mod.rs:441-509). Medium.
+5. **DS-V1.40-1**: ✅ FIXED (PR pending, #1714) — `PRAGMA data_version` on a long-lived probe connection added as second discriminator in `check_index_staleness` (batch/context.rs); probe rebaselined on rename-over; identity-only fallback with warn on probe failure. Two new tests pin WAL-commit-no-checkpoint invalidation and post-rename rebaseline.
 6. **DS-V1.40-8/10**: kind-detect + real query share no read snapshot. Medium; consider folding into 4.
 7. **Test backfill** (TC-ADV-V1.40-4, TC-HAP-V1.40-3, TC-ADV-V1.40-9, TC-ADV-V1.40-1 remainder): daemon try_kind_fallback has zero tests for any kind; no CLI integration tests for fallback kinds; V2Bare default + ULTRASECURITY×OUTPUT_FORMAT compose untested at binary boundary (every integration test pins CQS_OUTPUT_FORMAT=v1). Medium. *(ULTRASECURITY removed in #1703 — the compose-contract half is moot; V2Bare binary-boundary tests landed in the same PR.)*
 8. **Observability bundle** (OB-V1.40-1/2/5/6): fallback-fired tracing events, telemetry category (Phase 2 prioritization signal), kind.rs entry spans, Tier 2b drop counter. Easy.
@@ -96,7 +96,7 @@ Phase 1 landed shape across 6 commands × 2 surfaces with hand-rolled per-cell d
 ### Cluster D — Polymorphic-routing data safety (DS + RB + PERF)
 Every Phase 1 dispatcher adds a `lookup_by_name` SQL roundtrip BEFORE the existing-flow query. No `chunks.name` index → full table scan; no shared transaction → snapshot drift; `ORDER BY chunk_type` is alphabetical not routing-priority. **One PR**: schema migration (v28) adding `idx_chunks_name`, single read tx in dispatch handlers, CASE-priority ORDER BY, `lookup_by_name` LIMIT.
 - RB-V1.40-2 / PERF-V1.40-2 / RM-V1.40-4 (missing `chunks.name` index; full table scan per dispatch; `format!`-built SQL string per call)
-- DS-V1.40-1 (daemon `BatchContext` Store cache never invalidates from watch-loop WAL writes — WAL-mode masks main-DB identity; use `PRAGMA data_version`)
+- DS-V1.40-1 (daemon `BatchContext` Store cache never invalidates from watch-loop WAL writes — WAL-mode masks main-DB identity) — ✅ FIXED (PR pending, #1714): `PRAGMA data_version` probe shipped standalone, ahead of the rest of Cluster D
 - DS-V1.40-8 / DS-V1.40-10 (kind-detect + real-query share no read transaction)
 - AC-V1.40-9 (`lookup_by_name` ORDER BY alphabetical chunk_type)
 - SHL-V1.40-1 (no result cap — hot names deserialize thousands of chunks for kind classification)
@@ -169,7 +169,7 @@ Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full ch
 | ID(s) | Title | Effort | Status |
 |---|---|---|---|
 | EH-V1.40-2 + API-V1.40-8 + OB-V1.40-3 + PB-V1.40-3 + SEC-V1.40-6 + DS-V1.40-5 | `Posture::current` / `OutputFormat::current` silent swallow + per-emit re-read + no log + TOCTOU + cross-platform case sensitivity (Cluster B) | easy-medium | ✅ Cluster B PR |
-| DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | DEFERRED — symptom rare; Cluster D bundling deferred to v1.41 cycle |
+| DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | ✅ FIXED (PR pending, #1714) — data_version probe as second staleness discriminator |
 | DS-V1.40-2 | `cmd_telemetry_reset` non-atomic — kill between `fs::copy` and `fs::write` corrupts archive or current | easy | ✅ misc P1 PR |
 | DS-V1.40-3 | `restore_from_backup` `copy_triplet` non-atomic across (main, -wal, -shm) — kill mid-restore replays failed-migration WAL frames against pre-migrate main | medium | ✅ DS-V1.40-3 PR |
 | DS-V1.40-4 | `evals/regenerate_v3_test.py` writes fixture via `Path.write_text` non-atomically — Ctrl+C corrupts eval ground truth | easy | ✅ misc P1 PR |
