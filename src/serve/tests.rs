@@ -2089,3 +2089,38 @@ mod auth_tests {
         drop(fixture);
     }
 }
+
+// ===== loopback URL mapping for `--open` / the no-auth banner =====
+//
+// Wildcard binds are valid listen addresses but browsers reject them as
+// connect targets; the displayed/launched URL must map to loopback while
+// concrete addresses pass through untouched.
+
+#[test]
+fn loopback_open_url_maps_ipv4_wildcard_to_localhost() {
+    let addr: SocketAddr = "0.0.0.0:8080".parse().expect("parse wildcard v4");
+    assert_eq!(super::loopback_open_url(addr), "http://127.0.0.1:8080");
+}
+
+#[test]
+fn loopback_open_url_maps_ipv6_wildcard_to_localhost() {
+    let addr: SocketAddr = "[::]:8080".parse().expect("parse wildcard v6");
+    assert_eq!(super::loopback_open_url(addr), "http://[::1]:8080");
+}
+
+#[test]
+fn loopback_open_url_passes_through_concrete_addrs() {
+    for raw in ["192.168.1.5:9090", "127.0.0.1:8080", "[fe80::1]:8080"] {
+        let addr: SocketAddr = raw.parse().expect("parse concrete addr");
+        assert_eq!(super::loopback_open_url(addr), format!("http://{addr}"));
+    }
+}
+
+#[test]
+fn no_auth_banner_uses_loopback_under_wildcard_bind() {
+    let addr: SocketAddr = "0.0.0.0:8080".parse().expect("parse wildcard v4");
+    assert_eq!(
+        super::no_auth_banner_line(addr),
+        "cqs serve listening on http://127.0.0.1:8080"
+    );
+}

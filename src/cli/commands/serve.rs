@@ -94,7 +94,10 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
                 );
             }
             None => {
-                let url = format!("http://{bind_addr}");
+                // Wildcard binds (0.0.0.0 / [::]) are rejected by browsers
+                // as connect targets; launch the loopback equivalent instead.
+                // The bind itself (run_server below) is unchanged.
+                let url = cqs::serve::loopback_open_url(bind_addr);
                 if let Err(e) = open_browser(&url) {
                     tracing::warn!(error = %e, "failed to open browser");
                     eprintln!("WARN: --open requested but failed to launch browser: {e}");
