@@ -2,9 +2,17 @@
 //!
 //! Executes semantic search queries.
 //!
-//! TODO(json-schema): Extract typed QueryOutput struct. Depends on display module
-//! refactoring — search results use display::display_unified_results_json which
-//! builds JSON inline. Blocked until display module has typed output structs.
+//! ## Command-core split (Phase 2a)
+//!
+//! [`query_core`] owns the surface-agnostic search logic for the project and
+//! name-only paths: routing/classification, embedding, search invocation, and
+//! assembly into the typed [`QueryOutput`]. It never prints, never reads env
+//! posture, and never branches on its surface — the CLI adapter [`cmd_query`]
+//! renders the result (text or JSON via the [`crate::cli::display`] typed
+//! structs) and owns the `NoResults` exit code. The `--ref`-scoped and
+//! `--include-refs` paths stay in the adapter for now (see the
+//! `TODO(phase-2b)` markers) because their reference-index resolution and
+//! tagged-result shape don't yet share the core's `UnifiedResult` model.
 
 use std::collections::HashMap;
 
@@ -15,6 +23,148 @@ use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, Embedding, Pattern, SearchFilter, Store};
 
 use crate::cli::{display, signal, staleness, Cli};
+
+// ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
+
+/// Input for [`query_core`]: the full search-knob surface both the CLI and a
+/// future MCP `search` tool deserialize into. Every field a search consumer
+/// can set lives here; the core reads only these, never the process env or a
+/// CLI struct.
+///
+/// `#[serde(default)]` on the whole struct so a wire/MCP caller can supply just
+/// `query` and inherit the production defaults for the rest.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct QueryArgs {
+    /// Search query (quote multi-word queries).
+    pub query: String,
+    /// Max results to return.
+    pub limit: usize,
+    /// Definition search: match by function/struct name only, skip embedding.
+    pub name_only: bool,
+    /// Filter results to this language (e.g. `rust`, `python`).
+    pub lang: Option<String>,
+    /// Restrict results to these chunk types (e.g. `function`, `struct`).
+    pub include_type: Option<Vec<String>>,
+    /// Exclude these chunk types from results.
+    pub exclude_type: Option<Vec<String>>,
+    /// Glob path filter.
+    pub path: Option<String>,
+    /// Structural pattern filter (builder, async, unsafe, …).
+    pub pattern: Option<String>,
+    /// Include documentation / markdown / config chunks (default: code only).
+    pub include_docs: bool,
+    /// Enable RRF hybrid (keyword + semantic) fusion.
+    pub rrf: bool,
+    /// `true` when a cross-encoder reranker stage is requested.
+    pub rerank: bool,
+    /// Force SPLADE on even for Unknown-category queries.
+    pub splade: bool,
+    /// Constant SPLADE fusion weight (None = per-category router).
+    pub splade_alpha: Option<f32>,
+    /// Minimum similarity threshold.
+    pub threshold: f32,
+    /// Name-match weight in hybrid scoring (0.0–1.0).
+    pub name_boost: f32,
+    /// Disable test/underscore-prefix demotion.
+    pub no_demote: bool,
+    /// Token budget — packs the highest-scoring results into the budget.
+    pub tokens: Option<usize>,
+    /// Expand results with parent type/module context (small-to-big).
+    pub expand_parent: bool,
+    /// Force the non-enriched base HNSW. Resolved once at the adapter boundary
+    /// from `CQS_FORCE_BASE_INDEX` so the core stays env-free.
+    pub force_base_index: bool,
+    /// Per-result JSON overhead the token-budget packer adds when estimating
+    /// how many results fit the `tokens` budget. The CLI resolves this from
+    /// its output format (the per-result envelope cost under `--json`, 0 for
+    /// text) so packing picks the same survivors as before the core split.
+    /// A wire/MCP caller that always serializes should set the per-result
+    /// overhead constant; the `#[serde(default)]` value is 0.
+    pub json_overhead: usize,
+}
+
+impl Default for QueryArgs {
+    fn default() -> Self {
+        // Mirrors the clap defaults on `Cli` / `SearchArgs` so a wire caller
+        // omitting a field gets the same value the CLI would.
+        QueryArgs {
+            query: String::new(),
+            limit: 5,
+            name_only: false,
+            lang: None,
+            include_type: None,
+            exclude_type: None,
+            path: None,
+            pattern: None,
+            include_docs: false,
+            rrf: false,
+            rerank: false,
+            splade: false,
+            splade_alpha: None,
+            threshold: 0.3,
+            name_boost: 0.2,
+            no_demote: false,
+            tokens: None,
+            expand_parent: false,
+            force_base_index: false,
+            json_overhead: 0,
+        }
+    }
+}
+
+impl QueryArgs {
+    /// Build `QueryArgs` from the top-level CLI struct, resolving the
+    /// `CQS_FORCE_BASE_INDEX` env override and the format-dependent JSON
+    /// overhead once here at the adapter boundary.
+    fn from_cli(cli: &Cli) -> Self {
+        QueryArgs {
+            query: cli.query.clone().unwrap_or_default(),
+            limit: cli.limit,
+            name_only: cli.name_only,
+            lang: cli.lang.clone(),
+            include_type: cli.include_type.clone(),
+            exclude_type: cli.exclude_type.clone(),
+            path: cli.path.clone(),
+            pattern: cli.pattern.clone(),
+            include_docs: cli.include_docs,
+            rrf: cli.rrf,
+            rerank: cli.rerank_active(),
+            splade: cli.splade,
+            splade_alpha: cli.splade_alpha,
+            threshold: cli.threshold,
+            name_boost: cli.name_boost,
+            no_demote: cli.no_demote,
+            tokens: cli.tokens,
+            expand_parent: cli.expand_parent,
+            force_base_index: std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1"),
+            json_overhead: if cli.json {
+                crate::cli::commands::JSON_OVERHEAD_PER_RESULT
+            } else {
+                0
+            },
+        }
+    }
+}
+
+// ─── Output (the typed result the adapters render) ─────────────────────────
+
+/// Surface-agnostic result of [`query_core`] for the project + name-only
+/// paths. Carries the assembled results plus everything the adapter needs to
+/// render text or JSON without re-running retrieval: the resolved parent
+/// context and the token-budget accounting. Empty `results` is a valid output
+/// (the adapter maps it to the `NoResults` exit code).
+pub(crate) struct QueryOutput {
+    /// The original query string (echoed into the JSON envelope).
+    pub query: String,
+    /// Assembled, ranked, token-packed results.
+    pub results: Vec<UnifiedResult>,
+    /// Resolved parent context keyed by chunk id (empty unless
+    /// `expand_parent`).
+    pub parents: HashMap<String, ParentContext>,
+    /// `(used, budget)` when `--tokens` packed the results.
+    pub token_info: Option<(usize, usize)>,
+}
 
 /// Compute JSON overhead for token budgeting based on output format.
 fn json_overhead_for(cli: &Cli) -> usize {
@@ -42,6 +192,398 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
     std::process::exit(signal::ExitCode::NoResults as i32);
 }
 
+// ─── Core ───────────────────────────────────────────────────────────────────
+
+/// Surface-agnostic core for the plain (non-`--ref`, non-`--include-refs`)
+/// search path and the non-ref name-only path.
+///
+/// Owns routing/classification, embedding, the search invocation, and
+/// assembly into [`QueryOutput`] (pattern filter, rerank, token-budget
+/// packing, parent-context resolution). Returns an empty `results` vec rather
+/// than printing or exiting — the adapter maps empty to the `NoResults` exit
+/// code. Reads no env: the base-index override arrives via
+/// [`QueryArgs::force_base_index`].
+pub(crate) fn query_core(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    args: &QueryArgs,
+) -> Result<QueryOutput> {
+    let query = args.query.as_str();
+    let _span = tracing::info_span!("query_core", query_len = query.len()).entered();
+
+    let store = &ctx.store;
+    let cqs_dir = &ctx.cqs_dir;
+
+    // Name-only path: FTS by name, skip embedding entirely.
+    if args.name_only {
+        let results = store
+            .search_by_name(query, args.limit)
+            .context("Failed to search by name")?;
+        let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
+        return assemble_output(ctx, args, unified);
+    }
+
+    // Adaptive routing: classify query BEFORE embedding to potentially skip it.
+    // --splade is NOT a routing override (it only controls SPLADE fusion);
+    // --rrf/--rerank override the search strategy. (--ref never reaches the
+    // core.)
+    let has_explicit_flags = args.rrf || args.rerank;
+    let classification = if !has_explicit_flags {
+        let c = cqs::search::router::classify_query(query);
+        tracing::info!(
+            category = %c.category,
+            confidence = %c.confidence,
+            strategy = %c.strategy,
+            "Query classified"
+        );
+        Some(c)
+    } else {
+        tracing::debug!("Explicit flags set, skipping adaptive routing");
+        None
+    };
+
+    // NameOnly strategy: try FTS5 first, fall back to dense on 0 results.
+    if let Some(ref c) = classification {
+        if c.strategy == cqs::search::router::SearchStrategy::NameOnly {
+            let results = store.search_by_name(query, args.limit)?;
+            if !results.is_empty() {
+                tracing::info!(results = results.len(), "NameOnly search succeeded");
+                crate::cli::telemetry::log_routed(
+                    cqs_dir,
+                    query,
+                    &c.category.to_string(),
+                    &c.confidence.to_string(),
+                    &c.strategy.to_string(),
+                    false,
+                    Some(results.len()),
+                );
+                let unified: Vec<UnifiedResult> =
+                    results.into_iter().map(UnifiedResult::Code).collect();
+                return assemble_output(ctx, args, unified);
+            }
+            tracing::info!("NameOnly returned 0 results, falling back to dense");
+            crate::cli::telemetry::log_routed(
+                cqs_dir,
+                query,
+                &c.category.to_string(),
+                &c.confidence.to_string(),
+                &c.strategy.to_string(),
+                true, // fallback triggered
+                None,
+            );
+        }
+    }
+
+    // Over-retrieve when reranking to give the cross-encoder more candidates.
+    let effective_limit = if args.rerank {
+        crate::cli::limits::rerank_pool_size(args.limit)
+    } else {
+        args.limit
+    };
+
+    let embedder = ctx.embedder()?;
+    let query_embedding = embedder.embed_query(query)?;
+
+    // Centroid reclassification + α-floor tracking.
+    let pre_centroid_cat = classification.as_ref().map(|c| c.category);
+    let classification = classification
+        .map(|c| cqs::search::router::reclassify_with_centroid(c, query_embedding.as_slice()));
+    let centroid_applied = classification.as_ref().map(|c| c.category) != pre_centroid_cat;
+
+    let languages = match &args.lang {
+        Some(l) => Some(vec![l.parse().context(format!(
+            "Invalid language. Valid: {}",
+            cqs::parser::Language::valid_names_display()
+        ))?]),
+        None => None,
+    };
+
+    let include_types = match &args.include_type {
+        Some(types) => {
+            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
+            Some(parsed.with_context(|| {
+                format!(
+                    "Invalid chunk type. Valid: {}",
+                    ChunkType::valid_names().join(", ")
+                )
+            })?)
+        }
+        None if args.include_docs => None, // --include-docs: search everything
+        None => {
+            // Default: search code only (callable types + type definitions).
+            Some(ChunkType::code_types())
+        }
+    };
+
+    let exclude_types = match &args.exclude_type {
+        Some(types) => {
+            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
+            Some(parsed.with_context(|| {
+                format!(
+                    "Invalid chunk type for --exclude-type. Valid: {}",
+                    ChunkType::valid_names().join(", ")
+                )
+            })?)
+        }
+        None => None,
+    };
+
+    // Type boost from adaptive routing (boost, not filter — won't exclude).
+    let type_boost_types = classification.as_ref().and_then(|c| c.type_hints.clone());
+
+    // Resolve SPLADE alpha: explicit α wins; else per-category router on a
+    // classified query; else `--splade` forces α=0.7; else SPLADE off. SPLADE
+    // stays on even at α=1.0 when a category classified — the α knob is the
+    // scoring weight, not the candidate-pool switch.
+    let (use_splade, mut splade_alpha) = match (args.splade_alpha, classification.as_ref()) {
+        (Some(alpha), _) => (true, alpha),
+        (None, Some(c)) => (true, cqs::search::router::resolve_splade_alpha(&c.category)),
+        (None, None) if args.splade => (true, 0.7),
+        (None, None) => (false, 1.0),
+    };
+    // Centroid α floor: a centroid-driven reclassification can't zero SPLADE.
+    if centroid_applied {
+        splade_alpha = splade_alpha.max(0.7);
+    }
+
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.languages = languages;
+        f.include_types = include_types;
+        f.exclude_types = exclude_types;
+        f.path_pattern = args.path.clone();
+        f.name_boost = args.name_boost;
+        f.query_text = query.to_string();
+        f.enable_rrf = args.rrf;
+        f.enable_demotion = !args.no_demote;
+        f.enable_splade = use_splade;
+        f.splade_alpha = splade_alpha;
+        f.type_boost_types = type_boost_types;
+        f
+    };
+    filter.validate().map_err(|e| anyhow::anyhow!(e))?;
+
+    let reranker = if args.rerank {
+        Some(ctx.reranker()?)
+    } else {
+        None
+    };
+
+    // SPLADE sparse encoding (if enabled by --splade or per-category routing).
+    let splade_query = if use_splade {
+        ctx.splade_encoder().and_then(|enc| match enc.encode(query) {
+            Ok(sv) => Some(sv),
+            Err(e) => {
+                tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
+                None
+            }
+        })
+    } else {
+        None
+    };
+    let splade_index = if use_splade { ctx.splade_index() } else { None };
+
+    // Phase 5: when the classifier picked DenseBase (or the env override is
+    // resolved into args.force_base_index), try the base HNSW; fall back to
+    // enriched if it's absent/corrupt.
+    let use_base = matches!(
+        classification.as_ref().map(|c| c.strategy),
+        Some(cqs::search::router::SearchStrategy::DenseBase)
+    ) || args.force_base_index;
+    let mut base_fallback = false;
+    let index = if use_base {
+        match crate::cli::build_base_vector_index(store, cqs_dir)? {
+            Some(base_idx) => {
+                tracing::info!(
+                    basename = "index_base",
+                    "Router selected base HNSW for non-enriched query"
+                );
+                Some(base_idx)
+            }
+            None => {
+                tracing::info!(
+                    "Base HNSW unavailable — falling back to enriched index for DenseBase query"
+                );
+                base_fallback = true;
+                crate::cli::build_vector_index(store, cqs_dir)?
+            }
+        }
+    } else {
+        crate::cli::build_vector_index(store, cqs_dir)?
+    };
+
+    if use_base {
+        crate::cli::telemetry::log_routed(
+            cqs_dir,
+            query,
+            "routed_to_base",
+            "medium",
+            if base_fallback {
+                "dense_base_fallback_to_enriched"
+            } else {
+                "dense_base"
+            },
+            base_fallback,
+            None,
+        );
+    }
+
+    let audit_mode = cqs::audit::load_audit_state(cqs_dir);
+
+    let search_limit = if args.pattern.is_some() {
+        effective_limit * 3
+    } else {
+        effective_limit
+    };
+    let splade_arg = splade_index.zip(splade_query.as_ref());
+
+    // Audit mode and SPLADE both require the hybrid path (search_unified
+    // doesn't support SPLADE yet); only the plain dense path uses
+    // search_code_results.
+    let results = if audit_mode.is_active() || splade_arg.is_some() {
+        let code_results = store.search_hybrid(
+            &query_embedding,
+            &filter,
+            search_limit,
+            args.threshold,
+            index.as_deref(),
+            splade_arg,
+        )?;
+        code_results.into_iter().map(UnifiedResult::Code).collect()
+    } else {
+        store.search_code_results(
+            &query_embedding,
+            &filter,
+            search_limit,
+            args.threshold,
+            index.as_deref(),
+        )?
+    };
+
+    // Pattern filter.
+    let pattern: Option<Pattern> = args
+        .pattern
+        .as_ref()
+        .map(|p| p.parse())
+        .transpose()
+        .context("Invalid pattern")?;
+    let results = if let Some(ref pat) = pattern {
+        let mut filtered: Vec<UnifiedResult> = results
+            .into_iter()
+            .filter(|r| match r {
+                UnifiedResult::Code(sr) => {
+                    pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
+                }
+            })
+            .collect();
+        filtered.truncate(args.limit);
+        filtered
+    } else {
+        results
+    };
+
+    // Cross-encoder re-ranking.
+    let results = if let Some(reranker) = reranker.as_deref() {
+        rerank_unified(reranker, query, results, args.limit)?
+    } else {
+        results
+    };
+
+    assemble_output(ctx, args, results)
+}
+
+/// Final assembly shared by the core's name-only, NameOnly-FTS, and dense
+/// paths: token-budget packing + parent-context resolution. The input is
+/// already a ranked `Vec<UnifiedResult>`.
+fn assemble_output(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    args: &QueryArgs,
+    results: Vec<UnifiedResult>,
+) -> Result<QueryOutput> {
+    let store = &ctx.store;
+    let root = &ctx.root;
+
+    // Token-budget packing. The per-result JSON overhead is resolved by the
+    // adapter into `args.json_overhead` (the CLI's format-dependent estimate),
+    // so packing keeps the exact same survivors as before the core split.
+    let (results, token_info) = if let Some(budget) = args.tokens {
+        // Lazy embedder: the name-only path may not have built one yet.
+        let embedder = ctx.embedder()?;
+        crate::cli::commands::token_pack_results(
+            results,
+            budget,
+            args.json_overhead,
+            embedder,
+            unified_text,
+            unified_score,
+            "query_core",
+        )
+    } else {
+        (results, None)
+    };
+
+    let parents = if args.expand_parent {
+        resolve_parent_context(&results, store, root)
+    } else {
+        HashMap::new()
+    };
+
+    Ok(QueryOutput {
+        query: args.query.clone(),
+        results,
+        parents,
+        token_info,
+    })
+}
+
+/// Render a [`QueryOutput`] for the CLI: staleness warning, empty-result exit,
+/// and text/JSON emission via the typed display structs.
+fn render_query_output(
+    cli: &Cli,
+    root: &std::path::Path,
+    store: &Store<cqs::store::ReadOnly>,
+    output: QueryOutput,
+) -> Result<()> {
+    let QueryOutput {
+        query,
+        results,
+        parents,
+        token_info,
+    } = output;
+
+    // Staleness warning (surface I/O — adapter owns it).
+    if !cli.quiet && !cli.no_stale_check {
+        let origins: Vec<&str> = results
+            .iter()
+            .map(|r| {
+                let UnifiedResult::Code(sr) = r;
+                sr.chunk.file.to_str().unwrap_or("")
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !origins.is_empty() {
+            staleness::warn_stale_results(store, &origins, root);
+        }
+    }
+
+    if results.is_empty() {
+        emit_empty_results(&query, cli.json, None);
+    }
+
+    let parents_ref = if cli.expand_parent {
+        Some(&parents)
+    } else {
+        None
+    };
+
+    if cli.json {
+        display::display_unified_results_json(&results, &query, parents_ref, token_info)?;
+    } else {
+        display::display_unified_results(&results, root, cli.no_content, cli.context, parents_ref)?;
+    }
+    Ok(())
+}
+
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -65,15 +607,34 @@ pub(crate) fn cmd_query(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
-    // Name-only mode: search by function/struct name, skip embedding entirely
+    // Name-only mode: search by function/struct name, skip embedding entirely.
     if cli.name_only {
         if cli.rerank_active() {
             bail!("--rerank requires embedding search, incompatible with --name-only");
         }
         if let Some(ref ref_name) = cli.ref_name {
+            // TODO(phase-2b): ref-name-only search resolves a reference index
+            // and emits the tagged-result shape — distinct from the core's
+            // `UnifiedResult` model. Stays in the adapter until the ref paths
+            // adopt the shared output type.
             return cmd_query_ref_name_only(cli, ref_name, query, root);
         }
-        return cmd_query_name_only(cli, store, query, root);
+        // Non-ref name-only routes through the shared core (which performs the
+        // FTS-by-name lookup + assembly). `--include-refs` is ignored on the
+        // name-only path, matching prior behavior.
+        let args = QueryArgs::from_cli(cli);
+        let output = query_core(ctx, &args)?;
+        return render_query_output(cli, root, store, output);
+    }
+
+    // Plain (non-ref, non-multi-index) search routes through the shared core.
+    // The `--ref`-scoped and `--include-refs` paths keep the adapter-local
+    // retrieval below (TODO(phase-2b)) because they emit the tagged-result
+    // shape rather than the core's `UnifiedResult` envelope.
+    if cli.ref_name.is_none() && !cli.include_refs {
+        let args = QueryArgs::from_cli(cli);
+        let output = query_core(ctx, &args)?;
+        return render_query_output(cli, root, store, output);
     }
 
     // Adaptive routing: classify query BEFORE embedding to potentially skip it
@@ -928,4 +1489,111 @@ fn resolve_parent_context<Mode>(
     }
 
     parents
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The MCP-readiness contract: a wire/tool caller can supply only `query`
+    /// and the rest fall back to the production defaults via `#[serde(default)]`.
+    #[test]
+    fn query_args_deserialize_minimal() {
+        let args: QueryArgs = serde_json::from_str(r#"{"query": "find me"}"#).unwrap();
+        assert_eq!(args.query, "find me");
+        assert_eq!(args.limit, 5, "limit default mirrors clap");
+        assert!((args.threshold - 0.3).abs() < 1e-6);
+        assert!((args.name_boost - 0.2).abs() < 1e-6);
+        assert!(!args.name_only);
+        assert!(!args.rerank);
+        assert!(args.tokens.is_none());
+        assert_eq!(args.json_overhead, 0);
+        assert!(!args.force_base_index);
+    }
+
+    /// Every field is wire-settable (the future MCP `search` tool's param
+    /// surface). A regression that dropped `#[serde(default)]` or renamed a
+    /// field would break deserialization here.
+    #[test]
+    fn query_args_deserialize_full() {
+        let json = r#"{
+            "query": "q",
+            "limit": 12,
+            "name_only": true,
+            "lang": "rust",
+            "include_type": ["function", "struct"],
+            "exclude_type": ["test"],
+            "path": "src/**",
+            "pattern": "async",
+            "include_docs": true,
+            "rrf": true,
+            "rerank": true,
+            "splade": true,
+            "splade_alpha": 0.5,
+            "threshold": 0.1,
+            "name_boost": 0.7,
+            "no_demote": true,
+            "tokens": 4000,
+            "expand_parent": true,
+            "force_base_index": true,
+            "json_overhead": 30
+        }"#;
+        let args: QueryArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.limit, 12);
+        assert!(args.name_only);
+        assert_eq!(args.lang.as_deref(), Some("rust"));
+        assert_eq!(
+            args.include_type.as_deref(),
+            Some(&["function".to_string(), "struct".to_string()][..])
+        );
+        assert_eq!(
+            args.exclude_type.as_deref(),
+            Some(&["test".to_string()][..])
+        );
+        assert_eq!(args.path.as_deref(), Some("src/**"));
+        assert_eq!(args.pattern.as_deref(), Some("async"));
+        assert!(args.include_docs);
+        assert!(args.rrf);
+        assert!(args.rerank);
+        assert!(args.splade);
+        assert_eq!(args.splade_alpha, Some(0.5));
+        assert_eq!(args.tokens, Some(4000));
+        assert!(args.expand_parent);
+        assert!(args.force_base_index);
+        assert_eq!(args.json_overhead, 30);
+    }
+
+    /// `QueryArgs::default` must match the clap defaults exactly — the wire
+    /// surface and the CLI surface have to agree on omitted-field behavior.
+    /// Parses a real minimal CLI invocation so a changed clap default breaks
+    /// this test instead of silently diverging from the wire default.
+    #[test]
+    fn query_args_default_matches_clap_defaults() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from(["cqs", "q"]).unwrap();
+        let from_clap = QueryArgs::from_cli(&cli);
+        let expected = QueryArgs {
+            query: "q".to_string(),
+            ..QueryArgs::default()
+        };
+        assert_eq!(
+            from_clap, expected,
+            "clap defaults drifted from QueryArgs::default — update both together"
+        );
+    }
+
+    /// The `QueryOutput` envelope is a plain data carrier: an empty result set
+    /// is a valid output (the adapter, not the core, maps it to NoResults).
+    #[test]
+    fn query_output_allows_empty_results() {
+        let out = QueryOutput {
+            query: "nothing".to_string(),
+            results: Vec::new(),
+            parents: HashMap::new(),
+            token_info: None,
+        };
+        assert!(out.results.is_empty());
+        assert_eq!(out.query, "nothing");
+        assert!(out.token_info.is_none());
+    }
 }

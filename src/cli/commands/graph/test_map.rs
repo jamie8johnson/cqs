@@ -34,6 +34,12 @@ pub(crate) struct TestMapArgs {
     pub max_depth: usize,
     /// Cap on test matches returned (clamped 1..=100 inside the core).
     pub limit: usize,
+    /// Reverse-BFS visited-node ceiling (OOM guard on dense graphs). Resolved
+    /// once at the adapter boundary from `CQS_TEST_MAP_MAX_NODES` (default
+    /// 10,000) via [`test_map_max_nodes`]; the core never reads the env.
+    /// `#[serde(default)]` so a wire caller that omits it gets the default.
+    #[serde(default = "test_map_max_nodes")]
+    pub max_nodes: usize,
 }
 
 // ─── Shared data structures ─────────────────────────────────────────────────
@@ -82,7 +88,11 @@ pub(crate) enum TestMapCoreOutput {
 const DEFAULT_TEST_MAP_MAX_NODES: usize = 10_000;
 
 /// Returns the test-map BFS node cap, reading `CQS_TEST_MAP_MAX_NODES` once on first call.
-fn test_map_max_nodes() -> usize {
+///
+/// Resolved at the adapter boundary (CLI `cmd_test_map`, daemon
+/// `dispatch_test_map`) and threaded into [`TestMapArgs::max_nodes`] so the
+/// core stays env-free. Also serves as the `#[serde(default)]` for `max_nodes`.
+pub(crate) fn test_map_max_nodes() -> usize {
     use std::sync::OnceLock;
     static CAP: OnceLock<usize> = OnceLock::new();
     *CAP.get_or_init(|| match std::env::var("CQS_TEST_MAP_MAX_NODES") {
@@ -119,9 +129,9 @@ pub(crate) fn build_test_map(
     test_chunks: &[ChunkSummary],
     root: &Path,
     max_depth: usize,
+    max_nodes: usize,
 ) -> Vec<TestMatch> {
-    let _span = tracing::info_span!("build_test_map", target_name, max_depth).entered();
-    let max_nodes = test_map_max_nodes();
+    let _span = tracing::info_span!("build_test_map", target_name, max_depth, max_nodes).entered();
 
     // Reverse BFS from target.
     // Keys + parent-pointers are `Arc<str>` so the BFS reuses the
@@ -260,7 +270,14 @@ pub(crate) fn test_map_core(
     let resolved = resolve_target(store, &args.name)?;
     let target_name = resolved.chunk.name.clone();
 
-    let mut matches = build_test_map(&target_name, graph, test_chunks, root, args.max_depth);
+    let mut matches = build_test_map(
+        &target_name,
+        graph,
+        test_chunks,
+        root,
+        args.max_depth,
+        args.max_nodes,
+    );
     matches.truncate(limit);
     Ok(TestMapCoreOutput::Tests(build_test_map_output(
         &target_name,
@@ -292,7 +309,14 @@ pub(crate) fn cmd_test_map(
         let summaries: Vec<cqs::store::ChunkSummary> =
             test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
 
-        let mut matches = build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+        let mut matches = build_test_map(
+            name,
+            &graph,
+            &summaries,
+            &ctx.root,
+            max_depth,
+            test_map_max_nodes(),
+        );
         matches.truncate(limit);
 
         if json {
@@ -334,6 +358,8 @@ pub(crate) fn cmd_test_map(
         name: name.to_string(),
         max_depth,
         limit,
+        // Resolve the env ceiling once here, at the adapter boundary.
+        max_nodes: test_map_max_nodes(),
     };
     match test_map_core(store, &graph, &test_chunks, root, &args)? {
         TestMapCoreOutput::Fallback(fb) => {

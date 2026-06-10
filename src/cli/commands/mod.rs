@@ -74,8 +74,9 @@ pub(crate) use graph::cmd_trace;
 // `serde_json::to_value` / `to_value()` without being named at the call
 // site, so they stay internal to the graph module.
 pub(crate) use graph::{
-    callees_core, callers_core, deps_core, impact_core, test_map_core, trace_core, CalleesArgs,
-    CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+    callees_core, callers_core, deps_core, impact_core, test_map_core, test_map_max_nodes,
+    trace_core, trace_max_nodes, CalleesArgs, CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs,
+    TestMapCoreArgs, TraceCoreArgs,
 };
 
 // -- review --

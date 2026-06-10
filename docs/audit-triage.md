@@ -44,6 +44,15 @@ All findings still marked open after the v1.41.0 cycle were re-verified against 
 9. **Perf bundle**: Cluster A2 N+1 GLOB scans in `filter_invoked_macros` (dead_code.rs:189-199, correctness fixed by #1627 but still per-macro full scans); daemon `dispatch_value` refactor (TODO P2 #62, socket.rs:270) + `emit_json` double-serialization; PERF-V1.40-7 build_test_map inversion (modest — loop body is O(1)). Medium.
 10. **Cleanup tier**: PERF-V1.40-8 fragment caching — NOTE the proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale fields); cache only the static part. CQ-V1.40-5/6 `_with_posture` plumbing — wire it or delete it (perf motivation gone post-#1629). AC-V1.40-6/7, EH-V1.40-3 (trace macro/Multiple/target-validation). SEC-V1.40-8 walk caps. PB-V1.40-9 WAL-on-9P detection. RM-V1.40-4 SQL string const. RM-V1.40-6/7 cross-project graph caching. Easy-medium each.
 
+### Taste-debt issues (filed 2026-06-10, distilled from whole-codebase review)
+
+Ordered for the fix loop, all positioned relative to the command-core campaign:
+
+1. **#1692** — unify the duplicated embedding-reuse chains (pipeline vs watch/reindex). Standalone, any time.
+2. **#1693** — HNSW/GPU test concurrency policy + `test_loaded_index_lifecycle` containment (promote to immediate on next flake; `safety.rs` location means root-cause before trusting the flake explanation).
+3. **#1690** — posture/output-format matrix consolidation (after campaign phase 4 — same surface; subsumes the CQ-V1.40-5/6 and TC-ADV-V1.40-1 queue entries above).
+4. **#1691** — split big-with-logic monoliths with fixture-refresh discipline (after campaign phases 2-3 to avoid diff churn).
+
 ### Still deferred (unchanged decision)
 
 - **DS-V1.40-7**: partially mitigated (CLI clamps to [-1,1], rejects NaN/Inf) but `--sentiment 0.7` still accepted — no discrete-value CHECK. Stays deferred per the v1.41.0 rationale.

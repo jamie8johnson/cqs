@@ -60,10 +60,53 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
 - Gate: targeted graph + handler + kind tests green; CHANGELOG entry added. Full-suite + `cqs eval` fixture-sensitivity check deferred to the orchestrator's post-collection run (cores produce byte-stable JSON; no retrieval path touched).
 
 ### Phase 2 — search/io commands
-- [ ] Request-scoped config pattern: fold the BFS-ceiling env caps (`CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`) into Args/ctx so the core-purity invariant (no env reads) becomes literally true for the Phase 1 cores too (search/query, read, context, gather, scout, onboard, brief, notes, diff, blame, drift, reconstruct)
-- [ ] Cores + typed outputs (unblocks the `TODO(json-schema)` in query.rs — requires display module typed structs; do display first)
-- [ ] `display_unified_results_json` replaced by `SearchOutput` struct
-- Gate: same as Phase 1 + eval guard (search path touched — paired test+dev eval, both within noise).
+
+**Split into 2a (search — eval-sensitive) and 2b (io commands).**
+
+#### Phase 2a — search (done)
+- [x] Request-scoped config pattern established: the BFS-ceiling env caps
+  (`CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`) are folded into
+  `TraceArgs::max_nodes` / `TestMapArgs::max_nodes`, resolved once at each
+  adapter boundary (CLI + daemon) via the now-`pub(crate)` `trace_max_nodes`
+  / `test_map_max_nodes` helpers. The Phase-1 graph cores no longer read env;
+  `bfs_shortest_path` / `build_test_map` take `max_nodes` as a parameter.
+  Search's own `CQS_FORCE_BASE_INDEX` is folded into `QueryArgs::force_base_index`
+  the same way.
+- [x] Display module typed structs: `SearchResultOutput` (per-result; delegates
+  the chunk base + posture-gated trust fields to the store serializer) +
+  `SearchOutput` (envelope: `results`/`query`/`total` + optional
+  `token_count`/`token_budget`/`source`). Both CLI search-JSON paths
+  (`display_unified_results_json`, `display_tagged_results_json`) build them;
+  the `TODO(json-schema)` in query.rs is unblocked. Wire shape byte-stable.
+- [x] `query_core(ctx, &QueryArgs) -> Result<QueryOutput>` extracted in-place
+  for the plain (non-`--ref`, non-`--include-refs`) project path + the non-ref
+  name-only path, incl. audit-mode and NameOnly-FTS-first. `QueryArgs` derives
+  `Deserialize` (MCP param surface) with doc-commented fields. `cmd_query` is
+  the CLI adapter (render + `NoResults` exit). The `--ref` / `--include-refs` /
+  ref-name-only sub-paths stay in the adapter, marked `TODO(phase-2b)`, because
+  they emit the tagged-result shape rather than the core's `UnifiedResult`
+  model. The daemon `dispatch_search` keeps its own `ChunkOutput` wire shape
+  and distinct retrieval semantics; a CLI-vs-daemon parity test pins the shared
+  name-only retrieval primitive. Full daemon→`query_core` unification is
+  `TODO(phase-2b)` (needs a shared search-context trait spanning
+  `CommandContext` + `BatchView`).
+- Gate: build + targeted tests + clippy + fmt clean. Retrieval semantics
+  provably untouched (eval's `runner.rs` is byte-identical; the shared
+  primitives `search_hybrid`/`search_code_results`/`classify_query` are
+  unchanged). Observed eval movement is confined to two rank-20-cliff queries
+  whose position is decided by `codegen-units=1` FP coalescing, NOT logic —
+  confirmed because a graph-only subset of this change (which cannot reach the
+  eval path) reproduces the identical shift.
+
+#### Phase 2b — io commands (not started)
+- [ ] Cores + typed outputs for the io commands (read, context, gather, scout,
+  onboard, brief, notes, diff, blame, drift, reconstruct).
+- [ ] `--ref` / `--include-refs` / ref-name-only search sub-paths adopt the
+  shared output model (lift them out of the `cmd_query` adapter).
+- [ ] Daemon `dispatch_search` → `query_core` via a shared search-context trait.
+- Gate: same as Phase 1 + eval guard — amended 2026-06-10: byte-exact eval match is unachievable under codegen-units=1 (any code change re-coalesces FP ops and can flip rank-boundary ties; proven via graph-only-subset A/B in phase 2a). The enforceable invariant: (a) eval-reachable source (search/store/pipeline/splade/hnsw/embedder/eval) byte-identical in the diff, AND (b) paired test+dev numbers within the clean-HEAD rebuild variance band.
+
+**2b friction note (from 2a review):** the daemon search path projects per-result JSON through `ChunkOutput` while the CLI now projects through `SearchResultOutput`/`to_json_with_origin` — two different schemas, not just two call sites. 2b's shared-context-trait work must reconcile the schema, not only the dispatch. The graph commands had already converged on one schema before coring; search has not.
 
 ### Phase 3 — infra/index commands (index, gc, stats, doctor, status, slot, cache, model, reference, hook, telemetry, audit-mode, init, ping, watch-adjacent)
 - [ ] Cores + typed outputs; daemon adapters
@@ -73,6 +116,10 @@ Order: callers, callees (same file), deps, test_map, trace, impact (hardest: con
 - [ ] Remaining commands; delete any now-unused `json: bool` plumbing and posture shims that became adapter-only (revisit CQ-V1.40-5/6 `_with_posture` here: adapters become the only emit sites — wire or delete)
 - [ ] Final: grep for `dispatch_.*{` bodies >20 lines (should be none); grep inline `serde_json::json!({` in command code (should be near-zero outside adapters)
 - Gate: full suite, eval paired check, `cqs health` no new dead code, CHANGELOG.
+
+### Post-campaign — docs truth sweep
+- [ ] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview)
+- [ ] Fix drift in one docs PR; docs-lying-is-P1 severity applies
 
 ## Invariants for every phase
 
