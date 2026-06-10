@@ -14,25 +14,13 @@
 //! test paths that need the full CLI surface, and through file I/O +
 //! JSON roundtrip for everything else.
 
-use assert_cmd::Command;
+mod common;
+
+use common::cqs_v1 as cqs;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use tempfile::TempDir;
-
-/// Get a Command for the cqs binary.
-fn cqs() -> Command {
-    #[allow(deprecated)]
-    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
-    // Kept-v1 compat set: the default wire shape is V2Bare since
-    // v1.40.0. These tests pin `CQS_OUTPUT_FORMAT=v1` to exercise the
-    // surviving legacy-envelope contract, so `parsed["data"][...]`
-    // assertions keep working. The bare default is asserted end-to-end in
-    // tests/cli_envelope_test.rs, tests/cli_dead_test.rs, and
-    // tests/cli_chat_format_test.rs.
-    c.env("CQS_OUTPUT_FORMAT", "v1");
-    c
-}
 
 /// Minimal `EvalReport` JSON. Mirrors `runner::EvalReport` exactly — if the
 /// shape ever drifts, every test in this file will fail loudly with a

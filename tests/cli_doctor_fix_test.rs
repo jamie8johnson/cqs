@@ -20,24 +20,13 @@
 
 #![cfg(feature = "slow-tests")]
 
-use assert_cmd::Command;
+mod common;
+
+use common::cqs_v1 as cqs;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
-
-fn cqs() -> Command {
-    #[allow(deprecated)]
-    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
-    // Kept-v1 compat set: the default wire shape is V2Bare since
-    // v1.40.0. These tests pin `CQS_OUTPUT_FORMAT=v1` to exercise the
-    // surviving legacy-envelope contract, so `parsed["data"][...]`
-    // assertions keep working. The bare default is asserted end-to-end in
-    // tests/cli_envelope_test.rs, tests/cli_dead_test.rs, and
-    // tests/cli_chat_format_test.rs.
-    c.env("CQS_OUTPUT_FORMAT", "v1");
-    c
-}
 
 /// Build a minimal project with one indexable Rust function so `cqs index`
 /// has work to do.

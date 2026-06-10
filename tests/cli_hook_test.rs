@@ -16,26 +16,16 @@
 //! No embedder needed — `cqs hook` does not load ONNX. No `slow-tests`
 //! gate.
 
+mod common;
+
 use assert_cmd::Command;
+use common::cqs_v1 as cqs;
 use serde_json::Value;
 use std::fs;
 use tempfile::TempDir;
 
 const MANAGED_HOOKS: &[&str] = &["post-checkout", "post-merge", "post-rewrite"];
 const HOOK_MARKER_PREFIX: &str = "# cqs:hook";
-
-fn cqs() -> Command {
-    #[allow(deprecated)]
-    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
-    // Kept-v1 compat set: the default wire shape is V2Bare since
-    // v1.40.0. These tests pin `CQS_OUTPUT_FORMAT=v1` to exercise the
-    // surviving legacy-envelope contract, so `parsed["data"][...]`
-    // assertions keep working. The bare default is asserted end-to-end in
-    // tests/cli_envelope_test.rs, tests/cli_dead_test.rs, and
-    // tests/cli_chat_format_test.rs.
-    c.env("CQS_OUTPUT_FORMAT", "v1");
-    c
-}
 
 /// Force CLI mode — different dev machines may have leftover daemon sockets.
 fn cqs_no_daemon() -> Command {

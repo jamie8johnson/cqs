@@ -73,31 +73,28 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Files under src/ whose text contains `var` — used by the REMOVED_VARS
-/// inverted guard (a removed env knob must not regain production reads).
-fn grep_src_for_var(workspace: &str, var: &str) -> Vec<String> {
-    let mut files = Vec::new();
-    collect_rs_files(&Path::new(workspace).join("src"), &mut files);
-    files
-        .iter()
-        .filter(|f| {
-            fs::read_to_string(f)
-                .map(|t| t.contains(var))
-                .unwrap_or(false)
-        })
-        .map(|f| f.display().to_string())
-        .collect()
-}
-
 #[test]
 fn all_cqs_env_vars_are_documented_in_readme() {
     let workspace = env!("CARGO_MANIFEST_DIR");
-    let mut files = Vec::new();
-    collect_rs_files(&Path::new(workspace).join("src"), &mut files);
-    collect_rs_files(&Path::new(workspace).join("tests"), &mut files);
+    let mut src_files = Vec::new();
+    collect_rs_files(&Path::new(workspace).join("src"), &mut src_files);
+    let mut test_files = Vec::new();
+    collect_rs_files(&Path::new(workspace).join("tests"), &mut test_files);
 
+    // Single read pass over src/: each file's token-bounded var set feeds
+    // both the documentation check and the REMOVED_VARS inverted guard
+    // below. Using `extract_env_vars` for the guard keeps the matching
+    // word-boundary-exact — a raw `contains(var)` substring match would
+    // re-introduce the pre-fix bug that `readme_documents` documents.
     let mut all_vars: Vec<String> = Vec::new();
-    for f in &files {
+    let mut src_file_vars: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    for f in &src_files {
+        let text = fs::read_to_string(f).expect("readable source file");
+        let vars = extract_env_vars(&text);
+        all_vars.extend(vars.iter().cloned());
+        src_file_vars.push((f.clone(), vars));
+    }
+    for f in &test_files {
         let text = fs::read_to_string(f).expect("readable source file");
         all_vars.extend(extract_env_vars(&text));
     }
@@ -129,9 +126,14 @@ fn all_cqs_env_vars_are_documented_in_readme() {
 
     // Inverted guard: a removed var must stay removed. If any REMOVED_VARS
     // entry reappears in src/ (a production read), this test fails — the
-    // allowlist exempts test-only references, never live knobs.
+    // allowlist exempts test-only references, never live knobs. Checked
+    // against the per-file var sets from the single src/ pass above.
     for v in REMOVED_VARS {
-        let hits = grep_src_for_var(workspace, v);
+        let hits: Vec<String> = src_file_vars
+            .iter()
+            .filter(|(_, vars)| vars.iter().any(|x| x == v))
+            .map(|(f, _)| f.display().to_string())
+            .collect();
         assert!(
             hits.is_empty(),
             "{v} is in REMOVED_VARS but has production reads in src/: {hits:?} — \
