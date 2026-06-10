@@ -1,9 +1,9 @@
 # Command-Core Unification (agentic navigability refactor)
 
-Status: **Implementation phases complete (0–4 landed 2026-06-10).** Only the
-post-campaign docs truth sweep remains. See "Campaign status (phases 0–4)" and
-the "Post-campaign deferred ledger" near the bottom for the full state. This
-doc is the resume point if the session dies.
+Status: **CAMPAIGN CLOSED 2026-06-10.** All implementation phases merged
+(#1688, #1689, #1694, #1695, #1696, #1697, #1698) and the docs truth sweep
+landed (#1699, plus the repo-description fix). Remaining work lives in the
+"Post-campaign deferred ledger" near the bottom and its linked issues.
 
 ## Motivation (evidence, 2026-06-09/10)
 
@@ -396,8 +396,8 @@ one schema per command); each is a deliberate scope boundary.
 
 ### Post-campaign — docs truth sweep
 Reviewer-supplied hunts (phase-4 review): (1) audit-triage CQ-V1.40-5/6 marked resolved — verify nothing else in that doc claims _with_posture is pending; (2) docs/audit-findings-v1.15.1.md:379 describes daemon suggest `total` — historical doc, flag as frozen-not-current; (3) pin the exact eval-runner path (src/cli/commands/eval/runner.rs vs src/eval/) wherever "eval-reachable" is defined; (4) confirm the plan's phase-status lines reflect merged state, not working-tree state.
-- [~] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview). *(In progress 2026-06-10 — branch `docs/post-campaign-truth-sweep`.)*
-- [ ] Fix drift in one docs PR; docs-lying-is-P1 severity applies
+- [x] Run `/docs-review` across README, CONTRIBUTING, SECURITY, PRIVACY, lib.rs docs, Cargo.toml metadata, and the GitHub repo description — hunting "tiny lies" (claims the campaign made stale: command behavior, JSON shapes, env knobs incl. the #1690 CQS_ULTRASECURITY deletion) and legacy references (removed helpers, old dispatch names, pre-core architecture descriptions in CONTRIBUTING's Architecture Overview). *(In progress 2026-06-10 — branch `docs/post-campaign-truth-sweep`.)*
+- [x] Fix drift in one docs PR; docs-lying-is-P1 severity applies (#1699 — 6 stale claims fixed; repo description corrected)
 
 ## Invariants for every phase
 
