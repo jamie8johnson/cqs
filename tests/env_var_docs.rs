@@ -73,6 +73,22 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Files under src/ whose text contains `var` — used by the REMOVED_VARS
+/// inverted guard (a removed env knob must not regain production reads).
+fn grep_src_for_var(workspace: &str, var: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_rs_files(&Path::new(workspace).join("src"), &mut files);
+    files
+        .iter()
+        .filter(|f| {
+            fs::read_to_string(f)
+                .map(|t| t.contains(var))
+                .unwrap_or(false)
+        })
+        .map(|f| f.display().to_string())
+        .collect()
+}
+
 #[test]
 fn all_cqs_env_vars_are_documented_in_readme() {
     let workspace = env!("CARGO_MANIFEST_DIR");
@@ -103,11 +119,34 @@ fn all_cqs_env_vars_are_documented_in_readme() {
         "CQS_SPLADE_ALPHA_UNKNOWN",
     ];
 
+    // Deliberately-removed env vars that are still *referenced by name* in a
+    // regression test asserting the removal stuck (the env var is read by
+    // nothing in production, so it must NOT be documented as a live knob).
+    // `CQS_ULTRASECURITY` was the posture knob removed; its inert-
+    // knob test in `tests/cli_envelope_test.rs` sets it and asserts the wire
+    // shape is unchanged.
+    const REMOVED_VARS: &[&str] = &["CQS_ULTRASECURITY"];
+
+    // Inverted guard: a removed var must stay removed. If any REMOVED_VARS
+    // entry reappears in src/ (a production read), this test fails — the
+    // allowlist exempts test-only references, never live knobs.
+    for v in REMOVED_VARS {
+        let hits = grep_src_for_var(workspace, v);
+        assert!(
+            hits.is_empty(),
+            "{v} is in REMOVED_VARS but has production reads in src/: {hits:?} — \
+             either document it in README (it's live) or remove the reads"
+        );
+    }
+
     let readme = fs::read_to_string(Path::new(workspace).join("README.md")).expect("README.md");
 
     let mut missing = Vec::new();
     for v in &all_vars {
         if SPLADE_ALPHA_VARIANTS.contains(&v.as_str()) {
+            continue;
+        }
+        if REMOVED_VARS.contains(&v.as_str()) {
             continue;
         }
         // Skip test-only fixture env vars (used by `set_var` inside `#[test]`

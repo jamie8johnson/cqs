@@ -24,22 +24,38 @@ use assert_cmd::Command;
 use serial_test::serial;
 use tempfile::TempDir;
 
+/// Default helper — no env pins. The CLI direct success path emits the
+/// bare V2Bare payload (the shipped default since v1.40.0), which these
+/// tests assert directly. The error path (`emit_json_error`) always emits
+/// the full `{data, error, version, _meta}` envelope regardless of
+/// `CQS_OUTPUT_FORMAT`, so failure-shape assertions read `parsed["error"]`.
 fn cqs() -> Command {
     #[allow(deprecated)]
-    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
-    // SNR Phase 4 (2026-05-08): default flipped to V2Bare. These
-    // tests pin themselves to the legacy V1Envelope shape so existing
-    // `parsed["data"][...]` assertions keep working. Test-shape
-    // migration to bare-payload is a follow-up PR.
+    Command::cargo_bin("cqs").expect("Failed to find cqs binary")
+}
+
+/// v1 compatibility helper. `CQS_OUTPUT_FORMAT=v1` restores the legacy
+/// `{data, error, version, _meta}` envelope on the CLI direct success path.
+/// This is the only output-format knob that survives; a small named set of
+/// tests below pins that it still resolves.
+fn cqs_v1() -> Command {
+    let mut c = cqs();
     c.env("CQS_OUTPUT_FORMAT", "v1");
     c
 }
 
 /// Force CLI mode (no daemon) so tests that probe the daemon-not-running
 /// path don't get short-circuited by an actually-running daemon on the
-/// dev machine.
+/// dev machine. Bare default (no v1 pin).
 fn cqs_no_daemon() -> Command {
     let mut c = cqs();
+    c.env("CQS_NO_DAEMON", "1");
+    c
+}
+
+/// CLI mode (no daemon) pinned to the v1 envelope shape.
+fn cqs_no_daemon_v1() -> Command {
+    let mut c = cqs_v1();
     c.env("CQS_NO_DAEMON", "1");
     c
 }
@@ -79,25 +95,32 @@ fn test_cache_stats_top_level_json_emits_envelope() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("expected envelope JSON, parse failed: {e}\nstdout={stdout}"));
+        .unwrap_or_else(|e| panic!("expected bare JSON, parse failed: {e}\nstdout={stdout}"));
 
-    // Envelope shape: { data, error, version }
+    // V2Bare default: the success path emits the bare payload — no `data`
+    // wrapper, no `version` / `error` keys.
     assert!(
-        parsed["data"].is_object(),
-        "envelope must wrap stats under data, got: {stdout}"
+        parsed.is_object(),
+        "bare payload must be the stats object, got: {stdout}"
     );
-    assert_eq!(parsed["version"], 1);
-    assert!(parsed["error"].is_null(), "no error on success path");
+    assert!(
+        parsed.get("version").is_none(),
+        "bare default drops version key, got: {stdout}"
+    );
+    assert!(
+        parsed.get("error").is_none(),
+        "bare default drops error key on success, got: {stdout}"
+    );
 
     // P2.16 dropped total_size_mb (bytes is canonical). Pin numeric bytes.
     assert!(
-        parsed["data"]["total_size_bytes"].is_number(),
+        parsed["total_size_bytes"].is_number(),
         "total_size_bytes must be numeric"
     );
-    assert!(parsed["data"]["total_entries"].is_number());
-    assert!(parsed["data"]["unique_models"].is_number());
+    assert!(parsed["total_entries"].is_number());
+    assert!(parsed["unique_models"].is_number());
     assert!(
-        parsed["data"].get("total_size_mb").is_none(),
+        parsed.get("total_size_mb").is_none(),
         "P2.16: total_size_mb removed; use total_size_bytes"
     );
 }
@@ -117,11 +140,11 @@ fn test_cache_stats_subcommand_json_emits_envelope() {
         .expect("cqs cache stats --json failed to spawn");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
-    assert!(parsed["data"]["total_size_bytes"].is_number());
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("bare JSON parse");
+    // Bare default: payload fields are at the top level.
+    assert!(parsed["total_size_bytes"].is_number());
     assert!(
-        parsed["data"].get("total_size_mb").is_none(),
+        parsed.get("total_size_mb").is_none(),
         "P2.16: total_size_mb removed"
     );
 }
@@ -169,13 +192,14 @@ fn test_project_search_top_level_json_emits_envelope() {
     }
 
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("expected envelope JSON, parse failed: {e}\nstdout={stdout}"));
+        .unwrap_or_else(|e| panic!("expected bare JSON, parse failed: {e}\nstdout={stdout}"));
+    // V2Bare default: the search results array is the bare payload — no
+    // `data` wrapper. Array payloads can't carry `_meta`, so the top-level
+    // value is the array itself.
     assert!(
-        parsed["data"].is_array(),
-        "envelope must wrap search results under data array, got: {stdout}"
+        parsed.is_array(),
+        "bare payload must be the search results array, got: {stdout}"
     );
-    assert_eq!(parsed["version"], 1);
-    assert!(parsed["error"].is_null());
 }
 
 // =============================================================================
@@ -347,4 +371,131 @@ fn daemon_stats_includes_staleness_fields_via_batch() {
     // Fresh project: every indexed file still exists, none were modified.
     assert_eq!(parsed["data"]["stale_files"], 0);
     assert_eq!(parsed["data"]["missing_files"], 0);
+}
+
+// =============================================================================
+// V2Bare default shape — binary boundary, no env pins
+// =============================================================================
+
+/// With no `CQS_OUTPUT_FORMAT` pin, the CLI direct success path emits the
+/// bare payload: the stats object is the top-level JSON value, with no
+/// `data` wrapper and no `version` / `error` envelope keys. This is the
+/// shipped default; previously it shipped untested end-to-end.
+#[test]
+#[serial]
+fn test_v2bare_default_cache_stats_is_bare_object() {
+    let dir = TempDir::new().expect("tempdir");
+    let output = cqs_no_daemon()
+        .args(["--json", "cache", "stats"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CACHE_HOME", dir.path())
+        .output()
+        .expect("cqs --json cache stats failed to spawn");
+    assert!(output.status.success(), "cache stats should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("bare JSON parse");
+
+    // Bare payload: the stats fields are at the top level (skip-when-default
+    // means absent fields are at their default — not wrapped, not labelled).
+    assert!(
+        parsed["total_size_bytes"].is_number(),
+        "bare payload exposes stats fields at top level, got: {stdout}"
+    );
+    assert!(
+        parsed.get("data").is_none(),
+        "V2Bare default must NOT wrap in a data envelope, got: {stdout}"
+    );
+    assert!(
+        parsed.get("version").is_none(),
+        "V2Bare default drops version, got: {stdout}"
+    );
+    assert!(
+        parsed.get("error").is_none(),
+        "V2Bare default drops error on success, got: {stdout}"
+    );
+}
+
+/// `CQS_OUTPUT_FORMAT=v1` restores the full envelope on the CLI direct
+/// success path — the surviving compatibility contract. Pin both surfaces
+/// (object success payload) at the binary boundary.
+#[test]
+#[serial]
+fn test_v1_compat_cache_stats_restores_envelope() {
+    let dir = TempDir::new().expect("tempdir");
+    let output = cqs_no_daemon_v1()
+        .args(["--json", "cache", "stats"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CACHE_HOME", dir.path())
+        .output()
+        .expect("cqs --json cache stats failed to spawn");
+    assert!(output.status.success(), "cache stats should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // v1 envelope: { data, error: null, version: 1, _meta }
+    assert!(
+        parsed["data"].is_object(),
+        "v1 wraps stats under data, got: {stdout}"
+    );
+    assert_eq!(parsed["version"], 1, "v1 envelope carries version: 1");
+    assert!(parsed["error"].is_null(), "v1 success → error: null");
+    assert!(
+        parsed["data"]["total_size_bytes"].is_number(),
+        "stats fields live under data in v1, got: {stdout}"
+    );
+    // The deleted CQS_ULTRASECURITY knob's only wire payload was
+    // `_meta.handling_advice`; it must never appear, even in v1.
+    assert!(
+        parsed["_meta"].get("handling_advice").is_none(),
+        "handling_advice was removed with the CQS_ULTRASECURITY knob, got: {stdout}"
+    );
+}
+
+/// The removed `CQS_ULTRASECURITY` env var is inert: setting it has no
+/// effect on the wire shape. The default stays bare; the only signals that
+/// matter (trust_level / injection_flags) are emitted by the leaf serializer
+/// when meaningful, independent of any posture knob.
+#[test]
+#[serial]
+fn test_ultrasecurity_env_is_inert() {
+    let dir = TempDir::new().expect("tempdir");
+    let output = cqs_no_daemon()
+        .args(["--json", "cache", "stats"])
+        .env("CQS_ULTRASECURITY", "1")
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CACHE_HOME", dir.path())
+        .output()
+        .expect("cqs --json cache stats failed to spawn");
+    assert!(output.status.success(), "cache stats should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("bare JSON parse");
+
+    // CQS_ULTRASECURITY=1 used to force the full verbose envelope. Now it's
+    // a no-op: the default bare shape is unchanged.
+    assert!(
+        parsed.get("data").is_none(),
+        "CQS_ULTRASECURITY must NOT restore the data envelope, got: {stdout}"
+    );
+    assert!(
+        parsed.get("version").is_none(),
+        "CQS_ULTRASECURITY must NOT force version, got: {stdout}"
+    );
+    assert!(
+        parsed
+            .get("_meta")
+            .and_then(|m| m.get("handling_advice"))
+            .is_none(),
+        "CQS_ULTRASECURITY must NOT inject handling_advice, got: {stdout}"
+    );
+    assert!(parsed["total_size_bytes"].is_number());
 }

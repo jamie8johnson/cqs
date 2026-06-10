@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`CQS_ULTRASECURITY` env knob removed (breaking; #1690).** The
+  late-2024 posture flag that force-emitted the full `{data, error, version,
+  _meta}` envelope plus a constant `_meta.handling_advice` advisory string on
+  every response is gone, along with the internal `Posture` enum and all
+  `_with_posture` serializer variants it threaded through (`store::helpers::
+  types::SearchResult`/`UnifiedResult` `*_with_posture` / `*_and_posture`
+  methods, `json_envelope` `ok_with_posture` / `err_with_posture` /
+  `wrap_value_with_posture` / `wrap_error_with_posture` /
+  `emit_json_error_with_data_and_posture` / `meta_json_fragment_for_posture` /
+  `EnvelopeMeta::for_posture`, plus the `HANDLING_ADVICE` constant and the
+  `EnvelopeMeta.handling_advice` field). **What replaces it: nothing is
+  needed.** The security-relevant signals are never suppressed in the default
+  lean shape — leaf serializers emit `trust_level` whenever it is non-default
+  (`vendored-code` / `reference-code`) and `injection_flags` whenever a
+  heuristic fired; absent means "default" (`user-code`, no flags), which any
+  consuming agent handles. The flag's only remaining effects were emitting a
+  constant advisory (now documented in `SECURITY.md` rather than on the wire),
+  force-emitting default-valued fields (information-free), and restoring the
+  full envelope — the last of which `CQS_OUTPUT_FORMAT=v1` already provides.
+  `CQS_OUTPUT_FORMAT` is now the only output-format knob. No external users;
+  agents that parsed `_meta.handling_advice` should rely on `trust_level` /
+  `injection_flags`, which carry the actual origin/heuristic signal. Paired v3
+  evals (test + dev fixtures) show 0.0 R@K delta — retrieval is untouched.
+
 ### Changed
 
 - **Command-core unification for review/train/eval commands (Phase 4, final
