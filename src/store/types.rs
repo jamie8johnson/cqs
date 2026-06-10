@@ -796,7 +796,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.get("Config").map(|v| v.len()).unwrap_or(0), 1);
         assert_eq!(result.get("Store").map(|v| v.len()).unwrap_or(0), 1);
-        assert!(result.get("Unknown").is_none());
+        assert!(!result.contains_key("Unknown"));
     }
 
     #[test]

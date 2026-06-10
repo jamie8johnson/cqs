@@ -474,7 +474,7 @@ fn test_model_comparison() {
         // Build indexed chunks
         let indexed: Vec<IndexedChunk> = chunk_descs
             .iter()
-            .zip(all_embeddings.into_iter())
+            .zip(all_embeddings)
             .map(|(desc, emb)| IndexedChunk {
                 name: desc.name.clone(),
                 language: desc.language,
@@ -651,7 +651,7 @@ fn test_template_comparison() {
         // Build indexed chunks
         let indexed: Vec<IndexedChunk> = chunks
             .iter()
-            .zip(all_embeddings.into_iter())
+            .zip(all_embeddings)
             .map(|(chunk, emb)| IndexedChunk {
                 name: chunk.name.clone(),
                 language: chunk.language,
@@ -834,7 +834,7 @@ fn test_hard_template_comparison() {
 
         let indexed: Vec<IndexedChunk> = chunks
             .iter()
-            .zip(all_embeddings.into_iter())
+            .zip(all_embeddings)
             .map(|(chunk, emb)| IndexedChunk {
                 name: chunk.name.clone(),
                 language: chunk.language,
@@ -899,7 +899,7 @@ fn test_hard_template_comparison() {
 
 // ===== Hard eval - confusable functions =====
 
-/// Hard eval cases imported from eval_common — see eval_common::HARD_EVAL_CASES
+// Hard eval cases imported from eval_common — see eval_common::HARD_EVAL_CASES
 
 /// Compute Mean Reciprocal Rank from ranked results using pre-computed query embeddings
 fn compute_mrr(
@@ -1167,7 +1167,7 @@ fn test_hard_model_comparison() {
 
         let indexed: Vec<IndexedChunk> = chunk_descs
             .iter()
-            .zip(all_embeddings.into_iter())
+            .zip(all_embeddings)
             .map(|(desc, emb)| IndexedChunk {
                 name: desc.name.clone(),
                 language: desc.language,
@@ -2287,7 +2287,8 @@ fn test_type_aware_embeddings() {
     };
 
     // Embed all three variants
-    let configs: Vec<(&str, Box<dyn Fn(&TypeAwareChunk) -> &str>)> = vec![
+    type VariantSelector = Box<dyn Fn(&TypeAwareChunk) -> &str>;
+    let configs: Vec<(&str, VariantSelector)> = vec![
         (
             "Base (no signature)",
             Box::new(|c: &TypeAwareChunk| c.nl_base.as_str()),
@@ -2327,7 +2328,7 @@ fn test_type_aware_embeddings() {
 
         let indexed: Vec<IndexedChunk> = chunks
             .iter()
-            .zip(embs.into_iter())
+            .zip(embs)
             .map(|(c, e)| IndexedChunk {
                 name: c.name.clone(),
                 language: c.language,

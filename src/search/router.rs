@@ -2125,7 +2125,6 @@ mod tests {
         assert!(is_structural_query("every class definition"));
     }
 
-    #[test]
     // ── per-slot SPLADE α overrides ───────────────────────────────────────
 
     /// Slot table installed → that override beats the hardcoded default for
@@ -2212,6 +2211,7 @@ mod tests {
         clear_slot_splade_alpha_overrides();
     }
 
+    #[test]
     fn test_structural_keyword_substring_does_not_fire() {
         // Word-split matching: "MyTraitImpl" as a CamelCase identifier does
         // NOT classify as structural just because it contains "trait".

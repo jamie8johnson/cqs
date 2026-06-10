@@ -17,6 +17,8 @@
 
 mod common;
 
+use std::assert_matches;
+
 use cqs::embedder::{Embedding, EmbeddingConfig, ModelConfig};
 use cqs::store::{ModelInfo, SearchFilter, Store, StoreError};
 use std::sync::Mutex;
@@ -148,7 +150,7 @@ fn search_filtered_with_index_errors_on_dim_mismatch() {
     let err = store
         .search_filtered_with_index(&bad_query, &SearchFilter::default(), 10, 0.0, None)
         .expect_err("dim mismatch must error");
-    assert!(matches!(err, StoreError::QueryDimMismatch { .. }));
+    assert_matches!(err, StoreError::QueryDimMismatch { .. });
 }
 
 #[test]
@@ -165,7 +167,7 @@ fn search_by_candidate_ids_errors_on_dim_mismatch() {
             0.0,
         )
         .expect_err("dim mismatch must error");
-    assert!(matches!(err, StoreError::QueryDimMismatch { .. }));
+    assert_matches!(err, StoreError::QueryDimMismatch { .. });
 }
 
 #[test]

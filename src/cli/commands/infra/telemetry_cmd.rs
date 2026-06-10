@@ -741,6 +741,7 @@ fn format_utc_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::io::Write;
 
     /// `cqs telemetry` carries only the `--all` toggle; the core default
@@ -797,9 +798,9 @@ mod tests {
         );
         let entries = parse_entries(&dir.path().join("telemetry.jsonl")).unwrap();
         assert_eq!(entries.len(), 3);
-        assert!(matches!(&entries[0], Entry::Reset { _reason: Some(r), .. } if r == "test"));
-        assert!(matches!(&entries[1], Entry::Command { cmd, .. } if cmd == "search"));
-        assert!(matches!(&entries[2], Entry::Command { cmd, .. } if cmd == "impact"));
+        assert_matches!(&entries[0], Entry::Reset { _reason: Some(r), .. } if r == "test");
+        assert_matches!(&entries[1], Entry::Command { cmd, .. } if cmd == "search");
+        assert_matches!(&entries[2], Entry::Command { cmd, .. } if cmd == "impact");
     }
 
     #[test]

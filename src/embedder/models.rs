@@ -1162,10 +1162,12 @@ mod tests {
     fn resolve_custom_without_architecture_uses_bert_defaults() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("CQS_EMBEDDING_MODEL");
-        let mut cfg = EmbeddingConfig::default();
-        cfg.model = "legacy-custom".to_string();
-        cfg.repo = Some("org/legacy".to_string());
-        cfg.dim = Some(768);
+        let cfg = EmbeddingConfig {
+            model: "legacy-custom".to_string(),
+            repo: Some("org/legacy".to_string()),
+            dim: Some(768),
+            ..Default::default()
+        };
         // No input_names / output_name / pooling overrides.
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(resolved.name, "legacy-custom");

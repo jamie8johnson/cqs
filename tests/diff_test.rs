@@ -18,11 +18,11 @@ fn test_semantic_diff_basic() {
     // first half positive, second half negative, so cosine similarity with emb_same ≈ 0.
     let emb_different = {
         let mut v = vec![0.0f32; cqs::EMBEDDING_DIM];
-        for i in 0..384 {
-            v[i] = 1.0;
+        for x in &mut v[..384] {
+            *x = 1.0;
         }
-        for i in cqs::EMBEDDING_DIM / 2..cqs::EMBEDDING_DIM {
-            v[i] = -1.0;
+        for x in &mut v[cqs::EMBEDDING_DIM / 2..] {
+            *x = -1.0;
         }
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         for x in &mut v {

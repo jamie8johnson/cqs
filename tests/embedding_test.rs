@@ -3,6 +3,8 @@
 //! Tests for `embed_documents` and `embed_query` that require the ONNX model.
 //! Run with: cargo test --features gpu-index --test embedding_test -- --ignored
 
+use std::assert_matches;
+
 use cqs::embedder::{Embedder, EmbedderError, ModelConfig};
 use cqs::EMBEDDING_DIM;
 
@@ -162,7 +164,7 @@ fn test_embed_query_empty_rejected() {
         return;
     };
     let err = embedder.embed_query("").unwrap_err();
-    assert!(matches!(err, EmbedderError::EmptyQuery));
+    assert_matches!(err, EmbedderError::EmptyQuery);
 }
 
 #[test]
@@ -172,7 +174,7 @@ fn test_embed_query_whitespace_only_rejected() {
         return;
     };
     let err = embedder.embed_query("   \t\n  ").unwrap_err();
-    assert!(matches!(err, EmbedderError::EmptyQuery));
+    assert_matches!(err, EmbedderError::EmptyQuery);
 }
 
 #[test]

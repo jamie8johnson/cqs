@@ -539,6 +539,7 @@ fn check_request(req: &Request, expected: &AuthToken, cookie_lookup_needle: &str
     }
 }
 
+#[derive(Debug)]
 enum AuthOutcome {
     /// Token matched via header or cookie — pass the request through
     /// unchanged.
@@ -652,6 +653,7 @@ pub(crate) async fn enforce_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn random_token_is_url_safe_base64_43_chars() {
@@ -903,7 +905,7 @@ mod tests {
         // instead of `cookie_name` itself.
         let needle = format!("{cookie_name}=");
         let outcome = check_request(&req, &token, &needle);
-        assert!(matches!(outcome, AuthOutcome::OkViaQueryParam));
+        assert_matches!(outcome, AuthOutcome::OkViaQueryParam);
     }
 
     // ===== adversarial pins for `try_from_string` length, cookie/query

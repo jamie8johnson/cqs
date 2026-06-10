@@ -90,7 +90,7 @@ mod tests {
         let _redirect_mock = server_a.mock(|when, then| {
             when.method("GET").path("/redirect");
             then.status(302)
-                .header("Location", &format!("{}/target", server_b.base_url()));
+                .header("Location", format!("{}/target", server_b.base_url()));
         });
         let target_mock = server_b.mock(|when, then| {
             when.method("GET").path("/target");

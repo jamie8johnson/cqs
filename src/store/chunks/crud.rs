@@ -1437,7 +1437,7 @@ mod tests {
         let embs = store
             .get_embeddings_by_hashes(&[&c1.content_hash, &c2.content_hash])
             .unwrap();
-        for (_, emb) in &embs {
+        for emb in embs.values() {
             assert!(
                 emb.as_slice().iter().all(|&x| x == 0.0),
                 "unembedded chunks must carry a zero-vec sentinel"
@@ -1454,7 +1454,7 @@ mod tests {
         let c = make_chunk("alpha", "src/a.rs");
 
         store
-            .upsert_chunks_unembedded_batch(&[c.clone()], Some(100))
+            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
             .unwrap();
         assert_eq!(store.needs_embedding_count().unwrap(), 1);
 
@@ -1477,7 +1477,7 @@ mod tests {
         let c = make_chunk("alpha_function", "src/a.rs");
 
         store
-            .upsert_chunks_unembedded_batch(&[c.clone()], Some(100))
+            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
             .unwrap();
 
         // Name search must NOT find the unembedded chunk.
@@ -1518,7 +1518,7 @@ mod tests {
         let c = make_chunk("alpha", "src/a.rs");
 
         store
-            .upsert_chunks_unembedded_batch(&[c.clone()], Some(100))
+            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
             .unwrap();
 
         // Pre-enrichment: embedding_base IS NULL (not zero-vec). The base

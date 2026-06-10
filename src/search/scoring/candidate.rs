@@ -1319,9 +1319,11 @@ mod tests {
 
     #[test]
     fn apply_scoring_pipeline_applies_name_boost_to_fused() {
-        let mut filter = SearchFilter::default();
-        filter.name_boost = 0.3;
-        filter.query_text = "my_fn".to_string();
+        let filter = SearchFilter {
+            name_boost: 0.3,
+            query_text: "my_fn".to_string(),
+            ..Default::default()
+        };
         let query = test_embedding(1.0);
         let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let matcher = NameMatcher::new("my_fn");
@@ -1485,7 +1487,7 @@ mod tests {
         let got_e = apply_scoring_pipeline(-0.4, Some("fn_a"), "src/lib.rs", &ctx_e);
         let expected_e = {
             let emb = (-0.4f32).clamp(0.0, 1.0); // → 0.0
-            emb.max(0.0) * (1.0 + -1.0 * cfg.note_boost_factor)
+            emb.max(0.0) * (1.0 + -cfg.note_boost_factor)
         };
         assert_eq!(got_e, Some(expected_e), "scenario E bits changed");
 

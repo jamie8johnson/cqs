@@ -17,6 +17,7 @@
 //!   - dropped the `--improve-docs requires --llm-summaries` bail
 //!   - reordered the bail to AFTER the (slow) index pipeline
 //!   - swapped the bail messages between the two checks
+//!
 //! …would leave the operator with either silent misconfiguration (the
 //! LLM pass quietly skips because llm_summaries=false) OR a 30-min
 //! reindex that fails at the end.

@@ -778,7 +778,7 @@ mod tests {
         //   - For stage_idx = 1 (s2), stage_num = 2
         // A `stage = stage_num + 1` for the inner span would log stages 0, 2, 3
         // (skipping 1), which this pins against.
-        let segments = vec![
+        let segments = [
             vec!["a".to_string()],
             vec!["b".to_string()],
             vec!["c".to_string()],

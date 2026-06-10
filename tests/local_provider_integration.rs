@@ -243,7 +243,7 @@ fn item28_re_run_skips_cached_items() {
     // First pass: all 3 chunks processed.
     let count1 = cqs::llm::llm_summary_pass(&store, true, &config, None).unwrap();
     assert_eq!(count1, 3, "first pass processes all 3 items");
-    let hits_after_first = mock.hits();
+    let hits_after_first = mock.calls();
     assert_eq!(
         hits_after_first, 3,
         "first pass should issue 3 HTTP requests"
@@ -256,7 +256,7 @@ fn item28_re_run_skips_cached_items() {
         "second pass must skip all cached items (content-hash cache)"
     );
     assert_eq!(
-        mock.hits(),
+        mock.calls(),
         hits_after_first,
         "second pass should not issue new HTTP requests"
     );

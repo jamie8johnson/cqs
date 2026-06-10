@@ -515,7 +515,7 @@ mod tests {
         // BASE_OVERHEAD + changed_functions still count toward `used`, but the
         // variable-size sections must contribute zero.
         assert!(
-            used >= 30 && used < 100,
+            (30..100).contains(&used),
             "used = {used} should reflect base overhead only"
         );
     }

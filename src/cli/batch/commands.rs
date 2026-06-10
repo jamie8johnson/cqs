@@ -625,6 +625,7 @@ fn log_query(command: &str, query: &str) {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::assert_matches;
 
     #[test]
     fn test_parse_search() {
@@ -682,10 +683,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Dead { ref args, .. } => {
                 assert!(args.include_pub);
-                assert!(matches!(
-                    args.min_confidence,
-                    cqs::store::DeadConfidence::High
-                ));
+                assert_matches!(args.min_confidence, cqs::store::DeadConfidence::High);
             }
             _ => panic!("Expected Dead command"),
         }
@@ -703,7 +701,7 @@ mod tests {
     #[test]
     fn test_parse_ping() {
         let input = BatchInput::try_parse_from(["ping"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Ping));
+        assert_matches!(input.cmd, BatchCmd::Ping);
         assert!(
             !input.cmd.is_pipeable(),
             "ping is a healthcheck, not pipeable"
@@ -739,7 +737,7 @@ mod tests {
     #[test]
     fn test_parse_stats() {
         let input = BatchInput::try_parse_from(["stats"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Stats { .. }));
+        assert_matches!(input.cmd, BatchCmd::Stats { .. });
     }
 
     #[test]
@@ -833,13 +831,13 @@ mod tests {
     #[test]
     fn test_parse_stale() {
         let input = BatchInput::try_parse_from(["stale"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Stale { .. }));
+        assert_matches!(input.cmd, BatchCmd::Stale { .. });
     }
 
     #[test]
     fn test_parse_health() {
         let input = BatchInput::try_parse_from(["health"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Health { .. }));
+        assert_matches!(input.cmd, BatchCmd::Health { .. });
     }
 
     #[test]

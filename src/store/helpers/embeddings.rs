@@ -59,6 +59,7 @@ pub fn bytes_to_embedding(bytes: &[u8], expected_dim: usize) -> Result<Vec<f32>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_embedding_slice_768_dim() {
@@ -91,7 +92,7 @@ mod tests {
         let result = embedding_slice(bytes, wrong_dim);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, StoreError::EmbeddingBlobMismatch { .. }));
+        assert_matches!(err, StoreError::EmbeddingBlobMismatch { .. });
     }
 
     #[test]
@@ -169,7 +170,7 @@ mod tests {
         let result = bytes_to_embedding(&bytes, 768);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, StoreError::EmbeddingBlobMismatch { .. }));
+        assert_matches!(err, StoreError::EmbeddingBlobMismatch { .. });
     }
 
     // ===== NaN / Inf bytes in embedding blobs =====

@@ -1209,6 +1209,7 @@ impl Embedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     // ===== truncate_at_char_boundary =====
     //
@@ -1692,7 +1693,7 @@ mod tests {
         // Test that ort::Error converts to EmbedderError::InferenceFailed
         // We can't easily create an ort::Error, but we can verify the variant exists
         let err: EmbedderError = EmbedderError::InferenceFailed("test error".to_string());
-        assert!(matches!(err, EmbedderError::InferenceFailed(_)));
+        assert_matches!(err, EmbedderError::InferenceFailed(_));
     }
 
     // ===== Property-based tests =====

@@ -172,8 +172,8 @@ fn shadow_regressions(
 }
 
 /// 1. Drop within tolerance is fine.
-/// Baseline R@1=40%, current R@1=39.8% (drop 0.2pp), tolerance 0.5pp →
-/// no regression.
+///    Baseline R@1=40%, current R@1=39.8% (drop 0.2pp), tolerance 0.5pp →
+///    no regression.
 #[test]
 fn test_diff_no_regression_within_tolerance() {
     let baseline = report_json((0.40, 0.60, 0.80), &[("a", 0.40, 0.60, 0.80)], "1.0", "m");
@@ -187,8 +187,8 @@ fn test_diff_no_regression_within_tolerance() {
 }
 
 /// 2. Drop beyond tolerance flags.
-/// Baseline R@1=40%, current R@1=39.0% (drop 1.0pp), tolerance 0.5pp →
-/// regression on category "a"/R@1.
+///    Baseline R@1=40%, current R@1=39.0% (drop 1.0pp), tolerance 0.5pp →
+///    regression on category "a"/R@1.
 #[test]
 fn test_diff_flags_regression_beyond_tolerance() {
     let baseline = report_json((0.40, 0.60, 0.80), &[("a", 0.40, 0.60, 0.80)], "1.0", "m");
@@ -221,10 +221,10 @@ fn test_diff_zero_tolerance_flags_any_drop() {
 }
 
 /// 4. Text output format contains `(±N.Npp)`-style deltas. We can't drive
-/// `print_diff_report` directly from this crate (it's pub(crate)), so we
-/// pin the contract via the binary integration test below and via direct
-/// inspection of the format constant (a regex check on a serialized
-/// fixture).
+///    `print_diff_report` directly from this crate (it's pub(crate)), so we
+///    pin the contract via the binary integration test below and via direct
+///    inspection of the format constant (a regex check on a serialized
+///    fixture).
 ///
 /// To exercise the format string itself, we serialize a `DiffReport` shape
 /// using `serde_json` and pin the field names — `print_diff_report`
@@ -284,8 +284,8 @@ fn test_diff_text_output_format_field_contract() {
 }
 
 /// 5. JSON shape: regressions array + by_category_delta map. Same idea
-/// as test 4 — pin the JSON contract that the comparator emits so any
-/// CI script reading the diff knows the keys it can rely on.
+///    as test 4 — pin the JSON contract that the comparator emits so any
+///    CI script reading the diff knows the keys it can rely on.
 #[test]
 fn test_diff_json_output_shape() {
     let raw = json!({
@@ -316,7 +316,7 @@ fn test_diff_json_output_shape() {
 }
 
 /// 6. Drift in cqs_version or index_model warns but doesn't fail.
-/// Shadow check: the regressions list is unaffected by drift.
+///    Shadow check: the regressions list is unaffected by drift.
 #[test]
 fn test_diff_warns_on_model_drift() {
     let baseline = report_json(
@@ -348,7 +348,7 @@ fn test_diff_warns_on_model_drift() {
 }
 
 /// 7. Missing baseline file → bail with an actionable message.
-/// Drives the binary so we exercise the actual error path.
+///    Drives the binary so we exercise the actual error path.
 #[test]
 fn test_baseline_load_handles_missing_file() {
     let dir = TempDir::new().unwrap();
@@ -380,7 +380,7 @@ fn test_baseline_load_handles_missing_file() {
 }
 
 /// 8. Save → load roundtrip: serialize a synthetic `EvalReport`-shaped
-/// JSON, deserialize, confirm the values come back equal.
+///    JSON, deserialize, confirm the values come back equal.
 #[test]
 fn test_save_then_load_roundtrip() {
     let dir = TempDir::new().unwrap();
@@ -454,5 +454,5 @@ fn test_shadow_matches_known_regression_count() {
         "a/R@1 should regress, got {:?}",
         by_cat
     );
-    assert!(by_cat.get("b").is_none(), "b should not regress");
+    assert!(!by_cat.contains_key("b"), "b should not regress");
 }

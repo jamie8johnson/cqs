@@ -341,7 +341,7 @@ mod tests {
         // Wiring check: query the seed directly — nearest neighbour must
         // be itself. With spaced seeds the small-tier graph reliably
         // returns the queried point in top-K=N.
-        let query = make_embedding(1 * 1000);
+        let query = make_embedding(1000);
         let results = index.search(&query, 25);
         assert!(!results.is_empty());
         assert!(

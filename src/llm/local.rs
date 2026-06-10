@@ -971,6 +971,7 @@ impl LocalProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1346,7 +1347,7 @@ mod tests {
         // "already fetched" from "no items completed", so a drained id
         // is never mistaken for an empty batch.
         let second = provider.fetch_batch_results(&batch_id);
-        assert!(matches!(second, Err(LlmError::BatchNotFound(_))));
+        assert_matches!(second, Err(LlmError::BatchNotFound(_)));
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }

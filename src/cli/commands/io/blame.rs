@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_parse_git_log_output_single() {
-        let output = "abc1234\0Alice\02026-02-20 14:30:00 -0500\0fix: some bug\n";
+        let output = "abc1234\0Alice\x002026-02-20 14:30:00 -0500\0fix: some bug\n";
         let entries = parse_git_log_output(output);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hash, "abc1234");
@@ -431,9 +431,9 @@ mod tests {
 
     #[test]
     fn test_parse_git_log_output_multiple() {
-        let output = "abc1234\0Alice\02026-02-20\0first commit\n\
-                       def5678\0Bob\02026-02-19\0second commit\n\
-                       ghi9012\0Charlie\02026-02-18\0third commit\n";
+        let output = "abc1234\0Alice\x002026-02-20\0first commit\n\
+                       def5678\0Bob\x002026-02-19\0second commit\n\
+                       ghi9012\0Charlie\x002026-02-18\0third commit\n";
         let entries = parse_git_log_output(output);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].hash, "abc1234");
@@ -450,7 +450,7 @@ mod tests {
     fn test_parse_git_log_output_malformed() {
         // Lines without exactly 4 NUL-separated fields are skipped
         let output = "just-a-hash\n\
-                       abc1234\0Alice\02026-02-20\0valid line\n\
+                       abc1234\0Alice\x002026-02-20\0valid line\n\
                        incomplete\0two-parts\n";
         let entries = parse_git_log_output(output);
         assert_eq!(entries.len(), 1);
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn test_parse_git_log_output_message_with_pipe() {
         // Pipe in commit message should not break parsing (NUL separator handles it)
-        let output = "abc1234\0Alice\02026-02-20\0fix: search | callers pipeline\n";
+        let output = "abc1234\0Alice\x002026-02-20\0fix: search | callers pipeline\n";
         let entries = parse_git_log_output(output);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message, "fix: search | callers pipeline");

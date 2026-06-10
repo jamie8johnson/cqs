@@ -15,6 +15,13 @@ use thiserror::Error;
 pub const SENTIMENT_NEGATIVE_THRESHOLD: f32 = -0.3;
 pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
 
+// Compile-time guards: the negative threshold must sit strictly between
+// -0.5 and 0 (so -0.5 counts as a warning but 0 does not), and the positive
+// threshold strictly between 0 and 0.5 (so 0.5 counts as a pattern but 0
+// does not). Discrete sentiment values are -1, -0.5, 0, 0.5, 1.
+const _: () = assert!(SENTIMENT_NEGATIVE_THRESHOLD > -0.5 && SENTIMENT_NEGATIVE_THRESHOLD < 0.0);
+const _: () = assert!(SENTIMENT_POSITIVE_THRESHOLD > 0.0 && SENTIMENT_POSITIVE_THRESHOLD < 0.5);
+
 /// Maximum number of notes to parse from a single file.
 /// Prevents memory exhaustion from malicious or corrupted note files.
 /// Env override `CQS_NOTES_MAX_ENTRIES`.

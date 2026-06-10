@@ -1266,7 +1266,7 @@ impl Beta {
             false,
         );
 
-        let outcome = compute_rewrite(&src_path, &[edit.clone()], &parser)
+        let outcome = compute_rewrite(&src_path, std::slice::from_ref(&edit), &parser)
             .unwrap()
             .unwrap();
         assert_eq!(outcome.applied, 1);

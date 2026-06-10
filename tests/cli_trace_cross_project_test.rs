@@ -14,6 +14,7 @@
 //!   - dropped the `--cross-project` flag binding so it silently fell
 //!     through to the local arm
 //!   - flipped the if/else gate at line 114
+//!
 //! …would not break any existing test yet would silently corrupt every
 //! agent's cross-project consumer.
 //!

@@ -282,7 +282,7 @@ impl<Mode> Store<Mode> {
 
 #[cfg(test)]
 mod tests {
-    use crate::note::{Note, SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
+    use crate::note::Note;
     use crate::test_helpers::setup_store;
     use std::path::Path;
 
@@ -302,23 +302,8 @@ mod tests {
             kind: None,
         }
     }
-    /// Verifies that sentiment thresholds are positioned correctly between discrete sentiment values to ensure proper classification boundaries.
-    /// This test function asserts that the negative sentiment threshold falls strictly between -0.5 and 0, and the positive sentiment threshold falls strictly between 0 and 0.5. This positioning ensures that discrete sentiment values are classified into their intended categories (negative, neutral, or positive) without ambiguity.
-    /// # Panics
-    /// Panics if either threshold assertion fails, indicating that sentiment thresholds are not properly configured for the discrete sentiment value system.
-
-    #[test]
-    fn sentiment_thresholds_match_discrete_values() {
-        // Discrete sentiment values: -1, -0.5, 0, 0.5, 1
-        // Negative threshold must sit between -0.5 and 0 so that
-        // -0.5 counts as a warning but 0 does not.
-        assert!(SENTIMENT_NEGATIVE_THRESHOLD > -0.5);
-        assert!(SENTIMENT_NEGATIVE_THRESHOLD < 0.0);
-        // Positive threshold must sit between 0 and 0.5 so that
-        // 0.5 counts as a pattern but 0 does not.
-        assert!(SENTIMENT_POSITIVE_THRESHOLD > 0.0);
-        assert!(SENTIMENT_POSITIVE_THRESHOLD < 0.5);
-    }
+    // Sentiment threshold positioning relative to the discrete values is a
+    // compile-time `const` assertion next to the constants in `crate::note`.
 
     #[test]
     fn test_replace_notes_replaces_not_appends() {

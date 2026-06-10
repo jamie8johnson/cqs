@@ -20,9 +20,9 @@ use std::time::Instant;
 
 #[derive(Debug, Clone)]
 struct EvalConfig {
+    // Dense model and sparse mode are baked into `id` at construction;
+    // only the reranker varies behavior at eval time today.
     id: String,
-    dense_model: DenseModel,
-    sparse_mode: SparseMode,
     reranker: RerankerMode,
 }
 
@@ -74,8 +74,6 @@ impl EvalConfig {
     fn new(dense: DenseModel, sparse: SparseMode, reranker: RerankerMode) -> Self {
         Self {
             id: format!("{}_{}_{}", dense.label(), sparse.label(), reranker.label()),
-            dense_model: dense,
-            sparse_mode: sparse,
             reranker,
         }
     }
