@@ -27,6 +27,13 @@ src/cli/batch/handlers/<area>.rs
   dispatch_<cmd>(...)               // thin: parse wire -> Args, core, wrap_value
 ```
 
+**MCP-readiness (design driver, NOT an implementation target):** an eventual MCP server is a third thin adapter over the same cores — each core is one MCP tool. Shape every core so that adapter is mechanical when the day comes:
+- `Args` structs derive `Deserialize` (an MCP tool call's params deserialize straight into them) with doc comments on every field (future tool/param descriptions; keep them schema-derivable — no exotic types in Args).
+- `Output` structs derive `Serialize` (already the rule) — they are the tool results.
+- Cores take `ctx` explicitly, never global/env state, and are safe for many invocations per process (the daemon adapter already enforces this).
+- Command name → core enumeration stays mechanical (the `CqsCommands` derive registry is the seed).
+- Do NOT add an MCP dependency, server, or schema-generation crate in this campaign. The deliverable is cores an MCP adapter could wrap without touching them.
+
 Rules:
 - A core never prints, never reads env posture, never knows its surface. Adapters own I/O.
 - Output structs are the only JSON source (`serde_json::to_value(output)`); text rendering reads the same struct.
