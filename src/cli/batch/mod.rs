@@ -423,6 +423,7 @@ fn reject_null_tokens(tokens: &[String]) -> Result<(), &'static str> {
 mod tests {
     use super::*;
     use cqs::store::ModelInfo;
+    use std::assert_matches;
     use std::thread;
     use std::time::Duration;
 
@@ -751,13 +752,13 @@ mod tests {
     #[test]
     fn test_refresh_command_parses() {
         let input = commands::BatchInput::try_parse_from(["refresh"]).unwrap();
-        assert!(matches!(input.cmd, commands::BatchCmd::Refresh));
+        assert_matches!(input.cmd, commands::BatchCmd::Refresh);
     }
 
     #[test]
     fn test_invalidate_alias_parses() {
         let input = commands::BatchInput::try_parse_from(["invalidate"]).unwrap();
-        assert!(matches!(input.cmd, commands::BatchCmd::Refresh));
+        assert_matches!(input.cmd, commands::BatchCmd::Refresh);
     }
 
     #[test]

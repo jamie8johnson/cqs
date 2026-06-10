@@ -182,15 +182,13 @@ pub fn sanitize_for_terminal(s: &str) -> std::borrow::Cow<'_, str> {
 #[cfg(test)]
 mod sanitize_tests {
     use super::sanitize_for_terminal;
+    use std::assert_matches;
 
     #[test]
     fn passes_clean_text_unchanged() {
         let s = "fn foo() {\n    bar();\n}\t// trailing tab\n";
         // Borrowed Cow proves we didn't allocate.
-        assert!(matches!(
-            sanitize_for_terminal(s),
-            std::borrow::Cow::Borrowed(_)
-        ));
+        assert_matches!(sanitize_for_terminal(s), std::borrow::Cow::Borrowed(_));
     }
 
     #[test]

@@ -610,6 +610,7 @@ mod tests {
     use super::*;
     use crate::store::helpers::ModelInfo;
     use crate::test_helpers::setup_store;
+    use std::assert_matches;
 
     // ===== pending batch ID =====
 
@@ -920,7 +921,7 @@ mod tests {
         let err = store
             .check_model_version_with("custom/model-v3")
             .unwrap_err();
-        assert!(matches!(err, StoreError::ModelMismatch(..)));
+        assert_matches!(err, StoreError::ModelMismatch(..));
     }
 
     // ===== Store::dim tests =====

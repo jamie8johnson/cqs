@@ -859,7 +859,7 @@ mod tests {
             "CQS_LLM_API_BASE",
             "CQS_LLM_MAX_TOKENS",
         ];
-        for (name, val) in names.iter().zip(saved.into_iter()) {
+        for (name, val) in names.iter().zip(saved) {
             match val {
                 Some(v) => std::env::set_var(name, v),
                 None => std::env::remove_var(name),

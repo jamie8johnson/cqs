@@ -765,6 +765,7 @@ fn resolve_raw(kind: AuxModelKind, raw: &str) -> Result<AuxModelConfig, AuxModel
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Serialize all env-var-touching tests against a process-wide lock so
     /// they don't race against each other or against splade/reranker tests
@@ -1019,7 +1020,7 @@ mod tests {
             "ensembledistil",
         )
         .unwrap_err();
-        assert!(matches!(err, AuxModelError::InvalidConfig(_)));
+        assert_matches!(err, AuxModelError::InvalidConfig(_));
     }
 
     #[test]
@@ -1204,6 +1205,6 @@ mod tests {
             "ensembledistil",
         )
         .unwrap_err();
-        assert!(matches!(err, AuxModelError::NotFound(_)));
+        assert_matches!(err, AuxModelError::NotFound(_));
     }
 }

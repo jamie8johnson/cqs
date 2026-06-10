@@ -254,6 +254,7 @@ mod tests {
     use super::*;
     use crate::impact::RiskScore;
     use crate::note::path_matches_mention;
+    use std::assert_matches;
 
     /// Build a mock ReviewedFunction with the given name and risk level
     /// (used for both `risk_level` and `blast_radius`), file `src/lib.rs`,
@@ -282,7 +283,7 @@ mod tests {
         assert_eq!(summary.high, 0);
         assert_eq!(summary.medium, 0);
         assert_eq!(summary.low, 0);
-        assert!(matches!(summary.overall, RiskLevel::Low));
+        assert_matches!(summary.overall, RiskLevel::Low);
     }
 
     #[test]
@@ -293,7 +294,7 @@ mod tests {
         ];
         let summary = build_risk_summary(&funcs);
         assert_eq!(summary.high, 2);
-        assert!(matches!(summary.overall, RiskLevel::High));
+        assert_matches!(summary.overall, RiskLevel::High);
     }
 
     #[test]
@@ -307,7 +308,7 @@ mod tests {
         assert_eq!(summary.high, 0);
         assert_eq!(summary.medium, 1);
         assert_eq!(summary.low, 2);
-        assert!(matches!(summary.overall, RiskLevel::Medium));
+        assert_matches!(summary.overall, RiskLevel::Medium);
     }
 
     // ─── match_notes partial-match edge cases ───────────────────────────

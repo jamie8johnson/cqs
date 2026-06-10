@@ -1132,6 +1132,7 @@ fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::fs;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -1153,14 +1154,14 @@ mod tests {
 
     #[test]
     fn validate_rejects_uppercase() {
-        assert!(matches!(
+        assert_matches!(
             validate_slot_name("E5"),
             Err(SlotError::InvalidCharacters(_))
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             validate_slot_name("Default"),
             Err(SlotError::InvalidCharacters(_))
-        ));
+        );
     }
 
     #[test]
@@ -1178,34 +1179,31 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty() {
-        assert!(matches!(validate_slot_name(""), Err(SlotError::EmptyName)));
+        assert_matches!(validate_slot_name(""), Err(SlotError::EmptyName));
     }
 
     #[test]
     fn validate_rejects_leading_dash() {
         // Leading dash collides with clap's flag parser.
-        assert!(matches!(
+        assert_matches!(
             validate_slot_name("-foo"),
             Err(SlotError::InvalidCharacters(_))
-        ));
+        );
     }
 
     #[test]
     fn validate_rejects_trailing_dash() {
         // Trailing dashes get silently stripped by common copy-paste pipelines.
-        assert!(matches!(
+        assert_matches!(
             validate_slot_name("foo-"),
             Err(SlotError::InvalidCharacters(_))
-        ));
+        );
     }
 
     #[test]
     fn validate_rejects_too_long() {
         let n = "a".repeat(33);
-        assert!(matches!(
-            validate_slot_name(&n),
-            Err(SlotError::NameTooLong { .. })
-        ));
+        assert_matches!(validate_slot_name(&n), Err(SlotError::NameTooLong { .. }));
         let max = "b".repeat(32);
         assert!(validate_slot_name(&max).is_ok());
     }
@@ -1416,7 +1414,7 @@ mod tests {
     fn resolve_rejects_invalid_flag() {
         let dir = TempDir::new().unwrap();
         let err = resolve_slot_name(Some("BAD"), dir.path()).unwrap_err();
-        assert!(matches!(err, SlotError::InvalidCharacters(_)));
+        assert_matches!(err, SlotError::InvalidCharacters(_));
     }
 
     // ── migrate_legacy_index_to_default_slot ─────────────────────────────

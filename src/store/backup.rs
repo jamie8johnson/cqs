@@ -399,6 +399,7 @@ fn sidecar_path(db: &Path, ext: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn sidecar_path_appends_suffix_to_full_filename() {
@@ -668,18 +669,11 @@ mod tests {
             let missing_db = dir.path().join("does_not_exist.db");
 
             let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
-            match result {
-                Ok(None) => {}
-                Ok(Some(p)) => panic!(
-                    "expected Ok(None) on backup failure with opt-out, got Ok(Some({}))",
-                    p.display()
-                ),
-                Err(e) => panic!(
-                    "expected Ok(None) when CQS_MIGRATE_REQUIRE_BACKUP=0 is set, \
-                     got Err({:?})",
-                    e
-                ),
-            }
+            assert_matches!(
+                result,
+                Ok(None),
+                "backup failure with CQS_MIGRATE_REQUIRE_BACKUP=0 opt-out must yield Ok(None)"
+            );
         });
     }
 

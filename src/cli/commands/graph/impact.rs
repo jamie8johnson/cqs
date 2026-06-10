@@ -275,6 +275,130 @@ fn render_impact_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()
     Ok(())
 }
 
+/// Truncate each list inside `ImpactResult` to `limit`. Operates in-place
+/// — used by both the local and cross-project paths in `cmd_impact`.
+/// Direct callers, transitive callers, affected tests, and type-impacted
+/// callers each get the same cap (a single `--limit` controls all four
+/// sections; no per-section knob today).
+fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
+    result.callers.truncate(limit);
+    result.transitive_callers.truncate(limit);
+    result.tests.truncate(limit);
+    result.type_impacted.truncate(limit);
+}
+
+/// Display test suggestions with colored output
+fn display_test_suggestions(suggestions: &[cqs::TestSuggestion]) {
+    use colored::Colorize;
+
+    println!();
+    println!(
+        "{} ({} untested {}):",
+        "Suggested Tests".yellow(),
+        suggestions.len(),
+        if suggestions.len() == 1 {
+            "caller"
+        } else {
+            "callers"
+        }
+    );
+    for s in suggestions {
+        let location = if s.inline { "inline" } else { "new file" };
+        println!(
+            "  {} {} {} ({})",
+            s.for_function.bold(),
+            "→".dimmed(),
+            s.test_name,
+            location.dimmed()
+        );
+        println!(
+            "    {}",
+            format!("in {}", s.suggested_file.display()).dimmed()
+        );
+        if !s.pattern_source.is_empty() {
+            println!(
+                "    {}",
+                format!("pattern from: {}", s.pattern_source).dimmed()
+            );
+        }
+    }
+}
+
+/// Terminal display with colored output (CLI-only)
+fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, target_file: &str) {
+    use colored::Colorize;
+
+    println!("{} ({})", result.function_name.bold(), target_file);
+
+    // Direct callers
+    if result.callers.is_empty() {
+        println!();
+        println!("{}", "No callers found.".dimmed());
+    } else {
+        println!();
+        println!("{} ({}):", "Callers".cyan(), result.callers.len());
+        for c in &result.callers {
+            let rel = cqs::rel_display(&c.file, root);
+            println!(
+                "  {} ({}:{}, call at line {})",
+                c.name, rel, c.line, c.call_line
+            );
+            if let Some(ref snippet) = c.snippet {
+                for line in snippet.lines() {
+                    println!("    {}", line.dimmed());
+                }
+            }
+        }
+    }
+
+    // Transitive callers
+    if !result.transitive_callers.is_empty() {
+        println!();
+        println!(
+            "{} ({}):",
+            "Transitive Callers".cyan(),
+            result.transitive_callers.len()
+        );
+        for c in &result.transitive_callers {
+            let rel = cqs::rel_display(&c.file, root);
+            println!("  {} ({}:{}) [depth {}]", c.name, rel, c.line, c.depth);
+        }
+    }
+
+    // Tests
+    if result.tests.is_empty() {
+        println!();
+        println!("{}", "No affected tests found.".dimmed());
+    } else {
+        println!();
+        println!("{} ({}):", "Affected Tests".yellow(), result.tests.len());
+        for t in &result.tests {
+            let rel = cqs::rel_display(&t.file, root);
+            println!("  {} ({}:{}) [depth {}]", t.name, rel, t.line, t.call_depth);
+        }
+    }
+
+    // Type-impacted functions
+    if !result.type_impacted.is_empty() {
+        println!();
+        println!(
+            "{} ({}):",
+            "Type-Impacted".magenta(),
+            result.type_impacted.len()
+        );
+        for ti in &result.type_impacted {
+            let rel = cqs::rel_display(&ti.file, root);
+            println!(
+                "  {} ({}:{}) via {}",
+                ti.name,
+                rel,
+                ti.line,
+                ti.shared_types.join(", ")
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::notes_text::FallbackKind;
@@ -596,129 +720,5 @@ mod tests {
             "must still emit truncation suffix on UTF-8 boundary case"
         );
         // Implicit: as_str() succeeded → valid UTF-8.
-    }
-}
-
-/// Truncate each list inside `ImpactResult` to `limit`. Operates in-place
-/// — used by both the local and cross-project paths in `cmd_impact`.
-/// Direct callers, transitive callers, affected tests, and type-impacted
-/// callers each get the same cap (a single `--limit` controls all four
-/// sections; no per-section knob today).
-fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
-    result.callers.truncate(limit);
-    result.transitive_callers.truncate(limit);
-    result.tests.truncate(limit);
-    result.type_impacted.truncate(limit);
-}
-
-/// Display test suggestions with colored output
-fn display_test_suggestions(suggestions: &[cqs::TestSuggestion]) {
-    use colored::Colorize;
-
-    println!();
-    println!(
-        "{} ({} untested {}):",
-        "Suggested Tests".yellow(),
-        suggestions.len(),
-        if suggestions.len() == 1 {
-            "caller"
-        } else {
-            "callers"
-        }
-    );
-    for s in suggestions {
-        let location = if s.inline { "inline" } else { "new file" };
-        println!(
-            "  {} {} {} ({})",
-            s.for_function.bold(),
-            "→".dimmed(),
-            s.test_name,
-            location.dimmed()
-        );
-        println!(
-            "    {}",
-            format!("in {}", s.suggested_file.display()).dimmed()
-        );
-        if !s.pattern_source.is_empty() {
-            println!(
-                "    {}",
-                format!("pattern from: {}", s.pattern_source).dimmed()
-            );
-        }
-    }
-}
-
-/// Terminal display with colored output (CLI-only)
-fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, target_file: &str) {
-    use colored::Colorize;
-
-    println!("{} ({})", result.function_name.bold(), target_file);
-
-    // Direct callers
-    if result.callers.is_empty() {
-        println!();
-        println!("{}", "No callers found.".dimmed());
-    } else {
-        println!();
-        println!("{} ({}):", "Callers".cyan(), result.callers.len());
-        for c in &result.callers {
-            let rel = cqs::rel_display(&c.file, root);
-            println!(
-                "  {} ({}:{}, call at line {})",
-                c.name, rel, c.line, c.call_line
-            );
-            if let Some(ref snippet) = c.snippet {
-                for line in snippet.lines() {
-                    println!("    {}", line.dimmed());
-                }
-            }
-        }
-    }
-
-    // Transitive callers
-    if !result.transitive_callers.is_empty() {
-        println!();
-        println!(
-            "{} ({}):",
-            "Transitive Callers".cyan(),
-            result.transitive_callers.len()
-        );
-        for c in &result.transitive_callers {
-            let rel = cqs::rel_display(&c.file, root);
-            println!("  {} ({}:{}) [depth {}]", c.name, rel, c.line, c.depth);
-        }
-    }
-
-    // Tests
-    if result.tests.is_empty() {
-        println!();
-        println!("{}", "No affected tests found.".dimmed());
-    } else {
-        println!();
-        println!("{} ({}):", "Affected Tests".yellow(), result.tests.len());
-        for t in &result.tests {
-            let rel = cqs::rel_display(&t.file, root);
-            println!("  {} ({}:{}) [depth {}]", t.name, rel, t.line, t.call_depth);
-        }
-    }
-
-    // Type-impacted functions
-    if !result.type_impacted.is_empty() {
-        println!();
-        println!(
-            "{} ({}):",
-            "Type-Impacted".magenta(),
-            result.type_impacted.len()
-        );
-        for ti in &result.type_impacted {
-            let rel = cqs::rel_display(&ti.file, root);
-            println!(
-                "  {} ({}:{}) via {}",
-                ti.name,
-                rel,
-                ti.line,
-                ti.shared_types.join(", ")
-            );
-        }
     }
 }

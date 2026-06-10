@@ -1303,7 +1303,6 @@ fn test_noise_eval_143q() {
             .embed_documents(&refs)
             .expect("Failed to embed batch");
         for (c, emb) in batch_chunks.drain(..).zip(embeddings) {
-            let emb = emb;
             store.upsert_chunk(&c, &emb, None).ok();
         }
     }
@@ -1389,8 +1388,10 @@ fn test_noise_eval_143q() {
         .collect();
 
     // Sweep name_boost values
+    // One sweep row: (boost, R@1, relaxed R@1, R@5, MRR, per-language R@1).
+    type SweepRow = (f32, f64, f64, f64, f64, HashMap<Language, f64>);
     let boost_values: &[f32] = &[0.0, 0.2, 0.4, 0.6, 0.8];
-    let mut all_sweep: Vec<(f32, f64, f64, f64, f64, HashMap<Language, f64>)> = Vec::new();
+    let mut all_sweep: Vec<SweepRow> = Vec::new();
 
     for &boost in boost_values {
         eprintln!(

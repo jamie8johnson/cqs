@@ -67,7 +67,10 @@ fn insert_chunks(store: &TestStore, chunks: &[Chunk]) {
 }
 
 /// Insert function call graph entries
-fn insert_calls(store: &TestStore, file: &str, calls: &[(&str, u32, &[(&str, u32)])]) {
+/// One call-graph entry: (function name, line, callees as (name, line) pairs).
+type CallSpec<'a> = (&'a str, u32, &'a [(&'a str, u32)]);
+
+fn insert_calls(store: &TestStore, file: &str, calls: &[CallSpec]) {
     let fc: Vec<FunctionCalls> = calls
         .iter()
         .map(|(name, line, callees)| FunctionCalls {

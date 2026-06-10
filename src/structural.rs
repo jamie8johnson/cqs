@@ -244,37 +244,23 @@ fn matches_recursion(content: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_pattern_parse_all_variants() {
-        assert!(matches!(
-            "builder".parse::<Pattern>().unwrap(),
-            Pattern::Builder
-        ));
-        assert!(matches!(
+        assert_matches!("builder".parse::<Pattern>().unwrap(), Pattern::Builder);
+        assert_matches!(
             "error_swallow".parse::<Pattern>().unwrap(),
             Pattern::ErrorSwallow
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "error-swallow".parse::<Pattern>().unwrap(),
             Pattern::ErrorSwallow
-        ));
-        assert!(matches!(
-            "async".parse::<Pattern>().unwrap(),
-            Pattern::Async
-        ));
-        assert!(matches!(
-            "mutex".parse::<Pattern>().unwrap(),
-            Pattern::Mutex
-        ));
-        assert!(matches!(
-            "unsafe".parse::<Pattern>().unwrap(),
-            Pattern::Unsafe
-        ));
-        assert!(matches!(
-            "recursion".parse::<Pattern>().unwrap(),
-            Pattern::Recursion
-        ));
+        );
+        assert_matches!("async".parse::<Pattern>().unwrap(), Pattern::Async);
+        assert_matches!("mutex".parse::<Pattern>().unwrap(), Pattern::Mutex);
+        assert_matches!("unsafe".parse::<Pattern>().unwrap(), Pattern::Unsafe);
+        assert_matches!("recursion".parse::<Pattern>().unwrap(), Pattern::Recursion);
         assert!("unknown".parse::<Pattern>().is_err());
     }
 

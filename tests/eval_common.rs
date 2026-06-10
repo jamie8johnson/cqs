@@ -24,7 +24,6 @@ pub use cqs::search::router::QueryCategory;
 // V3 production schema — re-exported under a namespace so tests reaching
 // the production deserialization types don't need their own `use cqs::...`
 // import. Audit P2 #61.
-pub use cqs::eval::schema as prod_schema;
 
 // ===== V2 Eval Schema (300q harness) =====
 

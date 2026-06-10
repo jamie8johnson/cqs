@@ -53,6 +53,7 @@ mod tests {
     use super::*;
     use clap::Parser;
     use definitions::Commands;
+    use std::assert_matches;
 
     // ===== Default values tests =====
 
@@ -918,7 +919,7 @@ mod tests {
         match cli.command {
             Some(Commands::Impact { ref output, .. }) => {
                 assert!(output.json);
-                assert!(matches!(output.format, OutputFormat::Text)); // default, overridden at dispatch
+                assert_matches!(output.format, OutputFormat::Text); // default, overridden at dispatch
             }
             _ => panic!("Expected Impact command"),
         }
@@ -965,7 +966,7 @@ mod tests {
         match cli.command {
             Some(Commands::Trace { ref output, .. }) => {
                 assert!(output.json);
-                assert!(matches!(output.format, OutputFormat::Text));
+                assert_matches!(output.format, OutputFormat::Text);
             }
             _ => panic!("Expected Trace command"),
         }
@@ -1146,7 +1147,7 @@ mod tests {
                 assert!(args.base.is_none());
                 assert!(!args.stdin);
                 assert!(!output.json);
-                assert!(matches!(args.gate, GateThreshold::High));
+                assert_matches!(args.gate, GateThreshold::High);
                 assert!(args.tokens.is_none());
             }
             _ => panic!("Expected Ci command"),
@@ -1158,7 +1159,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "medium"]).unwrap();
         match cli.command {
             Some(Commands::Ci { ref args, .. }) => {
-                assert!(matches!(args.gate, GateThreshold::Medium));
+                assert_matches!(args.gate, GateThreshold::Medium);
             }
             _ => panic!("Expected Ci command"),
         }
@@ -1169,7 +1170,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "off"]).unwrap();
         match cli.command {
             Some(Commands::Ci { ref args, .. }) => {
-                assert!(matches!(args.gate, GateThreshold::Off));
+                assert_matches!(args.gate, GateThreshold::Off);
             }
             _ => panic!("Expected Ci command"),
         }

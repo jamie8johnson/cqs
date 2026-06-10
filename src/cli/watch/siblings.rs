@@ -700,6 +700,7 @@ fn drain_slot(
 mod tests {
     use super::*;
     use cqs::store::ModelInfo;
+    use std::assert_matches;
 
     fn policy(foreign_enabled: bool, batch_files: usize, batch_secs: u64) -> SiblingPolicy {
         SiblingPolicy {
@@ -928,7 +929,7 @@ mod tests {
         assert_eq!(same.kind, SiblingKind::SameModel);
         assert!(!same.inert);
         let foreign = set.slots.iter().find(|s| s.name == "foreign-sib").unwrap();
-        assert!(matches!(foreign.kind, SiblingKind::Foreign { .. }));
+        assert_matches!(foreign.kind, SiblingKind::Foreign { .. });
         assert!(
             foreign.inert,
             "foreign slot must be inert without CQS_WATCH_ALL_SLOTS"

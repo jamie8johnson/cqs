@@ -829,6 +829,7 @@ fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Constructs a sample call graph representing function call relationships.
     ///
@@ -862,18 +863,18 @@ mod tests {
 
     #[test]
     fn test_direction_parse() {
-        assert!(matches!(
+        assert_matches!(
             "both".parse::<GatherDirection>().unwrap(),
             GatherDirection::Both
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "callers".parse::<GatherDirection>().unwrap(),
             GatherDirection::Callers
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "callees".parse::<GatherDirection>().unwrap(),
             GatherDirection::Callees
-        ));
+        );
         assert!("invalid".parse::<GatherDirection>().is_err());
     }
 
@@ -882,7 +883,7 @@ mod tests {
         let opts = GatherOptions::default();
         assert_eq!(opts.expand_depth, 1);
         assert_eq!(opts.limit, 10);
-        assert!(matches!(opts.direction, GatherDirection::Both));
+        assert_matches!(opts.direction, GatherDirection::Both);
     }
 
     #[test]
@@ -992,7 +993,7 @@ mod tests {
             .with_seed_threshold(0.5)
             .with_decay_factor(0.9);
         assert_eq!(opts.expand_depth, 3);
-        assert!(matches!(opts.direction, GatherDirection::Callers));
+        assert_matches!(opts.direction, GatherDirection::Callers);
         assert_eq!(opts.limit, 20);
         assert_eq!(opts.seed_limit, 10);
         assert!((opts.seed_threshold - 0.5).abs() < f32::EPSILON);

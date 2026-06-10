@@ -2620,7 +2620,7 @@ mod tests {
         for &ct in ChunkType::ALL {
             let name = ct.human_name();
             assert!(
-                !camel_case.is_match(&name),
+                !camel_case.is_match(name),
                 "ChunkType::{ct:?}.human_name() returned \"{name}\" which contains CamelCase. \
                  Add an explicit arm in human_name() to return a spaced lowercase form."
             );
