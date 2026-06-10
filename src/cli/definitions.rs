@@ -394,10 +394,15 @@ pub(super) enum Commands {
     /// Watch for changes and reindex
     #[cqs_cmd(group = "a", batch = "cli")]
     Watch {
-        /// Debounce interval in milliseconds. Default 500ms suits inotify
-        /// on native Linux; WSL DrvFS (/mnt/) and --poll mode auto-bump to
-        /// 1500ms because NTFS mtime resolution is 1s. Override here or
-        /// via CQS_WATCH_DEBOUNCE_MS (takes precedence over the flag).
+        /// Quiet gap in milliseconds (idle-flush debounce): pending
+        /// changes reindex after this much event silence, so a bulk
+        /// burst (e.g. git checkout) coalesces into one cycle fired
+        /// just after the burst ends. Default 500ms suits inotify on
+        /// native Linux; WSL DrvFS (/mnt/) and --poll mode auto-bump
+        /// to 1500ms because NTFS mtime resolution is 1s. Override
+        /// here or via CQS_WATCH_DEBOUNCE_MS (takes precedence over
+        /// the flag). A never-quiet event stream still flushes within
+        /// CQS_WATCH_MAX_DEBOUNCE_MS (default 6x the quiet gap).
         #[arg(long, default_value = "500")]
         debounce: u64,
         /// Index files ignored by .gitignore

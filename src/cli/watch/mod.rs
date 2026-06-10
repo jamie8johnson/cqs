@@ -149,6 +149,13 @@ struct WatchState {
     pending_files: HashSet<PathBuf>,
     pending_notes: bool,
     last_event: std::time::Instant,
+    /// When the oldest still-pending event arrived. Armed by
+    /// `collect_events` (and the reconcile queue paths) on the first
+    /// event after a flush; cleared by the flush block once the pending
+    /// sets drain. Drives the max-latency cap in [`flush_due`]: a
+    /// never-quiet event stream still flushes within
+    /// `DebounceConfig::max_latency` of this instant.
+    first_pending_event: Option<std::time::Instant>,
     last_indexed_mtime: HashMap<PathBuf, SystemTime>,
     hnsw_index: Option<HnswIndex>,
     incremental_count: usize,
@@ -299,6 +306,92 @@ fn publish_watch_snapshot(
     fresh_notifier.set_fresh(next_snap.is_fresh());
 }
 
+/// Timing knobs for the watch loop's idle-flush debounce.
+///
+/// The pending event set flushes when EITHER condition holds:
+///
+/// - **quiet gap**: no accepted event for `quiet_gap` — the timer
+///   restarts on every event, so a `git checkout` burst coalesces into
+///   exactly one reindex cycle fired ~`quiet_gap` after the burst's
+///   *last* event, and a single save flushes at the same latency as a
+///   fixed window would.
+/// - **max latency**: the oldest pending event has waited
+///   `max_latency` — bounds total delay when the stream never goes
+///   quiet (e.g. a generator continuously rewriting files), which
+///   would otherwise keep restarting the quiet-gap timer forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DebounceConfig {
+    quiet_gap: Duration,
+    max_latency: Duration,
+}
+
+/// Multiplier applied to the quiet gap to derive the default
+/// max-latency cap when `CQS_WATCH_MAX_DEBOUNCE_MS` is unset.
+/// 6× = 3 s at the 500 ms inotify default, 9 s at the 1500 ms
+/// WSL/poll auto-bump — long enough that a normal burst (git
+/// checkout, branch switch) ends well inside it, short enough that a
+/// never-quiet stream still reindexes within seconds.
+const MAX_DEBOUNCE_FACTOR: u32 = 6;
+
+/// Resolve the idle-flush debounce config from the `--debounce` flag,
+/// poll-mode detection, and the two env overrides (passed in as already
+/// parsed values so this stays pure and unit-testable).
+///
+/// Quiet gap precedence: `CQS_WATCH_DEBOUNCE_MS` env > `--debounce`
+/// flag, with the WSL/poll auto-bump (500 → 1500 ms) applied only when
+/// the user overrode neither. The poll watcher delivers events in scan
+/// batches, so the quiet gap there must exceed NTFS's 1 s mtime
+/// resolution or a single save risks double-firing.
+///
+/// Max latency: `CQS_WATCH_MAX_DEBOUNCE_MS` env, defaulting to
+/// [`MAX_DEBOUNCE_FACTOR`] × the resolved quiet gap, and clamped to at
+/// least the quiet gap (a cap below the gap would turn the idle-flush
+/// into a fixed window at the cap, which is never what the two knobs
+/// together are asking for).
+fn resolve_debounce(
+    flag_ms: u64,
+    use_poll: bool,
+    env_gap_ms: Option<u64>,
+    env_max_ms: Option<u64>,
+) -> DebounceConfig {
+    let quiet_gap_ms = if let Some(env_ms) = env_gap_ms {
+        env_ms
+    } else if flag_ms == 500 && use_poll {
+        tracing::info!(
+            "Auto-bumping watch quiet-gap to 1500ms for WSL/poll mode (override via --debounce or CQS_WATCH_DEBOUNCE_MS)"
+        );
+        1500
+    } else {
+        flag_ms
+    };
+    let max_latency_ms = env_max_ms
+        .unwrap_or_else(|| quiet_gap_ms.saturating_mul(u64::from(MAX_DEBOUNCE_FACTOR)))
+        .max(quiet_gap_ms);
+    DebounceConfig {
+        quiet_gap: Duration::from_millis(quiet_gap_ms),
+        max_latency: Duration::from_millis(max_latency_ms),
+    }
+}
+
+/// Pre-drain decision: should the watch loop flush the pending sets
+/// into a reindex cycle right now?
+///
+/// Evaluated on every loop iteration — event arrivals included, not
+/// just recv timeouts — because a continuous stream of events arriving
+/// faster than the recv timeout never reaches the timeout arm at all;
+/// only the max-latency condition can fire there.
+fn flush_due(state: &WatchState, debounce: &DebounceConfig) -> bool {
+    if state.pending_files.is_empty() && !state.pending_notes {
+        return false;
+    }
+    if state.last_event.elapsed() >= debounce.quiet_gap {
+        return true;
+    }
+    state
+        .first_pending_event
+        .is_some_and(|first| first.elapsed() >= debounce.max_latency)
+}
+
 /// Check if a path is under a WSL DrvFS automount root.
 ///
 /// Default automount root is `/mnt/`, but users can customize it via `automount.root`
@@ -395,7 +488,9 @@ fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> 
 /// # Arguments
 ///
 /// * `cli` - Command-line interface context
-/// * `debounce_ms` - Debounce interval in milliseconds for file change events
+/// * `debounce_ms` - Quiet gap in milliseconds for the idle-flush debounce:
+///   pending changes flush after this much event silence (see
+///   [`DebounceConfig`] for the full semantics including the max-latency cap)
 /// * `no_ignore` - If true, skips `.gitignore` filtering in the watch loop.
 ///   Mirrors the `cqs index --no-ignore` flag. When false (default), the watch
 ///   loop queries the project's `.gitignore` for every event and ignores matches.
@@ -447,25 +542,27 @@ pub fn cmd_watch(
         tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
     }
 
-    // The 500ms default is tuned for inotify on native Linux.
-    // WSL DrvFS (/mnt/, //wsl$) exposes NTFS which has 1s mtime
-    // resolution — anything under ~1000ms risks double-fire for a single
-    // save. Poll mode also benefits from a longer window. When the user
-    // did not override via flag or env, auto-bump to 1500ms for these
-    // paths. `CQS_WATCH_DEBOUNCE_MS` takes precedence over the flag.
-    let debounce_ms = if let Some(env_ms) = std::env::var("CQS_WATCH_DEBOUNCE_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        env_ms
-    } else if debounce_ms == 500 && use_poll {
-        tracing::info!(
-            "Auto-bumping watch debounce to 1500ms for WSL/poll mode (override via --debounce or CQS_WATCH_DEBOUNCE_MS)"
-        );
-        1500
-    } else {
-        debounce_ms
-    };
+    // Idle-flush debounce resolution. `CQS_WATCH_DEBOUNCE_MS` is the
+    // quiet gap (takes precedence over --debounce; WSL/poll auto-bump
+    // 500 → 1500 ms because NTFS mtime resolution is 1 s and the poll
+    // watcher delivers scan batches); `CQS_WATCH_MAX_DEBOUNCE_MS` is
+    // the max-latency cap, defaulting to 6× the quiet gap. See
+    // `DebounceConfig` for the flush semantics.
+    let debounce = resolve_debounce(
+        debounce_ms,
+        use_poll,
+        std::env::var("CQS_WATCH_DEBOUNCE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok()),
+        std::env::var("CQS_WATCH_MAX_DEBOUNCE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok()),
+    );
+    tracing::info!(
+        quiet_gap_ms = debounce.quiet_gap.as_millis() as u64,
+        max_latency_ms = debounce.max_latency.as_millis() as u64,
+        "watch debounce resolved (idle-flush)"
+    );
 
     let project_cqs_dir = cqs::resolve_index_dir(&root);
 
@@ -910,7 +1007,6 @@ pub fn cmd_watch(
 
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
-    let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
     let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or_else(|e| {
         tracing::debug!(path = %cqs_dir.display(), error = %e, "canonicalize failed, using original");
@@ -1176,6 +1272,7 @@ pub fn cmd_watch(
         pending_files: HashSet::new(),
         pending_notes: false,
         last_event: std::time::Instant::now(),
+        first_pending_event: None,
         // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
         // On WSL, inotify over 9P delivers repeated events for the same file change.
         // Bounded: pruned when >10k entries or >1k entries on single-file reindex.
@@ -1289,11 +1386,15 @@ pub fn cmd_watch(
                     );
                     if queued > 0 {
                         // Reset `last_event` so the synthetic pending
-                        // entries are picked up by the very next
-                        // `should_process` tick (otherwise the debounce
-                        // window would still hold for `last_event`'s
-                        // worth of milliseconds).
+                        // entries flush one quiet-gap from queue time
+                        // (otherwise a stale `last_event` could fire
+                        // the flush mid-queue on a later tick). Arm the
+                        // max-latency clock too so a continuous event
+                        // stream can't starve the queued entries.
                         state.last_event = std::time::Instant::now();
+                        if state.first_pending_event.is_none() {
+                            state.first_pending_event = Some(state.last_event);
+                        }
                     }
                     // Sliding the periodic-tick clock keeps the two
                     // mechanisms from racing: the next periodic walk
@@ -1302,103 +1403,11 @@ pub fn cmd_watch(
                     last_reconcile = std::time::Instant::now();
                 }
 
-                let should_process = (!state.pending_files.is_empty() || state.pending_notes)
-                    && state.last_event.elapsed() >= debounce;
-
-                if should_process {
-                    cycles_since_clear = 0;
-
-                    // Acquire index lock before reindexing. If another process
-                    // (cqs index, cqs gc) holds it, skip this cycle.
-                    let lock = match try_acquire_index_lock(&cqs_dir) {
-                        Ok(Some(lock)) => lock,
-                        Ok(None) => {
-                            info!("Index lock held by another process, skipping reindex cycle");
-                            continue;
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to create index lock file");
-                            continue;
-                        }
-                    };
-
-                    // Detect if `cqs index --force` replaced the database
-                    // while we were waiting. If so, reopen the Store before processing
-                    // any changes — otherwise writes go to the orphaned inode.
-                    let current_id = db_file_identity(&index_path);
-                    if current_id != db_id {
-                        info!("index.db replaced (likely cqs index --force), reopening store");
-                        drop(store);
-                        // Reuse the shared runtime on re-open so the
-                        // replacement store keeps running on the same
-                        // multi-thread worker pool as its predecessor.
-                        store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
-                            .with_context(|| {
-                                format!(
-                                    "Failed to re-open store at {} after DB replacement",
-                                    index_path.display()
-                                )
-                            })?;
-                        // Re-stamp the vendored prefix list on the fresh Store
-                        // — the OnceLock is per-instance and a brand-new Store
-                        // starts empty. Use the cached resolution from startup
-                        // so we don't re-read .cqs.toml mid-watch.
-                        store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
-                        // db_id updated below in the cache-clear path.
-                        state.hnsw_index = None;
-                        state.incremental_count = 0;
-                        // Drop in-flight rebuild whose pending delta references
-                        // OLD DB chunk IDs. The rebuild thread sends into a
-                        // dropped receiver (no-op). Force a fresh rebuild on
-                        // the next threshold tick against the new DB.
-                        if state.pending_rebuild.take().is_some() {
-                            tracing::info!(
-                                "discarded in-flight HNSW rebuild after DB replacement; \
-                                 next threshold tick will rebuild against new DB",
-                            );
-                        }
-                    }
-
-                    if !state.pending_files.is_empty() {
-                        process_file_changes(&watch_cfg, &store, &mut state);
-                    }
-
-                    if state.pending_notes {
-                        state.pending_notes = false;
-                        process_note_changes(&root, &store, cli.quiet, &mut state);
-                    }
-
-                    // Clear stale OnceLock caches (call_graph_cache,
-                    // test_chunks_cache) after index changes. Clear caches
-                    // instead of a full re-open to avoid pool teardown +
-                    // runtime creation + PRAGMA setup on every reindex cycle
-                    // over a 24/7 systemd lifetime.
-                    store.clear_caches();
-                    db_id = db_file_identity(&index_path);
-
-                    // Periodically evict the global embedding cache so
-                    // long-running watch sessions don't let the shared
-                    // ~/.cache/cqs/embeddings.db grow past its
-                    // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
-                    // `last_cache_evict.elapsed()` so we don't churn the
-                    // SQLite file on every single reindex cycle. Reuses the
-                    // shared runtime so this one-shot eviction piggybacks on
-                    // the existing worker pool.
-                    if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
-                        let project_cqs_dir = cqs::resolve_index_dir(&root);
-                        let cache_path =
-                            cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
-                        super::batch::evict_embeddings_cache_with_runtime(
-                            &cache_path,
-                            "watch reindex cycle",
-                            Some(Arc::clone(&shared_rt)),
-                        );
-                        last_cache_evict = std::time::Instant::now();
-                    }
-
-                    // Release lock after all reindex work (including HNSW rebuild).
-                    drop(lock);
-                } else {
+                // Flush decision lives after the match (see the
+                // `flush_due` block below) so it is evaluated on event
+                // arrivals too, not just on quiet ticks. The idle
+                // housekeeping here only runs when no flush is due.
+                if !flush_due(&state, &debounce) {
                     // Age-only prune fires hourly on idle ticks regardless of
                     // map size. The size-gated `prune_last_indexed_mtime`
                     // still runs in the event path; this idle-tick variant
@@ -1600,11 +1609,15 @@ pub fn cmd_watch(
                                 shared_disk_files.as_ref(),
                             );
                             if queued > 0 {
-                                // Reset `last_event` so `process_file_changes`
-                                // observes the synthetic pending entries on
-                                // the very next debounce tick (otherwise the
-                                // idle threshold would still hold).
+                                // Reset `last_event` so the synthetic
+                                // pending entries flush one quiet-gap
+                                // from queue time; arm the max-latency
+                                // clock so a continuous event stream
+                                // can't starve them past the cap.
                                 state.last_event = std::time::Instant::now();
+                                if state.first_pending_event.is_none() {
+                                    state.first_pending_event = Some(state.last_event);
+                                }
                             }
                             last_reconcile = std::time::Instant::now();
                         }
@@ -1621,6 +1634,109 @@ pub fn cmd_watch(
             }
         }
 
+        // Pre-drain decision. Evaluated on every loop iteration —
+        // event arrivals included — because a continuous stream of
+        // events arriving faster than the 100 ms recv timeout never
+        // reaches the timeout arm at all; without this placement the
+        // max-latency cap could never fire under exactly the load it
+        // exists for.
+        if flush_due(&state, &debounce) {
+            cycles_since_clear = 0;
+
+            // Acquire index lock before reindexing. If another process
+            // (cqs index, cqs gc) holds it, skip this cycle.
+            let lock = match try_acquire_index_lock(&cqs_dir) {
+                Ok(Some(lock)) => lock,
+                Ok(None) => {
+                    info!("Index lock held by another process, skipping reindex cycle");
+                    continue;
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create index lock file");
+                    continue;
+                }
+            };
+
+            // Detect if `cqs index --force` replaced the database
+            // while we were waiting. If so, reopen the Store before processing
+            // any changes — otherwise writes go to the orphaned inode.
+            let current_id = db_file_identity(&index_path);
+            if current_id != db_id {
+                info!("index.db replaced (likely cqs index --force), reopening store");
+                drop(store);
+                // Reuse the shared runtime on re-open so the
+                // replacement store keeps running on the same
+                // multi-thread worker pool as its predecessor.
+                store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+                    .with_context(|| {
+                        format!(
+                            "Failed to re-open store at {} after DB replacement",
+                            index_path.display()
+                        )
+                    })?;
+                // Re-stamp the vendored prefix list on the fresh Store
+                // — the OnceLock is per-instance and a brand-new Store
+                // starts empty. Use the cached resolution from startup
+                // so we don't re-read .cqs.toml mid-watch.
+                store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
+                // db_id updated below in the cache-clear path.
+                state.hnsw_index = None;
+                state.incremental_count = 0;
+                // Drop in-flight rebuild whose pending delta references
+                // OLD DB chunk IDs. The rebuild thread sends into a
+                // dropped receiver (no-op). Force a fresh rebuild on
+                // the next threshold tick against the new DB.
+                if state.pending_rebuild.take().is_some() {
+                    tracing::info!(
+                        "discarded in-flight HNSW rebuild after DB replacement; \
+                         next threshold tick will rebuild against new DB",
+                    );
+                }
+            }
+
+            if !state.pending_files.is_empty() {
+                process_file_changes(&watch_cfg, &store, &mut state);
+            }
+
+            if state.pending_notes {
+                state.pending_notes = false;
+                process_note_changes(&root, &store, cli.quiet, &mut state);
+            }
+
+            // Clear stale OnceLock caches (call_graph_cache,
+            // test_chunks_cache) after index changes. Clear caches
+            // instead of a full re-open to avoid pool teardown +
+            // runtime creation + PRAGMA setup on every reindex cycle
+            // over a 24/7 systemd lifetime.
+            store.clear_caches();
+            db_id = db_file_identity(&index_path);
+
+            // Periodically evict the global embedding cache so
+            // long-running watch sessions don't let the shared
+            // ~/.cache/cqs/embeddings.db grow past its
+            // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
+            // `last_cache_evict.elapsed()` so we don't churn the
+            // SQLite file on every single reindex cycle. Reuses the
+            // shared runtime so this one-shot eviction piggybacks on
+            // the existing worker pool.
+            if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
+                let project_cqs_dir = cqs::resolve_index_dir(&root);
+                let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+                super::batch::evict_embeddings_cache_with_runtime(
+                    &cache_path,
+                    "watch reindex cycle",
+                    Some(Arc::clone(&shared_rt)),
+                );
+                last_cache_evict = std::time::Instant::now();
+            }
+
+            // Release lock after all reindex work (including HNSW rebuild).
+            drop(lock);
+
+            // Pending sets drained — disarm the max-latency clock so
+            // the next accepted event starts a fresh burst.
+            state.first_pending_event = None;
+        }
         // Publish freshness snapshot once per outer iteration.
         // Cheap — counter reads, one optional `metadata()` on `index.db`,
         // and a brief write-lock acquire. Runs every ~100 ms cycle so the
