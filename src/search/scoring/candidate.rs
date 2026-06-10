@@ -337,8 +337,183 @@ pub(crate) struct ScoringContext<'a> {
     pub threshold: f32,
 }
 
-/// Apply the scoring pipeline to a pre-computed base score (name boost, glob
-/// filter, note boost, test demotion, threshold).
+/// Identifying metadata for the chunk being scored — the per-candidate
+/// fields a [`ScoreSignal`] may consult (everything loop-invariant lives in
+/// [`ScoringContext`] instead).
+pub(crate) struct ChunkMeta<'a> {
+    /// Chunk name (function/type identifier), if known.
+    pub name: Option<&'a str>,
+    /// File path portion of the chunk id.
+    pub file: &'a str,
+}
+
+impl ChunkMeta<'_> {
+    /// Chunk name with the same `unwrap_or("")` fallback the legacy stanzas
+    /// used — keeps name-based signals byte-identical for nameless chunks.
+    #[inline]
+    fn name_or_empty(&self) -> &str {
+        self.name.unwrap_or("")
+    }
+}
+
+/// One composable stage of the per-candidate scoring pipeline.
+///
+/// The pipeline is a fold over [`SCORE_SIGNALS`]: each enabled signal
+/// transforms the running score (multiply, blend, or gate), and returning
+/// `None` rejects the candidate outright. **Slice order is load-bearing** —
+/// floating-point blend/multiply is order-sensitive and downstream tests pin
+/// exact bit patterns (`apply_scoring_pipeline_pinned_exact_scores`), so new
+/// signals must be inserted deliberately, not appended by reflex.
+///
+/// Both production base-score producers flow through the same slice:
+/// - dense path: `score_candidate` (base = cosine similarity), used by the
+///   brute-force scan and the index-guided candidate path;
+/// - hybrid path: `search_by_candidate_ids_with_notes` with `fused_scores`
+///   (base = α-weighted dense+sparse SPLADE fusion).
+///
+/// Per-path enablement is data-driven, not slice-driven: every signal checks
+/// its own gate in `enabled()` (e.g. `NameBlend` requires a `name_matcher`,
+/// `ImportanceDemotion` requires `filter.enable_demotion`), so both paths
+/// share one slice and diverge only through `ScoringContext` contents.
+///
+/// # Adding a signal (example: recency boost)
+///
+/// One struct + one slice entry — no edits to either search path:
+///
+/// ```ignore
+/// struct RecencyBoost;
+/// impl ScoreSignal for RecencyBoost {
+///     fn enabled(&self, ctx: &ScoringContext<'_>) -> bool {
+///         ctx.filter.enable_recency_boost
+///     }
+///     fn apply(&self, current: f32, ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32> {
+///         Some(current * recency_multiplier(chunk.file, ctx))
+///     }
+/// }
+/// // then insert into SCORE_SIGNALS between ImportanceDemotion and
+/// // ThresholdGate (multiplicative signals belong before the gate):
+/// // &NameBlend, &GlobGate, &NoteBoostSignal, &ImportanceDemotion, &RecencyBoost, &ThresholdGate
+/// ```
+pub(crate) trait ScoreSignal {
+    /// Whether this signal participates for the given search context.
+    /// Disabled signals are skipped entirely (score passes through).
+    fn enabled(&self, ctx: &ScoringContext<'_>) -> bool;
+
+    /// Transform the running score. Returning `None` rejects the candidate
+    /// (used by hard gates: glob filter, threshold).
+    fn apply(&self, current: f32, ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32>;
+}
+
+/// Blend the base score with a name-match score:
+/// `(1 - name_boost) * current + name_boost * name_score`.
+///
+/// Active when the caller built a [`NameMatcher`] (hybrid queries with
+/// `name_boost > 0`). Both search paths use it.
+struct NameBlend;
+
+impl ScoreSignal for NameBlend {
+    fn enabled(&self, ctx: &ScoringContext<'_>) -> bool {
+        ctx.name_matcher.is_some()
+    }
+
+    fn apply(&self, current: f32, ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32> {
+        let Some(matcher) = ctx.name_matcher else {
+            // Defensive identity — unreachable when gated by `enabled()`.
+            return Some(current);
+        };
+        // Defense-in-depth: clamp name_boost into [0.0, 1.0] regardless of
+        // where it originated. CLI uses parse_unit_f32 (clap-bounded) and
+        // config uses clamp_config_f32, but a programmatic / deserialised
+        // path could bypass both, in which case `(1.0 - 5.0) * embedding`
+        // would sign-flip search results silently. Cheap insurance.
+        let name_boost = ctx.filter.name_boost.clamp(0.0, 1.0);
+        let name_score = matcher.score(chunk.name_or_empty());
+        Some((1.0 - name_boost) * current + name_boost * name_score)
+    }
+}
+
+/// Hard gate: reject candidates whose file path doesn't match the compiled
+/// `--path` glob. Active when a glob filter is present; both paths use it.
+struct GlobGate;
+
+impl ScoreSignal for GlobGate {
+    fn enabled(&self, ctx: &ScoringContext<'_>) -> bool {
+        ctx.glob_matcher.is_some()
+    }
+
+    fn apply(&self, current: f32, ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32> {
+        match ctx.glob_matcher {
+            Some(matcher) if !matcher.is_match(chunk.file) => None,
+            _ => Some(current),
+        }
+    }
+}
+
+/// Multiply by the note-sentiment boost (`1.0 + sentiment * factor`).
+///
+/// Also floors the running score at 0.0 first — `current.max(0.0)` is part
+/// of this stanza's legacy arithmetic and must stay fused with the multiply
+/// for bit-identical output. Always enabled on both paths (no-match boost
+/// is 1.0).
+struct NoteBoostSignal;
+
+impl ScoreSignal for NoteBoostSignal {
+    fn enabled(&self, _ctx: &ScoringContext<'_>) -> bool {
+        true
+    }
+
+    fn apply(&self, current: f32, ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32> {
+        Some(current.max(0.0) * ctx.note_index.boost(chunk.file, chunk.name_or_empty()))
+    }
+}
+
+/// Multiply by [`chunk_importance`] (test-function / private-helper
+/// demotion). Gated on `filter.enable_demotion`; both paths use it.
+struct ImportanceDemotion;
+
+impl ScoreSignal for ImportanceDemotion {
+    fn enabled(&self, ctx: &ScoringContext<'_>) -> bool {
+        ctx.filter.enable_demotion
+    }
+
+    fn apply(&self, current: f32, _ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32> {
+        Some(current * chunk_importance(chunk.name_or_empty(), chunk.file))
+    }
+}
+
+/// Hard gate: reject candidates scoring below the threshold (inclusive
+/// boundary — `score >= threshold` passes). Always enabled; both paths use
+/// it. Must remain the final signal so every boost/demotion is reflected in
+/// the gated value.
+struct ThresholdGate;
+
+impl ScoreSignal for ThresholdGate {
+    fn enabled(&self, _ctx: &ScoringContext<'_>) -> bool {
+        true
+    }
+
+    fn apply(&self, current: f32, ctx: &ScoringContext<'_>, _chunk: &ChunkMeta<'_>) -> Option<f32> {
+        if current >= ctx.threshold {
+            Some(current)
+        } else {
+            None
+        }
+    }
+}
+
+/// The scoring pipeline, in execution order. See [`ScoreSignal`] for the
+/// ordering contract and how to register a new signal.
+pub(crate) const SCORE_SIGNALS: &[&dyn ScoreSignal] = &[
+    &NameBlend,
+    &GlobGate,
+    &NoteBoostSignal,
+    &ImportanceDemotion,
+    &ThresholdGate,
+];
+
+/// Apply the scoring pipeline to a pre-computed base score: a fold over
+/// [`SCORE_SIGNALS`] (name blend → glob gate → note boost → demotion →
+/// threshold gate).
 ///
 /// Used by `score_candidate` (base = cosine) and the hybrid search path
 /// (base = alpha-weighted dense+sparse fusion).
@@ -348,46 +523,24 @@ pub(crate) fn apply_scoring_pipeline(
     file_part: &str,
     ctx: &ScoringContext<'_>,
 ) -> Option<f32> {
-    // Defense-in-depth: clamp name_boost into [0.0, 1.0] regardless of where
-    // it originated. CLI uses parse_unit_f32 (clap-bounded) and config uses
-    // clamp_config_f32, but a programmatic / deserialised path could bypass
-    // both, in which case `(1.0 - 5.0) * embedding` would sign-flip search
-    // results silently. Cheap insurance.
-    //
-    // Also clamp `embedding_score` into `[0.0, 1.0]` before the linear
-    // interpolation. Raw cosine can be negative for orthogonal-or-worse
-    // pairs, and a negative embedding contaminating the blend then hits the
-    // downstream `.max(0.0)` and silently deletes a good name-only match.
-    // Clamping inputs makes the blend always interpolate between two
-    // same-range numbers and never sign-flip.
-    let embedding_score = embedding_score.clamp(0.0, 1.0);
-    let name_boost = ctx.filter.name_boost.clamp(0.0, 1.0);
-    let base_score = if let Some(matcher) = ctx.name_matcher {
-        let n = name.unwrap_or("");
-        let name_score = matcher.score(n);
-        (1.0 - name_boost) * embedding_score + name_boost * name_score
-    } else {
-        embedding_score
+    // Clamp `embedding_score` into `[0.0, 1.0]` before the signal fold. Raw
+    // cosine can be negative for orthogonal-or-worse pairs, and a negative
+    // base contaminating the name blend then hits the downstream `.max(0.0)`
+    // and silently deletes a good name-only match. Clamping the input makes
+    // the blend always interpolate between two same-range numbers and never
+    // sign-flip.
+    let base = embedding_score.clamp(0.0, 1.0);
+    let chunk = ChunkMeta {
+        name,
+        file: file_part,
     };
-
-    if let Some(matcher) = ctx.glob_matcher {
-        if !matcher.is_match(file_part) {
-            return None;
+    SCORE_SIGNALS.iter().try_fold(base, |score, signal| {
+        if signal.enabled(ctx) {
+            signal.apply(score, ctx, &chunk)
+        } else {
+            Some(score)
         }
-    }
-
-    let chunk_name = name.unwrap_or("");
-    let mut score = base_score.max(0.0) * ctx.note_index.boost(file_part, chunk_name);
-
-    if ctx.filter.enable_demotion {
-        score *= chunk_importance(chunk_name, file_part);
-    }
-
-    if score >= ctx.threshold {
-        Some(score)
-    } else {
-        None
-    }
+    })
 }
 
 /// Score a single candidate chunk against the query.
@@ -1212,6 +1365,143 @@ mod tests {
         assert!(
             test < prod,
             "test function should be demoted even with fused score"
+        );
+    }
+
+    /// Pins the exact f32 output of the full scoring pipeline so refactors
+    /// are provably bit-identical. Each expected value replicates today's
+    /// stanza sequence verbatim (clamp → name blend → max(0.0) × note boost
+    /// → demotion × → threshold gate) — floating-point multiply/blend is
+    /// order-sensitive, so any reordering of the pipeline changes these bits
+    /// and fails the `assert_eq!` (exact equality, no epsilon).
+    #[test]
+    fn apply_scoring_pipeline_pinned_exact_scores() {
+        let cfg = ScoringConfig::current();
+        let query = test_embedding(1.0);
+
+        // --- Scenario A: all multiplicative signals active ---
+        // name blend (exact match), positive note boost, demotion enabled
+        // (importance 1.0 for a production fn — multiplier still applied).
+        let filter_a = SearchFilter {
+            name_boost: 0.3,
+            query_text: "parseConfig".to_string(),
+            enable_demotion: true,
+            ..Default::default()
+        };
+        let notes = vec![make_note(1.0, &["lib.rs"])];
+        let note_index_a = NoteBoost::Borrowed(NoteBoostIndex::new(&notes));
+        let matcher = NameMatcher::new("parseConfig");
+        let ctx_a = ScoringContext {
+            query: &query,
+            filter: &filter_a,
+            name_matcher: Some(&matcher),
+            glob_matcher: None,
+            note_index: &note_index_a,
+            threshold: 0.0,
+        };
+        let got_a = apply_scoring_pipeline(0.62, Some("parseConfig"), "src/lib.rs", &ctx_a);
+        let expected_a = {
+            let emb = 0.62f32.clamp(0.0, 1.0);
+            let nb = 0.3f32.clamp(0.0, 1.0);
+            // exact name match → cfg.name_exact
+            let base = (1.0 - nb) * emb + nb * cfg.name_exact;
+            let boosted = base.max(0.0) * (1.0 + 1.0 * cfg.note_boost_factor);
+            boosted * 1.0 // importance: production fn
+        };
+        assert_eq!(got_a, Some(expected_a), "scenario A bits changed");
+
+        // --- Scenario B: test-function demotion, no name matcher, no notes ---
+        let filter_b = SearchFilter {
+            enable_demotion: true,
+            ..Default::default()
+        };
+        let empty_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
+        let ctx_b = ScoringContext {
+            query: &query,
+            filter: &filter_b,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &empty_index,
+            threshold: 0.0,
+        };
+        let got_b = apply_scoring_pipeline(0.81, Some("test_foo"), "src/lib.rs", &ctx_b);
+        let expected_b = {
+            let emb = 0.81f32.clamp(0.0, 1.0);
+            let boosted = emb.max(0.0) * 1.0; // no notes → boost 1.0
+            boosted * cfg.importance_test
+        };
+        assert_eq!(got_b, Some(expected_b), "scenario B bits changed");
+
+        // --- Scenario C: glob rejection short-circuits to None ---
+        let filter_c = SearchFilter::default();
+        let glob = globset::Glob::new("src/**/*.rs")
+            .expect("valid glob")
+            .compile_matcher();
+        let ctx_c = ScoringContext {
+            query: &query,
+            filter: &filter_c,
+            name_matcher: None,
+            glob_matcher: Some(&glob),
+            note_index: &empty_index,
+            threshold: 0.0,
+        };
+        assert_eq!(
+            apply_scoring_pipeline(0.9, Some("fn_a"), "docs/readme.md", &ctx_c),
+            None,
+            "scenario C: glob mismatch must reject"
+        );
+
+        // --- Scenario D: threshold gate, boundary inclusive (score >= threshold) ---
+        let ctx_d = ScoringContext {
+            query: &query,
+            filter: &filter_c,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &empty_index,
+            threshold: 0.75,
+        };
+        assert_eq!(
+            apply_scoring_pipeline(0.75, Some("fn_a"), "src/lib.rs", &ctx_d),
+            Some(0.75),
+            "scenario D: exact-threshold score must pass (>=)"
+        );
+        assert_eq!(
+            apply_scoring_pipeline(0.7499999, Some("fn_a"), "src/lib.rs", &ctx_d),
+            None,
+            "scenario D: below-threshold score must reject"
+        );
+
+        // --- Scenario E: negative base clamps to 0.0, negative note survives ---
+        let neg_notes = vec![make_note(-1.0, &["lib.rs"])];
+        let neg_index = NoteBoost::Borrowed(NoteBoostIndex::new(&neg_notes));
+        let ctx_e = ScoringContext {
+            query: &query,
+            filter: &filter_c,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &neg_index,
+            threshold: 0.0,
+        };
+        let got_e = apply_scoring_pipeline(-0.4, Some("fn_a"), "src/lib.rs", &ctx_e);
+        let expected_e = {
+            let emb = (-0.4f32).clamp(0.0, 1.0); // → 0.0
+            emb.max(0.0) * (1.0 + -1.0 * cfg.note_boost_factor)
+        };
+        assert_eq!(got_e, Some(expected_e), "scenario E bits changed");
+
+        // --- Scenario F: fused base > 1.0 (SPLADE rerank mode) clamps to 1.0 ---
+        let ctx_f = ScoringContext {
+            query: &query,
+            filter: &filter_c,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &empty_index,
+            threshold: 0.0,
+        };
+        assert_eq!(
+            apply_scoring_pipeline(1.05, Some("fn_a"), "src/lib.rs", &ctx_f),
+            Some(1.0),
+            "scenario F: over-1.0 fused base must clamp"
         );
     }
 
