@@ -61,6 +61,7 @@ pub(crate) use graph::build_deps_forward;
 pub(crate) use graph::build_deps_reverse;
 pub(crate) use graph::build_test_map;
 pub(crate) use graph::build_test_map_output;
+pub(crate) use graph::chunks_to_definitions;
 pub(crate) use graph::cmd_callees;
 pub(crate) use graph::cmd_callers;
 pub(crate) use graph::cmd_deps;
@@ -69,7 +70,6 @@ pub(crate) use graph::cmd_impact;
 pub(crate) use graph::cmd_impact_diff;
 pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
-pub(crate) use graph::{chunk_to_definition_value, KIND_FALLBACK_MAX_DEFINITIONS};
 
 // -- review --
 pub(crate) use review::build_dead_output;

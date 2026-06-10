@@ -17,6 +17,7 @@ use cqs::{
     ImpactOptions,
 };
 
+use super::chunks_to_definitions;
 use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
@@ -165,74 +166,6 @@ fn impact_to_json_with_kind(result: &cqs::ImpactResult, kind: &str) -> Result<se
         obj.insert("kind".into(), serde_json::json!(kind));
     }
     Ok(json)
-}
-
-/// Build a definitions list from chunks. Used by every kind-mismatch
-/// fallback below. Each entry carries file/line/language/chunk_type/
-/// signature/content — the same shape every kind emits.
-///
-/// Caps at [`KIND_FALLBACK_MAX_DEFINITIONS`] entries and truncates per-chunk
-/// content at [`KIND_FALLBACK_MAX_CONTENT_BYTES`]. Hot names like `Result` /
-/// `Error` match hundreds of chunks across a corpus; without the cap,
-/// `cqs callers Result --json` could return multi-MB JSON (and on the daemon
-/// path, write a multi-MB JSONL line that pegs the receiver's parse buffer).
-/// The cap mirrors the `clamp(1, 100)` discipline the rest of the graph
-/// commands use; the per-entry truncation keeps pathological monster-chunk
-/// content from ballooning the response.
-fn chunks_to_definitions(chunks: &[cqs::store::ChunkSummary]) -> Vec<serde_json::Value> {
-    chunks
-        .iter()
-        .take(KIND_FALLBACK_MAX_DEFINITIONS)
-        .map(chunk_to_definition_value)
-        .collect()
-}
-
-/// Maximum number of `definitions[]` entries returned in a kind-mismatch
-/// fallback response. Mirrors the standard graph-command result cap.
-pub(crate) const KIND_FALLBACK_MAX_DEFINITIONS: usize = 100;
-
-/// Per-entry `content` byte cap inside a kind-mismatch fallback
-/// `definitions[]` entry. Truncated content is suffixed with
-/// `"... (truncated)"` and the entry gains a `truncated: true` field
-/// so consumers can distinguish capped chunks from full ones.
-pub(crate) const KIND_FALLBACK_MAX_CONTENT_BYTES: usize = 2048;
-
-/// Shared chunk-to-definition transformation for both CLI-direct and
-/// daemon-path kind fallbacks. Truncates content per
-/// [`KIND_FALLBACK_MAX_CONTENT_BYTES`].
-pub(crate) fn chunk_to_definition_value(c: &cqs::store::ChunkSummary) -> serde_json::Value {
-    let (content, truncated) = if c.content.len() > KIND_FALLBACK_MAX_CONTENT_BYTES {
-        // Truncate at a UTF-8 char boundary at or below the byte cap.
-        // `floor_char_boundary` would be cleaner but isn't stable yet.
-        let mut end = KIND_FALLBACK_MAX_CONTENT_BYTES;
-        while !c.content.is_char_boundary(end) {
-            end -= 1;
-        }
-        (format!("{}... (truncated)", &c.content[..end]), true)
-    } else {
-        (c.content.clone(), false)
-    };
-    let mut entry = serde_json::Map::new();
-    entry.insert(
-        "file".to_string(),
-        serde_json::json!(cqs::normalize_path(&c.file)),
-    );
-    entry.insert("line_start".to_string(), serde_json::json!(c.line_start));
-    entry.insert("line_end".to_string(), serde_json::json!(c.line_end));
-    entry.insert(
-        "language".to_string(),
-        serde_json::json!(c.language.to_string()),
-    );
-    entry.insert(
-        "chunk_type".to_string(),
-        serde_json::json!(c.chunk_type.to_string()),
-    );
-    entry.insert("signature".to_string(), serde_json::json!(c.signature));
-    entry.insert("content".to_string(), serde_json::json!(content));
-    if truncated {
-        entry.insert("truncated".to_string(), serde_json::json!(true));
-    }
-    serde_json::Value::Object(entry)
 }
 
 /// Generic kind-mismatch fallback JSON builder. Every non-Function kind
@@ -437,6 +370,7 @@ fn cmd_impact_ambiguous_fallback(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{KIND_FALLBACK_MAX_CONTENT_BYTES, KIND_FALLBACK_MAX_DEFINITIONS};
     use super::*;
     use cqs::store::ChunkSummary;
     use std::path::PathBuf;
