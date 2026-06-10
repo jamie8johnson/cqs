@@ -41,6 +41,48 @@ pub(crate) struct SlotListEntry {
     pub path: String,
 }
 
+/// `cqs slot list --json` envelope: `{active, slots: [...]}`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SlotListOutput {
+    pub active: String,
+    pub slots: Vec<SlotListEntry>,
+}
+
+/// `cqs slot active --json` payload — the resolved active slot plus its
+/// provenance (`source`) and the on-disk pointer file path.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SlotActiveOutput {
+    pub active: String,
+    pub source: String,
+    pub active_slot_file: String,
+}
+
+/// `cqs slot create --json` payload.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SlotCreateOutput {
+    pub name: String,
+    pub path: String,
+    /// Resolved canonical repo for the requested preset/HF id, if `--model`
+    /// was passed.
+    pub model: Option<String>,
+}
+
+/// `cqs slot promote --json` payload. `warning` carries the daemon-restart
+/// reminder so JSON consumers see the same caveat as the text path.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SlotPromoteOutput {
+    pub promoted: String,
+    pub warning: String,
+}
+
+/// `cqs slot remove --json` payload. `new_active` is `Some` only when the
+/// removed slot was active and a sibling was auto-promoted under `--force`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SlotRemoveOutput {
+    pub removed: String,
+    pub new_active: Option<String>,
+}
+
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum SlotCommand {
     /// List all slots, marking the active one
@@ -130,27 +172,34 @@ pub(crate) fn cmd_slot(cli: &Cli, subcmd: &SlotCommand) -> Result<()> {
     }
 }
 
-fn slot_list(project_cqs_dir: &Path, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("slot_list").entered();
+/// Surface-agnostic core for `cqs slot list`. Reads each slot's index for
+/// chunk count + model metadata (best-effort — listing succeeds even if one
+/// slot's DB is unreadable). No daemon path: slot management is CLI-only.
+pub(crate) fn slot_list_core(project_cqs_dir: &Path) -> Result<SlotListOutput> {
+    let _span = tracing::info_span!("slot_list_core").entered();
     let names = list_slots(project_cqs_dir)?;
     let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
-    let entries: Vec<SlotListEntry> = names
+    let slots: Vec<SlotListEntry> = names
         .into_iter()
         .map(|name| collect_slot_entry(project_cqs_dir, &name, &active))
         .collect();
+    Ok(SlotListOutput { active, slots })
+}
+
+fn slot_list(project_cqs_dir: &Path, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("slot_list").entered();
+    let out = slot_list_core(project_cqs_dir)?;
+    let active = &out.active;
+    let entries = &out.slots;
 
     if json {
-        let obj = serde_json::json!({
-            "active": active,
-            "slots": entries,
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        crate::cli::json_envelope::emit_json(&out)?;
     } else if entries.is_empty() {
         println!("No slots found.");
         println!("Use `cqs slot create <name> --model <preset-or-hf>` to add one,");
         println!("or run `cqs index` to populate the default slot.");
     } else {
-        for e in &entries {
+        for e in entries {
             let mark = if e.active {
                 "*".green().bold()
             } else {
@@ -280,12 +329,12 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
     };
 
     if json {
-        let obj = serde_json::json!({
-            "name": name,
-            "path": dir.display().to_string(),
-            "model": resolved_model,
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        let out = SlotCreateOutput {
+            name: name.to_string(),
+            path: dir.display().to_string(),
+            model: resolved_model.clone(),
+        };
+        crate::cli::json_envelope::emit_json(&out)?;
     } else {
         println!("Created slot '{}' at {}", name, dir.display());
         if let Some(ref m) = resolved_model {
@@ -331,11 +380,11 @@ fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
         name
     );
     if json {
-        let obj = serde_json::json!({
-            "promoted": name,
-            "warning": warning,
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        let out = SlotPromoteOutput {
+            promoted: name.to_string(),
+            warning: warning.clone(),
+        };
+        crate::cli::json_envelope::emit_json(&out)?;
     } else {
         println!("Promoted slot '{name}' to active.");
         println!("{warning}");
@@ -407,11 +456,15 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
     fs::remove_dir_all(&dir)?;
 
     if json {
-        let obj = serde_json::json!({
-            "removed": name,
-            "new_active": if name == active { Some(all[0].clone()) } else { None::<String> },
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        let out = SlotRemoveOutput {
+            removed: name.to_string(),
+            new_active: if name == active {
+                Some(all[0].clone())
+            } else {
+                None
+            },
+        };
+        crate::cli::json_envelope::emit_json(&out)?;
     } else {
         println!("Removed slot '{}'.", name);
         if name == active {
@@ -471,19 +524,26 @@ fn guard_against_active_daemon(project_cqs_dir: &Path, name: &str, force: bool) 
     Ok(())
 }
 
-fn slot_active(project_cqs_dir: &Path, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("slot_active").entered();
+/// Surface-agnostic core for `cqs slot active`. Resolves the active slot name
+/// and its provenance.
+pub(crate) fn slot_active_core(project_cqs_dir: &Path) -> Result<SlotActiveOutput> {
+    let _span = tracing::info_span!("slot_active_core").entered();
     let resolved =
         cqs::slot::resolve_slot_name(None, project_cqs_dir).map_err(anyhow::Error::from)?;
+    Ok(SlotActiveOutput {
+        active: resolved.name,
+        source: resolved.source.as_str().to_string(),
+        active_slot_file: active_slot_path(project_cqs_dir).display().to_string(),
+    })
+}
+
+fn slot_active(project_cqs_dir: &Path, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("slot_active").entered();
+    let out = slot_active_core(project_cqs_dir)?;
     if json {
-        let obj = serde_json::json!({
-            "active": resolved.name,
-            "source": resolved.source.as_str(),
-            "active_slot_file": active_slot_path(project_cqs_dir).display().to_string(),
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        crate::cli::json_envelope::emit_json(&out)?;
     } else {
-        println!("{}", resolved.name);
+        println!("{}", out.active);
     }
     Ok(())
 }
@@ -838,6 +898,43 @@ mod tests {
         fs::create_dir_all(&cqs).unwrap();
         let r = slot_list(&cqs, true);
         assert!(r.is_ok());
+    }
+
+    /// `slot_list_core` returns the typed `{active, slots}` envelope — the
+    /// JSON schema for `cqs slot list`. Each entry carries the documented
+    /// fields even for an un-indexed slot.
+    #[test]
+    fn slot_list_core_returns_typed_envelope() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = with_slots(&["alpha", "beta"]);
+        let cqs = tmp.path().join(".cqs");
+        write_active_slot(&cqs, "alpha").unwrap();
+
+        let out = slot_list_core(&cqs).unwrap();
+        assert_eq!(out.active, "alpha");
+        assert_eq!(out.slots.len(), 2);
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["active"], "alpha");
+        let entry = &json["slots"][0];
+        for key in ["name", "active", "indexed", "path"] {
+            assert!(entry.get(key).is_some(), "slot entry missing `{key}`");
+        }
+    }
+
+    /// `slot_active_core` resolves the active slot plus provenance + pointer
+    /// path — the `cqs slot active --json` schema.
+    #[test]
+    fn slot_active_core_returns_typed_envelope() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = with_slots(&["only"]);
+        let cqs = tmp.path().join(".cqs");
+        write_active_slot(&cqs, "only").unwrap();
+
+        let out = slot_active_core(&cqs).unwrap();
+        let json = serde_json::to_value(&out).unwrap();
+        for key in ["active", "source", "active_slot_file"] {
+            assert!(json.get(key).is_some(), "slot active missing `{key}`");
+        }
     }
 
     /// `slots_root` is unused in this module but the import is part of the

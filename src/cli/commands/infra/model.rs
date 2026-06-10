@@ -166,6 +166,48 @@ struct ModelListEntry {
     current: bool,
 }
 
+/// `cqs model list --json` envelope: `{models: [...], current: <name>}` so the
+/// list shape matches ref/project/slot. The per-row `current` bool is also
+/// present; the top-level `current` is canonical.
+#[derive(Debug, Serialize)]
+struct ModelListOutput {
+    models: Vec<ModelListEntry>,
+    current: Option<String>,
+}
+
+/// Surface-agnostic core for `cqs model list`. Enumerates the built-in
+/// presets, marking the index's recorded model. Best-effort current-model
+/// lookup: a missing index is a soft `None` so `list` works on a fresh project.
+/// No daemon path — model commands are CLI-only (they mutate `.cqs/` or read
+/// process-local config).
+fn model_list_core() -> ModelListOutput {
+    let _span = tracing::info_span!("model_list_core").entered();
+    let current = read_current_model_name();
+
+    let models: Vec<ModelListEntry> = ModelConfig::PRESET_NAMES
+        .iter()
+        .filter_map(|name| {
+            let cfg = ModelConfig::from_preset(name)?;
+            let is_current = current
+                .as_deref()
+                .map(|c| c == cfg.name || c == cfg.repo)
+                .unwrap_or(false);
+            Some(ModelListEntry {
+                name: cfg.name,
+                repo: cfg.repo,
+                dim: cfg.dim,
+                current: is_current,
+            })
+        })
+        .collect();
+
+    let current_name = models.iter().find(|e| e.current).map(|e| e.name.clone());
+    ModelListOutput {
+        models,
+        current: current_name,
+    }
+}
+
 /// `cqs model swap --json` payload (success case).
 ///
 /// `chunks_indexed` is `i64` rather than `u64` so we can emit `-1` as a
@@ -300,45 +342,18 @@ fn cmd_model_show(json: bool) -> Result<()> {
 fn cmd_model_list(json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_model_list").entered();
 
-    // Best-effort current-model lookup. A missing index is a soft warning —
-    // `list` should still work on a fresh project so the user can see which
-    // presets are available before running `cqs init`.
-    let current = read_current_model_name();
-
-    let entries: Vec<ModelListEntry> = ModelConfig::PRESET_NAMES
-        .iter()
-        .filter_map(|name| {
-            let cfg = ModelConfig::from_preset(name)?;
-            let is_current = current
-                .as_deref()
-                .map(|c| c == cfg.name || c == cfg.repo)
-                .unwrap_or(false);
-            Some(ModelListEntry {
-                name: cfg.name,
-                repo: cfg.repo,
-                dim: cfg.dim,
-                current: is_current,
-            })
-        })
-        .collect();
+    let out = model_list_core();
 
     if json {
-        // Wrap in `{models: [...], current: <name>}` so list-shape envelopes
-        // match ref/project/slot. The per-row `current` bool is also present
-        // but the top-level field is canonical.
-        let current_name = entries.iter().find(|e| e.current).map(|e| e.name.clone());
-        crate::cli::json_envelope::emit_json(&serde_json::json!({
-            "models": entries,
-            "current": current_name,
-        }))?;
+        crate::cli::json_envelope::emit_json(&out)?;
     } else {
         println!("{:<12} {:<6} {:<3} REPO", "NAME", "DIM", "CUR");
         println!("{}", "-".repeat(60));
-        for e in &entries {
+        for e in &out.models {
             let mark = if e.current { "*" } else { " " };
             println!("{:<12} {:<6} {:<3} {}", e.name, e.dim, mark, e.repo);
         }
-        if current.is_none() {
+        if out.current.is_none() {
             println!();
             println!("(no index found — run `cqs init && cqs index` to record a model)");
         }
@@ -1056,6 +1071,28 @@ fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cqs model list` core enumerates every built-in preset and wraps them
+    /// in the `{models, current}` envelope. Best-effort current-model lookup
+    /// runs against the test project (no index → `current: None`).
+    #[test]
+    fn model_list_core_enumerates_presets() {
+        let out = model_list_core();
+        assert_eq!(
+            out.models.len(),
+            ModelConfig::PRESET_NAMES.len(),
+            "every preset must appear in `cqs model list`"
+        );
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(json.get("models").unwrap().is_array());
+        assert!(json.as_object().unwrap().contains_key("current"));
+        // Each row carries name/repo/dim/current.
+        let first = &json["models"][0];
+        assert!(first.get("name").is_some());
+        assert!(first.get("repo").is_some());
+        assert!(first.get("dim").is_some());
+        assert!(first.get("current").is_some());
+    }
 
     #[test]
     fn human_bytes_formats_units() {

@@ -4,6 +4,29 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+/// One converted document in `cqs convert --json`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ConvertEntry {
+    pub source: String,
+    pub output: String,
+    pub format: String,
+    pub title: String,
+    pub sections: usize,
+}
+
+/// `cqs convert --json` payload. `skipped` is reserved (empty) — the converter
+/// surfaces skips as warnings, not a structured list, so the field is a
+/// forward-compat schema reservation rather than a populated array. convert is
+/// document-conversion orchestration with no daemon path; this typed output is
+/// the schema for its inline JSON.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ConvertOutput {
+    pub converted: Vec<ConvertEntry>,
+    pub skipped: Vec<serde_json::Value>,
+    pub took_ms: u64,
+    pub dry_run: bool,
+}
+
 pub fn cmd_convert(
     path: &str,
     output: Option<&str>,
@@ -65,29 +88,24 @@ pub fn cmd_convert(
     let results = cqs::convert::convert_path(&source, &opts)?;
 
     if json {
-        // Structured summary for JSON-driven agents. We don't have a distinct
-        // `skipped` list out of `convert_path` (the converter
-        // surfaces skips as warnings), so the field stays as an empty array
-        // for forward compatibility — schema reservation, not a lie.
-        let converted: Vec<serde_json::Value> = results
+        // Structured summary for JSON-driven agents. `skipped` stays empty —
+        // see ConvertOutput docs (schema reservation, not a lie).
+        let converted: Vec<ConvertEntry> = results
             .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "source": r.source.display().to_string(),
-                    "output": r.output.display().to_string(),
-                    "format": r.format.to_string(),
-                    "title": r.title,
-                    "sections": r.sections,
-                })
+            .map(|r| ConvertEntry {
+                source: r.source.display().to_string(),
+                output: r.output.display().to_string(),
+                format: r.format.to_string(),
+                title: r.title.clone(),
+                sections: r.sections,
             })
             .collect();
-        let obj = serde_json::json!({
-            "converted": converted,
-            "skipped": Vec::<serde_json::Value>::new(),
-            "took_ms": start.elapsed().as_millis() as u64,
-            "dry_run": dry_run,
-        });
-        crate::cli::json_envelope::emit_json(&obj)?;
+        crate::cli::json_envelope::emit_json(&ConvertOutput {
+            converted,
+            skipped: Vec::new(),
+            took_ms: start.elapsed().as_millis() as u64,
+            dry_run,
+        })?;
         return Ok(());
     }
 
