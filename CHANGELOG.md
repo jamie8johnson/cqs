@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cqs status --watch` — daemon operational stats over the socket (#1715, PR #1720).** Queue depth, dropped events, in-flight clients, reconcile state, last-reindex latency, sticky last error, per-slot status vec. Composes with `--watch-fresh`/`--wait`.
+- **Slot-parallel reindex — delta propagation to sibling slots (#1717, PR #1727).** The active slot's reindex enqueues its file-delta per sibling; same-model siblings drain as pure cache hits (active-first ordering populates the global embedding cache), foreign-model slots batch with hysteresis behind `CQS_WATCH_ALL_SLOTS` opt-in; durability via slot-aware reconcile; per-slot freshness via `cqs status --watch-fresh --slot X`. Knobs: `CQS_WATCH_SIBLING_SLOTS`, `CQS_WATCH_FOREIGN_BATCH_FILES`, `CQS_WATCH_FOREIGN_BATCH_SECS`.
+- **Adaptive watch debounce — idle-flush with max-latency cap (#1716, PR #1724).** Pending events flush after a quiet gap (`CQS_WATCH_DEBOUNCE_MS`) bounded by `CQS_WATCH_MAX_DEBOUNCE_MS` (default 6× gap); a bulk checkout gets one cycle fired after the burst ends. Also fixed a latent starvation bug: the old flush decision only ran on recv-timeout, so event streams faster than 100ms never flushed.
+- **`DistanceMetric` threaded through HNSW + CAGRA (#1351, PR #1722).** `{Cosine (default), DotProduct}` selected at index time (`CQS_DISTANCE_METRIC`), persisted in a new `.hnsw.meta` header + CAGRA sidecar field; mismatch at load is a typed error; legacy indexes load as Cosine. Empirical note pinned by test: cuVS CAGRA InnerProduct returns the raw inner product best-first.
+
+### Fixed
+
+- **Daemon caches were blind to WAL writes (DS-V1.40-1, #1714, PR #1718).** `BatchContext` staleness now checks `PRAGMA data_version` on a dedicated probe connection alongside file identity — incremental watch-loop writes (which land in `index.db-wal` and never change main-file identity until checkpoint) now invalidate the long-lived session caches.
+- **Watch path no longer masks store errors as cache misses (review follow-up to #1692, PR #1707).** `resolve_reuse` returns `Result`; the watch path propagates (fail-and-retry, visible) while the bulk pipeline degrades with a warn. `canon_key_ref` is the single canonical-key function for the read path and all three cache write-back sites; `model_fingerprint` is computed only when a global cache exists.
+- **Kind-fallback hardening (audit items 2/3/7, PR #1725).** `detect_fallback` is infallible — a store error during the optional kind-detect step degrades to the normal command path instead of failing the request (both surfaces); `lookup_by_name` gains `LIMIT 100` + a routing-priority `ORDER BY` generated from the classifier; daemon/CLI fallback shapes now have test coverage for every kind.
+- **HNSW test-containment gaps closed (review follow-up to #1693, PR #1710).** The three recall assertions missed by the original hardening (incl. the integration binary) now retry; all `HNSW_ENV_LOCK` sites are poison-safe; env-override tests use an RAII guard.
+- **`--no-auth --bind 0.0.0.0 --open` launches a usable URL (#1723, PR #1726).** Wildcard binds map to loopback for the launched/banner URL only. The companion 256 KiB daemon-thread stack pin from the same salvage was reverted hours later (PR #1728) after it overflowed on the post-command-core dispatch path — the spawn-site comment records the failed experiment.
+- **Eval fixture gold origins re-pinned (PR #1712).** 12 golds orphaned by file splits (10) and stale worktree paths (2) were re-pointed; recall gate vs the 2026-05-08 baseline: agg R@1 +1.4 / R@5 ±0.0 / R@20 +2.3 — no retrieval regression from the day's changes.
+
 ### Internal
+
+- **MSRV 1.95 → 1.96 + lint debt to zero (#1680, PR #1731).** `assert_matches!` sweep (55 sites), clippy `--all-targets` 85 → 0 with zero `#[allow]`s, and the CI clippy job now runs `--all-targets`. Resurrected a silently-dead router test orphaned by a duplicated `#[test]` attribute.
+- **`ScoreSignal` trait (#1350, PR #1719).** The scoring pipeline's stanza sequence is a fold over a signal slice — one place to add a signal; bit-identical scores pinned by an exact-equality test written against the pre-refactor code.
+- **Review-driven cleanups (PRs #1708, #1709, #1711).** Remaining CQS_ULTRASECURITY doc claims annotated as removed; the 33-file copy-pasted `fn cqs()` test helper consolidated into `tests/common::cqs_v1` (−339 lines); `connect_cache_pool` extraction; `src/posture.rs` → `src/output_format.rs`; dead `pad_2d_i64` deleted with coverage ported; `BatchContext::new` replaces raw struct literals.
+- **Agent/skill conventions (PRs #1721, #1729, #1730).** Implementer agents: no issue/PR/audit IDs in code comments (CI provenance lint enforces); audit + team agent dispatches default to `fable`; docs freshness sweep (ROADMAP shipped-item flips, Cargo.toml/repo-description eval numbers from the re-pinned fixture).
+
+### Internal (pre-campaign)
 
 - **Split three big-with-logic monoliths into directories (#1691).** Pure code
   motion along existing seams — no behavior change. `src/cache.rs` (2,919 lines)
