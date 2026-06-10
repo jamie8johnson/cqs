@@ -270,8 +270,14 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         let summaries: Vec<cqs::store::ChunkSummary> =
             test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
 
-        let mut matches =
-            crate::cli::commands::build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+        let mut matches = crate::cli::commands::build_test_map(
+            name,
+            &graph,
+            &summaries,
+            &ctx.root,
+            max_depth,
+            crate::cli::commands::test_map_max_nodes(),
+        );
         matches.truncate(limit);
         let output = crate::cli::commands::build_test_map_output(name, &matches);
         return Ok(serde_json::to_value(&output)?);
@@ -286,6 +292,8 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         name: name.to_string(),
         max_depth,
         limit: args.limit_arg.limit,
+        // Resolve the env ceiling once at this (daemon) adapter boundary.
+        max_nodes: crate::cli::commands::test_map_max_nodes(),
     };
     let output = test_map_core(&ctx.store(), &graph, &test_chunks, &ctx.root, &core_args)?;
     Ok(serde_json::to_value(&output)?)
@@ -340,6 +348,8 @@ pub(in crate::cli::batch) fn dispatch_trace(
         source: source.to_string(),
         target: target.to_string(),
         max_depth,
+        // Resolve the env ceiling once at this (daemon) adapter boundary.
+        max_nodes: crate::cli::commands::trace_max_nodes(),
     };
     let output = trace_core(&ctx.store(), &graph, &ctx.root, &core_args)?;
     Ok(serde_json::to_value(&output)?)
@@ -748,6 +758,7 @@ mod tests {
                         name: name.into(),
                         max_depth: 5,
                         limit: 5,
+                        max_nodes: crate::cli::commands::test_map_max_nodes(),
                     },
                 )
                 .expect("test_map_core"),
@@ -782,6 +793,7 @@ mod tests {
                         source: source.into(),
                         target: target.into(),
                         max_depth: 10,
+                        max_nodes: crate::cli::commands::trace_max_nodes(),
                     },
                 )
                 .expect("trace_core"),

@@ -5,9 +5,115 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use serde::Serialize;
 
 use cqs::reference::TaggedResult;
 use cqs::store::{ParentContext, UnifiedResult};
+
+/// One search result in the CLI search JSON, the typed schema source for the
+/// per-result shape emitted by `cqs <query> --json` (and `--name-only`,
+/// `--ref`, `--include-refs`).
+///
+/// The base chunk fields and the posture-gated / skip-when-default behavior
+/// (`has_parent`, `trust_level`, `injection_flags`, `reference_name`,
+/// `type: "code"`) are owned by `UnifiedResult::to_json_with_origin` in the
+/// store layer — the single serializer for a chunk's trust-aware wire shape.
+/// This struct layers the search-display-only fields on top:
+///   - `parent_*`: parent context emitted under `--expand-parent`.
+///   - `source`: originating reference name under `--include-refs` / `--ref`
+///     (distinct from the typed `reference_name` that `to_json_with_origin`
+///     already carries — kept for backward-compatible consumers).
+///
+/// `to_value` reconstructs the exact historical object: chunk base via the
+/// store serializer, then the optional fields layered in the same order the
+/// previous inline `serde_json::json!` builder used. Keeping the chunk base in
+/// the store serializer guarantees the posture-gated fields stay byte-identical
+/// to every other surface that renders a chunk.
+pub struct SearchResultOutput<'a> {
+    /// The matched result. Provides the canonical chunk base fields.
+    result: &'a UnifiedResult,
+    /// Reference origin for trust tagging (`to_json_with_origin`). `None` for
+    /// project results; `Some(name)` for `--ref` / `--include-refs` results.
+    ref_name: Option<&'a str>,
+    /// Parent context (small-to-big retrieval) when `--expand-parent` is set
+    /// and the chunk has a resolved parent.
+    parent: Option<&'a ParentContext>,
+    /// Originating reference name surfaced as the legacy `source` field
+    /// (multi-index / `--ref` paths only).
+    source: Option<&'a str>,
+}
+
+impl<'a> SearchResultOutput<'a> {
+    /// Build the per-result JSON value, preserving the exact field set and
+    /// ordering of the previous inline builders.
+    fn to_value(&self) -> serde_json::Value {
+        // Chunk base + posture-gated trust fields + `type: "code"` come from
+        // the canonical store serializer so this surface can never drift from
+        // the rest of the CLI on the injection/trust schema.
+        let mut obj = self.result.to_json_with_origin(self.ref_name);
+        if let Some(parent) = self.parent {
+            obj["parent_name"] = serde_json::json!(parent.name);
+            obj["parent_content"] = serde_json::json!(parent.content);
+            obj["parent_line_start"] = serde_json::json!(parent.line_start);
+            obj["parent_line_end"] = serde_json::json!(parent.line_end);
+        }
+        if let Some(source) = self.source {
+            obj["source"] = serde_json::json!(source);
+        }
+        obj
+    }
+}
+
+/// The envelope for CLI search JSON: `{results, query, total}` plus the
+/// optional token-budget pair and the optional multi-index `source` label.
+///
+/// This is the single schema source for the search-result envelope. Field
+/// names and optionality match the historical inline `serde_json::json!`
+/// builders exactly: `token_count` / `token_budget` are present only under
+/// `--tokens`, and `source` only on a `--ref`-scoped top-level response.
+#[derive(Serialize)]
+pub struct SearchOutput {
+    /// Per-result objects (see [`SearchResultOutput`]).
+    pub results: Vec<serde_json::Value>,
+    /// The original query string.
+    pub query: String,
+    /// Number of results returned.
+    pub total: usize,
+    /// Tokens consumed by the packed results (only under `--tokens`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
+    /// Token budget requested (only under `--tokens`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+    /// Reference name for a `--ref`-scoped top-level response. `None` for
+    /// project and `--include-refs` responses (those tag per-result instead).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl SearchOutput {
+    /// Assemble an envelope from already-built per-result values.
+    fn new(
+        results: Vec<serde_json::Value>,
+        query: &str,
+        token_info: Option<(usize, usize)>,
+        source: Option<String>,
+    ) -> Self {
+        let total = results.len();
+        let (token_count, token_budget) = match token_info {
+            Some((used, budget)) => (Some(used), Some(budget)),
+            None => (None, None),
+        };
+        SearchOutput {
+            results,
+            query: query.to_string(),
+            total,
+            token_count,
+            token_budget,
+            source,
+        }
+    }
+}
 
 /// Strip terminal control sequences from chunk-derived strings before
 /// printing them to a TTY.
@@ -367,30 +473,21 @@ pub fn display_unified_results_json(
     let json_results: Vec<_> = results
         .iter()
         .map(|r| {
-            // Delegate to UnifiedResult::to_json() for the canonical base keys,
-            // then layer on parent context fields.
-            let mut obj = r.to_json();
+            // Per-result schema lives in `SearchResultOutput`; it delegates the
+            // chunk base + posture-gated trust fields to the store serializer
+            // and layers parent context on top.
             let UnifiedResult::Code(sr) = r;
-            if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
-                obj["parent_name"] = serde_json::json!(parent.name);
-                obj["parent_content"] = serde_json::json!(parent.content);
-                obj["parent_line_start"] = serde_json::json!(parent.line_start);
-                obj["parent_line_end"] = serde_json::json!(parent.line_end);
+            SearchResultOutput {
+                result: r,
+                ref_name: None,
+                parent: parents.and_then(|p| p.get(&sr.chunk.id)),
+                source: None,
             }
-            obj
+            .to_value()
         })
         .collect();
 
-    let mut output = serde_json::json!({
-        "results": json_results,
-        "query": query,
-        "total": results.len(),
-    });
-    if let Some((used, budget)) = token_info {
-        output["token_count"] = serde_json::json!(used);
-        output["token_budget"] = serde_json::json!(budget);
-    }
-
+    let output = SearchOutput::new(json_results, query, token_info, None);
     super::json_envelope::emit_json(&output)?;
     Ok(())
 }
@@ -557,36 +654,22 @@ pub fn display_tagged_results_json(
     let json_results: Vec<_> = results
         .iter()
         .map(|t| {
-            // Delegate to UnifiedResult::to_json_with_origin() for the
-            // canonical base keys + the trust_level/reference_name pair,
-            // then layer on parent context and the `source` field. Consumers
-            // can read `source`, or prefer the typed `trust_level` +
-            // `reference_name`.
-            let mut json = t.result.to_json_with_origin(t.source.as_deref());
+            // Same per-result schema as the project path, with the reference
+            // origin threaded for trust tagging AND surfaced as the legacy
+            // `source` field. Consumers can read `source`, or prefer the typed
+            // `trust_level` + `reference_name` the store serializer emits.
             let UnifiedResult::Code(sr) = &t.result;
-            if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
-                json["parent_name"] = serde_json::json!(parent.name);
-                json["parent_content"] = serde_json::json!(parent.content);
-                json["parent_line_start"] = serde_json::json!(parent.line_start);
-                json["parent_line_end"] = serde_json::json!(parent.line_end);
+            SearchResultOutput {
+                result: &t.result,
+                ref_name: t.source.as_deref(),
+                parent: parents.and_then(|p| p.get(&sr.chunk.id)),
+                source: t.source.as_deref(),
             }
-            if let Some(source) = &t.source {
-                json["source"] = serde_json::json!(source);
-            }
-            json
+            .to_value()
         })
         .collect();
 
-    let mut output = serde_json::json!({
-        "results": json_results,
-        "query": query,
-        "total": results.len(),
-    });
-    if let Some((used, budget)) = token_info {
-        output["token_count"] = serde_json::json!(used);
-        output["token_budget"] = serde_json::json!(budget);
-    }
-
+    let output = SearchOutput::new(json_results, query, token_info, None);
     super::json_envelope::emit_json(&output)?;
     Ok(())
 }

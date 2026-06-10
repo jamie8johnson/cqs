@@ -25,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parity tests asserting the daemon adapter and the core produce identical
   values.
 
+- **Command-core unification for search (Phase 2a, internal).** The CLI search
+  path now routes the plain (non-`--ref`, non-`--include-refs`) project search
+  and the non-ref name-only search through a single surface-agnostic
+  `query_core(ctx, &QueryArgs) -> QueryOutput`. The core owns routing,
+  classification, embedding, the search invocation, and result assembly;
+  `cmd_query` is a thin adapter that renders text/JSON and owns the
+  `NoResults` exit code. `QueryArgs` derives `Deserialize` with doc-commented
+  fields (the param surface a future MCP `search` tool wraps). The CLI search
+  JSON is now built from typed `SearchResultOutput` / `SearchOutput` structs in
+  the display module (the single schema source), replacing the inline
+  `serde_json::json!` builders; per-result trust/injection fields still come
+  from the canonical store serializer, so the wire shape is byte-stable. The
+  `--ref`, `--include-refs`, and ref-name-only sub-paths remain in the adapter
+  (marked `TODO(phase-2b)`). Request-scoped config: the graph BFS node-cap env
+  vars (`CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`) and search's
+  `CQS_FORCE_BASE_INDEX` are now read once at each adapter boundary and threaded
+  into the cores via args, so the cores read no env. No JSON field was removed
+  or renamed.
+
 ### Fixed
 
 - **Kind-fallback cap parity across all graph commands.** The

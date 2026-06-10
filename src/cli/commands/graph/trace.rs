@@ -35,6 +35,12 @@ pub(crate) struct TraceArgs {
     pub target: String,
     /// Max search depth — "give up after N hops."
     pub max_depth: usize,
+    /// BFS visited-node ceiling (OOM guard on dense graphs). Resolved once at
+    /// the adapter boundary from `CQS_TRACE_MAX_NODES` (default 10,000) via
+    /// [`trace_max_nodes`]; the core never reads the env itself. `#[serde(default)]`
+    /// so an MCP/wire caller that omits it falls back to the default ceiling.
+    #[serde(default = "trace_max_nodes")]
+    pub max_nodes: usize,
 }
 
 // ─── Output types ──────────────────────────────────────────────────────────
@@ -199,7 +205,13 @@ pub(crate) fn trace_core(
         return Ok(TraceCoreOutput::Trace(output));
     }
 
-    let path = bfs_shortest_path(&graph.forward, &source_name, &target_name, args.max_depth);
+    let path = bfs_shortest_path(
+        &graph.forward,
+        &source_name,
+        &target_name,
+        args.max_depth,
+        args.max_nodes,
+    );
     let output = build_trace_output(store, &source_name, &target_name, path.as_deref(), root)?;
     Ok(TraceCoreOutput::Trace(output))
 }
@@ -322,6 +334,9 @@ pub(crate) fn cmd_trace(
         source: source.to_string(),
         target: target.to_string(),
         max_depth,
+        // Resolve the env ceiling once here, at the adapter boundary, so the
+        // core receives a value instead of reading the process env.
+        max_nodes: trace_max_nodes(),
     };
     match trace_core(store, &graph, root, &args)? {
         TraceCoreOutput::Fallback(fb) => match format {
@@ -477,7 +492,11 @@ fn mermaid_escape(s: &str) -> String {
 const DEFAULT_TRACE_MAX_NODES: usize = 10_000;
 
 /// Returns the trace BFS node cap, reading `CQS_TRACE_MAX_NODES` once on first call.
-fn trace_max_nodes() -> usize {
+///
+/// Resolved at the adapter boundary (CLI `cmd_trace`, daemon `dispatch_trace`)
+/// and threaded into [`TraceArgs::max_nodes`] so the core stays env-free. Also
+/// serves as the `#[serde(default)]` for `max_nodes` when a wire caller omits it.
+pub(crate) fn trace_max_nodes() -> usize {
     use std::sync::OnceLock;
     static CAP: OnceLock<usize> = OnceLock::new();
     *CAP.get_or_init(|| match std::env::var("CQS_TRACE_MAX_NODES") {
@@ -518,8 +537,8 @@ pub(crate) fn bfs_shortest_path(
     source: &str,
     target: &str,
     max_depth: usize,
+    max_nodes: usize,
 ) -> Option<Vec<String>> {
-    let max_nodes = trace_max_nodes();
     let mut visited: HashMap<String, Option<String>> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
@@ -615,7 +634,7 @@ mod tests {
         let mut forward = HashMap::new();
         forward.insert("A".to_string(), vec!["B".to_string()]);
         let forward = arc_map(forward);
-        let result = bfs_shortest_path(&forward, "A", "B", 10);
+        let result = bfs_shortest_path(&forward, "A", "B", 10, 10_000);
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path, vec!["A", "B"]);
@@ -626,7 +645,7 @@ mod tests {
         let mut forward = HashMap::new();
         forward.insert("A".to_string(), vec!["B".to_string()]);
         let forward = arc_map(forward);
-        let result = bfs_shortest_path(&forward, "A", "C", 10);
+        let result = bfs_shortest_path(&forward, "A", "C", 10, 10_000);
         assert!(result.is_none(), "No path from A to C");
     }
 
@@ -638,7 +657,7 @@ mod tests {
         forward.insert("C".to_string(), vec!["D".to_string()]);
         let forward = arc_map(forward);
         // Path A->B->C->D exists but depth=2 should not reach D
-        let result = bfs_shortest_path(&forward, "A", "D", 2);
+        let result = bfs_shortest_path(&forward, "A", "D", 2, 10_000);
         assert!(result.is_none(), "Should not find path beyond max_depth=2");
     }
 
@@ -648,7 +667,7 @@ mod tests {
         forward.insert("A".to_string(), vec!["B".to_string()]);
         forward.insert("B".to_string(), vec!["C".to_string()]);
         let forward = arc_map(forward);
-        let result = bfs_shortest_path(&forward, "A", "C", 10);
+        let result = bfs_shortest_path(&forward, "A", "C", 10, 10_000);
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path, vec!["A", "B", "C"]);
@@ -667,7 +686,7 @@ mod tests {
         forward.insert("A".to_string(), vec!["".to_string()]);
         forward.insert("".to_string(), vec!["Z".to_string()]);
         let forward = arc_map(forward);
-        let result = bfs_shortest_path(&forward, "A", "Z", 10);
+        let result = bfs_shortest_path(&forward, "A", "Z", 10, 10_000);
         assert!(
             result.is_some(),
             "BFS through anonymous mid-chain node must find Z"

@@ -23,6 +23,10 @@ use crate::cli::args::SearchArgs;
 /// * Query embedding fails
 /// * The language parameter is invalid
 /// * Store operations fail
+// TODO(phase-2b): route through search::query::query_core via a shared
+// context trait (CommandContext vs BatchView), and reconcile the per-result
+// schema divergence — this path emits ChunkOutput while the CLI emits the
+// typed SearchResultOutput / to_json_with_origin shape.
 pub(in crate::cli::batch) fn dispatch_search(
     ctx: &BatchView,
     args: &SearchArgs,
@@ -861,5 +865,72 @@ mod tests {
             msg.contains("bogusbogus"),
             "Error must surface the offending input, got: {msg}"
         );
+    }
+
+    /// CLI-vs-daemon parity for the name-only search path (Phase 2a).
+    ///
+    /// The CLI core (`query_core`, name-only branch) and the daemon
+    /// (`dispatch_search`, name-only branch) both retrieve via the same
+    /// `store.search_by_name` primitive. This test pins that contract: the
+    /// chunk names + scores the daemon emits match exactly what the shared
+    /// primitive returns (which is what the CLI core wraps into
+    /// `UnifiedResult`). A future edit that gave one surface a different
+    /// name-only retrieval (a sort tweak, a different clamp) would break here.
+    ///
+    /// Name-only is the cheap parity surface: it skips the embedder entirely,
+    /// so the test runs in well under a second without the ONNX stack.
+    #[test]
+    fn parity_name_only_daemon_matches_shared_primitive() {
+        let (_dir, ctx) = ctx_with_chunks(vec![
+            make_chunk(
+                "src/lib.rs:1:ffff0001",
+                "src/lib.rs",
+                Language::Rust,
+                ChunkType::Function,
+                "parse_config",
+                "fn parse_config() -> Config",
+                "fn parse_config() -> Config { Config::default() }",
+            ),
+            make_chunk(
+                "src/lib.rs:7:ffff0002",
+                "src/lib.rs",
+                Language::Rust,
+                ChunkType::Function,
+                "do_parse_config",
+                "fn do_parse_config()",
+                "fn do_parse_config() { parse_config(); }",
+            ),
+        ]);
+        let view = ctx.build_view(None);
+
+        // The shared retrieval primitive both surfaces call for name-only.
+        let limit = 5usize;
+        let primitive = view.store().search_by_name("parse", limit).unwrap();
+
+        // Daemon name-only path.
+        let args = parse_search_args(&["parse", "--name-only"]);
+        let daemon = dispatch_search(&view, &args).expect("dispatch_search");
+        let daemon_results = daemon["results"].as_array().expect("results array");
+
+        // Same count and same ordered (name, score) pairs — the daemon JSON is
+        // a thin projection of the primitive, identical to what the CLI core
+        // wraps into UnifiedResult.
+        assert_eq!(
+            daemon_results.len(),
+            primitive.len(),
+            "daemon and shared primitive must return the same number of name-only hits"
+        );
+        for (i, sr) in primitive.iter().enumerate() {
+            assert_eq!(
+                daemon_results[i]["name"], sr.chunk.name,
+                "name mismatch at rank {i}"
+            );
+            let dscore = daemon_results[i]["score"].as_f64().unwrap() as f32;
+            assert!(
+                (dscore - sr.score).abs() < 1e-6,
+                "score mismatch at rank {i}: daemon={dscore} primitive={}",
+                sr.score
+            );
+        }
     }
 }
