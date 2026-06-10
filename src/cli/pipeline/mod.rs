@@ -7,11 +7,13 @@
 
 mod embedding;
 mod parsing;
+mod reuse;
 mod types;
 mod upsert;
 mod windowing;
 
 // Re-export public items
+pub(crate) use reuse::resolve_reuse;
 pub(crate) use types::embed_batch_size_for;
 pub(crate) use types::PipelineStats;
 pub(crate) use windowing::apply_windowing;
@@ -636,7 +638,13 @@ mod tests {
             .unwrap();
 
         // Pre-seed the chunk + embedding so the store cache hit path fires.
-        let chunk = make_test_chunk("seeded", "fn seeded() {}");
+        // Reuse is keyed by `canonical_hash` (v28), and
+        // `get_embeddings_by_canonical_hashes` filters `canonical_hash IS NOT
+        // NULL` — so the seeded row must carry a non-empty canonical_hash for
+        // the store-cache lookup to find it. Both chunks share the same
+        // canonical_hash; that's the key the shared `resolve_reuse` matches on.
+        let mut chunk = make_test_chunk("seeded", "fn seeded() {}");
+        chunk.canonical_hash = "canon-seeded".to_string();
         let mut emb_vec = vec![0.0_f32; embedder.embedding_dim()];
         emb_vec[0] = 1.0;
         let embedding = Embedding::new(emb_vec);
@@ -644,13 +652,15 @@ mod tests {
             .upsert_chunks_batch(&[(chunk.clone(), embedding)], Some(0))
             .unwrap();
 
-        // Build a ParsedBatch with a chunk that has the SAME content_hash —
-        // that's what the cache lookup keys on. We use a fresh Chunk with
-        // identical content so its hash matches without sharing the same id.
-        let lookup_chunk = make_test_chunk("seeded_again", "fn seeded() {}");
+        // Build a ParsedBatch with a chunk that shares the SAME canonical_hash —
+        // that's what the reuse lookup keys on (a comment-only edit would change
+        // content_hash but keep canonical_hash stable). Distinct id; identical
+        // canonical key.
+        let mut lookup_chunk = make_test_chunk("seeded_again", "fn seeded() {}");
+        lookup_chunk.canonical_hash = "canon-seeded".to_string();
         assert_eq!(
-            lookup_chunk.content_hash, chunk.content_hash,
-            "same content must hash identically"
+            lookup_chunk.canonical_hash, chunk.canonical_hash,
+            "same canonical_hash drives reuse under the v28 key"
         );
         let batch = make_parsed_batch_with_chunk(lookup_chunk);
 
