@@ -1887,3 +1887,16 @@ mentions = [
     "src/cli/watch/socket.rs",
     "src/daemon_translate.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "cqs's own cagra.rs builds indexes via the cuvs Rust crate whose ManagedTensor borrows host ndarray shape storage (upstream rapidsai/cuvs#2232) — if any cqs path drops the host embedding array while a CAGRA index is alive, index Drop reads a dangling shape pointer (SIGABRT). Audit cagra.rs lifetimes when touching that code; resolved upstream when #2232's owned-dims fix lands."
+mentions = ["src/cagra.rs"]
+
+[[note]]
+sentiment = 1.0
+text = "Upstream contribution pipeline that worked: implement in isolated git worktree per feature, code-review agent to maintainer standards before push, respond to bot review findings within the hour with follow-up commits (never force-push), decline nitpicks on-record with convention rationale. Five cuvs PRs shipped in one evening this way."
+mentions = [
+    "cuvs",
+    "worktree",
+]
