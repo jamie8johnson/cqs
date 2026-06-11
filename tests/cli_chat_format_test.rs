@@ -144,6 +144,62 @@ fn test_chat_emits_parseable_envelope_for_search_query() {
             "envelope `error` field present but non-null on success path: {err}"
         );
     }
+
+    // Content: the search for `add_numbers` (the only function in the seed
+    // corpus) must surface it by name. A shape-only assertion would pass even
+    // if the REPL emitted an empty or wrong-target result. The search payload
+    // is the bare `{query, results, total}` object; result names live under
+    // `results[*].name`.
+    let names: Vec<&str> = parsed["results"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|r| r["name"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        names.contains(&"add_numbers"),
+        "chat search results must contain the seeded add_numbers, got: {names:?} (raw: {parsed})"
+    );
+}
+
+/// Spawn `cqs --json "add numbers"` (no env pins) in the seeded fixture.
+/// The flagship search surface must emit the bare V2Bare search payload —
+/// the `{query, results, total}` object at the top level, with no `data` /
+/// `version` envelope keys — whose `results` name the seeded `add_numbers`.
+#[test]
+#[serial]
+fn test_flagship_json_search_emits_bare_payload_with_seeded_name() {
+    let dir = setup_chat_project();
+
+    let output = cqs()
+        .args(["--json", "add numbers"])
+        .current_dir(dir.path())
+        .output()
+        .expect("Failed to run cqs --json search");
+
+    assert!(
+        output.status.success(),
+        "flagship search should exit 0. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"));
+
+    // Bare payload: search object at the top level, no envelope keys.
+    assert!(
+        parsed.get("data").is_none() && parsed.get("version").is_none(),
+        "bare default drops the data/version envelope, got: {parsed}"
+    );
+    let results = parsed["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("bare search payload must expose results[], got: {parsed}"));
+
+    let names: Vec<&str> = results.iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(
+        names.contains(&"add_numbers"),
+        "flagship search must surface the seeded add_numbers, got: {names:?}"
+    );
 }
 
 /// Empty input lines and meta-commands (`help`, `clear`) should NOT produce

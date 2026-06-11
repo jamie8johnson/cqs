@@ -279,6 +279,114 @@ fn test_search_unified_without_index() {
     );
 }
 
+// ===== search_hybrid: the production search path =====
+//
+// `search_hybrid` is what the daemon/CLI search surface calls. With SPLADE
+// disabled (the default `SearchFilter`), it delegates to the index-guided
+// path when a vector index is supplied, or brute-force when it is not. These
+// tests pin that delegation, result-name fidelity, limit truncation, and that
+// the index-guided and brute-force legs agree on the same seeded corpus.
+
+#[test]
+fn test_search_hybrid_uses_index_and_returns_indexed_chunk() {
+    let store = TestStore::new();
+    let c1 = test_chunk("hybrid_target", "fn hybrid_target() { target }");
+    let c2 = test_chunk("hybrid_other", "fn hybrid_other() { other }");
+
+    let ids = insert_chunks(&store, &[c1, c2], 1.0);
+    let query = mock_embedding(1.0);
+    let filter = SearchFilter::default();
+
+    // Index returns only the first chunk. SPLADE disabled (default filter) +
+    // splade=None → search_hybrid routes to search_filtered_with_index.
+    let mock = MockIndex::new(vec![IndexResult {
+        id: ids[0].clone(),
+        score: 0.9,
+    }]);
+
+    let results = store
+        .search_hybrid(&query, &filter, 10, 0.0, Some(&mock), None)
+        .unwrap();
+
+    assert_eq!(results.len(), 1, "only the indexed chunk should return");
+    assert_eq!(results[0].chunk.name, "hybrid_target");
+}
+
+#[test]
+fn test_search_hybrid_truncates_to_limit() {
+    let store = TestStore::new();
+    let chunks: Vec<cqs::Chunk> = (0..5)
+        .map(|i| test_chunk(&format!("fn_{i}"), &format!("fn fn_{i}() {{ body{i} }}")))
+        .collect();
+    let ids = insert_chunks(&store, &chunks, 1.0);
+    let query = mock_embedding(1.0);
+    let filter = SearchFilter::default();
+
+    // Index offers all five; request only two.
+    let index_results: Vec<IndexResult> = ids
+        .iter()
+        .map(|id| IndexResult {
+            id: id.clone(),
+            score: 0.9,
+        })
+        .collect();
+    let mock = MockIndex::new(index_results);
+
+    let results = store
+        .search_hybrid(&query, &filter, 2, 0.0, Some(&mock), None)
+        .unwrap();
+
+    assert_eq!(results.len(), 2, "results must be truncated to limit=2");
+}
+
+#[test]
+fn test_search_hybrid_index_guided_agrees_with_brute_force() {
+    let store = TestStore::new();
+    let c1 = test_chunk("agree_a", "fn agree_a() { a }");
+    let c2 = test_chunk("agree_b", "fn agree_b() { b }");
+    let c3 = test_chunk("agree_c", "fn agree_c() { c }");
+
+    let ids = insert_chunks(&store, &[c1, c2, c3], 1.0);
+    let query = mock_embedding(1.0);
+    let filter = SearchFilter::default();
+
+    // Index exposes every chunk, so the index-guided candidate set equals the
+    // full corpus that brute-force scans. Identical embeddings make the score
+    // ties deterministic via the id tie-break, so the two paths must agree on
+    // the returned set.
+    let index_results: Vec<IndexResult> = ids
+        .iter()
+        .map(|id| IndexResult {
+            id: id.clone(),
+            score: 1.0,
+        })
+        .collect();
+    let mock = MockIndex::new(index_results);
+
+    let guided = store
+        .search_hybrid(&query, &filter, 10, 0.0, Some(&mock), None)
+        .unwrap();
+    let brute = store
+        .search_hybrid(&query, &filter, 10, 0.0, None, None)
+        .unwrap();
+
+    let mut guided_names: Vec<&str> = guided.iter().map(|r| r.chunk.name.as_str()).collect();
+    let mut brute_names: Vec<&str> = brute.iter().map(|r| r.chunk.name.as_str()).collect();
+    guided_names.sort_unstable();
+    brute_names.sort_unstable();
+
+    assert_eq!(
+        guided_names, brute_names,
+        "index-guided and brute-force should return the same chunk set"
+    );
+    assert!(
+        brute_names.contains(&"agree_a")
+            && brute_names.contains(&"agree_b")
+            && brute_names.contains(&"agree_c"),
+        "all three seeded chunks should be returned, got: {brute_names:?}"
+    );
+}
+
 // ===== #37: search_filtered with glob =====
 
 #[test]

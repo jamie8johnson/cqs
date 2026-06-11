@@ -737,6 +737,110 @@ mod tests {
         );
     }
 
+    // ===== compute_hints_batch tests =====
+
+    /// Build a test ChunkSummary for a function with the given name and file.
+    fn test_summary(name: &str, file: &str) -> crate::store::ChunkSummary {
+        crate::store::ChunkSummary {
+            id: format!("{file}:1:{name}"),
+            file: PathBuf::from(file),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::language::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            parent_id: None,
+            parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
+            parser_version: 0,
+            vendored: false,
+        }
+    }
+
+    #[test]
+    fn test_compute_hints_batch_uses_prefetched_caller_count() {
+        // Prefetched caller_counts override the graph-derived count, matching
+        // what the calling command already displayed.
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let mut caller_counts = HashMap::new();
+        caller_counts.insert("target".to_string(), 7u64);
+
+        let hints = compute_hints_batch(&graph, &test_chunks, &["target"], &caller_counts);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(
+            hints[0].caller_count, 7,
+            "prefetched caller count should win over the empty graph"
+        );
+        assert_eq!(hints[0].test_count, 0, "no test chunks means no tests");
+    }
+
+    #[test]
+    fn test_compute_hints_batch_falls_back_to_graph_reverse() {
+        // With no prefetched count for a name, the batch falls back to the
+        // graph's reverse-edge count.
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "target".to_string(),
+            vec!["caller_a".to_string(), "caller_b".to_string()],
+        );
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let caller_counts: std::collections::HashMap<String, u64> = HashMap::new();
+
+        let hints = compute_hints_batch(&graph, &test_chunks, &["target"], &caller_counts);
+        assert_eq!(
+            hints[0].caller_count, 2,
+            "fallback should count the two reverse edges"
+        );
+    }
+
+    #[test]
+    fn test_compute_hints_batch_counts_reachable_tests() {
+        // A test that reaches the target via a forward edge contributes to
+        // test_count; an unrelated function does not.
+        let mut forward = HashMap::new();
+        forward.insert("test_target".to_string(), vec!["target".to_string()]);
+        let mut reverse = HashMap::new();
+        reverse.insert("target".to_string(), vec!["test_target".to_string()]);
+        let graph = CallGraph::from_string_maps(forward, reverse);
+        let test_chunks = vec![test_summary("test_target", "tests/t.rs")];
+
+        let caller_counts: std::collections::HashMap<String, u64> = HashMap::new();
+        let hints = compute_hints_batch(
+            &graph,
+            &test_chunks,
+            &["target", "unrelated"],
+            &caller_counts,
+        );
+        assert_eq!(hints.len(), 2);
+        assert_eq!(
+            hints[0].test_count, 1,
+            "target is reached by test_target -> test_count 1"
+        );
+        assert_eq!(
+            hints[1].test_count, 0,
+            "unrelated function has no reaching tests"
+        );
+        assert_eq!(
+            hints[1].caller_count, 0,
+            "unrelated function has no callers"
+        );
+    }
+
+    #[test]
+    fn test_compute_hints_batch_empty_names() {
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let caller_counts: std::collections::HashMap<String, u64> = HashMap::new();
+        let hints = compute_hints_batch(&graph, &test_chunks, &[], &caller_counts);
+        assert!(hints.is_empty(), "empty name list yields empty hints");
+    }
+
     #[test]
     fn test_find_hotspots() {
         let mut reverse = HashMap::new();

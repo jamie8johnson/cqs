@@ -36,6 +36,15 @@ fn cqs_no_daemon() -> Command {
     c
 }
 
+/// Default-format binary (no `CQS_OUTPUT_FORMAT` pin) → exercises the shipped
+/// V2Bare bare-payload wire shape, unlike `cqs()` which pins v1.
+fn cqs_bare_no_daemon() -> Command {
+    #[allow(deprecated)]
+    let mut c = Command::cargo_bin("cqs").expect("Failed to find cqs binary");
+    c.env("CQS_NO_DAEMON", "1");
+    c
+}
+
 fn make_chunk(id: &str, name: &str, content: &str) -> Chunk {
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
     Chunk {
@@ -169,5 +178,47 @@ fn explain_cli_emits_envelope_with_callers_and_callees() {
     assert!(
         callee_names.contains(&"func_b"),
         "func_b must appear in data.callees[*].name when explaining func_a: {parsed:?}"
+    );
+}
+
+/// V2Bare default-format pin: `cqs explain --json` (no `CQS_OUTPUT_FORMAT`)
+/// emits the bare function-card payload — no `data` / `version` envelope keys,
+/// with the card fields (`name`, `callers`) at the top level.
+#[test]
+fn explain_cli_default_format_emits_bare_function_card() {
+    let dir = seed_explain_store();
+
+    let result = cqs_bare_no_daemon()
+        .args(["explain", "func_b", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run cqs explain");
+
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(
+        result.status.success(),
+        "explain must succeed. stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let parsed: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|_| panic!("must be JSON: {stdout}"));
+
+    // Bare shape: no envelope keys, card fields at the top level.
+    assert!(
+        parsed.get("data").is_none(),
+        "bare default drops the data wrapper: {parsed}"
+    );
+    assert!(
+        parsed.get("version").is_none(),
+        "bare default drops the version key: {parsed}"
+    );
+    assert_eq!(
+        parsed["name"].as_str(),
+        Some("func_b"),
+        "card name must be func_b at the top level: {parsed}"
+    );
+    assert!(
+        parsed["callers"].is_array(),
+        "card callers must be a top-level array: {parsed}"
     );
 }

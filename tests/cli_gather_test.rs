@@ -198,3 +198,44 @@ fn test_gather_without_tokens_omits_token_fields() {
         data.get("token_budget").unwrap_or(&serde_json::Value::Null)
     );
 }
+
+/// V2Bare default-format pin for `cqs gather`. With NO `CQS_OUTPUT_FORMAT`
+/// pin the gather payload must be emitted bare — a top-level object with the
+/// `query` and `chunks` content keys, no `data` / `version` envelope wrapper.
+#[test]
+#[serial]
+fn test_gather_default_format_emits_bare_payload() {
+    let dir = setup_gather_project();
+
+    #[allow(deprecated)]
+    let output = assert_cmd::Command::cargo_bin("cqs")
+        .expect("cqs binary")
+        .args(["gather", "parse JSON config", "--json", "-n", "3"])
+        .current_dir(dir.path())
+        .output()
+        .expect("cqs gather (bare) failed to spawn");
+
+    assert!(
+        output.status.success(),
+        "gather should succeed. stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("JSON parse: {e}\n{stdout}"));
+
+    // Bare shape: content keys at the top level, no envelope.
+    assert!(
+        parsed.get("data").is_none() && parsed.get("version").is_none(),
+        "bare default drops envelope keys, got: {parsed}"
+    );
+    assert_eq!(
+        parsed["query"], "parse JSON config",
+        "bare gather must echo query at the top level: {parsed}"
+    );
+    assert!(
+        parsed["chunks"].is_array(),
+        "bare gather must expose chunks at the top level: {parsed}"
+    );
+}

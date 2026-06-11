@@ -4,7 +4,7 @@ Audit date: 2026-06-10
 Main HEAD: 7284e31e
 Source: `docs/audit-findings.md` (107 findings — batch 1: 59 across 8 categories; batch 2: 48 across the other 8, run after batch-1 triage)
 Calibration: matches `docs/audit-triage-v1.40.0.md` priority matrix.
-Status: **P1 tier COMPLETE (2026-06-11)** — all 28 P1s fixed across 9 cluster PRs (#1738-#1746) plus 4 riders (DS-V1.42-6, EXT-V1.42-1, DOC-V1.42-4, RB-V1.42-4). 123 items remain open (P2/P3/P4/CF tiers; notes-hardening TC-V1.42-1/2 closed in #1748).
+Status: **P1 + P2 tiers COMPLETE (2026-06-11)** — P1: 28 findings + 4 riders across #1738-#1746/#1748; P2: all 30 v1.42 P2s across #1752-#1754, #1756-#1761, #1763 (+ P3 riders RB-V1.42-3, TC-V1.42-9/10, EH-V1.42-4, DS-V1.42-12, API-V1.42-4, TC-HAP-V1.42-7). Also closed en route: GitHub issues #1734 (#1762 text-mode bypass) and #1749 (#1751 nightly doctest split); follow-up filed #1755. **89 items remain open**: P3 (~24), P4 (7), CF-P2 (10), CF-P3 (40) + the GPU-half of TC-V1.42-8. Next: P3/P4 impact tiers 1-2, then re-rank.
 
 Fix-run review notes for the next cycle: combined-short bools (`-qv`) leak on the bare-query daemon path (pre-existing, found in #1746's review); `review`/`ci` are daemon-marked but silently ignore `--stdin` daemon-up (found by the new exhaustiveness test); remaining `clamp(1, 100)` literals on non-search commands fold into CF SHL-V1.40-2.
 
@@ -63,35 +63,35 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | ID | Finding | Location | Status |
 |----|---------|----------|--------|
 | OB-V1.42-3 | Daemon-served searches drop staleness warnings — recommended default path never warns; WSL inotify makes it the path that needs it most | src/cli/batch/handlers/search.rs:67-129 | ✅ PR #1752 |
-| DOC-V1.42-5 | CONTRIBUTING JSON envelope section teaches pre-V2Bare shape as universal; not_found/io_error "reserved" claim false (also json_envelope.rs:155) | CONTRIBUTING.md:63-93 | open |
-| DOC-V1.42-6 | CONTRIBUTING Architecture Overview missing ~14 files; commands/eval lists moved schema.rs | CONTRIBUTING.md:221-432 | open |
-| RB-V1.42-1 | collect_comment_ranges / find_type_identifier_recursive recurse per tree-depth — stack overflow (SIGSEGV) on rayon workers aborts index/watch | src/parser/chunk.rs:126, :756 | open |
-| API-V1.42-3 | callers vs callees output topology asymmetry; module doc's type-discrimination claim false for callees | src/cli/commands/graph/callers.rs:74-90 | open |
-| API-V1.42-8 | Args-layer contract drift in campaign code: borrowed non-Deserialize AuditModeArgs, two no-Args conventions, adapter-only flag in core Args | infra/audit_mode.rs:38 + slot.rs/reference.rs/cache_cmd.rs + index/stale.rs:76-82 | open |
+| DOC-V1.42-5 | CONTRIBUTING JSON envelope section teaches pre-V2Bare shape as universal; not_found/io_error "reserved" claim false (also json_envelope.rs:155) | CONTRIBUTING.md:63-93 | ✅ PR #1756 |
+| DOC-V1.42-6 | CONTRIBUTING Architecture Overview missing ~14 files; commands/eval lists moved schema.rs | CONTRIBUTING.md:221-432 | ✅ PR #1756 |
+| RB-V1.42-1 | collect_comment_ranges / find_type_identifier_recursive recurse per tree-depth — stack overflow (SIGSEGV) on rayon workers aborts index/watch | src/parser/chunk.rs:126, :756 | ✅ PR #1757 |
+| API-V1.42-3 | callers vs callees output topology asymmetry; module doc's type-discrimination claim false for callees | src/cli/commands/graph/callers.rs:74-90 | ✅ PR #1760 |
+| API-V1.42-8 | Args-layer contract drift in campaign code: borrowed non-Deserialize AuditModeArgs, two no-Args conventions, adapter-only flag in core Args | infra/audit_mode.rs:38 + slot.rs/reference.rs/cache_cmd.rs + index/stale.rs:76-82 | ✅ PR #1760 |
 | TC-V1.42-1 | notes add --mentions can write notes.toml past 10 MiB cap → bricks all notes ops; note.rs:30-33 doc overpromises write-side enforcement | src/cli/commands/io/notes.rs:306-311, src/note.rs:307-320 | ✅ PR #1748 |
-| TC-V1.42-8 | CAGRA accepts non-finite queries + zero/NaN build vectors HNSW guards — backend asymmetry (CPU-side prepare_index_data filter is the easy half; GPU-gated verification is P4-grade) | src/cagra.rs:424, src/hnsw/mod.rs:583-602 | open |
-| CQ-V1.42-1 | Config ef_search silently ignored on every direct-CLI search path — wrapper hardcodes None; knob only works via batch/daemon | src/cli/store.rs:397-402 | open |
-| CQ-V1.42-8 | prune_gitignored never cleans function_calls — orphan call-graph rows (ghost callers) until next prune_all; 3 prune fns already diverged | src/store/chunks/staleness.rs:266, :389, :532 | open |
-| CQ-V1.42-11 | Cross-project branches escaped command-core extraction on both surfaces — duplicated, no parity tests, no deferred-ledger entry | src/cli/batch/handlers/graph.rs vs src/cli/commands/graph/* | open |
-| SEC-V1.42-2 | cqs serve relays content_preview/signature/doc with no trust_level/injection_flags — wire them in OR scope SECURITY.md's universal claim to exempt serve (decision needed) | src/serve/data.rs:92-114, :508-645 | open |
-| PB-V1.42-1 | v23 reconcile fingerprint columns stamped only by watch path — CLI `cqs index` leaves them NULL/stale → spurious reindex churn wave after every branch-switch index under a live daemon | src/cli/pipeline/upsert.rs:174-178, async_helpers.rs:329 | open |
+| TC-V1.42-8 | CAGRA accepts non-finite queries + zero/NaN build vectors HNSW guards — backend asymmetry (CPU-side prepare_index_data filter is the easy half; GPU-gated verification is P4-grade) | src/cagra.rs:424, src/hnsw/mod.rs:583-602 | ✅ PR #1761 |
+| CQ-V1.42-1 | Config ef_search silently ignored on every direct-CLI search path — wrapper hardcodes None; knob only works via batch/daemon | src/cli/store.rs:397-402 | ✅ PR #1758 |
+| CQ-V1.42-8 | prune_gitignored never cleans function_calls — orphan call-graph rows (ghost callers) until next prune_all; 3 prune fns already diverged | src/store/chunks/staleness.rs:266, :389, :532 | ✅ PR #1759 |
+| CQ-V1.42-11 | Cross-project branches escaped command-core extraction on both surfaces — duplicated, no parity tests, no deferred-ledger entry | src/cli/batch/handlers/graph.rs vs src/cli/commands/graph/* | ✅ PR #1760 |
+| SEC-V1.42-2 | cqs serve relays content_preview/signature/doc with no trust_level/injection_flags — wire them in OR scope SECURITY.md's universal claim to exempt serve (decision needed) | src/serve/data.rs:92-114, :508-645 | ✅ PR #1761 |
+| PB-V1.42-1 | v23 reconcile fingerprint columns stamped only by watch path — CLI `cqs index` leaves them NULL/stale → spurious reindex churn wave after every branch-switch index under a live daemon | src/cli/pipeline/upsert.rs:174-178, async_helpers.rs:329 | ✅ PR #1753 |
 | EXT-V1.42-1 | daemon_translate hand-mirrors 5 of ~25 clap flags — `-v`/`--rrf` break daemon-up (verified live); derive strip/remap sets from Cli::command() like telemetry.rs does; structural cause of API-V1.42-1 | src/daemon_translate.rs:47-52 | ✅ PR #1746 |
-| AC-V1.42-3 | find_test_matches keeps the empty-string predecessor sentinel AC-V1.40-3 fixed in bfs_shortest_path, and is the only BFS without a node cap | src/impact/test_map.rs:40-78 | open |
-| AC-V1.42-4 | Python UntilColon signature truncates at first annotation colon — annotated defs lose params + return type (retrieval quality; needs PARSER_VERSION bump) | src/parser/chunk.rs:293 | open |
-| PERF-V1.42-3 | Dense-index path discards HNSW/CAGRA scores then re-fetches embeddings to recompute identical cosine (verify CAGRA score-scale parity first) | src/search/query.rs:785-794, :941-947 | open |
-| PERF-V1.42-4 | Incremental `cqs index` fully parses every file before the staleness filter + per-file N+1 mtime SELECT — O(corpus) instead of O(changed) | src/cli/pipeline/parsing.rs:62-209 | open |
-| PERF-V1.42-6 | store_stage defeats row batching with per-file transactions ×2 passes (~30k tx at ceiling); function-calls write in same fn already fixed this class | src/cli/pipeline/upsert.rs:172-179, :247-261 | open |
-| TC-HAP-V1.42-1 | scout pipeline untested at every layer (lib core, CLI core, compute_hints_batch, binary) — CLAUDE.md-mandated per-session command | src/scout.rs:124-181, src/impact/hints.rs:96 | open |
-| TC-HAP-V1.42-2 | search_hybrid — the production search path — referenced by exactly one test, inside an #[ignore]d eval; #1584's bug lived exactly here | src/search/query.rs:493 | open |
-| TC-HAP-V1.42-3 | Flagship `cqs "<query>"` has zero binary-spawn coverage in any format; only default-format search payload test is shape-only | tests/cli_chat_format_test.rs:129-141 | open |
-| TC-HAP-V1.42-6 | No test drives review_core/ci_core/affected_core through a populated diff — existing tests accept the empty branch (lands with AC-V1.42-1's -U0 test) | tests/cli_review_test.rs:245-275, review/affected.rs:54 | open |
-| TC-HAP-V1.42-10 | Every-session agent command set (impact, test-map, deps, callers/callees happy, trace, context, read, where, related, health, stats) has no happy-path binary spawn | tests/cli_surface_test.rs (pattern exists at :130) | open |
-| TC-HAP-V1.42-11 | v1-envelope pin monoculture — 34 test files route through cqs_v1(); shipped default (V2Bare) tested for only ~5 command payloads | tests/common/mod.rs:53 | open |
-| DS-V1.42-2 | HNSW dirty-flag self-heal trusts self-referential checksum manifest — crash between chunk commit and HNSW save silently serves stale index (generation stamp; shares mechanism with DS-V1.42-5) | src/hnsw/mod.rs:712-719, persist.rs:229 | open |
-| DS-V1.42-4 | HNSW stale-.bak guard: post-success debris locks out all future saves; guard runs outside the exclusive lock (TOCTOU); shutdown detaches rebuild thread mid-save | src/hnsw/persist.rs:366-394, watch/mod.rs:1891-1937 | open |
-| DS-V1.42-5 | Background HNSW rebuild saves sidecars outside index.lock — lost update vs concurrent `cqs index`, dirty flag cleared over the gap (generation stamp closes it) | src/cli/watch/rebuild.rs:260-357 | open |
+| AC-V1.42-3 | find_test_matches keeps the empty-string predecessor sentinel AC-V1.40-3 fixed in bfs_shortest_path, and is the only BFS without a node cap | src/impact/test_map.rs:40-78 | ✅ PR #1757 |
+| AC-V1.42-4 | Python UntilColon signature truncates at first annotation colon — annotated defs lose params + return type (retrieval quality; needs PARSER_VERSION bump) | src/parser/chunk.rs:293 | ✅ PR #1757 |
+| PERF-V1.42-3 | Dense-index path discards HNSW/CAGRA scores then re-fetches embeddings to recompute identical cosine (verify CAGRA score-scale parity first) | src/search/query.rs:785-794, :941-947 | ✅ PR #1758 |
+| PERF-V1.42-4 | Incremental `cqs index` fully parses every file before the staleness filter + per-file N+1 mtime SELECT — O(corpus) instead of O(changed) | src/cli/pipeline/parsing.rs:62-209 | ✅ PR #1753 |
+| PERF-V1.42-6 | store_stage defeats row batching with per-file transactions ×2 passes (~30k tx at ceiling); function-calls write in same fn already fixed this class | src/cli/pipeline/upsert.rs:172-179, :247-261 | ✅ PR #1753 |
+| TC-HAP-V1.42-1 | scout pipeline untested at every layer (lib core, CLI core, compute_hints_batch, binary) — CLAUDE.md-mandated per-session command | src/scout.rs:124-181, src/impact/hints.rs:96 | ✅ PR #1763 |
+| TC-HAP-V1.42-2 | search_hybrid — the production search path — referenced by exactly one test, inside an #[ignore]d eval; #1584's bug lived exactly here | src/search/query.rs:493 | ✅ PR #1763 |
+| TC-HAP-V1.42-3 | Flagship `cqs "<query>"` has zero binary-spawn coverage in any format; only default-format search payload test is shape-only | tests/cli_chat_format_test.rs:129-141 | ✅ PR #1763 |
+| TC-HAP-V1.42-6 | No test drives review_core/ci_core/affected_core through a populated diff — existing tests accept the empty branch (lands with AC-V1.42-1's -U0 test) | tests/cli_review_test.rs:245-275, review/affected.rs:54 | ✅ PR #1763 |
+| TC-HAP-V1.42-10 | Every-session agent command set (impact, test-map, deps, callers/callees happy, trace, context, read, where, related, health, stats) has no happy-path binary spawn | tests/cli_surface_test.rs (pattern exists at :130) | ✅ PR #1763 |
+| TC-HAP-V1.42-11 | v1-envelope pin monoculture — 34 test files route through cqs_v1(); shipped default (V2Bare) tested for only ~5 command payloads | tests/common/mod.rs:53 | ✅ PR #1763 |
+| DS-V1.42-2 | HNSW dirty-flag self-heal trusts self-referential checksum manifest — crash between chunk commit and HNSW save silently serves stale index (generation stamp; shares mechanism with DS-V1.42-5) | src/hnsw/mod.rs:712-719, persist.rs:229 | ✅ PR #1754 |
+| DS-V1.42-4 | HNSW stale-.bak guard: post-success debris locks out all future saves; guard runs outside the exclusive lock (TOCTOU); shutdown detaches rebuild thread mid-save | src/hnsw/persist.rs:366-394, watch/mod.rs:1891-1937 | ✅ PR #1754 |
+| DS-V1.42-5 | Background HNSW rebuild saves sidecars outside index.lock — lost update vs concurrent `cqs index`, dirty flag cleared over the gap (generation stamp closes it) | src/cli/watch/rebuild.rs:260-357 | ✅ PR #1754 |
 | DS-V1.42-6 | ensure_splade_index publishes a stale-snapshot index into the shared cell after invalidation already ran — served indefinitely on a quiet repo | src/cli/batch/view.rs:397-463 | ✅ PR #1739 |
-| DS-V1.42-10 | Migration backup has no cross-process write exclusion — torn snapshot under live daemon; restore discards daemon commits (use VACUUM INTO) | src/store/backup.rs:110-178 | open |
+| DS-V1.42-10 | Migration backup has no cross-process write exclusion — torn snapshot under live daemon; restore discards daemon commits (use VACUUM INTO) | src/store/backup.rs:110-178 | ✅ PR #1759 |
 
 ## P3 — easy + low impact
 
@@ -99,19 +99,19 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 |----|---------|----------|--------|
 | DOC-V1.42-4 | README HNSW tuning table presents mid-tier values as fixed; defaults are corpus-tiered | README.md:696-710 | ✅ PR #1738 |
 | EH-V1.42-3 | Batch dispatch swallows response-write failures via `let _ =` (7 sites) — daemon side built tracked writes for exactly this | src/cli/batch/context.rs:684-797 | open |
-| EH-V1.42-4 | chunk_count().ok() blanks slot-list chunks column silently; adjacent model-name read got the warn ladder | src/cli/commands/infra/slot.rs:253 | open |
-| RB-V1.42-3 | extract_signature UntilAs loop bound makes end-of-string guard unreachable — trailing "AS" never matched | src/parser/chunk.rs:302-306 | open |
+| EH-V1.42-4 | chunk_count().ok() blanks slot-list chunks column silently; adjacent model-name read got the warn ladder | src/cli/commands/infra/slot.rs:253 | ✅ PR #1759 |
+| RB-V1.42-3 | extract_signature UntilAs loop bound makes end-of-string guard unreachable — trailing "AS" never matched | src/parser/chunk.rs:302-306 | ✅ PR #1757 |
 | RB-V1.42-4 | injection.rs u32-cast safety comment cites nonexistent "MAX_FILE_SIZE (50MB)"; real cap 1 MiB + unbounded env override | src/parser/injection.rs:221 | ✅ PR #1738 |
 | API-V1.42-2 | Core Args reuse clap struct names — two contradictory alias conventions (CallersCoreArgs vs CoreCalleesArgs) | src/cli/commands/graph/callers.rs:34 et al. | open |
-| API-V1.42-4 | --cross-project flips callees topology object→flat array, different entry schema (fold into API-V1.42-3) | src/cli/batch/handlers/graph.rs:154-161 | open |
+| API-V1.42-4 | --cross-project flips callees topology object→flat array, different entry schema (fold into API-V1.42-3) | src/cli/batch/handlers/graph.rs:154-161 | ✅ PR #1760 |
 | API-V1.42-5 | serde(default) coverage inconsistent — graph cores reject minimal wire payloads io/search cores accept | src/cli/commands/graph/callers.rs:33-39 | open |
 | API-V1.42-6 | --expand alias: bool on search, value-taking depth on gather | src/cli/args.rs:189 vs :234 | open |
 | API-V1.42-7 | drift's hand-rolled --limit accepts 0 and defaults unlimited — contradicts LimitArg contract | src/cli/args.rs:581-583 | open |
 | TC-V1.42-2 | Whitespace-only note = cross-note wildcard for update/remove; duplicate-text semantics unpinned | src/cli/commands/io/notes.rs:298-572 | ✅ PR #1748 |
 | TC-V1.42-3 | cmd_batch stdin line-cap rejection path (CQS_BATCH_MAX_LINE_LEN) zero tests (daemon analog is pinned) | src/cli/batch/session.rs:155-173 | open |
 | TC-V1.42-5 | parse_nonzero_usize untested while f32 siblings exhaustively pinned in same file | src/cli/definitions.rs:94-100 | open |
-| TC-V1.42-9 | HNSW zero-vector skip / id_map desync — documented past bug class, no regression test | src/hnsw/build.rs:200-222 | open |
-| TC-V1.42-10 | HNSW search k > index size unpinned (CAGRA analog test exists) | src/hnsw/search.rs:105-117 | open |
+| TC-V1.42-9 | HNSW zero-vector skip / id_map desync — documented past bug class, no regression test | src/hnsw/build.rs:200-222 | ✅ PR #1758 |
+| TC-V1.42-10 | HNSW search k > index size unpinned (CAGRA analog test exists) | src/hnsw/search.rs:105-117 | ✅ PR #1758 |
 | TC-V1.42-11 | Store::open on garbage/truncated index.db untested | src/store/mod.rs:906 | open |
 | TC-V1.42-12 | Non-integer schema_version → Corruption arm untested | src/store/migrations.rs:230-236 | open |
 | TC-V1.42-14 | parser_stage TOCTOU (file deleted mid-pipeline): parse_errors arm + mtime=0 sentinel untested | src/cli/pipeline/parsing.rs:127-176 | open |
@@ -131,12 +131,12 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | PERF-V1.42-10 | build_chunk_detail tests-that-cover query is an unindexed full-table content LIKE scan per dashboard click — use chunks_fts | src/serve/data.rs:619-629 | open |
 | PERF-V1.42-11 | Daemon success response written unbuffered — one write() syscall per JSON fragment (fold into CF dispatch_value refactor, RM-V1.40-9 cluster) | src/cli/watch/socket.rs:298 | open |
 | TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | open |
-| TC-HAP-V1.42-7 | Command-core parity tests are parity-by-construction — no parity test pins a single output value; add one fixture-grounded assert each | src/cli/batch/handlers/graph.rs:862-1080 | open |
+| TC-HAP-V1.42-7 | Command-core parity tests are parity-by-construction — no parity test pins a single output value; add one fixture-grounded assert each | src/cli/batch/handlers/graph.rs:862-1080 | ✅ PR #1760 |
 | TC-HAP-V1.42-8 | cache_compact_core zero coverage; cache_stats_core per-model branch never executed | src/cli/commands/infra/cache_cmd.rs:222, :117-130 | open |
 | TC-HAP-V1.42-9 | telemetry_core populated path and all:true flag have zero assertions — telemetry feeds real decisions | src/cli/commands/infra/telemetry_cmd.rs:395 | open |
 | DS-V1.42-9 | checkpoint_legacy_index opens via URL parsing — special-char paths silently skip the WAL drain the slot migration depends on | src/slot/mod.rs:1053 | open |
 | DS-V1.42-11 | slot create --model killed between dir creation and slot.toml write loses the model pin; retry guidance steers toward wrong-model indexing | src/cli/commands/infra/slot.rs:313-325 | open |
-| DS-V1.42-12 | `cqs convert --overwrite` writes via bare fs::write — truncated doc ingested as valid content on next index | src/convert/mod.rs:523-526 | open |
+| DS-V1.42-12 | `cqs convert --overwrite` writes via bare fs::write — truncated doc ingested as valid content on next index | src/convert/mod.rs:523-526 | ✅ PR #1759 |
 
 ## P4 — hard or low impact
 
