@@ -11,117 +11,215 @@
 //! The daemon speaks the same syntax as `cqs batch`: one JSON object per line
 //! with `{"command": "<sub>", "args": [...]}`. The CLI args that reach
 //! `try_daemon_query` are the raw argv post-`cqs` (i.e. `std::env::args()
-//! .skip(1)`) — still mixed with global flags the top-level `Cli` struct
-//! consumes (`--json`, `-q`, `--model VAL`) and sub-command flags that the
+//! .skip(1)`) — still mixed with top-level flags the `Cli` struct consumes
+//! (`--json`, `-v`, `--model VAL`, `--rrf`, …) and sub-command flags that the
 //! batch parser consumes on the subcommand side.
 //!
 //! Responsibilities:
 //!
-//! - Strip global boolean flags (`--json`, `-q`, `--quiet`) — they live on
-//!   `Cli` not on the subcommand, and the batch handler always emits JSON.
-//! - Strip global key/value flags (`--model VAL`). The daemon runs a single
-//!   loaded model; reporting the stripped value is the caller's concern
-//!   (see `stripped_model_value`).
-//! - Remap `-n <N>` / `--limit <N>` to the canonical `--limit` form the
-//!   batch parser expects on the subcommand. Also handles `-n=N` /
-//!   `--limit=N` attached-value forms.
-//! - Auto-prepend `search` for bare-query invocations (no subcommand, e.g.
-//!   `cqs "hello world"`) so the batch parser can route them.
+//! - **With a subcommand**: drop every top-level token before the subcommand
+//!   name (those flags configure the CLI process — output shape, logging,
+//!   model selection — and do not reach subcommand handlers on the in-process
+//!   path either), then forward everything after the subcommand verbatim.
+//!   The CLI and batch sides flatten the *same* shared `args::*Args` structs,
+//!   so post-subcommand tokens parse identically on both surfaces — including
+//!   per-command short flags whose meaning differs from the top level (e.g.
+//!   blame's `-n` means `--commits`, not `--limit`).
+//! - **Bare query** (`cqs "find something"`): prepend `search` and translate
+//!   the top-level flags for the batch `search` parser. Search knobs
+//!   (`--rrf`, `-t`, `-n`, `--tokens`, …) mirror `args::SearchArgs` spelling
+//!   for spelling and forward verbatim; process-local flags (`--json`, `-q`,
+//!   `-v`, `--model`, `--slot`) are dropped.
 //!
-//! Keeping the translation pure (no I/O, no tracing) makes the whole surface
-//! unit-testable. The caller owns side effects (warning on stripped
-//! `--model`, socket I/O, response parsing).
+//! Which top-level flags exist, which take values, and which are
+//! process-local is not hardcoded here: the caller derives a [`CliArgSpec`]
+//! from the live clap definition ([`CliArgSpec::from_clap`]) so a new
+//! top-level flag is classified automatically instead of hand-mirrored —
+//! hand-mirroring is how `-v <cmd>` / `--rrf <cmd>` came to hard-error
+//! daemon-up while working daemon-down.
+//!
+//! Keeping the translation pure (no I/O, no tracing, no clap statics) makes
+//! the whole surface unit-testable. The caller owns side effects (warning on
+//! stripped `--model`, socket I/O, response parsing).
+
+/// Classification of the top-level CLI flag surface, consumed by
+/// [`translate_cli_args_to_batch`]. Plain data — the helper stays pure and
+/// testable without a clap `Command` in hand.
+///
+/// Built from the live clap definition via [`CliArgSpec::from_clap`] in
+/// production (see `cli::dispatch`), or by hand in tests.
+#[derive(Debug, Clone, Default)]
+pub struct CliArgSpec {
+    /// Every spelling (`--long`, `--alias`, `-s`) of a top-level flag that
+    /// consumes a following value token. Needed to skip `--flag value` pairs
+    /// when scanning for the subcommand name, and to forward the value token
+    /// verbatim on the bare-query path.
+    pub value_flags: std::collections::BTreeSet<String>,
+    /// Spellings of top-level flags that are process-local (output shaping,
+    /// logging, model/slot selection) and must be dropped when forwarding a
+    /// bare query to the batch `search` parser. Every other top-level flag is
+    /// a search knob shared spelling-for-spelling with `args::SearchArgs` and
+    /// forwards verbatim.
+    pub bare_query_strip: std::collections::BTreeSet<String>,
+}
+
+impl CliArgSpec {
+    /// Derive the spec from a clap `Command` (the top-level `Cli`
+    /// definition). `process_local_ids` lists the clap arg IDs (struct field
+    /// names) of flags that configure the CLI process rather than the search:
+    /// those are stripped on the bare-query path; everything else forwards.
+    ///
+    /// Mirrors the runtime-derivation pattern in
+    /// `cli::telemetry::describe_command`: value-flag-ness comes from the arg
+    /// action, spellings include long/short forms and all aliases, so a new
+    /// top-level flag is picked up without touching this module. A
+    /// classification test on the caller side pins that every top-level arg
+    /// ID is explicitly process-local or search-forwarded.
+    pub fn from_clap(cmd: &clap::Command, process_local_ids: &[&str]) -> Self {
+        let mut value_flags = std::collections::BTreeSet::new();
+        let mut bare_query_strip = std::collections::BTreeSet::new();
+        for arg in cmd.get_arguments() {
+            if arg.is_positional() {
+                continue;
+            }
+            let takes_value = matches!(
+                arg.get_action(),
+                clap::ArgAction::Set | clap::ArgAction::Append
+            );
+            let mut spellings: Vec<String> = Vec::new();
+            if let Some(long) = arg.get_long() {
+                spellings.push(format!("--{long}"));
+            }
+            for alias in arg.get_all_aliases().unwrap_or_default() {
+                spellings.push(format!("--{alias}"));
+            }
+            if let Some(short) = arg.get_short() {
+                spellings.push(format!("-{short}"));
+            }
+            for alias in arg.get_all_short_aliases().unwrap_or_default() {
+                spellings.push(format!("-{alias}"));
+            }
+            let is_local = process_local_ids.contains(&arg.get_id().as_str());
+            for spelling in spellings {
+                if takes_value {
+                    value_flags.insert(spelling.clone());
+                }
+                if is_local {
+                    bare_query_strip.insert(spelling);
+                }
+            }
+        }
+        Self {
+            value_flags,
+            bare_query_strip,
+        }
+    }
+}
 
 /// Translate raw CLI argv into a `(subcommand, args)` pair for the batch
-/// handler, stripping global flags and normalising `-n`/`--limit`.
+/// handler.
 ///
-/// `raw` is the argv after `cqs` (i.e. what `std::env::args().skip(1)` yields).
-/// `has_subcommand` is `true` iff `Cli::command` parsed a subcommand — i.e.
-/// the first post-strip token is the subcommand name. When `false`, the input
-/// is a bare query (e.g. `cqs "find something"`) and `search` is prepended.
+/// `raw` is the argv after `cqs` (i.e. what `std::env::args().skip(1)`
+/// yields). `has_subcommand` is `true` iff `Cli::command` parsed a
+/// subcommand; when `false` the input is a bare query (e.g. `cqs "find
+/// something"`) and `search` is prepended. `spec` classifies the top-level
+/// flag surface — see [`CliArgSpec`].
 ///
 /// Behaviour is pinned by `tests/daemon_forward_test.rs`. See the module
-/// docs for the full stripping/remapping rules.
-pub fn translate_cli_args_to_batch(raw: &[String], has_subcommand: bool) -> (String, Vec<String>) {
-    // Boolean global flags: drop entirely (no value to track).
-    const GLOBAL_FLAGS: &[&str] = &["--json", "-q", "--quiet"];
-    // Key/value global flags (space-separated form): drop the flag AND its
-    // value. `-n` and `--limit` are intercepted here to rewrite to the
-    // canonical `--limit`.
-    const GLOBAL_WITH_VALUE: &[&str] = &["--model", "-n", "--limit"];
-
-    let mut args: Vec<String> = Vec::with_capacity(raw.len());
-    let mut skip_next = false;
-    for arg in raw.iter() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        // `--json` / `-q` / `--quiet` → drop.
-        if GLOBAL_FLAGS.contains(&arg.as_str()) {
-            continue;
-        }
-        // Attached-value forms (`-n=5`, `--limit=5`, `--model=foo`). Handle
-        // here so we don't emit them verbatim and rely on the batch parser
-        // to tolerate them. The spaced forms fall through to the next branch.
-        if let Some((key, value)) = arg.split_once('=') {
-            if key == "-n" || key == "--limit" {
-                args.push(format!("--limit={}", value));
-                continue;
-            }
-            if key == "--model" {
-                // Strip `--model=VAL` entirely; caller handles the warning.
-                continue;
-            }
-            if GLOBAL_FLAGS.contains(&key) {
-                // Edge case: `--json=true` etc. — drop.
-                continue;
-            }
-            // Non-global attached-value flag: pass through verbatim.
-        }
-        // Spaced-form global key/value flags.
-        if GLOBAL_WITH_VALUE.contains(&arg.as_str()) {
-            if arg == "-n" || arg == "--limit" {
-                // Remap `-n 5` → `--limit 5`. The value is the next token and
-                // is forwarded verbatim on the next iteration (skip_next
-                // stays false).
-                args.push("--limit".to_string());
-                continue;
-            }
-            // `--model VAL` → strip both tokens. Caller uses
-            // `stripped_model_value` to recover VAL for its warning.
-            skip_next = true;
-            continue;
-        }
-        args.push(arg.clone());
-    }
-
-    if !has_subcommand {
-        // Bare query: `cqs "hello world"` → ("search", ["hello world"]).
-        return ("search".to_string(), args);
-    }
-    // With a subcommand: the first surviving token is the subcommand name.
-    if let Some((first, rest)) = args.split_first() {
-        let cmd = first.clone();
-        let mut tail = rest.to_vec();
-        // `cqs notes list ...` → daemon `notes ...`. The CLI's `Notes`
-        // command takes a NotesCommand subcommand enum (`list`/`add`/
-        // `update`/`remove`) but the batch dispatcher only ever receives
-        // `list` — `add`/`update`/`remove` route through `BatchSupport::Cli`
-        // and never hit the daemon. The batch parser's `BatchCmd::Notes`
-        // accepts `--warnings`/`--patterns` directly (no `list` token), so
-        // we strip the redundant subcommand name here. Without this strip
-        // every `cqs notes list` query through the daemon errors with
-        // `unexpected argument 'list' found`.
-        if cmd == "notes" && tail.first().map(|s| s.as_str()) == Some("list") {
-            tail.remove(0);
-        }
-        (cmd, tail)
+/// docs for the full rules.
+pub fn translate_cli_args_to_batch(
+    raw: &[String],
+    has_subcommand: bool,
+    spec: &CliArgSpec,
+) -> (String, Vec<String>) {
+    if has_subcommand {
+        translate_subcommand_args(raw, spec)
     } else {
+        ("search".to_string(), translate_bare_query_args(raw, spec))
+    }
+}
+
+/// Subcommand form: drop the top-level region (every flag before the
+/// subcommand name), forward the tail verbatim. The batch parser flattens
+/// the same shared args structs as the CLI subcommand, so no per-flag
+/// rewriting is needed — and none is safe, because short-flag meanings
+/// differ per subcommand (blame's `-n` is `--commits`).
+fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<String>) {
+    let mut idx = 0;
+    while idx < raw.len() {
+        let tok = &raw[idx];
+        if !tok.starts_with('-') {
+            // First non-flag token in the top-level region: the subcommand.
+            break;
+        }
+        // `--key=value` / `-k=value` are self-contained single tokens;
+        // spaced-form value flags consume their following value token too;
+        // boolean flags consume only themselves.
+        if !tok.contains('=') && spec.value_flags.contains(tok.as_str()) {
+            idx += 2;
+        } else {
+            idx += 1;
+        }
+    }
+    let Some(cmd) = raw.get(idx).cloned() else {
         // Unreachable in practice: if clap parsed a subcommand the argv
         // contained its name. Defensive empty fallback.
-        (String::new(), Vec::new())
+        return (String::new(), Vec::new());
+    };
+    let mut tail: Vec<String> = raw[idx + 1..].to_vec();
+    // `cqs notes list ...` → daemon `notes ...`. The CLI's `Notes`
+    // command takes a NotesCommand subcommand enum (`list`/`add`/
+    // `update`/`remove`) but the batch dispatcher only ever receives
+    // `list` — `add`/`update`/`remove` route through `BatchSupport::Cli`
+    // and never hit the daemon. The batch parser's `BatchCmd::Notes`
+    // accepts `--warnings`/`--patterns` directly (no `list` token), so
+    // we strip the redundant subcommand name here. Without this strip
+    // every `cqs notes list` query through the daemon errors with
+    // `unexpected argument 'list' found`.
+    if cmd == "notes" && tail.first().map(|s| s.as_str()) == Some("list") {
+        tail.remove(0);
     }
+    (cmd, tail)
+}
+
+/// Bare-query form: every token is top-level. Process-local flags
+/// (`spec.bare_query_strip`) are dropped — with their value, when they take
+/// one; everything else forwards verbatim to the batch `search` parser,
+/// whose `args::SearchArgs` mirrors the top-level search knobs spelling for
+/// spelling (including `-n`/`--limit` via the shared `LimitArg`).
+fn translate_bare_query_args(raw: &[String], spec: &CliArgSpec) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut iter = raw.iter();
+    while let Some(tok) = iter.next() {
+        // Attached-value forms (`--model=foo`, `--json=true`, `-n=5`):
+        // self-contained tokens — drop or forward whole.
+        if let Some((key, _value)) = tok.split_once('=') {
+            if key.starts_with('-') && spec.bare_query_strip.contains(key) {
+                continue;
+            }
+            out.push(tok.clone());
+            continue;
+        }
+        if spec.bare_query_strip.contains(tok.as_str()) {
+            if spec.value_flags.contains(tok.as_str()) {
+                // Spaced form: drop the flag's value token too.
+                iter.next();
+            }
+            continue;
+        }
+        if tok.starts_with('-') && spec.value_flags.contains(tok.as_str()) {
+            // Forwarded value flag: emit the flag and its value verbatim so
+            // a value that happens to start with `-` isn't re-scanned as a
+            // flag.
+            out.push(tok.clone());
+            if let Some(value) = iter.next() {
+                out.push(value.clone());
+            }
+            continue;
+        }
+        out.push(tok.clone());
+    }
+    out
 }
 
 /// Resolve the daemon socket read/write timeout used on both the CLI client
@@ -920,6 +1018,41 @@ mod tests {
         tokens.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Hand-built spec mirroring the production classification (derived from
+    /// the live clap definition in `cli::dispatch`). Subset is enough for the
+    /// translation-rule tests here; the full derived spec is exercised
+    /// end-to-end by `tests/daemon_forward_test.rs`.
+    fn spec() -> CliArgSpec {
+        let set = |items: &[&str]| {
+            items
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<std::collections::BTreeSet<String>>()
+        };
+        CliArgSpec {
+            value_flags: set(&[
+                "--model",
+                "--slot",
+                "-n",
+                "--limit",
+                "-t",
+                "--threshold",
+                "--tokens",
+                "-l",
+                "--lang",
+            ]),
+            bare_query_strip: set(&[
+                "--json",
+                "-q",
+                "--quiet",
+                "-v",
+                "--verbose",
+                "--model",
+                "--slot",
+            ]),
+        }
+    }
+
     // Env-var-driven timeout helper used by both daemon and CLI sides.
     // Test only the unset path; mutating env vars in a parallel test runner
     // is fragile, and the floor / honor logic is small enough to inspect.
@@ -939,16 +1072,71 @@ mod tests {
 
     #[test]
     fn strips_json_bare_query() {
-        let (cmd, args) = translate_cli_args_to_batch(&v(&["--json", "search me"]), false);
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["--json", "search me"]), false, &spec());
         assert_eq!(cmd, "search");
         assert_eq!(args, v(&["search me"]));
     }
 
+    /// Subcommand args forward verbatim — the batch parser flattens the same
+    /// shared args structs, and `LimitArg` accepts `-n` directly. No remap:
+    /// remapping `-n` → `--limit` is what broke blame, whose `-n` means
+    /// `--commits`.
     #[test]
-    fn remaps_dash_n_spaced() {
-        let (cmd, args) = translate_cli_args_to_batch(&v(&["impact", "foo", "-n", "5"]), true);
+    fn forwards_subcommand_dash_n_verbatim() {
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["impact", "foo", "-n", "5"]), true, &spec());
         assert_eq!(cmd, "impact");
-        assert_eq!(args, v(&["foo", "--limit", "5"]));
+        assert_eq!(args, v(&["foo", "-n", "5"]));
+
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["blame", "foo", "-n", "3"]), true, &spec());
+        assert_eq!(cmd, "blame");
+        assert_eq!(args, v(&["foo", "-n", "3"]));
+    }
+
+    /// Top-level flags before the subcommand are dropped wholesale — they
+    /// configure the CLI process, not the subcommand handler. Boolean flags
+    /// drop one token; value flags drop two.
+    #[test]
+    fn drops_top_level_region_before_subcommand() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["-v", "callers", "foo"]), true, &spec());
+        assert_eq!(cmd, "callers");
+        assert_eq!(args, v(&["foo"]));
+
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["--rrf", "callers", "foo"]), true, &spec());
+        assert_eq!(cmd, "callers");
+        assert_eq!(args, v(&["foo"]));
+
+        // Value flag pre-subcommand consumes its value token too — the value
+        // must not be mistaken for the subcommand name.
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["-n", "3", "callers", "foo"]), true, &spec());
+        assert_eq!(cmd, "callers");
+        assert_eq!(args, v(&["foo"]));
+
+        // Attached-value form is one token.
+        let (cmd, args) = translate_cli_args_to_batch(
+            &v(&["--model=bge-large", "callers", "foo"]),
+            true,
+            &spec(),
+        );
+        assert_eq!(cmd, "callers");
+        assert_eq!(args, v(&["foo"]));
+    }
+
+    /// Bare-query search knobs forward verbatim (`-n` included — the batch
+    /// `search` parser accepts it via the shared `LimitArg`); process-local
+    /// flags are stripped, with their value when they take one.
+    #[test]
+    fn bare_query_forwards_search_knobs_strips_process_local() {
+        let (cmd, args) = translate_cli_args_to_batch(
+            &v(&["hello", "--rrf", "-n", "8", "--model", "bge-large", "-v"]),
+            false,
+            &spec(),
+        );
+        assert_eq!(cmd, "search");
+        assert_eq!(args, v(&["hello", "--rrf", "-n", "8"]));
     }
 
     #[test]
@@ -975,14 +1163,15 @@ mod tests {
     /// `--warnings`/`--patterns` flags through unchanged.
     #[test]
     fn notes_list_subcommand_stripped() {
-        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "list"]), true);
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "list"]), true, &spec());
         assert_eq!(cmd, "notes");
         assert!(args.is_empty(), "got {args:?}");
     }
 
     #[test]
     fn notes_list_with_warnings_strips_only_list() {
-        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "list", "--warnings"]), true);
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["notes", "list", "--warnings"]), true, &spec());
         assert_eq!(cmd, "notes");
         assert_eq!(args, v(&["--warnings"]));
     }
@@ -990,7 +1179,7 @@ mod tests {
     /// Bare `cqs notes` (no `list` token) is unaffected.
     #[test]
     fn notes_without_list_unchanged() {
-        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "--patterns"]), true);
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "--patterns"]), true, &spec());
         assert_eq!(cmd, "notes");
         assert_eq!(args, v(&["--patterns"]));
     }
@@ -998,7 +1187,7 @@ mod tests {
     /// Other commands with a `list` first-arg are NOT touched — only `notes`.
     #[test]
     fn list_arg_is_only_stripped_for_notes() {
-        let (cmd, args) = translate_cli_args_to_batch(&v(&["impact", "list"]), true);
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["impact", "list"]), true, &spec());
         assert_eq!(cmd, "impact");
         assert_eq!(args, v(&["list"]));
     }

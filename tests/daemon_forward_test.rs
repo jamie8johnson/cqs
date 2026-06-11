@@ -4,9 +4,10 @@
 //! Two concerns:
 //!
 //! 1. **Pure arg-translation** — `cqs::daemon_translate::translate_cli_args_to_batch`
-//!    is the extracted helper. Black-box tests here pin the stripping and
-//!    `-n` → `--limit` remap so a future edit to the helper doesn't silently
-//!    ship a different wire format to the daemon.
+//!    is the extracted helper. Black-box tests here pin the top-level-region
+//!    stripping and the verbatim forwarding of subcommand args so a future
+//!    edit to the helper doesn't silently ship a different wire format to
+//!    the daemon.
 //!
 //! 2. **Daemon bypass + forwarding** — exercised end-to-end by spawning the
 //!    real `cqs` binary against a mock `UnixListener` bound at the exact
@@ -43,44 +44,101 @@ fn v(tokens: &[&str]) -> Vec<String> {
     tokens.iter().map(|s| s.to_string()).collect()
 }
 
+/// Hand-built [`cqs::daemon_translate::CliArgSpec`] mirroring the production
+/// classification (which `cli::dispatch` derives from the live clap
+/// definition — its derivation is pinned by unit tests in the binary crate
+/// and exercised end-to-end by the socket-mock tests below).
+fn spec() -> cqs::daemon_translate::CliArgSpec {
+    let set = |items: &[&str]| {
+        items
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<std::collections::BTreeSet<String>>()
+    };
+    cqs::daemon_translate::CliArgSpec {
+        value_flags: set(&[
+            "--model",
+            "--slot",
+            "-n",
+            "--limit",
+            "-t",
+            "--threshold",
+            "--tokens",
+            "-l",
+            "--lang",
+        ]),
+        bare_query_strip: set(&[
+            "--json",
+            "-q",
+            "--quiet",
+            "-v",
+            "--verbose",
+            "--model",
+            "--slot",
+        ]),
+    }
+}
+
 #[test]
-fn test_translate_strips_global_json_flag() {
-    // `--json` is a top-level `Cli` flag, not a subcommand flag; the batch
-    // handler always emits JSON. The translator drops it entirely.
-    let (cmd, args) =
-        cqs::daemon_translate::translate_cli_args_to_batch(&v(&["impact", "foo", "--json"]), true);
-    assert_eq!(cmd, "impact");
-    assert!(
-        !args.iter().any(|a| a == "--json"),
-        "--json must be stripped; got {args:?}"
+fn test_translate_strips_top_level_json_flag() {
+    // `--json` before the subcommand is a top-level `Cli` flag: the whole
+    // top-level region is dropped on daemon forwarding.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["--json", "impact", "foo"]),
+        true,
+        &spec(),
     );
+    assert_eq!(cmd, "impact");
+    assert_eq!(args, v(&["foo"]));
 
     // Bare-query form: `cqs --json "hello"` also drops --json.
-    let (cmd, args) =
-        cqs::daemon_translate::translate_cli_args_to_batch(&v(&["--json", "hello"]), false);
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["--json", "hello"]),
+        false,
+        &spec(),
+    );
     assert_eq!(cmd, "search");
     assert_eq!(args, v(&["hello"]));
 }
 
 #[test]
-fn test_translate_remaps_n_to_limit() {
-    // Spaced form: `-n 5` → `--limit 5` (two tokens).
-    let (cmd, args) =
-        cqs::daemon_translate::translate_cli_args_to_batch(&v(&["impact", "foo", "-n", "5"]), true);
+fn test_translate_forwards_subcommand_args_verbatim() {
+    // Post-subcommand tokens forward verbatim — the batch parser flattens
+    // the same shared args structs as the CLI, so `-n` keeps its
+    // per-subcommand meaning (`LimitArg` for impact, `--commits` for blame).
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["impact", "foo", "-n", "5"]),
+        true,
+        &spec(),
+    );
     assert_eq!(cmd, "impact");
-    assert_eq!(args, v(&["foo", "--limit", "5"]));
+    assert_eq!(args, v(&["foo", "-n", "5"]));
 
-    // Equals form: `-n=5` → `--limit=5` (one token).
-    let (cmd, args) =
-        cqs::daemon_translate::translate_cli_args_to_batch(&v(&["impact", "foo", "-n=5"]), true);
+    // Equals form is one token, forwarded whole.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["impact", "foo", "-n=5"]),
+        true,
+        &spec(),
+    );
     assert_eq!(cmd, "impact");
-    assert_eq!(args, v(&["foo", "--limit=5"]));
+    assert_eq!(args, v(&["foo", "-n=5"]));
 
-    // Already-canonical `--limit` is preserved verbatim (with a remap through
-    // the same branch — no double-insertion).
+    // blame's `-n` means `--commits` — the old `-n` → `--limit` remap made
+    // `cqs blame foo -n 3` a parse error daemon-up. Verbatim forwarding is
+    // the fix.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["blame", "foo", "-n", "3"]),
+        true,
+        &spec(),
+    );
+    assert_eq!(cmd, "blame");
+    assert_eq!(args, v(&["foo", "-n", "3"]));
+
+    // `--limit` long form forwards verbatim too.
     let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
         &v(&["impact", "foo", "--limit", "7"]),
         true,
+        &spec(),
     );
     assert_eq!(cmd, "impact");
     assert_eq!(args, v(&["foo", "--limit", "7"]));
@@ -91,7 +149,7 @@ fn test_translate_prepends_search_for_bare_query() {
     // `cqs "hello world"` → the caller passes `has_subcommand = false`; the
     // translator synthesises `search` as the subcommand.
     let (cmd, args) =
-        cqs::daemon_translate::translate_cli_args_to_batch(&v(&["hello world"]), false);
+        cqs::daemon_translate::translate_cli_args_to_batch(&v(&["hello world"]), false, &spec());
     assert_eq!(cmd, "search");
     assert_eq!(args, v(&["hello world"]));
 
@@ -100,6 +158,7 @@ fn test_translate_prepends_search_for_bare_query() {
     let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
         &v(&["alpha", "beta", "--quiet"]),
         false,
+        &spec(),
     );
     assert_eq!(cmd, "search");
     assert_eq!(args, v(&["alpha", "beta"]));
@@ -108,26 +167,63 @@ fn test_translate_prepends_search_for_bare_query() {
 #[test]
 fn test_translate_preserves_subcommand_flags() {
     // With an explicit subcommand, the subcommand name stays first and its
-    // flags (those we don't strip as global) pass through untouched. Here
-    // `--threshold 0.5` is subcommand-scoped for `impact` and must reach
-    // the daemon unchanged; `--json` is global and gets dropped.
+    // flags pass through untouched: `--threshold 0.5` is subcommand-scoped
+    // for `impact` and must reach the daemon unchanged. `--json` after the
+    // subcommand is the subcommand's own flag (the shared output structs
+    // accept it on the batch side too) and also forwards.
     let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
         &v(&["impact", "foo", "--threshold", "0.5", "--json"]),
         true,
+        &spec(),
     );
     assert_eq!(cmd, "impact");
-    assert_eq!(args, v(&["foo", "--threshold", "0.5"]));
+    assert_eq!(args, v(&["foo", "--threshold", "0.5", "--json"]));
+}
 
-    // Another spot-check: subcommand-level `-n` still gets remapped to
-    // `--limit`, so the batch clap parser sees the canonical long form.
-    // This is the one case where "subcommand flag" is rewritten on purpose
-    // — same flag, canonical name. Not a behaviour change vs. pre-#972.
+#[test]
+fn test_translate_drops_top_level_region_with_subcommand() {
+    // `-v` / `--rrf` before the subcommand are top-level `Cli` flags. The
+    // old hand-mirrored strip list forwarded them into the batch subcommand
+    // parser, hard-erroring daemon-up while working daemon-down.
     let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
-        &v(&["similar", "bar", "-n", "3"]),
+        &v(&["-v", "callers", "foo"]),
         true,
+        &spec(),
     );
-    assert_eq!(cmd, "similar");
-    assert_eq!(args, v(&["bar", "--limit", "3"]));
+    assert_eq!(cmd, "callers");
+    assert_eq!(args, v(&["foo"]));
+
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["--rrf", "callers", "foo"]),
+        true,
+        &spec(),
+    );
+    assert_eq!(cmd, "callers");
+    assert_eq!(args, v(&["foo"]));
+
+    // Top-level value flag consumes its value: the value must not be
+    // mistaken for the subcommand name.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["--model", "bge-large", "callers", "foo"]),
+        true,
+        &spec(),
+    );
+    assert_eq!(cmd, "callers");
+    assert_eq!(args, v(&["foo"]));
+}
+
+#[test]
+fn test_translate_bare_query_forwards_search_knobs() {
+    // Search knobs (`--rrf`, `-n`) forward verbatim to the batch `search`
+    // parser, which accepts them via the shared `SearchArgs`/`LimitArg`;
+    // process-local flags (`--model VAL`, `-v`) are stripped.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["hello", "--rrf", "-n", "8", "--model", "bge-large", "-v"]),
+        false,
+        &spec(),
+    );
+    assert_eq!(cmd, "search");
+    assert_eq!(args, v(&["hello", "--rrf", "-n", "8"]));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,6 +252,7 @@ fn test_translate_preserves_subcommand_flags() {
 /// the fixture signals the thread to exit and removes the socket file.
 struct MockDaemon {
     conn_count: Arc<AtomicUsize>,
+    last_request: Arc<std::sync::Mutex<String>>,
     stop: Arc<AtomicBool>,
     sock_path: PathBuf,
     handle: Option<JoinHandle<()>>,
@@ -182,8 +279,10 @@ impl MockDaemon {
             .expect("set_nonblocking on mock listener");
 
         let conn_count = Arc::new(AtomicUsize::new(0));
+        let last_request = Arc::new(std::sync::Mutex::new(String::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let c2 = Arc::clone(&conn_count);
+        let r2 = Arc::clone(&last_request);
         let s2 = Arc::clone(&stop);
 
         let handle = std::thread::spawn(move || {
@@ -192,10 +291,13 @@ impl MockDaemon {
                 match listener.accept() {
                     Ok((mut stream, _addr)) => {
                         c2.fetch_add(1, Ordering::SeqCst);
-                        // Drain the request line. We don't care what the CLI
-                        // sent — any valid frame is treated as a ping.
+                        // Drain the request line and record it so tests can
+                        // assert on the translated wire frame.
                         let mut buf = String::new();
                         let _ = BufReader::new(&stream).read_line(&mut buf);
+                        if let Ok(mut g) = r2.lock() {
+                            *g = buf.clone();
+                        }
                         // Reply with the sentinel output frame. The CLI side
                         // will `print!("{output}")` for status=ok and exit 0.
                         let _ = writeln!(stream, "{response}");
@@ -211,6 +313,7 @@ impl MockDaemon {
 
         Self {
             conn_count,
+            last_request,
             stop,
             sock_path,
             handle: Some(handle),
@@ -219,6 +322,13 @@ impl MockDaemon {
 
     fn conn_count(&self) -> usize {
         self.conn_count.load(Ordering::SeqCst)
+    }
+
+    fn last_request(&self) -> String {
+        self.last_request
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -370,6 +480,173 @@ fn test_mock_socket_round_trip_for_daemon_command() {
     assert!(
         stdout.contains("DAEMON_MOCK_SENTINEL"),
         "daemon sentinel missing from stdout; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+}
+
+/// Spawn the binary with `args` against a `MockDaemon`, assert it exited 0
+/// and reached the socket exactly once, and return the parsed request frame
+/// `{"command": ..., "args": [...]}` the CLI sent. Shared by the
+/// arg-translation parity tests below — they pin the *production* derived
+/// `CliArgSpec`, not the hand-built one the pure tests use.
+fn forwarded_request(cli_args: &[&str]) -> serde_json::Value {
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_MOCK_SENTINEL");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(cli_args);
+
+    let output = cmd.output().expect("cqs spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "`cqs {cli_args:?}` failed daemon-up; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "expected exactly one daemon connection for {cli_args:?}; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    let req = mock.last_request();
+    serde_json::from_str(req.trim())
+        .unwrap_or_else(|e| panic!("request frame is not JSON: {req} ({e})"))
+}
+
+#[test]
+fn test_blame_dash_n_forwards_as_commits_flag() {
+    // blame's `-n` means `--commits`, not `--limit`. The old translation
+    // remapped every `-n` to `--limit`, so `cqs blame foo -n 3` returned a
+    // parse_error envelope daemon-up while working daemon-down. The frame
+    // must carry `-n 3` verbatim for the batch BlameArgs parser.
+    let req = forwarded_request(&["blame", "foo", "-n", "3"]);
+    assert_eq!(req["command"], "blame");
+    assert_eq!(
+        req["args"],
+        serde_json::json!(["foo", "-n", "3"]),
+        "blame args must forward verbatim, got: {req}"
+    );
+}
+
+#[test]
+fn test_top_level_verbose_flag_is_stripped_on_forward() {
+    // `cqs -v callers foo`: `-v` is a top-level Cli flag the old
+    // hand-mirrored strip list didn't know, so it leaked into the batch
+    // `callers` parser and hard-errored daemon-up.
+    let req = forwarded_request(&["-v", "callers", "foo"]);
+    assert_eq!(req["command"], "callers");
+    assert_eq!(
+        req["args"],
+        serde_json::json!(["foo"]),
+        "top-level -v must be stripped, got: {req}"
+    );
+}
+
+#[test]
+fn test_top_level_rrf_flag_is_stripped_on_forward() {
+    // `cqs --rrf callers foo`: same drift class as `-v`.
+    let req = forwarded_request(&["--rrf", "callers", "foo"]);
+    assert_eq!(req["command"], "callers");
+    assert_eq!(
+        req["args"],
+        serde_json::json!(["foo"]),
+        "top-level --rrf must be stripped, got: {req}"
+    );
+}
+
+#[test]
+fn test_bare_query_forwards_search_knobs_to_daemon() {
+    // Bare-query search knobs forward to the batch `search` parser; the
+    // process-local `--json` is dropped.
+    let req = forwarded_request(&["--json", "find the thing", "--rrf", "-n", "8"]);
+    assert_eq!(req["command"], "search");
+    assert_eq!(
+        req["args"],
+        serde_json::json!(["find the thing", "--rrf", "-n", "8"]),
+        "search knobs must forward verbatim, got: {req}"
+    );
+}
+
+#[test]
+fn test_cqs_slot_env_bypasses_daemon() {
+    // `CQS_SLOT` is documented as equivalent to `--slot` and honored by
+    // `slot::resolve_slot_name`. The daemon serves whichever slot was active
+    // at *its* startup, so a slot-pinned invocation must bypass the daemon —
+    // same rationale as the `--slot` flag gate. Before the fix,
+    // `CQS_SLOT=experiment cqs <query>` silently returned the daemon's
+    // startup-slot results.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_SHOULD_NOT_RESPOND");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .env("CQS_SLOT", "experiment")
+        .current_dir(&canonical_dir)
+        .args(["notes", "list", "--json"]);
+
+    // The CLI fallback may fail (no index in the temp project) — the pin is
+    // purely that the daemon socket was never touched and the mock's reply
+    // never reached stdout.
+    let output = cmd.output().expect("cqs notes list spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        mock.conn_count(),
+        0,
+        "CQS_SLOT must bypass the daemon (slot-pinned queries can't be served by the \
+         daemon's startup slot); mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    assert!(
+        !stdout.contains("DAEMON_SHOULD_NOT_RESPOND"),
+        "mock response leaked into stdout despite CQS_SLOT: {stdout}"
+    );
+}
+
+#[test]
+fn test_empty_cqs_slot_env_keeps_daemon_path() {
+    // `slot::resolve_slot_name` trims `CQS_SLOT` and treats empty/whitespace
+    // as UNSET, so the daemon gate must too: `CQS_SLOT= cqs …` (a script
+    // clearing the var) pins no slot and must keep the daemon fast path. A
+    // bare `is_some()` env check would silently lose it.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_MOCK_SENTINEL");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+
+    for (case, slot_value) in [("empty", ""), ("whitespace", "   ")] {
+        let mut cmd = cqs();
+        clean_cqs_env(&mut cmd);
+        cmd.env("XDG_RUNTIME_DIR", dir.path())
+            .env("CQS_SLOT", slot_value)
+            .current_dir(&canonical_dir)
+            .args(["notes", "list", "--json"]);
+
+        let output = cmd.output().expect("cqs notes list spawn");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "`cqs notes list` ({case} CQS_SLOT) failed; stdout=<{stdout}> stderr=<{stderr}>"
+        );
+        assert!(
+            stdout.contains("DAEMON_MOCK_SENTINEL"),
+            "{case} CQS_SLOT pins no slot and must take the daemon path; \
+             stdout=<{stdout}> stderr=<{stderr}>"
+        );
+    }
+    assert_eq!(
+        mock.conn_count(),
+        2,
+        "both unset-equivalent CQS_SLOT values must reach the daemon"
     );
 }
 

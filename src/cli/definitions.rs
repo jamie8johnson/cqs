@@ -416,7 +416,15 @@ pub(super) enum Commands {
         serve: bool,
     },
     /// What functions, callers, and tests are affected by current diff
-    #[cqs_cmd(group = "b", batch = "daemon")]
+    ///
+    /// `batch = "cli"`: the batch dispatcher has no `affected` subcommand, so
+    /// a daemon-marked classification made `cqs affected` error daemon-up
+    /// while working daemon-down (the exhaustiveness test in
+    /// `cli::batch::commands` now pins the link). The command also reads the
+    /// diff from `--stdin`/git in the *CLI* process, which a daemon dispatch
+    /// cannot reproduce. Flip back to `daemon` only together with a
+    /// `BatchCmd::Affected` handler.
+    #[cqs_cmd(group = "b", batch = "cli")]
     Affected {
         /// Git ref to diff against (default: unstaged changes)
         #[arg(long)]

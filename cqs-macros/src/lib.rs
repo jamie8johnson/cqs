@@ -87,6 +87,30 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let variant_name_arms = parsed.iter().map(|v| v.variant_name_arm(enum_ident));
     let batch_support_arms = parsed.iter().map(|v| v.batch_support_arm(enum_ident));
 
+    // Names of variants that can route to the daemon's batch dispatcher:
+    // `batch = "daemon"` always, plus `batch = "runtime"` (whose support is
+    // decided per-invocation but resolves to Daemon for some inner
+    // subcommands). Emitted as `daemon_capable_variant_names()` so a test can
+    // assert every name has a matching `BatchCmd` subcommand — without this,
+    // the link between the two enums is checked only at runtime, only
+    // daemon-up.
+    let daemon_capable_pushes = parsed
+        .iter()
+        .filter(|v| {
+            matches!(
+                v.batch,
+                BatchSupportKind::Daemon | BatchSupportKind::Runtime
+            )
+        })
+        .map(|v| {
+            let cfg = &v.cfg_attrs;
+            let name = &v.name_lit;
+            quote! {
+                #(#cfg)*
+                names.push(#name);
+            }
+        });
+
     let group_a_dispatch_arms = parsed
         .iter()
         .filter(|v| matches!(v.group, Group::A))
@@ -161,6 +185,22 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 match self {
                     #(#batch_support_arms,)*
                 }
+            }
+
+            /// Wire-level names of every variant that may forward to the
+            /// daemon's batch dispatcher (`batch = "daemon"` plus
+            /// `batch = "runtime"`). A test asserts each name resolves to a
+            /// `BatchCmd` subcommand, so a variant marked daemon-capable
+            /// without a batch handler fails at test time instead of at
+            /// runtime, daemon-up only.
+            #[allow(
+                dead_code,
+                reason = "consumed by the exhaustiveness test in cli::batch::commands"
+            )]
+            pub fn daemon_capable_variant_names() -> Vec<&'static str> {
+                let mut names = Vec::new();
+                #(#daemon_capable_pushes)*
+                names
             }
         }
 

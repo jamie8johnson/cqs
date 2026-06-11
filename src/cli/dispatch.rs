@@ -203,15 +203,22 @@ fn run_with_dispatch(
         crate::cli::limits::install_reranker_pool_overrides(pool_max, over_retrieval);
     }
 
-    // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
-    cli.limit = cli.limit.clamp(1, 100);
+    // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries.
+    // Same cap as the daemon batch handler — see `limits::SEARCH_LIMIT_CAP`.
+    cli.limit = cli.limit.clamp(1, crate::cli::limits::SEARCH_LIMIT_CAP);
 
     // ── Daemon client: forward to running daemon if available ──────────────
     // The daemon binds to whichever slot was active at *its* startup (per
-    // spec). If the user passed `--slot <name>`, bypass the daemon so the
-    // requested slot wins instead of silently getting the daemon's slot.
+    // spec). If the user requested a slot — `--slot <name>` flag OR the
+    // documented-equivalent `CQS_SLOT` env var (honored by
+    // `slot::resolve_slot_name`) — bypass the daemon so the requested slot
+    // wins instead of silently getting the daemon's startup slot. Note the
+    // flag is propagated into `CQS_SLOT` above, so the env check covers both.
     #[cfg(unix)]
-    if cli.slot.is_none() && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
+    if cli.slot.is_none()
+        && !cqs_slot_env_pins_slot()
+        && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1")
+    {
         // Daemon protocol errors surface as `Err`. Transport-level failures
         // return `Ok(None)` so CLI fallback works for those.
         if let Some(output) = try_daemon_query(project_cqs_dir, &cli)? {
@@ -254,6 +261,76 @@ pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
 }
 
+/// `true` when the `CQS_SLOT` env var pins a slot — i.e. it is set to a
+/// non-empty (post-trim) value. Mirrors the semantics of
+/// `slot::resolve_slot_name`, which trims and treats empty/whitespace (and
+/// non-UTF-8) as UNSET: `CQS_SLOT= cqs …` — a script clearing the var — must
+/// keep the daemon fast path, not silently bypass it.
+#[cfg(unix)]
+fn cqs_slot_env_pins_slot() -> bool {
+    std::env::var("CQS_SLOT")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Top-level `Cli` arg IDs (clap IDs = struct field names) that configure the
+/// CLI *process* — output shaping, logging, model/slot selection — rather
+/// than the search. On daemon forwarding these are stripped from bare-query
+/// argv; every other top-level flag is a search knob mirrored by
+/// `args::SearchArgs` and forwards verbatim.
+///
+/// Kept in lock-step with [`SEARCH_KNOB_ARG_IDS`] by
+/// `every_top_level_cli_arg_is_classified_for_daemon_translation` — adding a
+/// top-level flag without classifying it here or there fails that test
+/// instead of failing daemon-up at runtime.
+#[cfg(unix)]
+const PROCESS_LOCAL_ARG_IDS: &[&str] = &["json", "quiet", "model", "slot", "verbose"];
+
+/// Top-level `Cli` arg IDs that are search knobs, mirrored spelling-for-
+/// spelling by `args::SearchArgs` (plus `LimitArg` for `limit`). Forwarded
+/// verbatim to the batch `search` parser on bare-query daemon dispatch.
+#[cfg(unix)]
+#[allow(
+    dead_code,
+    reason = "consumed by the classification tests below — the forwarded set is \
+              'everything not process-local', so production only needs the strip list"
+)]
+const SEARCH_KNOB_ARG_IDS: &[&str] = &[
+    "limit",
+    "threshold",
+    "name_boost",
+    "lang",
+    "include_type",
+    "exclude_type",
+    "path",
+    "pattern",
+    "name_only",
+    "rrf",
+    "include_docs",
+    "reranker",
+    "splade",
+    "splade_alpha",
+    "no_content",
+    "context",
+    "expand_parent",
+    "ref_name",
+    "include_refs",
+    "tokens",
+    "no_stale_check",
+    "no_demote",
+];
+
+/// Build the [`cqs::daemon_translate::CliArgSpec`] from the live clap
+/// definition. Derived at runtime (like `telemetry::describe_command`) so a
+/// new top-level flag is classified automatically — hand-mirrored flag lists
+/// are how `-v <cmd>` / `--rrf <cmd>` came to hard-error daemon-up while
+/// working daemon-down.
+#[cfg(unix)]
+fn cli_arg_spec() -> cqs::daemon_translate::CliArgSpec {
+    use clap::CommandFactory;
+    cqs::daemon_translate::CliArgSpec::from_clap(&Cli::command(), PROCESS_LOCAL_ARG_IDS)
+}
+
 /// Try to forward the current command to a running daemon.
 ///
 /// Returns:
@@ -294,14 +371,22 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
 
+    // From here on the socket file exists, so transport failures are
+    // anomalous (wedged or crashed daemon) — they log at warn so the default
+    // `cqs=info` filter surfaces why a 3 ms daemon query silently became a
+    // multi-second CLI cold start. Only the socket-absent path above stays
+    // quiet: that's the normal no-daemon case.
+    const FALLBACK_HINT: &str = "daemon unresponsive — falling back to CLI; \
+         check `systemctl --user status cqs-watch` (or set CQS_NO_DAEMON=1 to silence)";
+
     let stream = match UnixStream::connect(&sock_path) {
         Ok(s) => s,
         Err(e) => {
-            tracing::debug!(
+            tracing::warn!(
                 path = %sock_path.display(),
                 error = %e,
                 stage = "connect",
-                "Daemon transport failed, falling back to CLI"
+                "{FALLBACK_HINT}"
             );
             return Ok(None);
         }
@@ -340,8 +425,11 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
              Set CQS_NO_DAEMON=1 to force CLI mode with the requested model."
         );
     }
-    let (command, cmd_args) =
-        cqs::daemon_translate::translate_cli_args_to_batch(&raw_args, cli.command.is_some());
+    let (command, cmd_args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &raw_args,
+        cli.command.is_some(),
+        &cli_arg_spec(),
+    );
     let request = serde_json::json!({
         "command": command,
         "args": cmd_args,
@@ -349,11 +437,11 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
 
     let mut stream = stream;
     if let Err(e) = writeln!(stream, "{}", request) {
-        tracing::debug!(error = %e, stage = "write", "Daemon transport failed, falling back to CLI");
+        tracing::warn!(error = %e, stage = "write", "{FALLBACK_HINT}");
         return Ok(None);
     }
     if let Err(e) = stream.flush() {
-        tracing::debug!(error = %e, stage = "flush", "Daemon transport failed, falling back to CLI");
+        tracing::warn!(error = %e, stage = "flush", "{FALLBACK_HINT}");
         return Ok(None);
     }
 
@@ -369,11 +457,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     let bytes_read = match reader.read_line(&mut response_line) {
         Ok(n) => n,
         Err(e) => {
-            tracing::debug!(
-                error = %e,
-                stage = "read",
-                "Daemon transport failed, falling back to CLI"
-            );
+            tracing::warn!(error = %e, stage = "read", "{FALLBACK_HINT}");
             return Ok(None);
         }
     };
@@ -396,20 +480,16 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     let resp: serde_json::Value = match serde_json::from_str(response_line.trim()) {
         Ok(v) => v,
         Err(e) => {
-            tracing::debug!(
-                error = %e,
-                stage = "parse",
-                "Daemon transport failed, falling back to CLI"
-            );
+            tracing::warn!(error = %e, stage = "parse", "{FALLBACK_HINT}");
             return Ok(None);
         }
     };
     let status = match resp.get("status").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => {
-            tracing::debug!(
+            tracing::warn!(
                 stage = "parse",
-                "Daemon response missing 'status' field, falling back to CLI"
+                "Daemon response missing 'status' field — {FALLBACK_HINT}"
             );
             return Ok(None);
         }
@@ -494,4 +574,128 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     Err(anyhow::anyhow!(
         "daemon error: {msg}\nhint: set CQS_NO_DAEMON=1 to bypass the daemon"
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Collect every spelling (long, long aliases, short, short aliases) of a
+    /// clap arg.
+    fn spellings(arg: &clap::Arg) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(long) = arg.get_long() {
+            out.push(format!("--{long}"));
+        }
+        for alias in arg.get_all_aliases().unwrap_or_default() {
+            out.push(format!("--{alias}"));
+        }
+        if let Some(short) = arg.get_short() {
+            out.push(format!("-{short}"));
+        }
+        for alias in arg.get_all_short_aliases().unwrap_or_default() {
+            out.push(format!("-{alias}"));
+        }
+        out
+    }
+
+    /// Exhaustiveness pin for the daemon arg translation: every top-level
+    /// `Cli` flag must be explicitly classified as process-local (stripped on
+    /// daemon forwarding) or a search knob (forwarded to the batch `search`
+    /// parser on bare queries) — and never both. A new top-level flag fails
+    /// here at test time instead of failing daemon-up at runtime, which is
+    /// how `-v <cmd>` / `--rrf <cmd>` regressed.
+    #[test]
+    fn every_top_level_cli_arg_is_classified_for_daemon_translation() {
+        let app = Cli::command();
+        for arg in app.get_arguments() {
+            if arg.is_positional() {
+                continue; // `query` — the bare-query payload itself.
+            }
+            if matches!(
+                arg.get_action(),
+                clap::ArgAction::Help
+                    | clap::ArgAction::HelpShort
+                    | clap::ArgAction::HelpLong
+                    | clap::ArgAction::Version
+            ) {
+                continue; // clap-handled before dispatch ever runs.
+            }
+            let id = arg.get_id().as_str();
+            let local = PROCESS_LOCAL_ARG_IDS.contains(&id);
+            let knob = SEARCH_KNOB_ARG_IDS.contains(&id);
+            assert!(
+                local ^ knob,
+                "top-level Cli arg `{id}` must be classified in exactly one of \
+                 PROCESS_LOCAL_ARG_IDS / SEARCH_KNOB_ARG_IDS (local={local}, knob={knob}); \
+                 unclassified flags break daemon/CLI parity"
+            );
+        }
+    }
+
+    /// Every search-knob spelling the bare-query path forwards must be
+    /// accepted by the batch `search` parser — otherwise a daemon-up bare
+    /// query with that flag returns a parse error while daemon-down works.
+    #[test]
+    fn forwarded_search_knob_spellings_are_accepted_by_batch_search() {
+        let cli_app = Cli::command();
+        let batch_app = crate::cli::batch::BatchInput::command();
+        let search = batch_app
+            .find_subcommand("search")
+            .expect("batch parser must have a `search` subcommand");
+        let accepted: std::collections::BTreeSet<String> =
+            search.get_arguments().flat_map(spellings).collect();
+
+        for arg in cli_app.get_arguments() {
+            let id = arg.get_id().as_str();
+            if !SEARCH_KNOB_ARG_IDS.contains(&id) {
+                continue;
+            }
+            for spelling in spellings(arg) {
+                assert!(
+                    accepted.contains(&spelling),
+                    "top-level search knob `{id}` spelling `{spelling}` is forwarded to the \
+                     daemon but the batch `search` parser does not accept it"
+                );
+            }
+        }
+    }
+
+    /// The derived spec marks value-taking flags correctly: `--model` /
+    /// `--slot` / `-n` consume a value; `--json` / `-v` / `--rrf` don't.
+    #[test]
+    fn derived_spec_value_flag_classification() {
+        let spec = cli_arg_spec();
+        for flag in ["--model", "--slot", "-n", "--limit", "-t", "--tokens"] {
+            assert!(
+                spec.value_flags.contains(flag),
+                "`{flag}` must be classified as a value flag"
+            );
+        }
+        for flag in ["--json", "-q", "-v", "--rrf", "--name-only"] {
+            assert!(
+                !spec.value_flags.contains(flag),
+                "`{flag}` must not be classified as a value flag"
+            );
+        }
+        for flag in [
+            "--json",
+            "-q",
+            "--quiet",
+            "-v",
+            "--verbose",
+            "--model",
+            "--slot",
+        ] {
+            assert!(
+                spec.bare_query_strip.contains(flag),
+                "`{flag}` is process-local and must be stripped on bare queries"
+            );
+        }
+        assert!(
+            !spec.bare_query_strip.contains("--rrf"),
+            "`--rrf` is a search knob and must forward on bare queries"
+        );
+    }
 }

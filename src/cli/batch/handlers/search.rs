@@ -5,10 +5,11 @@ use anyhow::{Context, Result};
 use super::super::BatchView;
 use crate::cli::args::SearchArgs;
 use crate::cli::commands::search::query::{query_core, QueryArgs};
-
-/// Per-result limit clamp the daemon applies. The wire surface is agent-facing
-/// and must bound an over-eager `--limit`; the CLI has no such clamp.
-const DAEMON_LIMIT_CAP: usize = 100;
+// Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
+// same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
+// agree on the bound — CLI==daemon parity is the requirement, not a
+// daemon-only defense.
+use crate::cli::limits::SEARCH_LIMIT_CAP;
 
 /// Validate the textual filter args (`--lang`, `--include-type`,
 /// `--exclude-type`) with flag-specific error messages, returning the parsed
@@ -59,7 +60,7 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
 /// - `fts_first = false`: the daemon never had the NameOnly-FTS-first
 ///   short-circuit; it stays on the dense hybrid path for non-`--name-only`
 ///   queries.
-/// - limit clamped to [`DAEMON_LIMIT_CAP`].
+/// - limit clamped to [`SEARCH_LIMIT_CAP`].
 /// - `json_overhead` is the constant per-result envelope cost — the daemon
 ///   always serializes, so token-budget packing estimates with the JSON
 ///   overhead the CLI uses under `--json`.
@@ -71,7 +72,7 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
 fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
     QueryArgs {
         query: args.query.clone(),
-        limit: args.limit_arg.limit.clamp(1, DAEMON_LIMIT_CAP),
+        limit: args.limit_arg.limit.clamp(1, SEARCH_LIMIT_CAP),
         name_only: args.name_only,
         lang: args.lang.clone(),
         include_type: args.include_type.clone(),
@@ -184,7 +185,7 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
     // user typos that must fast-fail with the offending flag's name.
     let (languages, include_types, exclude_types) = validate_filter_args(args)?;
 
-    let limit = args.limit_arg.limit.clamp(1, DAEMON_LIMIT_CAP);
+    let limit = args.limit_arg.limit.clamp(1, SEARCH_LIMIT_CAP);
     let threshold = args.threshold;
 
     let query_embedding = ctx

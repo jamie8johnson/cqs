@@ -15,6 +15,13 @@
 //! FTS, graph, converter) live in `crate::limits` because their callers
 //! (`parser/`, `store/`, `nl/`, `convert/`) cannot reach into the CLI module.
 
+/// Hard cap on `--limit` for search, applied identically by the CLI
+/// dispatcher (`cli::dispatch`, top-level `cli.limit` clamp) and the daemon
+/// batch search handler (`batch::handlers::search`). One constant for both
+/// surfaces is a parity requirement: `cqs <query> -n 500` must return the
+/// same result count whether or not a daemon happens to serve it.
+pub(crate) const SEARCH_LIMIT_CAP: usize = 100;
+
 /// Maximum `--limit` accepted by `cqs scout` and the batch `scout`
 /// handler. Scout's downstream grouping and token packing scale roughly
 /// linearly in this number, so we keep the ceiling modest.
