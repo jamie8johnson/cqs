@@ -1040,7 +1040,6 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
 fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
     use sqlx::{ConnectOptions, Connection};
-    use std::str::FromStr;
 
     // Build a single-thread runtime for the pragma — slot migration is the
     // only caller and runs at most once per project lifetime.
@@ -1050,9 +1049,15 @@ fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
         .map_err(|e| SlotError::Migration(format!("checkpoint runtime: {e}")))?;
 
     rt.block_on(async {
-        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", legacy_index.display()))
-            .map_err(|e| SlotError::Migration(format!("checkpoint open: {e}")))?
+        // Use SqliteConnectOptions::filename() rather than from_str("sqlite://..")
+        // so special characters in the path (spaces, #, ?, %, unicode — common
+        // on Windows-origin trees) don't get URL-parsed and silently target the
+        // wrong file. busy_timeout lets a concurrent reader settle instead of
+        // failing the checkpoint outright.
+        let opts = SqliteConnectOptions::new()
+            .filename(legacy_index)
             .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(crate::store::helpers::sql::busy_timeout_from_env(30_000))
             .create_if_missing(false);
         let mut conn = opts
             .connect()
@@ -1457,6 +1462,57 @@ mod tests {
 
         // Active slot pointer is in place
         assert_eq!(read_active_slot(&cqs).as_deref(), Some(DEFAULT_SLOT));
+    }
+
+    /// `checkpoint_legacy_index` must open via `.filename()` so a project path
+    /// containing URL-significant characters (spaces, `#`, `%`) still drains the
+    /// WAL rather than silently targeting a wrong/empty path. Builds a real WAL
+    /// DB under a special-char directory, commits a row to grow the WAL, then
+    /// asserts the checkpoint succeeds and truncates the `-wal` sidecar.
+    #[test]
+    fn checkpoint_legacy_index_drains_wal_on_special_char_path() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use sqlx::{ConnectOptions, Connection, Executor};
+
+        let dir = TempDir::new().unwrap();
+        // Directory name with spaces, '#', and '%' — the URL-parse trap.
+        let weird = dir.path().join("My Project #1 (50%)");
+        fs::create_dir_all(&weird).unwrap();
+        let db = weird.join("index.db");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut conn = SqliteConnectOptions::new()
+                .filename(&db)
+                .journal_mode(SqliteJournalMode::Wal)
+                .create_if_missing(true)
+                .connect()
+                .await
+                .unwrap();
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+                .await
+                .unwrap();
+            conn.execute("INSERT INTO t (v) VALUES ('hello')")
+                .await
+                .unwrap();
+            // Leave the connection open so the WAL is non-empty on disk.
+            let wal = db.with_file_name("index.db-wal");
+            assert!(wal.exists(), "WAL sidecar should exist before checkpoint");
+            let _ = conn.close().await;
+        });
+
+        // The checkpoint must succeed (URL parsing would have failed the open
+        // or targeted the wrong path) and truncate the WAL to zero bytes.
+        checkpoint_legacy_index(&db).expect("checkpoint should drain WAL");
+
+        let wal = db.with_file_name("index.db-wal");
+        if wal.exists() {
+            let len = fs::metadata(&wal).unwrap().len();
+            assert_eq!(len, 0, "WAL should be truncated after checkpoint");
+        }
     }
 
     #[test]

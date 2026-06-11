@@ -1723,6 +1723,133 @@ mod tests {
         drop(writer);
     }
 
+    /// A second connection holding `BEGIN IMMEDIATE` (an exclusive write
+    /// reservation) while the `Store` attempts a write must surface a
+    /// recognizable "database is locked" error within the busy_timeout
+    /// window — not hang, not panic. Set `CQS_BUSY_TIMEOUT_MS=0` so the
+    /// store fails immediately instead of blocking for the 30 s default.
+    ///
+    /// This is the daemon+CLI concurrent-writer topology (two processes,
+    /// two connections, no shared in-process `WRITE_LOCK`); the raw sqlx
+    /// connection below stands in for the other process. SQLITE_BUSY caused
+    /// a production bug once and had zero test coverage before this.
+    #[test]
+    #[serial_test::serial]
+    fn busy_writer_surfaces_locked_error_not_hang() {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::{ConnectOptions, Connection, Executor};
+
+        // Force an immediate fail rather than a 30 s block.
+        std::env::set_var("CQS_BUSY_TIMEOUT_MS", "0");
+
+        let (store, dir) = make_test_store_initialized();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+
+        // Open a competing raw connection and hold an exclusive write
+        // reservation on it. This does NOT take the in-process WRITE_LOCK,
+        // so it models a separate process holding the SQLite-level lock.
+        let blocker = store
+            .rt
+            .block_on(async {
+                let mut conn = SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect()
+                    .await?;
+                conn.execute("BEGIN IMMEDIATE").await?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('busy_probe', '1')")
+                    .await?;
+                Ok::<_, sqlx::Error>(conn)
+            })
+            .expect("blocker should acquire the write reservation");
+
+        // The store's write must error (locked) rather than hang or panic.
+        let result = store.upsert_function_calls(
+            std::path::Path::new("busy.rs"),
+            &[crate::parser::FunctionCalls {
+                name: "f".to_string(),
+                line_start: 1,
+                calls: vec![],
+            }],
+        );
+
+        let err = result.expect_err("write should fail while blocker holds the lock");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("locked") || msg.contains("busy"),
+            "expected a recognizable locked/busy error, got: {msg}"
+        );
+
+        // Release the reservation; the store can then write successfully.
+        store
+            .rt
+            .block_on(async move {
+                let mut b = blocker;
+                b.execute("ROLLBACK").await?;
+                let _ = b.close().await;
+                Ok::<_, sqlx::Error>(())
+            })
+            .expect("blocker rollback should succeed");
+
+        std::env::remove_var("CQS_BUSY_TIMEOUT_MS");
+
+        store
+            .upsert_function_calls(
+                std::path::Path::new("busy.rs"),
+                &[crate::parser::FunctionCalls {
+                    name: "f".to_string(),
+                    line_start: 1,
+                    calls: vec![],
+                }],
+            )
+            .expect("write should succeed once the lock is released");
+    }
+
+    /// WAL mode lets a read-only open succeed while another connection holds
+    /// an open write transaction — the daemon-mid-write + CLI-read case.
+    /// A blocking writer reservation must not stop a fresh read-only Store
+    /// from opening and querying committed data.
+    #[test]
+    #[serial_test::serial]
+    fn wal_reader_succeeds_during_writer_transaction() {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::{ConnectOptions, Connection, Executor};
+
+        let (store, dir) = make_test_store_initialized();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+
+        // Hold an open write transaction on a competing connection.
+        let blocker = store
+            .rt
+            .block_on(async {
+                let mut conn = SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect()
+                    .await?;
+                conn.execute("BEGIN IMMEDIATE").await?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('wal_probe', '1')")
+                    .await?;
+                Ok::<_, sqlx::Error>(conn)
+            })
+            .expect("blocker should acquire the write reservation");
+
+        // A read-only open + query must succeed despite the live writer.
+        let ro = Store::open_readonly(&db_path)
+            .expect("readonly open should succeed during a writer transaction (WAL)");
+        assert!(ro.check_model_version().is_ok());
+
+        store
+            .rt
+            .block_on(async move {
+                let mut b = blocker;
+                b.execute("ROLLBACK").await?;
+                let _ = b.close().await;
+                Ok::<_, sqlx::Error>(())
+            })
+            .expect("blocker rollback should succeed");
+    }
+
     #[test]
     fn onclock_cache_not_invalidated_by_writes() {
         // get_call_graph() populates the OnceLock cache on first call.

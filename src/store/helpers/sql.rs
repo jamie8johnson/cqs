@@ -163,3 +163,44 @@ pub(crate) fn make_placeholders_offset(n: usize, start: usize) -> std::borrow::C
     }
     std::borrow::Cow::Owned(s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::time::Duration;
+
+    /// `busy_timeout_from_env` is the single source of truth for every SQLite
+    /// pool's lock-wait. These tests pin the three branches: unset → default,
+    /// valid override → parsed value, garbage → fallback. `#[serial]` guards
+    /// the process-global env var against parallel test interference.
+    #[test]
+    #[serial]
+    fn busy_timeout_from_env_defaults_when_unset() {
+        std::env::remove_var("CQS_BUSY_TIMEOUT_MS");
+        assert_eq!(busy_timeout_from_env(30_000), Duration::from_millis(30_000));
+    }
+
+    #[test]
+    #[serial]
+    fn busy_timeout_from_env_honours_valid_override() {
+        std::env::set_var("CQS_BUSY_TIMEOUT_MS", "500");
+        assert_eq!(busy_timeout_from_env(30_000), Duration::from_millis(500));
+        // Zero is a valid, deliberately-low value (used by the busy-writer
+        // test to force an immediate SQLITE_BUSY rather than a 30 s block).
+        std::env::set_var("CQS_BUSY_TIMEOUT_MS", "0");
+        assert_eq!(busy_timeout_from_env(30_000), Duration::from_millis(0));
+        std::env::remove_var("CQS_BUSY_TIMEOUT_MS");
+    }
+
+    #[test]
+    #[serial]
+    fn busy_timeout_from_env_falls_back_on_garbage() {
+        std::env::set_var("CQS_BUSY_TIMEOUT_MS", "not-a-number");
+        assert_eq!(busy_timeout_from_env(1234), Duration::from_millis(1234));
+        // Negative values fail u64 parse too → fallback.
+        std::env::set_var("CQS_BUSY_TIMEOUT_MS", "-5");
+        assert_eq!(busy_timeout_from_env(1234), Duration::from_millis(1234));
+        std::env::remove_var("CQS_BUSY_TIMEOUT_MS");
+    }
+}
