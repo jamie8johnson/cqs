@@ -1180,6 +1180,14 @@ impl CagraIndex {
             ));
         }
 
+        // Sweep orphan tmp files from interrupted saves before loading. A hard
+        // kill during the cuVS serialize step leaves a `.<blob>.<hex>.tmp` (or
+        // sidecar `.<blob>.meta.<hex>.tmp`) behind; the random suffix means no
+        // later save ever overwrites it, so they accumulate. Both `.<blob>.`-
+        // prefixed `.tmp` names are caught here. Mirrors the HNSW load sweep
+        // (hnsw/persist.rs) and SPLADE loader sweep (splade/index.rs).
+        cleanup_orphan_temp_files(path);
+
         if !path.exists() {
             return Err(CagraError::Io(format!(
                 "CAGRA blob not found at {}",
@@ -1353,6 +1361,66 @@ fn meta_path_for(path: &Path) -> std::path::PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".meta");
     std::path::PathBuf::from(s)
+}
+
+/// Remove orphan tmp files left by interrupted CAGRA saves.
+///
+/// Both the blob (`save_blob_atomic_with_rollback`) and the meta sidecar
+/// (`write_meta_atomic`) stage to `.<blob_file_name>.<hex16>.tmp` (the sidecar
+/// adds a `.meta` segment, so it shares the `.<blob_file_name>.` prefix) before
+/// atomic-replacing the live path. A hard kill (SIGKILL on daemon-stop timeout,
+/// OOM-kill, power loss) during the cuVS serialize — the longest save window —
+/// leaves the tmp behind, and the random suffix means no later save overwrites
+/// it. Sweeping on load matches the HNSW (`hnsw/persist.rs`) and SPLADE
+/// (`splade/index.rs`) loaders. Best-effort: a leftover tmp is wasteful, not
+/// fatal, so errors are logged and not propagated.
+///
+/// GPU-free (pure filesystem) so the sweep test runs without touching cuVS,
+/// though the whole `cagra` module is `cuda-index`-gated.
+#[cfg(feature = "cuda-index")]
+fn cleanup_orphan_temp_files(path: &std::path::Path) {
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return,
+    };
+    let blob_name = match path.file_name().and_then(|s| s.to_str()) {
+        Some(n) => n,
+        None => return,
+    };
+    // Live blob is `<blob_name>` and live meta is `<blob_name>.meta`; neither
+    // has a leading dot, and `.bak` rollbacks end in `.bak`, so this prefix +
+    // suffix only ever matches staged tmp files.
+    let prefix = format!(".{}.", blob_name);
+    let entries = match std::fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                parent = %parent.display(),
+                "read_dir for CAGRA orphan cleanup failed, skipping"
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue, // non-utf8 filename, leave it alone
+        };
+        if name.starts_with(&prefix) && name.ends_with(".tmp") {
+            match std::fs::remove_file(entry.path()) {
+                Ok(_) => tracing::info!(
+                    orphan = %name,
+                    "Cleaning up interrupted CAGRA save"
+                ),
+                Err(e) => tracing::debug!(
+                    error = %e,
+                    orphan = %name,
+                    "Failed to remove orphan CAGRA temp file"
+                ),
+            }
+        }
+    }
 }
 
 /// Stream-hash a file with blake3.
@@ -2501,5 +2569,55 @@ mod tests {
 
         let neg_inf = Embedding::new(vec![0.1, 0.2, 0.3, f32::NEG_INFINITY]);
         assert!(!super::query_is_finite(&neg_inf), "-Inf query rejected");
+    }
+}
+
+/// CPU-side tests for the orphan-tmp sweep. The sweep is GPU-free (pure
+/// filesystem), so these run without the `cuda-index` feature.
+#[cfg(test)]
+mod orphan_sweep_tests {
+    use std::fs;
+
+    #[test]
+    fn sweep_removes_blob_and_meta_orphans_keeps_live_and_unrelated() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blob = dir.path().join("cagra.index.bin");
+        let meta = dir.path().join("cagra.index.bin.meta");
+
+        // Live artifacts an interrupted-on-next-save state would have.
+        fs::write(&blob, b"live blob").unwrap();
+        fs::write(&meta, b"live meta").unwrap();
+
+        // Orphan tmp files: blob-staged and sidecar-staged, with the random
+        // hex suffix the real save paths use.
+        let blob_orphan = dir.path().join(".cagra.index.bin.0123456789abcdef.tmp");
+        let meta_orphan = dir
+            .path()
+            .join(".cagra.index.bin.meta.fedcba9876543210.tmp");
+        fs::write(&blob_orphan, b"orphan blob").unwrap();
+        fs::write(&meta_orphan, b"orphan meta").unwrap();
+
+        // A `.bak` rollback breadcrumb and an unrelated file must survive.
+        let bak = dir.path().join("cagra.index.bin.bak");
+        let unrelated = dir.path().join("other.index.bin.0000000000000000.tmp");
+        fs::write(&bak, b"bak").unwrap();
+        fs::write(&unrelated, b"unrelated").unwrap();
+
+        super::cleanup_orphan_temp_files(&blob);
+
+        assert!(!blob_orphan.exists(), "blob orphan tmp swept");
+        assert!(!meta_orphan.exists(), "meta orphan tmp swept");
+        assert!(blob.exists(), "live blob preserved");
+        assert!(meta.exists(), "live meta preserved");
+        assert!(bak.exists(), "`.bak` rollback preserved");
+        assert!(unrelated.exists(), "unrelated tmp preserved");
+    }
+
+    #[test]
+    fn sweep_is_noop_when_parent_missing() {
+        // Non-existent path with a parent that does not exist: best-effort,
+        // no panic.
+        let path = std::path::Path::new("/nonexistent-cqs-dir-xyz/cagra.index.bin");
+        super::cleanup_orphan_temp_files(path);
     }
 }

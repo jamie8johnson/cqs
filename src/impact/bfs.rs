@@ -318,9 +318,14 @@ pub(crate) fn test_reachability(
     graph: &CallGraph,
     test_names: &[&str],
     max_depth: usize,
-) -> HashMap<String, usize> {
+) -> HashMap<Arc<str>, usize> {
     let _span = tracing::info_span!("test_reachability", tests = test_names.len()).entered();
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    // Keys are `Arc<str>` so each visit/merge is an `Arc::clone` (RC bump)
+    // rather than a `callee.to_string()` heap allocation — the same interning
+    // rationale as `reverse_bfs`/`forward_bfs_multi`. The graph's node names are
+    // already interned `Arc<str>`, so we clone those keys via `get_key_value`.
+    // Callers index by `&str` because `Arc<str>: Borrow<str>`.
+    let mut counts: HashMap<Arc<str>, usize> = HashMap::new();
 
     // Step 1: Group tests by their first-hop callee set.
     // Tests with the same direct callees will traverse the same subgraph
@@ -336,8 +341,8 @@ pub(crate) fn test_reachability(
     }
 
     // Step 2: BFS once per unique callee set, multiply counts by class size.
-    let mut visited: HashMap<String, usize> = HashMap::new();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    let mut visited: HashMap<Arc<str>, usize> = HashMap::new();
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
 
     for (callee_set, class_size) in &equivalence_classes {
         if callee_set.is_empty() {
@@ -350,10 +355,13 @@ pub(crate) fn test_reachability(
         queue.clear();
 
         // Seed BFS from the shared callees at depth 1 (the test node itself
-        // is excluded from counts, so we start at depth 1 directly)
+        // is excluded from counts, so we start at depth 1 directly). Reuse the
+        // interned key from `graph.forward` when the callee is a key there
+        // (i.e. has outgoing edges); a leaf callee falls back to `Arc::from`.
         for &callee in callee_set {
-            visited.insert(callee.to_string(), 1);
-            queue.push_back((callee.to_string(), 1));
+            let arc = intern_node(graph, callee);
+            visited.insert(Arc::clone(&arc), 1);
+            queue.push_back((arc, 1));
         }
 
         while let Some((current, d)) = queue.pop_front() {
@@ -367,14 +375,14 @@ pub(crate) fn test_reachability(
                 );
                 break;
             }
-            if let Some(callees) = graph.forward.get(current.as_str()) {
+            if let Some(callees) = graph.forward.get(current.as_ref()) {
                 for callee in callees {
                     if visited.len() >= bfs_max_nodes() {
                         break;
                     }
                     if !visited.contains_key(callee.as_ref()) {
-                        visited.insert(callee.to_string(), d + 1);
-                        queue.push_back((callee.to_string(), d + 1));
+                        visited.insert(Arc::clone(callee), d + 1);
+                        queue.push_back((Arc::clone(callee), d + 1));
                     }
                 }
             }
@@ -382,11 +390,21 @@ pub(crate) fn test_reachability(
 
         // Every function visited is reachable from all tests in this class
         for name in visited.keys() {
-            *counts.entry(name.clone()).or_default() += class_size;
+            *counts.entry(Arc::clone(name)).or_default() += class_size;
         }
     }
 
     counts
+}
+
+/// Return the interned `Arc<str>` for `name` from the graph's forward map when
+/// present (nodes with outgoing edges), else allocate a fresh `Arc`. Lets the
+/// BFS reuse the graph's existing interning for the common case.
+fn intern_node(graph: &CallGraph, name: &str) -> Arc<str> {
+    match graph.forward.get_key_value(name) {
+        Some((k, _)) => Arc::clone(k),
+        None => Arc::from(name),
+    }
 }
 
 #[cfg(test)]

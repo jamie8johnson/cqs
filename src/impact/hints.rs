@@ -6,6 +6,7 @@ use crate::limits::{
 };
 use crate::store::{CallGraph, StoreError};
 use crate::Store;
+use std::sync::Arc;
 
 use super::bfs::{reverse_bfs, reverse_bfs_multi_attributed, test_reachability};
 use super::types::{FunctionHints, RiskLevel, RiskScore};
@@ -90,18 +91,56 @@ pub fn compute_hints<Mode>(
     ))
 }
 
+/// Borrow a precomputed test-reachability map when the caller supplied one,
+/// otherwise compute it once into `owned_slot` and borrow that. Lets `cqs task`
+/// share a single forward-BFS result across the scout and risk phases instead
+/// of recomputing it per phase, while standalone callers (`scout`, `health`,
+/// `review`, `suggest`) keep passing `None` and compute on demand.
+fn resolve_reachability<'a>(
+    graph: &CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+    precomputed: Option<&'a std::collections::HashMap<Arc<str>, usize>>,
+    owned_slot: &'a mut Option<std::collections::HashMap<Arc<str>, usize>>,
+) -> &'a std::collections::HashMap<Arc<str>, usize> {
+    match precomputed {
+        Some(map) => map,
+        None => {
+            let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+            owned_slot.insert(test_reachability(
+                graph,
+                &test_names,
+                DEFAULT_MAX_TEST_SEARCH_DEPTH,
+            ))
+        }
+    }
+}
+
 /// Batch compute hints for multiple functions using forward BFS.
 /// A single `test_reachability` call covers all functions, instead of N
 /// independent `reverse_bfs` calls.
+///
+/// `precomputed_reachability`: when `Some`, the forward-BFS test-reachability
+/// map is reused instead of recomputed (the `cqs task` pipeline shares one
+/// across phases); `None` computes it internally.
 pub fn compute_hints_batch(
     graph: &CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
     names: &[&str],
     caller_counts: &std::collections::HashMap<String, u64>,
+    precomputed_reachability: Option<&std::collections::HashMap<Arc<str>, usize>>,
 ) -> Vec<FunctionHints> {
     let _span = tracing::info_span!("compute_hints_batch", count = names.len()).entered();
-    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
-    let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+    // Reuse a caller-supplied reachability map when present (e.g. `cqs task`
+    // computes it once and shares it across scout + risk phases) instead of
+    // re-running the forward BFS over every test node. When absent, compute it
+    // here once and borrow the owned copy.
+    let mut owned_slot = None;
+    let reachability = resolve_reachability(
+        graph,
+        test_chunks,
+        precomputed_reachability,
+        &mut owned_slot,
+    );
 
     names
         .iter()
@@ -208,13 +247,21 @@ pub fn compute_risk_and_tests(
     targets: &[&str],
     graph: &CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
+    precomputed_reachability: Option<&std::collections::HashMap<Arc<str>, usize>>,
 ) -> (Vec<RiskScore>, Vec<super::TestInfo>) {
     let _span = tracing::info_span!("compute_risk_and_tests", targets = targets.len()).entered();
 
     // Use test_reachability (forward BFS) for risk scoring — same algorithm
     // as compute_risk_batch — to prevent divergent test counts between commands.
-    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
-    let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+    // Reuse a caller-supplied map (shared with the scout phase by `cqs task`)
+    // when present, else compute it once here.
+    let mut owned_slot = None;
+    let reachability = resolve_reachability(
+        graph,
+        test_chunks,
+        precomputed_reachability,
+        &mut owned_slot,
+    );
 
     // A single reverse_bfs_multi_attributed call covers all targets. The
     // attributed variant tracks which target (by index) first reached each
@@ -770,7 +817,7 @@ mod tests {
         let mut caller_counts = HashMap::new();
         caller_counts.insert("target".to_string(), 7u64);
 
-        let hints = compute_hints_batch(&graph, &test_chunks, &["target"], &caller_counts);
+        let hints = compute_hints_batch(&graph, &test_chunks, &["target"], &caller_counts, None);
         assert_eq!(hints.len(), 1);
         assert_eq!(
             hints[0].caller_count, 7,
@@ -792,7 +839,7 @@ mod tests {
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let caller_counts: std::collections::HashMap<String, u64> = HashMap::new();
 
-        let hints = compute_hints_batch(&graph, &test_chunks, &["target"], &caller_counts);
+        let hints = compute_hints_batch(&graph, &test_chunks, &["target"], &caller_counts, None);
         assert_eq!(
             hints[0].caller_count, 2,
             "fallback should count the two reverse edges"
@@ -816,6 +863,7 @@ mod tests {
             &test_chunks,
             &["target", "unrelated"],
             &caller_counts,
+            None,
         );
         assert_eq!(hints.len(), 2);
         assert_eq!(
@@ -837,8 +885,37 @@ mod tests {
         let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let caller_counts: std::collections::HashMap<String, u64> = HashMap::new();
-        let hints = compute_hints_batch(&graph, &test_chunks, &[], &caller_counts);
+        let hints = compute_hints_batch(&graph, &test_chunks, &[], &caller_counts, None);
         assert!(hints.is_empty(), "empty name list yields empty hints");
+    }
+
+    #[test]
+    fn test_compute_hints_batch_uses_precomputed_reachability() {
+        // When a precomputed reachability map is supplied, the batch reads
+        // test counts from it rather than recomputing from `test_chunks`.
+        // The graph here has no forward edges and the test_chunks are empty,
+        // so an internally-computed map would report 0 — the supplied map's
+        // count of 3 proves the precomputed path is exercised.
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let caller_counts: std::collections::HashMap<String, u64> = HashMap::new();
+
+        let mut precomputed: std::collections::HashMap<Arc<str>, usize> =
+            std::collections::HashMap::new();
+        precomputed.insert(Arc::from("target"), 3);
+
+        let hints = compute_hints_batch(
+            &graph,
+            &test_chunks,
+            &["target"],
+            &caller_counts,
+            Some(&precomputed),
+        );
+        assert_eq!(hints.len(), 1);
+        assert_eq!(
+            hints[0].test_count, 3,
+            "supplied reachability map should be used verbatim, not recomputed"
+        );
     }
 
     #[test]
