@@ -274,75 +274,6 @@ impl Store<ReadWrite> {
         })
     }
 
-    /// Insert chunks without a real embedding. Each row gets a
-    /// zero-vec sentinel in the `embedding` column and `needs_embedding=1`,
-    /// signaling that `enrichment_pass` must overwrite the embedding before
-    /// the chunk becomes visible to HNSW build / search hydration.
-    ///
-    /// Used by the indexing pipeline when `--llm-summaries` is set: the
-    /// first-pass embed would just be overwritten by the post-summary
-    /// enrichment re-embed, so we skip it entirely. On a fresh
-    /// `cqs index --force --llm-summaries` for a 12k-chunk corpus this
-    /// halves the GPU time spent embedding.
-    ///
-    /// Failure modes: an interrupted enrichment pass leaves chunks at
-    /// `needs_embedding=1`. The next `cqs index` invocation observes them
-    /// via `enrichment_pass`'s `needs_embedding > 0` trigger and embeds
-    /// them. Search ignores chunks at `needs_embedding=1` so the partial
-    /// state never leaks degraded results.
-    pub fn upsert_chunks_unembedded_batch(
-        &self,
-        chunks: &[Chunk],
-        source_mtime: Option<i64>,
-    ) -> Result<usize, StoreError> {
-        let _span =
-            tracing::info_span!("upsert_chunks_unembedded_batch", count = chunks.len()).entered();
-
-        if chunks.is_empty() {
-            return Ok(0);
-        }
-
-        let dim = self.dim;
-        let zero_vec = Embedding::new(vec![0.0_f32; dim]);
-        let chunks_with_zero: Vec<(Chunk, Embedding)> = chunks
-            .iter()
-            .map(|c| (c.clone(), zero_vec.clone()))
-            .collect();
-        let embedding_bytes: Vec<Vec<u8>> = chunks_with_zero
-            .iter()
-            .map(|(_, emb)| embedding_to_bytes(emb, dim))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let prefixes = self.vendored_prefixes_slice();
-        let vendored_per_chunk: Vec<bool> = chunks
-            .iter()
-            .map(|chunk| {
-                let origin = crate::normalize_path(&chunk.file);
-                crate::vendored::is_vendored_origin(&origin, prefixes)
-            })
-            .collect();
-
-        let source_mtimes = vec![source_mtime; chunks.len()];
-        self.rt.block_on(async {
-            let (_guard, mut tx) = self.begin_write().await?;
-            let old_hashes = snapshot_content_hashes(&mut tx, &chunks_with_zero).await?;
-            let now = chrono::Utc::now().to_rfc3339();
-            batch_insert_chunks(
-                &mut tx,
-                &chunks_with_zero,
-                &embedding_bytes,
-                &vendored_per_chunk,
-                &source_mtimes,
-                &now,
-                true, // zero-vec sentinel → needs_embedding=1
-            )
-            .await?;
-            upsert_fts_conditional(&mut tx, &chunks_with_zero, &old_hashes).await?;
-            tx.commit().await?;
-            Ok(chunks.len())
-        })
-    }
-
     /// Insert or update a single chunk
     pub fn upsert_chunk(
         &self,
@@ -459,7 +390,7 @@ impl Store<ReadWrite> {
             //
             // Also repopulate `embedding_base` when it was previously NULL.
             // The first-pass-skip path inserts chunks with
-            // `embedding_base = NULL` (per `upsert_chunks_unembedded_batch`);
+            // `embedding_base = NULL` (per `upsert_embedded_batch`'s sentinel mode);
             // without this, every `--llm-summaries` reindex permanently
             // leaves the chunk invisible to `build_hnsw_base_index` (which
             // filters `WHERE embedding_base IS NOT NULL`), silently degrading
@@ -911,8 +842,11 @@ impl Store<ReadWrite> {
     /// chunks + calls + function_calls + prune as one unit.)
     ///
     /// `sentinel` chunks are written via the same zero-vec
-    /// `needs_embedding=1` contract as [`Self::upsert_chunks_unembedded_batch`]
-    /// (skip-first-pass under `--llm-summaries`); `real` chunks land at
+    /// `needs_embedding=1` contract that `enrichment_pass` and the reuse
+    /// resolver depend on (skip-first-pass under `--llm-summaries`): each
+    /// sentinel row carries a zero vector in `embedding`, NULL
+    /// `embedding_base`, and stays invisible to HNSW build / search until
+    /// enrichment lands its real vector. `real` chunks land at
     /// `needs_embedding=0`.
     ///
     /// `fingerprints` is keyed by `Chunk::file`. Per-row `source_mtime` binds
@@ -1663,9 +1597,10 @@ mod tests {
 
     // ===== needs_embedding flag round-trip =====
 
-    /// `upsert_chunks_unembedded_batch` writes chunks with `needs_embedding=1`
-    /// and a zero-vec sentinel in the `embedding` column. `needs_embedding_count`
-    /// reports them; `needs_embedding_ids` returns their IDs.
+    /// `upsert_embedded_batch`'s sentinel mode writes chunks with
+    /// `needs_embedding=1` and a zero-vec sentinel in the `embedding`
+    /// column. `needs_embedding_count` reports them; `needs_embedding_ids`
+    /// returns their IDs.
     #[test]
     fn upsert_unembedded_marks_needs_embedding_and_zero_vec() {
         let (store, _dir) = setup_store();
@@ -1673,7 +1608,11 @@ mod tests {
         let c2 = make_chunk("beta", "src/b.rs");
 
         let count = store
-            .upsert_chunks_unembedded_batch(&[c1.clone(), c2.clone()], Some(100))
+            .upsert_embedded_batch(
+                &[],
+                &[c1.clone(), c2.clone()],
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
         assert_eq!(count, 2);
 
@@ -1722,7 +1661,11 @@ mod tests {
         let c = make_chunk("alpha", "src/a.rs");
 
         store
-            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&c),
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
         assert_eq!(store.needs_embedding_count().unwrap(), 1);
 
@@ -1745,7 +1688,11 @@ mod tests {
         let c = make_chunk("alpha_function", "src/a.rs");
 
         store
-            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&c),
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
 
         // Name search must NOT find the unembedded chunk.
@@ -1786,7 +1733,11 @@ mod tests {
         let c = make_chunk("alpha", "src/a.rs");
 
         store
-            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&c),
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
 
         // Pre-enrichment: embedding_base IS NULL (not zero-vec). The base

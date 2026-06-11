@@ -1224,7 +1224,11 @@ mod tests {
             ChunkType::Function,
         );
         store
-            .upsert_chunks_unembedded_batch(std::slice::from_ref(&chunk), Some(12345))
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&chunk),
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
 
         let emb = mock_embedding(1.0);
