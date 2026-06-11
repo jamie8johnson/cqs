@@ -141,10 +141,11 @@ struct HnswMeta {
     #[serde(default)]
     chunk_count: Option<u64>,
     /// `Store::splade_generation()` of the store state this index was built
-    /// from. The counter is bumped by every sparse-vector write batch and by
-    /// the chunk-delete trigger, so it advances with every chunk-mutating
-    /// write the index pipeline performs. Same `None` semantics as
-    /// `chunk_count`.
+    /// from. The counter is bumped by every sparse-vector write batch, by
+    /// the chunk-delete trigger, and by dense-embedding rewrites
+    /// (`update_embeddings_with_hashes_batch`, the enrichment pass), so it
+    /// advances with every vector-affecting write the index pipeline
+    /// performs. Same `None` semantics as `chunk_count`.
     #[serde(default)]
     splade_generation: Option<u64>,
 }
@@ -170,11 +171,12 @@ impl HnswMeta {
 /// sidecar fields play (`src/cagra.rs`): a cheap discriminator that lets the
 /// load path ask "does this index reflect the live store?" instead of only
 /// "are these files internally consistent?". `splade_generation` advances on
-/// every sparse-vector write batch and on every chunk delete (SQLite
-/// trigger); `chunk_count` catches insert-only paths that might not touch
-/// sparse rows. A write that changes neither (e.g. an embedding-only UPDATE
-/// with no chunk or sparse mutation) is invisible to the stamp — the same
-/// accepted limitation the CAGRA staleness check has.
+/// every sparse-vector write batch, on every chunk delete (SQLite trigger),
+/// and on every dense-embedding rewrite
+/// (`update_embeddings_with_hashes_batch` — the enrichment pass — bumps it
+/// explicitly so enrichment-only reindexes move the stamp); `chunk_count`
+/// catches insert-only paths that might not touch sparse rows. Every
+/// vector-affecting write path therefore moves the stamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreStamp {
     /// `Store::chunk_count()` at capture time.
@@ -639,6 +641,11 @@ impl HnswIndex {
             // set is the dirty-path load check's job, not this guard's; the
             // stamp here only has to prove the set came from a completed,
             // stamp-aware save of this store (generation not in the future).
+            // An ahead-of-store generation also occurs after restoring
+            // index.db from a backup (the restore rolls the counter back
+            // under sidecars saved later); the refusal is conservative
+            // there — remove the .baks or run `cqs index --force` to
+            // realign sidecars with the restored store.
             let debris_reason: Result<(), String> = (|| {
                 verify_hnsw_checksums(dir, basename)
                     .map_err(|e| format!("live set failed verification: {}", e))?;
@@ -2677,6 +2684,54 @@ mod tests {
         advance_store(&store, "late_chunk");
         let err = verify_hnsw_current(tmp.path(), "index", &store)
             .expect_err("store moved past the sidecar stamp — must refuse");
+        assert!(
+            format!("{err}").contains("does not match the live store"),
+            "want stamp-mismatch error, got: {err}"
+        );
+    }
+
+    /// Enrichment-style false-heal scenario: an embedding-only rewrite
+    /// (`update_embeddings_with_hashes_batch`) changes no chunk rows and no
+    /// sparse vectors — `chunk_count` is unchanged — so the stamp moves only
+    /// because the update bumps the write generation. A crash between that
+    /// commit and the HNSW save (dirty flag set, sidecars from before the
+    /// rewrite) must refuse the self-heal; healing would serve the
+    /// pre-enrichment vectors as current.
+    #[test]
+    fn verify_current_refuses_after_embedding_only_update() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        // Seed a chunk first so the sidecar stamp includes it — the later
+        // embedding rewrite must be the ONLY thing that moves the stamp.
+        advance_store(&store, "enriched_chunk");
+        let chunks_at_save = store.chunk_count().unwrap();
+
+        let index = small_index();
+        let snapshot = StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            index
+                .save_stamped(tmp.path(), "index", &store, snapshot)
+                .unwrap(),
+            SaveOutcome::Saved
+        );
+        verify_hnsw_current(tmp.path(), "index", &store).expect("precondition: stamp matches");
+
+        // The enrichment pass: rewrite the chunk's embedding in place.
+        store
+            .update_embeddings_with_hashes_batch(&[(
+                "enriched_chunk".to_string(),
+                make_embedding(77),
+                Some("enrichment_hash".to_string()),
+            )])
+            .unwrap();
+        assert_eq!(
+            store.chunk_count().unwrap(),
+            chunks_at_save,
+            "fixture invariant: the rewrite must not change chunk_count — \
+             only the write generation may move"
+        );
+
+        let err = verify_hnsw_current(tmp.path(), "index", &store)
+            .expect_err("sidecars predate the enrichment rewrite — must refuse");
         assert!(
             format!("{err}").contains("does not match the live store"),
             "want stamp-mismatch error, got: {err}"

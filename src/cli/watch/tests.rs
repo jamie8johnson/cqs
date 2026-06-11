@@ -1104,6 +1104,88 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
     assert!(state.pending_rebuild.is_none());
 }
 
+/// Ordering contract for same-cycle pairs: chunks committed in the same
+/// cycle a rebuild completes are queued into the pending delta BEFORE the
+/// drain runs (`PendingRebuild::queue_delta`, called by
+/// `process_file_changes` ahead of `drain_pending_rebuild`). The drain's
+/// sidecar save is stamped with the loop's observed store state — which
+/// includes those chunks — and clears the dirty flag, so the saved index
+/// must contain them: a crash right after the drain would otherwise leave
+/// a stamped-current sidecar that is missing the cycle's chunks, and the
+/// dirty-path self-heal would trust it.
+#[test]
+fn same_cycle_pairs_queued_before_drain_land_in_drained_and_saved_index() {
+    // dim = 64 (not the usual 4): the final assertion round-trips the saved
+    // sidecar through `load_with_dim`, whose data-file size sanity cap is
+    // `len * dim * 4 * 2` — at dim=4 that (128 B) is below the hnsw_rs file
+    // header overhead and the load is rejected as oversized.
+    let dim = 64;
+    let new_idx = synthetic_owned_index(3, dim); // ids: c0, c1, c2
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Ok(Some(RebuildResult {
+        index: new_idx,
+        snapshot_keys: std::collections::HashSet::new(),
+    })))
+    .unwrap();
+    drop(tx);
+
+    let mut state = test_watch_state();
+    state.pending_rebuild = Some(PendingRebuild {
+        rx,
+        delta: Vec::new(),
+        started_at: std::time::Instant::now(),
+        handle: None,
+        delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+
+    let fix = drain_test_fixture(dim);
+    fix.store
+        .set_hnsw_dirty(cqs::HnswKind::Enriched, true)
+        .unwrap();
+    let cfg = test_watch_config(
+        fix.tmp.path(),
+        fix.tmp.path(),
+        &fix.notes_path,
+        &fix.supported_ext,
+    );
+
+    // The same-cycle pair: committed this cycle, rebuild thread's snapshot
+    // never saw it. Queued BEFORE the drain — the seam under test.
+    let pending = state.pending_rebuild.as_mut().expect("pending set above");
+    pending.queue_delta(
+        vec![(
+            "same_cycle".to_string(),
+            cqs::Embedding::new(vec![0.9; dim]),
+            "h_same_cycle".to_string(),
+        )],
+        dim,
+        true,
+    );
+
+    let outcome = drain_pending_rebuild(&cfg, &fix.store, &mut state);
+    assert_eq!(outcome, DrainOutcome::Swapped);
+
+    // In-memory index contains the same-cycle pair.
+    let idx = state.hnsw_index.expect("rebuild was swapped in");
+    assert!(idx.ids().iter().any(|id| &**id == "same_cycle"));
+
+    // The stamped on-disk save contains it too — and the dirty flag was
+    // cleared, so this sidecar is exactly what a post-crash self-heal
+    // would trust.
+    assert!(
+        !fix.store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
+        "drain save landed → dirty flag cleared"
+    );
+    let loaded = cqs::HnswIndex::load_with_dim(fix.tmp.path(), "index", dim)
+        .expect("drain must have saved a loadable index");
+    assert!(
+        loaded.ids().iter().any(|id| &**id == "same_cycle"),
+        "the saved sidecar must contain the same-cycle pair its stamp claims"
+    );
+}
+
 /// Lost-update guard: when the live store stamp no longer matches the stamp
 /// the watch loop last observed (a concurrent `cqs index` committed chunks
 /// the rebuild snapshot + delta never saw), the drain must discard the

@@ -69,6 +69,81 @@ pub(super) struct PendingRebuild {
     pub(super) shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+impl PendingRebuild {
+    /// Queue (id, embedding, content_hash) triples for replay into the
+    /// rebuilt index at swap time, respecting the dim-aware
+    /// [`pending_rebuild_delta_max`] cap. Once the cap would be exceeded the
+    /// `delta_saturated` latch is set and the triples are dropped — SQLite
+    /// remains the source of truth and the drain discards a saturated
+    /// rebuild instead of swapping it.
+    ///
+    /// Ordering contract: pairs committed in the same cycle a drain may
+    /// complete MUST be queued BEFORE `drain_pending_rebuild` runs. The
+    /// drain's sidecar save is stamped with the watch loop's observed store
+    /// state, which already includes those pairs; a save without them would
+    /// clear the dirty flag on an index that is missing chunks its stamp
+    /// claims to contain.
+    pub(super) fn queue_delta(
+        &mut self,
+        pairs: Vec<(String, Embedding, String)>,
+        dim: usize,
+        quiet: bool,
+    ) {
+        if pairs.is_empty() {
+            return;
+        }
+        let delta_cap = pending_rebuild_delta_max(dim);
+        if self.delta.len() + pairs.len() > delta_cap {
+            if !self.delta_saturated {
+                tracing::warn!(
+                    cap = delta_cap,
+                    current = self.delta.len(),
+                    dim,
+                    "Pending HNSW rebuild delta saturated; \
+                     abandoning in-flight rebuild — next threshold \
+                     rebuild will pick up changes from SQLite"
+                );
+                self.delta_saturated = true;
+            }
+            // Drop the new pairs; SQLite is the source of truth.
+            return;
+        }
+        let added = pairs.len();
+        self.delta.extend(pairs);
+        tracing::debug!(
+            added,
+            total_delta = self.delta.len(),
+            "Captured chunks in pending rebuild delta"
+        );
+        if !quiet {
+            println!(
+                "  HNSW index: +{} vectors queued for in-flight rebuild ({} total deferred)",
+                added,
+                self.delta.len()
+            );
+        }
+    }
+}
+
+/// What [`drain_pending_rebuild`] did with the pending rebuild this tick.
+/// The caller uses this to decide whether this cycle's pairs were consumed
+/// (queued into the delta pre-drain and replayed/retained) or still need the
+/// post-drain handling (new rebuild's delta or the fast incremental path).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DrainOutcome {
+    /// No rebuild was pending.
+    NoPending,
+    /// Rebuild still in flight — pending (and its delta) retained.
+    StillRunning,
+    /// New index swapped in; the pending delta was replayed into it first.
+    Swapped,
+    /// Pending cleared without a swap (thread error, empty store, saturated
+    /// delta, stale-stamp discard, or channel disconnect). Any delta entries
+    /// were dropped — SQLite remains the source of truth and the next
+    /// threshold rebuild recovers them.
+    Cleared,
+}
+
 /// The rebuild thread reports both the freshly-built `HnswIndex` AND a
 /// fingerprint of every (id, content_hash) the build consumed. The drain path
 /// needs the snapshot to detect mid-rebuild re-embeddings — without it, a
@@ -409,17 +484,25 @@ pub(super) fn spawn_hnsw_rebuild(
 /// - Channel empty: rebuild still in flight; leave pending alone so the
 ///   caller continues to capture delta entries.
 /// - Channel disconnected: spawn failed earlier or thread panicked; clear.
-pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+///
+/// Returns a [`DrainOutcome`] so the caller can tell whether pairs it queued
+/// into the delta pre-drain were consumed (`Swapped` / retained
+/// `StillRunning`) or dropped (`Cleared`) and need re-handling.
+pub(super) fn drain_pending_rebuild(
+    cfg: &WatchConfig,
+    store: &Store,
+    state: &mut WatchState,
+) -> DrainOutcome {
     let Some(pending) = state.pending_rebuild.as_mut() else {
-        return;
+        return DrainOutcome::NoPending;
     };
     let outcome = match pending.rx.try_recv() {
         Ok(o) => o,
-        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return DrainOutcome::StillRunning,
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             tracing::warn!("Background rebuild thread channel disconnected; clearing pending");
             state.pending_rebuild = None;
-            return;
+            return DrainOutcome::Cleared;
         }
     };
     let pending = state
@@ -450,7 +533,7 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                         elapsed_ms
                     );
                 }
-                return;
+                return DrainOutcome::Cleared;
             }
             // Replay captured delta — skip only entries whose (id,
             // content_hash) match the snapshot. An id that was re-embedded
@@ -539,7 +622,7 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                                     elapsed_ms
                                 );
                             }
-                            return;
+                            return DrainOutcome::Cleared;
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -571,15 +654,18 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                     n, elapsed_ms
                 );
             }
+            DrainOutcome::Swapped
         }
         Ok(None) => {
             tracing::debug!("Background rebuild reported empty store; cleared pending");
+            DrainOutcome::Cleared
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 "Background HNSW rebuild failed; will retry on next threshold trigger"
             );
+            DrainOutcome::Cleared
         }
     }
 }

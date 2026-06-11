@@ -74,7 +74,7 @@ use rebuild::{
     PendingRebuild,
 };
 #[cfg(test)]
-use rebuild::{RebuildOutcome, RebuildResult};
+use rebuild::{DrainOutcome, RebuildOutcome, RebuildResult};
 
 mod gc;
 use gc::{
