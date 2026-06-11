@@ -39,10 +39,10 @@ use serde::Serialize;
 /// keys) is stable across versions.
 pub const JSON_OUTPUT_VERSION: u32 = 1;
 
-/// Re-export of the lib-level [`cqs::output_format::OutputFormat`] type so
-/// bin-level callers can write `cli::json_envelope::OutputFormat` for
+/// Re-export of the lib-level [`cqs::output_format::EnvelopeShape`] type so
+/// bin-level callers can write `cli::json_envelope::EnvelopeShape` for
 /// ergonomic locality with the envelope helpers below.
-pub use cqs::output_format::OutputFormat;
+pub use cqs::output_format::EnvelopeShape;
 
 /// Meta block surfaced as `_meta` on every envelope.
 ///
@@ -452,10 +452,10 @@ pub fn format_envelope_to_string<T: Serialize>(value: &T) -> Result<String> {
 /// Print a typed value as pretty-printed JSON. Drop-in replacement for
 /// `println!("{}", serde_json::to_string_pretty(&v)?)`.
 ///
-/// **Wire shape** depends on the active [`OutputFormat`]:
-/// - [`OutputFormat::V2Bare`] (default, `CQS_OUTPUT_FORMAT` unset) ⇒ bare
+/// **Wire shape** depends on the active [`EnvelopeShape`]:
+/// - [`EnvelopeShape::V2Bare`] (default, `CQS_OUTPUT_FORMAT` unset) ⇒ bare
 ///   payload to stdout, no envelope.
-/// - [`OutputFormat::V1Envelope`] (`CQS_OUTPUT_FORMAT=v1`) ⇒ full envelope
+/// - [`EnvelopeShape::V1Envelope`] (`CQS_OUTPUT_FORMAT=v1`) ⇒ full envelope
 ///   `{data, error: null, version: 1, _meta: {...}}` wrapped around
 ///   the value, pretty-printed.
 ///
@@ -464,7 +464,7 @@ pub fn format_envelope_to_string<T: Serialize>(value: &T) -> Result<String> {
 /// and [`crate::cli::batch::write_json_line`]). Keeps observable output uniform
 /// across CLI, batch, and chat surfaces.
 pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
-    let format = OutputFormat::current();
+    let format = EnvelopeShape::current();
     if format.emits_bare_payload() {
         // Bare payload to stdout, no envelope wrap. Pretty-print for human
         // readability of default CLI use; JSONL batch/daemon path is separate
@@ -479,7 +479,7 @@ pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
 }
 
 /// Print a value as a bare pretty-printed JSON payload to stdout —
-/// no envelope wrap. Used by [`emit_json`] under `OutputFormat::V2Bare`.
+/// no envelope wrap. Used by [`emit_json`] under `EnvelopeShape::V2Bare`.
 /// Sanitizes NaN / Infinity via the same retry pattern as the envelope
 /// path so non-finite floats become `null` instead of failing to
 /// serialize.
@@ -561,13 +561,13 @@ pub fn daemon_payload_to_cli_text(
     payload: &serde_json::Value,
     meta: Option<&serde_json::Value>,
 ) -> Result<String> {
-    daemon_payload_to_cli_text_with(OutputFormat::current(), payload, meta)
+    daemon_payload_to_cli_text_with(EnvelopeShape::current(), payload, meta)
 }
 
 /// Format-explicit core of [`daemon_payload_to_cli_text`], split out so tests
 /// can pin both branches without racing the process-cached env read.
 fn daemon_payload_to_cli_text_with(
-    format: OutputFormat,
+    format: EnvelopeShape,
     payload: &serde_json::Value,
     meta: Option<&serde_json::Value>,
 ) -> Result<String> {
@@ -606,30 +606,69 @@ pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
 /// `error.code="timeout"` AND keep the `data.snapshot` for diagnostic
 /// display, all in one envelope.
 ///
+/// **Wire shape** honors the active [`EnvelopeShape`], matching
+/// [`wrap_error`] and [`emit_json`] rather than diverging into an
+/// always-full envelope:
+/// - [`EnvelopeShape::V2Bare`] (default) ⇒ slim `{"data": ..., "error":
+///   {...}}` plus `"_meta": {...}` only when non-empty. Drops `version`
+///   (the slim shape's convention), and drops the `data` key entirely when
+///   no payload was supplied — bare-payload consumers never see `data:
+///   null` noise.
+/// - [`EnvelopeShape::V1Envelope`] (`CQS_OUTPUT_FORMAT=v1`) ⇒ full
+///   `{data, error, version, _meta}` envelope (always carries `data`, as
+///   `null` when absent) for consumers pinned to the wrapped shape.
+///
 /// Same retry-on-NaN guarantee as [`emit_json`].
 pub fn emit_json_error_with_data(
     code: &str,
     message: &str,
     data: Option<serde_json::Value>,
 ) -> Result<()> {
-    let mut env = serde_json::Map::with_capacity(4);
-    env.insert("data".to_string(), data.unwrap_or(serde_json::Value::Null));
-    env.insert(
-        "error".to_string(),
-        serde_json::json!({"code": code, "message": message}),
-    );
-    env.insert(
-        "version".to_string(),
-        serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
-    );
-    env.insert(
-        "_meta".to_string(),
-        serde_json::to_value(EnvelopeMeta::current())?,
-    );
-    let buf = serde_json::Value::Object(env);
+    let buf = error_with_data_envelope(EnvelopeShape::current(), code, message, data)?;
     let s = format_envelope_to_string(&buf)?;
     println!("{s}");
     Ok(())
+}
+
+/// Build the error-with-data envelope value for [`emit_json_error_with_data`],
+/// shaped by the supplied [`EnvelopeShape`]. Split out from the `println!`
+/// emitter so the shape contract is unit-testable without redirecting stdout.
+///
+/// - [`EnvelopeShape::V2Bare`] ⇒ slim `{"error": {...}}` (from [`wrap_error`],
+///   `_meta` only when non-empty), with `data` spliced in only when supplied.
+/// - [`EnvelopeShape::V1Envelope`] ⇒ full `{data, error, version, _meta}`.
+fn error_with_data_envelope(
+    shape: EnvelopeShape,
+    code: &str,
+    message: &str,
+    data: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    if shape.emits_bare_payload() {
+        // Slim shape: start from `wrap_error` (error + optional _meta), then
+        // splice `data` only when the caller supplied a payload.
+        let mut env = wrap_error(code, message);
+        if let (Some(payload), Some(obj)) = (data, env.as_object_mut()) {
+            obj.insert("data".to_string(), payload);
+        }
+        Ok(env)
+    } else {
+        // Full v1 envelope: data (null when absent) + error + version + _meta.
+        let mut env = serde_json::Map::with_capacity(4);
+        env.insert("data".to_string(), data.unwrap_or(serde_json::Value::Null));
+        env.insert(
+            "error".to_string(),
+            serde_json::json!({"code": code, "message": message}),
+        );
+        env.insert(
+            "version".to_string(),
+            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+        );
+        env.insert(
+            "_meta".to_string(),
+            serde_json::to_value(EnvelopeMeta::current())?,
+        );
+        Ok(serde_json::Value::Object(env))
+    }
 }
 
 /// Redact an error chain to a stable `(code, message)` pair safe to surface
@@ -719,18 +758,18 @@ mod tests {
 
     // Direct unit tests of `emit_json` would need stdout capture; instead
     // we exercise the behavior at the level of the dispatch decision (which
-    // `OutputFormat` triggers bare vs envelope emission).
+    // `EnvelopeShape` triggers bare vs envelope emission).
 
     #[test]
     fn dispatch_decision_v1_emits_envelope() {
         // V1Envelope (CQS_OUTPUT_FORMAT=v1) → envelope.
-        assert!(!OutputFormat::V1Envelope.emits_bare_payload());
+        assert!(!EnvelopeShape::V1Envelope.emits_bare_payload());
     }
 
     #[test]
     fn dispatch_decision_v2_emits_bare() {
         // V2Bare (default) → bare payload (the headline change).
-        assert!(OutputFormat::V2Bare.emits_bare_payload());
+        assert!(EnvelopeShape::V2Bare.emits_bare_payload());
     }
 
     #[test]
@@ -882,41 +921,26 @@ mod tests {
         assert_eq!(code, "parse_error");
     }
 
-    // `emit_json_error_with_data` produces an envelope matching
-    // `{data: <payload>, error: {code, message}, version, _meta}` — same
-    // outer shape as `emit_json_error` but with a payload in the `data` slot
-    // (success-style) AND an error in the `error` slot. This dual-fill is
-    // intentional: timeout-class failures want to carry diagnostic counters
-    // (snapshot, wait_secs) in `data` while signalling failure via
-    // `error.code = "timeout"`.
-    //
-    // We exercise the helper indirectly by mirroring its construction logic
-    // (println!-emitting functions are hard to assert against in a test
-    // harness without redirecting stdout).
+    // `emit_json_error_with_data` under the **V1 envelope** shape produces
+    // `{data: <payload>, error: {code, message}, version, _meta}` — the
+    // payload in the `data` slot (success-style) AND an error in the `error`
+    // slot. This dual-fill is intentional: timeout-class failures want to
+    // carry diagnostic counters (snapshot, wait_secs) in `data` while
+    // signalling failure via `error.code = "timeout"`. We assert the pure
+    // builder directly (the `println!` emitter just stringifies its output).
     #[test]
-    fn emit_json_error_with_data_envelope_shape() {
+    fn error_with_data_envelope_v1_full_shape() {
         let payload = serde_json::json!({
             "snapshot": {"state": "stale", "modified_files": 3},
             "wait_secs": 5,
         });
-        // Reconstruct what emit_json_error_with_data builds (the println!-
-        // emitting function is hard to assert against without redirecting
-        // stdout). The full envelope always carries data/error/version/_meta.
-        let mut env = serde_json::Map::with_capacity(4);
-        env.insert("data".to_string(), payload.clone());
-        env.insert(
-            "error".to_string(),
-            serde_json::json!({"code": error_codes::TIMEOUT, "message": "timed out"}),
-        );
-        env.insert(
-            "version".to_string(),
-            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
-        );
-        env.insert(
-            "_meta".to_string(),
-            serde_json::to_value(EnvelopeMeta::current()).unwrap(),
-        );
-        let v = serde_json::Value::Object(env);
+        let v = error_with_data_envelope(
+            EnvelopeShape::V1Envelope,
+            error_codes::TIMEOUT,
+            "timed out",
+            Some(payload),
+        )
+        .unwrap();
         // Diagnostic data carried alongside the error.
         assert_eq!(v["data"]["wait_secs"], 5);
         assert_eq!(v["data"]["snapshot"]["state"], "stale");
@@ -929,31 +953,55 @@ mod tests {
         assert!(v["_meta"].get("handling_advice").is_none());
     }
 
-    // `emit_json_error_with_data` accepts `None` data and emits `data: null`
-    // — degrades to the same shape as `emit_json_error` for callers that
-    // don't need a payload.
+    // V1 envelope with `None` data emits explicit `data: null` — degrades to
+    // the same shape as `emit_json_error` for callers without a payload.
     #[test]
-    fn emit_json_error_with_data_none_data_is_null() {
-        let mut env = serde_json::Map::with_capacity(4);
-        env.insert(
-            "data".to_string(),
-            (None as Option<serde_json::Value>).unwrap_or(serde_json::Value::Null),
-        );
-        env.insert(
-            "error".to_string(),
-            serde_json::json!({"code": error_codes::TIMEOUT, "message": "x"}),
-        );
-        env.insert(
-            "version".to_string(),
-            serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
-        );
-        env.insert(
-            "_meta".to_string(),
-            serde_json::to_value(EnvelopeMeta::current()).unwrap(),
-        );
-        let v = serde_json::Value::Object(env);
+    fn error_with_data_envelope_v1_none_data_is_null() {
+        let v =
+            error_with_data_envelope(EnvelopeShape::V1Envelope, error_codes::TIMEOUT, "x", None)
+                .unwrap();
         assert!(v["data"].is_null());
         assert_eq!(v["error"]["code"], "timeout");
+        assert_eq!(v["version"], JSON_OUTPUT_VERSION);
+    }
+
+    // V2Bare (default) honors the slim shape — matching `wrap_error` — instead
+    // of always emitting the full envelope. The `data`
+    // payload is spliced in, but `version` is dropped and `_meta` is absent
+    // when empty.
+    #[test]
+    fn error_with_data_envelope_v2bare_is_slim_with_data() {
+        let payload = serde_json::json!({"wait_secs": 5});
+        let v = error_with_data_envelope(
+            EnvelopeShape::V2Bare,
+            error_codes::TIMEOUT,
+            "timed out",
+            Some(payload),
+        )
+        .unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(v["error"]["code"], "timeout");
+        assert_eq!(v["data"]["wait_secs"], 5);
+        // Slim shape: no `version` key, no `data: null` noise.
+        assert!(
+            !obj.contains_key("version"),
+            "slim shape drops version: {v}"
+        );
+    }
+
+    // V2Bare with `None` data omits the `data` key entirely (no `data: null`),
+    // matching `wrap_error`'s bare-payload convention.
+    #[test]
+    fn error_with_data_envelope_v2bare_none_data_omits_key() {
+        let v = error_with_data_envelope(EnvelopeShape::V2Bare, error_codes::TIMEOUT, "x", None)
+            .unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(v["error"]["code"], "timeout");
+        assert!(
+            !obj.contains_key("data"),
+            "slim shape with no payload omits data: {v}"
+        );
+        assert!(!obj.contains_key("version"));
     }
 
     // wrap_value is the slim shape; the typed Envelope::ok path is the full
@@ -1300,7 +1348,7 @@ mod tests {
     fn daemon_payload_bare_splices_meta_into_object() {
         let payload = serde_json::json!({"query": "q", "results": []});
         let meta = serde_json::json!({"worktree_stale": true});
-        let s = daemon_payload_to_cli_text_with(OutputFormat::V2Bare, &payload, Some(&meta))
+        let s = daemon_payload_to_cli_text_with(EnvelopeShape::V2Bare, &payload, Some(&meta))
             .expect("render");
         assert!(s.ends_with('\n'), "trailing newline for println parity");
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
@@ -1316,7 +1364,7 @@ mod tests {
     fn daemon_payload_bare_array_drops_meta_with_shape_intact() {
         let payload = serde_json::json!([1, 2, 3]);
         let meta = serde_json::json!({"worktree_stale": true});
-        let s = daemon_payload_to_cli_text_with(OutputFormat::V2Bare, &payload, Some(&meta))
+        let s = daemon_payload_to_cli_text_with(EnvelopeShape::V2Bare, &payload, Some(&meta))
             .expect("render");
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
         assert_eq!(v, serde_json::json!([1, 2, 3]));
@@ -1325,7 +1373,7 @@ mod tests {
     #[test]
     fn daemon_payload_v1_rebuilds_full_envelope() {
         let payload = serde_json::json!({"k": 1});
-        let s = daemon_payload_to_cli_text_with(OutputFormat::V1Envelope, &payload, None)
+        let s = daemon_payload_to_cli_text_with(EnvelopeShape::V1Envelope, &payload, None)
             .expect("render");
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
         assert_eq!(v["data"]["k"], 1);

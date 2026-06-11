@@ -146,8 +146,8 @@ pub use helpers::score_name_match_pre_lower;
 /// Result of atomic GC prune (all 4 operations in one transaction).
 pub use chunks::PruneAllResult;
 
-/// Row cap for `Store::lookup_by_name` (kind-detection lookup).
-pub use chunks::LOOKUP_BY_NAME_LIMIT;
+/// Row cap for `Store::get_chunks_by_name` (kind-detection lookup).
+pub use chunks::GET_CHUNKS_BY_NAME_LIMIT;
 
 /// Per-file reconcile fingerprint stored alongside each chunk.
 /// `mtime + size + content_hash`, used by `run_daemon_reconcile` to detect

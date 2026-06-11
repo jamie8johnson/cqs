@@ -62,11 +62,11 @@ Rules:
 
 ### JSON Output Envelope
 
-JSON output has **two wire shapes**, selected by surface (and, on the CLI direct path, by `CQS_OUTPUT_FORMAT`). The shape is intentionally lean: the default drops redundant keys. Agents still parse a small, predictable set of shapes — but it is not one universal `{data, error, version}` wrapper. See `src/output_format.rs` (`OutputFormat`) and `src/cli/json_envelope.rs`.
+JSON output has **two wire shapes**, selected by surface (and, on the CLI direct path, by `CQS_OUTPUT_FORMAT`). The shape is intentionally lean: the default drops redundant keys. Agents still parse a small, predictable set of shapes — but it is not one universal `{data, error, version}` wrapper. See `src/output_format.rs` (`EnvelopeShape`) and `src/cli/json_envelope.rs`. (`EnvelopeShape` is the wire-envelope selector — renamed from the colliding `OutputFormat` in the v1.40 audit; the CLI `--format text|json|mermaid` flag enum keeps the `OutputFormat` name in `src/cli/definitions.rs`.)
 
 **Default lean shapes:**
 
-- **CLI direct (`--json`), success** — `OutputFormat::V2Bare` (the default). The handler emits the **bare payload** to stdout, no envelope wrap:
+- **CLI direct (`--json`), success** — `EnvelopeShape::V2Bare` (the default). The handler emits the **bare payload** to stdout, no envelope wrap:
   ```json
   { "name": "search_filtered", "callers": [ ... ] }
   ```
@@ -84,7 +84,7 @@ JSON output has **two wire shapes**, selected by surface (and, on the CLI direct
   ```
   CLI direct error paths emit via `emit_json_error` (see `reference.rs`, which surfaces `not_found` as a structured envelope error in JSON mode).
 
-**`CQS_OUTPUT_FORMAT=v1` opt-in (legacy full envelope):** on the CLI direct success path, set `CQS_OUTPUT_FORMAT=v1` (`OutputFormat::V1Envelope`) to restore the wrapped shape:
+**`CQS_OUTPUT_FORMAT=v1` opt-in (legacy full envelope):** on the CLI direct success path, set `CQS_OUTPUT_FORMAT=v1` (`EnvelopeShape::V1Envelope`) to restore the wrapped shape:
 ```json
 { "data": <payload>, "error": null, "version": 1, "_meta": { ... } }
 ```
@@ -103,7 +103,7 @@ All six codes can reach a client. The redaction boundary (`redact_error`) downca
 **`version`** (v1 envelope only) is the wire-format version — bump `JSON_OUTPUT_VERSION` on any breaking change to inner `data` payload shapes. The slim default shapes omit it entirely.
 
 **How to emit when adding `--json` to a new command:**
-- **CLI direct:** call `crate::cli::json_envelope::emit_json(&output)?` (success) / `emit_json_error(code, message)?` (error) instead of `println!`. `emit_json` resolves `OutputFormat` and picks bare-vs-v1 for you, and sanitizes NaN/Infinity to `null`.
+- **CLI direct:** call `crate::cli::json_envelope::emit_json(&output)?` (success) / `emit_json_error(code, message)?` (error) instead of `println!`. `emit_json` resolves `EnvelopeShape` and picks bare-vs-v1 for you, and sanitizes NaN/Infinity to `null`.
 - **Batch / daemon:** return a raw `serde_json::Value` from your `dispatch_*` handler — the chokepoint `src/cli/batch/mod.rs::write_json_line` wraps it in the slim shape and splices `_meta`. For per-response meta (like `stale_origins`), build it through `merged_meta_value`.
 - **Daemon socket transport:** the outer `{ "status", "output" }` framing in `watch.rs` is transport-level and orthogonal — its `output` field carries the JSONL line as a string.
 
@@ -269,7 +269,7 @@ src/
     display.rs  - Output formatting, result display
     enrichment.rs - Enrichment pass (extracted from pipeline.rs)
     files.rs    - File enumeration, lock files, path utilities
-    json_envelope.rs - JSON output emission helpers: emit_json/emit_json_error (CLI direct, bare-vs-v1 via OutputFormat), wrap_value/wrap_error (slim batch/daemon JSONL), ErrorCode taxonomy + error_codes consts, redact_error (daemon error redaction), EnvelopeMeta (_meta worktree-stale + per-response stale_origins merge), NaN/Infinity sanitization
+    json_envelope.rs - JSON output emission helpers: emit_json/emit_json_error (CLI direct, bare-vs-v1 via EnvelopeShape), wrap_value/wrap_error (slim batch/daemon JSONL), ErrorCode taxonomy + error_codes consts, redact_error (daemon error redaction), EnvelopeMeta (_meta worktree-stale + per-response stale_origins merge), NaN/Infinity sanitization
     limits.rs   - Shared clamp ceilings + env-overridable size limits for the CLI and batch/daemon dispatchers (keeps the two paths from drifting on `--limit`). Library-layer counterpart is `src/limits.rs`.
     pipeline/   - Multi-threaded indexing pipeline
       mod.rs, embedding.rs, parsing.rs, types.rs, upsert.rs, windowing.rs
@@ -299,7 +299,7 @@ src/
   ort_helpers.rs - Shared ORT error mapping (`ort_err`) wrapping `ort::Error` into the embedder/reranker/SPLADE `*Error` variants
   aux_model.rs - Auxiliary (small) model paths used by the LLM-summary pipeline
   kind.rs      - Polymorphic-routing Kind enum (Function | Type | Const | Module | Other | Ambiguous | Multiple | NotFound) + classify_chunk_type + classify_hits + detect_kind_for_store (#1610). Every function-or-type-specialized command consults this before its happy-path query.
-  output_format.rs - Wire-format selector: OutputFormat (V1Envelope | V2Bare; gated by CQS_OUTPUT_FORMAT, process-lifetime cached). Default V2Bare emits the bare payload on the CLI direct success path; v1 restores the full envelope. Consumed by emission helpers in src/cli/json_envelope.rs. (The CQS_ULTRASECURITY posture knob was removed in #1690 — security signals always emit when meaningful.)
+  output_format.rs - Wire-envelope selector: EnvelopeShape (V1Envelope | V2Bare; gated by CQS_OUTPUT_FORMAT, process-lifetime cached). Default V2Bare emits the bare payload on the CLI direct success path; v1 restores the full envelope. Consumed by emission helpers in src/cli/json_envelope.rs. Distinct from the CLI `--format` flag enum `OutputFormat` in src/cli/definitions.rs. (The CQS_ULTRASECURITY posture knob was removed in #1690 — security signals always emit when meaningful.)
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
     languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
