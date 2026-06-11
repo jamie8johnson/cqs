@@ -251,10 +251,26 @@ impl EmbeddingCache {
                         continue;
                     }
 
+                    // A blob whose length is not a multiple of 4 would panic
+                    // the bytemuck cast below (OutputSliceWouldHaveSlop); the
+                    // post-cast length check only catches whole-f32
+                    // truncation. Treat it as a miss, like the dim mismatch
+                    // above.
+                    if !blob.len().is_multiple_of(std::mem::size_of::<f32>()) {
+                        tracing::warn!(
+                            hash = &hash[..8.min(hash.len())],
+                            blob_len = blob.len(),
+                            "Cache blob length not a multiple of 4, skipping"
+                        );
+                        continue;
+                    }
+
                     // Zero-copy LE cast. `bytemuck::cast_slice` is sound here
                     // because (a) `embedding_to_bytes` is the only producer and
                     // stamps blobs as `&[f32] → &[u8]` so alignment + endianness
-                    // match, and (b) the length check below catches truncation.
+                    // match, and (b) the pre-check above rejects lengths that
+                    // are not a multiple of 4, while the length check below
+                    // catches whole-f32 truncation.
                     // cqs ships little-endian targets only; the cast is a no-op
                     // memcpy-equivalent there. Mirrors the fast path in
                     // `helpers/embeddings.rs::bytes_to_embedding`.
@@ -900,6 +916,67 @@ mod tests {
         let out = blake3_hex_or_passthrough(&bytes);
         assert_eq!(out.len(), 128); // 64 bytes × 2 hex chars per byte
         assert!(out.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// A cache row whose blob length is not a multiple of 4 must surface as
+    /// a miss, not a panic — the bytemuck cast in `read_batch` would
+    /// otherwise abort with `OutputSliceWouldHaveSlop` before the dim/length
+    /// checks run. Mirrors `test_query_cache_get_deletes_malformed_blob`.
+    #[test]
+    fn test_read_batch_skips_malformed_blob() {
+        let (cache, _dir) = test_cache();
+
+        // Insert a malformed (5-byte) blob and a valid sibling row directly
+        // via raw sqlx — bypassing write paths that only produce whole-f32
+        // blobs.
+        cache.rt.block_on(async {
+            sqlx::query(
+                "INSERT INTO embedding_cache \
+                 (content_hash, model_fingerprint, purpose, embedding, dim, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            )
+            .bind("malformed-hash")
+            .bind("test-fp")
+            .bind(CachePurpose::Embedding.as_str())
+            .bind(vec![0u8; 5]) // 5 bytes — not a multiple of 4
+            .bind(2i64)
+            .execute(&cache.pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "INSERT INTO embedding_cache \
+                 (content_hash, model_fingerprint, purpose, embedding, dim, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            )
+            .bind("valid-hash")
+            .bind("test-fp")
+            .bind(CachePurpose::Embedding.as_str())
+            .bind(bytemuck::cast_slice::<f32, u8>(&[0.5f32, 0.25]).to_vec())
+            .bind(2i64)
+            .execute(&cache.pool)
+            .await
+            .unwrap();
+        });
+
+        let result = cache
+            .read_batch(
+                &["malformed-hash", "valid-hash"],
+                "test-fp",
+                CachePurpose::Embedding,
+                2,
+            )
+            .expect("read_batch must not error on a malformed blob");
+
+        assert!(
+            !result.contains_key("malformed-hash"),
+            "malformed blob must produce a cache miss, got a hit"
+        );
+        assert_eq!(
+            result.get("valid-hash").map(Vec::as_slice),
+            Some(&[0.5f32, 0.25][..]),
+            "valid sibling row must still hit"
+        );
     }
 
     #[test]

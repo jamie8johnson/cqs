@@ -210,9 +210,17 @@ impl HnswIndex {
                 }
                 // Skip zero-vector embeddings — they produce NaN cosine
                 // distances. Short-circuit on the first non-zero element
-                // instead of computing the full L2 norm.
+                // instead of computing the full L2 norm. Note `NaN != 0.0`
+                // is true, so this check alone does not catch NaN vectors.
                 if !embedding.as_vec().iter().any(|x| *x != 0.0) {
                     tracing::warn!(chunk_id = %chunk_id, "Skipping zero-vector embedding");
+                    continue;
+                }
+                // Skip embeddings with NaN/Inf components — non-finite
+                // distances trip assertions inside hnsw_rs's parallel insert
+                // workers and would panic the whole build.
+                if embedding.as_vec().iter().any(|x| !x.is_finite()) {
+                    tracing::warn!(chunk_id = %chunk_id, "Skipping non-finite embedding");
                     continue;
                 }
                 let insert_idx = id_map.len();
@@ -507,6 +515,46 @@ mod tests {
             result.is_err(),
             "dim=0 with non-empty embeddings should error on dimension mismatch"
         );
+    }
+
+    /// A NaN vector interleaved between valid vectors must be skipped (it
+    /// passes the zero-vector check because `NaN != 0.0` is true), the build
+    /// must succeed, and the surviving ids must stay aligned with their
+    /// insertion indices — the id_map desync class documented in the build
+    /// loop.
+    #[test]
+    fn test_build_batched_skips_non_finite_embedding() {
+        // One-hot vectors: cosine-orthogonal, so each query's exact match
+        // is unambiguous even at k=1.
+        fn one_hot(idx: usize) -> Embedding {
+            let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
+            v[idx] = 1.0;
+            Embedding::new(v)
+        }
+
+        // Non-zero NaN component: passes the zero-vector check, must be
+        // caught by the non-finite check.
+        let mut nan_vec = vec![0.0f32; crate::EMBEDDING_DIM];
+        nan_vec[1] = f32::NAN;
+
+        let batch = vec![
+            ("chunk_a".to_string(), one_hot(0)),
+            ("chunk_nan".to_string(), Embedding::new(nan_vec)),
+            ("chunk_b".to_string(), one_hot(2)),
+        ];
+        let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> =
+            vec![Ok(batch)];
+
+        let index = HnswIndex::build_batched_with_dim(batches.into_iter(), 3, crate::EMBEDDING_DIM)
+            .expect("build must succeed with a non-finite vector in the stream");
+        assert_eq!(index.len(), 2, "NaN vector must be skipped, not inserted");
+
+        // Exact-embedding searches must return the correct ids — pins that
+        // the skip kept id_map positions aligned with insertion indices.
+        let hits = index.search(&one_hot(0), 1);
+        assert_eq!(hits.first().map(|r| r.id.as_str()), Some("chunk_a"));
+        let hits = index.search(&one_hot(2), 1);
+        assert_eq!(hits.first().map(|r| r.id.as_str()), Some("chunk_b"));
     }
 
     // ===== HnswIndex::search_filtered predicate tests =====
