@@ -231,6 +231,9 @@ pub(in crate::cli::batch) fn dispatch_scout(
         query: query.to_string(),
         limit: args.limit_arg.limit,
         tokens: args.tokens,
+        search_limit: args.search_limit,
+        search_threshold: args.search_threshold,
+        min_gap_ratio: args.min_gap_ratio,
     };
     let (output, _token_info) =
         crate::cli::commands::scout::scout_core(&ctx.store(), embedder, &ctx.root, &core_args)?;

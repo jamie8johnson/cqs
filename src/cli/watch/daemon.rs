@@ -222,7 +222,12 @@ pub(super) fn spawn_daemon_thread(
                         );
                         continue;
                     }
-                    in_flight.fetch_add(1, Ordering::AcqRel);
+                    let prev = in_flight.fetch_add(1, Ordering::AcqRel);
+                    tracing::debug!(
+                        in_flight_after = prev + 1,
+                        cap = max_clients,
+                        "Accepted daemon connection"
+                    );
                     let ctx_clone = Arc::clone(&ctx);
                     let in_flight_clone = Arc::clone(&in_flight);
                     // Spawn a fresh thread per accepted connection so
@@ -239,7 +244,11 @@ pub(super) fn spawn_daemon_thread(
                         .name("cqs-daemon-client".to_string())
                         .spawn(move || {
                             handle_socket_client(stream, &ctx_clone);
-                            in_flight_clone.fetch_sub(1, Ordering::AcqRel);
+                            let prev = in_flight_clone.fetch_sub(1, Ordering::AcqRel);
+                            tracing::debug!(
+                                in_flight_after = prev.saturating_sub(1),
+                                "Daemon connection released"
+                            );
                         })
                     {
                         // Couldn't spawn a thread — decrement the

@@ -314,7 +314,12 @@ impl<Mode> Store<Mode> {
     /// detection case, this method is the right primitive: one SQL
     /// query, no FTS overhead, no batching ceremony.
     pub fn lookup_by_name(&self, name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
-        let _span = tracing::debug_span!("lookup_by_name", %name).entered();
+        // Record only the length, not the name. The full user-supplied name
+        // lands in journald under RUST_LOG=debug — unbounded size plus a
+        // potential secret/identifier leak. The content is recoverable from
+        // the SQL plan if ever needed; matches the socket layer's args_len
+        // redaction pattern.
+        let _span = tracing::debug_span!("lookup_by_name", name_len = name.len()).entered();
         if name.is_empty() {
             return Ok(Vec::new());
         }

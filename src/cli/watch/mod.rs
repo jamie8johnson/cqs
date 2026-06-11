@@ -411,10 +411,12 @@ fn flush_due(state: &WatchState, debounce: &DebounceConfig) -> bool {
 /// Default automount root is `/mnt/`, but users can customize it via `automount.root`
 /// in `/etc/wsl.conf`.
 ///
-/// Delegates to `cqs::config::wsl_automount_root_or_default` so this helper
-/// and `is_wsl_drvfs_path` share a single OnceLock-cached source of truth.
+/// Delegates to `cqs::config::is_wsl_drvfs_path` so this helper and the
+/// generic filesystem-resolution path apply identical drive-letter shape
+/// validation (`<root>/<letter>/...`) over the same OnceLock-cached
+/// `automount.root` source of truth, instead of a bare prefix match.
 fn is_under_wsl_automount(path: &str) -> bool {
-    path.starts_with(cqs::config::wsl_automount_root_or_default())
+    cqs::config::is_wsl_drvfs_path(std::path::Path::new(path))
 }
 
 /// Build a `Gitignore` matcher rooted at the project, combining the

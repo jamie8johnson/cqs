@@ -901,6 +901,9 @@ pub fn cmd_scout_dispatch(
             args.limit_arg.limit,
             cli.json || output.json,
             args.tokens,
+            args.search_limit,
+            args.search_threshold,
+            args.min_gap_ratio,
         )
     })
 }

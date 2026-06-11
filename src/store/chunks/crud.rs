@@ -1164,10 +1164,22 @@ impl Store<ReadWrite> {
             }
 
             // Phantom-chunk pruning fused into the same transaction.
-            // Mirrors `delete_phantom_chunks`, adapted to run on the open
-            // `tx` instead of opening its own. An empty `live_ids` with
-            // `Some(prune_file)` degrades to a full DELETE of the file —
-            // same contract as `delete_phantom_chunks` → `delete_by_origin`.
+            //
+            // This is a deliberate near-verbatim copy of `delete_phantom_chunks`,
+            // NOT an accidental duplicate. The distinction is the prune scope:
+            //   - This fused path operates on a *survivor set* — it deletes only
+            //     the chunks for `prune_file` that are absent from `live_ids`,
+            //     the rows that survived the just-applied upsert *inside the
+            //     active transaction*. Folding it into the same `tx` keeps the
+            //     upsert + prune atomic so a reindex never exposes a half-state.
+            //   - Standalone `delete_phantom_chunks` does a *wholesale* prune in
+            //     its own transaction, with no survivor set in scope.
+            // The two can't share an impl because this one must run on the
+            // already-open `tx` rather than opening its own connection.
+            //
+            // An empty `live_ids` with `Some(prune_file)` degrades to a full
+            // DELETE of the file — the same edge-case contract as
+            // `delete_phantom_chunks` → `delete_by_origin`.
             if let Some(file) = prune_file {
                 let origin_str = crate::normalize_path(file);
                 if live_ids.is_empty() {

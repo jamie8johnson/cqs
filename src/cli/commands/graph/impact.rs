@@ -28,6 +28,7 @@ use crate::cli::OutputFormat;
 /// (separate cross-project analyzer); the core covers the single-project
 /// path both surfaces share.
 #[derive(Debug, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct ImpactArgs {
     /// Function name or `file:function`.
     pub name: String,
@@ -39,6 +40,20 @@ pub(crate) struct ImpactArgs {
     pub suggest_tests: bool,
     /// Include type-impacted functions (shared type dependencies).
     pub include_types: bool,
+}
+
+impl Default for ImpactArgs {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            // Mirrors clap `--depth` default (`DEFAULT_DEPTH_BLAST`).
+            depth: crate::cli::args::DEFAULT_DEPTH_BLAST,
+            // Mirrors clap `LimitArg` default.
+            limit: crate::cli::args::DEFAULT_LIMIT,
+            suggest_tests: false,
+            include_types: false,
+        }
+    }
 }
 
 // ─── Core output ────────────────────────────────────────────────────────────
@@ -439,6 +454,17 @@ mod tests {
     use super::*;
     use cqs::store::ChunkSummary;
     use std::path::PathBuf;
+
+    /// A wire caller can supply just `name` and inherit the defaults.
+    #[test]
+    fn impact_args_deserialize_minimal() {
+        let args: ImpactArgs = serde_json::from_str(r#"{"name":"foo"}"#).unwrap();
+        assert_eq!(args.name, "foo");
+        assert_eq!(args.depth, crate::cli::args::DEFAULT_DEPTH_BLAST);
+        assert_eq!(args.limit, crate::cli::args::DEFAULT_LIMIT);
+        assert!(!args.suggest_tests);
+        assert!(!args.include_types);
+    }
 
     /// Build the serialized impact kind-fallback object the same way the
     /// core does, for shape assertions. Mirrors the per-kind notes via

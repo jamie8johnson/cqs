@@ -334,17 +334,16 @@ const GOLD_CHUNK_KNOWN_FIELDS: &[&str] = &[
     "language",
 ];
 
-/// Audit P2 #61c: every row of `v3_dev.v2.json` must deserialize through
-/// `cqs::eval::schema::EvalQuery`, and every JSON key in each row must be
-/// modeled (a runtime `deny_unknown_fields` equivalent that doesn't
-/// require a parallel test-only schema).
-#[test]
-fn test_v3_dev_v2_schema_covers_all_fields() {
+/// Shared body for the v3 split schema-coverage tests. Each row of the
+/// fixture at `path` must deserialize through `cqs::eval::schema::EvalQuery`,
+/// and every JSON key in each row must be modeled (a runtime
+/// `deny_unknown_fields` equivalent that doesn't require a parallel test-only
+/// schema). Both the dev and test splits run this with the same allowlists.
+fn assert_v3_split_schema_covers_all_fields(path: &str) {
     use cqs::eval::schema::EvalQuery;
     use serde::Deserialize;
     use std::collections::HashSet;
 
-    let path = "evals/queries/v3_dev.v2.json";
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -355,11 +354,11 @@ fn test_v3_dev_v2_schema_covers_all_fields() {
     };
 
     let envelope: serde_json::Value =
-        serde_json::from_str(&raw).expect("v3_dev.v2.json must be valid JSON");
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{path} must be valid JSON: {e}"));
     let queries_array = envelope
         .get("queries")
         .and_then(|v| v.as_array())
-        .expect("v3_dev.v2.json must have a top-level `queries` array");
+        .unwrap_or_else(|| panic!("{path} must have a top-level `queries` array"));
 
     let known_eval: HashSet<&str> = EVAL_QUERY_KNOWN_FIELDS.iter().copied().collect();
     let known_gold: HashSet<&str> = GOLD_CHUNK_KNOWN_FIELDS.iter().copied().collect();
@@ -368,9 +367,7 @@ fn test_v3_dev_v2_schema_covers_all_fields() {
     for (idx, raw_query) in queries_array.iter().enumerate() {
         // 1) Strong-type deserialization — must succeed.
         let _typed: EvalQuery = EvalQuery::deserialize(raw_query.clone()).unwrap_or_else(|e| {
-            panic!(
-                "EvalQuery #{idx} failed to deserialize from v3_dev.v2.json: {e}\nrow = {raw_query}",
-            )
+            panic!("EvalQuery #{idx} failed to deserialize from {path}: {e}\nrow = {raw_query}")
         });
 
         // 2) Field-coverage check — every JSON key must be modeled.
@@ -380,7 +377,7 @@ fn test_v3_dev_v2_schema_covers_all_fields() {
         for key in obj.keys() {
             assert!(
                 known_eval.contains(key.as_str()),
-                "query #{idx} has unknown field {key:?} not modeled in EvalQuery — \
+                "query #{idx} in {path} has unknown field {key:?} not modeled in EvalQuery — \
                  update src/eval/schema.rs and EVAL_QUERY_KNOWN_FIELDS in this test",
             );
         }
@@ -390,7 +387,7 @@ fn test_v3_dev_v2_schema_covers_all_fields() {
             for key in gold.keys() {
                 assert!(
                     known_gold.contains(key.as_str()),
-                    "query #{idx} gold_chunk has unknown field {key:?} not modeled in \
+                    "query #{idx} in {path} gold_chunk has unknown field {key:?} not modeled in \
                      GoldChunk — update src/eval/schema.rs and GOLD_CHUNK_KNOWN_FIELDS \
                      in this test",
                 );
@@ -402,7 +399,23 @@ fn test_v3_dev_v2_schema_covers_all_fields() {
 
     assert!(
         typed_count > 0,
-        "v3_dev.v2.json had zero queries — fixture is empty or malformed",
+        "{path} had zero queries — fixture is empty or malformed",
     );
-    eprintln!("v3_dev.v2.json schema coverage: {typed_count} queries, all fields modeled");
+    eprintln!("{path} schema coverage: {typed_count} queries, all fields modeled");
+}
+
+/// Audit P2 #61c: every row of `v3_dev.v2.json` must deserialize through
+/// `cqs::eval::schema::EvalQuery`, and every JSON key in each row must be
+/// modeled (a runtime `deny_unknown_fields` equivalent that doesn't
+/// require a parallel test-only schema).
+#[test]
+fn test_v3_dev_v2_schema_covers_all_fields() {
+    assert_v3_split_schema_covers_all_fields("evals/queries/v3_dev.v2.json");
+}
+
+/// Test split must satisfy the same schema-coverage contract as the dev
+/// split — same allowlists, same runtime `deny_unknown_fields` equivalent.
+#[test]
+fn test_v3_test_v2_schema_covers_all_fields() {
+    assert_v3_split_schema_covers_all_fields("evals/queries/v3_test.v2.json");
 }
