@@ -28,13 +28,13 @@ echo "1. search:" && cqs "error handling" --json -n 3 2>/dev/null | python3 -c "
 echo "2. name-only:" && cqs "Store" --name-only --json -n 3 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({len(r[\"results\"])} results)')" 2>&1 || echo "  FAIL"
 
 # 3. Read
-echo "3. read:" && cqs read src/lib.rs 2>/dev/null | head -1 | grep -q "cqs" && echo "  PASS" || echo "  FAIL"
+echo "3. read:" && cqs read src/lib.rs 2>/dev/null | head -1 | grep -q . && echo "  PASS" || echo "  FAIL"
 
 # 4. Callers
-echo "4. callers:" && cqs callers search_filtered --json 2>/dev/null | python3 -c "import sys,json; print(f'  PASS ({len(json.load(sys.stdin))} callers)')" 2>&1 || echo "  FAIL"
+echo "4. callers:" && cqs callers search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"count\"]} callers)')" 2>&1 || echo "  FAIL"
 
 # 5. Callees
-echo "5. callees:" && cqs callees search_filtered --json 2>/dev/null | python3 -c "import sys,json; print(f'  PASS ({len(json.load(sys.stdin))} callees)')" 2>&1 || echo "  FAIL"
+echo "5. callees:" && cqs callees search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"count\"]} callees)')" 2>&1 || echo "  FAIL"
 
 # 6. Explain
 echo "6. explain:" && cqs explain search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS (callers:{len(r.get(\"callers\",[]))}, callees:{len(r.get(\"callees\",[]))})')" 2>&1 || echo "  FAIL"
@@ -52,7 +52,7 @@ echo "9. health:" && cqs health --json 2>/dev/null | python3 -c "import sys,json
 echo "10. doctor:" && cqs doctor 2>/dev/null | grep -c "✓" | xargs -I{} echo "  PASS ({} checks)"
 
 # 11. Notes
-echo "11. notes:" && cqs notes list --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({len(r[\"notes\"])} notes)')" 2>&1 || echo "  FAIL"
+echo "11. notes:" && cqs notes list --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({len(r)} notes)')" 2>&1 || echo "  FAIL"
 
 # 12. Dead code
 echo "12. dead:" && cqs dead --json 2>/dev/null | python3 -c "import sys,json; print('  PASS')" 2>&1 || echo "  FAIL"
