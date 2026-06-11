@@ -211,7 +211,14 @@ pub fn worktree_name(dir: &Path) -> Option<String> {
         .lines()
         .find_map(|line| line.strip_prefix("gitdir:"))?
         .trim();
-    let gitdir = PathBuf::from(gitdir_path_str);
+    // The `.git` link file can carry a Windows verbatim (`\\?\C:\...`)
+    // prefix and backslash separators. Strip the prefix and normalize to
+    // forward slashes before `file_name()`, otherwise on a non-Windows host
+    // `PathBuf::from` treats the whole backslash string as one component and
+    // returns the prefixed mess instead of the worktree basename.
+    let gitdir_normalized =
+        crate::strip_windows_verbatim_prefix(gitdir_path_str).replace('\\', "/");
+    let gitdir = PathBuf::from(&gitdir_normalized);
     gitdir
         .file_name()
         .and_then(|n| n.to_str())
@@ -451,5 +458,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(worktree_name(&wt_root).as_deref(), Some("feature-x"));
+    }
+
+    #[test]
+    fn worktree_name_strips_windows_verbatim_prefix() {
+        let dir = TempDir::new().unwrap();
+        let wt_root = dir.path().join("wt-verbatim");
+        std::fs::create_dir_all(&wt_root).unwrap();
+        // Windows-style `.git` link with a `\\?\` verbatim prefix and
+        // backslash separators, as `git worktree add` writes under WSL/Windows.
+        std::fs::write(
+            wt_root.join(".git"),
+            "gitdir: \\\\?\\C:\\Projects\\cqs\\.git\\worktrees\\feature-x\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_name(&wt_root).as_deref(), Some("feature-x"));
+    }
+
+    #[test]
+    fn worktree_name_strips_verbatim_unc_prefix() {
+        let dir = TempDir::new().unwrap();
+        let wt_root = dir.path().join("wt-unc");
+        std::fs::create_dir_all(&wt_root).unwrap();
+        // `\\?\UNC\server\share\...` verbatim UNC form.
+        std::fs::write(
+            wt_root.join(".git"),
+            "gitdir: \\\\?\\UNC\\server\\share\\repo\\.git\\worktrees\\hotfix-9\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_name(&wt_root).as_deref(), Some("hotfix-9"));
     }
 }

@@ -649,4 +649,157 @@ mod tests {
         assert_eq!(once, twice, "normalize_ws must be idempotent");
         assert_eq!(once, "foo bar baz");
     }
+
+    // ---------- enrichment_pass end-to-end (slow, real embedder) ----------
+
+    /// `slow-tests`-gated end-to-end pin for `enrichment_pass` itself. The
+    /// unit tests above cover the hash function in isolation; the store
+    /// layer covers the needs_embedding clear + splade_generation bump with
+    /// mock vectors. Neither exercises the orchestration: paging chunks,
+    /// generating enriched NL, embedding it with a real model, and writing
+    /// the result back. This builds a real CPU embedder (loads the default
+    /// ~91MB model via the HF cache), seeds a store with `needs_embedding=1`
+    /// sentinel chunks, runs the pass, and asserts the full invariant set:
+    ///
+    /// 1. `needs_embedding` flags clear for every seeded chunk.
+    /// 2. The written embeddings are real (non-zero, not the seed sentinel).
+    /// 3. `splade_generation` advances (the vector-rewrite generation bump
+    ///    the HNSW sidecar staleness check depends on).
+    ///
+    /// Runs nightly via `ci-slow.yml` with the HF cache primed. Locally:
+    /// `cargo test --features slow-tests enrichment_pass_end_to_end`.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn enrichment_pass_end_to_end_real_embedder() {
+        use cqs::embedder::ModelConfig;
+        use cqs::store::ModelInfo;
+        use cqs::{Embedder, Store};
+
+        // Build a real CPU embedder from the default model.
+        let model_config = ModelConfig::resolve(None, None);
+        let embedder = match Embedder::new_cpu(model_config.clone()) {
+            Ok(e) => e,
+            Err(e) => {
+                // The CI-slow job primes the HF cache; if the model is
+                // genuinely unavailable, skip rather than fail so a missing
+                // cache doesn't redden an otherwise-green run.
+                eprintln!("Skipping enrichment_pass e2e: embedder init failed: {e}");
+                return;
+            }
+        };
+        let dim = embedder.embedding_dim();
+
+        // Store wired to the embedder's actual dim (setup_store uses the
+        // default ModelInfo dim, which may not match the live model).
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let mut store = Store::open(&db_path).unwrap();
+        store
+            .init(&ModelInfo::new(&embedder.model_config().repo, dim))
+            .unwrap();
+        store.set_dim(dim);
+
+        // Seed two real-looking function chunks. Give one a caller edge so
+        // the enrichment path also exercises call-context NL, not just the
+        // bare needs_embedding fallback.
+        let chunk_a = cqs::parser::Chunk {
+            id: "src/svc.rs:1:a".to_string(),
+            file: std::path::PathBuf::from("src/svc.rs"),
+            language: cqs::parser::Language::Rust,
+            chunk_type: cqs::parser::ChunkType::Function,
+            name: "process_request".to_string(),
+            signature: "fn process_request(req: Request) -> Response".to_string(),
+            content:
+                "fn process_request(req: Request) -> Response { validate(req); build_response() }"
+                    .to_string(),
+            doc: Some("Handles an inbound request and produces a response.".to_string()),
+            line_start: 1,
+            line_end: 4,
+            content_hash: "hash_a".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        let chunk_b = cqs::parser::Chunk {
+            id: "src/svc.rs:10:b".to_string(),
+            file: std::path::PathBuf::from("src/svc.rs"),
+            language: cqs::parser::Language::Rust,
+            chunk_type: cqs::parser::ChunkType::Function,
+            name: "validate".to_string(),
+            signature: "fn validate(req: Request)".to_string(),
+            content: "fn validate(req: Request) { assert!(req.is_ok()); }".to_string(),
+            doc: None,
+            line_start: 10,
+            line_end: 12,
+            content_hash: "hash_b".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        // Sentinel-mode upsert → needs_embedding=1, zero-vec embeddings.
+        store
+            .upsert_embedded_batch(
+                &[],
+                &[chunk_a.clone(), chunk_b.clone()],
+                &std::collections::HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            store.needs_embedding_count().unwrap(),
+            2,
+            "both seeded chunks should start at needs_embedding=1"
+        );
+
+        let gen_before = store.splade_generation().unwrap();
+
+        // Run the pass under test.
+        let enriched = enrichment_pass(&store, &embedder, &model_config, true)
+            .expect("enrichment_pass should succeed with a real embedder");
+        assert_eq!(
+            enriched, 2,
+            "enrichment_pass should re-embed both needs_embedding chunks"
+        );
+
+        // Invariant 1: needs_embedding flags clear.
+        assert_eq!(
+            store.needs_embedding_count().unwrap(),
+            0,
+            "enrichment_pass must clear needs_embedding for every processed chunk"
+        );
+        assert!(
+            store.needs_embedding_ids().unwrap().is_empty(),
+            "no chunk IDs should remain in the needs_embedding set"
+        );
+
+        // Invariant 2: written embeddings are real (non-zero). After the
+        // flag clears, the by-hash lookup serves the stored vectors.
+        let embs = store
+            .get_embeddings_by_hashes(&["hash_a", "hash_b"])
+            .unwrap();
+        assert_eq!(
+            embs.len(),
+            2,
+            "both embeddings must be retrievable post-pass"
+        );
+        for (h, emb) in &embs {
+            let slice = emb.as_slice();
+            assert_eq!(slice.len(), dim, "embedding dim mismatch for {h}");
+            assert!(
+                slice.iter().any(|&x| x != 0.0),
+                "embedding for {h} is all-zero — the real embedder did not run"
+            );
+        }
+
+        // Invariant 3: splade_generation advanced (vector-rewrite bump).
+        let gen_after = store.splade_generation().unwrap();
+        assert!(
+            gen_after > gen_before,
+            "enrichment_pass must bump splade_generation (before={gen_before}, after={gen_after})"
+        );
+    }
 }

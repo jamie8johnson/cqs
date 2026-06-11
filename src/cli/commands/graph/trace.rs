@@ -28,6 +28,7 @@ use crate::cli::OutputFormat;
 /// (separate cross-project BFS, no kind-fallback); the core covers the
 /// single-project path.
 #[derive(Debug, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct TraceArgs {
     /// Source function name or `file:function`.
     pub source: String,
@@ -41,6 +42,18 @@ pub(crate) struct TraceArgs {
     /// so an MCP/wire caller that omits it falls back to the default ceiling.
     #[serde(default = "trace_max_nodes")]
     pub max_nodes: usize,
+}
+
+impl Default for TraceArgs {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            target: String::new(),
+            // Mirrors clap `--max-depth` default (`DEFAULT_DEPTH_TRACE`).
+            max_depth: crate::cli::args::DEFAULT_DEPTH_TRACE as usize,
+            max_nodes: trace_max_nodes(),
+        }
+    }
 }
 
 // ─── Output types ──────────────────────────────────────────────────────────
@@ -753,6 +766,19 @@ pub(crate) fn bfs_shortest_path(
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    /// A wire caller can supply just `source`/`target` and inherit the defaults.
+    #[test]
+    fn trace_args_deserialize_minimal() {
+        let args: TraceArgs = serde_json::from_str(r#"{"source":"a","target":"b"}"#).unwrap();
+        assert_eq!(args.source, "a");
+        assert_eq!(args.target, "b");
+        assert_eq!(
+            args.max_depth,
+            crate::cli::args::DEFAULT_DEPTH_TRACE as usize
+        );
+        assert_eq!(args.max_nodes, trace_max_nodes());
+    }
 
     /// Convert a `HashMap<String, Vec<String>>` to `HashMap<Arc<str>, Vec<Arc<str>>>` for tests.
     fn arc_map(m: HashMap<String, Vec<String>>) -> HashMap<Arc<str>, Vec<Arc<str>>> {

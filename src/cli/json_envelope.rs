@@ -319,8 +319,22 @@ pub fn meta_json_fragment() -> String {
         // No non-default meta fields → skip the key entirely.
         return String::new();
     }
-    let value = meta_value_for_envelope(&meta);
-    let payload = serde_json::to_string(&value).expect("Envelope meta serializes");
+    // Serialize `&meta` straight to a string. The struct's serde-skip rules
+    // (skip false bool, skip None option) make this identical to routing
+    // through `meta_value_for_envelope`'s Value, while dropping the extra
+    // to_value allocation/tree-walk on this hot path.
+    //
+    // Graceful on serialize failure: the meta block is optional (skip-empty
+    // is already a valid shape), so on the impossible-today error path we
+    // drop the fragment rather than panic the daemon. A future field whose
+    // Serialize returns Err must not crash the streamed envelope writer.
+    let payload = serde_json::to_string(&meta).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Envelope meta failed to serialize; dropping _meta fragment");
+        String::new()
+    });
+    if payload.is_empty() {
+        return String::new();
+    }
     format!(",\"_meta\":{payload}")
 }
 
@@ -974,6 +988,78 @@ mod tests {
         assert!(via_wrap.get("version").is_none());
         assert!(via_typed["data"].is_null());
         assert_eq!(via_typed["version"], JSON_OUTPUT_VERSION);
+    }
+
+    // Adversarial error-envelope inputs must round-trip through serde_json
+    // unchanged. `wrap_error` builds the failure Value without writing
+    // stdout, so we can assert the build → to_string → from_str cycle
+    // preserves `error.code` / `error.message` byte-for-byte regardless of
+    // what control characters, sizes, or multibyte sequences the inputs
+    // carry. serde_json is responsible for escaping; these tests pin that
+    // the envelope layer doesn't corrupt or truncate the payload first.
+    #[test]
+    fn wrap_error_round_trips_nul_byte_message() {
+        let code = "internal";
+        let message = "before\0after";
+        let v = wrap_error(code, message);
+        let s = serde_json::to_string(&v).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("re-parse");
+        assert_eq!(parsed["error"]["code"], code);
+        assert_eq!(
+            parsed["error"]["message"], message,
+            "NUL byte in message must survive the round-trip intact"
+        );
+    }
+
+    #[test]
+    fn wrap_error_round_trips_one_megabyte_message() {
+        let code = "internal";
+        let message = "x".repeat(1024 * 1024);
+        let v = wrap_error(code, &message);
+        let s = serde_json::to_string(&v).expect("serialize 1MB message");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("re-parse 1MB message");
+        assert_eq!(parsed["error"]["code"], code);
+        assert_eq!(
+            parsed["error"]["message"]
+                .as_str()
+                .expect("message is a string")
+                .len(),
+            1024 * 1024,
+            "1MB message must round-trip without truncation"
+        );
+    }
+
+    #[test]
+    fn wrap_error_round_trips_json_significant_chars_in_code() {
+        // A code carrying quotes, newlines, and backslashes must be escaped
+        // by serde_json and recovered exactly — no premature stringification
+        // in the envelope layer.
+        let code = "weird\"code\nwith\\chars";
+        let message = "msg";
+        let v = wrap_error(code, message);
+        let s = serde_json::to_string(&v).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("re-parse");
+        assert_eq!(
+            parsed["error"]["code"], code,
+            "JSON-significant chars in code must round-trip intact"
+        );
+        assert_eq!(parsed["error"]["message"], message);
+    }
+
+    #[test]
+    fn wrap_error_round_trips_multibyte_utf8_message() {
+        // Multibyte UTF-8 and emoji pass through unchanged — serde_json emits
+        // them as-is (no \u escaping required) and recovers them byte-exact.
+        let code = "invalid_input";
+        let message = "café ☃ 日本語 🚀 résumé";
+        let v = wrap_error(code, message);
+        let s = serde_json::to_string(&v).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("re-parse");
+        assert_eq!(parsed["error"]["code"], code);
+        assert_eq!(
+            parsed["error"]["message"], message,
+            "multibyte UTF-8 / emoji must pass through unchanged"
+        );
     }
 
     // wrap_value takes &Value — confirm the caller doesn't need to clone the

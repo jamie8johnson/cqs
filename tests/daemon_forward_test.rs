@@ -1625,3 +1625,132 @@ fn test_impact_text_mode_bypasses_daemon() {
         "mock response leaked into text-mode impact stdout: {stdout}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `--stdin` daemon-forward bypass (issue #1775).
+//
+// `review` / `ci` / `impact-diff` are daemon-marked, but the daemon reads its
+// own git diff in the server process — it has no client stdin on the wire. A
+// `--stdin --json` invocation daemon-up would silently drop the piped diff and
+// analyze the daemon's working tree (the wrong diff, no error). The gate keeps
+// `--stdin` invocations on the CLI path even in JSON mode, exactly like the
+// text-mode bypass above.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_review_stdin_json_bypasses_daemon() {
+    // `cqs review --stdin --json` with a piped diff must NOT forward to the
+    // daemon — the daemon can't see the piped diff. The gate keeps it on the
+    // CLI path; the mock must observe zero connections.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_SHOULD_NOT_RESPOND");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["review", "--stdin", "--json"])
+        // A minimal unified diff on stdin. The CLI fallback may still error
+        // (no real index / store), but the pin is purely that the daemon
+        // socket was never touched and its sentinel never reached stdout.
+        .write_stdin(
+            "diff --git a/foo.rs b/foo.rs\n\
+             --- a/foo.rs\n\
+             +++ b/foo.rs\n\
+             @@ -1 +1 @@\n\
+             -fn foo() {}\n\
+             +fn foo() { bar(); }\n",
+        );
+
+    let output = cmd.output().expect("cqs review --stdin spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        mock.conn_count(),
+        0,
+        "review --stdin --json reached the daemon socket (issue #1775 gate regressed); \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    assert!(
+        !stdout.contains("DAEMON_SHOULD_NOT_RESPOND"),
+        "daemon sentinel leaked into review --stdin stdout: {stdout}"
+    );
+}
+
+#[test]
+fn test_ci_stdin_json_bypasses_daemon() {
+    // Sibling of the review test: `ci --stdin --json` must also bypass.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_SHOULD_NOT_RESPOND");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["ci", "--stdin", "--json"])
+        .write_stdin(
+            "diff --git a/foo.rs b/foo.rs\n\
+             --- a/foo.rs\n\
+             +++ b/foo.rs\n\
+             @@ -1 +1 @@\n\
+             -fn foo() {}\n\
+             +fn foo() { bar(); }\n",
+        );
+
+    let output = cmd.output().expect("cqs ci --stdin spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        mock.conn_count(),
+        0,
+        "ci --stdin --json reached the daemon socket (issue #1775 gate regressed); \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+}
+
+#[test]
+fn test_review_base_json_still_forwards_to_daemon() {
+    // The complement: `review --base <ref> --json` (NO --stdin) must still
+    // forward to the daemon — the bypass is stdin-specific, not a blanket
+    // review/ci opt-out. The daemon runs the diff itself, so no client stdin
+    // is needed and the fast path is preserved.
+    let (dir, sock_path) = setup_project();
+    let response = serde_json::json!({
+        "status": "ok",
+        "output": {"data": {"files": [], "risk_score": 0.0}},
+    });
+    let mock = MockDaemon::with_response_line(sock_path.clone(), response.to_string());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["review", "--base", "HEAD~1", "--json"]);
+
+    let output = cmd.output().expect("cqs review --base spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs review --base --json` failed daemon-up; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "review --base --json (no --stdin) must still forward to the daemon; \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+    assert_eq!(v["risk_score"], 0.0, "daemon payload reached stdout");
+}

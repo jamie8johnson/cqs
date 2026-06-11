@@ -735,11 +735,13 @@ fn test_notes_add_rejects_infinity_sentiment() {
 /// (which avoid `notes list` because it needs a `CommandContext`), this seeds a
 /// `.cqs/index.db` so the context opens, writes a `docs/notes.toml` directly,
 /// and spawns `cqs notes list --json` with NO `CQS_OUTPUT_FORMAT` pin. The
-/// payload must be a bare top-level array of note entries — no `data` /
-/// `version` envelope — with the seeded note's text present.
+/// payload must be the union object `{notes:[...], count:N}` — no `data` /
+/// `version` envelope — with the seeded note's text present. (Post-union the
+/// CLI emits the same object envelope as the daemon, replacing the old bare
+/// array, so the daemon path can splice `_meta`.)
 #[test]
 #[serial]
-fn test_notes_list_default_format_emits_bare_array() {
+fn test_notes_list_default_format_emits_union_object() {
     let dir = TempDir::new().expect("tempdir");
 
     // A store so the list handler's CommandContext resolves.
@@ -779,12 +781,17 @@ fn test_notes_list_default_format_emits_bare_array() {
     let parsed: Value =
         serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("JSON parse: {e}\n{stdout}"));
 
-    let arr = parsed
-        .as_array()
-        .unwrap_or_else(|| panic!("notes list must emit a bare top-level array, got: {parsed}"));
     assert!(
         parsed.get("data").is_none() && parsed.get("version").is_none(),
         "bare default drops envelope keys, got: {parsed}"
+    );
+    let arr = parsed["notes"].as_array().unwrap_or_else(|| {
+        panic!("notes list must emit a union object with a `notes` array, got: {parsed}")
+    });
+    assert_eq!(
+        parsed["count"].as_u64(),
+        Some(arr.len() as u64),
+        "count mirrors the notes array length, got: {parsed}"
     );
     let texts: Vec<&str> = arr.iter().filter_map(|n| n["text"].as_str()).collect();
     assert!(
@@ -792,5 +799,13 @@ fn test_notes_list_default_format_emits_bare_array() {
             .iter()
             .any(|t| t.contains("seeded list note about scoring")),
         "the seeded note text must appear, got: {texts:?}"
+    );
+    // Union schema: each entry carries id + type + sentiment_label.
+    let first = &arr[0];
+    assert!(first.get("id").is_some(), "union carries id: {first}");
+    assert!(first.get("type").is_some(), "union carries type: {first}");
+    assert!(
+        first.get("sentiment_label").is_some(),
+        "union carries sentiment_label: {first}"
     );
 }

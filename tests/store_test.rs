@@ -568,6 +568,71 @@ fn test_model_mismatch_rejected() {
     );
 }
 
+// ===== Corrupt / Truncated DB Open Tests =====
+
+// Garbage bytes written to the index DB path must produce a clean Result
+// from Store::open — never a panic. SQLite has lazy header validation: it
+// may reject the file as "not a database" (Err) or accept the leading bytes
+// and treat it as an empty DB (Ok, then check_and_migrate sees no metadata
+// table and returns the fresh-DB path). Both are acceptable; the contract
+// is "no panic", mirroring embedding_cache's test_corrupt_db_recovery.
+#[test]
+fn test_store_open_garbage_bytes_no_panic() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("garbage.db");
+    std::fs::write(&db_path, b"not a sqlite database").unwrap();
+
+    // Must not panic. Either outcome (clean error or empty-DB acceptance) is
+    // fine — the point is the open path is total, not that it always rejects.
+    let result = cqs::store::Store::open(&db_path);
+    match result {
+        Ok(_) => { /* SQLite accepted the bytes as an empty DB — fine. */ }
+        Err(e) => {
+            // A clean StoreError, not a crash. Render it to confirm Display
+            // doesn't panic either.
+            let _ = e.to_string();
+        }
+    }
+}
+
+// A truncated (half-written) SQLite file — a real DB cut to half its length,
+// which corrupts the header / page structure — must also surface as a clean
+// Result, never a panic.
+#[test]
+fn test_store_open_truncated_db_no_panic() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("truncated.db");
+
+    // Build a real, populated DB first so the file has genuine SQLite
+    // structure to truncate.
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        let chunk = test_chunk("survivor", "fn survivor() {}");
+        store
+            .upsert_chunk(&chunk, &mock_embedding(1.0), Some(7))
+            .unwrap();
+    }
+
+    // Truncate to half its size — corrupts the header / page layout.
+    let full = std::fs::read(&db_path).unwrap();
+    assert!(
+        full.len() > 2,
+        "DB file should be non-trivial before truncation"
+    );
+    std::fs::write(&db_path, &full[..full.len() / 2]).unwrap();
+
+    // Open must not panic. SQLite typically reports corruption here; accept
+    // either a clean error or (defensively) an Ok if SQLite recovered.
+    let result = cqs::store::Store::open(&db_path);
+    match result {
+        Ok(_) => { /* SQLite recovered / re-created — acceptable, no panic. */ }
+        Err(e) => {
+            let _ = e.to_string();
+        }
+    }
+}
+
 // ===== Streaming Embeddings Tests =====
 
 #[test]
