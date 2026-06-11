@@ -31,14 +31,29 @@ use crate::store::StoreError;
 
 use sqlx::Row;
 
-/// Number of distinct chunk_ids fetched per page by [`Store::load_all_sparse_vectors`].
+/// Default number of distinct chunk_ids fetched per page by
+/// [`Store::load_all_sparse_vectors`].
 ///
 /// Sized so the per-batch row Vec fits comfortably in a few MB even at the
 /// upper bound of tokens-per-chunk (~100-500). With 1000 chunks × 200 avg
 /// tokens/row × ~80B/row ≈ 16 MB per batch. An unpaginated single-query
 /// `fetch_all` could hit multiple GB on a large index. Larger values reduce
 /// round-trip count but cap the memory win.
-const LOAD_SPARSE_CHUNK_ID_BATCH: i64 = 1000;
+const LOAD_SPARSE_CHUNK_ID_BATCH_DEFAULT: i64 = 1000;
+
+/// Resolve the SPLADE load page size honoring `CQS_LOAD_SPARSE_BATCH`.
+/// Falls back to [`LOAD_SPARSE_CHUNK_ID_BATCH_DEFAULT`] when unset, empty,
+/// unparseable, or zero. Resolved as a `u64` (the page size is always
+/// positive) and narrowed to the `i64` the SQL `LIMIT` bind expects;
+/// `i64::MAX`-and-up clamps to `i64::MAX` so a pathological env value can't
+/// wrap negative.
+fn load_sparse_chunk_id_batch() -> i64 {
+    let n = crate::limits::parse_env_u64(
+        "CQS_LOAD_SPARSE_BATCH",
+        LOAD_SPARSE_CHUNK_ID_BATCH_DEFAULT as u64,
+    );
+    n.min(i64::MAX as u64) as i64
+}
 
 /// Bump the SPLADE generation counter inside an existing write transaction.
 ///
@@ -318,7 +333,7 @@ impl<Mode> Store<Mode> {
     /// Returns Vec of (chunk_id, sparse_vector).
     ///
     /// Paginates by chunk_id in batches of up to
-    /// [`LOAD_SPARSE_CHUNK_ID_BATCH`] distinct chunk_ids, using a cursor on
+    /// [`load_sparse_chunk_id_batch`] distinct chunk_ids, using a cursor on
     /// `chunk_id`. Each batch's rows are fully grouped before discarding
     /// the row Vec, so peak memory is bounded to one batch (~5-20 MB) plus
     /// the growing result. A single unpaginated `SELECT ... ORDER BY chunk_id`
@@ -327,6 +342,7 @@ impl<Mode> Store<Mode> {
     pub fn load_all_sparse_vectors(&self) -> Result<Vec<(String, SparseVector)>, StoreError> {
         let _span = tracing::info_span!("load_all_sparse_vectors").entered();
         self.rt.block_on(async {
+            let batch_size = load_sparse_chunk_id_batch();
             let mut result: Vec<(String, SparseVector)> = Vec::new();
             let mut total_entries: usize = 0;
             // Cursor: chunk_id ordering. Empty string sorts before any real id
@@ -335,7 +351,7 @@ impl<Mode> Store<Mode> {
             let mut last_chunk_id = String::new();
 
             loop {
-                // Fetch up to LOAD_SPARSE_CHUNK_ID_BATCH distinct chunk_ids
+                // Fetch up to `batch_size` distinct chunk_ids
                 // past the cursor, and all their rows, in one query. The
                 // subquery's LIMIT bounds the outer rows to one batch.
                 let rows: Vec<_> = sqlx::query(
@@ -349,7 +365,7 @@ impl<Mode> Store<Mode> {
                      ORDER BY chunk_id, token_id",
                 )
                 .bind(&last_chunk_id)
-                .bind(LOAD_SPARSE_CHUNK_ID_BATCH)
+                .bind(batch_size)
                 .fetch_all(&self.pool)
                 .await?;
 
@@ -418,7 +434,7 @@ impl<Mode> Store<Mode> {
                 // page budget, the next query would find nothing — skip
                 // the empty round-trip. Otherwise advance the cursor past
                 // the last-seen id and loop.
-                if distinct_ids_in_batch < LOAD_SPARSE_CHUNK_ID_BATCH {
+                if distinct_ids_in_batch < batch_size {
                     break;
                 }
                 last_chunk_id = last_id_in_batch;
@@ -560,6 +576,30 @@ impl<Mode> Store<Mode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `load_sparse_chunk_id_batch()` returns the compiled default when
+    /// unset, the env value when set, and clamps a pathological value to
+    /// `i64::MAX` rather than wrapping negative.
+    #[test]
+    fn load_sparse_batch_honors_env() {
+        std::env::remove_var("CQS_LOAD_SPARSE_BATCH");
+        assert_eq!(
+            load_sparse_chunk_id_batch(),
+            LOAD_SPARSE_CHUNK_ID_BATCH_DEFAULT
+        );
+        std::env::set_var("CQS_LOAD_SPARSE_BATCH", "256");
+        assert_eq!(load_sparse_chunk_id_batch(), 256);
+        // Garbage / zero falls back to default (parse_env_u64 rejects them).
+        std::env::set_var("CQS_LOAD_SPARSE_BATCH", "0");
+        assert_eq!(
+            load_sparse_chunk_id_batch(),
+            LOAD_SPARSE_CHUNK_ID_BATCH_DEFAULT
+        );
+        // Above-i64::MAX clamps, never wraps negative.
+        std::env::set_var("CQS_LOAD_SPARSE_BATCH", "18446744073709551615");
+        assert_eq!(load_sparse_chunk_id_batch(), i64::MAX);
+        std::env::remove_var("CQS_LOAD_SPARSE_BATCH");
+    }
 
     /// Insert a minimal valid `chunks` row so a sparse_vectors insert can
     /// satisfy the v19 FK constraint. Pattern mirrored from

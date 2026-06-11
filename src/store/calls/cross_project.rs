@@ -20,6 +20,37 @@ pub struct NamedStore {
     pub name: String,
     /// The open Store handle.
     pub store: Store<crate::store::ReadOnly>,
+    /// The `index.db` path this store was opened from, plus the
+    /// `(mtime, size)` identity captured at open time. Used by
+    /// [`CrossProjectContext::is_stale`] so a daemon caching the context
+    /// across requests self-heals after a `cqs ref update <name>` (which
+    /// rewrites a reference's `index.db` without touching the primary
+    /// project's). `None` when the file was unstattable at open — the
+    /// staleness check then keeps the cached store rather than thrashing on
+    /// a transient glitch.
+    db_path: std::path::PathBuf,
+    loaded_identity: Option<(std::time::SystemTime, u64)>,
+}
+
+impl NamedStore {
+    /// Construct a `NamedStore`, capturing the `index.db` identity from
+    /// `path` for later staleness detection. `path` is the file the store was
+    /// opened from; callers that already hold it (e.g.
+    /// [`CrossProjectContext::from_config`]) avoid a redundant stat by passing
+    /// it through rather than re-deriving it.
+    pub fn new(
+        name: String,
+        store: Store<crate::store::ReadOnly>,
+        path: std::path::PathBuf,
+    ) -> Self {
+        let loaded_identity = stat_identity(&path);
+        Self {
+            name,
+            store,
+            db_path: path,
+            loaded_identity,
+        }
+    }
 }
 
 impl std::fmt::Debug for NamedStore {
@@ -29,6 +60,15 @@ impl std::fmt::Debug for NamedStore {
             .field("store", &"<Store>")
             .finish()
     }
+}
+
+/// Stat `path` and return `(mtime, size)` if readable. Mirrors the helper
+/// in `reference.rs`; an unreadable path yields `None` (treated as
+/// "unknown", caller keeps the cached value).
+fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let md = std::fs::metadata(path).ok()?;
+    let mtime = md.modified().ok()?;
+    Some((mtime, md.len()))
 }
 
 /// Caller info enriched with the originating project name.
@@ -65,6 +105,12 @@ pub struct CrossProjectContext {
     stores: Vec<NamedStore>,
     /// Cached call graphs, keyed by index into `stores`.
     graphs: HashMap<usize, Arc<CallGraph>>,
+    /// Fingerprint of the `references` config this context was built from.
+    /// `None` for contexts assembled directly via [`Self::new`] (tests).
+    /// The daemon caches a `CrossProjectContext` across requests and compares
+    /// this against the current config's fingerprint so a `.cqs.toml` /
+    /// `slot.toml` references edit forces a rebuild — see [`Self::config_fingerprint`].
+    config_fingerprint: Option<u64>,
 }
 
 impl CrossProjectContext {
@@ -73,13 +119,37 @@ impl CrossProjectContext {
         Self {
             stores,
             graphs: HashMap::new(),
+            config_fingerprint: None,
         }
+    }
+
+    /// Stable fingerprint of a `references` config slice: each reference's
+    /// `(name, path, weight)` folded into a single hash. Two configs with the
+    /// same references (order included) produce the same fingerprint; adding,
+    /// removing, repointing, or reweighting a reference changes it.
+    ///
+    /// Used as the daemon cache key so a config edit invalidates a cached
+    /// cross-project context even though `index.db` (the primary staleness
+    /// discriminator) never moved.
+    pub fn config_fingerprint(references: &[crate::config::ReferenceConfig]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        references.len().hash(&mut hasher);
+        for r in references {
+            r.name.hash(&mut hasher);
+            r.path.hash(&mut hasher);
+            // f32 isn't Hash; fold the bit pattern so a weight tweak still
+            // moves the fingerprint.
+            r.weight.to_bits().hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// Build from the local store and `.cqs.toml` reference config.
     pub fn from_config(root: &std::path::Path) -> Result<Self, crate::store::helpers::StoreError> {
         let _span = tracing::info_span!("cross_project_from_config").entered();
         let config = crate::config::Config::load(root);
+        let fingerprint = Self::config_fingerprint(&config.references);
 
         // Use the slot-aware resolver so slot layouts
         // (`.cqs/slots/<active>/index.db`) work for `cqs trace
@@ -91,21 +161,25 @@ impl CrossProjectContext {
         // Cross-project reads only — open read-only. If the DB doesn't exist
         // yet, propagate the error; creating it here would corrupt the
         // invariant that cross-project queries never mutate.
+        //
+        // The local project is the throughput-sensitive store on this path
+        // (it backs the BFS traversals), so it keeps the 64MB-mmap
+        // `open_readonly`. Reference stores below use `open_readonly_small`.
         let local_store = Store::open_readonly(&db_path)?;
-        let mut stores = vec![NamedStore {
-            name: "local".to_string(),
-            store: local_store,
-        }];
+        let mut stores = vec![NamedStore::new("local".to_string(), local_store, db_path)];
 
         for ref_cfg in &config.references {
             let db_path = ref_cfg.path.join(crate::INDEX_DB_FILENAME);
-            match Store::open_readonly(&db_path) {
+            // `open_readonly_small` (16MB mmap) rather than `open_readonly`
+            // (64MB): a cached cross-project session holding N references
+            // would otherwise reserve 64MB × N of virtual address space, which
+            // has bitten us on WSL via address-space fragmentation. Reference
+            // corpora are read for graph edges, not full-scan search, so the
+            // smaller mmap costs nothing here.
+            match Store::open_readonly_small(&db_path) {
                 Ok(store) => {
                     tracing::debug!(name = %ref_cfg.name, "Reference store opened");
-                    stores.push(NamedStore {
-                        name: ref_cfg.name.clone(),
-                        store,
-                    });
+                    stores.push(NamedStore::new(ref_cfg.name.clone(), store, db_path));
                 }
                 Err(e) => {
                     tracing::warn!(name = %ref_cfg.name, error = %e, "Failed to open reference, skipping");
@@ -114,7 +188,37 @@ impl CrossProjectContext {
         }
 
         tracing::info!(projects = stores.len(), "Cross-project context loaded");
-        Ok(Self::new(stores))
+        Ok(Self {
+            stores,
+            graphs: HashMap::new(),
+            config_fingerprint: Some(fingerprint),
+        })
+    }
+
+    /// The config fingerprint this context was built from, if it came from
+    /// [`Self::from_config`]. `None` for test-assembled contexts.
+    pub fn fingerprint(&self) -> Option<u64> {
+        self.config_fingerprint
+    }
+
+    /// Has any underlying `index.db` been rewritten since this context was
+    /// built? Catches `cqs ref update <name>` (rewrites a reference's
+    /// `index.db`) and a local reindex (rewrites the primary `index.db`) —
+    /// both leave the cached `graphs` map and the merged graph pointing at a
+    /// stale generation.
+    ///
+    /// Returns `true` on the first store whose current `(mtime, size)`
+    /// differs from the value captured at open. Stores with no captured
+    /// identity (unstattable at open) or that are now unstattable are
+    /// skipped — a transient glitch shouldn't force a rebuild.
+    pub fn is_stale(&self) -> bool {
+        self.stores.iter().any(|ns| match ns.loaded_identity {
+            Some(loaded) => match stat_identity(&ns.db_path) {
+                Some(current) => current != loaded,
+                None => false,
+            },
+            None => false,
+        })
     }
 
     /// Number of projects in this context.
@@ -338,10 +442,7 @@ mod tests {
         // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
         let _keep = dir.keep();
 
-        NamedStore {
-            name: name.to_string(),
-            store,
-        }
+        NamedStore::new(name.to_string(), store, db_path)
     }
 
     #[test]
@@ -401,5 +502,109 @@ mod tests {
         let mut ctx = CrossProjectContext::new(vec![store_a]);
         let callers = ctx.get_callers_cross("nonexistent").unwrap();
         assert!(callers.is_empty());
+    }
+
+    #[test]
+    fn test_config_fingerprint_changes_on_reference_edit() {
+        use crate::config::ReferenceConfig;
+        use std::path::PathBuf;
+
+        let base = vec![ReferenceConfig {
+            name: "a".to_string(),
+            path: PathBuf::from("/refs/a"),
+            source: None,
+            weight: 0.8,
+        }];
+        let fp_base = CrossProjectContext::config_fingerprint(&base);
+
+        // Same config → same fingerprint (deterministic).
+        assert_eq!(
+            fp_base,
+            CrossProjectContext::config_fingerprint(&base),
+            "identical config must fingerprint identically"
+        );
+
+        // Repointing the path moves the fingerprint.
+        let repointed = vec![ReferenceConfig {
+            path: PathBuf::from("/refs/a2"),
+            ..base[0].clone()
+        }];
+        assert_ne!(
+            fp_base,
+            CrossProjectContext::config_fingerprint(&repointed),
+            "path change must move the fingerprint"
+        );
+
+        // Reweighting moves it.
+        let reweighted = vec![ReferenceConfig {
+            weight: 0.5,
+            ..base[0].clone()
+        }];
+        assert_ne!(
+            fp_base,
+            CrossProjectContext::config_fingerprint(&reweighted),
+            "weight change must move the fingerprint"
+        );
+
+        // Adding a reference moves it.
+        let mut grown = base.clone();
+        grown.push(ReferenceConfig {
+            name: "b".to_string(),
+            path: PathBuf::from("/refs/b"),
+            source: None,
+            weight: 0.8,
+        });
+        assert_ne!(
+            fp_base,
+            CrossProjectContext::config_fingerprint(&grown),
+            "adding a reference must move the fingerprint"
+        );
+
+        // Empty config fingerprints stably (and differently from non-empty).
+        assert_ne!(
+            fp_base,
+            CrossProjectContext::config_fingerprint(&[]),
+            "empty vs non-empty must differ"
+        );
+    }
+
+    #[test]
+    fn test_is_stale_detects_db_rewrite() {
+        // A NamedStore captures its db identity at construction. Rewriting the
+        // underlying index.db (the `cqs ref update` / local-reindex shape)
+        // must flip is_stale() true.
+        let mut forward = StdMap::new();
+        forward.insert("caller_a".to_string(), vec!["target".to_string()]);
+        let ns = make_named_store("proj_a", forward, StdMap::new());
+        let db_path = ns.db_path.clone();
+        let ctx = CrossProjectContext::new(vec![ns]);
+
+        assert!(!ctx.is_stale(), "freshly built context is not stale");
+
+        // Append a byte and bump mtime past the 1s FS granularity floor so the
+        // (mtime, size) identity changes.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&db_path)
+                .unwrap();
+            f.write_all(b" ").unwrap();
+            f.sync_all().unwrap();
+        }
+
+        assert!(
+            ctx.is_stale(),
+            "rewriting the underlying index.db must mark the context stale"
+        );
+    }
+
+    #[test]
+    fn test_new_context_has_no_fingerprint() {
+        // Test-assembled contexts (via `new`) carry no fingerprint — only
+        // `from_config` sets one, since only it reads the references config.
+        let ctx = CrossProjectContext::new(vec![]);
+        assert_eq!(ctx.fingerprint(), None);
     }
 }

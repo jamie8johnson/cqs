@@ -109,42 +109,69 @@ fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option
             return Ok(());
         }
 
-        // Auto-archive if file exceeds 10 MB to prevent unbounded growth
-        if let Ok(meta) = fs::metadata(&path) {
-            if meta.len() > MAX_TELEMETRY_BYTES {
-                // Archive filename falls back to `0` when the clock is
-                // pre-epoch — uniqueness here is best-effort and
-                // the JSON row above already records `ts: null` so the
-                // bad-clock condition is preserved in the data, not just
-                // a swept-under filename.
-                let ts_for_filename = timestamp.unwrap_or(0);
-                let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
-                let archive_path = cqs_dir.join(&archive_name);
-                if let Err(e) = fs::rename(&path, &archive_path) {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to auto-archive telemetry file"
-                    );
-                } else {
+        // Open the append handle once and reuse it for both the size check
+        // and the write. The size gate uses `file.metadata()` (an fstat on
+        // the already-open fd) instead of `fs::metadata(&path)` (a fresh
+        // path-resolve + stat) — one fewer path lookup per write. The handle
+        // is opened *before* the size check so the 10-MB rotation, when it
+        // fires, drops this handle, renames, and reopens a fresh empty file
+        // rather than appending the new row to the about-to-be-archived
+        // inode.
+        //
+        // Set 0o600 at creation via OpenOptionsExt::mode to close the umask
+        // race. A post-open set_permissions would leave a window where the
+        // file is visible with default perms (often 0o644).
+        let open_append = || -> std::io::Result<std::fs::File> {
+            let mut opts = OpenOptions::new();
+            opts.create(true).append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            opts.open(&path)
+        };
+        let mut file = open_append()?;
+
+        // Auto-archive if file exceeds 10 MB to prevent unbounded growth.
+        // `file.metadata()` is an fstat on the open fd, so the rotation check
+        // still triggers correctly even when the write handle is reused.
+        let over_cap = file
+            .metadata()
+            .map(|m| m.len() > MAX_TELEMETRY_BYTES)
+            .unwrap_or(false);
+        if over_cap {
+            // Archive filename falls back to `0` when the clock is
+            // pre-epoch — uniqueness here is best-effort and
+            // the JSON row above already records `ts: null` so the
+            // bad-clock condition is preserved in the data, not just
+            // a swept-under filename.
+            let ts_for_filename = timestamp.unwrap_or(0);
+            let archive_name = format!("telemetry_{ts_for_filename}.jsonl");
+            let archive_path = cqs_dir.join(&archive_name);
+            // Drop the handle on the soon-to-be-archived inode before the
+            // rename so the post-rotation write lands in a fresh file.
+            drop(file);
+            match fs::rename(&path, &archive_path) {
+                Ok(()) => {
                     tracing::info!(
                         archived = %archive_name,
                         "Auto-archived telemetry file (exceeded 10 MB)"
                     );
                 }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to auto-archive telemetry file"
+                    );
+                }
             }
+            // Reopen — the create flag makes a new empty file after a
+            // successful rename, or reuses the existing one if the rename
+            // failed (the row still gets written, just to the un-rotated file).
+            file = open_append()?;
         }
 
-        // Set 0o600 at creation via OpenOptionsExt::mode to close the umask
-        // race. A post-open set_permissions would leave a window where the
-        // file is visible with default perms (often 0o644).
-        let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(&path)?;
         if let Err(e) = writeln!(file, "{}", entry) {
             tracing::warn!(error = %e, "Failed to write telemetry entry");
         }
@@ -539,6 +566,62 @@ mod tests {
         let name = r["name"].as_str().unwrap();
         assert_ne!(name, "MAX_RETRIES", "name must be redacted by default");
         assert_eq!(name.len(), 8, "redacted name is an 8-char hash prefix");
+    }
+
+    #[test]
+    fn telemetry_rotates_at_10mb_with_reused_handle() {
+        // The size gate now uses `file.metadata()` (fstat on the open append
+        // handle) instead of a separate path stat. Pin that rotation still
+        // fires: a telemetry file already past the 10-MB cap must be archived
+        // on the next write, and the live file must come back as a small fresh
+        // file holding only the new row.
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        let path = cqs_dir.join("telemetry.jsonl");
+
+        // Seed an over-cap file (10 MB + 1 byte).
+        let oversized = vec![b'x'; (MAX_TELEMETRY_BYTES + 1) as usize];
+        std::fs::write(&path, &oversized).unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+
+        log_command(cqs_dir, "impact", Some("my_fn"), Some(3));
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        // The live file should have been rotated: it now holds just the one
+        // new JSON row, far under the cap.
+        let live = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            live.len() < (MAX_TELEMETRY_BYTES as usize),
+            "live telemetry file should be small after rotation, got {} bytes",
+            live.len()
+        );
+        let lines: Vec<&str> = live.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "rotated file should hold exactly the new row"
+        );
+        let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v["cmd"], "impact");
+
+        // An archive file `telemetry_*.jsonl` should now exist holding the
+        // old oversized content.
+        let archives: Vec<_> = std::fs::read_dir(cqs_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with("telemetry_") && n.ends_with(".jsonl")
+            })
+            .collect();
+        assert_eq!(archives.len(), 1, "exactly one archive should be created");
+        let archived_len = archives[0].metadata().unwrap().len();
+        assert!(
+            archived_len > MAX_TELEMETRY_BYTES,
+            "archive should hold the old oversized content"
+        );
     }
 
     #[test]

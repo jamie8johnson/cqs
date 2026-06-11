@@ -314,7 +314,7 @@ pub(crate) fn cmd_explain(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
     // Cap on callers/callees/similar lists in the function card.
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let embedder = if max_tokens.is_some() {
         Some(ctx.embedder()?)
