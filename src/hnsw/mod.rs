@@ -671,6 +671,15 @@ impl VectorIndex for HnswIndex {
     fn dim(&self) -> usize {
         self.dim
     }
+
+    /// HNSW with the `Cosine` metric returns `1 - DistCosine`, which on full
+    /// vectors is exactly the cosine similarity the brute-force path
+    /// recomputes — so its scores are reusable. The `DotProduct` metric
+    /// returns `1 - DistDot = a·b`, a different scale from cosine, so it leaves
+    /// the default `false`.
+    fn index_scores_are_cosine(&self) -> bool {
+        self.metric() == DistanceMetric::Cosine
+    }
 }
 
 /// Always-available CPU vector index. Priority 0 (lowest). The selector

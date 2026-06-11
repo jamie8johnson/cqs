@@ -216,6 +216,25 @@ pub trait VectorIndex: Send + Sync {
     fn max_k(&self) -> Option<usize> {
         None
     }
+
+    /// Whether [`search`](Self::search)'s emitted `score` is bit-for-bit the
+    /// cosine similarity the brute-force scoring path would recompute from the
+    /// stored embedding BLOB.
+    ///
+    /// When `true`, callers may reuse the index-returned score as the dense
+    /// base instead of re-fetching the embedding and recomputing cosine — the
+    /// ranking is identical, the BLOB fetch + dot product are saved.
+    ///
+    /// The default is `false` (conservative): only the HNSW backend built with
+    /// the `Cosine` metric returns `1 - DistCosine = cos`, exactly the
+    /// brute-force value. CAGRA derives its cosine through cuVS `L2Expanded`
+    /// (`1 - d/2`, floating-point-divergent and unit-norm-dependent) and its
+    /// `DotProduct` metric returns a raw inner product on a different scale, so
+    /// CAGRA leaves the default and the optimization is gated off there to
+    /// avoid a silent ranking change.
+    fn index_scores_are_cosine(&self) -> bool {
+        false
+    }
 }
 
 /// Inputs every [`IndexBackend`] needs to decide whether it can serve, and

@@ -783,6 +783,29 @@ impl<Mode> Store<Mode> {
             );
 
             let candidate_ids: Vec<&str> = index_results.iter().map(|r| r.id.as_str()).collect();
+
+            // The index already computed the dense cosine for every candidate;
+            // when its score scale is exactly the brute-force cosine
+            // (`index_scores_are_cosine`), reuse those scores as the fused base
+            // instead of re-fetching each embedding BLOB and recomputing the
+            // identical dot product. The downstream scoring pipeline still
+            // applies name/note boost, demotion, and threshold on top — passing
+            // the scores via `fused_scores` only replaces the base, so the
+            // ranking is unchanged. Backends whose scale differs (CAGRA cosine
+            // via L2Expanded, any DotProduct metric) report `false` and keep
+            // the recompute path to avoid a silent ranking shift.
+            let reuse_scores = idx.index_scores_are_cosine();
+            let fused_scores: Option<std::collections::HashMap<String, f32>> = if reuse_scores {
+                Some(
+                    index_results
+                        .iter()
+                        .map(|r| (r.id.clone(), r.score))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
             return self.search_by_candidate_ids_with_notes(
                 &candidate_ids,
                 query,
@@ -790,7 +813,7 @@ impl<Mode> Store<Mode> {
                 limit,
                 threshold,
                 &notes,
-                None,
+                fused_scores.as_ref(),
             );
         }
 
@@ -1637,6 +1660,129 @@ mod tests {
             "result count must be bounded by fixture, got {}",
             results.len()
         );
+    }
+
+    /// PERF wiring: when a backend reports `index_scores_are_cosine() == true`,
+    /// `search_filtered_with_index` reuses the index-returned scores as the
+    /// dense base instead of re-fetching each embedding and recomputing cosine.
+    /// This pins that the reuse path and the recompute path produce identical
+    /// scores AND identical ranking — the optimization must be score-neutral.
+    ///
+    /// Two mock indexes return the same candidates and the same per-candidate
+    /// scores (the exact cosine, computed here from the stored embeddings); one
+    /// reports cosine parity (reuse path) and one does not (recompute path).
+    /// The store's recompute path independently derives cosine from the BLOB,
+    /// so agreement proves the reused score equals the recomputed one.
+    #[test]
+    fn test_index_score_reuse_matches_recompute() {
+        use crate::embedder::Embedding;
+        use crate::index::{IndexResult, VectorIndex};
+
+        // Backend that serves fixed (id, score) pairs and advertises whether
+        // its scores are the brute-force cosine.
+        struct ParityMock {
+            results: Vec<IndexResult>,
+            cosine: bool,
+        }
+        impl VectorIndex for ParityMock {
+            fn search(&self, _query: &Embedding, k: usize) -> Vec<IndexResult> {
+                self.results.iter().take(k).cloned().collect()
+            }
+            fn len(&self) -> usize {
+                self.results.len()
+            }
+            fn name(&self) -> &'static str {
+                "ParityMock"
+            }
+            fn dim(&self) -> usize {
+                crate::EMBEDDING_DIM
+            }
+            fn index_scores_are_cosine(&self) -> bool {
+                self.cosine
+            }
+        }
+
+        // Build two distinct, non-collinear embeddings so their cosines to the
+        // query differ — `mock_embedding` collapses every positive seed to the
+        // same unit vector, which can't distinguish ranking.
+        fn embedding_with_lead(lead: f32) -> Embedding {
+            let mut v = vec![0.05f32; crate::EMBEDDING_DIM];
+            v[0] = lead;
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            for x in &mut v {
+                *x /= norm;
+            }
+            Embedding::new(v)
+        }
+
+        let (store, _dir) = setup_store();
+        let query = embedding_with_lead(1.0);
+        let emb_a = embedding_with_lead(0.9);
+        let emb_b = embedding_with_lead(0.3);
+
+        let c_a = make_chunk("alpha", "src/a.rs", Language::Rust, ChunkType::Function);
+        let c_b = make_chunk("beta", "src/b.rs", Language::Rust, ChunkType::Function);
+        let id_a = c_a.id.clone();
+        let id_b = c_b.id.clone();
+        store
+            .upsert_chunks_batch(&[(c_a, emb_a.clone()), (c_b, emb_b.clone())], Some(12345))
+            .unwrap();
+
+        // Exact cosine the index would have returned (HNSW DistCosine yields
+        // `1 - dist = cos`). Same value the brute-force path recomputes.
+        let cos_a = crate::math::cosine_similarity(query.as_slice(), emb_a.as_slice()).unwrap();
+        let cos_b = crate::math::cosine_similarity(query.as_slice(), emb_b.as_slice()).unwrap();
+
+        let results = vec![
+            IndexResult {
+                id: id_a.clone(),
+                score: cos_a,
+            },
+            IndexResult {
+                id: id_b.clone(),
+                score: cos_b,
+            },
+        ];
+
+        let reuse_idx = ParityMock {
+            results: results.clone(),
+            cosine: true,
+        };
+        let recompute_idx = ParityMock {
+            results,
+            cosine: false,
+        };
+
+        let filter = SearchFilter::default();
+        let reuse = store
+            .search_filtered_with_index(&query, &filter, 10, 0.0, Some(&reuse_idx))
+            .expect("reuse path must succeed");
+        let recompute = store
+            .search_filtered_with_index(&query, &filter, 10, 0.0, Some(&recompute_idx))
+            .expect("recompute path must succeed");
+
+        assert_eq!(
+            reuse.len(),
+            recompute.len(),
+            "reuse and recompute must return the same number of results"
+        );
+        // Ranking parity: identical id order.
+        let reuse_ids: Vec<&str> = reuse.iter().map(|r| r.chunk.id.as_str()).collect();
+        let recompute_ids: Vec<&str> = recompute.iter().map(|r| r.chunk.id.as_str()).collect();
+        assert_eq!(
+            reuse_ids, recompute_ids,
+            "index-score reuse must not change ranking order"
+        );
+        // Score parity: each result's score matches within f32 epsilon.
+        for (r, rc) in reuse.iter().zip(recompute.iter()) {
+            assert!(
+                (r.score - rc.score).abs() < 1e-6,
+                "reused score {} must equal recomputed score {} for {}",
+                r.score,
+                rc.score,
+                r.chunk.id
+            );
+        }
     }
 
     // ===== type_boost_factor() tests =====
