@@ -59,11 +59,17 @@ pub(crate) struct RefRemoveOutput {
     pub name: String,
 }
 
+/// Input for [`ref_list_core`]. `cqs ref list` takes no positional or flag
+/// input; the empty struct keeps the surface-agnostic Args convention every
+/// other core follows (a wire caller inflates it from `{}`).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct RefListArgs {}
+
 /// Surface-agnostic core for `cqs ref list`. Loads the project config and,
 /// for each reference, opens its index read-only to read the chunk count
 /// (best-effort: a failed open shows 0 chunks and logs a warning). No daemon
 /// path — reference management is CLI-only.
-pub(crate) fn ref_list_core(root: &std::path::Path) -> RefListOutput {
+pub(crate) fn ref_list_core(root: &std::path::Path, _args: &RefListArgs) -> RefListOutput {
     let _span = tracing::info_span!("ref_list_core").entered();
     let config = cqs::config::Config::load(root);
     let references = config
@@ -509,7 +515,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     let root = find_project_root();
     let want_json = json || cli.json;
 
-    let out = ref_list_core(&root);
+    let out = ref_list_core(&root, &RefListArgs::default());
 
     if want_json {
         // `{references: [...]}` envelope (empty list when none configured) so

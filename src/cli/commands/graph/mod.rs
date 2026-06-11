@@ -10,18 +10,20 @@ mod test_map;
 pub(crate) mod trace;
 
 pub(crate) use callers::{
-    callees_core, callers_core, cmd_callees, cmd_callers, CalleesArgs,
-    CallersArgs as CallersCoreArgs,
+    callees_core, callees_cross_core, callers_core, callers_cross_core, cmd_callees, cmd_callers,
+    CalleesArgs, CallersArgs as CallersCoreArgs,
 };
 pub(crate) use deps::{cmd_deps, deps_core, DepsArgs as DepsCoreArgs};
 pub(crate) use explain::cmd_explain;
-pub(crate) use impact::{cmd_impact, impact_core, ImpactArgs as ImpactCoreArgs};
+pub(crate) use impact::{cmd_impact, impact_core, impact_cross_core, ImpactArgs as ImpactCoreArgs};
 pub(crate) use impact_diff::cmd_impact_diff;
 pub(crate) use test_map::{
-    build_test_map, build_test_map_output, cmd_test_map, test_map_core, test_map_max_nodes,
+    build_test_map_output, cmd_test_map, test_map_core, test_map_cross_core, test_map_max_nodes,
     TestMapArgs as TestMapCoreArgs,
 };
-pub(crate) use trace::{cmd_trace, trace_core, trace_max_nodes, TraceArgs as TraceCoreArgs};
+pub(crate) use trace::{
+    cmd_trace, trace_core, trace_cross_core, trace_max_nodes, TraceArgs as TraceCoreArgs,
+};
 
 use cqs::kind::{detect_kind_for_store, Kind};
 use cqs::store::{ChunkSummary, ReadOnly, Store};

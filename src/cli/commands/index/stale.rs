@@ -69,17 +69,14 @@ pub(crate) fn build_stale(report: &StaleReport) -> StaleOutput {
 // Args + core (surface-agnostic, MCP-ready)
 // ---------------------------------------------------------------------------
 
-/// Input for [`stale_core`]. `count_only` only affects rendering / the
-/// daemon's JSON projection — the core always returns the full
-/// [`StaleOutput`]; adapters decide whether to drop the per-file lists.
+/// Input for [`stale_core`]. The core has no tunable inputs of its own — the
+/// file set and root are passed as explicit parameters, and `--count-only` is
+/// an adapter-side render flag (it never changes what the core computes), so
+/// it lives on the adapter signature rather than here. An empty struct keeps
+/// the surface-agnostic Args convention every other core follows (a wire
+/// caller inflates it from `{}`).
 #[derive(Debug, Default, serde::Deserialize)]
-pub(crate) struct StaleArgs {
-    /// Suppress the per-file `stale` / `missing` lists in the rendered output
-    /// (counts only). The core ignores this — it is honored by the adapter so
-    /// the typed schema stays complete for callers that want the file lists.
-    #[serde(default)]
-    pub count_only: bool,
-}
+pub(crate) struct StaleArgs {}
 
 /// Surface-agnostic core for `cqs stale`.
 ///
@@ -87,10 +84,10 @@ pub(crate) struct StaleArgs {
 /// returns the full typed [`StaleOutput`]. The adapter owns file enumeration
 /// so the hot daemon path can keep its cached `file_set` (re-enumerating on
 /// every probe would be a perf regression); the CLI uses
-/// [`enumerate_for_stale`] to build the set once. `count_only` lives on
-/// [`StaleArgs`] for schema completeness but does not change what the core
-/// computes — the adapter chooses how much to render (CLI hides the file list
-/// in text mode; the daemon projects a 3-field count subset).
+/// [`enumerate_for_stale`] to build the set once. `--count-only` is an
+/// adapter-side render flag (CLI hides the file list in text mode; the daemon
+/// projects a 3-field count subset) — it never reaches the core, which always
+/// computes the full [`StaleOutput`].
 pub(crate) fn stale_core(
     store: &cqs::Store<cqs::store::ReadOnly>,
     root: &std::path::Path,
@@ -126,9 +123,10 @@ pub(crate) fn cmd_stale(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    let args = StaleArgs { count_only };
+    // `--count-only` is an adapter-side render flag — the core always returns
+    // the full StaleOutput; the CLI decides whether to print the file lists.
     let file_set = enumerate_for_stale(root)?;
-    let output = stale_core(store, root, &file_set, &args)?;
+    let output = stale_core(store, root, &file_set, &StaleArgs::default())?;
 
     if json {
         crate::cli::json_envelope::emit_json(&output)?;
@@ -161,9 +159,8 @@ pub(crate) fn cmd_stale(
 
         // File list (unless --count-only). `output` already carries
         // normalized paths (build_stale normalizes), so no re-normalize here.
-        // Read `count_only` off the typed args so the field has a live reader
-        // (it is otherwise adapter-honored, not core-honored).
-        if !args.count_only && !ctx.cli.quiet {
+        // `count_only` is the adapter-side render flag (off the core Args).
+        if !count_only && !ctx.cli.quiet {
             if !output.stale.is_empty() {
                 println!("\nStale:");
                 for f in &output.stale {
@@ -191,48 +188,33 @@ pub(crate) fn cmd_stale(
 mod tests {
     use super::*;
 
-    /// `StaleArgs` defaults must match the clap `args::StaleArgs` defaults so
-    /// the wire surface and the core agree on the omitted `--count-only`
-    /// behavior. Parses a real minimal `cqs stale` invocation.
+    /// The clap-side `--count-only` flag lives on the adapter (`args::StaleArgs`),
+    /// not the core Args. Pin that the clap surface still parses it — the CLI
+    /// adapter reads it to decide whether to print the file lists.
     #[test]
-    fn stale_args_default_matches_clap_defaults() {
+    fn stale_count_only_flag_parses_on_adapter_args() {
         use clap::Parser;
         #[derive(Parser)]
         struct Wrap {
             #[command(flatten)]
             args: crate::cli::args::StaleArgs,
         }
-        let clap_args = Wrap::try_parse_from(["cqs-stale"]).unwrap().args;
-        let core = StaleArgs {
-            count_only: clap_args.count_only,
-        };
-        assert_eq!(
-            core.count_only,
-            StaleArgs::default().count_only,
-            "clap stale default drifted from StaleArgs::default"
-        );
-    }
-
-    /// `--count-only` flows into the core Args unchanged.
-    #[test]
-    fn stale_args_count_only_flag_parses() {
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrap {
-            #[command(flatten)]
-            args: crate::cli::args::StaleArgs,
-        }
-        let clap_args = Wrap::try_parse_from(["cqs-stale", "--count-only"])
+        let default = Wrap::try_parse_from(["cqs-stale"]).unwrap().args;
+        assert!(!default.count_only, "clap default is count_only=false");
+        let flagged = Wrap::try_parse_from(["cqs-stale", "--count-only"])
             .unwrap()
             .args;
-        assert!(clap_args.count_only);
+        assert!(flagged.count_only);
     }
 
-    /// Empty-object deserialize (MCP no-params) yields the default args.
+    /// The core Args is parameterless: empty-object deserialize (MCP no-params)
+    /// succeeds and equals the default.
     #[test]
-    fn stale_args_deserialize_empty_matches_default() {
-        let from_empty: StaleArgs = serde_json::from_str("{}").unwrap();
-        assert_eq!(from_empty.count_only, StaleArgs::default().count_only);
+    fn stale_args_deserialize_empty_succeeds() {
+        let _from_empty: StaleArgs = serde_json::from_str("{}").unwrap();
+        // Empty struct → trivially equal to default; constructing both is the
+        // assertion that `{}` is a valid wire payload.
+        let _default = StaleArgs::default();
     }
 
     #[test]

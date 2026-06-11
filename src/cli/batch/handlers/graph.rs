@@ -19,9 +19,9 @@ use crate::cli::args::{
     CallersArgs, DepsArgs, ImpactArgs, ImpactDiffArgs, RelatedArgs, TestMapArgs, TraceArgs,
 };
 use crate::cli::commands::{
-    callees_core, callers_core, deps_core, impact_core, test_map_core, trace_core,
-    CalleesArgs as CoreCalleesArgs, CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs,
-    TraceCoreArgs,
+    callees_core, callees_cross_core, callers_core, callers_cross_core, deps_core, impact_core,
+    test_map_core, trace_core, CalleesArgs as CoreCalleesArgs, CallersCoreArgs, DepsCoreArgs,
+    ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
 };
 
 // ─── Daemon dispatch handlers ──────────────────────────────────────────────
@@ -75,11 +75,11 @@ pub(in crate::cli::batch) fn dispatch_deps(
 /// Retrieves and serializes caller information for a given function name.
 ///
 /// The wire schema is `CallersCoreOutput` (in
-/// `cli::commands::graph::callers`), serialized as-is — a flat array of
-/// caller entries on the function path, the shared kind-fallback object on
-/// a kind mismatch. See that type for the exact field names. The
-/// cross-project branch serializes `CrossProjectContext::get_callers_cross`
-/// results directly instead.
+/// `cli::commands::graph::callers`), serialized as-is — the
+/// `{name, callers, count}` object on the function path, the shared
+/// kind-fallback object on a kind mismatch. See that type for the exact
+/// field names. The cross-project branch goes through `callers_cross_core`,
+/// which projects to the same object shape with a `project` field per entry.
 ///
 /// # Errors
 ///
@@ -98,12 +98,15 @@ pub(in crate::cli::batch) fn dispatch_callers(
     )
     .entered();
     if cross_project {
-        // Shared cap with the core. Truncate before serialization.
-        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let mut callers = cross_ctx.get_callers_cross(name)?;
-        callers.truncate(limit);
-        return Ok(serde_json::to_value(&callers)?);
+        let output = callers_cross_core(
+            &mut cross_ctx,
+            &CallersCoreArgs {
+                name: name.to_string(),
+                limit: args.limit_arg.limit,
+            },
+        )?;
+        return Ok(serde_json::to_value(&output)?);
     }
 
     let core_args = CallersCoreArgs {
@@ -120,8 +123,8 @@ pub(in crate::cli::batch) fn dispatch_callers(
 /// `cli::commands::graph::callers`), serialized as-is — the
 /// `{name, calls, count}` object on the function path, the shared
 /// kind-fallback object on a kind mismatch. See that type for the exact
-/// field names. The cross-project branch serializes
-/// `CrossProjectContext::get_callees_cross` results directly instead.
+/// field names. The cross-project branch goes through `callees_cross_core`,
+/// which projects to the same object shape with a `project` field per entry.
 ///
 /// # Errors
 ///
@@ -140,12 +143,15 @@ pub(in crate::cli::batch) fn dispatch_callees(
     )
     .entered();
     if cross_project {
-        // Shared cap with the core.
-        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let mut callees = cross_ctx.get_callees_cross(name)?;
-        callees.truncate(limit);
-        return Ok(serde_json::to_value(&callees)?);
+        let output = callees_cross_core(
+            &mut cross_ctx,
+            &CoreCalleesArgs {
+                name: name.to_string(),
+                limit: args.limit_arg.limit,
+            },
+        )?;
+        return Ok(serde_json::to_value(&output)?);
     }
 
     let core_args = CoreCalleesArgs {
@@ -189,20 +195,17 @@ pub(in crate::cli::batch) fn dispatch_impact(
     )
     .entered();
     if cross_project {
-        let depth = args.depth.clamp(1, 10);
-        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let mut result = cqs::cross_project::analyze_impact_cross(
+        let result = crate::cli::commands::impact_cross_core(
             &mut cross_ctx,
-            name,
-            depth,
-            do_suggest_tests,
-            include_types,
+            &ImpactCoreArgs {
+                name: name.to_string(),
+                depth: args.depth,
+                limit: args.limit_arg.limit,
+                suggest_tests: do_suggest_tests,
+                include_types,
+            },
         )?;
-        result.callers.truncate(limit);
-        result.transitive_callers.truncate(limit);
-        result.tests.truncate(limit);
-        result.type_impacted.truncate(limit);
         // Cross-project JSON never carried `kind` / `test_suggestions`
         // (the historical path called `impact_to_json` directly). Preserve
         // that wire shape.
@@ -251,22 +254,17 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     )
     .entered();
     if cross_project {
-        let limit = args.limit_arg.limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let test_chunks = cross_ctx.find_test_chunks_cross()?;
-        let graph = cross_ctx.merged_call_graph()?;
-        let summaries: Vec<cqs::store::ChunkSummary> =
-            test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
-
-        let mut matches = crate::cli::commands::build_test_map(
-            name,
-            &graph,
-            &summaries,
+        let matches = crate::cli::commands::test_map_cross_core(
+            &mut cross_ctx,
             &ctx.root,
-            max_depth,
-            crate::cli::commands::test_map_max_nodes(),
-        );
-        matches.truncate(limit);
+            &TestMapCoreArgs {
+                name: name.to_string(),
+                max_depth,
+                limit: args.limit_arg.limit,
+                max_nodes: crate::cli::commands::test_map_max_nodes(),
+            },
+        )?;
         let output = crate::cli::commands::build_test_map_output(name, &matches);
         return Ok(serde_json::to_value(&output)?);
     }
@@ -318,15 +316,8 @@ pub(in crate::cli::batch) fn dispatch_trace(
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let result = cqs::cross_project::trace_cross(&mut cross_ctx, source, target, max_depth)?;
-
-        let trace_result = cqs::cross_project::CrossProjectTraceResult {
-            source: source.to_string(),
-            target: target.to_string(),
-            depth: result.as_ref().map(|p| p.len().saturating_sub(1)),
-            found: result.is_some(),
-            path: result,
-        };
+        let trace_result =
+            crate::cli::commands::trace_cross_core(&mut cross_ctx, source, target, max_depth)?;
         return Ok(serde_json::to_value(&trace_result)?);
     }
 
@@ -509,11 +500,12 @@ mod tests {
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
-        // `build_callers` returns `Vec<CallerEntry>`, which serializes as a
-        // bare JSON array (no enclosing key).
-        let callers = json
+        // `callers_core` emits `{name, callers, count}` — the same object
+        // topology as callees, keyed by `callers` rather than `calls`.
+        assert_eq!(json["name"], "callee_fn");
+        let callers = json["callers"]
             .as_array()
-            .unwrap_or_else(|| panic!("response must be a JSON array, got: {json}"));
+            .unwrap_or_else(|| panic!("`callers` must be a JSON array, got: {json}"));
         assert!(
             callers.iter().any(|c| c["name"] == "caller_fn"),
             "expected caller_fn in callers list, got: {callers:?}"
@@ -577,11 +569,19 @@ mod tests {
 
     // ─── Surface-parity tests ──────────────────────────────────────────────
     //
-    // The structural payoff of the command-core refactor: the daemon
-    // dispatch adapter and a direct core call produce byte-identical
-    // `serde_json::Value` for identical inputs. These seed a const (so the
-    // kind-fallback path fires) and exercise every graph command on both a
-    // happy-path name (`callee_fn`/`caller_fn`) and the const.
+    // The structural payoff of the command-core refactor: the daemon dispatch
+    // adapter and a direct core call produce byte-identical
+    // `serde_json::Value` for identical inputs. These are parity-BY-
+    // CONSTRUCTION — each `dispatch_*` is a thin wrapper that calls the very
+    // core it's compared against, so the equality is structurally guaranteed
+    // rather than independently verified. To keep that guarantee meaningful
+    // each test also carries a fixture-grounded value assert (the core output
+    // contains the seeded caller / callee / path before the equality check),
+    // so a both-sides-empty regression — the one failure mode by-construction
+    // parity can't catch — fails the test. These seed a const (so the
+    // kind-fallback path fires) and exercise every graph command on a
+    // happy-path name (`callee_fn`/`caller_fn`) and the const, plus a
+    // cross-project variant per command.
 
     /// Seed a const chunk named `MAX_LEN` so the kind-fallback path is
     /// reachable. Returns a fresh context with the call-graph fixture plus
@@ -886,9 +886,9 @@ mod tests {
         };
         let json = dispatch_callers(&ctx.build_view(None), &args)
             .expect("kind-detect store error must not fail the request");
-        let callers = json
-            .as_array()
-            .unwrap_or_else(|| panic!("normal-path response must be an array, got: {json}"));
+        let callers = json["callers"].as_array().unwrap_or_else(|| {
+            panic!("normal-path response must carry a `callers` array, got: {json}")
+        });
         assert!(
             callers.iter().any(|c| c["name"] == "caller_fn"),
             "normal callers path must still answer, got: {callers:?}"
@@ -918,8 +918,68 @@ mod tests {
                 .expect("callers_core"),
             )
             .unwrap();
+            // Fixture-grounded: `callee_fn` has a real caller (`caller_fn`)
+            // in the seed, so the core output must be non-empty. Without this
+            // a both-sides-empty regression (e.g. the SQL stops matching)
+            // would still satisfy the byte-equality below.
+            if name == "callee_fn" {
+                let callers = core["callers"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("function-path core must carry callers: {core}"));
+                assert!(
+                    callers.iter().any(|c| c["name"] == "caller_fn"),
+                    "seeded caller_fn must appear in callers_core output: {core}"
+                );
+            }
             assert_eq!(daemon, core, "callers parity mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn parity_callers_cross_daemon_matches_core() {
+        // Cross-project parity over a single-project corpus (no references in
+        // config → `from_config` builds a one-store "local" context). Both
+        // the daemon cross branch and the CLI cross branch route through
+        // `callers_cross_core`, so this pins their shared output: the
+        // unified `{name, callers, count}` object with `project: "local"`.
+        let (dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+        let root = dir.path();
+
+        let wire = CallersArgs {
+            name: "callee_fn".into(),
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let daemon = dispatch_callers(&view, &wire).expect("dispatch_callers cross");
+
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(root).expect("from_config");
+        let core = serde_json::to_value(
+            callers_cross_core(
+                &mut cross_ctx,
+                &CallersCoreArgs {
+                    name: "callee_fn".into(),
+                    limit: 5,
+                },
+            )
+            .expect("callers_cross_core"),
+        )
+        .unwrap();
+
+        // Fixture-grounded value assert: the seeded caller surfaces, tagged
+        // with its project.
+        let callers = core["callers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("cross core must carry callers: {core}"));
+        assert!(
+            callers
+                .iter()
+                .any(|c| c["name"] == "caller_fn" && c["project"] == "local"),
+            "seeded cross-project caller_fn@local must appear: {core}"
+        );
+        assert_eq!(core["name"], "callee_fn");
+        assert_eq!(daemon, core, "cross-project callers parity mismatch");
     }
 
     #[test]
@@ -945,8 +1005,62 @@ mod tests {
                 .expect("callees_core"),
             )
             .unwrap();
+            // Fixture-grounded: `caller_fn` calls `callee_fn` in the seed, so
+            // the core's `calls` list must be non-empty on that name.
+            if name == "caller_fn" {
+                let calls = core["calls"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("function-path core must carry calls: {core}"));
+                assert!(
+                    calls.iter().any(|c| c["name"] == "callee_fn"),
+                    "seeded callee_fn must appear in callees_core output: {core}"
+                );
+            }
             assert_eq!(daemon, core, "callees parity mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn parity_callees_cross_daemon_matches_core() {
+        // Cross-project parity for callees over the single-project corpus.
+        // Both surfaces route through `callees_cross_core`; pin the unified
+        // `{name, calls, count}` object with `project: "local"`.
+        let (dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+        let root = dir.path();
+
+        let wire = CallersArgs {
+            name: "caller_fn".into(),
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let daemon = dispatch_callees(&view, &wire).expect("dispatch_callees cross");
+
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(root).expect("from_config");
+        let core = serde_json::to_value(
+            callees_cross_core(
+                &mut cross_ctx,
+                &CoreCalleesArgs {
+                    name: "caller_fn".into(),
+                    limit: 5,
+                },
+            )
+            .expect("callees_cross_core"),
+        )
+        .unwrap();
+
+        let calls = core["calls"]
+            .as_array()
+            .unwrap_or_else(|| panic!("cross core must carry calls: {core}"));
+        assert!(
+            calls
+                .iter()
+                .any(|c| c["name"] == "callee_fn" && c["project"] == "local"),
+            "seeded cross-project callee_fn@local must appear: {core}"
+        );
+        assert_eq!(core["name"], "caller_fn");
+        assert_eq!(daemon, core, "cross-project callees parity mismatch");
     }
 
     #[test]
@@ -979,6 +1093,24 @@ mod tests {
                 .expect("deps_core"),
             )
             .unwrap();
+            // Fixture-grounded: the reverse function case ran the reverse
+            // path (object keyed by `name`), and the const case ran the
+            // kind-fallback (object keyed by `fallback_from`) — pinning which
+            // branch fired guards against both sides collapsing to the same
+            // wrong shape.
+            if name == "caller_fn" && reverse {
+                assert_eq!(core["name"], "caller_fn", "reverse-path name key: {core}");
+                assert!(
+                    core.get("fallback_from").is_none(),
+                    "not a fallback: {core}"
+                );
+            }
+            if name == "MAX_LEN" {
+                assert_eq!(
+                    core["fallback_from"], "deps",
+                    "const must fall back: {core}"
+                );
+            }
             assert_eq!(daemon, core, "deps parity mismatch for {name}");
         }
     }
@@ -1014,8 +1146,65 @@ mod tests {
                 .expect("test_map_core"),
             )
             .unwrap();
+            // Fixture-grounded: the seed has no test chunks, so the function
+            // path returns an empty `tests` list — but it must still be the
+            // function path (`{name, tests, count}`), not the kind fallback.
+            // Pinning the `name`/`tests` keys catches a both-sides-fallback
+            // regression that byte-equality alone would mask.
+            if name == "callee_fn" {
+                assert_eq!(core["name"], "callee_fn", "function-path name key: {core}");
+                assert!(
+                    core["tests"].is_array(),
+                    "function path must carry a tests array: {core}"
+                );
+            }
             assert_eq!(daemon, core, "test-map parity mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn parity_test_map_cross_daemon_matches_core() {
+        // Cross-project parity for test-map. Both surfaces route through
+        // `test_map_cross_core` → `build_test_map_output`; pin the shared
+        // `{name, tests, count}` object. The seed has no tests, so `tests`
+        // is empty — the grounded assert pins the function-path keys.
+        let (dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+        let root = dir.path();
+
+        let wire = TestMapArgs {
+            name: "callee_fn".into(),
+            depth: 5,
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let daemon = dispatch_test_map(&view, &wire).expect("dispatch_test_map cross");
+
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(root).expect("from_config");
+        let matches = crate::cli::commands::test_map_cross_core(
+            &mut cross_ctx,
+            root,
+            &TestMapCoreArgs {
+                name: "callee_fn".into(),
+                max_depth: 5,
+                limit: 5,
+                max_nodes: crate::cli::commands::test_map_max_nodes(),
+            },
+        )
+        .expect("test_map_cross_core");
+        let core = serde_json::to_value(crate::cli::commands::build_test_map_output(
+            "callee_fn",
+            &matches,
+        ))
+        .unwrap();
+
+        assert_eq!(core["name"], "callee_fn");
+        assert!(
+            core["tests"].is_array(),
+            "cross test-map carries tests: {core}"
+        );
+        assert_eq!(daemon, core, "cross-project test-map parity mismatch");
     }
 
     #[test]
@@ -1049,8 +1238,47 @@ mod tests {
                 .expect("trace_core"),
             )
             .unwrap();
+            // Fixture-grounded: caller_fn → callee_fn is a real edge, so the
+            // path must be found (found=true, depth=1). The const-source case
+            // is left to byte-equality (it exercises the fallback shape).
+            if source == "caller_fn" {
+                assert_eq!(core["found"], true, "seeded path must be found: {core}");
+                assert_eq!(core["depth"], 1, "caller_fn→callee_fn is one hop: {core}");
+            }
             assert_eq!(daemon, core, "trace parity mismatch for {source}->{target}");
         }
+    }
+
+    #[test]
+    fn parity_trace_cross_daemon_matches_core() {
+        // Cross-project parity for trace. Both surfaces route through
+        // `trace_cross_core`; pin the shared `CrossProjectTraceResult`
+        // (`{source, target, path?, depth?, found}`).
+        let (dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+        let root = dir.path();
+
+        let wire = TraceArgs {
+            source: "caller_fn".into(),
+            target: "callee_fn".into(),
+            max_depth: 10,
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let daemon = dispatch_trace(&view, &wire).expect("dispatch_trace cross");
+
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(root).expect("from_config");
+        let core = serde_json::to_value(
+            crate::cli::commands::trace_cross_core(&mut cross_ctx, "caller_fn", "callee_fn", 10)
+                .expect("trace_cross_core"),
+        )
+        .unwrap();
+
+        assert_eq!(core["found"], true, "cross path must be found: {core}");
+        assert_eq!(core["source"], "caller_fn");
+        assert_eq!(core["target"], "callee_fn");
+        assert_eq!(daemon, core, "cross-project trace parity mismatch");
     }
 
     #[test]
@@ -1058,7 +1286,9 @@ mod tests {
         let (_dir, ctx) = seed_with_const();
         let view = ctx.build_view(None);
         let store = view.store();
-        for name in ["caller_fn", "MAX_LEN"] {
+        // `callee_fn` has a real caller (`caller_fn`); `MAX_LEN` exercises the
+        // kind-fallback path.
+        for name in ["callee_fn", "MAX_LEN"] {
             let wire = ImpactArgs {
                 name: name.into(),
                 depth: 1,
@@ -1082,7 +1312,65 @@ mod tests {
             .expect("impact_core")
             .to_value()
             .expect("to_value");
+            // Fixture-grounded: impact on `callee_fn` must list `caller_fn`
+            // among its direct callers, so the function-path output is
+            // non-empty — guarding against a both-sides-empty regression.
+            if name == "callee_fn" {
+                let callers = core["callers"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("impact function path must carry callers: {core}"));
+                assert!(
+                    callers.iter().any(|c| c["name"] == "caller_fn"),
+                    "seeded caller_fn must appear in impact callers: {core}"
+                );
+            }
             assert_eq!(daemon, core, "impact parity mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn parity_impact_cross_daemon_matches_core() {
+        // Cross-project parity for impact. Both surfaces route through
+        // `impact_cross_core`; the cross-project JSON is the bare
+        // `impact_to_json(result)` (no `kind` / `test_suggestions`).
+        let (dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+        let root = dir.path();
+
+        let wire = ImpactArgs {
+            name: "callee_fn".into(),
+            depth: 1,
+            suggest_tests: false,
+            type_impact: false,
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let daemon = dispatch_impact(&view, &wire).expect("dispatch_impact cross");
+
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(root).expect("from_config");
+        let result = crate::cli::commands::impact_cross_core(
+            &mut cross_ctx,
+            &ImpactCoreArgs {
+                name: "callee_fn".into(),
+                depth: 1,
+                limit: 5,
+                suggest_tests: false,
+                include_types: false,
+            },
+        )
+        .expect("impact_cross_core");
+        let core = cqs::impact_to_json(&result).expect("impact_to_json");
+
+        // Fixture-grounded: caller_fn calls callee_fn, so the cross impact
+        // must list it among callers.
+        let callers = core["callers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("cross impact must carry callers: {core}"));
+        assert!(
+            callers.iter().any(|c| c["name"] == "caller_fn"),
+            "seeded cross caller_fn must appear in impact callers: {core}"
+        );
+        assert_eq!(daemon, core, "cross-project impact parity mismatch");
     }
 }

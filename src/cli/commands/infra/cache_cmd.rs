@@ -217,9 +217,18 @@ pub(crate) fn cache_prune_core(
     }
 }
 
+/// Input for [`cache_compact_core`]. `cqs cache compact` takes no positional
+/// or flag input; the empty struct keeps the surface-agnostic Args convention
+/// every other core follows (a wire caller inflates it from `{}`).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct CacheCompactArgs {}
+
 /// Surface-agnostic core for `cqs cache compact`. VACUUMs the DB and reports
 /// the size delta. Mutating (rewrites the DB file).
-pub(crate) fn cache_compact_core(cache: &EmbeddingCache) -> Result<CacheCompactOutput> {
+pub(crate) fn cache_compact_core(
+    cache: &EmbeddingCache,
+    _args: &CacheCompactArgs,
+) -> Result<CacheCompactOutput> {
     let _span = tracing::info_span!("cache_compact_core").entered();
     let before = cache.stats().context("Failed to read pre-compact stats")?;
     cache.compact().context("Failed to VACUUM cache DB")?;
@@ -367,7 +376,7 @@ fn cache_prune(
 }
 
 fn cache_compact(cache: &EmbeddingCache, json: bool) -> Result<()> {
-    let out = cache_compact_core(cache)?;
+    let out = cache_compact_core(cache, &CacheCompactArgs::default())?;
     if json {
         crate::cli::json_envelope::emit_json(&out)?;
     } else {

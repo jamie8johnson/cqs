@@ -82,7 +82,8 @@ impl TextJsonArgs {
 pub use cqs::ci::GateThreshold;
 
 /// Audit mode state for the audit-mode command
-#[derive(Clone, Debug, clap::ValueEnum)]
+#[derive(Clone, Debug, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AuditModeState {
     /// Enable audit mode
     On,

@@ -8,9 +8,16 @@
 //! `cqs::kind::classify_hits` against an exact-name lookup before the
 //! call-graph query (see `docs/polymorphic-routing.md`): kind-mismatch
 //! fallbacks return an object with `kind`, `fallback_from`, `name`,
-//! `definitions`, and `note` fields. The function-path success shape is a
-//! flat array of caller/callee entries; agents detect the dispatch decision
-//! by type (`isinstance(parsed, list)` ⇒ function path, `dict` ⇒ fallback).
+//! `definitions`, and `note` fields.
+//!
+//! ## Output topology (function path)
+//!
+//! Both commands emit one object shape on the function path: callers returns
+//! `{name, callers: [...], count}` and callees returns `{name, calls: [...],
+//! count}` (cross-project adds a `project` field to each entry). Agents
+//! discriminate the dispatch decision by key-probing, not by JSON type: a
+//! `fallback_from` key means the kind-mismatch fallback fired; a `callers` /
+//! `calls` key means the function path ran. Both paths are JSON objects.
 
 use anyhow::{Context as _, Result};
 use colored::Colorize;
@@ -49,12 +56,31 @@ pub(crate) struct CallerEntry {
     pub name: String,
     pub file: String,
     pub line_start: u32,
+    /// Originating project name on the cross-project path; omitted (single
+    /// project) on the standard path.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project: String,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct CalleeEntry {
     pub name: String,
     pub line_start: u32,
+    /// Originating project name on the cross-project path; omitted (single
+    /// project) on the standard path.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project: String,
+}
+
+/// Function-path output for `cqs callers <name>`: `{name, callers, count}`.
+/// The mirror of [`CalleesOutput`] — both commands share one object
+/// topology so agents key-probe (`callers` vs `calls`) rather than
+/// discriminating array-vs-object.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CallersOutput {
+    pub name: String,
+    pub callers: Vec<CallerEntry>,
+    pub count: usize,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -64,16 +90,16 @@ pub(crate) struct CalleesOutput {
     pub count: usize,
 }
 
-/// Single JSON-schema source for `cqs callers <name>`. The happy path is
-/// a flat array of caller entries (possibly empty); a kind mismatch yields
-/// the shared fallback object. `#[serde(untagged)]` reproduces the
-/// historical "array ⇒ function path, object ⇒ fallback" shape agents
-/// already discriminate on by type.
+/// Single JSON-schema source for `cqs callers <name>`. Happy path is the
+/// `{name, callers, count}` object (cross-project adds `project` per entry);
+/// a kind mismatch yields the shared fallback object. Both variants are JSON
+/// objects — agents key-probe (`callers` ⇒ function path, `fallback_from` ⇒
+/// fallback) rather than discriminating by JSON type.
 #[derive(Debug, serde::Serialize)]
 #[serde(untagged)]
 pub(crate) enum CallersCoreOutput {
-    /// Function path: flat array of callers (empty array when none).
-    Callers(Vec<CallerEntry>),
+    /// Function path: `{name, callers, count}`.
+    Callers(CallersOutput),
     /// Kind mismatch: `{kind, fallback_from, name, definitions, note}`.
     Fallback(KindFallbackOutput),
 }
@@ -91,17 +117,30 @@ pub(crate) enum CalleesCoreOutput {
 
 // ─── Shared JSON builders ──────────────────────────────────────────────────
 
-/// Build typed caller output from caller info -- shared between CLI and batch.
-pub(crate) fn build_callers(callers: &[CallerInfo]) -> Vec<CallerEntry> {
-    let _span = tracing::info_span!("build_callers", count = callers.len()).entered();
+/// Build typed caller entries from caller info -- shared between CLI and batch.
+pub(crate) fn build_caller_entries(callers: &[CallerInfo]) -> Vec<CallerEntry> {
+    let _span = tracing::info_span!("build_caller_entries", count = callers.len()).entered();
     callers
         .iter()
         .map(|c| CallerEntry {
             name: c.name.clone(),
             file: normalize_path(&c.file).to_string(),
             line_start: c.line,
+            project: String::new(),
         })
         .collect()
+}
+
+/// Build typed callers output (`{name, callers, count}`) -- the function-path
+/// shape both surfaces emit. Mirror of [`build_callees`].
+pub(crate) fn build_callers(name: &str, callers: &[CallerInfo]) -> CallersOutput {
+    let _span = tracing::info_span!("build_callers", name, count = callers.len()).entered();
+    let entries = build_caller_entries(callers);
+    CallersOutput {
+        name: name.to_string(),
+        count: entries.len(),
+        callers: entries,
+    }
 }
 
 /// Build typed callees output -- shared between CLI and batch.
@@ -114,6 +153,7 @@ pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOut
             .map(|(n, line)| CalleeEntry {
                 name: n.clone(),
                 line_start: *line,
+                project: String::new(),
             })
             .collect(),
         count: callees.len(),
@@ -152,7 +192,9 @@ pub(crate) fn callers_core(
         .get_callers_full(&args.name)
         .context("Failed to load callers")?;
     callers.truncate(limit);
-    Ok(CallersCoreOutput::Callers(build_callers(&callers)))
+    Ok(CallersCoreOutput::Callers(build_callers(
+        &args.name, &callers,
+    )))
 }
 
 /// Surface-agnostic core for `cqs callees <name>` (single-project).
@@ -181,6 +223,78 @@ pub(crate) fn callees_core(
     )))
 }
 
+// ─── Cross-project cores ─────────────────────────────────────────────────────
+//
+// The cross-project path has its own (multi-index) retrieval and no
+// kind-fallback, so it gets its own core rather than a branch inside
+// `callers_core`. Both surfaces (CLI `cmd_callers --cross-project`, daemon
+// `dispatch_callers` cross branch) call these so the cap discipline and the
+// `{name, callers|calls, count}` projection can't drift. Output topology is
+// the same object shape as the single-project path; each entry gains a
+// `project` field.
+
+/// Surface-agnostic core for `cqs callers <name> --cross-project`.
+///
+/// Resolves callers across every project in `cross_ctx`, applies the shared
+/// `1..=100` cap, and projects to the same `{name, callers, count}` object
+/// the single-project core emits — entries carry their originating project.
+pub(crate) fn callers_cross_core(
+    cross_ctx: &mut cqs::cross_project::CrossProjectContext,
+    args: &CallersArgs,
+) -> Result<CallersOutput> {
+    let _span =
+        tracing::info_span!("callers_cross_core", name = %args.name, limit = args.limit).entered();
+    let limit = args.limit.clamp(1, 100);
+    let mut callers = cross_ctx
+        .get_callers_cross(&args.name)
+        .context("Failed to load cross-project callers")?;
+    callers.truncate(limit);
+    let entries: Vec<CallerEntry> = callers
+        .iter()
+        .map(|c| CallerEntry {
+            name: c.caller.name.clone(),
+            file: normalize_path(&c.caller.file).to_string(),
+            line_start: c.caller.line,
+            project: c.project.clone(),
+        })
+        .collect();
+    Ok(CallersOutput {
+        name: args.name.clone(),
+        count: entries.len(),
+        callers: entries,
+    })
+}
+
+/// Surface-agnostic core for `cqs callees <name> --cross-project`.
+///
+/// Mirror of [`callers_cross_core`]: projects to `{name, calls, count}` with
+/// a `project` field on each entry.
+pub(crate) fn callees_cross_core(
+    cross_ctx: &mut cqs::cross_project::CrossProjectContext,
+    args: &CalleesArgs,
+) -> Result<CalleesOutput> {
+    let _span =
+        tracing::info_span!("callees_cross_core", name = %args.name, limit = args.limit).entered();
+    let limit = args.limit.clamp(1, 100);
+    let mut callees = cross_ctx
+        .get_callees_cross(&args.name)
+        .context("Failed to load cross-project callees")?;
+    callees.truncate(limit);
+    let calls: Vec<CalleeEntry> = callees
+        .iter()
+        .map(|c| CalleeEntry {
+            name: c.name.clone(),
+            line_start: c.line,
+            project: c.project.clone(),
+        })
+        .collect();
+    Ok(CalleesOutput {
+        name: args.name.clone(),
+        count: calls.len(),
+        calls,
+    })
+}
+
 // ─── CLI commands (thin adapters over the cores) ───────────────────────────
 
 /// Find functions that call the specified function
@@ -197,36 +311,32 @@ pub(crate) fn cmd_callers(
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let mut callers = cross_ctx
-            .get_callers_cross(name)
-            .context("Failed to load cross-project callers")?;
-        callers.truncate(limit);
-
-        if callers.is_empty() {
-            if json {
-                crate::cli::json_envelope::emit_json(&serde_json::json!([]))?;
-            } else {
-                println!("No callers found for '{}' (cross-project)", name);
-            }
-            return Ok(());
-        }
+        let output = callers_cross_core(
+            &mut cross_ctx,
+            &CallersArgs {
+                name: name.to_string(),
+                limit,
+            },
+        )?;
 
         if json {
-            crate::cli::json_envelope::emit_json(&callers)?;
+            crate::cli::json_envelope::emit_json(&output)?;
+        } else if output.callers.is_empty() {
+            println!("No callers found for '{}' (cross-project)", name);
         } else {
             println!("Functions that call '{}' (cross-project):", name);
             println!();
-            for c in &callers {
+            for c in &output.callers {
                 println!(
                     "  {} ({}:{}) [{}]",
-                    c.caller.name.cyan(),
-                    c.caller.file.display(),
-                    c.caller.line,
+                    c.name.cyan(),
+                    c.file,
+                    c.line_start,
                     c.project.dimmed()
                 );
             }
             println!();
-            println!("Total: {} caller(s)", callers.len());
+            println!("Total: {} caller(s)", output.count);
         }
         return Ok(());
     }
@@ -246,15 +356,15 @@ pub(crate) fn cmd_callers(
                 render_callers_fallback_text(name, store)?;
             }
         }
-        CallersCoreOutput::Callers(callers) => {
+        CallersCoreOutput::Callers(output) => {
             if json {
-                crate::cli::json_envelope::emit_json(&callers)?;
-            } else if callers.is_empty() {
+                crate::cli::json_envelope::emit_json(&output)?;
+            } else if output.callers.is_empty() {
                 println!("No callers found for '{}'", name);
             } else {
                 println!("Functions that call '{}':", name);
                 println!();
-                for caller in &callers {
+                for caller in &output.callers {
                     println!(
                         "  {} ({}:{})",
                         caller.name.cyan(),
@@ -263,7 +373,7 @@ pub(crate) fn cmd_callers(
                     );
                 }
                 println!();
-                println!("Total: {} caller(s)", callers.len());
+                println!("Total: {} caller(s)", output.count);
             }
         }
     }
@@ -300,25 +410,28 @@ pub(crate) fn cmd_callees(
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let mut callees = cross_ctx
-            .get_callees_cross(name)
-            .context("Failed to load cross-project callees")?;
-        callees.truncate(limit);
+        let output = callees_cross_core(
+            &mut cross_ctx,
+            &CalleesArgs {
+                name: name.to_string(),
+                limit,
+            },
+        )?;
 
         if json {
-            crate::cli::json_envelope::emit_json(&callees)?;
+            crate::cli::json_envelope::emit_json(&output)?;
         } else {
             println!("Functions called by '{}' (cross-project):", name.cyan());
             println!();
-            if callees.is_empty() {
+            if output.calls.is_empty() {
                 println!("  (no function calls found)");
             } else {
-                for c in &callees {
+                for c in &output.calls {
                     println!("  {} [{}]", c.name, c.project.dimmed());
                 }
             }
             println!();
-            println!("Total: {} call(s)", callees.len());
+            println!("Total: {} call(s)", output.count);
         }
         return Ok(());
     }
@@ -382,16 +495,54 @@ mod tests {
             name: "foo".into(),
             file: "src/lib.rs".into(),
             line_start: 42,
+            project: String::new(),
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("line_start").is_some());
         assert!(json.get("line").is_none());
+        // Single-project entry omits the empty `project` field.
+        assert!(json.get("project").is_none());
+    }
+
+    #[test]
+    fn test_caller_entry_project_field_present_when_set() {
+        let entry = CallerEntry {
+            name: "foo".into(),
+            file: "src/lib.rs".into(),
+            line_start: 42,
+            project: "openclaw".into(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["project"], "openclaw");
     }
 
     #[test]
     fn test_build_callers_empty() {
-        let output = build_callers(&[]);
-        assert!(output.is_empty());
+        let output = build_callers("foo", &[]);
+        assert_eq!(output.count, 0);
+        assert!(output.callers.is_empty());
+        let json = serde_json::to_value(&output).unwrap();
+        // Callers now shares the callees object topology: {name, callers, count}.
+        assert_eq!(json["name"], "foo");
+        assert!(json["callers"].as_array().unwrap().is_empty());
+        assert_eq!(json["count"], 0);
+    }
+
+    #[test]
+    fn test_build_callers_object_shape() {
+        let info = vec![CallerInfo {
+            name: "caller_fn".into(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            line: 12,
+        }];
+        let output = build_callers("target", &info);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["name"], "target");
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["callers"][0]["name"], "caller_fn");
+        assert_eq!(json["callers"][0]["line_start"], 12);
+        // Mirror of callees: agents key-probe `callers` vs `calls`.
+        assert!(json.get("calls").is_none());
     }
 
     #[test]

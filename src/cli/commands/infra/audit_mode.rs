@@ -35,12 +35,25 @@ pub(crate) struct AuditModeOutput {
 
 /// Input for [`audit_mode_core`]. `state == None` is the query path (report
 /// current state without mutating); `Some(On/Off)` toggles and persists.
-pub(crate) struct AuditModeArgs<'a> {
+///
+/// Owned + `Deserialize` like every other core Args, so a wire/MCP caller can
+/// inflate it from `{"state": "on", "expires": "30m"}`. `expires` defaults to
+/// `30m` when omitted, matching the clap default.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct AuditModeArgs {
     /// `None` → query current state; `Some(On)` / `Some(Off)` → set it.
-    pub state: Option<&'a AuditModeState>,
+    #[serde(default)]
+    pub state: Option<AuditModeState>,
     /// Expiry duration for `On` (e.g. `30m`), parsed by `parse_duration`.
     /// Ignored on the query and `Off` paths.
-    pub expires: &'a str,
+    #[serde(default = "default_audit_expires")]
+    pub expires: String,
+}
+
+/// `#[serde(default)]` for [`AuditModeArgs::expires`] — mirrors the clap
+/// `--expires` default so wire callers that omit it get the same `30m`.
+fn default_audit_expires() -> String {
+    "30m".to_string()
 }
 
 /// Surface-agnostic core for `cqs audit-mode [on|off]`. Reads or persists the
@@ -50,11 +63,11 @@ pub(crate) struct AuditModeArgs<'a> {
 /// audit-mode is process-local posture set by the CLI before a review.
 pub(crate) fn audit_mode_core(
     cqs_dir: &std::path::Path,
-    args: &AuditModeArgs<'_>,
+    args: &AuditModeArgs,
 ) -> Result<AuditModeOutput> {
     let _span = tracing::info_span!("audit_mode_core").entered();
 
-    let Some(state) = args.state else {
+    let Some(state) = args.state.as_ref() else {
         // Query path — report current state, no mutation.
         let mode = load_audit_state(cqs_dir);
         return Ok(if mode.is_active() {
@@ -76,7 +89,7 @@ pub(crate) fn audit_mode_core(
 
     match state {
         AuditModeState::On => {
-            let duration = parse_duration(args.expires)?;
+            let duration = parse_duration(&args.expires)?;
             let expires_at = Utc::now() + duration;
             let mode = AuditMode {
                 enabled: true,
@@ -123,7 +136,13 @@ pub(crate) fn cmd_audit_mode(
         bail!("No .cqs directory found. Run 'cqs init' first.");
     }
 
-    let output = audit_mode_core(&cqs_dir, &AuditModeArgs { state, expires })?;
+    let output = audit_mode_core(
+        &cqs_dir,
+        &AuditModeArgs {
+            state: state.cloned(),
+            expires: expires.to_string(),
+        },
+    )?;
 
     if json {
         crate::cli::json_envelope::emit_json(&output)?;
@@ -169,8 +188,8 @@ mod tests {
         let on = audit_mode_core(
             cqs_dir,
             &AuditModeArgs {
-                state: Some(&AuditModeState::On),
-                expires: "30m",
+                state: Some(AuditModeState::On),
+                expires: "30m".to_string(),
             },
         )
         .unwrap();
@@ -181,7 +200,7 @@ mod tests {
             cqs_dir,
             &AuditModeArgs {
                 state: None,
-                expires: "30m",
+                expires: "30m".to_string(),
             },
         )
         .unwrap();
@@ -190,8 +209,8 @@ mod tests {
         let off = audit_mode_core(
             cqs_dir,
             &AuditModeArgs {
-                state: Some(&AuditModeState::Off),
-                expires: "30m",
+                state: Some(AuditModeState::Off),
+                expires: "30m".to_string(),
             },
         )
         .unwrap();
@@ -201,11 +220,29 @@ mod tests {
             cqs_dir,
             &AuditModeArgs {
                 state: None,
-                expires: "30m",
+                expires: "30m".to_string(),
             },
         )
         .unwrap();
         assert!(!queried_off.audit_mode, "query after Off must report off");
+    }
+
+    /// `AuditModeArgs` deserializes from the wire object every other core
+    /// Args accepts. `state` accepts lowercase `"on"`/`"off"`; `expires`
+    /// defaults to `30m` when omitted (matching the clap default).
+    #[test]
+    fn audit_mode_args_deserialize_from_wire() {
+        let full: AuditModeArgs = serde_json::from_str(r#"{"state":"on","expires":"1h"}"#).unwrap();
+        assert!(matches!(full.state, Some(AuditModeState::On)));
+        assert_eq!(full.expires, "1h");
+
+        let off: AuditModeArgs = serde_json::from_str(r#"{"state":"off"}"#).unwrap();
+        assert!(matches!(off.state, Some(AuditModeState::Off)));
+        assert_eq!(off.expires, "30m", "expires default mirrors clap --expires");
+
+        let query: AuditModeArgs = serde_json::from_str("{}").unwrap();
+        assert!(query.state.is_none(), "empty object → query path");
+        assert_eq!(query.expires, "30m");
     }
 
     #[test]
