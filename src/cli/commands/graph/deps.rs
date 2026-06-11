@@ -129,7 +129,7 @@ pub(crate) fn deps_core(
     let _span =
         tracing::info_span!("deps_core", name = %args.name, reverse = args.reverse, limit = args.limit)
             .entered();
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     // Const/Module/Ambiguous don't fit deps' model. `notes_text::deps`
     // returns `None` for Type, encoding "deps runs the forward query for a
@@ -140,6 +140,38 @@ pub(crate) fn deps_core(
             return Ok(DepsCoreOutput::Fallback(KindFallbackOutput::new(
                 &args.name, &chunks, fk, "deps", &text,
             )));
+        }
+    }
+
+    // Forward (no `--reverse`) deps answers "who uses this *type*?". A
+    // function name routes through here too (Function isn't a fallback kind),
+    // runs `get_type_users`, finds nothing, and would emit a silent empty
+    // list. Detect that misroute and surface the kind-labeled redirect to
+    // `--reverse` instead — mirroring the established fallback shape.
+    if !args.reverse {
+        match cqs::kind::detect_kind_for_store(store, &args.name) {
+            Ok((cqs::kind::Kind::Function, _)) => {
+                let def_chunks = match store.lookup_by_name(&args.name) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, name = %args.name, "deps function-forward definition lookup failed");
+                        Vec::new()
+                    }
+                };
+                let definitions = super::chunks_to_definitions(&def_chunks);
+                super::record_kind_fallback(&args.name, "function", "deps", definitions.len());
+                return Ok(DepsCoreOutput::Fallback(super::KindFallbackOutput {
+                    kind: "function",
+                    fallback_from: "deps",
+                    name: args.name.clone(),
+                    definitions,
+                    note: notes_text::deps_function_forward_note(),
+                }));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, name = %args.name, "deps forward kind detection failed; running forward query");
+            }
         }
     }
 
@@ -197,7 +229,7 @@ pub(crate) fn cmd_deps(
             if json {
                 crate::cli::json_envelope::emit_json(&fb)?;
             } else {
-                render_deps_fallback_text(name, store)?;
+                render_deps_fallback_text(name, reverse, store)?;
             }
         }
         DepsCoreOutput::Reverse(output) => {
@@ -243,11 +275,31 @@ pub(crate) fn cmd_deps(
 /// to print the definition list. Type never reaches here (it routes to the
 /// forward query), so an unexpected `None` from `notes_text::deps` is a
 /// no-op.
-fn render_deps_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> {
+fn render_deps_fallback_text(name: &str, reverse: bool, store: &Store<ReadOnly>) -> Result<()> {
     let (chunks, fallback) = super::detect_fallback(store, name);
     if let Some(fk) = fallback {
         if let (Some(text), Some(lead)) = (notes_text::deps(fk), notes_text::deps_lead(fk, name)) {
             super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Definitions:");
+        }
+        return Ok(());
+    }
+    // Forward-deps Function misroute: the core emitted the `function`
+    // fallback; mirror it in text.
+    if !reverse {
+        if let Ok((cqs::kind::Kind::Function, _)) = cqs::kind::detect_kind_for_store(store, name) {
+            let def_chunks = match store.lookup_by_name(name) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, name, "deps function-forward text lookup failed");
+                    Vec::new()
+                }
+            };
+            super::render_kind_fallback_text(
+                &notes_text::deps_function_forward_lead(name),
+                &def_chunks,
+                notes_text::deps_function_forward_redirect(),
+                "Definitions:",
+            );
         }
     }
     Ok(())
@@ -355,5 +407,83 @@ mod tests {
         let content = defs[0]["content"].as_str().unwrap();
         assert!(content.ends_with("... (truncated)"));
         assert_eq!(defs[0]["truncated"], true);
+    }
+
+    /// Forward deps (no `--reverse`) on a *function* name finds no
+    /// type-users and historically emitted a silent empty list. It must now
+    /// short-circuit to a `function` kind fallback that redirects the caller
+    /// to `--reverse`, instead of the misleading empty result.
+    #[test]
+    fn deps_forward_on_function_emits_function_fallback() {
+        use cqs::store::Store;
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let mock_embedding = cqs::Embedding::new(emb_vec);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open(&db).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let content = "fn do_work() {}";
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = cqs::parser::Chunk {
+            id: format!("src/lib.rs:1:{}", &hash[..8]),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: cqs::parser::Language::Rust,
+            chunk_type: cqs::parser::ChunkType::Function,
+            name: "do_work".to_string(),
+            signature: "fn do_work()".to_string(),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding)], Some(100))
+            .unwrap();
+        drop(store);
+
+        // Reopen read-only — `deps_core` takes a `Store<ReadOnly>`.
+        let store = Store::open_readonly(&db).unwrap();
+        let args = DepsArgs {
+            name: "do_work".to_string(),
+            reverse: false,
+            limit: 50,
+        };
+        let out = deps_core(&store, dir.path(), &args).unwrap();
+        match out {
+            DepsCoreOutput::Fallback(fb) => {
+                assert_eq!(fb.kind, "function");
+                assert_eq!(fb.fallback_from, "deps");
+                assert_eq!(fb.name, "do_work");
+                assert_eq!(fb.definitions.len(), 1);
+                assert!(
+                    fb.note.contains("--reverse"),
+                    "note should redirect to --reverse: {}",
+                    fb.note
+                );
+            }
+            other => panic!("expected function fallback, got: {other:?}"),
+        }
+
+        // Reverse mode on the same function runs the normal flow (no
+        // fallback) — pin that the misroute guard is forward-only.
+        let rev = DepsArgs {
+            name: "do_work".to_string(),
+            reverse: true,
+            limit: 50,
+        };
+        match deps_core(&store, dir.path(), &rev).unwrap() {
+            DepsCoreOutput::Reverse(_) => {}
+            other => panic!("reverse deps on a function must run normal flow, got: {other:?}"),
+        }
     }
 }

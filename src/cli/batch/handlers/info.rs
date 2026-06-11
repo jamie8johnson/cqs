@@ -56,7 +56,7 @@ pub(in crate::cli::batch) fn dispatch_explain(
         tracing::info_span!("batch_explain", target, limit = args.limit_arg.limit).entered();
     // Shared cap with `cmd_explain`. Truncates the per-section lists
     // (callers / callees / similar) before serialization.
-    let limit = args.limit_arg.limit.clamp(1, 100);
+    let limit = args.limit_arg.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let index = ctx.vector_index()?;
     let index = index.as_deref();

@@ -187,7 +187,7 @@ pub(crate) fn callers_core(
         tracing::info_span!("callers_core", name = %args.name, limit = args.limit).entered();
     // Standardised cap. The store query returns every caller; we truncate
     // before rendering so the user can paginate via repeated calls.
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     // Polymorphic-routing kind detection. Dispatch the kind-mismatch
     // fallback before the call-graph query.
@@ -215,7 +215,7 @@ pub(crate) fn callees_core(
 ) -> Result<CalleesCoreOutput> {
     let _span =
         tracing::info_span!("callees_core", name = %args.name, limit = args.limit).entered();
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
@@ -255,7 +255,7 @@ pub(crate) fn callers_cross_core(
 ) -> Result<CallersOutput> {
     let _span =
         tracing::info_span!("callers_cross_core", name = %args.name, limit = args.limit).entered();
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
     let mut callers = cross_ctx
         .get_callers_cross(&args.name)
         .context("Failed to load cross-project callers")?;
@@ -286,7 +286,7 @@ pub(crate) fn callees_cross_core(
 ) -> Result<CalleesOutput> {
     let _span =
         tracing::info_span!("callees_cross_core", name = %args.name, limit = args.limit).entered();
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
     let mut callees = cross_ctx
         .get_callees_cross(&args.name)
         .context("Failed to load cross-project callees")?;
@@ -318,7 +318,7 @@ pub(crate) fn cmd_callers(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name, limit, cross_project).entered();
     let store = &ctx.store;
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -417,7 +417,7 @@ pub(crate) fn cmd_callees(
     let _span = tracing::info_span!("cmd_callees", name, limit, cross_project).entered();
     let store = &ctx.store;
     // See cmd_callers — same clamp range.
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;

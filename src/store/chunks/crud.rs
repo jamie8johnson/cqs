@@ -849,12 +849,27 @@ impl Store<ReadWrite> {
     /// paid a BEGIN/COMMIT plus a content-hash snapshot SELECT per file
     /// (tens of thousands of transactions of pure overhead on a large
     /// corpus). Crash-atomicity contract: a crash mid-index may lose whole
-    /// uncommitted batches, but the chunks, FTS rows, and fingerprints that
-    /// DID land always committed together — the index is never left with a
-    /// chunk/FTS desync for the rows it contains. (The watch path keeps its
-    /// own per-file fused transaction in `upsert_chunks_calls_and_prune` —
-    /// that boundary is deliberate: a daemon tick must commit each file's
-    /// chunks + calls + function_calls + prune as one unit.)
+    /// uncommitted batches, but the chunks and FTS rows that DID land always
+    /// committed together — the index is never left with a chunk/FTS desync
+    /// for the rows it contains.
+    ///
+    /// Fingerprint ordering is the key crash-safety guarantee: a file's chunks
+    /// can straddle batches (the parser slices at `embed_batch_size`; a GPU
+    /// failure re-splits a batch). The pipeline stamps a file's fingerprint
+    /// only in the batch carrying its LAST chunk, so for a straddling file the
+    /// fingerprint commits in a LATER transaction than some of the file's
+    /// chunks — deliberately. If the process dies between those commits the
+    /// file is left half-indexed but UNSTAMPED, so the next run's staleness
+    /// pre-filter (`filter_stale_files`) classifies it STALE and re-indexes it
+    /// in full. (The reverse — fingerprint committed before all chunks — was
+    /// the bug this ordering fixes: it would mark a half-indexed file current
+    /// and skip it permanently.) `fingerprints` therefore only ever mentions
+    /// files whose every chunk is present in THIS batch's row sets.
+    ///
+    /// (The watch path keeps its own per-file fused transaction in
+    /// `upsert_chunks_calls_and_prune` — that boundary is deliberate: a daemon
+    /// tick must commit each file's chunks + calls + function_calls + prune as
+    /// one unit.)
     ///
     /// `sentinel` chunks are written via the same zero-vec
     /// `needs_embedding=1` contract that `enrichment_pass` and the reuse
@@ -924,11 +939,11 @@ impl Store<ReadWrite> {
             sentinel_pairs.iter().map(|(c, _)| mtime_for(c)).collect();
 
         // Only stamp fingerprints for files actually present in this batch's
-        // chunk sets. The embed stages clone the batch-level fingerprint map
-        // to both the cached and requeued halves of a GPU-failure split, so
-        // the map can mention files whose chunks travel in a different
-        // `EmbeddedBatch` — stamping those early would mark a file fresh
-        // before its rows landed.
+        // chunk sets. The pipeline already restricts `fingerprints` to files
+        // whose LAST chunk rides in this batch (file-complete stamping), and
+        // the GPU-failure split keeps a straddling file's fingerprint with the
+        // later-landing requeued half — so this intersection is a defensive
+        // belt-and-braces against stamping a file before all its rows landed.
         let batch_files: std::collections::HashSet<&std::path::PathBuf> = real
             .iter()
             .map(|(c, _)| &c.file)

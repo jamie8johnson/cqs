@@ -186,7 +186,10 @@ pub(in crate::cli::batch) fn dispatch_task(
     let tokens = args.tokens;
     let _span = tracing::info_span!("batch_task", description).entered();
     let embedder = ctx.embedder()?;
-    let limit = args.limit_arg.limit.clamp(1, 10);
+    let limit = args
+        .limit_arg
+        .limit
+        .clamp(1, crate::cli::PLACEMENT_LIMIT_CAP);
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.test_chunks()?;
     let result = cqs::task_with_resources(
@@ -254,7 +257,10 @@ pub(in crate::cli::batch) fn dispatch_where(
     let description = args.description.as_str();
     let _span = tracing::info_span!("batch_where", description).entered();
     let embedder = ctx.embedder()?;
-    let limit = args.limit_arg.limit.clamp(1, 10);
+    let limit = args
+        .limit_arg
+        .limit
+        .clamp(1, crate::cli::PLACEMENT_LIMIT_CAP);
     let result = cqs::suggest_placement(&ctx.store(), embedder, description, limit)?;
 
     let output = crate::cli::commands::build_where_output(&result, description, &ctx.root);

@@ -169,6 +169,7 @@ pub fn detect_kind_for_store<Mode>(
     store: &Store<Mode>,
     name: &str,
 ) -> Result<(Kind, Vec<KindHit>), StoreError> {
+    let _span = tracing::info_span!("detect_kind_for_store", %name).entered();
     let chunks = store.lookup_by_name(name)?;
     let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
     let kind = classify_hits(&hits);
@@ -184,6 +185,7 @@ pub fn detect_kind_for_store<Mode>(
 /// - N hits, all same Kind → `Multiple`
 /// - N hits, mixed Kinds → `Ambiguous`
 pub fn classify_hits(hits: &[KindHit]) -> Kind {
+    let _span = tracing::info_span!("classify_hits", hits = hits.len()).entered();
     if hits.is_empty() {
         return Kind::NotFound;
     }
@@ -255,6 +257,81 @@ mod tests {
         assert_eq!(classify_chunk_type(ChunkType::Impl), Kind::Other);
         assert_eq!(classify_chunk_type(ChunkType::ConfigKey), Kind::Other);
         assert_eq!(classify_chunk_type(ChunkType::Section), Kind::Other);
+    }
+
+    /// Table-driven pin over every [`ChunkType`] variant. The per-family
+    /// tests above only exercise a representative subset (13 of 24
+    /// variants); this iterates `ChunkType::ALL` so a newly-added variant
+    /// (or a re-bucketed existing one — Endpoint/Middleware → Function,
+    /// Object/Delegate → Type, Property/Event → Const, Service/StoredProc/
+    /// Extern/Modifier/Extension → Other) can't slip through unclassified.
+    /// `classify_chunk_type`'s match is already exhaustive (a new variant is
+    /// a compile error there), but this pins the *routing intent* of each
+    /// variant, which the compiler can't check.
+    #[test]
+    fn classify_chunk_type_covers_every_variant() {
+        fn expected(ct: ChunkType) -> Kind {
+            match ct {
+                ChunkType::Function
+                | ChunkType::Method
+                | ChunkType::Constructor
+                | ChunkType::Test
+                | ChunkType::Endpoint
+                | ChunkType::Middleware => Kind::Function,
+                ChunkType::Class
+                | ChunkType::Struct
+                | ChunkType::Enum
+                | ChunkType::Trait
+                | ChunkType::Interface
+                | ChunkType::TypeAlias
+                | ChunkType::Object
+                | ChunkType::Delegate => Kind::Type,
+                ChunkType::Constant
+                | ChunkType::Variable
+                | ChunkType::Property
+                | ChunkType::Event => Kind::Const,
+                ChunkType::Module | ChunkType::Namespace => Kind::Module,
+                ChunkType::Section
+                | ChunkType::Macro
+                | ChunkType::Impl
+                | ChunkType::ConfigKey
+                | ChunkType::Service
+                | ChunkType::StoredProc
+                | ChunkType::Extern
+                | ChunkType::Modifier
+                | ChunkType::Extension => Kind::Other,
+            }
+        }
+
+        // Every variant classifies; none falls through to a panic, and the
+        // result is one of the routing-level groupings.
+        for &ct in ChunkType::ALL {
+            let got = classify_chunk_type(ct);
+            assert_eq!(
+                got,
+                expected(ct),
+                "classify_chunk_type({ct:?}) routing intent drifted"
+            );
+            // A single chunk_type never reduces to an aggregate decision.
+            assert!(
+                !matches!(got, Kind::Ambiguous | Kind::Multiple | Kind::NotFound),
+                "{ct:?} classified to an aggregate-only Kind ({got:?})"
+            );
+        }
+
+        // Sanity: the previously-undertested variants are present in ALL and
+        // land in the buckets the doc comment promises.
+        assert_eq!(classify_chunk_type(ChunkType::Endpoint), Kind::Function);
+        assert_eq!(classify_chunk_type(ChunkType::Middleware), Kind::Function);
+        assert_eq!(classify_chunk_type(ChunkType::Object), Kind::Type);
+        assert_eq!(classify_chunk_type(ChunkType::Delegate), Kind::Type);
+        assert_eq!(classify_chunk_type(ChunkType::Property), Kind::Const);
+        assert_eq!(classify_chunk_type(ChunkType::Event), Kind::Const);
+        assert_eq!(classify_chunk_type(ChunkType::Service), Kind::Other);
+        assert_eq!(classify_chunk_type(ChunkType::StoredProc), Kind::Other);
+        assert_eq!(classify_chunk_type(ChunkType::Extern), Kind::Other);
+        assert_eq!(classify_chunk_type(ChunkType::Modifier), Kind::Other);
+        assert_eq!(classify_chunk_type(ChunkType::Extension), Kind::Other);
     }
 
     #[test]

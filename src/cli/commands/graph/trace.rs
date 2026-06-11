@@ -77,6 +77,16 @@ pub(crate) struct TraceOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<usize>,
     pub found: bool,
+    /// Source definition sites when the source name resolved to several
+    /// same-kind callables (`Kind::Multiple` — e.g. a free function and a
+    /// method that share a name). `resolve_target` picks one to seed the
+    /// BFS, but the other candidates would otherwise vanish silently; this
+    /// surfaces them alongside the path so the caller can re-run against a
+    /// disambiguated `Type::method` if the chosen seed was the wrong one.
+    /// Skip-when-empty: omitted entirely for the unambiguous single-source
+    /// case, so the historical wire shape is byte-stable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<serde_json::Value>,
 }
 
 /// Trace's kind-mismatch fallback payload. Unlike the other graph
@@ -156,6 +166,7 @@ pub(crate) fn build_trace_output<Mode>(
                 depth: Some(hops.len().saturating_sub(1)),
                 path: Some(hops),
                 found: true,
+                candidates: Vec::new(),
             })
         }
         None => Ok(TraceOutput {
@@ -164,6 +175,7 @@ pub(crate) fn build_trace_output<Mode>(
             path: None,
             depth: None,
             found: false,
+            candidates: Vec::new(),
         }),
     }
 }
@@ -188,19 +200,76 @@ pub(crate) fn trace_core(
         tracing::info_span!("trace_core", source = %args.source, target = %args.target).entered();
 
     // Polymorphic-routing kind detection on the source name. The trace BFS
-    // requires a callable starting node; a non-Function source dispatches a
-    // kind-labeled fallback. The target's kind is left to `resolve_target`
-    // to surface its own error if missing.
-    let (chunks, fallback) = super::detect_fallback(store, &args.source);
-    if let Some(fk) = fallback {
+    // requires a callable starting node. Classify the source once and route
+    // every non-callable shape to an explicit response instead of letting
+    // the BFS silently return "no path found":
+    //   - Const / Type / Module / Ambiguous → the shared kind-labeled
+    //     fallback (`super::fallback_kind`).
+    //   - Other (macro / impl / service / stored-proc / extern) → a
+    //     trace-specific `Kind::Other` fallback; these chunk types aren't
+    //     callable nodes, so no call path can originate from them.
+    //   - Function / Multiple → proceed to the BFS. `Multiple` (several
+    //     same-kind callables sharing a name) additionally surfaces its
+    //     candidate definition sites alongside the result so the caller can
+    //     see the disambiguation `resolve_target` made for it.
+    // The target's kind is left to `resolve_target` to surface its own
+    // error if missing.
+    let (source_kind, _source_hits) = match cqs::kind::detect_kind_for_store(store, &args.source) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Kind detection is a best-effort routing hint; a store hiccup
+            // here must not kill the trace. Warn and fall through to the
+            // normal resolve + BFS path, which runs its own queries.
+            tracing::warn!(
+                error = %e,
+                source = %args.source,
+                "trace source kind detection failed; falling through to BFS"
+            );
+            (cqs::kind::Kind::Function, Vec::new())
+        }
+    };
+
+    if let Some(fk) = super::fallback_kind(source_kind) {
+        // Re-fetch full summaries for the fallback `definitions` render —
+        // the kind hits drop the content/signature fields the fallback
+        // shows. Same indexed `WHERE name = ?` row set.
+        let chunks = match store.lookup_by_name(&args.source) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, source = %args.source, "fallback definition lookup failed");
+                Vec::new()
+            }
+        };
         let text = notes_text::trace(fk);
+        let definitions = super::chunks_to_definitions(&chunks);
+        super::record_kind_fallback(&args.source, fk.label(), "trace", definitions.len());
         return Ok(TraceCoreOutput::Fallback(TraceKindFallbackOutput {
             kind: fk.label(),
             fallback_from: "trace",
             source: args.source.clone(),
             target: args.target.clone(),
-            definitions: super::chunks_to_definitions(&chunks),
+            definitions,
             note: text.note,
+        }));
+    }
+
+    if source_kind == cqs::kind::Kind::Other {
+        let chunks = match store.lookup_by_name(&args.source) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, source = %args.source, "Other-kind definition lookup failed");
+                Vec::new()
+            }
+        };
+        let definitions = super::chunks_to_definitions(&chunks);
+        super::record_kind_fallback(&args.source, "other", "trace", definitions.len());
+        return Ok(TraceCoreOutput::Fallback(TraceKindFallbackOutput {
+            kind: "other",
+            fallback_from: "trace",
+            source: args.source.clone(),
+            target: args.target.clone(),
+            definitions,
+            note: notes_text::trace_other_note(),
         }));
     }
 
@@ -210,11 +279,54 @@ pub(crate) fn trace_core(
     let source_name = source_resolved.chunk.name.clone();
     let target_name = target_resolved.chunk.name.clone();
 
+    // Symmetric target-kind validation. The source is routed up-front (a
+    // non-callable source short-circuits to a fallback); the target was
+    // historically left entirely to `resolve_target`, so a non-callable
+    // target — which can never be reached as a callable BFS node — would
+    // silently report "no path found" with no indication the target was
+    // the wrong kind. Classify the target and warn on a non-callable so the
+    // empty result is attributable.
+    match cqs::kind::detect_kind_for_store(store, &args.target) {
+        Ok((target_kind, _hits)) => {
+            if !matches!(
+                target_kind,
+                cqs::kind::Kind::Function | cqs::kind::Kind::Multiple | cqs::kind::Kind::NotFound
+            ) {
+                tracing::warn!(
+                    target = %args.target,
+                    kind = ?target_kind,
+                    "trace target is not a callable; the call-graph BFS can only reach callable nodes, so any 'no path found' may reflect the target's kind rather than graph distance"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, target = %args.target, "trace target kind detection failed");
+        }
+    }
+
+    // `Kind::Multiple`: several same-kind callables share this source name.
+    // `resolve_target` picked one to seed the BFS; surface the full
+    // candidate set so the caller sees what it chose among (and can re-run
+    // against a disambiguated `Type::method` if the seed was wrong).
+    let source_candidates: Vec<serde_json::Value> = if source_kind == cqs::kind::Kind::Multiple {
+        match store.lookup_by_name(&args.source) {
+            Ok(chunks) => super::chunks_to_definitions(&chunks),
+            Err(e) => {
+                tracing::warn!(error = %e, source = %args.source, "Multiple-source candidate lookup failed");
+                Vec::new()
+            }
+        }
+    } else {
+        // Single callable source (`Kind::Function`) — nothing to disambiguate.
+        Vec::new()
+    };
+
     // Trivial case: source == target.
     if source_name == target_name {
         let trivial_path = vec![source_name.clone()];
-        let output =
+        let mut output =
             build_trace_output(store, &source_name, &target_name, Some(&trivial_path), root)?;
+        output.candidates = source_candidates;
         return Ok(TraceCoreOutput::Trace(output));
     }
 
@@ -225,7 +337,8 @@ pub(crate) fn trace_core(
         args.max_depth,
         args.max_nodes,
     );
-    let output = build_trace_output(store, &source_name, &target_name, path.as_deref(), root)?;
+    let mut output = build_trace_output(store, &source_name, &target_name, path.as_deref(), root)?;
+    output.candidates = source_candidates;
     Ok(TraceCoreOutput::Trace(output))
 }
 
@@ -487,6 +600,22 @@ fn render_trace_output(
             );
         }
     }
+    // `Kind::Multiple` source: surface the candidate definition sites the
+    // BFS seed was chosen from so a Text consumer sees the disambiguation.
+    // JSON already carries `candidates`; Mermaid stays graph-only.
+    if matches!(format, OutputFormat::Text) && !output.candidates.is_empty() {
+        println!();
+        println!(
+            "Note: `{}` matches {} callable definitions — traced from one of them. Candidate sites:",
+            source,
+            output.candidates.len()
+        );
+        for c in &output.candidates {
+            let file = c.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            let line = c.get("line_start").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("  {file}:{line}");
+        }
+    }
     Ok(())
 }
 
@@ -495,11 +624,35 @@ fn render_trace_output(
 /// `detect_fallback` (cheap indexed lookup) to print the source
 /// definition list with a "Source definitions:" heading.
 fn render_trace_fallback_text(source: &str, store: &Store<ReadOnly>) -> Result<()> {
-    let (chunks, fallback) = super::detect_fallback(store, source);
-    if let Some(fk) = fallback {
+    // Re-detect the source kind so the text renderer covers the same shapes
+    // the core's JSON path does: the four FallbackKinds plus the
+    // trace-specific `Kind::Other`. Cheap indexed lookup.
+    let source_kind = match cqs::kind::detect_kind_for_store(store, source) {
+        Ok((kind, _hits)) => kind,
+        Err(e) => {
+            tracing::warn!(error = %e, source, "trace fallback-text kind detection failed");
+            return Ok(());
+        }
+    };
+    let chunks = match store.lookup_by_name(source) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, source, "trace fallback-text definition lookup failed");
+            Vec::new()
+        }
+    };
+    if let Some(fk) = super::fallback_kind(source_kind) {
         let text = notes_text::trace(fk);
         let lead = notes_text::trace_lead(fk, source);
         super::render_kind_fallback_text(&lead, &chunks, text.text_redirect, "Source definitions:");
+    } else if source_kind == cqs::kind::Kind::Other {
+        let lead = notes_text::trace_other_lead(source);
+        super::render_kind_fallback_text(
+            &lead,
+            &chunks,
+            notes_text::trace_other_redirect(),
+            "Source definitions:",
+        );
     }
     Ok(())
 }
@@ -756,11 +909,14 @@ mod tests {
             path: None,
             depth: None,
             found: false,
+            candidates: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["found"], false);
         assert!(json.get("path").is_none());
         assert!(json.get("depth").is_none());
+        // Skip-when-empty: no candidates on the unambiguous case.
+        assert!(json.get("candidates").is_none());
     }
 
     #[test]
@@ -790,6 +946,7 @@ mod tests {
             ]),
             depth: Some(2),
             found: true,
+            candidates: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["found"], true);
@@ -841,5 +998,80 @@ mod tests {
         let content = defs[0]["content"].as_str().unwrap();
         assert!(content.ends_with("... (truncated)"));
         assert_eq!(defs[0]["truncated"], true);
+    }
+
+    /// Seed a single chunk of a chosen `chunk_type` and run `trace_core`
+    /// against it as the source — exercising the kind-routing branch.
+    fn trace_core_for_source_kind(chunk_type: cqs::parser::ChunkType) -> TraceCoreOutput {
+        use cqs::store::Store;
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let mock_embedding = cqs::Embedding::new(emb_vec);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open(&db).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let content = if matches!(chunk_type, cqs::parser::ChunkType::Macro) {
+            "macro_rules! my_macro { () => {} }"
+        } else {
+            "fn my_macro() {}"
+        };
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = cqs::parser::Chunk {
+            id: format!("src/lib.rs:1:{}", &hash[..8]),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: cqs::parser::Language::Rust,
+            chunk_type,
+            name: "my_macro".to_string(),
+            signature: "macro_rules! my_macro".to_string(),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding)], Some(100))
+            .unwrap();
+        drop(store);
+
+        // Reopen read-only — `trace_core` takes a `Store<ReadOnly>`.
+        let store = Store::open_readonly(&db).unwrap();
+        let graph = store.get_call_graph().unwrap();
+        let args = TraceArgs {
+            source: "my_macro".to_string(),
+            target: "anything".to_string(),
+            max_depth: 5,
+            max_nodes: 10_000,
+        };
+        trace_core(&store, &graph, dir.path(), &args).unwrap()
+    }
+
+    /// A `Kind::Other` source (macro / impl / service) must short-circuit to
+    /// the trace-specific `other` fallback instead of silently running the
+    /// BFS to "no path found". Pins the fallback shape.
+    #[test]
+    fn trace_other_kind_source_emits_other_fallback() {
+        let out = trace_core_for_source_kind(cqs::parser::ChunkType::Macro);
+        match out {
+            TraceCoreOutput::Fallback(fb) => {
+                assert_eq!(fb.kind, "other", "macro source must label as other");
+                assert_eq!(fb.fallback_from, "trace");
+                assert_eq!(fb.source, "my_macro");
+                assert_eq!(fb.definitions.len(), 1);
+                assert!(!fb.note.is_empty());
+            }
+            TraceCoreOutput::Trace(t) => {
+                panic!("expected Other-kind fallback, got a trace result: {t:?}")
+            }
+        }
     }
 }

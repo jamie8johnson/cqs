@@ -119,12 +119,27 @@ pub(super) fn store_stage(
     // `upsert_chunks_calls_and_prune`; this keeps the full reindex pipeline
     // in line.
     let mut live_ids_per_file: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    // Files that survived the staleness pre-filter but parsed to zero chunks
+    // this run: their stale chunks must be pruned (empty live set) so they
+    // don't survive forever and re-classify the file STALE every run. Stored
+    // separately from `live_ids_per_file` so a file that DID produce chunks in
+    // one batch isn't clobbered into an empty live set by a stray empty entry.
+    let mut empty_file_fingerprints: HashMap<PathBuf, cqs::store::FileFingerprint> = HashMap::new();
     let mut batch_counter: usize = 0;
     let flush_interval = deferred_flush_interval();
 
     for batch in embed_rx {
         if check_interrupted() {
             break;
+        }
+
+        // Stash zero-chunk files for the post-loop prune. A later batch may
+        // still carry chunks for the same origin (a file straddling batches
+        // where only a later half is empty cannot happen — empties have no
+        // chunks anywhere — but guard anyway): the post-loop pass skips any
+        // origin that also appears in `live_ids_per_file`.
+        for (file, fp) in batch.empty_file_fingerprints {
+            empty_file_fingerprints.entry(file).or_insert(fp);
         }
 
         // Use pre-extracted chunk calls from the parse stage (rayon parallel)
@@ -244,7 +259,22 @@ pub(super) fn store_stage(
     // One transaction for the whole sweep — the per-file variant opened a
     // BEGIN/COMMIT per origin, thousands of round-trips of pure overhead
     // on a full reindex.
-    let prune_entries: Vec<(&std::path::Path, Vec<&str>)> = live_ids_per_file
+    //
+    // Zero-chunk files (survived the pre-filter, parsed to nothing this run)
+    // are pruned with an EMPTY live set: `delete_phantom_chunks_batch` deletes
+    // every chunk for an origin whose live set is empty. Without this their
+    // old chunks survive the prune (the loop above never saw them, so they
+    // have no `live_ids_per_file` entry) and keep returning stale search hits
+    // forever. Skip any origin that DID produce chunks this run — that file is
+    // handled by its real live set.
+    //
+    // The fingerprint lives only on chunk rows, so once an origin is pruned to
+    // zero rows there is nowhere to stamp it: the next run's pre-filter sees no
+    // rows, treats the file as un-indexed, and re-parses it — to zero chunks
+    // again, a cheap idempotent no-op (no embed, no writes). That is the
+    // correct steady state; the load-bearing fix is that the file's stale
+    // chunks no longer pollute search.
+    let mut prune_entries: Vec<(&std::path::Path, Vec<&str>)> = live_ids_per_file
         .iter()
         .map(|(file, live_ids)| {
             (
@@ -253,6 +283,11 @@ pub(super) fn store_stage(
             )
         })
         .collect();
+    for file in empty_file_fingerprints.keys() {
+        if !live_ids_per_file.contains_key(file) {
+            prune_entries.push((file.as_path(), Vec::new()));
+        }
+    }
     match store.delete_phantom_chunks_batch(&prune_entries) {
         Ok(deleted) if deleted > 0 => {
             tracing::info!(
@@ -303,4 +338,230 @@ pub(super) fn store_stage(
     }
 
     Ok((total_embedded, total_cached, total_type_edges, total_calls))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    use super::super::types::RelationshipData;
+    use cqs::store::{FileFingerprint, ModelInfo};
+
+    fn chunk(file: &str, id_suffix: &str, body: &str) -> Chunk {
+        Chunk {
+            id: format!("{file}:1:{id_suffix}"),
+            file: PathBuf::from(file),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: id_suffix.to_string(),
+            signature: format!("pub fn {id_suffix}()"),
+            content: body.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: blake3::hash(body.as_bytes()).to_hex().to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    fn full_fp(content: &[u8]) -> FileFingerprint {
+        FileFingerprint {
+            mtime: Some(123_456),
+            size: Some(content.len() as u64),
+            content_hash: Some(*blake3::hash(content).as_bytes()),
+        }
+    }
+
+    fn embedded_batch(
+        chunks: Vec<Chunk>,
+        file_fingerprints: HashMap<PathBuf, FileFingerprint>,
+        empty_file_fingerprints: HashMap<PathBuf, FileFingerprint>,
+    ) -> EmbeddedBatch {
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        EmbeddedBatch {
+            cached_count: 0,
+            chunk_embeddings: chunks.into_iter().map(|c| (c, emb.clone())).collect(),
+            relationships: RelationshipData::default(),
+            file_fingerprints,
+            empty_file_fingerprints,
+            uncached_need_embedding: false,
+        }
+    }
+
+    fn run_store_stage(store: &Store, batches: Vec<EmbeddedBatch>) {
+        let (tx, rx) = unbounded::<EmbeddedBatch>();
+        for b in batches {
+            tx.send(b).unwrap();
+        }
+        drop(tx); // closing the channel = store_stage drains and returns
+        let parsed = AtomicUsize::new(0);
+        let embedded = AtomicUsize::new(0);
+        store_stage(rx, store, &parsed, &embedded, &ProgressBar::hidden()).unwrap();
+    }
+
+    /// Simulated crash between a straddling file's two batch commits. The
+    /// pipeline stamps a file's fingerprint only in the batch carrying its
+    /// LAST chunk; if the process dies after committing the file's first
+    /// (chunk-only, no-fingerprint) batch but before the second, the file is
+    /// half-indexed and UNSTAMPED. The staleness pre-filter consumes these
+    /// fingerprints (NULL columns degrade to "not current"), so the file MUST
+    /// classify stale on the next run rather than be skipped permanently.
+    ///
+    /// Drives `store_stage` with only the first batch (no fingerprint) and
+    /// then closes the channel — exactly the post-crash on-disk state.
+    #[test]
+    fn store_stage_partial_file_leaves_fingerprint_unstamped() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Batch 1 of 2 for straddle.rs: chunks present, fingerprint WITHHELD
+        // (it would have ridden the second, never-committed batch).
+        let first_half = vec![
+            chunk("straddle.rs", "aaaa", "fn a() {}"),
+            chunk("straddle.rs", "bbbb", "fn b() {}"),
+        ];
+        run_store_stage(
+            &store,
+            vec![embedded_batch(first_half, HashMap::new(), HashMap::new())],
+        );
+
+        // Chunks landed...
+        assert_eq!(
+            store.get_chunks_by_origin("straddle.rs").unwrap().len(),
+            2,
+            "first-half chunks must be committed"
+        );
+
+        // ...but the reconcile fingerprint the staleness pre-filter reads is
+        // unpopulated, so the file is NOT marked current.
+        let fps = store.fingerprints_for_origins(&["straddle.rs"]).unwrap();
+        let fp = fps
+            .get("straddle.rs")
+            .expect("origin row exists for the committed chunks");
+        assert!(
+            fp.content_hash.is_none() && fp.size.is_none(),
+            "a half-indexed file must stay unstamped so it re-indexes; got {fp:?}"
+        );
+    }
+
+    /// File-complete stamping, happy path: the SECOND (last-chunk) batch
+    /// carries the fingerprint, and after it commits the file is fully
+    /// stamped — proving the stamp lands once both halves are written.
+    #[test]
+    fn store_stage_stamps_fingerprint_when_last_batch_lands() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let content = b"fn a() {}\nfn b() {}";
+        let mut last_fp = HashMap::new();
+        last_fp.insert(PathBuf::from("straddle.rs"), full_fp(content));
+
+        run_store_stage(
+            &store,
+            vec![
+                // First half: no fingerprint.
+                embedded_batch(
+                    vec![chunk("straddle.rs", "aaaa", "fn a() {}")],
+                    HashMap::new(),
+                    HashMap::new(),
+                ),
+                // Last half: carries the fingerprint.
+                embedded_batch(
+                    vec![chunk("straddle.rs", "bbbb", "fn b() {}")],
+                    last_fp,
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        let fps = store.fingerprints_for_origins(&["straddle.rs"]).unwrap();
+        let fp = fps.get("straddle.rs").expect("origin exists");
+        assert!(
+            fp.content_hash.is_some() && fp.size.is_some() && fp.mtime.is_some(),
+            "after the last batch the file must be fully stamped; got {fp:?}"
+        );
+    }
+
+    /// Zero-chunk transition: a file previously indexed with chunks now parses
+    /// to zero chunks. It rides the pipeline as an `empty_file_fingerprints`
+    /// entry; `store_stage` must prune its stale chunks (empty live set) so
+    /// they stop polluting search. Pins the correctness fix for the
+    /// re-parse-forever / stale-results defect on the CLI path.
+    #[test]
+    fn store_stage_zero_chunk_file_prunes_old_chunks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Pre-seed gone.rs with chunks + a current fingerprint.
+        let seed = vec![
+            chunk("gone.rs", "1111", "fn one() {}"),
+            chunk("gone.rs", "2222", "fn two() {}"),
+        ];
+        let mut seed_fp = HashMap::new();
+        seed_fp.insert(PathBuf::from("gone.rs"), full_fp(b"seed"));
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        let seed_pairs: Vec<(Chunk, Embedding)> =
+            seed.into_iter().map(|c| (c, emb.clone())).collect();
+        store
+            .upsert_embedded_batch(&seed_pairs, &[], &seed_fp)
+            .unwrap();
+        assert_eq!(
+            store.get_chunks_by_origin("gone.rs").unwrap().len(),
+            2,
+            "seed chunks must be present before the zero-chunk reindex"
+        );
+
+        // Reindex run: gone.rs parses to ZERO chunks → rides the empty set.
+        let mut empties = HashMap::new();
+        empties.insert(PathBuf::from("gone.rs"), full_fp(b"now empty"));
+        run_store_stage(
+            &store,
+            vec![embedded_batch(Vec::new(), HashMap::new(), empties)],
+        );
+
+        assert_eq!(
+            store.get_chunks_by_origin("gone.rs").unwrap().len(),
+            0,
+            "zero-chunk file's stale chunks must be pruned"
+        );
+    }
+
+    /// A file that produced chunks this run must NOT be clobbered by a stray
+    /// empty-set entry for the same origin (defensive: empties never carry
+    /// chunks, but the post-loop pass must skip any origin with a real live
+    /// set). The chunks survive.
+    #[test]
+    fn store_stage_chunked_file_not_pruned_by_stray_empty_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let mut fp = HashMap::new();
+        fp.insert(PathBuf::from("live.rs"), full_fp(b"live"));
+        let mut stray_empty = HashMap::new();
+        stray_empty.insert(PathBuf::from("live.rs"), full_fp(b"live"));
+
+        run_store_stage(
+            &store,
+            vec![embedded_batch(
+                vec![chunk("live.rs", "cccc", "fn c() {}")],
+                fp,
+                stray_empty,
+            )],
+        );
+
+        assert_eq!(
+            store.get_chunks_by_origin("live.rs").unwrap().len(),
+            1,
+            "a file with a real live set must survive a stray empty entry"
+        );
+    }
 }

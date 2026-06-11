@@ -47,14 +47,39 @@ use super::helpers::StoreError;
 /// value (including unset) keeps the default hard-error behaviour.
 pub(crate) const REQUIRE_BACKUP_ENV: &str = "CQS_MIGRATE_REQUIRE_BACKUP";
 
-/// Number of version-tagged backups to retain in the DB's parent directory.
-/// The most recent `KEEP_BACKUPS` (by mtime) survive; older ones are pruned
-/// on every successful migrate.
+/// Default number of version-tagged backups to retain in the DB's parent
+/// directory. The most recent `keep_backups()` (by mtime) survive; older ones
+/// are pruned on every successful migrate.
 ///
 /// Value of 3 = the backup from the current migrate run + the two prior
 /// runs' backups. That gives the user two additional recovery points if a
 /// migration bug is discovered after a subsequent migrate has completed.
-pub(crate) const KEEP_BACKUPS: usize = 3;
+pub(crate) const KEEP_BACKUPS_DEFAULT: usize = 3;
+
+/// Resolve the backup-retention count honoring `CQS_MIGRATE_KEEP_BACKUPS`.
+///
+/// Unlike most size knobs, `0` is a valid override here — "prune every
+/// backup after a successful migrate" is a legitimate choice on tight-quota
+/// mounts (the just-written backup only guards the current run; once migrate
+/// commits it is no longer needed). So this resolver accepts `0` verbatim
+/// rather than treating it as "unset" the way `parse_env_usize` does.
+/// Missing / empty / unparseable falls back to [`KEEP_BACKUPS_DEFAULT`].
+pub(crate) fn keep_backups() -> usize {
+    match std::env::var("CQS_MIGRATE_KEEP_BACKUPS") {
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => {
+                tracing::warn!(
+                    env = "CQS_MIGRATE_KEEP_BACKUPS",
+                    value = %v,
+                    "Invalid env var (must be a non-negative usize), using default {KEEP_BACKUPS_DEFAULT}"
+                );
+                KEEP_BACKUPS_DEFAULT
+            }
+        },
+        Err(_) => KEEP_BACKUPS_DEFAULT,
+    }
+}
 
 /// Build the backup path for a given migration span.
 ///
@@ -261,7 +286,7 @@ pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<()
 }
 
 /// Prune `*.bak-v*.db` files in the DB's parent directory, keeping the
-/// newest `KEEP_BACKUPS` by mtime. Logs each removal at `info!`.
+/// newest `keep_backups()` by mtime. Logs each removal at `info!`.
 ///
 /// The WAL/SHM sidecars (if any) for a pruned backup are removed too so the
 /// directory doesn't fill with orphan `.bak-v*.db-wal` files.
@@ -317,9 +342,9 @@ pub(crate) fn prune_old_backups(db_path: &Path) -> Result<(), StoreError> {
         candidates.push((path, mtime));
     }
 
-    // Sort newest-first. The newest KEEP_BACKUPS survive; the rest are pruned.
+    // Sort newest-first. The newest `keep_backups()` survive; the rest are pruned.
     candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
-    for (path, _) in candidates.into_iter().skip(KEEP_BACKUPS) {
+    for (path, _) in candidates.into_iter().skip(keep_backups()) {
         if let Err(e) = std::fs::remove_file(&path) {
             tracing::warn!(
                 error = %e,
@@ -445,6 +470,23 @@ fn sidecar_path(db: &Path, ext: &str) -> PathBuf {
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    /// `keep_backups()` returns the compiled default when unset, the env
+    /// value when set (including `0`, which is a valid "prune all" choice),
+    /// and the default on a garbage value.
+    #[test]
+    fn keep_backups_honors_env_including_zero() {
+        std::env::remove_var("CQS_MIGRATE_KEEP_BACKUPS");
+        assert_eq!(keep_backups(), KEEP_BACKUPS_DEFAULT);
+        std::env::set_var("CQS_MIGRATE_KEEP_BACKUPS", "7");
+        assert_eq!(keep_backups(), 7);
+        // Zero is honored verbatim, unlike the parse_env_usize "reject zero".
+        std::env::set_var("CQS_MIGRATE_KEEP_BACKUPS", "0");
+        assert_eq!(keep_backups(), 0);
+        std::env::set_var("CQS_MIGRATE_KEEP_BACKUPS", "garbage");
+        assert_eq!(keep_backups(), KEEP_BACKUPS_DEFAULT);
+        std::env::remove_var("CQS_MIGRATE_KEEP_BACKUPS");
+    }
 
     #[test]
     fn sidecar_path_appends_suffix_to_full_filename() {

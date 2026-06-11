@@ -316,10 +316,7 @@ mod tests {
         // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
         let _keep = dir.keep();
 
-        NamedStore {
-            name: name.to_string(),
-            store,
-        }
+        NamedStore::new(name.to_string(), store, db_path)
     }
 
     // ===== Cross-project impact tests =====

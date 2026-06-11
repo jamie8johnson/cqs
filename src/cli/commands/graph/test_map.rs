@@ -271,7 +271,7 @@ pub(crate) fn test_map_core(
         tracing::info_span!("test_map_core", name = %args.name, limit = args.limit).entered();
     // Cap on rendered matches. Truncates the BFS-derived matches AFTER
     // sorting so the "closest" tests rank first.
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
@@ -317,7 +317,7 @@ pub(crate) fn test_map_cross_core(
 ) -> Result<Vec<TestMatch>> {
     let _span =
         tracing::info_span!("test_map_cross_core", name = %args.name, limit = args.limit).entered();
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
     let test_chunks = cross_ctx.find_test_chunks_cross()?;
     let graph = cross_ctx.merged_call_graph()?;
     let summaries: Vec<ChunkSummary> = test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
@@ -346,7 +346,7 @@ pub(crate) fn cmd_test_map(
     let _span = tracing::info_span!("cmd_test_map", name, limit, cross_project).entered();
     // Cap on rendered matches. Default is 5 (LimitArg). Truncates the
     // BFS-derived matches AFTER sorting so the "closest" tests rank first.
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;

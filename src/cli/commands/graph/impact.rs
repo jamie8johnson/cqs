@@ -129,8 +129,8 @@ pub(crate) fn impact_core(
     args: &ImpactArgs,
 ) -> Result<ImpactCoreOutput> {
     let _span = tracing::info_span!("impact_core", name = %args.name, limit = args.limit).entered();
-    let depth = args.depth.clamp(1, 10);
-    let limit = args.limit.clamp(1, 100);
+    let depth = args.depth.clamp(1, crate::cli::IMPACT_DEPTH_CAP);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
@@ -187,8 +187,8 @@ pub(crate) fn impact_cross_core(
 ) -> Result<cqs::ImpactResult> {
     let _span =
         tracing::info_span!("impact_cross_core", name = %args.name, limit = args.limit).entered();
-    let depth = args.depth.clamp(1, 10);
-    let limit = args.limit.clamp(1, 100);
+    let depth = args.depth.clamp(1, crate::cli::IMPACT_DEPTH_CAP);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
     let mut result = cqs::cross_project::analyze_impact_cross(
         cross_ctx,
         &args.name,

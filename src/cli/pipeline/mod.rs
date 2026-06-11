@@ -307,6 +307,7 @@ mod tests {
             vec![],
             RelationshipData::default(),
             test_fps(12345),
+            std::collections::HashMap::new(),
         );
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 1);
@@ -327,6 +328,7 @@ mod tests {
             vec![emb],
             RelationshipData::default(),
             test_fps(99),
+            std::collections::HashMap::new(),
         );
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 0);
@@ -349,6 +351,7 @@ mod tests {
             vec![new_emb],
             RelationshipData::default(),
             test_fps(12345),
+            std::collections::HashMap::new(),
         );
         assert_eq!(batch.chunk_embeddings.len(), 2);
         assert_eq!(batch.cached_count, 1);
@@ -361,6 +364,7 @@ mod tests {
             vec![],
             vec![],
             RelationshipData::default(),
+            std::collections::HashMap::new(),
             std::collections::HashMap::new(),
         );
         assert_eq!(batch.chunk_embeddings.len(), 0);
@@ -382,6 +386,7 @@ mod tests {
             vec![e2, e3],
             RelationshipData::default(),
             test_fps(0),
+            std::collections::HashMap::new(),
         );
 
         assert_eq!(batch.chunk_embeddings.len(), 3);
@@ -585,6 +590,7 @@ mod tests {
             chunks: vec![chunk],
             relationships: super::types::RelationshipData::default(),
             file_fingerprints,
+            empty_file_fingerprints: std::collections::HashMap::new(),
         }
     }
 
@@ -728,6 +734,7 @@ mod tests {
             chunks: vec![],
             relationships: super::types::RelationshipData::default(),
             file_fingerprints: std::collections::HashMap::new(),
+            empty_file_fingerprints: std::collections::HashMap::new(),
         };
 
         let prepared = prepare_for_embedding(batch, &embedder, &store, None, None);

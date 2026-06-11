@@ -88,7 +88,7 @@ pub(crate) fn cmd_where(
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
-    let limit = limit.clamp(1, 10);
+    let limit = limit.clamp(1, crate::cli::PLACEMENT_LIMIT_CAP);
 
     let result = suggest_placement(store, embedder, description, limit)?;
 
