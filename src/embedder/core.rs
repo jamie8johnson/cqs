@@ -46,6 +46,21 @@ pub struct Embedder {
     /// using `arc.encode(...)` work via `Arc` deref without touching the mutex
     /// during inference.
     tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
+    /// Lazy truncation-disabled clone of [`Self::tokenizer`].
+    ///
+    /// `split_into_windows`, `token_count`, and `token_counts_batch` all need
+    /// full-sequence token counts, but some preset tokenizers ship
+    /// `tokenizer.json` with `truncation: {max_length: 512}` baked in (see
+    /// `split_into_windows` for the windowing-loss failure mode). Cloning the
+    /// tokenizer per call to flip truncation off deep-copies the full vocab
+    /// (~262k entries for EmbeddingGemma) — ~14k clones per reindex. Clone
+    /// once here instead and hand out `Arc` clones.
+    ///
+    /// Same `Mutex<Option<Arc<..>>>` shape as `tokenizer` (not `OnceLock`) so
+    /// [`Self::clear_session`] can drop it for a model swap — a stale
+    /// no-trunc tokenizer from the previous model would silently mis-tokenize
+    /// everything after the swap.
+    tokenizer_no_trunc: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
     /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     /// Lazy execution-provider resolution. `select_provider()` probes for CUDA
@@ -195,6 +210,7 @@ impl Embedder {
         Ok(Self {
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
+            tokenizer_no_trunc: Mutex::new(None),
             model_paths: OnceCell::new(),
             // Lazy. Both `new_lazy_provider` and `new_with_provider`
             // overwrite this slot before returning.
@@ -440,6 +456,46 @@ impl Embedder {
         Ok(loaded)
     }
 
+    /// Get or initialize the truncation-disabled tokenizer.
+    ///
+    /// First call deep-clones the base tokenizer and flips truncation off;
+    /// every subsequent call returns an `Arc` clone of that one copy. The
+    /// result is immutable after creation (call sites only `encode`), so
+    /// sharing is safe. See the `tokenizer_no_trunc` field doc for why the
+    /// per-call clone this replaces was expensive.
+    fn tokenizer_no_trunc(&self) -> Result<Arc<tokenizers::Tokenizer>, EmbedderError> {
+        {
+            let guard = self
+                .tokenizer_no_trunc
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = guard.as_ref() {
+                return Ok(Arc::clone(t));
+            }
+        }
+        // Build outside the lock — the clone of a 262k-entry vocab is the
+        // expensive part and shouldn't serialize concurrent callers.
+        let base = self.tokenizer()?;
+        let mut no_trunc = (*base).clone();
+        if no_trunc.get_truncation().is_some() {
+            no_trunc
+                .with_truncation(None)
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
+        }
+        let built = Arc::new(no_trunc);
+        let mut guard = self
+            .tokenizer_no_trunc
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // Another thread may have initialized while we were cloning; prefer
+        // the first winner so Arc identity is stable.
+        if let Some(existing) = guard.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        *guard = Some(Arc::clone(&built));
+        Ok(built)
+    }
+
     /// Resolve the pad token id once, caching on the embedder.
     ///
     /// Returns the id used to fill `input_ids` below `max_length` during
@@ -504,12 +560,7 @@ impl Embedder {
         // bge-large-ft and v9-200k ship tokenizer.json with
         // truncation.max_length=512, which silently caps `token_count`
         // and breaks every downstream "is this chunk too long?" check.
-        let tokenizer_arc = self.tokenizer()?;
-        let mut tok = (*tokenizer_arc).clone();
-        if tok.get_truncation().is_some() {
-            tok.with_truncation(None)
-                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
-        }
+        let tok = self.tokenizer_no_trunc()?;
         let encoding = tok
             .encode(text, false)
             .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
@@ -527,12 +578,7 @@ impl Embedder {
         let _span = tracing::debug_span!("token_counts_batch", count = texts.len()).entered();
         // Same truncation-bypass as `token_count` — count actual tokens
         // for accurate windowing decisions.
-        let tokenizer_arc = self.tokenizer()?;
-        let mut tok = (*tokenizer_arc).clone();
-        if tok.get_truncation().is_some() {
-            tok.with_truncation(None)
-                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
-        }
+        let tok = self.tokenizer_no_trunc()?;
         let encodings = tok
             .encode_batch(texts.to_vec(), false)
             .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
@@ -586,25 +632,19 @@ impl Embedder {
             )));
         }
 
-        // Clone the tokenizer and disable truncation so we count the FULL
+        // Use the cached truncation-disabled tokenizer so we count the FULL
         // token sequence, not whatever the tokenizer's `truncation` field
         // caps it to. Some preset tokenizers (notably bge-large-ft and
         // v9-200k, which were exported via `optimum-cli` with default
         // truncation enabled) ship `tokenizer.json` with
-        // `truncation: {max_length: 512}`. Without this clone, encode()
+        // `truncation: {max_length: 512}`. Without the override, encode()
         // silently caps long content at 512 tokens, the windowing loop
         // sees `ids.len() <= max_tokens` and returns a single window —
         // dropping ~90% of long markdown sections from the embedding.
         // Inference paths (embed_query/embed_batch) intentionally keep the
         // truncation behavior because they need to clamp input to
         // max_seq_length anyway, so we only override here.
-        let tokenizer_arc = self.tokenizer()?;
-        let mut tokenizer_no_trunc = (*tokenizer_arc).clone();
-        if tokenizer_no_trunc.get_truncation().is_some() {
-            tokenizer_no_trunc
-                .with_truncation(None)
-                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
-        }
+        let tokenizer_no_trunc = self.tokenizer_no_trunc()?;
         let encoding = tokenizer_no_trunc
             .encode(text, false)
             .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
@@ -842,6 +882,17 @@ impl Embedder {
             }
         }
         *tok = None;
+        drop(tok);
+        // Drop the cached truncation-disabled clone alongside the base
+        // tokenizer — a model swap must not leave the old model's no-trunc
+        // tokenizer serving `split_into_windows` / `token_count`.
+        {
+            let mut no_trunc = self
+                .tokenizer_no_trunc
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *no_trunc = None;
+        }
         // Reset detected_dim and model_fingerprint so a model swap re-detects
         // dim and re-fingerprints on next inference. Without this reset, the
         // Mutex<Option<...>> slots would carry the first-loaded model's values
@@ -1998,6 +2049,43 @@ mod tests {
             };
             let windows = embedder.split_into_windows("any text", 0, 0).unwrap();
             assert!(windows.is_empty());
+        }
+
+        /// Two calls to `tokenizer_no_trunc()` must return the SAME cached
+        /// tokenizer (Arc identity), not a fresh deep clone per call — the
+        /// per-call vocab clone was ~14k clones per reindex.
+        #[test]
+        #[ignore]
+        fn tokenizer_no_trunc_is_cached_across_calls() {
+            let embedder = match Embedder::new(ModelConfig::e5_base()) {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("E5-base unavailable in test env: {err}; skipping (#1305)");
+                    return;
+                }
+            };
+            let first = match embedder.tokenizer_no_trunc() {
+                Ok(t) => t,
+                Err(err) => {
+                    eprintln!(
+                        "tokenizer load failed (likely corrupt tokenizer.json from a partial \
+                         HF cache): {err}; skipping (#1305)"
+                    );
+                    return;
+                }
+            };
+            let second = embedder.tokenizer_no_trunc().unwrap();
+            assert!(
+                std::sync::Arc::ptr_eq(&first, &second),
+                "second call must reuse the cached no-trunc tokenizer"
+            );
+            // clear_session drops the cache; the next call rebuilds a NEW Arc.
+            embedder.clear_session();
+            let third = embedder.tokenizer_no_trunc().unwrap();
+            assert!(
+                !std::sync::Arc::ptr_eq(&first, &third),
+                "clear_session must drop the cached no-trunc tokenizer"
+            );
         }
 
         /// overlap >= max_tokens/2 must error out, not

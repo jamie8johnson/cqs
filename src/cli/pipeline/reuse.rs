@@ -120,13 +120,31 @@ pub(crate) fn resolve_reuse(
             dim,
         ) {
             Ok(hits) => {
-                if !hits.is_empty() {
-                    tracing::debug!(hits = hits.len(), "Global cache hits");
-                }
+                let total = hits.len();
+                let mut dropped = 0usize;
                 for (hash, emb_vec) in hits {
-                    if let Ok(emb) = Embedding::try_new(emb_vec) {
-                        global_hits.insert(hash, emb);
+                    // Same finiteness guard as the store-cache path
+                    // (`get_embeddings_by_canonical_hashes`): reject NaN/Inf
+                    // before they can poison HNSW build or query paths. A
+                    // dropped hit falls through to re-embedding, so warn —
+                    // a silent drop hides cache corruption indefinitely.
+                    match Embedding::try_new(emb_vec) {
+                        Ok(emb) => {
+                            global_hits.insert(hash, emb);
+                        }
+                        Err(e) => {
+                            dropped += 1;
+                            tracing::warn!(
+                                hash = %hash,
+                                error = %e,
+                                "Non-finite embedding values (NaN/Inf) in global cache, \
+                                 re-embedding — run 'cqs cache clear' to purge corrupt entries"
+                            );
+                        }
                     }
+                }
+                if total > 0 {
+                    tracing::debug!(hits = total, dropped, "Global cache hits");
                 }
             }
             Err(e) => {
@@ -329,6 +347,78 @@ mod tests {
         assert!(split.cached.is_empty());
         assert_eq!(split.to_embed, vec![0, 1]);
         assert_eq!(split.global_hits, 0);
+    }
+
+    /// A corrupt (non-finite) global-cache vector must be dropped (with a
+    /// warn) and the chunk routed to `to_embed` — never served as a hit, and
+    /// never counted in `global_hits`.
+    #[test]
+    fn non_finite_global_cache_entry_falls_through_to_embed() {
+        let dim = 8;
+        let (_tmp, store) = open_store(dim);
+
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let cache_path = cache_dir.path().join("embeddings_cache.db");
+        let cache = cqs::cache::EmbeddingCache::open(&cache_path).unwrap();
+        let fp = "test-fingerprint";
+
+        let chunk = chunk_with("a", "fn a() {}", "k1");
+        let key = canon_key_ref(&chunk).to_string();
+
+        // `write_batch` rejects non-finite vectors at write time, so seed a
+        // valid row first, then corrupt the stored blob through a direct
+        // connection — modeling on-disk corruption or a cache written before
+        // the write-side finiteness guard existed.
+        let written = cache
+            .write_batch_owned(
+                &[(key.clone(), vec![0.5_f32; dim])],
+                fp,
+                cqs::cache::CachePurpose::Embedding,
+                dim,
+            )
+            .unwrap();
+        assert_eq!(written, 1);
+
+        let mut nan_blob = Vec::with_capacity(dim * 4);
+        for _ in 0..dim {
+            nan_blob.extend_from_slice(&f32::NAN.to_le_bytes());
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let url = format!("sqlite:{}?mode=rw", cache_path.display());
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await
+                .unwrap();
+            let res =
+                sqlx::query("UPDATE embedding_cache SET embedding = ?1 WHERE content_hash = ?2")
+                    .bind(&nan_blob)
+                    .bind(&key)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(res.rows_affected(), 1, "corruption seed must hit the row");
+            pool.close().await;
+        });
+
+        let split = resolve_reuse(&[chunk], &store, Some(&cache), dim, Some(fp)).unwrap();
+        assert!(
+            split.cached.is_empty(),
+            "non-finite cache entry must not be served as a hit"
+        );
+        assert_eq!(
+            split.to_embed,
+            vec![0],
+            "chunk with corrupt cache entry falls through to embedding"
+        );
+        assert_eq!(
+            split.global_hits, 0,
+            "dropped entry must not count as a global hit"
+        );
     }
 
     /// Dim mismatch (model swap): the store cache is skipped, so a stored row at

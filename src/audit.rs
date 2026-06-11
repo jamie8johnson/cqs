@@ -91,7 +91,19 @@ pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
     }
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return AuditMode::default(),
+        // Missing file is the normal "audit mode never enabled" state — stay
+        // silent. Every other read failure (EACCES, EIO, ...) silently
+        // disabling audit mode would be invisible to the operator, so warn
+        // before degrading to the inactive default.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AuditMode::default(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to read audit-mode.json; treating audit mode as inactive"
+            );
+            return AuditMode::default();
+        }
     };
     let file: AuditModeFile = match serde_json::from_str(&content) {
         Ok(f) => f,
@@ -307,6 +319,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let loaded = load_audit_state(dir.path());
         assert!(!loaded.is_active());
+    }
+
+    /// A read failure that is NOT NotFound (here: permission denied) must
+    /// still degrade to the inactive default — the warn path, not a panic
+    /// or a silent divergence from the missing-file behavior.
+    #[test]
+    #[cfg(unix)]
+    fn test_load_unreadable_file_returns_default() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit-mode.json");
+        std::fs::write(&path, r#"{"enabled":true}"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root bypasses permission bits; the read would succeed and this
+        // test would assert the wrong path. Skip in that case.
+        if std::fs::read_to_string(&path).is_ok() {
+            eprintln!("running as root or permissive FS — permission bits ignored; skipping");
+            return;
+        }
+        let loaded = load_audit_state(dir.path());
+        assert!(
+            !loaded.is_active(),
+            "unreadable audit-mode.json must degrade to inactive default"
+        );
+        // Restore perms so tempdir cleanup can remove the file.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     #[test]

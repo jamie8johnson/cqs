@@ -58,10 +58,17 @@ impl<Mode> Store<Mode> {
     /// `doc`, `signature`, `line_start`, `line_end` columns. Full content is
     /// loaded only for top-k survivors via `fetch_chunks_by_ids_async`.
     /// Batch size derives from `max_rows_per_statement(1)`.
+    ///
+    /// When `with_embeddings` is false, the embedding BLOB column is skipped
+    /// entirely (every tuple carries `None`). The hybrid-fused search path
+    /// scores from pre-fused dense+sparse scores and never reads the
+    /// embedding, so fetching ~candidate_count BLOBs per query (768-dim ×
+    /// 4 bytes × ~450 candidates ≈ 1.4 MB) was pure waste there.
     pub(crate) async fn fetch_candidates_by_ids_async(
         &self,
         ids: &[&str],
-    ) -> Result<Vec<(CandidateRow, Vec<u8>)>, StoreError> {
+        with_embeddings: bool,
+    ) -> Result<Vec<(CandidateRow, Option<Vec<u8>>)>, StoreError> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -79,16 +86,24 @@ impl<Mode> Store<Mode> {
         // tie-break sorts rely on.
         let id_pos: std::collections::HashMap<&str, usize> =
             ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let mut positioned: Vec<Option<(CandidateRow, Vec<u8>)>> =
+        let mut positioned: Vec<Option<(CandidateRow, Option<Vec<u8>>)>> =
             (0..ids.len()).map(|_| None).collect();
 
         for batch in ids.chunks(BATCH_SIZE) {
             let placeholders = crate::store::helpers::make_placeholders(batch.len());
-            let sql = format!(
-                "SELECT id, name, origin, language, chunk_type, embedding
-                 FROM chunks WHERE id IN ({})",
-                placeholders
-            );
+            let sql = if with_embeddings {
+                format!(
+                    "SELECT id, name, origin, language, chunk_type, embedding
+                     FROM chunks WHERE id IN ({})",
+                    placeholders
+                )
+            } else {
+                format!(
+                    "SELECT id, name, origin, language, chunk_type
+                     FROM chunks WHERE id IN ({})",
+                    placeholders
+                )
+            };
 
             let rows: Vec<_> = {
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
@@ -100,7 +115,11 @@ impl<Mode> Store<Mode> {
 
             for r in &rows {
                 let candidate = CandidateRow::from_row(r);
-                let embedding_bytes: Vec<u8> = r.get("embedding");
+                let embedding_bytes: Option<Vec<u8>> = if with_embeddings {
+                    Some(r.get("embedding"))
+                } else {
+                    None
+                };
                 if let Some(&pos) = id_pos.get(candidate.id.as_str()) {
                     positioned[pos] = Some((candidate, embedding_bytes));
                 }

@@ -861,9 +861,16 @@ impl<Mode> Store<Mode> {
         let use_rrf = flags.use_rrf;
 
         self.rt.block_on(async {
-            // Phase 1: Lightweight candidate fetch — only scoring fields +
-            // embedding. Excludes heavy content/doc/signature columns.
-            let candidates = self.fetch_candidates_by_ids_async(candidate_ids).await?;
+            // Phase 1: Lightweight candidate fetch — only scoring fields.
+            // Excludes heavy content/doc/signature columns. The embedding
+            // BLOB is fetched only when there are no pre-fused scores:
+            // `search_hybrid` builds `candidate_ids` and `fused_scores` from
+            // the same fusion result, so fused coverage is total by
+            // construction and the cosine fallback below never needs the
+            // embedding on that path.
+            let candidates = self
+                .fetch_candidates_by_ids_async(candidate_ids, fused_scores.is_none())
+                .await?;
 
             // Compile glob pattern once outside the loop (not per-chunk).
             let glob_matcher = compile_glob_filter(filter.path_pattern.as_ref());
@@ -938,7 +945,20 @@ impl<Mode> Store<Mode> {
                                 &scoring_ctx,
                             )?
                         } else {
-                            let embedding = embedding_slice(&embedding_bytes, self.dim).ok()?;
+                            // `embedding_bytes` is `Some` whenever
+                            // `fused_scores` is `None` (the fetch above keys
+                            // on it), and the fused map covers every
+                            // candidate id by construction — so a `None`
+                            // here means that invariant broke upstream.
+                            // Drop the candidate loudly rather than panic.
+                            let Some(bytes) = embedding_bytes.as_deref() else {
+                                tracing::warn!(
+                                    id = %candidate.id,
+                                    "candidate missing both fused score and embedding; dropping"
+                                );
+                                return None;
+                            };
+                            let embedding = embedding_slice(bytes, self.dim).ok()?;
                             score_candidate(
                                 embedding,
                                 Some(&candidate.name),
