@@ -151,11 +151,13 @@ impl From<ErrorCode> for &'static str {
 /// delegates to [`ErrorCode::as_str`] so the wire-format strings live in
 /// exactly one place.
 ///
-/// Today only `internal`, `invalid_input`, and `parse_error` are emitted by
-/// CLI / batch / daemon paths; `not_found` and `io_error` are reserved for
-/// future error-path migrations (see ping/eval emit-on-failure paths). Keep
-/// them exposed so the `tracing::warn!(code = ...)` calls and downstream
-/// matchers stay grounded against the same taxonomy.
+/// All six codes reach clients. `not_found` is emitted by production
+/// handlers (e.g. `cli::commands::infra::reference`), `io_error` by
+/// [`redact_error`]'s `std::io::Error` downcast on the daemon batch path,
+/// and `internal` / `invalid_input` / `parse_error` / `timeout` by their
+/// respective call sites. Keeping them exposed as constants lets the
+/// `tracing::warn!(code = ...)` calls and downstream matchers stay grounded
+/// against the same taxonomy.
 #[allow(dead_code)]
 pub mod error_codes {
     use super::ErrorCode;
