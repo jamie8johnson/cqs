@@ -269,110 +269,28 @@ pub(in crate::cli::batch) fn dispatch_read(
     args: &ReadArgs,
 ) -> Result<serde_json::Value> {
     let path = args.path.as_str();
-    let focus = args.focus.as_deref();
     let _span = tracing::info_span!("batch_read", path).entered();
 
-    // Focused read mode
-    if let Some(focus) = focus {
-        return dispatch_read_focused(ctx, focus);
-    }
-
-    let (file_path, content) = crate::cli::commands::read::validate_and_read_file(&ctx.root, path)?;
-
-    // ctx.audit_state() returns owned AuditMode (cached + TTL'd reload).
-    // build_file_note_header expects `&AuditMode`, so borrow.
+    // Thin adapter over the shared `read_core` — identical union JSON shape
+    // across the CLI and daemon surfaces (full + focused). The adapter resolves
+    // the cached audit state, the always-fresh notes parse, and the vendored
+    // prefixes from the cached `Config`; the core owns the schema.
     let audit_state = ctx.audit_state();
     let notes = ctx.notes();
-    let (header, notes_injected) =
-        crate::cli::commands::read::build_file_note_header(path, &file_path, &audit_state, &notes);
-
-    let enriched = if header.is_empty() {
-        content
-    } else {
-        format!("{}{}", header, content)
-    };
-
-    // The file-read path honors vendored detection so
-    // `cqs read node_modules/lodash.js` reports the correct trust level
-    // matching the chunks-side labeling. Match the user-supplied relative
-    // path against the configured `[index].vendored_paths` (or defaults).
     let cfg = ctx.config();
     let prefixes = cqs::vendored::effective_prefixes(
         cfg.index
             .as_ref()
             .and_then(|ic| ic.vendored_paths.as_deref()),
     );
-    let normalized = cqs::normalize_path(std::path::Path::new(path));
-    let trust_level = if cqs::vendored::is_vendored_origin(&normalized, &prefixes) {
-        "vendored-code"
-    } else {
-        "user-code"
-    };
-
-    Ok(serde_json::json!({
-        "path": path,
-        "content": enriched,
-        "notes_injected": notes_injected,
-        "trust_level": trust_level,
-    }))
-}
-
-/// Dispatches a focused read operation and returns the results as JSON.
-/// Builds output for a specific focused target from the store and formats it as a JSON object containing the focus identifier, content, and optional hints about callers and tests.
-/// # Arguments
-/// * `ctx` - The batch execution context containing store, root path, audit state, and notes
-/// * `focus` - The identifier of the target to focus on for the read operation
-/// # Returns
-/// A JSON value containing:
-/// - `focus`: the focus identifier
-/// - `content`: the generated output for the focused target
-/// - `hints` (optional): an object with caller_count, test_count, no_callers, and no_tests fields
-/// # Errors
-/// Returns an error if building the focused output fails.
-fn dispatch_read_focused(ctx: &BatchView, focus: &str) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_read_focused", focus).entered();
-
-    // ctx.audit_state() returns owned AuditMode; borrow at the call site
-    // since build_focused_output takes `&AuditMode`.
-    let audit_state = ctx.audit_state();
-    let notes = ctx.notes();
-    let result = crate::cli::commands::read::build_focused_output(
+    crate::cli::commands::read::read_core(
         &ctx.store(),
-        focus,
         &ctx.root,
+        args,
         &audit_state,
         &notes,
-    )?;
-
-    // `build_focused_output` surfaces the resolved chunk's `vendored` flag so
-    // the daemon RPC matches the index-time labeling shape used by
-    // search/scout JSON — chunks under `node_modules/`/`vendor/`/etc report
-    // `vendored-code`.
-    let trust_level = if result.vendored {
-        "vendored-code"
-    } else {
-        "user-code"
-    };
-    let mut json = serde_json::json!({
-        "focus": focus,
-        "content": result.output,
-        "trust_level": trust_level,
-    });
-    if let Some(ref h) = result.hints {
-        json["hints"] = serde_json::json!({
-            "caller_count": h.caller_count,
-            "test_count": h.test_count,
-            "no_callers": h.caller_count == 0,
-            "no_tests": h.test_count == 0,
-        });
-    }
-    // Surface warnings into the batch response so daemon consumers see why
-    // type-deps lookup may have come back empty.
-    if !result.warnings.is_empty() {
-        json["warnings"] = serde_json::json!(result.warnings);
-    }
-
-    Ok(json)
+        &prefixes,
+    )
 }
 
 // Happy-path coverage for the embedder-free info dispatchers. The
@@ -612,12 +530,24 @@ mod tests {
         (dir, ctx)
     }
 
+    /// Drive `dispatch_read` in focused mode for the vendored-trust tests.
+    fn dispatch_read_focus(view: &BatchView, focus: &str) -> serde_json::Value {
+        dispatch_read(
+            view,
+            &ReadArgs {
+                path: String::new(),
+                focus: Some(focus.to_string()),
+            },
+        )
+        .expect("dispatch_read focused")
+    }
+
     #[test]
     fn dispatch_read_focus_emits_vendored_code_for_vendored_chunk() {
         let (_dir, ctx) = seed_with_vendored_chunk();
         let view = ctx.build_view(None);
         // `lib_fn` lives in `node_modules/lib.js` so it must be tagged vendored.
-        let json = dispatch_read_focused(&view, "lib_fn").expect("dispatch_read_focused");
+        let json = dispatch_read_focus(&view, "lib_fn");
         assert_eq!(
             json["trust_level"], "vendored-code",
             "vendored chunk must surface trust_level=vendored-code, got: {json}"
@@ -628,12 +558,58 @@ mod tests {
     fn dispatch_read_focus_emits_user_code_for_normal_chunk() {
         let (_dir, ctx) = seed_with_vendored_chunk();
         let view = ctx.build_view(None);
-        // `user_fn` lives in `src/lib.rs` so it must be tagged user-code.
-        let json = dispatch_read_focused(&view, "user_fn").expect("dispatch_read_focused");
-        assert_eq!(
-            json["trust_level"], "user-code",
-            "non-vendored chunk must surface trust_level=user-code, got: {json}"
+        // `user_fn` lives in `src/lib.rs` so it's tagged user-code, which is
+        // skip-when-default in the union schema — assert the field is absent.
+        let json = dispatch_read_focus(&view, "user_fn");
+        assert!(
+            json.get("trust_level").is_none(),
+            "non-vendored chunk: trust_level skip-when-default (user-code), got: {json}"
         );
+    }
+
+    /// Parity: `dispatch_read` (full file) is byte-equal to `read_core` driven
+    /// with the same args + resolved prefixes. Pins the union schema —
+    /// `notes_injected` always present, `trust_level` skip-when-default.
+    #[test]
+    fn parity_read_full_dispatch_equals_core() {
+        let (dir, ctx) = seed_minimal_ctx();
+        // A readable file under the project root.
+        std::fs::write(dir.path().join("hello.txt"), "hello world\n").expect("write file");
+        let view = ctx.build_view(None);
+
+        let args = ReadArgs {
+            path: "hello.txt".into(),
+            focus: None,
+        };
+        let dispatched = dispatch_read(&view, &args).expect("dispatch_read");
+
+        let audit_state = view.audit_state();
+        let notes = view.notes();
+        let cfg = view.config();
+        let prefixes = cqs::vendored::effective_prefixes(
+            cfg.index
+                .as_ref()
+                .and_then(|ic| ic.vendored_paths.as_deref()),
+        );
+        let core = crate::cli::commands::read::read_core(
+            &view.store(),
+            &view.root,
+            &args,
+            &audit_state,
+            &notes,
+            &prefixes,
+        )
+        .expect("read_core");
+
+        assert_eq!(
+            dispatched, core,
+            "dispatch_read (full) must equal read_core output"
+        );
+        // Fixture-grounded: notes_injected present, content carries the file.
+        assert_eq!(dispatched["notes_injected"], false);
+        assert!(dispatched["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("hello world")));
     }
 
     /// Parity: `dispatch_context` (the daemon adapter) is byte-equal to

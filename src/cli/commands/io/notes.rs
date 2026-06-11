@@ -34,19 +34,99 @@ struct NoteMutationOutput {
     index_error: Option<String>,
 }
 
-/// A single note entry in the list output.
+/// A single note entry in the list output — the union schema both surfaces
+/// emit. `id` + `type` came from the CLI path; `sentiment_label` came from the
+/// daemon path; the union carries all of them so a consumer gets the same
+/// fields regardless of which surface served the request.
 #[derive(Debug, serde::Serialize)]
 struct NoteListEntry {
     id: String,
     sentiment: f32,
+    /// Coarse sentiment bucket: `"warning"` / `"pattern"` / `"neutral"`.
+    /// Distinct from `sentiment_label` (the note-injection header label,
+    /// `WARNING` / `PATTERN` / `NOTE`).
     #[serde(rename = "type")]
     note_type: String,
+    /// Note-injection header label (`WARNING` / `PATTERN` / `NOTE`), mirroring
+    /// `Note::sentiment_label`. Present on both surfaces post-unification.
+    sentiment_label: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
     text: String,
     mentions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stale_mentions: Option<Vec<String>>,
+}
+
+/// Envelope for `notes list --json` — the union object both surfaces emit.
+///
+/// An object (not a bare array) so the daemon path can splice `_meta`
+/// (worktree-staleness) onto it — a bare array drops `_meta` in the
+/// slim-envelope translation. `count` mirrors the array length for cheap
+/// pagination/summary reads.
+#[derive(Debug, serde::Serialize)]
+struct NotesListOutput {
+    notes: Vec<NoteListEntry>,
+    count: usize,
+}
+
+// ─── Surface-agnostic core ────────────────────────────────────────────────────
+
+/// Surface-agnostic JSON core for `cqs notes list`. Both the CLI
+/// (`cmd_notes_list --json`) and the daemon (`dispatch_notes`) drive it, so the
+/// wire shape is identical.
+///
+/// **Data source:** both surfaces parse `docs/notes.toml` directly (the CLI via
+/// `parse_notes`, the daemon via its freshness-checked `ctx.notes()` cell which
+/// also calls `parse_notes`). The file is the authoritative, always-fresh
+/// source — the store-cached note rows are derived FROM it at index time and
+/// can lag a hand edit, so neither surface reads the store for the list. The
+/// core takes the already-parsed, already-filtered `notes` plus the staleness
+/// map the adapter computed when `--check` was set.
+pub(crate) fn notes_list_core(
+    notes: &[&cqs::note::Note],
+    staleness: &std::collections::HashMap<String, Vec<String>>,
+    check: bool,
+) -> serde_json::Value {
+    let _span = tracing::info_span!("notes_list_core", count = notes.len(), check).entered();
+    let entries: Vec<NoteListEntry> = notes
+        .iter()
+        .map(|n| {
+            let note_type = if n.is_warning() {
+                "warning"
+            } else if n.is_pattern() {
+                "pattern"
+            } else {
+                "neutral"
+            };
+            let stale_mentions = if check {
+                Some(staleness.get(&n.text).cloned().unwrap_or_default())
+            } else {
+                None
+            };
+            NoteListEntry {
+                id: n.id.clone(),
+                sentiment: n.sentiment,
+                note_type: note_type.into(),
+                sentiment_label: n.sentiment_label(),
+                kind: n.kind.clone(),
+                text: n.text.clone(),
+                mentions: n.mentions.clone(),
+                stale_mentions,
+            }
+        })
+        .collect();
+    let output = NotesListOutput {
+        count: entries.len(),
+        notes: entries,
+    };
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        // to_value on a #[derive(Serialize)] struct of owned primitives cannot
+        // fail in practice; degrade to an empty envelope rather than panicking
+        // on the unreachable path.
+        tracing::warn!(error = %e, "notes_list_core serialization failed");
+        serde_json::json!({ "notes": [], "count": 0 })
+    })
 }
 
 /// Notes subcommands
@@ -758,33 +838,10 @@ fn cmd_notes_list(
         .collect();
 
     if json || ctx.cli.json {
-        let json_notes: Vec<NoteListEntry> = filtered
-            .iter()
-            .map(|n| {
-                let note_type = if n.is_warning() {
-                    "warning"
-                } else if n.is_pattern() {
-                    "pattern"
-                } else {
-                    "neutral"
-                };
-                let stale_mentions = if check {
-                    Some(staleness.get(&n.text).cloned().unwrap_or_default())
-                } else {
-                    None
-                };
-                NoteListEntry {
-                    id: n.id.clone(),
-                    sentiment: n.sentiment,
-                    note_type: note_type.into(),
-                    kind: n.kind.clone(),
-                    text: n.text.clone(),
-                    mentions: n.mentions.clone(),
-                    stale_mentions,
-                }
-            })
-            .collect();
-        crate::cli::json_envelope::emit_json(&json_notes)?;
+        // Route through the shared core so the CLI and daemon emit the
+        // identical union object (`{notes, count}`) — was a bare array.
+        let value = notes_list_core(&filtered, &staleness, check);
+        crate::cli::json_envelope::emit_json(&value)?;
         return Ok(());
     }
 
@@ -896,6 +953,7 @@ mod tests {
             id: "note:0".into(),
             sentiment: -1.0,
             note_type: "warning".into(),
+            sentiment_label: "WARNING",
             kind: Some("known-bug".into()),
             text: "This is broken".into(),
             mentions: vec!["search.rs".into()],
@@ -904,6 +962,7 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["id"], "note:0");
         assert_eq!(json["type"], "warning");
+        assert_eq!(json["sentiment_label"], "WARNING");
         assert_eq!(json["kind"], "known-bug");
         assert_eq!(json["sentiment"], -1.0);
         assert_eq!(json["mentions"][0], "search.rs");
@@ -916,6 +975,7 @@ mod tests {
             id: "note:1".into(),
             sentiment: 0.0,
             note_type: "neutral".into(),
+            sentiment_label: "NOTE",
             kind: None,
             text: "just an observation".into(),
             mentions: vec![],
@@ -924,5 +984,64 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("stale_mentions").is_none());
         assert!(json.get("kind").is_none());
+    }
+
+    /// `notes_list_core` emits the union envelope: an object with `notes` +
+    /// `count`, each note carrying the merged field set (`id`, `type`,
+    /// `sentiment_label`). Pins the data-source-agnostic schema both surfaces
+    /// share.
+    #[test]
+    fn notes_list_core_emits_union_envelope() {
+        let notes = [
+            cqs::note::Note {
+                id: "note:0".into(),
+                text: "a warning".into(),
+                sentiment: -0.5,
+                mentions: vec!["search.rs".into()],
+                kind: None,
+            },
+            cqs::note::Note {
+                id: "note:1".into(),
+                text: "a pattern".into(),
+                sentiment: 0.5,
+                mentions: vec![],
+                kind: Some("design-decision".into()),
+            },
+        ];
+        let refs: Vec<&cqs::note::Note> = notes.iter().collect();
+        let staleness = std::collections::HashMap::new();
+        let value = notes_list_core(&refs, &staleness, false);
+
+        assert_eq!(value["count"], 2, "count mirrors the notes array length");
+        let arr = value["notes"].as_array().expect("notes is an array");
+        assert_eq!(arr.len(), 2);
+        // Union: id + type + sentiment_label all present.
+        assert_eq!(arr[0]["id"], "note:0");
+        assert_eq!(arr[0]["type"], "warning");
+        assert_eq!(arr[0]["sentiment_label"], "WARNING");
+        assert_eq!(arr[1]["type"], "pattern");
+        assert_eq!(arr[1]["sentiment_label"], "PATTERN");
+        assert_eq!(arr[1]["kind"], "design-decision");
+        // stale_mentions absent without --check.
+        assert!(arr[0].get("stale_mentions").is_none());
+    }
+
+    /// With `--check`, every note carries `stale_mentions` (present even when
+    /// empty), matching the prior CLI/daemon contract.
+    #[test]
+    fn notes_list_core_check_emits_stale_mentions() {
+        let notes = [cqs::note::Note {
+            id: "note:0".into(),
+            text: "a note".into(),
+            sentiment: 0.0,
+            mentions: vec![],
+            kind: None,
+        }];
+        let refs: Vec<&cqs::note::Note> = notes.iter().collect();
+        let mut staleness = std::collections::HashMap::new();
+        staleness.insert("a note".to_string(), vec!["gone.rs".to_string()]);
+        let value = notes_list_core(&refs, &staleness, true);
+        let arr = value["notes"].as_array().unwrap();
+        assert_eq!(arr[0]["stale_mentions"][0], "gone.rs");
     }
 }

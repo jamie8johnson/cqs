@@ -1064,6 +1064,25 @@ impl Commands {
             _ => None,
         }
     }
+
+    /// `true` when this invocation reads its diff from `--stdin`.
+    ///
+    /// `review` / `ci` / `impact-diff` are daemon-marked, but the daemon
+    /// reads the diff itself (it runs git in the *server* process and has no
+    /// client stdin on the wire). Forwarding a `--stdin` invocation would
+    /// silently drop the piped diff and analyze the daemon's working tree
+    /// instead — the wrong diff, with no error. The daemon-forward gate uses
+    /// this to keep `--stdin` invocations on the CLI path, the same bypass
+    /// shape text-mode invocations use. (`affected` also carries `--stdin` but
+    /// is already classified CLI-only, so it never reaches the gate.)
+    pub(crate) fn reads_diff_from_stdin(&self) -> bool {
+        match self {
+            Commands::Review { args, .. } => args.stdin,
+            Commands::Ci { args, .. } => args.stdin,
+            Commands::ImpactDiff { args, .. } => args.stdin,
+            _ => false,
+        }
+    }
 }
 
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can
