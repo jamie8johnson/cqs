@@ -650,8 +650,8 @@ impl Store<ReadWrite> {
 }
 
 impl<Mode> Store<Mode> {
-    /// Count files that are stale (mtime changed) or missing from disk.
-    /// Compares stored source_mtime against current filesystem state.
+    /// Count files that are stale (fingerprint diverged) or missing from disk.
+    /// Compares the stored fingerprint against current filesystem state.
     /// Only checks files with source_type='file' (not notes or other sources).
     /// Returns `(stale_count, missing_count)`.
     pub fn count_stale_files(
@@ -664,9 +664,19 @@ impl<Mode> Store<Mode> {
         Ok((report.stale.len() as u64, report.missing.len() as u64))
     }
 
-    /// List files that are stale (mtime changed) or missing from disk.
+    /// List files that are stale (fingerprint diverged) or missing from disk.
     /// Like `count_stale_files()` but returns full details for display.
     /// Requires `existing_files` from `enumerate_files()` (~100ms for 10k files).
+    ///
+    /// Staleness is divergence in *either direction*: a file restored with a
+    /// preserved older timestamp (`rsync -t`, `tar -x`, robocopy, backup
+    /// restores) is just as out-of-date as one edited after indexing — the
+    /// watch-loop reconcile already queues those, and this report must agree
+    /// with it. Rows whose fingerprint columns (`source_size`,
+    /// `source_content_hash`) are populated get the content-hash tiebreak
+    /// from [`FingerprintPolicy::MtimeOrHash`], so an mtime-only flip with
+    /// identical bytes (`git checkout`, formatter no-op) is not a false
+    /// positive; rows without them degrade to mtime inequality.
     pub fn list_stale_files(
         &self,
         existing_files: &HashSet<PathBuf>,
@@ -674,8 +684,19 @@ impl<Mode> Store<Mode> {
     ) -> Result<StaleReport, StoreError> {
         let _span = tracing::debug_span!("list_stale_files").entered();
         self.rt.block_on(async {
-            let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
-                "SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'",
+            // GROUP BY origin (one row per file). `MAX(...)` deterministically
+            // picks the newer fingerprint when an in-flight reindex briefly
+            // holds two rows for the same file — same dedup semantics as
+            // `indexed_file_origins`.
+            type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
+            let rows: Vec<FpRow> = sqlx::query_as(
+                "SELECT origin, \
+                        MAX(source_mtime) AS mtime, \
+                        MAX(source_size) AS size, \
+                        MAX(source_content_hash) AS content_hash \
+                 FROM chunks \
+                 WHERE source_type = 'file' \
+                 GROUP BY origin",
             )
             .fetch_all(&self.pool)
             .await?;
@@ -684,7 +705,7 @@ impl<Mode> Store<Mode> {
             let mut stale = Vec::new();
             let mut missing = Vec::new();
 
-            for (origin, stored_mtime) in rows {
+            for (origin, stored_mtime, stored_size, stored_hash) in rows {
                 let path = PathBuf::from(&origin);
 
                 // Filesystem existence check — same logic as prune_*.
@@ -706,6 +727,13 @@ impl<Mode> Store<Mode> {
                     }
                 };
 
+                let stored_fp = FileFingerprint {
+                    mtime: stored_mtime,
+                    size: stored_size.and_then(|s| u64::try_from(s).ok()),
+                    content_hash: stored_hash
+                        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok()),
+                };
+
                 // Resolve the path against `root` for metadata lookup so
                 // relative origins work regardless of current directory.
                 let lookup_path: PathBuf = if path.is_absolute() {
@@ -713,21 +741,21 @@ impl<Mode> Store<Mode> {
                 } else {
                     root.join(&path)
                 };
-                // Surface a `metadata()` failure (permission-denied,
-                // busy-file) and treat the file as stale with a sentinel
-                // `current_mtime = -1` so an operator can spot the unreadable
-                // origin in `cqs stats --json` rather than having it silently
-                // treated as fresh.
-                let current_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
-                    Ok(t) => t
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()
-                        .map(crate::duration_to_mtime_millis),
-                    Err(e) => {
+                // `read_disk` returns `None` when `metadata()` fails
+                // (permission-denied, busy-file). Surface that as stale with
+                // a sentinel `current_mtime = -1` so an operator can spot the
+                // unreadable origin in `cqs stats --json` rather than having
+                // it silently treated as fresh.
+                let disk = match FileFingerprint::read_disk(
+                    &lookup_path,
+                    &stored_fp,
+                    FingerprintPolicy::MtimeOrHash,
+                ) {
+                    Some(d) => d,
+                    None => {
                         tracing::warn!(
                             path = %lookup_path.display(),
-                            error = %e,
-                            "Failed to read mtime for indexed file — treating as stale"
+                            "Failed to read metadata for indexed file — treating as stale"
                         );
                         stale.push(StaleFile {
                             file: path,
@@ -738,14 +766,12 @@ impl<Mode> Store<Mode> {
                     }
                 };
 
-                if let Some(current) = current_mtime {
-                    if current > stored {
-                        stale.push(StaleFile {
-                            file: path,
-                            stored_mtime: stored,
-                            current_mtime: current,
-                        });
-                    }
+                if !stored_fp.matches(&disk, FingerprintPolicy::MtimeOrHash) {
+                    stale.push(StaleFile {
+                        file: path,
+                        stored_mtime: stored,
+                        current_mtime: disk.mtime.unwrap_or(-1),
+                    });
                 }
             }
 
@@ -762,8 +788,9 @@ impl<Mode> Store<Mode> {
     /// watch-loop reconciler can:
     ///   1. Walk the disk → set of current files
     ///   2. Look up each disk file in this map
-    ///   3. Queue for reindex when missing (added) OR `disk_mtime > stored`
-    ///      (modified). Files in this map but not on disk are handled by
+    ///   3. Queue for reindex when missing (added) OR the disk fingerprint
+    ///      diverges from the stored one (modified — in either direction).
+    ///      Files in this map but not on disk are handled by
     ///      `prune_missing` in the existing GC pass.
     ///
     /// `source_mtime` may be `None`. Treat those as needing reindex — same
@@ -887,11 +914,18 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Check if specific origins are stale (mtime changed on disk).
+    /// Check if specific origins are stale (fingerprint diverged on disk).
     /// Lightweight per-query check: only examines the given origins, not the
     /// entire index. O(result_count), not O(index_size).
     /// `root` is the project root — origins are relative paths joined against it.
     /// Returns the set of stale origin paths.
+    ///
+    /// Same divergence semantics as [`Self::list_stale_files`]: stale means
+    /// the disk fingerprint differs from the stored one in *either*
+    /// direction (a rewound mtime from `rsync -t` / `tar -x` / backup
+    /// restore counts), with the [`FingerprintPolicy::MtimeOrHash`]
+    /// content-hash tiebreak suppressing mtime-only flips when the
+    /// fingerprint columns are populated.
     pub fn check_origins_stale(
         &self,
         origins: &[&str],
@@ -907,51 +941,60 @@ impl<Mode> Store<Mode> {
 
             use crate::store::helpers::sql::max_rows_per_statement;
             const BATCH_SIZE: usize = max_rows_per_statement(1);
+            type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
             for batch in origins.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                // `MAX(...)` dedup: same semantics as `indexed_file_origins`
+                // when an in-flight reindex briefly holds two rows per origin.
                 let sql = format!(
-                    "SELECT origin, source_mtime FROM chunks WHERE origin IN ({}) GROUP BY origin",
+                    "SELECT origin, \
+                            MAX(source_mtime) AS mtime, \
+                            MAX(source_size) AS size, \
+                            MAX(source_content_hash) AS content_hash \
+                     FROM chunks WHERE origin IN ({}) GROUP BY origin",
                     placeholders
                 );
 
-                let mut query =
-                    sqlx::query_as::<_, (String, Option<i64>)>(sqlx::AssertSqlSafe(sql.as_str()));
+                let mut query = sqlx::query_as::<_, FpRow>(sqlx::AssertSqlSafe(sql.as_str()));
                 for origin in batch {
                     query = query.bind(*origin);
                 }
                 let rows = query.fetch_all(&self.pool).await?;
 
-                for (origin, stored_mtime) in rows {
-                    let stored = match stored_mtime {
-                        Some(m) => m,
-                        None => {
-                            stale.insert(origin);
-                            continue;
-                        }
-                    };
+                for (origin, stored_mtime, stored_size, stored_hash) in rows {
+                    if stored_mtime.is_none() {
+                        stale.insert(origin);
+                        continue;
+                    }
 
                     // Origins in DB always use forward slashes (via normalize_path).
                     debug_assert!(
                         !origin.contains('\\'),
                         "DB origin contains backslash: {origin}"
                     );
+                    let stored_fp = FileFingerprint {
+                        mtime: stored_mtime,
+                        size: stored_size.and_then(|s| u64::try_from(s).ok()),
+                        content_hash: stored_hash
+                            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok()),
+                    };
                     // Normalize the joined path to handle OS-native root with
                     // forward-slash origin (e.g., `C:\proj` + `src/lib.rs`).
                     let path = PathBuf::from(crate::normalize_path(&root.join(&origin)));
-                    let current_mtime = path
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(crate::duration_to_mtime_millis);
-
-                    if let Some(current) = current_mtime {
-                        if current > stored {
+                    match FileFingerprint::read_disk(
+                        &path,
+                        &stored_fp,
+                        FingerprintPolicy::MtimeOrHash,
+                    ) {
+                        Some(disk) => {
+                            if !stored_fp.matches(&disk, FingerprintPolicy::MtimeOrHash) {
+                                stale.insert(origin);
+                            }
+                        }
+                        None => {
+                            // File deleted or inaccessible — treat as stale
                             stale.insert(origin);
                         }
-                    } else {
-                        // File deleted or inaccessible — treat as stale
-                        stale.insert(origin);
                     }
                 }
             }
@@ -1280,6 +1323,62 @@ mod tests {
         assert!(
             stale.is_empty(),
             "Unknown origin should not appear in stale set"
+        );
+    }
+
+    /// Rewound-mtime case for the per-query check: disk mtime older than
+    /// stored must surface as stale, mirroring both `list_stale_files` and
+    /// the reconcile pin (`run_daemon_reconcile_queues_older_disk_mtime`).
+    /// Otherwise the per-query staleness warning stays silent for files
+    /// restored with preserved timestamps while the daemon queues them.
+    #[test]
+    fn test_check_origins_stale_rewound_disk_mtime_is_stale() {
+        let (store, dir) = setup_store();
+
+        let file_path = dir.path().join("src/rewound.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn rewound() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "rewound".to_string(),
+            signature: "fn rewound()".to_string(),
+            content: "fn rewound() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        // Stored mtime sits well above the disk mtime — the disk file was
+        // "rewound" by a timestamp-preserving restore.
+        let disk_mtime = crate::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(disk_mtime + 10_000_000))
+            .unwrap();
+
+        let stale = store.check_origins_stale(&[&origin], dir.path()).unwrap();
+        assert!(
+            stale.contains(&origin),
+            "Disk mtime older than stored must be stale in the per-query check, got {stale:?}"
         );
     }
 
@@ -1697,17 +1796,23 @@ mod tests {
 
     // ===== mtime semantics tests =====
     //
-    // The staleness predicate in `list_stale_files` is `current > stored`,
-    // strict-greater-than. Two tests pin the boundary behaviour so any
-    // refactor to `current != stored` fails loudly:
+    // The staleness predicate in `list_stale_files` is fingerprint
+    // *divergence* (`FileFingerprint::matches` under `MtimeOrHash`), the
+    // same rule the watch-loop reconcile applies — see
+    // `run_daemon_reconcile_queues_older_disk_mtime`. Three tests pin the
+    // boundary behaviour:
     //   - Equal mtime: fresh (not stale).
-    //   - Stored mtime newer than disk (backup restore): fresh (not stale).
-    // A naive `current != stored` rewrite would report both as stale,
-    // triggering a full re-embed on backup-restore and wasting hours.
+    //   - Disk mtime older than stored (rewound by rsync -t / tar / backup
+    //     restore): stale — a strict `current > stored` predicate would
+    //     silently skip these while reconcile queues them.
+    //   - Rewound mtime but identical content with fingerprint columns
+    //     populated: fresh — the content-hash tiebreak suppresses the
+    //     mtime-only flip, so backup restores of unchanged files don't
+    //     trigger a full re-embed.
 
     /// Equal mtime must be treated as fresh. Tests the boundary of the
-    /// `current > stored` predicate — a refactor to `>=` or `!=` would
-    /// flip this case and report the file as stale.
+    /// divergence predicate — a refactor to "always stale when columns are
+    /// NULL" would flip this case and report the file as stale.
     #[test]
     fn test_list_stale_files_mtime_equal_is_fresh() {
         let (store, dir) = setup_store();
@@ -1764,16 +1869,17 @@ mod tests {
         assert_eq!(report.total_indexed, 1);
     }
 
-    /// Backup-restore case: stored mtime is *newer* than disk. This
-    /// happens when a user restores a backup of the DB while the source
-    /// files are older than when the DB was last written. Must be
-    /// treated as fresh (not stale), because the stored data was
-    /// generated from a version of the file that is no older than the
-    /// one currently on disk. A naive `current != stored` refactor
-    /// would report these as stale and corrupt the index on the next
-    /// re-embed pass.
+    /// Rewound-mtime case: the file on disk carries an mtime *older* than
+    /// the stored one. Files restored with preserved timestamps (`rsync -t`,
+    /// `tar -x`, robocopy, backup restores) land in this state with
+    /// arbitrary content. The watch-loop reconcile already queues these
+    /// (see `run_daemon_reconcile_queues_older_disk_mtime`); the staleness
+    /// report must agree, otherwise `cqs stats` / `cqs index --stale` claim
+    /// fresh for a file the index no longer reflects. With NULL fingerprint
+    /// columns the predicate degrades to mtime inequality, which catches
+    /// the backward divergence a strict greater-than comparison missed.
     #[test]
-    fn test_list_stale_files_stored_newer_is_fresh() {
+    fn test_list_stale_files_rewound_disk_mtime_is_stale() {
         let (store, dir) = setup_store();
 
         let file_path = dir.path().join("src/backup.rs");
@@ -1801,8 +1907,8 @@ mod tests {
         };
 
         // Store with an mtime 10_000_000 ms (~2.7 hours) in the future
-        // relative to the file on disk. Pins `current > stored` (false)
-        // → fresh.
+        // relative to the file on disk — equivalent to the disk file being
+        // rewound below the indexed mtime.
         let disk_mtime = crate::duration_to_mtime_millis(
             file_path
                 .metadata()
@@ -1821,9 +1927,80 @@ mod tests {
         let mut existing = HashSet::new();
         existing.insert(file_path);
         let report = store.list_stale_files(&existing, dir.path()).unwrap();
+        assert_eq!(
+            report.stale.len(),
+            1,
+            "Disk mtime older than stored (rewound restore) must be reported as stale, got {:?}",
+            report.stale
+        );
+        assert!(report.missing.is_empty());
+        assert_eq!(report.total_indexed, 1);
+    }
+
+    /// Rewound mtime with *identical content* must stay fresh when the
+    /// fingerprint columns are populated: `FingerprintPolicy::MtimeOrHash`
+    /// falls through to the content-hash tiebreak on mtime mismatch, so a
+    /// timestamp-only flip (`git checkout`, formatter no-op, `touch`) does
+    /// not become a false positive under the divergence predicate.
+    #[test]
+    fn test_list_stale_files_rewound_mtime_same_content_is_fresh() {
+        let (store, dir) = setup_store();
+
+        let file_path = dir.path().join("src/flip.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        let content = "fn flip() {}";
+        std::fs::write(&file_path, content).unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "flip".to_string(),
+            signature: "fn flip()".to_string(),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+
+        let disk_mtime = crate::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let diverged_mtime = disk_mtime + 10_000_000;
+
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(diverged_mtime))
+            .unwrap();
+
+        // Stamp the full fingerprint: mtime diverges from disk, but size +
+        // BLAKE3 hash match the bytes on disk exactly.
+        let fp = super::FileFingerprint {
+            mtime: Some(diverged_mtime),
+            size: Some(content.len() as u64),
+            content_hash: Some(*blake3::hash(content.as_bytes()).as_bytes()),
+        };
+        store.set_file_fingerprint(&file_path, &fp).unwrap();
+
+        let mut existing = HashSet::new();
+        existing.insert(file_path);
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(
             report.stale.is_empty(),
-            "Stored mtime newer than disk (backup-restore) must not be reported as stale, got {:?}",
+            "mtime-only flip with identical content must not be stale, got {:?}",
             report.stale
         );
         assert!(report.missing.is_empty());

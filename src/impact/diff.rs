@@ -74,12 +74,19 @@ pub fn map_hunks_to_functions<Mode>(
             None => continue,
         };
         for hunk in file_hunks {
-            // Skip zero-count hunks (insertion points with no changed lines)
-            if hunk.count == 0 {
-                continue;
-            }
-            // Skip malformed hunks where start + count overflows u32
-            let hunk_end = match hunk.start.checked_add(hunk.count) {
+            // A zero-count hunk is a deletion-only change (e.g.
+            // `@@ -10,5 +9,0 @@`): the new-file side has no lines, and
+            // `start` names the line just before the removed span (0 when
+            // the deletion is at the top of the file). Probe the deletion
+            // seam as a single point so the removal still maps to its
+            // containing function instead of vanishing from the analysis.
+            let (hunk_start, span) = if hunk.count == 0 {
+                (hunk.start.max(1), 1)
+            } else {
+                (hunk.start, hunk.count)
+            };
+            // Skip malformed hunks where start + span overflows u32
+            let hunk_end = match hunk_start.checked_add(span) {
                 Some(end) => end,
                 None => {
                     tracing::warn!(
@@ -91,8 +98,8 @@ pub fn map_hunks_to_functions<Mode>(
                 }
             };
             for chunk in chunks {
-                // Overlap: hunk [start, start+count) vs chunk [line_start, line_end]
-                if hunk.start <= chunk.line_end
+                // Overlap: hunk [hunk_start, hunk_end) vs chunk [line_start, line_end]
+                if hunk_start <= chunk.line_end
                     && hunk_end > chunk.line_start
                     && seen.insert(chunk.name.clone())
                 {
@@ -678,5 +685,119 @@ mod tests {
         assert_eq!(result.summary.changed_count, 10);
         assert_eq!(result.changed_functions.len(), 10);
         assert_eq!(result.summary.truncated_functions, 0);
+    }
+
+    /// Index a real chunk (function `name` in `file`, spanning
+    /// `line_start..=line_end`) so `map_hunks_to_functions` can find it via
+    /// `get_chunks_by_origins_batch`.
+    fn index_function(
+        store: &crate::Store,
+        name: &str,
+        file: &str,
+        line_start: u32,
+        line_end: u32,
+    ) {
+        let chunk = crate::parser::Chunk {
+            id: format!("{file}:{line_start}:{name}"),
+            file: PathBuf::from(file),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: format!("fn {name}() {{}}"),
+            doc: None,
+            line_start,
+            line_end,
+            content_hash: name.to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunks_batch(
+                &[(chunk, crate::test_helpers::mock_embedding(1.0))],
+                Some(1000),
+            )
+            .unwrap();
+    }
+
+    /// A `-U0` deletion-only hunk (`count == 0`) must map to the function
+    /// containing the deletion seam. `git diff -U0` emits `@@ -8,3 +7,0 @@`
+    /// for deleting lines 8-10: the new-file side has zero lines and `start`
+    /// names the line before the removed span — which sits inside the
+    /// containing function. Skipping these hunks made pure deletions
+    /// invisible to impact analysis (no callers, no affected tests).
+    #[test]
+    fn test_deletion_only_hunk_maps_to_containing_function() {
+        let (store, _dir) = make_test_store();
+        index_function(&store, "target", "src/main.rs", 5, 15);
+
+        let diff = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -8,3 +7,0 @@ fn target() {
+-    let a = 1;
+-    let b = 2;
+-    let c = 3;
+";
+        let hunks = crate::diff_parse::parse_unified_diff(diff);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].count, 0, "deletion-only hunk parses with count 0");
+
+        let changed = map_hunks_to_functions(&store, &hunks);
+        assert_eq!(
+            changed.len(),
+            1,
+            "deletion-only hunk must map to its containing function, got {changed:?}"
+        );
+        assert_eq!(changed[0].name, "target");
+    }
+
+    /// Deletion at the very top of the file arrives as `@@ -1,2 +0,0 @@` —
+    /// new-side `start` is 0. The seam clamps to line 1 so the deletion
+    /// still maps to a function that begins at the top of the file.
+    #[test]
+    fn test_deletion_only_hunk_at_file_start_clamps_seam() {
+        let (store, _dir) = make_test_store();
+        index_function(&store, "top", "src/top.rs", 1, 6);
+
+        let hunks = vec![crate::diff_parse::DiffHunk {
+            file: PathBuf::from("src/top.rs"),
+            start: 0,
+            count: 0,
+        }];
+
+        let changed = map_hunks_to_functions(&store, &hunks);
+        assert_eq!(
+            changed.len(),
+            1,
+            "top-of-file deletion must clamp the seam to line 1, got {changed:?}"
+        );
+        assert_eq!(changed[0].name, "top");
+    }
+
+    /// A deletion seam *between* functions (in the gap) must not map to any
+    /// function — the point-probe stays precise, it does not blanket the file.
+    #[test]
+    fn test_deletion_only_hunk_outside_functions_maps_nothing() {
+        let (store, _dir) = make_test_store();
+        index_function(&store, "early", "src/gap.rs", 1, 5);
+        index_function(&store, "late", "src/gap.rs", 20, 30);
+
+        // Seam at new-file line 10 — in the gap between the two functions.
+        let hunks = vec![crate::diff_parse::DiffHunk {
+            file: PathBuf::from("src/gap.rs"),
+            start: 10,
+            count: 0,
+        }];
+
+        let changed = map_hunks_to_functions(&store, &hunks);
+        assert!(
+            changed.is_empty(),
+            "seam outside any function must map to nothing, got {changed:?}"
+        );
     }
 }
