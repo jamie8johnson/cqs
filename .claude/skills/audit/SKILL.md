@@ -30,7 +30,7 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
 
 1. **Archive previous audit**: If `docs/audit-findings.md` or `docs/audit-triage.md` exist, rename both with the version suffix (e.g., `audit-findings-v0.9.1.md`, `audit-triage-v0.9.1.md`). Each audit starts with fresh files.
 
-2. **Enable audit mode**: `cqs audit-mode on --expires 2h -q` — prevents stale notes from biasing review
+2. **Enable audit mode**: `cqs audit-mode on --expires 2h` — prevents stale notes from biasing review (no `-q` flag exists; the subcommand takes only `on`/`off` + `--expires`)
 
 ### Per-Batch
 
@@ -40,11 +40,13 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
 
    **Exception — the Security category auditor uses `model: "opus"`.** Fable's documented bug-finding gains explicitly exclude security-focused analysis (its cyber classifiers apply there), and benign-adjacent security work can occasionally trigger a classifier false positive — a mid-run refusal kills that category's coverage for the whole audit. Opus carries no refusal risk on this lane, has no documented capability deficit for it, and costs half. Same reasoning applies to `/red-team`.
 
+   **Nested-lead option for broad categories** (Code Quality, both Test Coverage categories, Performance, Data Safety): spawn the teammate as `subagent_type: "general-purpose"` (it needs the Agent tool) and have it (1) run the category's mandatory cqs commands itself, (2) fan out 3 read-only sub-scope agents in parallel (`subagent_type: "explorer"`, omit model so they inherit; HARD RULE in their prompts: no file writes — return candidate findings as their final message), (3) verify every candidate against the cited source + archived triages before appending, and report the candidate→appended funnel. Measured v1.42: 38 candidates → 31 appended (1 cross-category dup caught, 5 same-root-cause merges, 1 stale-triage reject); the two nested categories produced the largest verified hauls and the most P1s. Narrow/mined-out categories (Scaling found 1 finding in v1.42) stay single-agent — the lead overhead isn't worth it.
+
 5. **Each teammate prompt must include**:
    - Their category scope (from table below)
    - Instruction to read archived triage files (e.g., `docs/audit-triage-v*.md`) — skip anything already triaged in prior audits
    - Instruction to read `docs/audit-findings.md` first — skip anything already reported by earlier batches in this audit
-   - Instruction to append findings to `docs/audit-findings.md`
+   - Instruction to append findings to `docs/audit-findings.md` **via bash heredoc append** (`cat >> docs/audit-findings.md <<'EOF' ... EOF`) — never Edit/Write on that file; 8 agents append concurrently and Edit fails with "file modified since read". This replaces the old per-category scratch-file + aggregation step: v1.42 ran 8 concurrent heredoc appenders with zero conflicts. (Initialize the findings file with a header before spawning so appends have a base.)
    - Format: `## [Category]\n\n#### [Finding title]\n- **Difficulty:** easy | medium | hard\n- **Location:** ...\n- **Description:** ...\n- **Suggested fix:** ...`
    - Use `subagent_type: "auditor"` when spawning — the auditor agent definition (`.claude/agents/auditor.md`) has cqs tools built in
 
@@ -58,6 +60,7 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
    - P3: Easy + low impact → fix if time
    - P4: Hard or low impact → create issues for hard items; fix trivial ones inline (doc comments, one-liners, undocumented edge cases)
    - **Write triage to `docs/audit-triage.md`** — fresh file with P1-P4 tables (include Status column). This survives context compaction.
+   - **Carry forward prior-triage open items**: read the most recent archived triage (`docs/audit-triage-v*.md`, honoring any verification section that supersedes its row statuses), reconcile against PRs merged since, spot-grep ambiguous items against main, and append the still-open entries as CF-P2/CF-P3 tables. The live `docs/audit-triage.md` must be the single source of truth for everything open — no hunting through archives.
 
 8. **Generate fix prompts**: For each P1, P2, and P3 finding, spawn fable agents to (P4 trivials get prompts too; hard P4s get issue descriptions):
    - Read the actual source file at the stated line numbers
@@ -70,7 +73,7 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
    - Does the fix compile? (check types, imports, API existence)
    - Are there any missing edge cases?
    - Report: "VERIFIED" or "NEEDS FIX — [specific issue]"
-   - This step catches ~20% of prompt errors (wrong field names, nonexistent APIs, moved code)
+   - This step catches 20-40% of prompt errors (wrong field names, nonexistent APIs, moved code) — measured NEEDS-FIX rates: P1 42%, P2 41%, P3 16%
 
 10. **Execute fixes**: P1 first, then P2. Mark each item in triage as fixed.
 
@@ -107,19 +110,19 @@ Run these cqs commands **before** manual exploration — they surface the highes
 - **API Design**: No mandatory command.
 - **Error Handling**: No mandatory command — grep-driven.
 - **Observability**: No mandatory command — grep for `tracing::` patterns.
+- **Test Coverage (adversarial)**: Run `cqs health --json` first (includes untested hotspots). Check for **adversarial test gaps**: functions that accept user input, external data, or embeddings should have tests for malformed/adversarial inputs (empty, NaN, truncated, wrong-type, concurrent).
+- **Robustness**: No mandatory command — grep for `.unwrap()`, `.expect(`, `panic!`.
+- **Scaling & Hardcoded Limits**: No mandatory command — grep-driven (const definitions, `.clamp(` sites, capacity/Duration literals, dim literals).
 
 **Batch 2:**
-- **Test Coverage**: Run `cqs health --json` first (includes untested hotspots). Also check for **adversarial test gaps**: functions that accept user input, external data, or embeddings should have tests for malformed/adversarial inputs (empty, NaN, truncated, wrong-type, concurrent).
-- **Robustness**: No mandatory command — grep for `.unwrap()`, `.expect(`, `panic!`.
 - **Algorithm Correctness**: Use `cqs explain <fn> --json` on algorithmic functions.
 - **Extensibility**: Run `cqs health --json` for hotspot overview.
 - **Platform Behavior**: No mandatory command.
-
-**Batch 3:**
 - **Security**: No mandatory command.
 - **Data Safety**: No mandatory command.
 - **Performance**: Run `cqs health --json` first (identifies hotspots).
 - **Resource Management**: No mandatory command.
+- **Test Coverage (happy path)**: Run `cqs health --json` first (includes untested hotspots).
 
 ## Rules
 

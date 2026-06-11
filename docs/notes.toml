@@ -978,35 +978,12 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "HNSW traversal-time filtering effectively bypasses CAGRA for all default searches. Both CLI and batch mode set chunk_types: Some(code_types()) by default, which routes to HNSW search_with_filter instead of CAGRA. CAGRA only runs with --include-docs (chunk_types: None). At 10K-50K chunks this is fine (HNSW filtered < 1ms). Revisit if indexing 500K+ chunks where CAGRA batch throughput matters."
-mentions = [
-    "src/hnsw/search.rs",
-    "src/cagra.rs",
-    "src/search/query.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "LLM summaries regenerated 3 times in one session (~$2.60 total). content_hash is blake3 of source content (stable), but --force reindex still loses summaries. Issue is likely that copy_summaries_from runs before chunks are inserted, then prune_missing_files deletes them. Need to verify the timing in the --force path."
-mentions = [
-    "src/cli/commands/index/build.rs",
-    "llm_summaries",
-    "content_hash",
-]
-
-[[note]]
 sentiment = -0.5
 text = "ms-marco-MiniLM-L-6-v2 reranker is net negative for code search: -15pp (NL passages) to -49pp (raw code). Need code-trained cross-encoder."
 mentions = [
     "reranker.rs",
     "model_eval.rs",
 ]
-
-[[note]]
-sentiment = 0.5
-text = "Embedding cache working: SQLite at ~/.cache/cqs/embeddings.db, keyed by (content_hash, model_fingerprint). Best-effort, never blocks pipeline."
-mentions = ["cache.rs"]
 
 [[note]]
 sentiment = 0.0
@@ -1056,15 +1033,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "Phase 5 dual embeddings: schema migration v17→v18 + dual HNSW index works end-to-end. Initial smoke test confirms behavioral/conceptual queries route to base index, structural stays on enriched. Pending eval results to confirm pp gains."
-mentions = [
-    "src/search/router.rs",
-    "src/store/migrations.rs",
-    "src/cli/commands/index/build.rs",
-]
-
-[[note]]
 sentiment = -0.5
 text = "bin-crate tests can't access pub(crate) types from lib — need explicit re-exports in lib.rs for ReviewedFunction, RiskSummary etc. Agent-generated tests hit this; fix is to add pub use review::{Type} in lib.rs"
 mentions = [
@@ -1090,14 +1058,6 @@ mentions = [
     "evals/run_ablation.py",
     "watch",
     "daemon",
-]
-
-[[note]]
-sentiment = -0.5
-text = "cargo publish fails with --features gpu-index because [patch.crates-io] cannot reference a git dep when publishing. Must publish default features only. Consumers with gpu-index apply the same patch in their own Cargo.toml."
-mentions = [
-    "Cargo.toml",
-    "cuvs",
 ]
 
 [[note]]
@@ -1148,15 +1108,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "CI runs 'cargo clippy -- -D warnings' without --all-targets; local --all-targets treats test warnings as warnings. Match the CI command exactly before pushing — unused imports / absurd comparisons in tests escape otherwise."
-mentions = [
-    "src/cli/commands/mod.rs",
-    "clippy",
-    "CI",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Store::into_readonly() zero-cost type-level erasure — RW to RO via ManuallyDrop + ptr::read (Store<Mode> has Drop). Pub because integration tests need it; doc-comment steers production to Store::open_readonly."
 mentions = [
@@ -1190,7 +1141,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "dual-judge consensus (Claude Haiku + Gemma 4 31B local) gives 85% gold agreement. 15% disagreement is inherent taxonomy ambiguity, not model failure. /bin/bash.50 total for Claude side."
+text = "dual-judge consensus (Claude Haiku + Gemma 4 31B local) gives 85% gold agreement. 15% disagreement is inherent taxonomy ambiguity, not model failure. ~$0.50 total for Claude side."
 mentions = [
     "eval",
     "consensus",
@@ -1282,15 +1233,6 @@ mentions = [
     "git",
     "merge-file",
     "agent",
-]
-
-[[note]]
-sentiment = -0.5
-text = "systemd --user doesn't inherit shell env. CQS_EMBEDDING_MODEL=foo systemctl start cqs-watch FAILS to propagate. Use systemctl --user set-environment KEY=VAL then start. Mostly obsolete after #1026 made resolution index-aware."
-mentions = [
-    "systemd",
-    "daemon",
-    "env",
 ]
 
 [[note]]
@@ -1457,7 +1399,7 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "cqs notes list --json envelope shape: {data: [{id, mentions, sentiment, text, type}], error, version}. data is a flat list, NOT a dict with 'notes' key. Python parsers that do data['data']['notes'] crash with AttributeError; use data['data'] directly when isinstance is list, else fall back to data['data']['notes']. Bit me twice in one session."
+text = "cqs notes list --json: CLI direct default is the bare payload (V2Bare since v1.40) — a flat JSON list of {id, mentions, sentiment, text, type}; batch/daemon lines wrap it as slim {data: [...]}. Either way the list is flat, NOT a dict with a 'notes' key — parsers doing data['data']['notes'] crash with AttributeError. Bit me twice in one session."
 mentions = [
     "src/cli/commands/io/notes.rs",
     "evals",
@@ -1876,13 +1818,8 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "tc31_save_and_load_with_dim_1024 (hnsw/persist.rs) is flaky in CI — nearest-neighbor assertion failed on an unrelated dep-bump PR (#1671, 2026-06-09), passed on rerun. HNSW approximate recall on random vectors; consider seeding or relaxing to top-k containment."
-mentions = ["src/hnsw/persist.rs"]
-
-[[note]]
 sentiment = -1.0
-text = "I restarted cqs-watch while a test suite was running and hung cli_envelope_test for 40min — operator error first: never bounce the daemon mid-suite. The hang exposed two real defects underneath: the daemon CLI client has no socket read timeout (a request racing a restart blocks forever), and tests leak to the live daemon socket when CQS_NO_DAEMON is unset (missing test isolation)."
+text = "Never bounce cqs-watch mid-test-suite (hung cli_envelope_test 40min). Of the two defects it exposed, the missing socket read timeout is since fixed (CQS_DAEMON_TIMEOUT_MS, 30s default); the remaining gap is tests leaking to the live daemon socket when CQS_NO_DAEMON is unset (missing test isolation)."
 mentions = [
     "src/cli/watch/socket.rs",
     "src/daemon_translate.rs",
@@ -1900,11 +1837,6 @@ mentions = [
     "cuvs",
     "worktree",
 ]
-
-[[note]]
-sentiment = -0.5
-text = "hnsw::safety::tests::test_loaded_index_lifecycle is flaky under parallel cargo test (passes in isolation) — same family as tc31; HNSW tests under concurrent execution need the containment treatment if a third one appears."
-mentions = ["src/hnsw/safety.rs"]
 
 [[note]]
 sentiment = 0.5
@@ -1937,3 +1869,25 @@ mentions = [
     "src/cagra.rs",
     "DistanceMetric",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Nested-lead audit topology (lead + 3 read-only sub-scope explorers + lead-side verification before append) caught 1 cross-category dup, 5 merges, 1 stale-triage reject out of 38 candidates — use for broad audit categories; single agents for mined-out ones"
+mentions = [
+    "audit",
+    "agents",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Concurrent auditor appends to a single findings file via bash cat >> heredoc (never Edit/Write on the shared file) worked cleanly with 8 parallel agents — simpler than the per-category-file + aggregation-step pattern earlier audit cycles used to dodge write races."
+mentions = [
+    "audit",
+    "agents",
+    "docs/audit-findings.md",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Audit categories exhaust after 13+ cycles: Scaling found 1 finding, Robustness unwrap/panic sweeps came back clean — new findings concentrate in the newest code (v28 canonical_hash parser paths, campaign adapter seams). Future audits could weight scope toward recent diffs over full-codebase sweeps."
+mentions = ["audit"]
