@@ -1047,13 +1047,23 @@ fn test_check_origins_stale_across_batch_boundary() {
             parser_version: 0,
         };
 
-        // Use a synthetic mtime: first half are old (stale), second half are current
+        // First half stores a divergent old mtime (stale); second half
+        // stores the file's real on-disk mtime (fresh). The staleness
+        // predicate is divergence — any stored/disk mtime mismatch is
+        // stale — so "fresh" requires stamping the actual disk mtime.
         let mtime = if i < count / 2 {
-            // Old mtime — file on disk will be newer, so these should be stale
+            // Old mtime — diverges from the file on disk, so these are stale
             1000i64
         } else {
-            // Future mtime — file on disk will be older, so these should be fresh
-            i64::MAX / 2
+            cqs::duration_to_mtime_millis(
+                filepath
+                    .metadata()
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap(),
+            )
         };
 
         store
@@ -1078,12 +1088,12 @@ fn test_check_origins_stale_across_batch_boundary() {
         );
     }
 
-    // Second half (475..950) had mtime=MAX/2, files on disk are older → fresh
+    // Second half (475..950) stored the real disk mtime → fresh
     for i in count / 2..count {
         let origin = format!("file_{:04}.rs", i);
         assert!(
             !stale.contains(&origin),
-            "Origin {} should be fresh (future mtime)",
+            "Origin {} should be fresh (stored mtime matches disk)",
             origin
         );
     }
