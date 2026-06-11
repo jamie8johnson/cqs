@@ -24,6 +24,7 @@ mod metadata;
 mod migrations;
 mod notes;
 mod search;
+pub(crate) mod serve_queries;
 mod sparse;
 mod summary_queue;
 mod types;
@@ -176,7 +177,7 @@ pub use types::TypeGraph;
 pub use types::TypeUsage;
 
 /// Set RRF K override from config scoring overrides.
-pub use search::set_rrf_k_from_config;
+pub use crate::search::scoring::set_rrf_k_from_config;
 
 /// Defense-in-depth sanitization for FTS5 query strings.
 /// Strips or escapes FTS5 special characters that could alter query semantics.

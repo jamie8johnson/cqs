@@ -22,8 +22,8 @@ use crate::store::{NoteSummary, Store, StoreError};
 use super::mmr::{mmr_lambda_from_env, mmr_rerank, MmrCandidate};
 use super::scoring::{
     apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
-    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoost,
-    ScoringContext,
+    extract_file_from_chunk_id, rrf_fuse, score_candidate, BoundedScoreHeap, NameMatcher,
+    NoteBoost, ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
 
@@ -381,7 +381,7 @@ impl<Mode> Store<Mode> {
             // Request extra candidates from RRF to compensate for parent dedup
             // filtering below — dedup can drop results, leaving fewer than `limit`.
             // Saturating mul to match sibling paths.
-            Self::rrf_fuse(&semantic_ids, &fts_ids, limit.saturating_mul(2))
+            rrf_fuse(&semantic_ids, &fts_ids, limit.saturating_mul(2))
         } else {
             scored.truncate(limit);
             scored

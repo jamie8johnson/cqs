@@ -43,6 +43,7 @@ pub use types::{
 pub use search_filter::{SearchFilter, DEFAULT_NAME_BOOST};
 
 // Scoring functions
+pub(crate) use scoring::score_name_match_ascii;
 pub use scoring::{score_name_match, score_name_match_pre_lower};
 
 // SQL helpers (crate-internal)
