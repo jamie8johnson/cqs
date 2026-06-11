@@ -576,6 +576,16 @@ impl HnswIndex {
 /// Validates all dimensions match `expected_dim`, flattens into contiguous f32 buffer,
 /// and returns the ID map for index<->chunk_id mapping.
 ///
+/// Poisoned vectors are dropped with a `warn` rather than indexed: an
+/// all-zero vector yields a NaN cosine distance, and a NaN/Inf component
+/// trips assertions inside the dense library's insert workers. The HNSW
+/// batched build applies the same skip; mirroring it here keeps the CAGRA
+/// feed (which flows exclusively through this function) symmetric with the
+/// HNSW guard instead of handing cuVS a poisoned dataset. The returned
+/// count is the number of **kept** vectors — `id_map.len()` and
+/// `data.len() / expected_dim` stay in lockstep with it, so the CAGRA
+/// `Array2::from_shape_vec((n, dim), data)` reshape downstream holds.
+///
 /// PERF-39: This uses two passes (validate then build). Merging into one pass would
 /// require partial rollback on mid-iteration dimension errors, complicating the code
 /// for no real gain — this is only called from test/build paths with small N.
@@ -601,20 +611,43 @@ pub(crate) fn prepare_index_data(
         }
     }
 
-    // Build ID map and flat data vector
+    // Build ID map and flat data vector. Skip poisoned vectors (all-zero or
+    // non-finite) with a warn so id_map / data / kept-count stay aligned.
     let mut id_map: Vec<Box<str>> = Vec::with_capacity(n);
     let cap = n
         .checked_mul(expected_dim)
         .ok_or_else(|| HnswError::Build("embedding count * dimension would overflow".into()))?;
     let mut data = Vec::with_capacity(cap);
     for (chunk_id, embedding) in embeddings {
+        // Skip all-zero embeddings — they produce NaN cosine distances.
+        // Short-circuit on the first non-zero element instead of computing
+        // the full norm. `NaN != 0.0` is true, so this does not also catch
+        // NaN vectors — the finite check below handles those.
+        if !embedding.as_slice().iter().any(|x| *x != 0.0) {
+            tracing::warn!(chunk_id = %chunk_id, "Skipping zero-vector embedding");
+            continue;
+        }
+        // Skip embeddings with NaN/Inf components — non-finite distances
+        // trip assertions inside the dense library's insert workers and
+        // poison the cuVS build dataset.
+        if embedding.as_slice().iter().any(|x| !x.is_finite()) {
+            tracing::warn!(chunk_id = %chunk_id, "Skipping non-finite embedding");
+            continue;
+        }
         // `String::into_boxed_str()` is zero-copy — shrinks the existing heap
         // allocation in place and drops the `cap` field. ~8 bytes per entry.
         id_map.push(chunk_id.into_boxed_str());
         data.extend(embedding.into_inner());
     }
 
-    Ok((id_map, data, n))
+    if id_map.is_empty() {
+        return Err(HnswError::Build(
+            "No valid embeddings to index (all were zero-vector or non-finite)".into(),
+        ));
+    }
+
+    let kept = id_map.len();
+    Ok((id_map, data, kept))
 }
 
 impl VectorIndex for HnswIndex {
@@ -1217,5 +1250,85 @@ mod env_override_tests {
         )
         .unwrap();
         assert_eq!(idx.metric(), crate::index::DistanceMetric::Cosine);
+    }
+}
+
+/// CPU-only unit tests for [`prepare_index_data`]'s poisoned-vector filter.
+/// These exercise the id_map / data / kept-count alignment that the CAGRA
+/// build's `Array2::from_shape_vec((n, dim), data)` reshape depends on —
+/// no GPU, no index build.
+#[cfg(test)]
+mod prepare_index_data_tests {
+    use crate::Embedding;
+
+    const DIM: usize = 4;
+
+    fn unit(seed: f32) -> Embedding {
+        // Non-zero, finite vector. Values don't matter beyond "not all zero".
+        Embedding::new(vec![seed + 1.0, 0.0, 0.0, 0.0])
+    }
+
+    #[test]
+    fn drops_zero_and_nonfinite_keeps_id_alignment() {
+        let embeddings = vec![
+            ("good_a".to_string(), unit(1.0)),
+            ("zero".to_string(), Embedding::new(vec![0.0; DIM])),
+            (
+                "nan".to_string(),
+                Embedding::new(vec![f32::NAN, 0.1, 0.2, 0.3]),
+            ),
+            (
+                "inf".to_string(),
+                Embedding::new(vec![1.0, f32::INFINITY, 0.0, 0.0]),
+            ),
+            ("good_b".to_string(), unit(2.0)),
+        ];
+
+        let (id_map, data, kept) =
+            super::prepare_index_data(embeddings, DIM).expect("two good vectors survive");
+
+        // Only the two finite, non-zero vectors survive — in original order.
+        assert_eq!(kept, 2, "two poisoned-free vectors kept");
+        assert_eq!(
+            id_map.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
+            vec!["good_a", "good_b"],
+            "surviving ids keep order; poisoned ids dropped"
+        );
+        // The flat buffer length must equal kept * dim so the downstream
+        // CAGRA reshape `(kept, dim)` holds — the alignment invariant.
+        assert_eq!(data.len(), kept * DIM, "data stays aligned to kept count");
+        assert_eq!(id_map.len(), kept, "id_map length == kept count");
+        // First kept vector's leading component is good_a's (2.0), proving
+        // the data buffer wasn't shifted by the skipped vectors.
+        assert_eq!(data[0], 2.0, "good_a's data, not a skipped vector's");
+        assert_eq!(data[DIM], 3.0, "good_b's data follows immediately");
+    }
+
+    #[test]
+    fn all_poisoned_is_a_build_error() {
+        let embeddings = vec![
+            ("zero".to_string(), Embedding::new(vec![0.0; DIM])),
+            (
+                "nan".to_string(),
+                Embedding::new(vec![f32::NAN, 0.0, 0.0, 0.0]),
+            ),
+        ];
+        let err = super::prepare_index_data(embeddings, DIM)
+            .expect_err("all-poisoned input must error, not return an empty index");
+        assert!(
+            err.to_string().contains("No valid embeddings"),
+            "error names the all-poisoned cause: {err}"
+        );
+    }
+
+    #[test]
+    fn dimension_mismatch_still_errors_before_filtering() {
+        let embeddings = vec![("bad".to_string(), Embedding::new(vec![1.0, 2.0]))];
+        let err = super::prepare_index_data(embeddings, DIM)
+            .expect_err("dimension mismatch is a hard error");
+        assert!(
+            err.to_string().contains("dimension mismatch"),
+            "dim check fires: {err}"
+        );
     }
 }

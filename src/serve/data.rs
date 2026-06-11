@@ -110,6 +110,19 @@ pub(crate) struct ChunkDetail {
     /// when the underlying `chunks.content` column is NULL — same
     /// reasoning as `signature`.
     pub content_preview: Option<String>,
+    /// SECURITY.md trust signal. Skip-when-default (`"user-code"`): only
+    /// serialized when the chunk is vendored (`"vendored-code"`), matching
+    /// the search serializer + graph kind-fallback convention. Serve serves
+    /// a single project store with no `cqs ref` references, so the
+    /// `"reference-code"` tier never applies here. Default is `None` so a
+    /// user-code chunk emits no `trust_level` key at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<String>,
+    /// SECURITY.md trust signal. Empty (skip-when-default) when no injection
+    /// heuristic fired. Detection runs on the **full** content before preview
+    /// truncation so a directive past the 30-line cap still flags.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub injection_flags: Vec<String>,
     pub callers: Vec<NodeRef>,
     pub callees: Vec<NodeRef>,
     pub tests: Vec<NodeRef>,
@@ -507,7 +520,7 @@ pub(crate) fn build_chunk_detail(
         // Fetch the chunk row.
         let row = sqlx::query(
             "SELECT id, name, chunk_type, language, origin, line_start, line_end, \
-                    signature, doc, content \
+                    signature, doc, content, vendored \
              FROM chunks WHERE id = ?",
         )
         .bind(chunk_id)
@@ -529,6 +542,28 @@ pub(crate) fn build_chunk_detail(
         let signature: Option<String> = row.get("signature");
         let doc: Option<String> = row.get("doc");
         let content: Option<String> = row.get("content");
+        // `vendored` is INTEGER NOT NULL DEFAULT 0 (schema v24).
+        let vendored: bool = row.get::<i64, _>("vendored") != 0;
+
+        // SECURITY.md trust signals. Detection runs on the FULL content
+        // before the preview truncation below, so a directive past the
+        // 30-line cap still surfaces in `injection_flags`. Empty content
+        // (NULL column) yields no flags.
+        let injection_flags: Vec<String> = content
+            .as_deref()
+            .map(crate::llm::validation::detect_all_injection_patterns)
+            .unwrap_or_default()
+            .into_iter()
+            .map(String::from)
+            .collect();
+        // Skip-when-default trust_level: serve serves a single project store
+        // with no `cqs ref` references, so the only non-default tier is the
+        // vendored downgrade. `None` (user-code) is skipped on the wire.
+        let trust_level: Option<String> = if vendored {
+            Some("vendored-code".to_string())
+        } else {
+            None
+        };
 
         // Preview = first 30 lines of content. Bounded so big chunks
         // don't bloat the sidebar JSON. `None` when the row had NULL
@@ -643,6 +678,8 @@ pub(crate) fn build_chunk_detail(
             signature,
             doc,
             content_preview,
+            trust_level,
+            injection_flags,
             callers,
             callees,
             tests,
