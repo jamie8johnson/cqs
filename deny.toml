@@ -15,10 +15,6 @@ notice = "warn"
 ignore = [
     # bincode 1.x - via hnsw_rs, mitigated by blake3 checksum verification
     "RUSTSEC-2025-0141",
-    # derivative - via keyring -> secret-service -> zbus chain (optional feature)
-    "RUSTSEC-2024-0388",
-    # instant - via keyring -> zbus chain (optional feature)
-    "RUSTSEC-2024-0384",
     # number_prefix - via indicatif (progress bars only)
     "RUSTSEC-2025-0119",
     # paste - via tokenizers (upstream dependency)
