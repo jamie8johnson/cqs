@@ -188,6 +188,81 @@ fn test_task_json_returns_implementation_brief() {
     );
 }
 
+/// Run `cqs task ... --json` (optionally budgeted) and return the `data` value.
+fn run_task_json(dir: &std::path::Path, extra: &[&str]) -> serde_json::Value {
+    let mut args = vec!["task", "improve validation logic", "--json"];
+    args.extend_from_slice(extra);
+    let output = cqs()
+        .args(&args)
+        .current_dir(dir)
+        .output()
+        .expect("Failed to run cqs task");
+    assert!(
+        output.status.success(),
+        "task should succeed (args={args:?}). stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+    parsed["data"].clone()
+}
+
+/// `cqs task --tokens N` must route through the waterfall-budget branch
+/// (`task_json_core` Some-budget → `task_to_budgeted_json` → `waterfall_pack`),
+/// which the non-`--tokens` test never exercises. Pins that the budget is
+/// echoed verbatim, that a numeric `token_count` (the packed `total_used`) is
+/// published, and that a tiny budget truncates the code section relative to
+/// the un-budgeted full result.
+///
+/// `token_count` is NOT a hard ceiling: `waterfall_pack` guarantees at least
+/// one item per section, so the documented overshoot is "at most one item's
+/// tokens" — the truncation assertion compares item *counts*, not a raw cap.
+#[test]
+#[serial]
+fn test_task_tokens_budget_publishes_token_fields() {
+    let dir = setup_git_project();
+
+    // Full (un-budgeted) result: count the code chunks the pipeline produced.
+    let full = run_task_json(dir.path(), &[]);
+    let full_code_len = full["code"].as_array().map(|a| a.len()).unwrap_or(0);
+
+    // Budgeted result with a tiny budget.
+    let budgeted = run_task_json(dir.path(), &["--tokens", "50"]);
+
+    assert_eq!(
+        budgeted["token_budget"],
+        serde_json::json!(50),
+        "data.token_budget must echo the requested budget, got: {budgeted}"
+    );
+    let used = budgeted["token_count"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("data.token_count must be numeric, got: {budgeted}"));
+    assert!(used > 0, "packed total_used must be positive, got: {used}");
+
+    // The waterfall packer publishes the full section keys even when truncated.
+    assert!(
+        budgeted["scout"].is_object(),
+        "budgeted output keeps the scout section, got: {budgeted}"
+    );
+
+    // Truncation: a 50-token budget must not pack MORE code chunks than the
+    // full result, and when the full result has multiple chunks the tiny
+    // budget must drop at least one.
+    let budgeted_code_len = budgeted["code"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert!(
+        budgeted_code_len <= full_code_len,
+        "budgeted code section ({budgeted_code_len}) cannot exceed the full one ({full_code_len})"
+    );
+    if full_code_len > 1 {
+        assert!(
+            budgeted_code_len < full_code_len,
+            "a 50-token budget must truncate the code section below the full {full_code_len}"
+        );
+    }
+}
+
 // ============================================================================
 // P2 #46 (c) — `cmd_affected`
 // ============================================================================

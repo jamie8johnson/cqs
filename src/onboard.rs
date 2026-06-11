@@ -34,22 +34,16 @@ const MAX_CALLEE_FETCH_DEFAULT: usize = 30;
 /// `CQS_ONBOARD_CALLER_FETCH`.
 const MAX_CALLER_FETCH_DEFAULT: usize = 15;
 
-/// Resolve `CQS_ONBOARD_CALLEE_FETCH`, default 30.
+/// Resolve `CQS_ONBOARD_CALLEE_FETCH`, default 30. Parse/warn/default via
+/// the shared `crate::limits::parse_env_usize` (warns on a malformed value).
 fn max_callee_fetch() -> usize {
-    std::env::var("CQS_ONBOARD_CALLEE_FETCH")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(MAX_CALLEE_FETCH_DEFAULT)
+    crate::limits::parse_env_usize("CQS_ONBOARD_CALLEE_FETCH", MAX_CALLEE_FETCH_DEFAULT)
 }
 
-/// Resolve `CQS_ONBOARD_CALLER_FETCH`, default 15.
+/// Resolve `CQS_ONBOARD_CALLER_FETCH`, default 15. Parse/warn/default via
+/// the shared `crate::limits::parse_env_usize` (warns on a malformed value).
 fn max_caller_fetch() -> usize {
-    std::env::var("CQS_ONBOARD_CALLER_FETCH")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(MAX_CALLER_FETCH_DEFAULT)
+    crate::limits::parse_env_usize("CQS_ONBOARD_CALLER_FETCH", MAX_CALLER_FETCH_DEFAULT)
 }
 
 // Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.

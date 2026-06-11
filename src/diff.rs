@@ -73,16 +73,20 @@ impl From<&ChunkIdentity> for ChunkKey {
     }
 }
 
+/// Default embedding-fetch batch size for `semantic_diff`. Keeps each batch
+/// ~12 MB at 1024-dim. Scales linearly with model dim.
+const EMBEDDING_BATCH_SIZE_DEFAULT: usize = 1000;
+
 /// Embedding batch size for `semantic_diff`'s embedding-fetch loop.
 ///
-/// Default 1000 keeps each batch ~12 MB at 1024-dim. Scales linearly with model dim;
-/// override via `CQS_DIFF_EMBEDDING_BATCH_SIZE` for larger models or tight memory budgets.
+/// Override via `CQS_DIFF_EMBEDDING_BATCH_SIZE` for larger models or tight
+/// memory budgets. Parse/warn/default via the shared
+/// `crate::limits::parse_env_usize` (warns on a malformed value).
 fn embedding_batch_size() -> usize {
-    std::env::var("CQS_DIFF_EMBEDDING_BATCH_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(1000)
+    crate::limits::parse_env_usize(
+        "CQS_DIFF_EMBEDDING_BATCH_SIZE",
+        EMBEDDING_BATCH_SIZE_DEFAULT,
+    )
 }
 
 /// Run a semantic diff between two stores.

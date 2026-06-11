@@ -771,6 +771,83 @@ mod tests {
         }
     }
 
+    fn write_named_telemetry(dir: &Path, name: &str, lines: &[&str]) {
+        let path = dir.join(name);
+        let mut f = fs::File::create(&path).unwrap();
+        for line in lines {
+            writeln!(f, "{line}").unwrap();
+        }
+    }
+
+    /// `telemetry_core` over a populated live file aggregates every command
+    /// entry (Reset lines don't count as events) and rolls them up by
+    /// category. Pins the count and one category total so a silently-zero
+    /// aggregation can't pass.
+    #[test]
+    fn telemetry_core_populated_counts_events_and_categories() {
+        let dir = tempfile::tempdir().unwrap();
+        // 4 command entries + 1 reset (reset is not an event).
+        // search/gather → Search (2); impact → Structural (1); read → Read/Write (1).
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"cmd":"search","query":"foo","ts":1001}"#,
+                r#"{"cmd":"gather","query":"bar","ts":1002}"#,
+                r#"{"cmd":"impact","query":"baz","ts":1003}"#,
+                r#"{"event":"reset","ts":1004,"reason":"test"}"#,
+                r#"{"cmd":"read","ts":1005}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(
+            out.events, 4,
+            "four command entries (reset is not an event)"
+        );
+        assert_eq!(
+            out.categories.get("Search").copied(),
+            Some(2),
+            "search + gather both roll up under Search"
+        );
+        assert_eq!(
+            out.commands.get("search").copied(),
+            Some(1),
+            "per-command count surfaces too"
+        );
+    }
+
+    /// `all: true` folds archived `telemetry*.jsonl` files in alongside the
+    /// live one. With `all: false` only the live file's events are counted.
+    #[test]
+    fn telemetry_core_all_aggregates_archived_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Live file: 1 event.
+        write_test_telemetry(dir.path(), &[r#"{"cmd":"search","query":"foo","ts":2001}"#]);
+        // Archived file: 2 events.
+        write_named_telemetry(
+            dir.path(),
+            "telemetry.1.jsonl",
+            &[
+                r#"{"cmd":"impact","query":"a","ts":1001}"#,
+                r#"{"cmd":"callers","query":"b","ts":1002}"#,
+            ],
+        );
+
+        let live_only = telemetry_core(dir.path(), &TelemetryArgs { all: false }).unwrap();
+        assert_eq!(live_only.events, 1, "all:false counts only the live file");
+
+        let everything = telemetry_core(dir.path(), &TelemetryArgs { all: true }).unwrap();
+        assert_eq!(
+            everything.events, 3,
+            "all:true folds the archived file's events in"
+        );
+        assert_eq!(
+            everything.categories.get("Structural").copied(),
+            Some(2),
+            "impact + callers from the archive roll up under Structural"
+        );
+    }
+
     #[test]
     fn test_category_assignment() {
         assert_eq!(category_for("search"), "Search");

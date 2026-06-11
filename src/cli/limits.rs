@@ -14,6 +14,13 @@
 //! so they share a single env-override pattern. Library-level caps (parser,
 //! FTS, graph, converter) live in `crate::limits` because their callers
 //! (`parser/`, `store/`, `nl/`, `convert/`) cannot reach into the CLI module.
+//!
+//! The env-knob parse/warn/default contract lives once in `cqs::limits`
+//! (warns loudly on a malformed-but-set value so a typoed
+//! `CQS_RERANK_POOL_MAX=abc` shows the silent fall-through). These CLI
+//! resolvers route through those helpers rather than carrying a private copy.
+
+use cqs::limits::{parse_env_u64, parse_env_usize};
 
 /// Hard cap on `--limit` for search, applied identically by the CLI
 /// dispatcher (`cli::dispatch`, top-level `cli.limit` clamp) and the daemon
@@ -242,53 +249,6 @@ pub(crate) const DEFAULT_MAX_BATCH_LINE_LEN: usize = MAX_DIFF_BYTES;
 /// Resolve the batch-line cap honoring `CQS_BATCH_MAX_LINE_LEN`.
 pub(crate) fn batch_max_line_len() -> usize {
     parse_env_usize("CQS_BATCH_MAX_LINE_LEN", DEFAULT_MAX_BATCH_LINE_LEN)
-}
-
-// ============ shared parsing helpers ============
-
-/// Parse a `usize`-shaped env var. Empty / unparseable / zero values fall
-/// back to the supplied default. Zero is rejected because every caller
-/// here treats the value as a non-zero size limit; a caller that wants to
-/// disable a check should remove the call, not set it to zero.
-///
-/// Warns loudly on a malformed-but-set value so an operator who typoed
-/// `CQS_RERANK_POOL_MAX=128 ` (trailing space) or `=abc` sees the
-/// silent-default fall-through instead of debugging "why isn't my env var
-/// doing anything." Mirrors the warn pattern in the other env-knob helpers.
-fn parse_env_usize(key: &str, default: usize) -> usize {
-    match std::env::var(key) {
-        Ok(v) => match v.parse::<usize>() {
-            Ok(n) if n > 0 => n,
-            _ => {
-                tracing::warn!(
-                    env = key,
-                    value = %v,
-                    "Invalid env var (must be positive usize), using default {default}"
-                );
-                default
-            }
-        },
-        Err(_) => default,
-    }
-}
-
-/// Same as [`parse_env_usize`] but for `u64`-shaped byte limits.
-/// Same warn-on-malformed contract.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
-    match std::env::var(key) {
-        Ok(v) => match v.parse::<u64>() {
-            Ok(n) if n > 0 => n,
-            _ => {
-                tracing::warn!(
-                    env = key,
-                    value = %v,
-                    "Invalid env var (must be positive u64), using default {default}"
-                );
-                default
-            }
-        },
-        Err(_) => default,
-    }
 }
 
 #[cfg(test)]

@@ -290,9 +290,31 @@ fn test_task_end_to_end() {
 
     let task_result = result.unwrap();
     assert_eq!(task_result.description, "search for code");
-    assert!(
-        task_result.summary.total_files > 0 || task_result.code.is_empty(),
-        "Should find files or gracefully return empty results"
+    // Cross-phase invariants that hold regardless of whether the real
+    // embedder ranks the (mock-embedded) fixture above threshold — these
+    // replace the prior `total_files > 0 || code.is_empty()` tautology with
+    // checks a pipeline regression would actually fail.
+    //
+    // 1. The summary file count is the scout file-group count it was computed
+    //    from — a divergence between the two surfaces fails here.
+    assert_eq!(
+        task_result.summary.total_files,
+        task_result.scout.file_groups.len(),
+        "summary file count must match the scout file groups it was computed from"
+    );
+    // 2. Every modify target must carry a matching impact risk entry, and the
+    //    summary modify-target count must match the extracted targets.
+    let target_names = cqs::extract_modify_targets(&task_result.scout);
+    for name in &target_names {
+        assert!(
+            task_result.risk.iter().any(|r| &r.name == name),
+            "modify target {name} must have an impact risk entry"
+        );
+    }
+    assert_eq!(
+        task_result.summary.modify_targets,
+        target_names.len(),
+        "summary modify-target count must match the extracted targets"
     );
 }
 
@@ -323,7 +345,27 @@ fn test_task_with_resources_end_to_end() {
     );
 
     let task_result = result.unwrap();
-    // Verify the pipeline ran — even if search returns no results, structure should be valid
     assert_eq!(task_result.description, "validate user input");
-    let _ = task_result.summary.total_files;
+    // Cross-phase invariants (hold regardless of model-dependent ranking),
+    // replacing the prior `let _ = task_result.summary.total_files;` no-op.
+    assert_eq!(
+        task_result.summary.total_files,
+        task_result.scout.file_groups.len(),
+        "summary file count must equal the scout file-group count"
+    );
+    // Every modify target must carry a matching impact risk entry — the
+    // gather/impact phases are wired to the same target set, so a mismatch is
+    // a pipeline regression regardless of which functions ranked highest.
+    let target_names = cqs::extract_modify_targets(&task_result.scout);
+    for name in &target_names {
+        assert!(
+            task_result.risk.iter().any(|r| &r.name == name),
+            "modify target {name} must have an impact risk entry"
+        );
+    }
+    assert_eq!(
+        task_result.summary.modify_targets,
+        target_names.len(),
+        "summary modify-target count must match the extracted targets"
+    );
 }

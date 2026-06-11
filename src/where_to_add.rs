@@ -137,7 +137,11 @@ pub fn suggest_placement_with_options<Mode>(
 }
 
 /// Core placement logic. Requires `opts.query_embedding` to be set.
-fn suggest_placement_with_options_core<Mode>(
+///
+/// Embedder-free: callers that already hold a query embedding (e.g.
+/// `task_core`) reach the placement logic without an `&Embedder`, which is
+/// what lets the task pipeline run against a seeded store in tests.
+pub(crate) fn suggest_placement_with_options_core<Mode>(
     store: &Store<Mode>,
     description: &str,
     limit: usize,

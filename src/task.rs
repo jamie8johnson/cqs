@@ -18,8 +18,9 @@ use crate::{AnalysisError, Embedder, Store};
 /// BFS expansion depth for gather phase (how many call-graph hops from modify targets).
 ///
 /// `CQS_TASK_GATHER_DEPTH` overrides this per-task; falls back to this constant
-/// when unset. Also honors `CQS_GATHER_DEPTH` as a cross-cutting default for any
-/// caller that wants to set both `gather` and `task` depth in one place.
+/// when unset. `CQS_GATHER_DEPTH` is honored as a lower-precedence fallback for
+/// the task pipeline only — `cqs gather` itself takes its depth from the
+/// `--depth` flag (`DEFAULT_DEPTH_BLAST`), not from this env var.
 const TASK_GATHER_DEPTH_DEFAULT: usize = 2;
 
 /// Multiplier applied to `limit` for gather phase truncation.
@@ -29,28 +30,32 @@ const TASK_GATHER_LIMIT_MULTIPLIER: usize = 3;
 ///
 /// Precedence:
 /// 1. `CQS_TASK_GATHER_DEPTH` (per-task override)
-/// 2. `CQS_GATHER_DEPTH` (shared default with `cqs gather`)
+/// 2. `CQS_GATHER_DEPTH` (task-pipeline fallback; `cqs gather` does not read it)
 /// 3. `TASK_GATHER_DEPTH_DEFAULT` (= 2)
 ///
 /// Reading on each call (vs `OnceLock`) is a single `getenv` per `task` invocation,
 /// which keeps `systemctl set-environment` and per-test overrides effective without
 /// process restart. Documented in README.md.
+///
+/// Both env reads go through the shared `crate::limits::parse_env_usize`
+/// (uniform warn-on-invalid). The helper re-reads env on each call, so the
+/// deliberate no-cache contract above is preserved. A set-but-invalid
+/// `CQS_TASK_GATHER_DEPTH` still falls through to `CQS_GATHER_DEPTH` (matching
+/// the original precedence): the per-var presence + positive-parse check is
+/// done here so an invalid override doesn't shadow the shared fallback.
 fn task_gather_depth() -> usize {
-    if let Ok(v) = std::env::var("CQS_TASK_GATHER_DEPTH") {
-        if let Ok(n) = v.parse::<usize>() {
-            if n > 0 {
-                return n;
-            }
-        }
+    let valid_positive = |key: &str| -> Option<usize> {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+    };
+    if let Some(n) = valid_positive("CQS_TASK_GATHER_DEPTH") {
+        return n;
     }
-    if let Ok(v) = std::env::var("CQS_GATHER_DEPTH") {
-        if let Ok(n) = v.parse::<usize>() {
-            if n > 0 {
-                return n;
-            }
-        }
-    }
-    TASK_GATHER_DEPTH_DEFAULT
+    // Route the resolved fallback (task var unset or invalid) through the
+    // shared helper so `CQS_GATHER_DEPTH=garbage` gets the uniform warn.
+    crate::limits::parse_env_usize("CQS_GATHER_DEPTH", TASK_GATHER_DEPTH_DEFAULT)
 }
 
 /// Per-function risk assessment from impact analysis.
@@ -137,13 +142,43 @@ pub fn task_with_resources<Mode>(
 ) -> Result<TaskResult, AnalysisError> {
     let _span = tracing::info_span!("task", description_len = description.len(), limit).entered();
 
-    // 1. Embed query
+    // 1. Embed query — the only step that needs an `&Embedder`. Everything
+    // downstream runs against the pre-built embedding via `task_core`, which
+    // is what lets the pipeline be exercised against a seeded store in tests.
     let query_embedding = embedder.embed_query(description)?;
+
+    task_core(
+        store,
+        &query_embedding,
+        description,
+        root,
+        limit,
+        graph,
+        test_chunks,
+    )
+}
+
+/// Embedder-free task pipeline core: scout → gather → impact → placement,
+/// driven by a pre-built `query_embedding`. Mirrors `scout_core`'s seam so
+/// callers (and tests) that already hold an embedding can run the whole
+/// composition without an `&Embedder` / ONNX model.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn task_core<Mode>(
+    store: &Store<Mode>,
+    query_embedding: &crate::Embedding,
+    description: &str,
+    root: &Path,
+    limit: usize,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> Result<TaskResult, AnalysisError> {
+    let _span =
+        tracing::info_span!("task_core", description_len = description.len(), limit).entered();
 
     // 2. Scout phase
     let scout = scout_core(&ScoutResources {
         store,
-        query_embedding: &query_embedding,
+        query_embedding,
         task: description,
         root,
         limit,
@@ -211,14 +246,15 @@ pub fn task_with_resources<Mode>(
     };
     tracing::debug!(risks = risk.len(), tests = tests.len(), "Impact complete");
 
-    // 6. Placement phase — reuse query embedding to avoid redundant ONNX inference
+    // 6. Placement phase — reuse the query embedding (no redundant ONNX
+    // inference). The `_core` placement entry is embedder-free precisely so
+    // the task pipeline never needs an `&Embedder` past step 1.
     let placement_opts = crate::where_to_add::PlacementOptions {
         query_embedding: Some(query_embedding.clone()),
         ..Default::default()
     };
-    let placement: Vec<_> = match crate::where_to_add::suggest_placement_with_options(
+    let placement: Vec<_> = match crate::where_to_add::suggest_placement_with_options_core(
         store,
-        embedder,
         description,
         3,
         &placement_opts,
@@ -624,5 +660,141 @@ mod tests {
         assert_eq!(placement.len(), 1);
         assert_eq!(placement[0]["near_function"], "fn_a");
         assert_eq!(placement[0]["reason"], "same module");
+    }
+
+    // ===== task_core integration (seeded store + pre-built query embedding) =====
+
+    /// Build a normalized embedding from per-index weights (dims past
+    /// `weights.len()` are zero). Gives chunks distinct, deterministic cosine
+    /// scores against a one-hot query without an embedder — mirrors the
+    /// scout_core seeded-store pattern.
+    fn weighted_embedding(weights: &[f32]) -> crate::Embedding {
+        let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
+        for (i, &w) in weights.iter().enumerate() {
+            if i < v.len() {
+                v[i] = w;
+            }
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        crate::Embedding::new(v)
+    }
+
+    fn indexed_chunk(
+        name: &str,
+        file: &str,
+        line_start: u32,
+        line_end: u32,
+    ) -> crate::parser::Chunk {
+        crate::parser::Chunk {
+            id: format!("{file}:{line_start}:{name}"),
+            file: PathBuf::from(file),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: format!("fn {name}() {{}}"),
+            doc: None,
+            line_start,
+            line_end,
+            content_hash: format!("{name}_hash"),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    /// The whole scout → gather → impact → placement composition runs against a
+    /// seeded store via the embedder-free `task_core`, asserting a SPECIFIC
+    /// modify target (not just "ran without panicking" the way the `#[ignore]`d
+    /// e2e tests did). A one-hot query puts `validate_input` at cosine 1.0 (the
+    /// lone ModifyTarget) and a helper below the gap as a Dependency.
+    #[test]
+    fn task_core_seeded_store_picks_modify_target() {
+        let (store, _dir) = crate::test_helpers::setup_store();
+
+        let query = weighted_embedding(&[1.0]);
+        // cosine 1.0 → ModifyTarget.
+        let target = indexed_chunk("validate_input", "src/validate.rs", 10, 30);
+        // cosine ~0.29 → above the 0.2 floor but below the gap → Dependency.
+        let dep_embedding = weighted_embedding(&[0.3, 1.0]);
+        let helper = indexed_chunk("validation_helper", "src/helper.rs", 1, 8);
+        // Test chunk in a tests/ path → TestToUpdate.
+        let test = indexed_chunk("test_validate_input", "tests/validate_test.rs", 1, 12);
+
+        store.upsert_chunk(&target, &query, Some(1)).unwrap();
+        store
+            .upsert_chunk(&helper, &dep_embedding, Some(1))
+            .unwrap();
+        store.upsert_chunk(&test, &query, Some(1)).unwrap();
+
+        // Caller edges so the target has a test caller and a non-test caller.
+        let calls = [
+            crate::parser::FunctionCalls {
+                name: "test_validate_input".to_string(),
+                line_start: 1,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "validate_input".to_string(),
+                    line_number: 3,
+                }],
+            },
+            crate::parser::FunctionCalls {
+                name: "validation_helper".to_string(),
+                line_start: 1,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "validate_input".to_string(),
+                    line_number: 2,
+                }],
+            },
+        ];
+        store
+            .upsert_function_calls(Path::new("tests/validate_test.rs"), &calls[..1])
+            .unwrap();
+        store
+            .upsert_function_calls(Path::new("src/helper.rs"), &calls[1..])
+            .unwrap();
+
+        let graph = store.get_call_graph().unwrap();
+        let test_chunks = store.find_test_chunks().unwrap();
+
+        let result = task_core(
+            &store,
+            &query,
+            "validate user input",
+            Path::new("/tmp"),
+            10,
+            &graph,
+            &test_chunks,
+        )
+        .unwrap();
+
+        // Scout phase ran and classified the cosine-1.0 chunk as the lone
+        // ModifyTarget — a real, specific outcome.
+        let targets = extract_modify_targets(&result.scout);
+        assert_eq!(
+            targets,
+            vec!["validate_input".to_string()],
+            "validate_input must be the lone modify target, got: {targets:?}"
+        );
+
+        // Impact phase produced a risk entry for that target.
+        assert!(
+            result.risk.iter().any(|r| r.name == "validate_input"),
+            "impact phase must score the modify target, got: {:?}",
+            result.risk.iter().map(|r| &r.name).collect::<Vec<_>>()
+        );
+
+        // Summary echoes the modify-target count.
+        assert_eq!(
+            result.summary.modify_targets, 1,
+            "summary must report exactly one modify target"
+        );
+        assert_eq!(result.description, "validate user input");
     }
 }

@@ -892,6 +892,49 @@ mod tests {
         assert_eq!(ctx.query_count.load(Ordering::Relaxed), 2);
     }
 
+    // A response-write failure on the stdin batch surface (EPIPE, full-disk
+    // redirect) must not vanish: `write_ok_tracked` warns and bumps
+    // `error_count` so the agent's lost response line is observable. Drives the
+    // success path (`refresh` invalidates cleanly, then writes the ok payload)
+    // through a writer that errors on every write.
+    #[test]
+    fn test_dispatch_response_write_failure_bumps_error_count() {
+        struct FailingWriter;
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "epipe"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "epipe"))
+            }
+        }
+
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        assert_eq!(ctx.error_count.load(Ordering::Relaxed), 0);
+
+        // `refresh` invalidates the caches and then writes a success payload.
+        // The write fails, so write_ok_tracked must bump error_count exactly
+        // once even though the dispatch itself succeeded.
+        let mut out = FailingWriter;
+        ctx.dispatch_line("refresh", &mut out);
+        assert_eq!(
+            ctx.error_count.load(Ordering::Relaxed),
+            1,
+            "a failed response write on a successful dispatch must bump error_count"
+        );
+
+        // Sanity: the same successful dispatch against a working writer does
+        // NOT bump error_count.
+        let mut ok_out = Vec::new();
+        ctx.dispatch_line("refresh", &mut ok_out);
+        assert_eq!(
+            ctx.error_count.load(Ordering::Relaxed),
+            1,
+            "a successful dispatch+write leaves error_count unchanged"
+        );
+    }
+
     // ping_snapshot returns a coherent picture even on an empty BatchContext
     // (no commands run yet, no embedder warmed). Pins the initial values so the
     // CLI can rely on the field shape.
