@@ -19,7 +19,10 @@ pub struct DiffHunk {
     pub file: PathBuf,
     /// Start line in the new version (1-based)
     pub start: u32,
-    /// Number of lines in the new version (half-open: covers `start..start+count`)
+    /// Number of lines in the new version (half-open: covers `start..start+count`).
+    /// `0` means a deletion-only hunk (e.g. `@@ -10,5 +9,0 @@`): the old side
+    /// removed lines and the new side has none; `start` is then the line just
+    /// *before* the removed span (0 when the deletion is at the top of file).
     pub count: u32,
 }
 

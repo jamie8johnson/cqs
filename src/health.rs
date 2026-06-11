@@ -211,14 +211,23 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         for (i, name) in ["alpha", "beta", "gamma"].iter().enumerate() {
             let file = format!("src/mod{}.rs", i);
-            std::fs::write(dir.path().join(&file), format!("fn {}() {{ }}", name)).unwrap();
+            let abs = dir.path().join(&file);
+            std::fs::write(&abs, format!("fn {}() {{ }}", name)).unwrap();
             let chunk = test_chunk(&file, name, 1, &format!("fn {}() {{ }}", name));
-            // Stamp the stored mtime to a large future value so the staleness
-            // check (`current_mtime > stored_mtime`) sees these chunks as
-            // fresh — the file's real mtime from `std::fs::write` above will
-            // be smaller.
+            // Stamp the stored mtime to the file's real on-disk mtime so the
+            // staleness divergence predicate (stored != disk → stale) sees
+            // these chunks as fresh — the fixture models "indexed, then
+            // unchanged".
+            let mtime = crate::duration_to_mtime_millis(
+                abs.metadata()
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap(),
+            );
             store
-                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(i64::MAX))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(mtime))
                 .unwrap();
         }
 
