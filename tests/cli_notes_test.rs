@@ -730,3 +730,67 @@ fn test_notes_add_rejects_infinity_sentiment() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+/// V2Bare default-format pin for `cqs notes list`. Unlike the mutation tests
+/// (which avoid `notes list` because it needs a `CommandContext`), this seeds a
+/// `.cqs/index.db` so the context opens, writes a `docs/notes.toml` directly,
+/// and spawns `cqs notes list --json` with NO `CQS_OUTPUT_FORMAT` pin. The
+/// payload must be a bare top-level array of note entries — no `data` /
+/// `version` envelope — with the seeded note's text present.
+#[test]
+#[serial]
+fn test_notes_list_default_format_emits_bare_array() {
+    let dir = TempDir::new().expect("tempdir");
+
+    // A store so the list handler's CommandContext resolves.
+    let cqs_dir = dir.path().join(".cqs");
+    fs::create_dir_all(&cqs_dir).unwrap();
+    {
+        let store = cqs::Store::open(&cqs_dir.join(cqs::INDEX_DB_FILENAME)).expect("open store");
+        store
+            .init(&cqs::store::ModelInfo::default())
+            .expect("init store");
+    }
+
+    // The list handler reads docs/notes.toml from disk via parse_notes.
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(&docs).unwrap();
+    fs::write(
+        docs.join("notes.toml"),
+        "[[note]]\nsentiment = -0.5\ntext = \"seeded list note about scoring\"\nmentions = [\"search.rs\"]\n",
+    )
+    .unwrap();
+
+    #[allow(deprecated)]
+    let output = assert_cmd::Command::cargo_bin("cqs")
+        .expect("cqs binary")
+        .args(["notes", "list", "--json"])
+        .env("CQS_NO_DAEMON", "1")
+        .current_dir(dir.path())
+        .output()
+        .expect("cqs notes list failed to spawn");
+
+    assert!(
+        output.status.success(),
+        "notes list should succeed. stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("JSON parse: {e}\n{stdout}"));
+
+    let arr = parsed
+        .as_array()
+        .unwrap_or_else(|| panic!("notes list must emit a bare top-level array, got: {parsed}"));
+    assert!(
+        parsed.get("data").is_none() && parsed.get("version").is_none(),
+        "bare default drops envelope keys, got: {parsed}"
+    );
+    let texts: Vec<&str> = arr.iter().filter_map(|n| n["text"].as_str()).collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("seeded list note about scoring")),
+        "the seeded note text must appear, got: {texts:?}"
+    );
+}

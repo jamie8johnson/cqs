@@ -613,6 +613,197 @@ mod tests {
         assert!(threshold >= 0.90);
     }
 
+    // ===== scout_core integration (seeded store + pre-built query embedding) =====
+
+    /// Build a normalized embedding from per-index weights. Dimensions past
+    /// `weights.len()` are zero. Used to give chunks distinct, deterministic
+    /// cosine scores against a one-hot query without an embedder.
+    fn weighted_embedding(weights: &[f32]) -> crate::Embedding {
+        let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
+        for (i, &w) in weights.iter().enumerate() {
+            if i < v.len() {
+                v[i] = w;
+            }
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        crate::Embedding::new(v)
+    }
+
+    /// Build an indexed Chunk for a function with the given name/file/lines.
+    fn scout_chunk(name: &str, file: &str, line_start: u32, line_end: u32) -> crate::parser::Chunk {
+        crate::parser::Chunk {
+            id: format!("{file}:{line_start}:{name}"),
+            file: std::path::PathBuf::from(file),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: format!("fn {name}() {{}}"),
+            doc: None,
+            line_start,
+            line_end,
+            content_hash: format!("{name}_hash"),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    #[test]
+    fn test_scout_core_classifies_roles_and_groups_files() {
+        let (store, _dir) = crate::test_helpers::setup_store();
+
+        // Query is the one-hot e0 direction. Chunk embeddings are crafted so
+        // their cosine against the query falls into a high cluster and a
+        // low cluster with a wide gap between them, making the gap-based
+        // modify-threshold deterministic.
+        let query = weighted_embedding(&[1.0]);
+
+        // cosine 1.0 — the single ModifyTarget (top of the gap).
+        let target = scout_chunk("apply_search_scoring", "src/search.rs", 10, 30);
+        // cosine ~0.29 (0.3·e0 + e1 normalized) — above the 0.2 threshold but
+        // below the gap → Dependency.
+        let dep = weighted_embedding(&[0.3, 1.0]);
+        let helper = scout_chunk("scoring_helper", "src/helper.rs", 1, 8);
+        // A test chunk in a tests/ path → TestToUpdate regardless of score.
+        let test = scout_chunk("test_search_scoring", "tests/search_test.rs", 1, 12);
+
+        store.upsert_chunk(&target, &query, Some(1)).unwrap();
+        store.upsert_chunk(&helper, &dep, Some(1)).unwrap();
+        store.upsert_chunk(&test, &query, Some(1)).unwrap();
+
+        // Seed a caller edge so the test is reachable to apply_search_scoring,
+        // and give the target a non-test caller.
+        let calls = [
+            crate::parser::FunctionCalls {
+                name: "test_search_scoring".to_string(),
+                line_start: 1,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "apply_search_scoring".to_string(),
+                    line_number: 3,
+                }],
+            },
+            crate::parser::FunctionCalls {
+                name: "scoring_helper".to_string(),
+                line_start: 1,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "apply_search_scoring".to_string(),
+                    line_number: 2,
+                }],
+            },
+        ];
+        store
+            .upsert_function_calls(std::path::Path::new("tests/search_test.rs"), &calls[..1])
+            .unwrap();
+        store
+            .upsert_function_calls(std::path::Path::new("src/helper.rs"), &calls[1..])
+            .unwrap();
+
+        let graph = store.get_call_graph().unwrap();
+        let test_chunks = store.find_test_chunks().unwrap();
+        let opts = ScoutOptions::default();
+
+        let result = scout_core(&ScoutResources {
+            store: &store,
+            query_embedding: &query,
+            task: "search scoring",
+            root: std::path::Path::new("/tmp"),
+            limit: 10,
+            opts: &opts,
+            graph: &graph,
+            test_chunks: &test_chunks,
+        })
+        .unwrap();
+
+        // All three chunks should surface (scores >= 0.2 threshold).
+        let all_chunks: Vec<&ScoutChunk> =
+            result.file_groups.iter().flat_map(|g| &g.chunks).collect();
+        assert_eq!(
+            all_chunks.len(),
+            3,
+            "all three seeded chunks should appear, got: {:?}",
+            all_chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        let role_of = |name: &str| -> ChunkRole {
+            all_chunks
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.role.clone())
+                .unwrap_or_else(|| panic!("{name} not found in scout result"))
+        };
+
+        // The cosine-1.0 chunk is the lone ModifyTarget (top of the gap).
+        assert_eq!(role_of("apply_search_scoring"), ChunkRole::ModifyTarget);
+        // The lower-scoring non-test chunk is a Dependency.
+        assert_eq!(role_of("scoring_helper"), ChunkRole::Dependency);
+        // The tests/ chunk is a test to update.
+        assert_eq!(role_of("test_search_scoring"), ChunkRole::TestToUpdate);
+
+        // file_groups membership: each file forms its own group.
+        let files: std::collections::HashSet<String> = result
+            .file_groups
+            .iter()
+            .map(|g| g.file.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            files.contains("src/search.rs"),
+            "src/search.rs group missing, got: {files:?}"
+        );
+        assert!(
+            files.contains("src/helper.rs"),
+            "src/helper.rs group missing, got: {files:?}"
+        );
+        assert!(
+            files.contains("tests/search_test.rs"),
+            "tests/search_test.rs group missing, got: {files:?}"
+        );
+
+        // The target is reached by one test (test_search_scoring) — its hint
+        // test_count should reflect that.
+        let target_chunk = all_chunks
+            .iter()
+            .find(|c| c.name == "apply_search_scoring")
+            .unwrap();
+        assert!(
+            target_chunk.test_count >= 1,
+            "apply_search_scoring should have a reaching test, got {}",
+            target_chunk.test_count
+        );
+    }
+
+    #[test]
+    fn test_scout_core_empty_store_returns_empty_result() {
+        let (store, _dir) = crate::test_helpers::setup_store();
+        let query = weighted_embedding(&[1.0]);
+        let graph = store.get_call_graph().unwrap();
+        let test_chunks: Vec<ChunkSummary> = Vec::new();
+        let opts = ScoutOptions::default();
+
+        let result = scout_core(&ScoutResources {
+            store: &store,
+            query_embedding: &query,
+            task: "anything",
+            root: std::path::Path::new("/tmp"),
+            limit: 10,
+            opts: &opts,
+            graph: &graph,
+            test_chunks: &test_chunks,
+        })
+        .unwrap();
+
+        assert!(result.file_groups.is_empty());
+        assert_eq!(result.summary.total_files, 0);
+        assert_eq!(result.summary.total_functions, 0);
+    }
+
     #[test]
     fn test_note_mention_matches_file() {
         // Positive: suffix at path boundary
