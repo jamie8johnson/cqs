@@ -36,6 +36,17 @@ pub(crate) struct TelemetryOutput {
     pub sessions: Option<usize>,
     pub commands: HashMap<String, usize>,
     pub categories: HashMap<String, usize>,
+    /// Per-command kind-mismatch fallback counts. Keyed by the firing graph
+    /// command (`callers`, `impact`, `deps`, `test-map`, `trace`, …); the
+    /// value is how many times that command redirected to a kind-labeled
+    /// fallback instead of running its normal flow. The Phase-2 routing
+    /// signal: a high `kind_fallbacks` rate relative to a command's total
+    /// invocations means agents are still bouncing between commands (asking
+    /// `callers` about a const, `impact` about a type) rather than routing
+    /// the first time. Skip-when-empty so the historical wire shape is
+    /// unchanged for telemetry logs with no fallback events.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub kind_fallbacks: HashMap<String, usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub top_queries: Vec<TopQuery>,
 }
@@ -87,6 +98,11 @@ struct RawEntry {
     query: Option<String>,
     #[serde(default)]
     reason: Option<String>,
+    /// Routing kind label on a `kind_fallback` event (`const` / `type` /
+    /// `module` / `ambiguous` / `function` / `other`). Unset on every other
+    /// entry flavor.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Debug)]
@@ -100,6 +116,15 @@ enum Entry {
         ts: u64,
         _reason: Option<String>,
     },
+    /// A graph command redirected to a kind-mismatch fallback. Counted
+    /// separately from `Command` (the invoke event for the same command
+    /// already lands via `log_command` at dispatch entry), so a fallback
+    /// neither double-counts the command nor inflates the event total.
+    KindFallback {
+        cmd: String,
+        _kind: Option<String>,
+        ts: u64,
+    },
 }
 
 fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
@@ -112,17 +137,34 @@ fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
             continue;
         }
         if let Ok(raw) = serde_json::from_str::<RawEntry>(&line) {
-            if raw.event.is_some() {
-                entries.push(Entry::Reset {
-                    ts: raw.ts,
-                    _reason: raw.reason,
-                });
-            } else if let Some(cmd) = raw.cmd {
-                entries.push(Entry::Command {
-                    cmd,
-                    query: raw.query,
-                    ts: raw.ts,
-                });
+            match raw.event.as_deref() {
+                // Kind-fallback events carry both `event` and `cmd`; route
+                // them before the generic reset arm (which keys only on
+                // `event` being present) so they aren't miscounted as resets.
+                Some("kind_fallback") => {
+                    if let Some(cmd) = raw.cmd {
+                        entries.push(Entry::KindFallback {
+                            cmd,
+                            _kind: raw.kind,
+                            ts: raw.ts,
+                        });
+                    }
+                }
+                Some(_) => {
+                    entries.push(Entry::Reset {
+                        ts: raw.ts,
+                        _reason: raw.reason,
+                    });
+                }
+                None => {
+                    if let Some(cmd) = raw.cmd {
+                        entries.push(Entry::Command {
+                            cmd,
+                            query: raw.query,
+                            ts: raw.ts,
+                        });
+                    }
+                }
             }
         }
     }
@@ -156,6 +198,9 @@ fn count_sessions(entries: &[Entry]) -> usize {
                 last_ts = Some(*ts);
                 continue;
             }
+            // A fallback annotates an existing command invocation; it neither
+            // opens nor closes a session, so it's a no-op here.
+            Entry::KindFallback { .. } => continue,
         };
         if let Some(prev) = last_ts {
             if ts.saturating_sub(prev) > GAP_SECS {
@@ -236,6 +281,8 @@ struct TelemetryAggregator {
     cmd_counts: HashMap<String, usize>,
     cat_counts: HashMap<String, usize>,
     query_counts: HashMap<String, usize>,
+    // Per-command kind-mismatch fallback counts (Phase-2 routing signal).
+    kind_fallback_counts: HashMap<String, usize>,
     // Session tracking (inlined from count_sessions)
     sessions: usize,
     last_ts: Option<u64>,
@@ -252,6 +299,7 @@ impl TelemetryAggregator {
             cmd_counts: HashMap::with_capacity(32),
             cat_counts: HashMap::with_capacity(8),
             query_counts: HashMap::with_capacity(64),
+            kind_fallback_counts: HashMap::with_capacity(8),
             sessions: 0,
             last_ts: None,
         }
@@ -314,6 +362,27 @@ impl TelemetryAggregator {
                 }
                 self.last_ts = Some(*ts);
             }
+            Entry::KindFallback { cmd, ts, .. } => {
+                // Not an `event_count` increment: the command's own invoke
+                // event (logged at dispatch entry) already counted this
+                // invocation. The fallback is a per-command annotation on
+                // that same invocation, so we only bump the fallback tally.
+                if let Some(c) = self.kind_fallback_counts.get_mut(cmd.as_str()) {
+                    *c += 1;
+                } else {
+                    self.kind_fallback_counts.insert(cmd.clone(), 1);
+                }
+                // Fold the timestamp into the date range so a log that is
+                // all fallbacks (unlikely, but possible in a test) still
+                // reports a span rather than the sentinel u64::MAX..0.
+                let ts = *ts;
+                if ts < self.min_ts {
+                    self.min_ts = ts;
+                }
+                if ts > self.max_ts {
+                    self.max_ts = ts;
+                }
+            }
         }
     }
 
@@ -327,12 +396,16 @@ impl TelemetryAggregator {
     /// Consume the aggregator and produce the final output.
     fn finish(self) -> TelemetryOutput {
         if self.event_count == 0 {
+            // A log with no command events but some fallback events (e.g. a
+            // test fixture of pure fallbacks) still reports the fallback
+            // tally; everything else stays empty.
             return TelemetryOutput {
                 events: 0,
                 date_range: None,
                 sessions: None,
                 commands: HashMap::new(),
                 categories: HashMap::new(),
+                kind_fallbacks: self.kind_fallback_counts,
                 top_queries: Vec::new(),
             };
         }
@@ -350,6 +423,7 @@ impl TelemetryAggregator {
             sessions: Some(self.sessions),
             commands: self.cmd_counts,
             categories: self.cat_counts,
+            kind_fallbacks: self.kind_fallback_counts,
             top_queries: query_sorted
                 .into_iter()
                 .take(10)
@@ -537,6 +611,28 @@ fn print_telemetry_text(output: &TelemetryOutput) {
         }
     }
     println!();
+
+    // Kind-mismatch fallbacks (Phase-2 routing signal). Shown as a rate
+    // against each command's total invocations so a high bounce-rate is
+    // visible at a glance.
+    if !output.kind_fallbacks.is_empty() {
+        println!();
+        println!("{}:", "Kind Fallbacks".cyan());
+        let mut fb_sorted: Vec<_> = output.kind_fallbacks.iter().collect();
+        fb_sorted.sort_by(|a, b| b.1.cmp(a.1));
+        for (cmd, &fb_count) in &fb_sorted {
+            let cmd_total = output.commands.get(*cmd).copied().unwrap_or(0);
+            if cmd_total > 0 {
+                let pct = (fb_count as f64 / cmd_total as f64) * 100.0;
+                println!(
+                    "  {:<14} {:>4} / {:<4}  ({:.0}% of invocations)",
+                    cmd, fb_count, cmd_total, pct,
+                );
+            } else {
+                println!("  {:<14} {:>4}", cmd, fb_count);
+            }
+        }
+    }
 
     // Sessions
     if let Some(sessions) = output.sessions {
@@ -848,6 +944,87 @@ mod tests {
         );
     }
 
+    /// A `kind_fallback` event is counted into `kind_fallbacks` keyed by the
+    /// firing command, and crucially does NOT inflate the command's invoke
+    /// count or the event total — the command's own invoke event already
+    /// landed at dispatch entry. Pins the Phase-2 routing-signal contract.
+    #[test]
+    fn telemetry_core_aggregates_kind_fallbacks_without_double_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                // Two `callers` invocations; the second misrouted to a const.
+                r#"{"cmd":"callers","query":"foo","ts":1001}"#,
+                r#"{"cmd":"callers","query":"MAX","ts":1002}"#,
+                r#"{"event":"kind_fallback","cmd":"callers","kind":"const","name":"MAX","definitions":1,"ts":1002}"#,
+                // One `impact` invocation that hit a type fallback.
+                r#"{"cmd":"impact","query":"Config","ts":1003}"#,
+                r#"{"event":"kind_fallback","cmd":"impact","kind":"type","name":"Config","definitions":2,"ts":1003}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        // 3 command invocations — the two fallback events are annotations,
+        // not events.
+        assert_eq!(
+            out.events, 3,
+            "fallback events must not inflate the event total"
+        );
+        assert_eq!(
+            out.commands.get("callers").copied(),
+            Some(2),
+            "callers invoked twice; the fallback must not bump its invoke count"
+        );
+        assert_eq!(
+            out.kind_fallbacks.get("callers").copied(),
+            Some(1),
+            "one callers fallback recorded"
+        );
+        assert_eq!(
+            out.kind_fallbacks.get("impact").copied(),
+            Some(1),
+            "one impact fallback recorded"
+        );
+        // Structural category counts only the real invocations.
+        assert_eq!(out.categories.get("Structural").copied(), Some(3));
+    }
+
+    /// A `kind_fallback` event serializes into the `kind_fallbacks` map and
+    /// is omitted entirely when no fallback fired (skip-when-empty preserves
+    /// the historical wire shape).
+    #[test]
+    fn telemetry_output_kind_fallbacks_skip_when_empty() {
+        let no_fb = TelemetryOutput {
+            events: 1,
+            date_range: None,
+            sessions: None,
+            commands: HashMap::new(),
+            categories: HashMap::new(),
+            kind_fallbacks: HashMap::new(),
+            top_queries: Vec::new(),
+        };
+        let json = serde_json::to_value(&no_fb).unwrap();
+        assert!(
+            json.get("kind_fallbacks").is_none(),
+            "empty kind_fallbacks must be omitted, got: {json}"
+        );
+
+        let mut kf = HashMap::new();
+        kf.insert("trace".to_string(), 4);
+        let with_fb = TelemetryOutput {
+            events: 1,
+            date_range: None,
+            sessions: None,
+            commands: HashMap::new(),
+            categories: HashMap::new(),
+            kind_fallbacks: kf,
+            top_queries: Vec::new(),
+        };
+        let json = serde_json::to_value(&with_fb).unwrap();
+        assert_eq!(json["kind_fallbacks"]["trace"], 4);
+    }
+
     #[test]
     fn test_category_assignment() {
         assert_eq!(category_for("search"), "Search");
@@ -1005,6 +1182,7 @@ mod tests {
             sessions: Some(3),
             commands,
             categories,
+            kind_fallbacks: HashMap::new(),
             top_queries: vec![
                 TopQuery {
                     query: "foo bar".to_string(),
@@ -1036,6 +1214,7 @@ mod tests {
             sessions: None,
             commands: HashMap::new(),
             categories: HashMap::new(),
+            kind_fallbacks: HashMap::new(),
             top_queries: Vec::new(),
         };
 
@@ -1181,6 +1360,7 @@ mod tests {
                 m.insert("Search".to_string(), 1);
                 m
             },
+            kind_fallbacks: HashMap::new(),
             top_queries: vec![TopQuery {
                 query: emoji_query,
                 count: 1,

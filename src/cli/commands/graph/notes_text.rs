@@ -214,6 +214,35 @@ pub(crate) fn deps(kind: FallbackKind) -> Option<FallbackText> {
     }
 }
 
+// deps forward (default, no `--reverse`) answers "who uses this type?". A
+// Function name in that slot finds no type-users and would otherwise emit a
+// silent empty list — the caller almost certainly meant `--reverse` ("what
+// types does this function use?"). These strings carry that redirect.
+
+const DEPS_FUNCTION_FORWARD_NOTE: &str =
+    "forward deps lists chunks that use a *type*; this name is a function. \
+     Re-run `cqs deps --reverse <name>` to see the types this function uses, \
+     or `cqs callers <name>` / `cqs callees <name>` for its call graph.";
+const DEPS_FUNCTION_FORWARD_REDIRECT: &str =
+    "Re-run `cqs deps --reverse <name>` for the function's used types, or `cqs callers <name>` for its callers.";
+
+/// `--json` note for a forward `cqs deps <name>` whose name is a function.
+pub(crate) fn deps_function_forward_note() -> &'static str {
+    DEPS_FUNCTION_FORWARD_NOTE
+}
+
+/// Plain-text redirect for a forward `cqs deps <function>` misroute.
+pub(crate) fn deps_function_forward_redirect() -> &'static str {
+    DEPS_FUNCTION_FORWARD_REDIRECT
+}
+
+/// Plain-text lead line for a forward `cqs deps <function>` misroute.
+pub(crate) fn deps_function_forward_lead(name: &str) -> String {
+    format!(
+        "(deps) `{name}` is a function, not a type — forward deps (\"who uses this type?\") doesn't apply."
+    )
+}
+
 /// Plain-text lead line for a `cqs deps <name>` fallback. Returns `None`
 /// for Type for the same reason as [`deps`].
 pub(crate) fn deps_lead(kind: FallbackKind, name: &str) -> Option<String> {
@@ -332,6 +361,39 @@ pub(crate) fn trace(kind: FallbackKind) -> FallbackText {
             text_redirect: TRACE_AMBIGUOUS_REDIRECT,
         },
     }
+}
+
+// trace also routes a `Kind::Other` source (macro / impl / service /
+// stored-proc — chunk types the routing matrix doesn't rule on) to a
+// kind-labeled fallback rather than letting the BFS silently return an
+// empty "no path found". `Other` isn't a `FallbackKind` (those are the
+// four kinds every graph command falls back on), so trace carries its own
+// note + lead for it.
+
+const TRACE_OTHER_NOTE: &str =
+    "source resolves to a chunk kind that doesn't participate in the call-graph as a callable node \
+     (macro / impl / service / stored-proc / extern); no call path can originate from it. \
+     Here are the source's definition sites. Use `cqs <source>` to find references, or trace from a \
+     concrete function instead.";
+const TRACE_OTHER_REDIRECT: &str =
+    "Use `cqs <source>` to find references, or `cqs trace <function> <target>` from a concrete function.";
+
+/// `--json` note for a `cqs trace` fallback whose source classified as
+/// `Kind::Other`.
+pub(crate) fn trace_other_note() -> &'static str {
+    TRACE_OTHER_NOTE
+}
+
+/// Plain-text redirect line for a `Kind::Other` trace source fallback.
+pub(crate) fn trace_other_redirect() -> &'static str {
+    TRACE_OTHER_REDIRECT
+}
+
+/// Plain-text lead line for a `Kind::Other` trace source fallback.
+pub(crate) fn trace_other_lead(source: &str) -> String {
+    format!(
+        "(trace) source `{source}` is not a callable (macro / impl / service / etc.) — no call path applies."
+    )
 }
 
 /// Plain-text lead line for a `cqs trace <source> <target>` fallback.

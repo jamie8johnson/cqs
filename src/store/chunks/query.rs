@@ -1042,6 +1042,81 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_by_name_adversarial_inputs_no_panic() {
+        // `lookup_by_name` is the kind-detection entry point, fed names that
+        // ultimately originate from CLI args / wire requests. The name is
+        // bound as a SQL parameter (?1), so injection is structurally
+        // impossible — but the method must still degrade gracefully on
+        // pathological inputs: no panic, a clean (usually empty) result, and
+        // the result never exceeds the row cap. Seed one ordinary chunk so a
+        // happy lookup keeps working alongside the adversarial ones.
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk("normal_fn", "src/lib.rs");
+        store
+            .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
+            .unwrap();
+
+        // SQL-injection-shaped strings: bound as a parameter, these match no
+        // row and certainly don't execute. The point is no panic + empty.
+        let injection_shaped = [
+            "'; DROP TABLE chunks; --",
+            "\" OR \"1\"=\"1",
+            "normal_fn'; DELETE FROM chunks WHERE name = 'normal_fn",
+            "1) UNION SELECT * FROM chunks --",
+            "%'; --",
+        ];
+        for probe in injection_shaped {
+            let hits = store
+                .lookup_by_name(probe)
+                .expect("injection-shaped name must not error");
+            assert!(
+                hits.is_empty(),
+                "injection-shaped probe {probe:?} should match nothing, got {} hits",
+                hits.len()
+            );
+        }
+        // The benign row survived every injection-shaped lookup.
+        assert_eq!(
+            store.lookup_by_name("normal_fn").unwrap().len(),
+            1,
+            "DROP/DELETE-shaped probes must not have touched real rows"
+        );
+
+        // LIKE wildcards are literal in an `=` comparison — `%` / `_` match
+        // only themselves, not arbitrary names. Pin that they don't wildcard.
+        for wildcard in ["%", "_", "%%", "normal\\_fn", "norm%", "n_rmal_fn"] {
+            let hits = store
+                .lookup_by_name(wildcard)
+                .expect("wildcard-shaped name must not error");
+            assert!(
+                hits.is_empty(),
+                "wildcard {wildcard:?} must be literal under `=`, not match normal_fn"
+            );
+        }
+
+        // Very long name (1 MiB): no panic, no error, empty result.
+        let long_name = "x".repeat(1024 * 1024);
+        let hits = store
+            .lookup_by_name(&long_name)
+            .expect("very long name must not error");
+        assert!(hits.is_empty(), "1 MiB name should match nothing");
+
+        // Unicode / control / NUL-ish bytes: still parameter-bound, no panic.
+        for weird in [
+            "fn\u{0000}name",
+            "naïve_fn",
+            "\u{1F600}_emoji",
+            "tab\tname",
+            "newline\nname",
+        ] {
+            let hits = store
+                .lookup_by_name(weird)
+                .expect("unusual-char name must not error");
+            assert!(hits.len() <= super::LOOKUP_BY_NAME_LIMIT);
+        }
+    }
+
+    #[test]
     fn test_chunk_type_priority_case_covers_every_chunk_type() {
         // The CASE expression is generated from ChunkType::ALL, so every
         // stored chunk_type string must appear in it — pin the generation

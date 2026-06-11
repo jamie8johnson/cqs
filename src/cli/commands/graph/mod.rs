@@ -58,6 +58,7 @@ pub(crate) fn detect_fallback(
     store: &Store<ReadOnly>,
     name: &str,
 ) -> (Vec<ChunkSummary>, Option<FallbackKind>) {
+    let _span = tracing::info_span!("detect_fallback", name).entered();
     let kind = match detect_kind_for_store(store, name) {
         Ok((kind, _hits)) => kind,
         Err(e) => {
@@ -84,6 +85,46 @@ pub(crate) fn detect_fallback(
             (Vec::new(), None)
         }
     }
+}
+
+/// Record a kind-mismatch fallback fire on both observability surfaces.
+///
+/// Every graph command's core funnels through here the moment it decides
+/// to emit a kind-labeled fallback instead of running its normal flow.
+/// This is the single fire point shared by the CLI-direct and daemon
+/// dispatch paths (both route through the same `*_core` functions), so a
+/// fallback is recorded exactly once per surface regardless of which
+/// command fired it:
+///
+/// - `tracing::info!` — the structured event an operator greps for, the
+///   routing-prioritization signal the audit asked for (command, name,
+///   kind, definition count).
+/// - `telemetry::log_kind_fallback` — the durable counter `cqs telemetry`
+///   aggregates into a per-command fallback rate (the Phase-2 routing
+///   decision: do agents still bounce between commands). The telemetry
+///   write self-gates on the `CQS_TELEMETRY` activation rules, so this is
+///   a no-op when telemetry is off.
+///
+/// The project `.cqs` dir is resolved here (rather than threaded through
+/// the surface-agnostic core signatures) because a fallback is a rare,
+/// off-the-hot-path event — the resolution cost is negligible against the
+/// SQL the command already ran, and keeping it out of the core signatures
+/// preserves their wire shape.
+pub(crate) fn record_kind_fallback(
+    name: &str,
+    kind: &'static str,
+    fallback_from: &'static str,
+    definitions: usize,
+) {
+    tracing::info!(
+        command = fallback_from,
+        name,
+        kind,
+        definitions,
+        "kind-mismatch fallback fired"
+    );
+    let cqs_dir = cqs::resolve_index_dir(&crate::cli::config::find_project_root());
+    crate::cli::telemetry::log_kind_fallback(&cqs_dir, fallback_from, kind, name, definitions);
 }
 
 /// Map a routing-level [`Kind`] to the [`FallbackKind`] that drives a
@@ -141,11 +182,18 @@ impl KindFallbackOutput {
         fallback_from: &'static str,
         text: &notes_text::FallbackText,
     ) -> Self {
+        let definitions = chunks_to_definitions(chunks);
+        record_kind_fallback(
+            name,
+            fallback_kind.label(),
+            fallback_from,
+            definitions.len(),
+        );
         KindFallbackOutput {
             kind: fallback_kind.label(),
             fallback_from,
             name: name.to_string(),
-            definitions: chunks_to_definitions(chunks),
+            definitions,
             note: text.note,
         }
     }
