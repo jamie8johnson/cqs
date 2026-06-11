@@ -104,7 +104,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | RB-V1.42-4 | injection.rs u32-cast safety comment cites nonexistent "MAX_FILE_SIZE (50MB)"; real cap 1 MiB + unbounded env override | src/parser/injection.rs:221 | ✅ PR #1738 |
 | API-V1.42-2 | Core Args reuse clap struct names — two contradictory alias conventions (CallersCoreArgs vs CoreCalleesArgs) | src/cli/commands/graph/callers.rs:34 et al. | ❎ closed: naming churn > value |
 | API-V1.42-4 | --cross-project flips callees topology object→flat array, different entry schema (fold into API-V1.42-3) | src/cli/batch/handlers/graph.rs:154-161 | ✅ PR #1760 |
-| API-V1.42-5 | serde(default) coverage inconsistent — graph cores reject minimal wire payloads io/search cores accept | src/cli/commands/graph/callers.rs:33-39 | open |
+| API-V1.42-5 | serde(default) coverage inconsistent — graph cores reject minimal wire payloads io/search cores accept | src/cli/commands/graph/callers.rs:33-39 | ✅ PR #1779 |
 | API-V1.42-6 | --expand alias: bool on search, value-taking depth on gather | src/cli/args.rs:189 vs :234 | ❎ closed: alias nit |
 | API-V1.42-7 | drift's hand-rolled --limit accepts 0 and defaults unlimited — contradicts LimitArg contract | src/cli/args.rs:581-583 | ❎ closed: limit nit; documented deviation acceptable |
 | TC-V1.42-2 | Whitespace-only note = cross-note wildcard for update/remove; duplicate-text semantics unpinned | src/cli/commands/io/notes.rs:298-572 | ✅ PR #1748 |
@@ -112,14 +112,14 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | TC-V1.42-5 | parse_nonzero_usize untested while f32 siblings exhaustively pinned in same file | src/cli/definitions.rs:94-100 | ❎ closed: low-value parser unit gap |
 | TC-V1.42-9 | HNSW zero-vector skip / id_map desync — documented past bug class, no regression test | src/hnsw/build.rs:200-222 | ✅ PR #1758 |
 | TC-V1.42-10 | HNSW search k > index size unpinned (CAGRA analog test exists) | src/hnsw/search.rs:105-117 | ✅ PR #1758 |
-| TC-V1.42-11 | Store::open on garbage/truncated index.db untested | src/store/mod.rs:906 | open |
-| TC-V1.42-12 | Non-integer schema_version → Corruption arm untested | src/store/migrations.rs:230-236 | open |
+| TC-V1.42-11 | Store::open on garbage/truncated index.db untested | src/store/mod.rs:906 | ✅ PR #1779 |
+| TC-V1.42-12 | Non-integer schema_version → Corruption arm untested | src/store/migrations.rs:230-236 | ✅ PR #1779 |
 | TC-V1.42-14 | parser_stage TOCTOU (file deleted mid-pipeline): parse_errors arm + mtime=0 sentinel untested | src/cli/pipeline/parsing.rs:127-176 | ❎ closed: low-value TOCTOU pin |
-| CQ-V1.42-2 | gather_cross_index production-dead wrapper skews test coverage to brute-force path | src/gather.rs:561 | open |
-| CQ-V1.42-3 | CAGRA in-memory constructors test-only API masquerading as production surface | src/cagra.rs:801, :370-376 | open |
+| CQ-V1.42-2 | gather_cross_index production-dead wrapper skews test coverage to brute-force path | src/gather.rs:561 | ✅ PR #1779 |
+| CQ-V1.42-3 | CAGRA in-memory constructors test-only API masquerading as production surface | src/cagra.rs:801, :370-376 | ✅ PR #1779 |
 | CQ-V1.42-4 | CagraIndex::save ~75-line test-only twin of save_with_store hardcoding splade_generation: 0 | src/cagra.rs:1013-1086 | ✅ PR #1764 |
-| CQ-V1.42-5 | CommandContext.project_cqs_dir/slot_name written never read, masked by #[allow(dead_code)] | src/cli/store.rs:162-168 | open |
-| CQ-V1.42-6 | ScoutOptions knobs unreachable from any surface | src/scout.rs:101, :135 | open |
+| CQ-V1.42-5 | CommandContext.project_cqs_dir/slot_name written never read, masked by #[allow(dead_code)] | src/cli/store.rs:162-168 | ✅ PR #1779 |
+| CQ-V1.42-6 | ScoutOptions knobs unreachable from any surface | src/scout.rs:101, :135 | ✅ PR #1779 |
 | CQ-V1.42-10 | Env-knob parsing re-implemented across six sites; cli/limits.rs private copy; divergent silent-swallow semantics | hnsw/persist.rs, cli/limits.rs, onboard.rs, note.rs, diff.rs, task.rs | ✅ PR #1765 |
 | CQ-V1.42-15 | Library llm modules eprintln! user-facing hints directly | src/llm/summary.rs:101, doc_comments.rs:281, batch.rs:638 | ❎ closed: lib eprintln nit |
 | CQ-V1.42-16 | Crate root accretes utilities that have dedicated homes (serde/path/fs helpers in lib.rs) | src/lib.rs:410-645 | ❎ closed: structure nit |
@@ -130,12 +130,12 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | PERF-V1.42-8 | test_reachability allocates 2-3 Strings per BFS visit — siblings in same file use Arc<str> interning (runs on every scout/task/health/review) | src/impact/bfs.rs:354-386 | ✅ PR #1767 |
 | PERF-V1.42-10 | build_chunk_detail tests-that-cover query is an unindexed full-table content LIKE scan per dashboard click — use chunks_fts | src/serve/data.rs:619-629 | ❎ closed: serve dashboard, secondary surface |
 | PERF-V1.42-11 | Daemon success response written unbuffered — one write() syscall per JSON fragment (fold into CF dispatch_value refactor, RM-V1.40-9 cluster) | src/cli/watch/socket.rs:298 | ✅ PR #1766 |
-| TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | open |
+| TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | ✅ PR #1779 |
 | TC-HAP-V1.42-7 | Command-core parity tests are parity-by-construction — no parity test pins a single output value; add one fixture-grounded assert each | src/cli/batch/handlers/graph.rs:862-1080 | ✅ PR #1760 |
-| TC-HAP-V1.42-8 | cache_compact_core zero coverage; cache_stats_core per-model branch never executed | src/cli/commands/infra/cache_cmd.rs:222, :117-130 | open |
+| TC-HAP-V1.42-8 | cache_compact_core zero coverage; cache_stats_core per-model branch never executed | src/cli/commands/infra/cache_cmd.rs:222, :117-130 | ✅ PR #1779 |
 | TC-HAP-V1.42-9 | telemetry_core populated path and all:true flag have zero assertions — telemetry feeds real decisions | src/cli/commands/infra/telemetry_cmd.rs:395 | ✅ PR #1765 |
 | DS-V1.42-9 | checkpoint_legacy_index opens via URL parsing — special-char paths silently skip the WAL drain the slot migration depends on | src/slot/mod.rs:1053 | ✅ PR #1764 |
-| DS-V1.42-11 | slot create --model killed between dir creation and slot.toml write loses the model pin; retry guidance steers toward wrong-model indexing | src/cli/commands/infra/slot.rs:313-325 | open |
+| DS-V1.42-11 | slot create --model killed between dir creation and slot.toml write loses the model pin; retry guidance steers toward wrong-model indexing | src/cli/commands/infra/slot.rs:313-325 | ✅ PR #1779 |
 | DS-V1.42-12 | `cqs convert --overwrite` writes via bare fs::write — truncated doc ingested as valid content on next index | src/convert/mod.rs:523-526 | ✅ PR #1759 |
 
 ## P4 — hard or low impact
@@ -145,7 +145,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | TC-V1.42-4 | read_stdin oversize-cap + invalid-UTF-8 untested (review --stdin, impact --diff, ci --stdin) | src/cli/commands/mod.rs:566-580 | ❎ closed: P4 test gap, low traffic surface |
 | TC-V1.42-13 | No SQLITE_BUSY / concurrent-writer test anywhere; busy_timeout env fallback unpinned | src/store/helpers/sql.rs:14 | ✅ PR #1764 |
 | TC-V1.42-15 | Read-only .cqs/ — no permission-denied test for index creation/open | src/cli/commands/index/build.rs:135-190 | ❎ closed: P4 permission-test gap, low |
-| CQ-V1.42-7 | Fused-tx phantom-chunk pruning verbatim inline copy of delete_phantom_chunks | src/store/chunks/crud.rs:1059-1144 | open |
+| CQ-V1.42-7 | Fused-tx phantom-chunk pruning verbatim inline copy of delete_phantom_chunks | src/store/chunks/crud.rs:1059-1144 | ✅ PR #1779 |
 | CQ-V1.42-9 | Ref-path query preparation duplicated, wider than deferred ledger entry; cmd_query_project double-search_hybrid is the easy first slice | src/cli/commands/search/query.rs:918-1174 vs :239-527 | open |
 | CQ-V1.42-13 | serve/data.rs writes raw SQL via pub(crate) pool access — schema knowledge in two modules | src/serve/data.rs:224-1124 | open |
 | CQ-V1.42-14 | store ↔ search bidirectional coupling — Store's search API implemented in search module on private fields (root cause of CQ-V1.42-12's gate-in-dead-code) | src/search/query.rs:67, src/store/search.rs:8 | open |
@@ -184,30 +184,30 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 | ID(s) | Finding | Effort | Status |
 |---|---|---|---|
 | DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real query share no read snapshot — dispatcher/existing-flow drift (v1.40 queue item 6) | medium | open |
-| CQ-V1.40-10 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + PERF-V1.40-1 | Cluster A2: `filter_invoked_macros` N+1 GLOB full scans, no transaction (correctness fixed in #1627; perf half remains) | medium | open |
+| CQ-V1.40-10 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + PERF-V1.40-1 | Cluster A2: `filter_invoked_macros` N+1 GLOB full scans, no transaction (correctness fixed in #1627; perf half remains) | medium | ✅ PR #1769 |
 | RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation + `emit_json` double serialization — `dispatch_value` refactor (socket.rs TODO P2 #62) | medium | ✅ PR #1766 (socket single-write; envelope to_value kept as wire canonicalization) |
 | PERF-V1.40-7 | `build_test_map` iterates all test chunks per call — invert to iterate ancestors (modest; loop body O(1)) | easy | open |
-| RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs) — cache in BatchContext (note: new CQ-V1.42-11 touches the same surface) | medium | open |
-| AC-V1.40-6 + AC-V1.40-7 + EH-V1.40-3 | trace: macro falls through to empty BFS; `Multiple` masks ambiguity; `target` kind unvalidated | medium | open |
-| SEC-V1.40-8 | `enumerate_files` no depth/file-count cap on adversarial repos (Cluster H leftover) | medium | open |
+| RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs) — cache in BatchContext (note: new CQ-V1.42-11 touches the same surface) | medium | ✅ PR #1770 |
+| AC-V1.40-6 + AC-V1.40-7 + EH-V1.40-3 | trace: macro falls through to empty BFS; `Multiple` masks ambiguity; `target` kind unvalidated | medium | ✅ PR #1773 |
+| SEC-V1.40-8 | `enumerate_files` no depth/file-count cap on adversarial repos (Cluster H leftover) | medium | ✅ PR #1769 |
 | PB-V1.40-9 | WAL mode unconditional on store open — unsupported on /mnt/c 9P bridge; detect and switch to DELETE | medium | open |
-| PERF-V1.40-8 | `meta_json_fragment` triple-work per JSONL emit — CAUTION: proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale); cache only the static part | easy | open |
+| PERF-V1.40-8 | `meta_json_fragment` triple-work per JSONL emit — CAUTION: proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale); cache only the static part | easy | ✅ PR #1779 |
 | RM-V1.40-4 | `lookup_by_name` builds SQL via `format!` per call (surviving sub-claim of RB-V1.40-2) | easy | open |
 
 ## CF-P3 — carried forward, P3-grade
 
 | ID(s) | Finding | Effort | Status |
 |---|---|---|---|
-| OB-V1.40-1 | Kind-fallback dispatchers emit no fallback-fired tracing (verified today: graph/mod.rs warns only on store error) | easy | open |
-| OB-V1.40-2 | `cqs telemetry` has no kind-fallback category — Phase 2 routing decision blocked on this signal | medium | open |
-| OB-V1.40-5 | `detect_fallback` / `classify_hits` no entry spans | easy | open |
-| OB-V1.40-6 | Tier 2b macro filter drops candidates silently — FP rate unauditable | easy | open |
-| OB-V1.40-7 | `write_json_line` format decision unattributable | easy | open |
-| OB-V1.40-8 | Daemon `accept()` successes unlogged — handle leaks unattributable | easy | open |
-| OB-V1.40-9 | `max_concurrent_daemon_clients` env override unlogged | easy | open |
-| OB-V1.40-10 + SEC-V1.40-3 + TC-ADV-V1.40-6 | `redact_query_str` silent on activation, strict `v != "0"`, zero tests | easy | open |
-| EH-V1.40-4 | `dispatch_deps` Type-forward misroutes Function names without warning | easy | open |
-| EH-V1.40-5 | `meta_json_fragment` `.expect()` on hot path | easy | open |
+| OB-V1.40-1 | Kind-fallback dispatchers emit no fallback-fired tracing (verified today: graph/mod.rs warns only on store error) | easy | ✅ PR #1773 |
+| OB-V1.40-2 | `cqs telemetry` has no kind-fallback category — Phase 2 routing decision blocked on this signal | medium | ✅ PR #1773 |
+| OB-V1.40-5 | `detect_fallback` / `classify_hits` no entry spans | easy | ✅ PR #1773 |
+| OB-V1.40-6 | Tier 2b macro filter drops candidates silently — FP rate unauditable | easy | ✅ PR #1769 |
+| OB-V1.40-7 | `write_json_line` format decision unattributable | easy | ❎ stale: Posture deleted in #1701-#1704 |
+| OB-V1.40-8 | Daemon `accept()` successes unlogged — handle leaks unattributable | easy | ✅ PR #1779 |
+| OB-V1.40-9 | `max_concurrent_daemon_clients` env override unlogged | easy | ✅ PR #1779 |
+| OB-V1.40-10 + SEC-V1.40-3 + TC-ADV-V1.40-6 | `redact_query_str` silent on activation, strict `v != "0"`, zero tests | easy | ✅ PR #1779 |
+| EH-V1.40-4 | `dispatch_deps` Type-forward misroutes Function names without warning | easy | ✅ PR #1773 |
+| EH-V1.40-5 | `meta_json_fragment` `.expect()` on hot path | easy | ✅ PR #1779 |
 | EH-V1.40-7 | `lookup_by_name` empty-string short-circuit undocumented | easy | ❎ closed: one doc line; fold into next query.rs touch |
 | API-V1.40-2 | Kind enum mixes 5 routing kinds + 3 resolution outcomes (verified today: no KindResolution split exists) | medium | open |
 | API-V1.40-3 | `Store::lookup_by_name` breaks `get_chunks_by_X` convention (verified today: unrenamed) | easy | open |
@@ -215,26 +215,26 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 | API-V1.40-6 | `emit_json_error_with_data` shape inconsistency vs wrap_error path | easy | open |
 | API-V1.40-9 | `CQS_DEFERRED_FLUSH_INTERVAL` is a count, not a duration — rename `_BATCHES` | easy | open |
 | API-V1.40-10 | `--format` and `--json` flags shadow each other | easy | open |
-| CQ-V1.40-8 | `meta_value_for_envelope` duplicate fallback Map construction (partially reduced by #1711's delegation) | easy | open |
-| RB-V1.40-5 + SEC-V1.40-5 | `lookup_by_name` debug-span records full user-supplied name | easy | open |
-| SHL-V1.40-2 | `clamp(1, 100)` literals duplicated 13+× — named constants in cli::limits (new SHL-V1.42-1 is the false-rationale sibling; fix together) | easy | open |
-| SHL-V1.40-4 | `STALENESS_CHECK_INTERVAL = 100ms` hardcoded (verified today) | easy | open |
-| SHL-V1.40-5 | `AUDIT_STATE_RELOAD_INTERVAL = 30s` / `CONFIG_RELOAD_INTERVAL = 5min` hardcoded (verified today) | easy | open |
-| SHL-V1.40-7 | `KEEP_BACKUPS = 3` hardcoded | easy | open |
-| SHL-V1.40-8 | `LOAD_SPARSE_CHUNK_ID_BATCH = 1000` hardcoded | easy | open |
-| SHL-V1.40-10 | `chunks_paged` accepts unbounded limit | easy | open |
-| TC-ADV-V1.40-2 + EXT-V1.40-5 | `classify_chunk_type` pin incomplete for 11/24 ChunkType variants | easy | open |
-| TC-ADV-V1.40-3 | `lookup_by_name` wildcard/injection/long-name inputs untested | easy | open |
-| TC-ADV-V1.40-8 | `emit_json_error` adversarial input untested | easy | open |
+| CQ-V1.40-8 | `meta_value_for_envelope` duplicate fallback Map construction (partially reduced by #1711's delegation) | easy | ✅ verified already fixed (pre-existing refactor; confirmed in #1779) |
+| RB-V1.40-5 + SEC-V1.40-5 | `lookup_by_name` debug-span records full user-supplied name | easy | ✅ PR #1779 |
+| SHL-V1.40-2 | `clamp(1, 100)` literals duplicated 13+× — named constants in cli::limits (new SHL-V1.42-1 is the false-rationale sibling; fix together) | easy | ✅ PR #1771 |
+| SHL-V1.40-4 | `STALENESS_CHECK_INTERVAL = 100ms` hardcoded (verified today) | easy | ✅ PR #1771 |
+| SHL-V1.40-5 | `AUDIT_STATE_RELOAD_INTERVAL = 30s` / `CONFIG_RELOAD_INTERVAL = 5min` hardcoded (verified today) | easy | ✅ PR #1771 |
+| SHL-V1.40-7 | `KEEP_BACKUPS = 3` hardcoded | easy | ✅ PR #1771 |
+| SHL-V1.40-8 | `LOAD_SPARSE_CHUNK_ID_BATCH = 1000` hardcoded | easy | ✅ PR #1771 |
+| SHL-V1.40-10 | `chunks_paged` accepts unbounded limit | easy | ✅ PR #1771 |
+| TC-ADV-V1.40-2 + EXT-V1.40-5 | `classify_chunk_type` pin incomplete for 11/24 ChunkType variants | easy | ✅ PR #1773 |
+| TC-ADV-V1.40-3 | `lookup_by_name` wildcard/injection/long-name inputs untested | easy | ✅ PR #1773 |
+| TC-ADV-V1.40-8 | `emit_json_error` adversarial input untested | easy | ✅ PR #1779 |
 | TC-ADV-V1.40-10 | `current_worktree_name` Unicode/shell-special/long inputs untested | easy | ❎ closed: low-value pin on stable code |
 | TC-HAP-V1.40-5 | `_meta.worktree_name`/`_meta.worktree_stale` zero emission tests | easy | ❎ closed: low-value pin on stable code |
-| TC-HAP-V1.40-6 | `v3_test.v2.json` schema-coverage test missing (dev-only covered) | easy | open |
-| PB-V1.40-2 | `is_under_wsl_automount` vs `is_wsl_drvfs_path` divergent shape validation | easy | open |
+| TC-HAP-V1.40-6 | `v3_test.v2.json` schema-coverage test missing (dev-only covered) | easy | ✅ PR #1779 |
+| PB-V1.40-2 | `is_under_wsl_automount` vs `is_wsl_drvfs_path` divergent shape validation | easy | ✅ PR #1779 |
 | PB-V1.40-4 | `worktree_name` doesn't trim trailing slash | easy | ❎ closed: premise moot — Path::file_name tolerates trailing slashes |
-| PB-V1.40-6 | `is_wsl_drvfs_path` UNC arm unguarded for non-WSL hosts | easy | open |
-| PB-V1.40-10 | `worktree_name` no dunce::canonicalize — Windows verbatim prefix leaks into JSON | easy | open |
+| PB-V1.40-6 | `is_wsl_drvfs_path` UNC arm unguarded for non-WSL hosts | easy | ✅ PR #1779 |
+| PB-V1.40-10 | `worktree_name` no dunce::canonicalize — Windows verbatim prefix leaks into JSON | easy | ✅ PR #1779 |
 | RM-V1.40-2 | `dispatch_via_view` reconstructs token Vec — second full clone per dispatch | easy | ❎ closed: micro-clone, not measurable |
 | RM-V1.40-3 | `current_worktree_name` clones cached String per envelope emit | easy | ❎ closed: micro-clone, not measurable |
 | RM-V1.40-5 | `dispatch_test_map` clones every test chunk per cross-project request | easy | open |
 | PERF-V1.40-6 | `upsert_chunks_unembedded_batch` clones every chunk + zero-vec | easy | ✅ fixed by #1753 (verified by CF sweep) |
-| PERF-V1.40-9 | Telemetry write ~5 syscalls per CLI command — daemon-path handle caching | medium | open |
+| PERF-V1.40-9 | Telemetry write ~5 syscalls per CLI command — daemon-path handle caching | medium | ✅ PR #1769 |

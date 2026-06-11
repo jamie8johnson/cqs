@@ -24,22 +24,56 @@ use std::path::Path;
 /// Maximum telemetry file size before auto-archiving (10 MB).
 const MAX_TELEMETRY_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Decide whether query redaction is active from the raw env value.
+///
+/// Opt-OUT semantics: redaction is ON by default and only disabled when the
+/// value is in the falsy alias set (`0`, `false`, `no`, `off`,
+/// case-insensitive, surrounding whitespace trimmed). Unset (`None`) → redact.
+/// Any other value (e.g. `1`, `yes`, `garbage`) → redact. Pure function, no
+/// env read and no logging, so the decision logic is unit-testable without the
+/// `OnceLock` cache or process-global env races.
+fn redact_enabled_from(val: Option<&str>) -> bool {
+    match val {
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        None => true,
+    }
+}
+
+/// 8-char blake3 prefix of the query — collision-resistant for telemetry
+/// buckets, not reversible. Mirrors the redaction shape used for notes args in
+/// the daemon journal. Deterministic: same input always yields the same digest.
+fn redact_query_digest(query: &str) -> String {
+    let h = blake3::hash(query.as_bytes());
+    h.to_hex().as_str()[..8].to_string()
+}
+
 /// Redact telemetry `query` strings by default. Search queries can carry
 /// secrets and source snippets; logging them in plaintext at every invocation
-/// is a privileged-journal harvest. Set `CQS_TELEMETRY_REDACT_QUERY=0` to log
-/// the raw text (useful for offline analysis on a single-user machine).
+/// is a privileged-journal harvest. Set `CQS_TELEMETRY_REDACT_QUERY` to a
+/// falsy value (`0`, `false`, `no`, `off`) to log the raw text (useful for
+/// offline analysis on a single-user machine).
+///
+/// The env var is read once via `OnceLock`; the resolved posture is logged
+/// once at `info` on first invocation so operators can confirm whether
+/// plaintext queries are landing in the journal.
 fn redact_query_str(query: &str) -> String {
-    let redact = std::env::var("CQS_TELEMETRY_REDACT_QUERY")
-        .ok()
-        .as_deref()
-        .map(|v| v != "0")
-        .unwrap_or(true);
+    use std::sync::OnceLock;
+    static REDACT: OnceLock<bool> = OnceLock::new();
+    let redact = *REDACT.get_or_init(|| {
+        let enabled =
+            redact_enabled_from(std::env::var("CQS_TELEMETRY_REDACT_QUERY").ok().as_deref());
+        tracing::info!(
+            redact = enabled,
+            source = "CQS_TELEMETRY_REDACT_QUERY",
+            "Telemetry query-redaction posture"
+        );
+        enabled
+    });
     if redact {
-        // 8-char blake3 prefix is collision-resistant for telemetry buckets,
-        // not reversible. Mirrors the redaction shape used for notes args in
-        // the daemon journal.
-        let h = blake3::hash(query.as_bytes());
-        h.to_hex().as_str()[..8].to_string()
+        redact_query_digest(query)
     } else {
         query.to_string()
     }
@@ -642,5 +676,46 @@ mod tests {
         assert!(err_field.ends_with('…'));
         // 240 'x's plus the ellipsis.
         assert_eq!(err_field.chars().count(), 241);
+    }
+
+    #[test]
+    fn redact_enabled_defaults_on_when_unset() {
+        assert!(redact_enabled_from(None));
+    }
+
+    #[test]
+    fn redact_enabled_falsy_aliases_opt_out() {
+        // Opt-OUT set: only these disable redaction.
+        assert!(!redact_enabled_from(Some("0")));
+        assert!(!redact_enabled_from(Some("false")));
+        assert!(!redact_enabled_from(Some("no")));
+        assert!(!redact_enabled_from(Some("off")));
+        // Case-insensitive + whitespace-trimmed.
+        assert!(!redact_enabled_from(Some("OFF")));
+        assert!(!redact_enabled_from(Some("False")));
+        assert!(!redact_enabled_from(Some(" 0 ")));
+    }
+
+    #[test]
+    fn redact_enabled_truthy_and_garbage_stay_on() {
+        // Anything outside the falsy set keeps redaction ON (fail-safe).
+        assert!(redact_enabled_from(Some("1")));
+        assert!(redact_enabled_from(Some("yes")));
+        assert!(redact_enabled_from(Some("on")));
+        assert!(redact_enabled_from(Some("true")));
+        assert!(redact_enabled_from(Some("")));
+        assert!(redact_enabled_from(Some("garbage")));
+    }
+
+    #[test]
+    fn redact_query_digest_is_deterministic_and_short() {
+        let a = redact_query_digest("find authentication tokens");
+        let b = redact_query_digest("find authentication tokens");
+        assert_eq!(a, b, "same input must hash to same digest");
+        assert_eq!(a.len(), 8, "digest is an 8-char blake3 prefix");
+        // Different input → different bucket (overwhelmingly likely).
+        assert_ne!(a, redact_query_digest("a totally different query"));
+        // Digest must not leak the plaintext.
+        assert!(!a.contains("authentication"));
     }
 }

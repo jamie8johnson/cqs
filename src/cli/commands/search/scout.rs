@@ -8,9 +8,8 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::scout;
 use cqs::store::{ReadOnly, Store};
-use cqs::Embedder;
+use cqs::{scout_with_options, Embedder, ScoutOptions};
 
 // ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
 
@@ -29,6 +28,15 @@ pub(crate) struct ScoutArgs {
     pub limit: usize,
     /// Token budget — when set, packs chunk content into the budget.
     pub tokens: Option<usize>,
+    /// Override the number of search results scout retrieves before grouping.
+    /// `None` inherits [`ScoutOptions::default`] (`DEFAULT_SCOUT_SEARCH_LIMIT`).
+    pub search_limit: Option<usize>,
+    /// Override the minimum search score threshold. `None` inherits
+    /// [`ScoutOptions::default`] (`DEFAULT_SCOUT_SEARCH_THRESHOLD`).
+    pub search_threshold: Option<f32>,
+    /// Override the min relative score gap that splits a ModifyTarget from a
+    /// Dependency. Lower → more ModifyTargets. `None` inherits the default.
+    pub min_gap_ratio: Option<f32>,
 }
 
 impl Default for ScoutArgs {
@@ -38,6 +46,9 @@ impl Default for ScoutArgs {
             // Mirrors clap `LimitArg` default (5).
             limit: 5,
             tokens: None,
+            search_limit: None,
+            search_threshold: None,
+            min_gap_ratio: None,
         }
     }
 }
@@ -57,7 +68,8 @@ pub(crate) fn scout_core(
 ) -> Result<(serde_json::Value, Option<(usize, usize)>)> {
     let _span = tracing::info_span!("scout_core", query = %args.query).entered();
     let limit = args.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
-    let result = scout(store, embedder, &args.query, root, limit)?;
+    let opts = scout_options_from_args(args);
+    let result = scout_with_options(store, embedder, &args.query, root, limit, &opts)?;
 
     let (content_map, token_info) = if let Some(budget) = args.tokens {
         let named_items = crate::cli::commands::scout_scored_names(&result);
@@ -70,6 +82,22 @@ pub(crate) fn scout_core(
 
     let output = build_scout_output(&result, content_map.as_ref(), token_info)?;
     Ok((output, token_info))
+}
+
+/// Fold the optional `ScoutArgs` knob overrides onto [`ScoutOptions::default`].
+/// Each `None` inherits the production default; each `Some` overrides it.
+fn scout_options_from_args(args: &ScoutArgs) -> ScoutOptions {
+    let mut opts = ScoutOptions::default();
+    if let Some(v) = args.search_limit {
+        opts.search_limit = v;
+    }
+    if let Some(v) = args.search_threshold {
+        opts.search_threshold = v;
+    }
+    if let Some(v) = args.min_gap_ratio {
+        opts.min_gap_ratio = v;
+    }
+    opts
 }
 
 /// Build the typed scout JSON object shared between CLI and batch.
@@ -100,12 +128,16 @@ pub(crate) fn build_scout_output(
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_scout(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     task: &str,
     limit: usize,
     json: bool,
     max_tokens: Option<usize>,
+    search_limit: Option<usize>,
+    search_threshold: Option<f32>,
+    min_gap_ratio: Option<f32>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_scout", task, ?max_tokens).entered();
     let store = &ctx.store;
@@ -119,6 +151,9 @@ pub(crate) fn cmd_scout(
             query: task.to_string(),
             limit,
             tokens: max_tokens,
+            search_limit,
+            search_threshold,
+            min_gap_ratio,
         };
         let (output, _token_info) = scout_core(store, embedder, root, &args)?;
         crate::cli::json_envelope::emit_json(&output)?;
@@ -129,7 +164,13 @@ pub(crate) fn cmd_scout(
     // constant so it returns the same number of groups as the core.
     let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
 
-    let result = scout(store, embedder, task, root, limit)?;
+    let opts = scout_options_from_args(&ScoutArgs {
+        search_limit,
+        search_threshold,
+        min_gap_ratio,
+        ..Default::default()
+    });
+    let result = scout_with_options(store, embedder, task, root, limit, &opts)?;
 
     // Token-budgeted content: fetch chunk content and pack into budget
     let (content_map, token_info) = if let Some(budget) = max_tokens {
@@ -267,6 +308,38 @@ mod tests {
         assert_eq!(args.query, "auth flow");
         assert_eq!(args.limit, 5);
         assert!(args.tokens.is_none());
+        assert!(args.search_limit.is_none());
+        assert!(args.search_threshold.is_none());
+        assert!(args.min_gap_ratio.is_none());
+    }
+
+    /// A wire caller can override the search knobs; omitted knobs inherit the
+    /// `ScoutOptions::default` values via `scout_options_from_args`.
+    #[test]
+    fn scout_args_knobs_reach_scout_options() {
+        let args: super::ScoutArgs = serde_json::from_str(
+            r#"{"query": "x", "search_limit": 30, "search_threshold": 0.05, "min_gap_ratio": 0.25}"#,
+        )
+        .unwrap();
+        assert_eq!(args.search_limit, Some(30));
+        assert_eq!(args.search_threshold, Some(0.05));
+        assert_eq!(args.min_gap_ratio, Some(0.25));
+
+        let opts = super::scout_options_from_args(&args);
+        assert_eq!(opts.search_limit, 30);
+        assert_eq!(opts.search_threshold, 0.05);
+        assert_eq!(opts.min_gap_ratio, 0.25);
+    }
+
+    /// Omitted knobs fall back to `ScoutOptions::default`.
+    #[test]
+    fn scout_args_omitted_knobs_use_defaults() {
+        let args: super::ScoutArgs = serde_json::from_str(r#"{"query": "x"}"#).unwrap();
+        let opts = super::scout_options_from_args(&args);
+        let defaults = cqs::ScoutOptions::default();
+        assert_eq!(opts.search_limit, defaults.search_limit);
+        assert_eq!(opts.search_threshold, defaults.search_threshold);
+        assert_eq!(opts.min_gap_ratio, defaults.min_gap_ratio);
     }
 
     /// `ScoutArgs::default` must match the clap `ScoutArgs` defaults exactly.
@@ -286,6 +359,9 @@ mod tests {
             query: clap_args.query.clone(),
             limit: clap_args.limit_arg.limit,
             tokens: clap_args.tokens,
+            search_limit: clap_args.search_limit,
+            search_threshold: clap_args.search_threshold,
+            min_gap_ratio: clap_args.min_gap_ratio,
         };
         let expected = super::ScoutArgs {
             query: "q".to_string(),

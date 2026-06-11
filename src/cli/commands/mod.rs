@@ -36,6 +36,7 @@ pub(crate) use io::blame;
 pub(crate) use io::context;
 pub(crate) use io::diff;
 pub(crate) use io::drift;
+pub(crate) use io::notes;
 pub(crate) use io::read;
 pub(crate) use search::gather;
 pub(crate) use search::onboard;

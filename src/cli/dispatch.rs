@@ -404,6 +404,22 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         return Ok(None);
     }
 
+    // `--stdin` invocations (review / ci / impact-diff with a piped diff) stay
+    // on the CLI path even in JSON mode. The daemon reads its diff in the
+    // *server* process and never sees the client's stdin, so forwarding would
+    // silently analyze the wrong diff. This is the same surface-independence
+    // guarantee the text-mode bypass above provides, applied to a stdin-bearing
+    // invocation rather than a text-mode one.
+    if let Some(cmd) = cli.command.as_ref() {
+        if cmd.reads_diff_from_stdin() {
+            tracing::debug!(
+                cmd = cmd_label,
+                "--stdin invocation kept on CLI path: daemon has no client stdin on the wire"
+            );
+            return Ok(None);
+        }
+    }
+
     let sock_path = super::daemon_socket_path(cqs_dir);
     if !sock_path.exists() {
         return Ok(None);
