@@ -957,7 +957,7 @@ impl Reranker for NoopReranker {
 /// `Reranker` shim turns that into the synchronous `rerank` shape the search
 /// path expects.
 ///
-/// TODO: wire the production version — the `score` method becomes a
+/// Production wiring (unimplemented): the `score` method becomes a
 /// `tokio::block_on` of a batch-call to the LLM provider with
 /// `(query, passage)` pairs, parses scores from the response, and feeds them
 /// through `apply_rerank_scores`. The trait surface here doesn't change.
@@ -995,8 +995,7 @@ impl Reranker for LlmReranker {
         _limit: usize,
     ) -> Result<(), RerankerError> {
         Err(RerankerError::Inference(
-            "LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)"
-                .to_string(),
+            "LlmReranker is a skeleton — production wiring is not implemented".to_string(),
         ))
     }
 
@@ -1008,8 +1007,7 @@ impl Reranker for LlmReranker {
         _limit: usize,
     ) -> Result<(), RerankerError> {
         Err(RerankerError::Inference(
-            "LlmReranker is a skeleton — wire to a BatchProvider in a follow-up PR (#1220)"
-                .to_string(),
+            "LlmReranker is a skeleton — production wiring is not implemented".to_string(),
         ))
     }
 }

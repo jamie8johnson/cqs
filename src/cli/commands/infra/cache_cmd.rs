@@ -488,6 +488,88 @@ mod tests {
         assert_eq!(j["reclaimed_bytes"], 2048);
     }
 
+    /// `cache_compact_core` reports `reclaimed = before - after` from real
+    /// pre/post VACUUM stats, not a hand-rolled constant.
+    #[test]
+    fn cache_compact_core_reclaimed_is_delta() {
+        use cqs::cache::CachePurpose;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cache.db");
+        let cache = EmbeddingCache::open(&path).unwrap();
+
+        // Write then delete a chunk of entries so VACUUM has free pages to
+        // reclaim (a freshly-written DB may not shrink).
+        let entries: Vec<(String, Vec<f32>)> = (0..200)
+            .map(|i| (format!("h{i}"), vec![i as f32; 64]))
+            .collect();
+        cache
+            .write_batch_owned(&entries, "m", CachePurpose::Embedding, 64)
+            .unwrap();
+        cache.prune_by_model("m").unwrap();
+
+        let out = cache_compact_core(&cache, &CacheCompactArgs::default()).unwrap();
+        assert_eq!(
+            out.reclaimed_bytes,
+            out.size_before_bytes.saturating_sub(out.size_after_bytes),
+            "reclaimed must equal before - after"
+        );
+    }
+
+    /// `cache_stats_core(.., per_model = true)` returns one row per distinct
+    /// model_id with the right entry counts.
+    #[test]
+    fn cache_stats_core_per_model_rows() {
+        use cqs::cache::CachePurpose;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cache.db");
+        let cache = EmbeddingCache::open(&path).unwrap();
+
+        let alpha: Vec<(String, Vec<f32>)> = (0..3)
+            .map(|i| (format!("a{i}"), vec![i as f32; 4]))
+            .collect();
+        let beta: Vec<(String, Vec<f32>)> = (0..5)
+            .map(|i| (format!("b{i}"), vec![i as f32; 4]))
+            .collect();
+        cache
+            .write_batch_owned(&alpha, "alpha", CachePurpose::Embedding, 4)
+            .unwrap();
+        cache
+            .write_batch_owned(&beta, "beta", CachePurpose::Embedding, 4)
+            .unwrap();
+
+        let out = cache_stats_core(&cache, &path, true).unwrap();
+        assert_eq!(out.per_model.len(), 2, "two distinct model_ids → two rows");
+
+        let mut rows: Vec<(&str, u64)> = out
+            .per_model
+            .iter()
+            .map(|r| (r.model_id.as_str(), r.entries))
+            .collect();
+        rows.sort_by_key(|(m, _)| *m);
+        assert_eq!(rows, vec![("alpha", 3), ("beta", 5)]);
+    }
+
+    /// `per_model = false` leaves the per-model rows empty (no extra query).
+    #[test]
+    fn cache_stats_core_per_model_off_is_empty() {
+        use cqs::cache::CachePurpose;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cache.db");
+        let cache = EmbeddingCache::open(&path).unwrap();
+        let entries: Vec<(String, Vec<f32>)> = (0..2)
+            .map(|i| (format!("x{i}"), vec![i as f32; 4]))
+            .collect();
+        cache
+            .write_batch_owned(&entries, "solo", CachePurpose::Embedding, 4)
+            .unwrap();
+
+        let out = cache_stats_core(&cache, &path, false).unwrap();
+        assert!(out.per_model.is_empty());
+    }
+
     // format_timestamp must not panic on a corrupt cache row with
     // ts == i64::MAX. A plain `UNIX_EPOCH + Duration::from_secs(ts as u64)`
     // panics on platforms where SystemTime is backed by i64-seconds (some

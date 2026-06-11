@@ -128,8 +128,14 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
             }
         }
     }
-    // UNC paths reaching back into WSL from Windows-side tools.
-    if s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/") {
+    // UNC paths reaching back into WSL from Windows-side tools. Guard this
+    // arm so it only fires on WSL guests or native Windows: on a plain Linux
+    // host the `//wsl.localhost/`, `//wsl$/` patterns can be legitimate CIFS
+    // mounts that should NOT receive DrvFS treatment (advisory-lock skips,
+    // 0o777 permission assumptions, 2 s mtime resolution).
+    if (is_wsl() || cfg!(windows))
+        && (s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/"))
+    {
         return true;
     }
     false
@@ -1988,14 +1994,46 @@ llm_max_tokens = 200
         );
         assert_eq!(coarse_fs_resolution(Path::new("/mnt/d/some/path")), two_sec);
         assert_eq!(coarse_fs_resolution(Path::new("/mnt/C/UpperCase")), two_sec);
-        assert_eq!(
-            coarse_fs_resolution(Path::new("//wsl.localhost/Ubuntu/home/user")),
-            two_sec
-        );
-        assert_eq!(
-            coarse_fs_resolution(Path::new("//wsl$/Ubuntu/home/user")),
-            two_sec
-        );
+        // The UNC `//wsl.localhost/`, `//wsl$/` arm only treats paths as
+        // DrvFS on WSL guests / native Windows — on a plain Linux host they
+        // can be legitimate CIFS mounts, so the shortcut deliberately does
+        // not fire there. Gate the assertion to match that contract so CI on
+        // a non-WSL Linux runner doesn't see a false failure.
+        if is_wsl() || cfg!(windows) {
+            assert_eq!(
+                coarse_fs_resolution(Path::new("//wsl.localhost/Ubuntu/home/user")),
+                two_sec
+            );
+            assert_eq!(
+                coarse_fs_resolution(Path::new("//wsl$/Ubuntu/home/user")),
+                two_sec
+            );
+        }
+    }
+
+    /// The drive-letter automount arm of `is_wsl_drvfs_path` is host-agnostic
+    /// (it's a path-shape check), so `/mnt/<letter>/` always classifies as
+    /// DrvFS. The UNC arm is gated to WSL/Windows, so its result is tied to
+    /// the host: assert it only fires when `is_wsl() || cfg!(windows)`.
+    #[test]
+    fn is_wsl_drvfs_path_unc_arm_gated_to_wsl_or_windows() {
+        // Automount arm: shape match, always true.
+        assert!(is_wsl_drvfs_path(Path::new("/mnt/c/Projects/foo")));
+        assert!(is_wsl_drvfs_path(Path::new("/mnt/D/data")));
+        // A bare `/mnt/data` (no single-letter drive segment) is NOT DrvFS.
+        assert!(!is_wsl_drvfs_path(Path::new("/mnt/data/native")));
+
+        let unc_localhost = is_wsl_drvfs_path(Path::new("//wsl.localhost/Ubuntu/home"));
+        let unc_dollar = is_wsl_drvfs_path(Path::new("//wsl$/Ubuntu/home"));
+        if is_wsl() || cfg!(windows) {
+            assert!(unc_localhost);
+            assert!(unc_dollar);
+        } else {
+            // Plain Linux host: UNC `//wsl.localhost/`, `//wsl$/` could be a
+            // legitimate CIFS mount and must NOT receive DrvFS treatment.
+            assert!(!unc_localhost);
+            assert!(!unc_dollar);
+        }
     }
 
     /// Paths under `/tmp` (tmpfs on Linux) and other native fine-grained

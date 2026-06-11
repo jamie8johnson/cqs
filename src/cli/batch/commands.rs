@@ -777,6 +777,12 @@ mod tests {
             "20",
             "--tokens",
             "2000",
+            "--search-limit",
+            "30",
+            "--search-threshold",
+            "0.05",
+            "--min-gap-ratio",
+            "0.25",
         ])
         .unwrap();
         match input.cmd {
@@ -784,6 +790,9 @@ mod tests {
                 assert_eq!(args.query, "error handling");
                 assert_eq!(args.limit_arg.limit, 20);
                 assert_eq!(args.tokens, Some(2000));
+                assert_eq!(args.search_limit, Some(30));
+                assert_eq!(args.search_threshold, Some(0.05));
+                assert_eq!(args.min_gap_ratio, Some(0.25));
             }
             _ => panic!("Expected Scout command"),
         }
@@ -955,6 +964,9 @@ mod tests {
                 query: "foo".into(),
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
                 tokens: None,
+                search_limit: None,
+                search_threshold: None,
+                min_gap_ratio: None,
             },
             output: TextJsonArgs { json: false },
         };

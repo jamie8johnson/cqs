@@ -18,9 +18,6 @@ use super::definitions;
 pub(crate) struct SlotPaths {
     /// Project root (`<root>` — directory holding `.cqs/`).
     pub root: PathBuf,
-    /// Project-level `.cqs/` (telemetry, daemon socket, embeddings_cache.db,
-    /// active_slot pointer, slots/).
-    pub project_cqs_dir: PathBuf,
     /// Slot dir `.cqs/slots/<name>/` (holds index.db, hnsw_*, splade.*).
     pub slot_dir: PathBuf,
     /// Slot name (validated, post-resolution).
@@ -57,14 +54,12 @@ pub(crate) fn resolve_slot_paths(slot_flag: Option<&str>) -> Result<SlotPaths> {
         // `.cqs/` as the slot dir for this read.
         return Ok(SlotPaths {
             root,
-            project_cqs_dir: project_cqs_dir.clone(),
             slot_dir: project_cqs_dir,
             slot_name: cqs::slot::DEFAULT_SLOT.to_string(),
         });
     }
     Ok(SlotPaths {
         root,
-        project_cqs_dir,
         slot_dir,
         slot_name: resolved.name,
     })
@@ -151,21 +146,6 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     /// Slot dir — `.cqs/slots/<active>/`. Holds index.db, hnsw_*, splade.*.
     /// Most call sites use this as the "where do my index files live" anchor.
     pub cqs_dir: PathBuf,
-    /// Project-level `.cqs/` dir (parent of `slots/`). Holds the
-    /// embeddings_cache.db, the active_slot pointer, telemetry, daemon
-    /// socket. Pre-slots projects have `cqs_dir == project_cqs_dir`.
-    ///
-    /// Surfaced as `pub` for handlers that need to open the project-scoped
-    /// embeddings cache, write the active_slot pointer, or interact with
-    /// the daemon socket — all project-level concerns rather than
-    /// slot-local ones.
-    #[allow(dead_code)] // wired into doctor + handlers progressively; spec §Architecture
-    pub project_cqs_dir: PathBuf,
-    /// Slot name resolved from `--slot` / `CQS_SLOT` / `.cqs/active_slot` /
-    /// fallback "default". Available so handlers can include the slot in
-    /// their tracing fields and `--json` envelopes without re-resolving.
-    #[allow(dead_code)] // wired into doctor + handlers progressively
-    pub slot_name: String,
     reranker: OnceLock<std::sync::Arc<dyn cqs::Reranker>>,
     embedder: OnceLock<cqs::Embedder>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
@@ -181,13 +161,13 @@ impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
     /// Open the project store in read-only mode and build a command context.
     pub fn open_readonly(cli: &'a definitions::Cli) -> Result<Self> {
         let (store, paths) = open_project_store_readonly_for_slot(cli.slot.as_deref())?;
+        let _span =
+            tracing::info_span!("CommandContext::open_readonly", slot = %paths.slot_name).entered();
         Ok(Self {
             cli,
             store,
             root: paths.root,
             cqs_dir: paths.slot_dir,
-            project_cqs_dir: paths.project_cqs_dir,
-            slot_name: paths.slot_name,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),
@@ -203,15 +183,14 @@ impl<'a> CommandContext<'a, cqs::store::ReadWrite> {
     /// Used by write commands (gc, etc.) that need the lazy embedder/reranker
     /// from `CommandContext` but also need a writable store.
     pub fn open_readwrite(cli: &'a definitions::Cli) -> Result<Self> {
-        let _span = tracing::info_span!("CommandContext::open_readwrite").entered();
         let (store, paths) = open_project_store_for_slot(cli.slot.as_deref())?;
+        let _span = tracing::info_span!("CommandContext::open_readwrite", slot = %paths.slot_name)
+            .entered();
         Ok(Self {
             cli,
             store,
             root: paths.root,
             cqs_dir: paths.slot_dir,
-            project_cqs_dir: paths.project_cqs_dir,
-            slot_name: paths.slot_name,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),

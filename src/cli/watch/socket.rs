@@ -47,15 +47,30 @@ const DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS: usize = 16;
 /// memory (16 × 2 MB = 32 MB) isn't the binding constraint on modern 64-bit
 /// hosts.
 pub(super) fn max_concurrent_daemon_clients() -> usize {
-    std::env::var("CQS_MAX_DAEMON_CLIENTS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().clamp(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS, 64))
-                .unwrap_or(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS)
-        })
+    let scaled_default = || {
+        std::thread::available_parallelism()
+            .map(|n| n.get().clamp(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS, 64))
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS)
+    };
+    match std::env::var("CQS_MAX_DAEMON_CLIENTS") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    cap = n,
+                    "Daemon client cap overridden via CQS_MAX_DAEMON_CLIENTS"
+                );
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    val = %val,
+                    "CQS_MAX_DAEMON_CLIENTS invalid — using parallelism-scaled default"
+                );
+                scaled_default()
+            }
+        },
+        Err(_) => scaled_default(),
+    }
 }
 /// Handle a single client connection on the daemon socket.
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
