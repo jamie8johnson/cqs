@@ -36,20 +36,36 @@ pub fn find_test_matches(
 ) -> Vec<TestMatch> {
     let _span = tracing::info_span!("find_test_matches", target = target_name).entered();
 
-    // Reverse BFS from target, tracking parent for chain reconstruction
-    let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
+    // Reverse BFS from target, tracking each node's predecessor for chain
+    // reconstruction. The predecessor is `Option<String>` (None = root/target)
+    // rather than an empty-string sentinel: an anonymous or empty-named caller
+    // would collide with a `String::new()` sentinel and silently truncate the
+    // reconstructed chain. The chain walk breaks on `None`, never on `is_empty`.
+    let mut ancestors: HashMap<String, (usize, Option<String>)> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    ancestors.insert(target_name.to_string(), (0, String::new()));
+    ancestors.insert(target_name.to_string(), (0, None));
     queue.push_back((target_name.to_string(), 0));
 
+    let max_nodes = crate::impact::bfs::bfs_max_nodes();
     while let Some((current, depth)) = queue.pop_front() {
         if depth >= max_depth {
             continue;
         }
+        if ancestors.len() >= max_nodes {
+            tracing::warn!(
+                target = target_name,
+                nodes = ancestors.len(),
+                "find_test_matches hit node cap, returning partial results"
+            );
+            break;
+        }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= max_nodes {
+                    break;
+                }
                 if !ancestors.contains_key(caller.as_ref()) {
-                    ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
+                    ancestors.insert(caller.to_string(), (depth + 1, Some(current.clone())));
                     queue.push_back((caller.to_string(), depth + 1));
                 }
             }
@@ -64,13 +80,13 @@ pub fn find_test_matches(
             if *depth > 0 {
                 let mut chain = Vec::new();
                 let mut current = test.name.clone();
-                while !current.is_empty() && chain.len() < chain_limit {
+                while chain.len() < chain_limit {
                     chain.push(current.clone());
                     if current == target_name {
                         break;
                     }
                     current = match ancestors.get(&current) {
-                        Some((_, p)) if !p.is_empty() => p.clone(),
+                        Some((_, Some(p))) => p.clone(),
                         _ => {
                             tracing::debug!(node = %current, "Chain walk hit dead end");
                             break;
@@ -162,5 +178,71 @@ mod tests {
         let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let matches = find_test_matches(&graph, &[], "target", 5, |c| c.file.display().to_string());
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_test_matches_empty_named_caller_no_truncate() {
+        // Regression: an empty-named caller mid-chain must NOT collide with the
+        // old `String::new()` predecessor sentinel and truncate the chain.
+        // Chain: test_foo -> "" (anonymous) -> target
+        let mut reverse = HashMap::new();
+        reverse.insert("target".to_string(), vec![String::new()]);
+        reverse.insert(String::new(), vec!["test_foo".to_string()]);
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
+
+        let test_chunks = vec![make_test_chunk("test_foo")];
+        let matches = find_test_matches(&graph, &test_chunks, "target", 5, |c| {
+            c.file.display().to_string()
+        });
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].depth, 2);
+        // Full chain reconstructed through the empty-named node, not truncated.
+        assert_eq!(
+            matches[0].chain,
+            vec!["test_foo".to_string(), String::new(), "target".to_string()],
+            "chain must walk through the empty-named caller instead of breaking at it"
+        );
+    }
+
+    #[test]
+    fn test_find_test_matches_honors_node_cap() {
+        // A wide fan-out graph must stop expanding at the node cap instead of
+        // materializing every caller. `bfs_max_nodes()` memoizes via OnceLock,
+        // so in this shared test binary the env var may already be locked to a
+        // prior value — read the live cap and size the graph to exceed it,
+        // making the assertion robust regardless of which test won the race.
+        std::env::set_var("CQS_IMPACT_MAX_NODES", "3");
+        let cap = crate::impact::bfs::bfs_max_nodes();
+
+        // More callers than the cap so the ancestor set must be clipped.
+        let n = cap + 50;
+        let callers: Vec<String> = (0..n).map(|i| format!("caller_{i}")).collect();
+        let mut reverse = HashMap::new();
+        reverse.insert("target".to_string(), callers.clone());
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
+
+        // Make every caller a "test" so the match count reflects reached nodes.
+        let test_chunks: Vec<ChunkSummary> = callers.iter().map(|c| make_test_chunk(c)).collect();
+        let matches = find_test_matches(&graph, &test_chunks, "target", 5, |c| {
+            c.file.display().to_string()
+        });
+
+        std::env::remove_var("CQS_IMPACT_MAX_NODES");
+
+        // With the cap enforced, fewer than `cap` callers can be recorded
+        // (the target itself occupies one slot), so the match set is strictly
+        // smaller than the full caller fan-out.
+        assert!(
+            matches.len() < callers.len(),
+            "node cap ({cap}) must bound the reached caller set (got {} of {})",
+            matches.len(),
+            callers.len()
+        );
+        assert!(
+            matches.len() <= cap,
+            "reached set ({}) must not exceed the cap ({cap})",
+            matches.len()
+        );
     }
 }
