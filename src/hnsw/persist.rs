@@ -322,6 +322,22 @@ pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError
     Ok(())
 }
 
+/// Test-only fault injection seams for the save/promote path. Thread-local
+/// so parallel tests can't observe each other's injected faults (saves run
+/// synchronously on the calling thread).
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// When set, `save()` deletes the staged file with this extension
+        /// (e.g. `"hnsw.ids"`) right before the promote pass, simulating a
+        /// staging directory that was tampered with mid-save.
+        pub(crate) static DELETE_STAGED_EXT_BEFORE_PROMOTE: RefCell<Option<String>> =
+            const { RefCell::new(None) };
+    }
+}
+
 impl HnswIndex {
     /// Save the index to disk
     ///
@@ -622,6 +638,16 @@ impl HnswIndex {
             }
         }
 
+        // Test-only fault injection: delete one staged file just before the
+        // promote pass so tests can pin the missing-temp hard-error path.
+        #[cfg(test)]
+        test_hooks::DELETE_STAGED_EXT_BEFORE_PROMOTE.with(|hook| {
+            if let Some(ext) = hook.borrow_mut().take() {
+                let p = temp_dir.join(format!("{}.{}", basename, ext));
+                let _ = std::fs::remove_file(&p);
+            }
+        });
+
         // Atomically rename each file from temp to final location. Track
         // which files were successfully moved so we can roll back on failure.
         // `all_exts` is reused from the stale-bak guard above.
@@ -681,33 +707,45 @@ impl HnswIndex {
             for ext in &all_exts {
                 let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
                 let final_path = dir.join(format!("{}.{}", basename, ext));
-                if temp_path.exists() {
-                    // `atomic_replace` fsyncs the temp file, renames with
-                    // cross-device fallback (the in-process temp dir sits
-                    // on a different device from `dir` on Docker overlayfs
-                    // and WSL `/mnt/c`), and fsyncs the parent directory.
-                    crate::fs::atomic_replace(&temp_path, &final_path).map_err(|e| {
-                        HnswError::Internal(format!(
-                            "Failed to promote {} -> {}: {}",
-                            temp_path.display(),
-                            final_path.display(),
-                            e
-                        ))
-                    })?;
-                    // Keep the restrictive mode on the promoted file now that
-                    // it lives in the final directory. The library
-                    // `file_dump` output uses the process umask; we want
-                    // 0o600 regardless.
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(
-                            &final_path,
-                            std::fs::Permissions::from_mode(0o600),
-                        );
-                    }
-                    moved_exts.push(ext);
+                // Every staged file is written unconditionally earlier in
+                // this function, so a missing one means the staging dir was
+                // deleted out from under us (e.g. by another process's
+                // stale-temp cleanup). Silently skipping it would promote a
+                // partial set and let the success path below delete the
+                // `.bak`s of the previous good index — hard-error into the
+                // rollback instead.
+                if !temp_path.exists() {
+                    return Err(HnswError::Internal(format!(
+                        "HNSW staging file missing during promote: {} — \
+                         aborting save and rolling back",
+                        temp_path.display()
+                    )));
                 }
+                // `atomic_replace` fsyncs the temp file, renames with
+                // cross-device fallback (the in-process temp dir sits
+                // on a different device from `dir` on Docker overlayfs
+                // and WSL `/mnt/c`), and fsyncs the parent directory.
+                crate::fs::atomic_replace(&temp_path, &final_path).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to promote {} -> {}: {}",
+                        temp_path.display(),
+                        final_path.display(),
+                        e
+                    ))
+                })?;
+                // Keep the restrictive mode on the promoted file now that
+                // it lives in the final directory. The library
+                // `file_dump` output uses the process umask; we want
+                // 0o600 regardless.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &final_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+                moved_exts.push(ext);
             }
             Ok(())
         })();
@@ -834,27 +872,24 @@ impl HnswIndex {
     /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load_with_dim(dir: &Path, basename: &str, dim: usize) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_load", dir = %dir.display(), basename).entered();
-        // Clean up stale temp dirs from interrupted saves (before anything
-        // else). Temp dirs have unpredictable suffixes, so match by
-        // prefix+suffix pattern.
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            let prefix = format!(".{}.", basename);
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with(&prefix) && name.ends_with(".tmp") && entry.path().is_dir() {
-                    tracing::info!(dir = %entry.path().display(), "Cleaning up interrupted HNSW save");
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
-
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
         let data_path = dir.join(format!("{}.hnsw.data", basename));
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
 
-        // The existence check happens INSIDE the shared-lock critical
-        // section. Checking file existence before acquiring the lock
+        // The stale-temp cleanup and the existence check both happen
+        // INSIDE the shared-lock critical section.
+        //
+        // Cleanup before the lock would race a concurrent `save()`: the
+        // saver creates its `.{basename}.<suffix>.tmp` staging directory
+        // under the EXCLUSIVE lock and writes into it while a pre-lock
+        // loader could `remove_dir_all` that live staging dir. The saver
+        // would then rename the previous good files to `.bak`, find every
+        // staged file missing during promote, and the success path would
+        // delete the `.bak`s — destroying the previous good index. Once
+        // the shared lock is held, no exclusive saver is mid-flight, so
+        // any surviving `.tmp` directory is genuinely stale.
+        //
+        // Checking file existence before acquiring the lock
         // would open a TOCTOU window: a concurrent `save()` could take
         // the exclusive lock, rename the four files into `.bak`, and
         // complete; the reader would then proceed with files that had
@@ -923,6 +958,23 @@ impl HnswIndex {
         }
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared, released after read)");
+
+        // Clean up stale temp dirs from interrupted saves. This runs under
+        // the shared lock: a live `save()` holds the exclusive lock while
+        // its staging directory exists, so any `.tmp` directory observed
+        // here is from a crashed/killed save and safe to remove. Temp dirs
+        // have unpredictable suffixes, so match by prefix+suffix pattern.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let prefix = format!(".{}.", basename);
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(&prefix) && name.ends_with(".tmp") && entry.path().is_dir() {
+                    tracing::info!(dir = %entry.path().display(), "Cleaning up interrupted HNSW save");
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
 
         // Existence check happens under the shared lock. A concurrent
         // `save()` that wanted to rename these files would need the
@@ -1542,10 +1594,109 @@ mod tests {
         let temp_dir = dir.path().join(format!(".{}.tmp", basename));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
-        // Load should clean up the temp dir even though no index exists
+        // Load should clean up the temp dir even though no index exists.
+        // The cleanup happens after the shared lock is acquired (no saver
+        // is mid-flight here, so the load proceeds straight through).
         let result = HnswIndex::load_with_dim(dir.path(), basename, crate::EMBEDDING_DIM);
         assert!(result.is_err()); // no index to load
         assert!(!temp_dir.exists()); // but temp dir should be cleaned
+    }
+
+    /// Pins the cleanup-under-lock ordering: while a saver holds the
+    /// exclusive lock, its staging directory is LIVE and a concurrent load
+    /// must not delete it. If the cleanup ever moves back in front of the
+    /// shared-lock acquisition, this test fails because the staging dir
+    /// gets removed while the "saver" still holds the exclusive lock.
+    #[test]
+    fn test_load_does_not_clean_staging_dir_while_saver_holds_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let basename = "test_index";
+
+        // Simulate a mid-flight save: staging dir exists and the exclusive
+        // lock is held (flock is per open file description, so this blocks
+        // the load's shared lock even within the same process).
+        let staging = dir
+            .path()
+            .join(format!(".{}.{:016x}.tmp", basename, 0xdeadbeefu64));
+        std::fs::create_dir_all(&staging).unwrap();
+        let lock_path = dir.path().join(format!("{}.hnsw.lock", basename));
+        #[allow(clippy::suspicious_open_options)]
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        lock_file.lock().unwrap();
+
+        // Load must fail to acquire the shared lock (bounded retries) and
+        // must NOT have touched the live staging directory.
+        let result = HnswIndex::load_with_dim(dir.path(), basename, crate::EMBEDDING_DIM);
+        let err = format!(
+            "{}",
+            result.err().expect("load must fail under lock contention")
+        );
+        assert!(
+            err.contains("lock contended"),
+            "load should fail on lock contention, got: {}",
+            err
+        );
+        assert!(
+            staging.exists(),
+            "live staging dir must survive a load that never got the shared lock"
+        );
+    }
+
+    /// A staged file that goes missing between staging and promote must
+    /// hard-error into the rollback path — never report a successful save.
+    /// Silently skipping missing temps used to promote a partial set and
+    /// then delete the `.bak`s of the previous good index on the success
+    /// path, destroying it.
+    #[test]
+    fn test_save_errors_and_rolls_back_when_staged_file_missing() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+
+        // Establish a good v1 index on disk.
+        let v1: Vec<(String, crate::embedder::Embedding)> = (1..=2)
+            .map(|i| (format!("vec{}", i), make_embedding(i)))
+            .collect();
+        let v1_idx = HnswIndex::build_with_dim(v1, crate::EMBEDDING_DIM).unwrap();
+        v1_idx.save(tmp.path(), basename).unwrap();
+        let v1_ids = std::fs::read(tmp.path().join(format!("{}.hnsw.ids", basename))).unwrap();
+
+        // Save v2 with the ids staging file deleted just before promote.
+        // graph/data promote first, so this exercises mid-loop rollback.
+        let v2: Vec<(String, crate::embedder::Embedding)> = (1..=3)
+            .map(|i| (format!("newvec{}", i), make_embedding(i + 10)))
+            .collect();
+        let v2_idx = HnswIndex::build_with_dim(v2, crate::EMBEDDING_DIM).unwrap();
+        test_hooks::DELETE_STAGED_EXT_BEFORE_PROMOTE
+            .with(|hook| *hook.borrow_mut() = Some("hnsw.ids".to_string()));
+        let result = v2_idx.save(tmp.path(), basename);
+
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("staging file missing during promote"),
+            "save must surface the missing staged file, got: {}",
+            err
+        );
+
+        // Rollback must restore the previous good index: v1 files back in
+        // place, no `.bak` breadcrumbs, no staging dir, and the index loads.
+        for ext in ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"] {
+            let bak = tmp.path().join(format!("{}.{}.bak", basename, ext));
+            assert!(
+                !bak.exists(),
+                "rollback must consume .bak files; {} still exists",
+                bak.display()
+            );
+        }
+        let restored_ids =
+            std::fs::read(tmp.path().join(format!("{}.hnsw.ids", basename))).unwrap();
+        assert_eq!(restored_ids, v1_ids, "rollback must restore the v1 id map");
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+            .expect("previous good index must still load after rolled-back save");
+        assert_eq!(loaded.len(), 2, "loaded index must be the v1 index");
     }
 
     #[test]
