@@ -216,6 +216,34 @@ pub(crate) fn trace_core(
     Ok(TraceCoreOutput::Trace(output))
 }
 
+// ─── Cross-project core ──────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs trace <source> <target> --cross-project`.
+///
+/// Runs the cross-project shortest-path BFS and projects to the
+/// [`cqs::cross_project::CrossProjectTraceResult`] both surfaces emit
+/// (`{source, target, path?, depth?, found}` with per-hop `project`).
+/// Carries no kind-fallback — the cross-project path never had one. Both the
+/// CLI and daemon cross branches call this so the result assembly can't
+/// drift. `max_depth` is the only knob; trace returns a single shortest path
+/// so there is no `limit` cap to apply.
+pub(crate) fn trace_cross_core(
+    cross_ctx: &mut cqs::cross_project::CrossProjectContext,
+    source: &str,
+    target: &str,
+    max_depth: usize,
+) -> Result<cqs::cross_project::CrossProjectTraceResult> {
+    let _span = tracing::info_span!("trace_cross_core", source, target).entered();
+    let result = cqs::cross_project::trace_cross(cross_ctx, source, target, max_depth)?;
+    Ok(cqs::cross_project::CrossProjectTraceResult {
+        source: source.to_string(),
+        target: target.to_string(),
+        depth: result.as_ref().map(|p| p.len().saturating_sub(1)),
+        found: result.is_some(),
+        path: result,
+    })
+}
+
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_trace(
@@ -235,15 +263,7 @@ pub(crate) fn cmd_trace(
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let result = cqs::cross_project::trace_cross(&mut cross_ctx, source, target, max_depth)?;
-
-        let trace_result = cqs::cross_project::CrossProjectTraceResult {
-            source: source.to_string(),
-            target: target.to_string(),
-            depth: result.as_ref().map(|p| p.len().saturating_sub(1)),
-            found: result.is_some(),
-            path: result,
-        };
+        let trace_result = trace_cross_core(&mut cross_ctx, source, target, max_depth)?;
 
         // Exhaustive match instead of if/else-if chains so a future
         // `OutputFormat` variant fails to compile until every render site

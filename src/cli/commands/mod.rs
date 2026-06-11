@@ -62,7 +62,6 @@ pub(crate) use search::GatherContext;
 // through `test_map_core`). The other `build_*` / `chunks_to_definitions`
 // helpers are now reached only inside the graph cores, so they no longer
 // re-export here.
-pub(crate) use graph::build_test_map;
 pub(crate) use graph::build_test_map_output;
 pub(crate) use graph::cmd_callees;
 pub(crate) use graph::cmd_callers;
@@ -77,8 +76,9 @@ pub(crate) use graph::cmd_trace;
 // `serde_json::to_value` / `to_value()` without being named at the call
 // site, so they stay internal to the graph module.
 pub(crate) use graph::{
-    callees_core, callers_core, deps_core, impact_core, test_map_core, test_map_max_nodes,
-    trace_core, trace_max_nodes, CalleesArgs, CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs,
+    callees_core, callees_cross_core, callers_core, callers_cross_core, deps_core, impact_core,
+    impact_cross_core, test_map_core, test_map_cross_core, test_map_max_nodes, trace_core,
+    trace_cross_core, trace_max_nodes, CalleesArgs, CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs,
     TestMapCoreArgs, TraceCoreArgs,
 };
 

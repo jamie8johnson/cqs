@@ -466,9 +466,11 @@ mod tests {
         );
     }
 
-    /// Daemon `dispatch_stale` (non-count-only) is byte-equal to
-    /// `stale_core(...)` over the daemon's cached file_set — the parity
-    /// contract for the cored stale command.
+    /// Daemon `dispatch_stale` (non-count-only) equals `stale_core(...)` over
+    /// the daemon's cached file_set. Parity by construction (the dispatcher
+    /// calls this core), so the test also carries a fixture-grounded value
+    /// assert — the seeded indexed file surfaces as missing — to catch a
+    /// both-sides-empty regression.
     #[test]
     fn parity_stale_dispatch_equals_core() {
         let (_dir, ctx) = seed_minimal_ctx();
@@ -479,10 +481,23 @@ mod tests {
             &view.store(),
             &view.root,
             &file_set,
-            &crate::cli::commands::StaleArgs { count_only: false },
+            &crate::cli::commands::StaleArgs::default(),
         )
         .expect("stale_core");
         let core_val = serde_json::to_value(&core).expect("serialize core");
+
+        // Fixture-grounded value assert (not just shape): the seeded chunk
+        // lives in `src/lib.rs`, which doesn't exist on disk in the tempdir,
+        // so the core must report it indexed-and-missing. Without this both
+        // sides could be empty and the equality below would still pass.
+        assert!(
+            core.total_indexed >= 1,
+            "core must count the seeded indexed file, got: {core_val}"
+        );
+        assert!(
+            core.missing.iter().any(|f| f.contains("lib.rs")),
+            "seeded src/lib.rs (absent on disk) must surface as missing, got: {core_val}"
+        );
 
         let dispatched = super::super::analysis::dispatch_stale(
             &view,
@@ -496,9 +511,10 @@ mod tests {
         );
     }
 
-    /// Daemon `dispatch_stats` is byte-equal to `stats_core(...)` plus the
-    /// daemon-only `errors` field — the parity contract for the cored stats
-    /// command. Asserts the adapter adds nothing beyond `errors`.
+    /// Daemon `dispatch_stats` equals `stats_core(...)` plus the daemon-only
+    /// `errors` field. Parity by construction (the dispatcher calls this
+    /// core); asserts the adapter adds nothing beyond `errors`, with a
+    /// fixture-grounded value assert so an empty-index regression still fails.
     #[test]
     fn parity_stats_dispatch_equals_core_plus_errors() {
         let (_dir, ctx) = seed_minimal_ctx();
@@ -513,6 +529,13 @@ mod tests {
         )
         .expect("stats_core");
         let mut core_val = serde_json::to_value(&core).expect("serialize core");
+        // Fixture-grounded: the seeded `foo` chunk must be counted, so neither
+        // side reports an empty index (which by-construction parity wouldn't
+        // catch).
+        assert!(
+            core_val["total_chunks"].as_u64().is_some_and(|n| n >= 1),
+            "stats core must count the seeded chunk: {core_val}"
+        );
         // The adapter layers on `errors`; everything else must match exactly.
         let errors = dispatched.get("errors").cloned().expect("errors present");
         core_val

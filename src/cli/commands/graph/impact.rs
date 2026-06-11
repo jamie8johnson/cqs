@@ -155,6 +155,36 @@ pub(crate) fn impact_core(
     })
 }
 
+// ─── Cross-project core ──────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs impact <name> --cross-project`.
+///
+/// Runs the cross-project BFS impact analysis, applies the shared `1..=100`
+/// per-section cap, and returns the truncated [`ImpactResult`]. Unlike the
+/// single-project core this carries no kind-fallback and no test suggestions
+/// — the cross-project JSON has always been the bare `impact_to_json(result)`
+/// shape (no `kind` / `test_suggestions`). Both surfaces (CLI cross branch,
+/// daemon cross branch) call this so the retrieval + truncate discipline
+/// can't drift; the adapter chooses text / mermaid / JSON rendering.
+pub(crate) fn impact_cross_core(
+    cross_ctx: &mut cqs::cross_project::CrossProjectContext,
+    args: &ImpactArgs,
+) -> Result<cqs::ImpactResult> {
+    let _span =
+        tracing::info_span!("impact_cross_core", name = %args.name, limit = args.limit).entered();
+    let depth = args.depth.clamp(1, 10);
+    let limit = args.limit.clamp(1, 100);
+    let mut result = cqs::cross_project::analyze_impact_cross(
+        cross_ctx,
+        &args.name,
+        depth,
+        args.suggest_tests,
+        args.include_types,
+    )?;
+    truncate_impact_sections(&mut result, limit);
+    Ok(result)
+}
+
 // ─── CLI command (thin adapter over the core) ──────────────────────────────
 
 // The CLI dispatcher inflates a shared arg struct rather than calling this
@@ -176,17 +206,17 @@ pub(crate) fn cmd_impact(
     let root = &ctx.root;
 
     if cross_project {
-        let depth = depth.clamp(1, 10);
-        let limit = limit.clamp(1, 100);
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(root)?;
-        let mut result = cqs::cross_project::analyze_impact_cross(
+        let result = impact_cross_core(
             &mut cross_ctx,
-            name,
-            depth,
-            do_suggest_tests,
-            include_types,
+            &ImpactArgs {
+                name: name.to_string(),
+                depth,
+                limit,
+                suggest_tests: do_suggest_tests,
+                include_types,
+            },
         )?;
-        truncate_impact_sections(&mut result, limit);
 
         // Exhaustive match — adding a new `OutputFormat` variant fails to
         // compile until every render site adds an arm.

@@ -285,6 +285,40 @@ pub(crate) fn test_map_core(
     )))
 }
 
+// ─── Cross-project core ──────────────────────────────────────────────────────
+
+/// Surface-agnostic core for `cqs test-map <name> --cross-project`.
+///
+/// Loads every project's test chunks, merges their call graphs, runs the
+/// reverse-BFS [`build_test_map`], applies the shared `1..=100` cap, and
+/// returns the truncated [`TestMatch`] list. Carries no kind-fallback (the
+/// cross-project path never had one). Returns the matches rather than the
+/// projected [`TestMapOutput`] so the text adapter keeps access to the call
+/// chain; the JSON adapter wraps with [`build_test_map_output`]. Both
+/// surfaces call this so the merge + truncate discipline can't drift.
+pub(crate) fn test_map_cross_core(
+    cross_ctx: &mut cqs::cross_project::CrossProjectContext,
+    root: &Path,
+    args: &TestMapArgs,
+) -> Result<Vec<TestMatch>> {
+    let _span =
+        tracing::info_span!("test_map_cross_core", name = %args.name, limit = args.limit).entered();
+    let limit = args.limit.clamp(1, 100);
+    let test_chunks = cross_ctx.find_test_chunks_cross()?;
+    let graph = cross_ctx.merged_call_graph()?;
+    let summaries: Vec<ChunkSummary> = test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
+    let mut matches = build_test_map(
+        &args.name,
+        &graph,
+        &summaries,
+        root,
+        args.max_depth,
+        args.max_nodes,
+    );
+    matches.truncate(limit);
+    Ok(matches)
+}
+
 // ─── CLI command (thin adapter over the core) ──────────────────────────────
 
 pub(crate) fn cmd_test_map(
@@ -302,22 +336,16 @@ pub(crate) fn cmd_test_map(
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let test_chunks = cross_ctx.find_test_chunks_cross()?;
-
-        // Build a merged call graph from all projects
-        let graph = cross_ctx.merged_call_graph()?;
-        let summaries: Vec<cqs::store::ChunkSummary> =
-            test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
-
-        let mut matches = build_test_map(
-            name,
-            &graph,
-            &summaries,
+        let matches = test_map_cross_core(
+            &mut cross_ctx,
             &ctx.root,
-            max_depth,
-            test_map_max_nodes(),
-        );
-        matches.truncate(limit);
+            &TestMapArgs {
+                name: name.to_string(),
+                max_depth,
+                limit,
+                max_nodes: test_map_max_nodes(),
+            },
+        )?;
 
         if json {
             let output = build_test_map_output(name, &matches);

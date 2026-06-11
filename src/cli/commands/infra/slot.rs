@@ -172,10 +172,23 @@ pub(crate) fn cmd_slot(cli: &Cli, subcmd: &SlotCommand) -> Result<()> {
     }
 }
 
+/// Input for [`slot_list_core`]. `cqs slot list` takes no positional or flag
+/// input; the empty struct keeps the surface-agnostic Args convention every
+/// other core follows (a wire caller inflates it from `{}`).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct SlotListArgs {}
+
+/// Input for [`slot_active_core`]. Parameterless, like [`SlotListArgs`].
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct SlotActiveArgs {}
+
 /// Surface-agnostic core for `cqs slot list`. Reads each slot's index for
 /// chunk count + model metadata (best-effort — listing succeeds even if one
 /// slot's DB is unreadable). No daemon path: slot management is CLI-only.
-pub(crate) fn slot_list_core(project_cqs_dir: &Path) -> Result<SlotListOutput> {
+pub(crate) fn slot_list_core(
+    project_cqs_dir: &Path,
+    _args: &SlotListArgs,
+) -> Result<SlotListOutput> {
     let _span = tracing::info_span!("slot_list_core").entered();
     let names = list_slots(project_cqs_dir)?;
     let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
@@ -188,7 +201,7 @@ pub(crate) fn slot_list_core(project_cqs_dir: &Path) -> Result<SlotListOutput> {
 
 fn slot_list(project_cqs_dir: &Path, json: bool) -> Result<()> {
     let _span = tracing::info_span!("slot_list").entered();
-    let out = slot_list_core(project_cqs_dir)?;
+    let out = slot_list_core(project_cqs_dir, &SlotListArgs::default())?;
     let active = &out.active;
     let entries = &out.slots;
 
@@ -537,7 +550,10 @@ fn guard_against_active_daemon(project_cqs_dir: &Path, name: &str, force: bool) 
 
 /// Surface-agnostic core for `cqs slot active`. Resolves the active slot name
 /// and its provenance.
-pub(crate) fn slot_active_core(project_cqs_dir: &Path) -> Result<SlotActiveOutput> {
+pub(crate) fn slot_active_core(
+    project_cqs_dir: &Path,
+    _args: &SlotActiveArgs,
+) -> Result<SlotActiveOutput> {
     let _span = tracing::info_span!("slot_active_core").entered();
     let resolved =
         cqs::slot::resolve_slot_name(None, project_cqs_dir).map_err(anyhow::Error::from)?;
@@ -550,7 +566,7 @@ pub(crate) fn slot_active_core(project_cqs_dir: &Path) -> Result<SlotActiveOutpu
 
 fn slot_active(project_cqs_dir: &Path, json: bool) -> Result<()> {
     let _span = tracing::info_span!("slot_active").entered();
-    let out = slot_active_core(project_cqs_dir)?;
+    let out = slot_active_core(project_cqs_dir, &SlotActiveArgs::default())?;
     if json {
         crate::cli::json_envelope::emit_json(&out)?;
     } else {
@@ -922,7 +938,7 @@ mod tests {
         let cqs = tmp.path().join(".cqs");
         write_active_slot(&cqs, "alpha").unwrap();
 
-        let out = slot_list_core(&cqs).unwrap();
+        let out = slot_list_core(&cqs, &SlotListArgs::default()).unwrap();
         assert_eq!(out.active, "alpha");
         assert_eq!(out.slots.len(), 2);
         let json = serde_json::to_value(&out).unwrap();
@@ -942,7 +958,7 @@ mod tests {
         let cqs = tmp.path().join(".cqs");
         write_active_slot(&cqs, "only").unwrap();
 
-        let out = slot_active_core(&cqs).unwrap();
+        let out = slot_active_core(&cqs, &SlotActiveArgs::default()).unwrap();
         let json = serde_json::to_value(&out).unwrap();
         for key in ["active", "source", "active_slot_file"] {
             assert!(json.get(key).is_some(), "slot active missing `{key}`");

@@ -70,8 +70,11 @@ pub(in crate::cli::batch) fn dispatch_stale(
         &ctx.store(),
         &ctx.root,
         &file_set,
-        &crate::cli::commands::StaleArgs { count_only },
+        &crate::cli::commands::StaleArgs::default(),
     )?;
+    // `count_only` is the adapter-side render flag (read off the wire
+    // `args::StaleArgs`, not the core Args): project to the 3-field count
+    // subset here, after the core has computed the full report.
     if count_only {
         Ok(serde_json::json!({
             "stale_count": output.stale_count,
@@ -195,13 +198,17 @@ pub(in crate::cli::batch) fn dispatch_ci(
 
 // ---------------------------------------------------------------------------
 // Parity tests — each `dispatch_*` is a thin adapter over the shared `*_core`,
-// so the daemon JSON must be byte-equal to `serde_json::to_value(*_core(...))`
-// for the same inputs. dead/health/suggest are embedder-free and git-free
-// (they read the store directly), so the full dispatch path is exercised.
-// review/ci acquire their diff via `run_git_diff` (needs a real repo with a
-// diff), so their core-equivalence is asserted at the core level against the
-// empty-diff convergence shape; the dispatchers are parity-by-construction
-// (they literally call the core with `run_git_diff` output then `to_value`).
+// so the daemon JSON equals `serde_json::to_value(*_core(...))` for the same
+// inputs. This equality is parity-BY-CONSTRUCTION: the dispatcher calls the
+// very core it's compared against, so the byte-equality is structurally
+// guaranteed, not independently verified. The dead/health tests therefore also
+// carry a fixture-grounded value assert (core output reflects the seeded
+// `foo` chunk) so a both-sides-empty regression — the failure mode
+// by-construction parity can't catch — still fails the test. dead/health/
+// suggest are embedder-free and git-free (they read the store directly), so
+// the full dispatch path is exercised. review/ci acquire their diff via
+// `run_git_diff` (needs a real repo with a diff), so their core-equivalence is
+// asserted at the core level against the empty-diff convergence shape.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod parity_tests {
@@ -255,7 +262,10 @@ mod parity_tests {
         (dir, ctx)
     }
 
-    /// `dispatch_dead` is byte-equal to `serde_json::to_value(dead_core(...))`.
+    /// `dispatch_dead` equals `serde_json::to_value(dead_core(...))` (parity by
+    /// construction). The fixture-grounded assert pins that the seeded
+    /// callerless non-pub `foo` actually surfaces as dead, so both sides can't
+    /// silently converge on an empty list.
     #[test]
     fn parity_dead_dispatch_equals_core() {
         let (_dir, ctx) = seed_minimal_ctx();
@@ -272,6 +282,15 @@ mod parity_tests {
         .expect("dead_core");
         let core_val = serde_json::to_value(&core).expect("serialize core");
 
+        // Fixture-grounded: `foo` has no callers and isn't pub → dead.
+        let dead = core_val["dead"]
+            .as_array()
+            .unwrap_or_else(|| panic!("dead core must carry a dead array: {core_val}"));
+        assert!(
+            dead.iter().any(|d| d["name"] == "foo"),
+            "seeded callerless `foo` must be reported dead: {core_val}"
+        );
+
         let dispatched = super::dispatch_dead(
             &view,
             &crate::cli::args::DeadArgs {
@@ -284,7 +303,9 @@ mod parity_tests {
         assert_eq!(dispatched, core_val, "dispatch_dead must equal dead_core");
     }
 
-    /// `dispatch_health` is byte-equal to `serde_json::to_value(health_core(...))`.
+    /// `dispatch_health` equals `serde_json::to_value(health_core(...))` (parity
+    /// by construction). The fixture-grounded assert pins that the seeded chunk
+    /// is counted, guarding against both sides reporting an empty index.
     #[test]
     fn parity_health_dispatch_equals_core() {
         let (_dir, ctx) = seed_minimal_ctx();
@@ -300,6 +321,14 @@ mod parity_tests {
         )
         .expect("health_core");
         let core_val = serde_json::to_value(&core).expect("serialize core");
+
+        // Fixture-grounded: the index holds the seeded `foo` chunk.
+        assert!(
+            core_val["stats"]["total_chunks"]
+                .as_u64()
+                .is_some_and(|n| n >= 1),
+            "health core must count the seeded chunk: {core_val}"
+        );
 
         let dispatched = super::dispatch_health(&view).expect("dispatch_health");
 

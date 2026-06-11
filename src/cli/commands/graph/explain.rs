@@ -231,6 +231,7 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
             name: c.name.clone(),
             file: rel_display(&c.file, root),
             line_start: c.line,
+            project: String::new(),
         })
         .collect();
 
@@ -240,6 +241,7 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
         .map(|(name, line)| CalleeEntry {
             name: name.clone(),
             line_start: *line,
+            project: String::new(),
         })
         .collect();
 
@@ -501,10 +503,12 @@ mod output_tests {
                 name: "caller_a".into(),
                 file: "src/a.rs".into(),
                 line_start: 42,
+                project: String::new(),
             }],
             callees: vec![CalleeEntry {
                 name: "callee_b".into(),
                 line_start: 3,
+                project: String::new(),
             }],
             similar: vec![SimilarEntry {
                 name: "baz".into(),
@@ -552,6 +556,7 @@ mod output_tests {
                 name: "call<U>".into(),
                 file: "src/a.rs".into(),
                 line_start: 5,
+                project: String::new(),
             }],
             callees: vec![],
             similar: vec![],

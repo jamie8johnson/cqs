@@ -256,10 +256,13 @@ fn dispatch_callers_returns_envelope_with_callers() {
     let (_dir, ctx) = seed_ctx();
     let env = dispatch(&ctx, "callers bar");
     let data = assert_ok_envelope(&env, "callers bar");
-    // `build_callers` emits a bare JSON array of `{name, file, line}`.
+    // `callers_core` emits `{name, callers, count}` — the same object
+    // topology as callees, keyed by `callers` rather than `calls`.
+    assert_eq!(data["name"], "bar", "callers payload name: {data}");
     let callers = data
-        .as_array()
-        .unwrap_or_else(|| panic!("callers payload must be a JSON array: {data}"));
+        .get("callers")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected `callers` array in callers payload: {data}"));
     assert!(
         !callers.is_empty(),
         "foo() calls bar() in the seeded graph, so callers must be non-empty: {data}"
