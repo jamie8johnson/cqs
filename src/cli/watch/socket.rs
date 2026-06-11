@@ -10,7 +10,6 @@
 
 #![cfg(unix)]
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -267,9 +266,11 @@ pub(super) fn handle_socket_client(
         // This eliminates the per-byte JSON-escape inflation that would
         // double large search responses on the wire.
         //
-        // TODO(P2 #62): replace this parse with a `dispatch_value` call once
-        // `batch/mod.rs` exposes it. The bytes-then-parse shape here keeps the
-        // wire compatible while removing the escape pass.
+        // The parse also canonicalizes key order (serde_json `Value` is
+        // BTreeMap-backed without `preserve_order`); the response is then
+        // serialized exactly once into a byte buffer and written with a
+        // single `write_all` (see `write_daemon_ok`), rather than
+        // re-stringified through `Display` / `writeln!` per JSON fragment.
         let trimmed = trim_trailing_newline(&output);
         match serde_json::from_slice::<serde_json::Value>(trimmed) {
             Ok(v) => Ok(v),
@@ -291,17 +292,7 @@ pub(super) fn handle_socket_client(
 
     let (status, delivered) = match result {
         Ok(Ok(output_value)) => {
-            let resp = serde_json::json!({
-                "status": "ok",
-                "output": output_value,
-            });
-            let delivered = match writeln!(stream, "{}", resp) {
-                Ok(()) => true,
-                Err(e) => {
-                    tracing::debug!(error = %e, "Failed to write daemon response");
-                    false
-                }
-            };
+            let delivered = write_daemon_ok(&mut stream, output_value);
             ("ok", delivered)
         }
         Ok(Err(e)) => {
@@ -331,13 +322,58 @@ pub(super) fn handle_socket_client(
         "Daemon query complete"
     );
 }
+/// Serialize a daemon response `Value` as one JSONL frame
+/// (`<json>\n`) into a single buffer and emit it with one `write_all`.
+///
+/// `UnixStream` is unbuffered: writing through `writeln!("{}", value)`
+/// drives `Value`'s `Display` impl, whose `write_fmt` adapter issues a
+/// `write_all` per JSON fragment (every key, string, and delimiter). A
+/// multi-KB search response becomes hundreds of write syscalls — material
+/// against the daemon's single-digit-millisecond budget, and worse on WSL
+/// where syscalls are slow. Serializing into a `Vec<u8>` first collapses
+/// the whole frame to one syscall, and `to_writer` serializes the value
+/// exactly once (no intermediate `String`).
+///
+/// Returns whether the frame reached the client. Serialization of a
+/// `serde_json::Value` cannot fail except on a downstream `io::Write`
+/// error, and the buffer is in-memory, so the only failure mode is the
+/// final socket write.
+fn write_response_frame(
+    stream: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    // Infallible for an in-memory `Vec<u8>` sink with a `Value` payload.
+    serde_json::to_writer(&mut buf, value).map_err(std::io::Error::other)?;
+    buf.push(b'\n');
+    stream.write_all(&buf)
+}
+
+/// Write the success envelope `{"status":"ok","output":<value>}` as one
+/// frame. The wrapped `Value` carries the canonicalized dispatch output
+/// (already parsed in `handle_socket_client`), so this is the sole
+/// serialization of the response on the success path. Returns whether the
+/// frame was delivered.
+fn write_daemon_ok(stream: &mut impl std::io::Write, output: serde_json::Value) -> bool {
+    let resp = serde_json::json!({
+        "status": "ok",
+        "output": output,
+    });
+    match write_response_frame(stream, &resp) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to write daemon response");
+            false
+        }
+    }
+}
+
 pub(super) fn write_daemon_error(
     stream: &mut std::os::unix::net::UnixStream,
     message: &str,
 ) -> std::io::Result<()> {
-    use std::io::Write;
     let resp = serde_json::json!({ "status": "error", "message": message });
-    writeln!(stream, "{}", resp)
+    write_response_frame(stream, &resp)
 }
 
 /// Trim a trailing `\n` (and optional `\r`) from `buf` and return the
@@ -369,5 +405,86 @@ fn write_daemon_error_tracked(stream: &mut std::os::unix::net::UnixStream, messa
             tracing::debug!(error = %e, "Failed to write daemon error response");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// `io::Write` sink that records every `write` / `write_all` call so a
+    /// test can assert the response frame reaches the socket in exactly one
+    /// syscall (`UnixStream` is unbuffered — fragmented writes there are
+    /// fragmented syscalls).
+    #[derive(Default)]
+    struct CountingWriter {
+        buf: Vec<u8>,
+        writes: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.buf.extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // The response frame is emitted with a single `write_all` of one
+    // pre-serialized buffer. `write_all` on a `Vec`-extending sink that
+    // never short-writes calls `write` exactly once — so one logical write,
+    // one syscall against a real unbuffered `UnixStream`. Pins the
+    // PERF-fix: no per-JSON-fragment Display write storm.
+    #[test]
+    fn response_frame_is_one_write() {
+        let mut w = CountingWriter::default();
+        let resp = serde_json::json!({
+            "status": "ok",
+            "output": {"data": {"a": 1, "b": [2, 3]}},
+        });
+        write_response_frame(&mut w, &resp).expect("frame writes");
+        assert_eq!(
+            w.writes, 1,
+            "response must reach the socket in a single write; got {}",
+            w.writes
+        );
+        assert!(w.buf.ends_with(b"\n"), "frame must end with a newline");
+    }
+
+    // `write_daemon_ok` wraps the dispatch output in
+    // `{"status":"ok","output":<value>}` and serializes once. Pin the exact
+    // wire bytes of a representative envelope so the single-serialization
+    // path stays byte-identical to the prior parse → wrap → serialize shape:
+    // serde_json `Value` is BTreeMap-backed (no `preserve_order`), so keys
+    // emit alphabetically — `output` before `status` on the frame, and
+    // `data` before everything in the slim envelope.
+    #[test]
+    fn daemon_ok_frame_exact_bytes() {
+        let mut w = CountingWriter::default();
+        // The dispatch output value, already parsed/canonicalized by the
+        // handler before it reaches `write_daemon_ok`.
+        let output = serde_json::json!({"data": {"zebra": 1, "alpha": 2}});
+        let delivered = write_daemon_ok(&mut w, output);
+        assert!(delivered, "frame must be delivered");
+        let bytes = String::from_utf8(w.buf).expect("utf-8 frame");
+        assert_eq!(
+            bytes, "{\"output\":{\"data\":{\"alpha\":2,\"zebra\":1}},\"status\":\"ok\"}\n",
+            "exact wire bytes must stay alphabetized + single-line + newline-terminated"
+        );
+    }
+
+    // The error frame shares the single-serialization path and the same
+    // byte contract: `{"message":...,"status":"error"}` alphabetized.
+    #[test]
+    fn daemon_error_frame_exact_bytes() {
+        let mut w = CountingWriter::default();
+        let resp = serde_json::json!({ "status": "error", "message": "boom" });
+        write_response_frame(&mut w, &resp).expect("frame writes");
+        let bytes = String::from_utf8(w.buf).expect("utf-8 frame");
+        assert_eq!(bytes, "{\"message\":\"boom\",\"status\":\"error\"}\n");
     }
 }
