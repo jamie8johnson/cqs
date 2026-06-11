@@ -202,8 +202,8 @@ pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 pub use diff::{semantic_diff, DiffEntry, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
-    gather, gather_cross_index, gather_cross_index_with_index, gather_max_nodes, gather_with_graph,
-    GatherDirection, GatherOptions, GatherResult, GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
+    gather, gather_cross_index_with_index, gather_max_nodes, gather_with_graph, GatherDirection,
+    GatherOptions, GatherResult, GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
 };
 /// Cross-project call graph types and context.
 pub mod cross_project {
@@ -599,7 +599,7 @@ pub fn normalize_slashes(path: &str) -> String {
 /// Recognized prefixes:
 /// - `\\?\C:\foo`  → `C:\foo`
 /// - `\\?\UNC\server\share` → `\\server\share`
-fn strip_windows_verbatim_prefix(s: &str) -> String {
+pub(crate) fn strip_windows_verbatim_prefix(s: &str) -> String {
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         // `\\?\UNC\server\share` → `\\server\share`
         let mut out = String::with_capacity(rest.len() + 2);

@@ -19,6 +19,7 @@ use super::KindFallbackOutput;
 /// surfaces warn and return the local result); the flag lives on the
 /// adapter side, so the core covers the single-project path.
 #[derive(Debug, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct DepsArgs {
     /// Type name (forward) or function name (with `reverse`).
     pub name: String,
@@ -26,6 +27,17 @@ pub(crate) struct DepsArgs {
     pub reverse: bool,
     /// Cap on type users (forward) or used types (reverse), clamped 1..=100.
     pub limit: usize,
+}
+
+impl Default for DepsArgs {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            reverse: false,
+            // Mirrors clap `LimitArg` default.
+            limit: crate::cli::args::DEFAULT_LIMIT,
+        }
+    }
 }
 
 // ─── Output types ──────────────────────────────────────────────────────────
@@ -244,6 +256,15 @@ fn render_deps_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wire caller can supply just `name` and inherit the defaults.
+    #[test]
+    fn deps_args_deserialize_minimal() {
+        let args: DepsArgs = serde_json::from_str(r#"{"name":"Config"}"#).unwrap();
+        assert_eq!(args.name, "Config");
+        assert!(!args.reverse);
+        assert_eq!(args.limit, crate::cli::args::DEFAULT_LIMIT);
+    }
 
     #[test]
     fn test_deps_reverse_field_names() {

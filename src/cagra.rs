@@ -166,7 +166,7 @@ fn cagra_max_bytes() -> usize {
     })
 }
 
-/// Configurable CAGRA streaming batch size for `build_from_store`, scaled by
+/// Configurable CAGRA streaming batch size for `build_from_store_with_metric`, scaled by
 /// `dim` and overridable via `CQS_CAGRA_STREAM_BATCH_SIZE` (which wins
 /// verbatim). The base 10_000 at dim=1024 is a 40 MB allocation per batch
 /// (10_000 × 1024 × 4 bytes). Higher-dim models shrink it to keep per-batch
@@ -271,7 +271,7 @@ pub struct CagraIndex {
     /// (cudaMalloc'd buffer unfreed, stream corked, resources leaked),
     /// so subsequent searches against the same `GpuState` could
     /// double-free or CUDA-fault. `BatchContext::vector_index` checks
-    /// `is_poisoned()` and forces a rebuild via `build_from_store`
+    /// `is_poisoned()` and forces a rebuild via `build_from_store_with_metric`
     /// rather than reusing the poisoned state.
     poisoned: AtomicBool,
 }
@@ -378,12 +378,20 @@ impl CagraIndex {
     /// Build a CAGRA index from embeddings. The distance metric is resolved
     /// from `CQS_DISTANCE_METRIC` (default cosine); use
     /// [`Self::build_with_metric`] to pin it explicitly.
+    ///
+    /// Test-only: production builds go through `build_from_store_with_metric`,
+    /// which streams embeddings from SQLite. This in-memory constructor exists
+    /// to seed fixtures from explicit `(id, embedding)` pairs.
+    #[cfg(test)]
     pub fn build(embeddings: Vec<(String, Embedding)>, dim: usize) -> Result<Self, CagraError> {
         let metric = DistanceMetric::resolve().map_err(CagraError::Build)?;
         Self::build_with_metric(embeddings, dim, metric)
     }
 
     /// [`Self::build`] with an explicit [`DistanceMetric`].
+    ///
+    /// Test-only: see [`Self::build`].
+    #[cfg(test)]
     pub fn build_with_metric(
         embeddings: Vec<(String, Embedding)>,
         dim: usize,
@@ -823,15 +831,7 @@ impl CagraIndex {
     /// can't stream incrementally like HNSW. We stream from SQLite to avoid
     /// double-buffering in memory.
     /// Notes are excluded — they use brute-force search from SQLite.
-    pub fn build_from_store<Mode>(
-        store: &crate::Store<Mode>,
-        dim: usize,
-    ) -> Result<Self, CagraError> {
-        let metric = DistanceMetric::resolve().map_err(CagraError::Build)?;
-        Self::build_from_store_with_metric(store, dim, metric)
-    }
-
-    /// [`Self::build_from_store`] with an explicit [`DistanceMetric`].
+    ///
     /// `CagraBackend::try_open` uses this to keep a rebuilt CAGRA index
     /// consistent with the slot's stored HNSW metric instead of silently
     /// re-resolving to the default.
@@ -1001,7 +1001,7 @@ fn default_metric_string() -> String {
 /// Whether CAGRA persistence is enabled (via `CQS_CAGRA_PERSIST`).
 ///
 /// Defaults to `true`. Setting `CQS_CAGRA_PERSIST=0` disables both the save
-/// path (build_from_store won't write the file) and the load path
+/// path (build_from_store_with_metric won't write the file) and the load path
 /// (build_vector_index_with_config won't even check for persisted indices).
 ///
 /// Cached in a `OnceLock` so we parse the env var exactly once per process.

@@ -38,11 +38,22 @@ use super::KindFallbackOutput;
 /// kind-fallback. The core covers the single-project path both surfaces
 /// share.
 #[derive(Debug, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct CallersArgs {
     /// Function name to analyze.
     pub name: String,
     /// Max callers/callees returned (clamped 1..=100 inside the core).
     pub limit: usize,
+}
+
+impl Default for CallersArgs {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            // Mirrors clap `LimitArg` default.
+            limit: crate::cli::args::DEFAULT_LIMIT,
+        }
+    }
 }
 
 /// Alias so `callees` reads naturally at call sites. Same shape as
@@ -488,6 +499,14 @@ mod tests {
     use super::super::chunks_to_definitions;
     use super::*;
     use cqs::store::ChunkSummary;
+
+    /// A wire caller can supply just `name` and inherit the default limit.
+    #[test]
+    fn callers_args_deserialize_minimal() {
+        let args: CallersArgs = serde_json::from_str(r#"{"name":"foo"}"#).unwrap();
+        assert_eq!(args.name, "foo");
+        assert_eq!(args.limit, crate::cli::args::DEFAULT_LIMIT);
+    }
 
     #[test]
     fn test_caller_entry_field_names() {

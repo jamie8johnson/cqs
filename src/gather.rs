@@ -537,33 +537,15 @@ pub fn gather_with_graph<Mode>(
 
 /// Cross-index gather: seed from a reference index, bridge into project code, BFS expand.
 ///
+/// Accepts an optional HNSW index for O(log n) bridge searches instead of
+/// brute-force scans per reference seed (pass `None` to scan).
+///
 /// Flow:
 /// 1. Search reference index for seed chunks matching the query
 /// 2. Retrieve seed chunk embeddings from the reference store
 /// 3. For each seed embedding, search the project store for similar code (bridge)
 /// 4. BFS expand project-side bridges via the project call graph
 /// 5. Return both reference seeds (context) and expanded project chunks
-pub fn gather_cross_index<Mode: Sync>(
-    project_store: &Store<Mode>,
-    ref_idx: &crate::reference::ReferenceIndex,
-    query_embedding: &crate::Embedding,
-    query_text: &str,
-    opts: &GatherOptions,
-    root: &Path,
-) -> Result<GatherResult, AnalysisError> {
-    gather_cross_index_with_index(
-        project_store,
-        ref_idx,
-        query_embedding,
-        query_text,
-        opts,
-        root,
-        None,
-    )
-}
-
-/// Like [`gather_cross_index`] but accepts an optional HNSW index for O(log n)
-/// bridge searches instead of brute-force scans per reference seed.
 pub fn gather_cross_index_with_index<Mode: Sync>(
     project_store: &Store<Mode>,
     ref_idx: &crate::reference::ReferenceIndex,

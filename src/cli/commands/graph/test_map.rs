@@ -27,6 +27,7 @@ use crate::cli::commands::resolve::resolve_target;
 /// adapters (it has no kind-fallback and a merged-graph context); the core
 /// covers the single-project path both surfaces share.
 #[derive(Debug, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct TestMapArgs {
     /// Function name or `file:function`.
     pub name: String,
@@ -40,6 +41,19 @@ pub(crate) struct TestMapArgs {
     /// `#[serde(default)]` so a wire caller that omits it gets the default.
     #[serde(default = "test_map_max_nodes")]
     pub max_nodes: usize,
+}
+
+impl Default for TestMapArgs {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            // Mirrors clap `--depth` default (`DEFAULT_DEPTH_TEST_MAP`).
+            max_depth: crate::cli::args::DEFAULT_DEPTH_TEST_MAP as usize,
+            // Mirrors clap `LimitArg` default.
+            limit: crate::cli::args::DEFAULT_LIMIT,
+            max_nodes: test_map_max_nodes(),
+        }
+    }
 }
 
 // ─── Shared data structures ─────────────────────────────────────────────────
@@ -440,6 +454,19 @@ fn render_test_map_fallback_text(name: &str, store: &Store<ReadOnly>) -> Result<
 #[cfg(test)]
 mod output_tests {
     use super::*;
+
+    /// A wire caller can supply just `name` and inherit the defaults.
+    #[test]
+    fn test_map_args_deserialize_minimal() {
+        let args: TestMapArgs = serde_json::from_str(r#"{"name":"foo"}"#).unwrap();
+        assert_eq!(args.name, "foo");
+        assert_eq!(
+            args.max_depth,
+            crate::cli::args::DEFAULT_DEPTH_TEST_MAP as usize
+        );
+        assert_eq!(args.limit, crate::cli::args::DEFAULT_LIMIT);
+        assert_eq!(args.max_nodes, test_map_max_nodes());
+    }
 
     #[test]
     fn test_test_map_output_field_names() {

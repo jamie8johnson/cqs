@@ -38,6 +38,12 @@ use cqs::store::DeadConfidence;
 // expresses "give up after 10 hops" rather than "expand 10 deep."
 // `--depth` is accepted as an alias so the spelling matches the others.
 
+/// Default `--limit` for graph commands (callers, callees, deps, impact,
+/// test-map, trace, ...). Mirrors the top-level `Cli::limit` so a bare
+/// `cqs <query>` and `cqs callers <name>` agree on the cap. Single source
+/// for both the clap `LimitArg` default and the core `*Args` `Default` impls.
+pub const DEFAULT_LIMIT: usize = 5;
+
 /// Default for "blast radius" depth flags (gather, impact). One step
 /// of direct callers / callees.
 pub const DEFAULT_DEPTH_BLAST: usize = 1;
@@ -84,7 +90,7 @@ pub(crate) enum RerankerMode {
 #[derive(Args, Debug, Clone)]
 pub(crate) struct LimitArg {
     /// Max results to return (per category for impact/explain)
-    #[arg(short = 'n', long, default_value = "5", value_parser = parse_nonzero_usize)]
+    #[arg(short = 'n', long, default_value_t = DEFAULT_LIMIT, value_parser = parse_nonzero_usize)]
     pub limit: usize,
 }
 
@@ -282,6 +288,18 @@ pub(crate) struct ScoutArgs {
     /// Maximum token budget (includes chunk content within budget)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
+    /// Override the number of search results retrieved before grouping
+    /// (default: 15). Higher surfaces more candidate files.
+    #[arg(long, value_parser = parse_nonzero_usize)]
+    pub search_limit: Option<usize>,
+    /// Override the minimum search score threshold (default: 0.2). Lower
+    /// admits weaker matches.
+    #[arg(long, value_parser = parse_finite_f32)]
+    pub search_threshold: Option<f32>,
+    /// Override the min relative score gap that splits a ModifyTarget from a
+    /// Dependency (default: 0.10). Lower yields more ModifyTargets.
+    #[arg(long, value_parser = parse_finite_f32)]
+    pub min_gap_ratio: Option<f32>,
 }
 
 /// Arguments shared between CLI `context` and batch `context`.

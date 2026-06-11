@@ -1243,6 +1243,52 @@ mod tests {
         });
     }
 
+    /// A non-numeric `schema_version` value must surface as
+    /// `StoreError::Corruption`, not panic and not be silently treated as
+    /// version 0. Guards the `s.parse::<i32>()` failure arm.
+    #[test]
+    fn test_check_and_migrate_schema_non_numeric_version_is_corruption() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            // Garbage version string — must fail the i32 parse.
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', 'abc')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let result = check_and_migrate_schema(pool, &db_path, 26, false).await;
+            match result {
+                Err(StoreError::Corruption(msg)) => {
+                    assert!(
+                        msg.contains("abc"),
+                        "corruption message should name the bad value: {msg}"
+                    );
+                }
+                Ok(_) => panic!("non-numeric schema_version must not be treated as valid"),
+                Err(other) => panic!("expected Corruption for non-numeric version, got: {other:?}"),
+            }
+        });
+    }
+
     /// Read-only opens of a DB already at the current version must succeed
     /// (no migration, no error). Regression guard for the `read_only=true`
     /// branch added above so it doesn't reject every readonly open.

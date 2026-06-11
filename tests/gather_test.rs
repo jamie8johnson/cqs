@@ -132,13 +132,19 @@ fn test_gather_callers_only() {
     let chunk_target = test_chunk("target", "fn target() {}");
     let chunk_callee = test_chunk("callee", "fn callee() {}");
 
-    let emb = mock_embedding(1.0);
-    store.upsert_chunk(&chunk_a, &emb, Some(12345)).unwrap();
+    // Only `target` shares the query direction (seed 1.0). `caller` and
+    // `callee` sit on the opposite direction (seed -1.0) so they fall below
+    // the seed threshold — they can only enter the result via graph expansion,
+    // which makes the direction assertion meaningful (otherwise all three
+    // would be seeds at depth 0 and direction would be untestable).
     store
-        .upsert_chunk(&chunk_target, &emb, Some(12345))
+        .upsert_chunk(&chunk_a, &mock_embedding(-1.0), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk_callee, &emb, Some(12345))
+        .upsert_chunk(&chunk_target, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk_callee, &mock_embedding(-1.0), Some(12345))
         .unwrap();
 
     // caller → target → callee
@@ -180,9 +186,25 @@ fn test_gather_callers_only() {
         &opts,
         &PathBuf::from("/tmp"),
         &graph,
-    );
+    )
+    .expect("Gather with callers direction should work");
 
-    assert!(result.is_ok(), "Gather with callers direction should work");
+    // Names brought in by graph expansion (depth ≥ 1).
+    let expanded: Vec<&str> = result
+        .chunks
+        .iter()
+        .filter(|c| c.depth >= 1)
+        .map(|c| c.name.as_str())
+        .collect();
+
+    assert!(
+        expanded.contains(&"caller"),
+        "Callers direction should expand up to `caller`, got expanded {expanded:?}"
+    );
+    assert!(
+        !expanded.contains(&"callee"),
+        "Callers direction must not expand down to `callee`, got expanded {expanded:?}"
+    );
 }
 
 #[test]
@@ -190,22 +212,41 @@ fn test_gather_callees_only() {
     let store = TestStore::new();
 
     let chunk_a = test_chunk("caller", "fn caller() { target(); }");
-    let chunk_target = test_chunk("target", "fn target() {}");
+    let chunk_target = test_chunk("target", "fn target() { callee(); }");
+    let chunk_callee = test_chunk("callee", "fn callee() {}");
 
-    let emb = mock_embedding(1.0);
-    store.upsert_chunk(&chunk_a, &emb, Some(12345)).unwrap();
+    // Mirror of the callers test: only `target` is a seed (direction 1.0);
+    // `caller` (upstream) and `callee` (downstream) sit on the opposite
+    // direction so they only enter via graph expansion.
     store
-        .upsert_chunk(&chunk_target, &emb, Some(12345))
+        .upsert_chunk(&chunk_a, &mock_embedding(-1.0), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk_target, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk_callee, &mock_embedding(-1.0), Some(12345))
         .unwrap();
 
-    let function_calls = vec![FunctionCalls {
-        name: "caller".to_string(),
-        line_start: 1,
-        calls: vec![CallSite {
-            callee_name: "target".to_string(),
-            line_number: 1,
-        }],
-    }];
+    // caller → target → callee
+    let function_calls = vec![
+        FunctionCalls {
+            name: "caller".to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: "target".to_string(),
+                line_number: 1,
+            }],
+        },
+        FunctionCalls {
+            name: "target".to_string(),
+            line_start: 5,
+            calls: vec![CallSite {
+                callee_name: "callee".to_string(),
+                line_number: 5,
+            }],
+        },
+    ];
     store
         .upsert_function_calls(&PathBuf::from("test.rs"), &function_calls)
         .unwrap();
@@ -226,9 +267,25 @@ fn test_gather_callees_only() {
         &opts,
         &PathBuf::from("/tmp"),
         &graph,
-    );
+    )
+    .expect("Gather with callees direction should work");
 
-    assert!(result.is_ok(), "Gather with callees direction should work");
+    // Names brought in by graph expansion (depth ≥ 1).
+    let expanded: Vec<&str> = result
+        .chunks
+        .iter()
+        .filter(|c| c.depth >= 1)
+        .map(|c| c.name.as_str())
+        .collect();
+
+    assert!(
+        expanded.contains(&"callee"),
+        "Callees direction should expand down to `callee`, got expanded {expanded:?}"
+    );
+    assert!(
+        !expanded.contains(&"caller"),
+        "Callees direction must not expand up to `caller`, got expanded {expanded:?}"
+    );
 }
 
 // ============ Cross-index gather tests (#414) ============
@@ -290,13 +347,14 @@ fn test_gather_cross_index_basic() {
         ..GatherOptions::default()
     };
 
-    let result = cqs::gather_cross_index(
+    let result = cqs::gather_cross_index_with_index(
         &proj_ts.store,
         &ref_idx,
         &mock_embedding(1.0),
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        None,
     )
     .unwrap();
 
@@ -344,13 +402,14 @@ fn test_gather_cross_index_no_ref_seeds() {
     let ref_idx = make_ref_index(&ref_ts, "empty-ref");
     let opts = GatherOptions::default();
 
-    let result = cqs::gather_cross_index(
+    let result = cqs::gather_cross_index_with_index(
         &proj_ts.store,
         &ref_idx,
         &mock_embedding(1.0),
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        None,
     )
     .unwrap();
 
@@ -385,13 +444,14 @@ fn test_gather_cross_index_ref_only() {
         ..GatherOptions::default()
     };
 
-    let result = cqs::gather_cross_index(
+    let result = cqs::gather_cross_index_with_index(
         &proj_ts.store,
         &ref_idx,
         &mock_embedding(1.0),
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        None,
     )
     .unwrap();
 
@@ -435,13 +495,14 @@ fn test_gather_cross_index_respects_limit() {
         ..GatherOptions::default()
     };
 
-    let result = cqs::gather_cross_index(
+    let result = cqs::gather_cross_index_with_index(
         &proj_ts.store,
         &ref_idx,
         &mock_embedding(1.0),
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        None,
     )
     .unwrap();
 
@@ -449,5 +510,83 @@ fn test_gather_cross_index_respects_limit() {
         result.chunks.len() <= 3,
         "Should respect limit=3, got {}",
         result.chunks.len()
+    );
+}
+
+#[test]
+fn test_gather_cross_index_with_real_index() {
+    use cqs::hnsw::HnswIndex;
+    use cqs::index::VectorIndex;
+
+    // Reference store: has "ref_func" with embedding seed 1.0
+    let ref_ts = TestStore::new();
+    let ref_chunk = test_chunk("ref_func", "fn ref_func() { does_stuff(); }");
+    ref_ts
+        .upsert_chunk(&ref_chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // Project store: "proj_func" matches the ref seed direction (bridge hit),
+    // "proj_callee" reachable via the call graph.
+    let proj_ts = TestStore::new();
+    let proj_chunk = test_chunk("proj_func", "fn proj_func() { proj_callee(); }");
+    let proj_callee = test_chunk("proj_callee", "fn proj_callee() {}");
+    proj_ts
+        .upsert_chunk(&proj_chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+    proj_ts
+        .upsert_chunk(&proj_callee, &mock_embedding(2.0), Some(12345))
+        .unwrap();
+
+    proj_ts
+        .upsert_function_calls(
+            &PathBuf::from("test.rs"),
+            &[FunctionCalls {
+                name: "proj_func".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "proj_callee".to_string(),
+                    line_number: 1,
+                }],
+            }],
+        )
+        .unwrap();
+
+    // Build a real HNSW index over the project chunks the way production does:
+    // (chunk_id, embedding) pairs keyed identically to the project store rows.
+    let embeddings: Vec<(String, _)> = vec![
+        (proj_chunk.id.clone(), mock_embedding(1.0)),
+        (proj_callee.id.clone(), mock_embedding(2.0)),
+    ];
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
+
+    let ref_idx = make_ref_index(&ref_ts, "test-ref");
+    let opts = GatherOptions {
+        expand_depth: 1,
+        direction: GatherDirection::Both,
+        limit: 20,
+        ..GatherOptions::default()
+    };
+
+    // Exercise the indexed (non-None) bridge-search path.
+    let result = cqs::gather_cross_index_with_index(
+        &proj_ts.store,
+        &ref_idx,
+        &mock_embedding(1.0),
+        "test query",
+        &opts,
+        &PathBuf::from("/tmp"),
+        Some(&index as &dyn VectorIndex),
+    )
+    .unwrap();
+
+    assert!(!result.chunks.is_empty(), "Should return chunks");
+    let names: Vec<&str> = result.chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"ref_func"),
+        "Should include the reference seed, got {names:?}"
+    );
+    assert!(
+        names.contains(&"proj_func"),
+        "Indexed bridge search should find proj_func, got {names:?}"
     );
 }

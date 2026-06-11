@@ -325,7 +325,15 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
     let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
 
     let dir = slot_dir(project_cqs_dir, name);
-    if dir.exists() {
+    // Refuse only when the dir holds a *real* slot — an `index.db` or a
+    // `slot.toml` model pin. A bare dir with neither is the residue of a
+    // create killed between `create_dir_all` and `write_slot_model`: refusing
+    // it would strand the slot with no model pin, and a later `cqs index`
+    // would silently fall back to the default model. Treat it as re-creatable
+    // so the model pin gets written.
+    let index_db = dir.join(cqs::INDEX_DB_FILENAME);
+    let slot_toml = cqs::slot::slot_config_path(project_cqs_dir, name);
+    if dir.exists() && (index_db.exists() || slot_toml.exists()) {
         anyhow::bail!(
             "Slot '{}' already exists at {}. Either run `cqs index --slot {}` or `cqs slot remove {}` first.",
             name,
@@ -654,11 +662,42 @@ mod tests {
 
     #[test]
     fn slot_create_refuses_existing() {
+        // A *real* slot (one with a model pin) must be refused so the user
+        // doesn't clobber a populated slot. `with_slots` only makes a bare
+        // dir, so write the model pin to make it a real slot.
         let _g = ENV_LOCK.lock().unwrap();
         let tmp = with_slots(&["dup"]);
         let cqs = tmp.path().join(".cqs");
+        write_slot_model(&cqs, "dup", "nomic-coderank").unwrap();
         let r = slot_create(&cqs, "dup", None, true);
         assert!(r.is_err());
+    }
+
+    /// Kill-window recovery: a slot dir with neither `index.db` nor
+    /// `slot.toml` is the residue of a create killed between `create_dir_all`
+    /// and the model-pin write. Re-running `slot create` must succeed and
+    /// write the pin rather than refuse (which would strand the slot on the
+    /// default model at the next `cqs index`).
+    #[test]
+    fn slot_create_recreates_pinless_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = with_slots(&["halfborn"]);
+        let cqs = tmp.path().join(".cqs");
+        // Precondition: the dir exists but holds no model pin.
+        assert!(slot_dir(&cqs, "halfborn").exists());
+        assert!(cqs::slot::read_slot_model(&cqs, "halfborn").is_none());
+
+        let r = slot_create(&cqs, "halfborn", Some("nomic-coderank"), true);
+        assert!(
+            r.is_ok(),
+            "pinless dir should be re-creatable: {:?}",
+            r.err()
+        );
+        assert_eq!(
+            cqs::slot::read_slot_model(&cqs, "halfborn").as_deref(),
+            Some("nomic-coderank"),
+            "re-create must write the model pin"
+        );
     }
 
     #[test]
