@@ -14,9 +14,10 @@ use super::types::EmbeddedBatch;
 use crate::cli::check_interrupted;
 
 /// How often (in batches) to flush deferred vecs.
-/// Overridable via `CQS_DEFERRED_FLUSH_INTERVAL` env var.
+/// Overridable via `CQS_DEFERRED_FLUSH_BATCHES` env var (the value is a
+/// batch count, not a duration).
 fn deferred_flush_interval() -> usize {
-    std::env::var("CQS_DEFERRED_FLUSH_INTERVAL")
+    std::env::var("CQS_DEFERRED_FLUSH_BATCHES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50)

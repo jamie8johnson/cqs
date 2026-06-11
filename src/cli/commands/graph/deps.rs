@@ -138,14 +138,10 @@ pub(crate) fn deps_core(
     // `--reverse` instead — mirroring the established fallback shape.
     if !args.reverse {
         match cqs::kind::detect_kind_for_store(store, &args.name) {
-            Ok((cqs::kind::Kind::Function, _)) => {
-                let def_chunks = match store.lookup_by_name(&args.name) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(error = %e, name = %args.name, "deps function-forward definition lookup failed");
-                        Vec::new()
-                    }
-                };
+            Ok((cqs::kind::KindResolution::Resolved(cqs::kind::Kind::Function), def_chunks)) => {
+                // Reuse the rows the kind detection already read — one read
+                // feeds both the routing decision and the rendering
+                // (DS-V1.40-8/10), so no second `get_chunks_by_name` here.
                 let definitions = super::chunks_to_definitions(&def_chunks);
                 super::record_kind_fallback(&args.name, "function", "deps", definitions.len());
                 return Ok(DepsCoreOutput::Fallback(super::KindFallbackOutput {
@@ -274,14 +270,10 @@ fn render_deps_fallback_text(name: &str, reverse: bool, store: &Store<ReadOnly>)
     // Forward-deps Function misroute: the core emitted the `function`
     // fallback; mirror it in text.
     if !reverse {
-        if let Ok((cqs::kind::Kind::Function, _)) = cqs::kind::detect_kind_for_store(store, name) {
-            let def_chunks = match store.lookup_by_name(name) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, name, "deps function-forward text lookup failed");
-                    Vec::new()
-                }
-            };
+        if let Ok((cqs::kind::KindResolution::Resolved(cqs::kind::Kind::Function), def_chunks)) =
+            cqs::kind::detect_kind_for_store(store, name)
+        {
+            // Reuse the rows kind detection already read (DS-V1.40-8/10).
             super::render_kind_fallback_text(
                 &notes_text::deps_function_forward_lead(name),
                 &def_chunks,

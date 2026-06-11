@@ -1,6 +1,6 @@
 //! Wire-format selector for JSON output.
 //!
-//! - **Process-lifetime caching.** [`OutputFormat::current`] reads the env
+//! - **Process-lifetime caching.** [`EnvelopeShape::current`] reads the env
 //!   once via `OnceLock` and memoizes. A daemon serving thousands of
 //!   emissions per minute does one syscall per process lifetime, not per
 //!   emit. Side benefit: no TOCTOU race — a daemon thread that calls
@@ -33,7 +33,7 @@
 /// slim `{"data": ...}` / `{"error": {...}}` shape (the JSONL contract
 /// requires self-describing lines either way).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFormat {
+pub enum EnvelopeShape {
     /// v1 envelope shape: CLI direct success emits the full envelope
     /// `{data, error: null, version: 1, _meta: {...}}` to stdout. Selected
     /// by setting `CQS_OUTPUT_FORMAT=v1`. For consumer scripts that want the
@@ -49,9 +49,9 @@ pub enum OutputFormat {
 /// call reads env, subsequent calls hit the cache. Avoids a per-emit
 /// `std::env::var` syscall and pins the value so a daemon thread can't flip
 /// the envelope shape mid-stream via `set_var`.
-static OUTPUT_FORMAT: std::sync::OnceLock<OutputFormat> = std::sync::OnceLock::new();
+static OUTPUT_FORMAT: std::sync::OnceLock<EnvelopeShape> = std::sync::OnceLock::new();
 
-impl OutputFormat {
+impl EnvelopeShape {
     /// Resolve once and cache for the process lifetime. Intended to be
     /// called at request entry points (CLI dispatcher, batch dispatcher,
     /// daemon handler).
@@ -70,7 +70,7 @@ impl OutputFormat {
         tracing::info!(
             format = ?format,
             raw = ?raw.as_deref().unwrap_or("<unset>"),
-            "OutputFormat resolved from CQS_OUTPUT_FORMAT"
+            "EnvelopeShape resolved from CQS_OUTPUT_FORMAT"
         );
         format
     }
@@ -106,7 +106,7 @@ mod tests {
     use super::*;
 
     // ───────────────────────────────────────────────────────────────────
-    // OutputFormat::resolve_from_str — pure parser tests
+    // EnvelopeShape::resolve_from_str — pure parser tests
     //
     // `current()` uses process-lifetime `OnceLock` caching, so env-mutating
     // tests against it are racy: the first test that runs in the binary
@@ -116,10 +116,10 @@ mod tests {
 
     #[test]
     fn output_format_resolve_unset_is_v2_bare() {
-        assert_eq!(OutputFormat::resolve_from_str(None), OutputFormat::V2Bare);
+        assert_eq!(EnvelopeShape::resolve_from_str(None), EnvelopeShape::V2Bare);
         assert_eq!(
-            OutputFormat::resolve_from_str(Some("")),
-            OutputFormat::V2Bare
+            EnvelopeShape::resolve_from_str(Some("")),
+            EnvelopeShape::V2Bare
         );
     }
 
@@ -128,8 +128,8 @@ mod tests {
         // `v1` recognition is case-insensitive and whitespace-trimmed.
         for v in &["v1", "V1", "  v1  ", "\tv1\n", "V1"] {
             assert_eq!(
-                OutputFormat::resolve_from_str(Some(v)),
-                OutputFormat::V1Envelope,
+                EnvelopeShape::resolve_from_str(Some(v)),
+                EnvelopeShape::V1Envelope,
                 "expected v1 alias {v:?} → V1Envelope"
             );
         }
@@ -139,8 +139,8 @@ mod tests {
     fn output_format_resolve_v2_yields_bare() {
         for v in &["v2", "V2", " v2 "] {
             assert_eq!(
-                OutputFormat::resolve_from_str(Some(v)),
-                OutputFormat::V2Bare,
+                EnvelopeShape::resolve_from_str(Some(v)),
+                EnvelopeShape::V2Bare,
                 "expected v2 alias {v:?} → V2Bare"
             );
         }
@@ -152,26 +152,26 @@ mod tests {
         // V2Bare + tracing::warn (so a typo doesn't silently select the
         // v1 envelope shape).
         assert_eq!(
-            OutputFormat::resolve_from_str(Some("v3")),
-            OutputFormat::V2Bare
+            EnvelopeShape::resolve_from_str(Some("v3")),
+            EnvelopeShape::V2Bare
         );
         assert_eq!(
-            OutputFormat::resolve_from_str(Some("envelope")),
-            OutputFormat::V2Bare
+            EnvelopeShape::resolve_from_str(Some("envelope")),
+            EnvelopeShape::V2Bare
         );
         assert_eq!(
-            OutputFormat::resolve_from_str(Some("junk")),
-            OutputFormat::V2Bare
+            EnvelopeShape::resolve_from_str(Some("junk")),
+            EnvelopeShape::V2Bare
         );
     }
 
     #[test]
     fn output_format_emits_bare_payload_under_v2() {
-        assert!(OutputFormat::V2Bare.emits_bare_payload());
+        assert!(EnvelopeShape::V2Bare.emits_bare_payload());
     }
 
     #[test]
     fn output_format_skips_bare_under_v1() {
-        assert!(!OutputFormat::V1Envelope.emits_bare_payload());
+        assert!(!EnvelopeShape::V1Envelope.emits_bare_payload());
     }
 }

@@ -4,10 +4,10 @@
 //!
 //! `cqs impact <name>` consults `cqs::kind::classify_hits` against an
 //! exact-name lookup before running the call-graph analysis. For
-//! [`Kind::Const`], [`Kind::Type`], [`Kind::Module`], and
-//! [`Kind::Ambiguous`] the response is a kind-labeled definition list with
-//! a redirect note instead of empty. Function and other kinds fall through
-//! to the call-graph analysis flow.
+//! `Resolved(Kind::Const)`, `Resolved(Kind::Type)`, `Resolved(Kind::Module)`,
+//! and `KindResolution::Ambiguous` the response is a kind-labeled definition
+//! list with a redirect note instead of empty. Function and other
+//! resolutions fall through to the call-graph analysis flow.
 
 use anyhow::Result;
 
