@@ -34,19 +34,12 @@ use crate::cli::commands::{
 // their adapter-side branch (separate cross-project context, no
 // kind-fallback).
 
-/// Dispatches a dependency query for a given name, returning either the types used by it or the code locations that use it.
+/// Dispatches a dependency query for a given name, returning either the
+/// types used by it (`reverse`) or the code locations that use it.
 ///
-/// # Arguments
-///
-/// * `ctx` - The batch processing context containing the store and root path
-/// * `name` - The name of the type or function to query dependencies for
-/// * `reverse` - If `true`, returns types used by `name`; if `false`, returns code locations that use `name`
-///
-/// # Returns
-///
-/// A JSON value containing:
-/// - When `reverse` is `true`: an object with the queried function name, a list of types it uses (with type names and edge kinds), and the count of types
-/// - When `reverse` is `false`: an array of objects describing code locations that use the type, each with name, file path, line number, and chunk type
+/// The wire schema is `DepsCoreOutput` (in `cli::commands::graph::deps`),
+/// serialized as-is — see that type for the exact field names of the
+/// reverse, forward, and kind-fallback shapes.
 ///
 /// # Errors
 ///
@@ -81,16 +74,16 @@ pub(in crate::cli::batch) fn dispatch_deps(
 
 /// Retrieves and serializes caller information for a given function name.
 ///
-/// This function fetches the complete caller data for the specified function name from the batch context's store, then transforms it into a JSON array containing the caller's name, normalized file path, and line number.
+/// The wire schema is `CallersCoreOutput` (in
+/// `cli::commands::graph::callers`), serialized as-is — a flat array of
+/// caller entries on the function path, the shared kind-fallback object on
+/// a kind mismatch. See that type for the exact field names. The
+/// cross-project branch serializes `CrossProjectContext::get_callers_cross`
+/// results directly instead.
 ///
-/// # Arguments
+/// # Errors
 ///
-/// * `ctx` - The batch context containing the store to query for caller information
-/// * `name` - The name of the function for which to retrieve callers
-///
-/// # Returns
-///
-/// A `Result` containing a JSON array of caller objects, each with `name`, `file`, and `line` fields. Returns an error if the store query fails.
+/// Returns an error if the store query fails.
 pub(in crate::cli::batch) fn dispatch_callers(
     ctx: &BatchView,
     args: &CallersArgs,
@@ -123,17 +116,12 @@ pub(in crate::cli::batch) fn dispatch_callers(
 
 /// Dispatches a request to retrieve all functions called by a specified function.
 ///
-/// # Arguments
-///
-/// * `ctx` - The batch processing context containing the store for querying callees
-/// * `name` - The name of the function whose callees should be retrieved
-///
-/// # Returns
-///
-/// Returns a JSON object containing:
-/// - `function`: the name of the queried function
-/// - `calls`: an array of objects with `name` and `line` fields for each callee
-/// - `count`: the total number of callees found
+/// The wire schema is `CalleesCoreOutput` (in
+/// `cli::commands::graph::callers`), serialized as-is — the
+/// `{name, calls, count}` object on the function path, the shared
+/// kind-fallback object on a kind mismatch. See that type for the exact
+/// field names. The cross-project branch serializes
+/// `CrossProjectContext::get_callees_cross` results directly instead.
 ///
 /// # Errors
 ///

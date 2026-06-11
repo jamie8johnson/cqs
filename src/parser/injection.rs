@@ -218,9 +218,11 @@ fn walk_for_containers(
                                     end_point: child.end_position(),
                                 };
 
-                                // Safe: row count fits u32 because MAX_FILE_SIZE (50MB)
-                                // limits files to ~50M lines at minimum 1 byte/line,
-                                // well within u32::MAX.
+                                // Cast assumes the row count is < u32::MAX. The
+                                // per-file cap (CQS_MAX_FILE_SIZE, default 1 MiB)
+                                // keeps line counts far below that; the env override
+                                // is unbounded, but a >4-billion-line file is not a
+                                // realistic input.
                                 //
                                 // content_scoped_lines: use the content child's line
                                 // range instead of the container's. Required for PHP
