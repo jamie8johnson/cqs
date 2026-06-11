@@ -277,6 +277,30 @@ fn meta_value_for_envelope(meta: &EnvelopeMeta) -> serde_json::Value {
     })
 }
 
+/// Merge per-response meta entries (e.g. `stale_origins` from a search
+/// handler) with the process-level [`EnvelopeMeta`] fields, returning the
+/// combined `_meta` object — or `None` when both are empty, so callers keep
+/// the skip-when-empty emission convention `worktree_stale` established.
+///
+/// Per-response keys never collide with the process-level ones
+/// (`worktree_stale` / `worktree_name`); insertion order is process-level
+/// first, then per-response.
+pub fn merged_meta_value(
+    per_response: serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let meta = EnvelopeMeta::current();
+    if meta.is_empty() && per_response.is_empty() {
+        return None;
+    }
+    let mut combined = match meta_value_for_envelope(&meta) {
+        serde_json::Value::Object(m) => m,
+        // meta_value_for_envelope always returns an object; defensive arm.
+        _ => serde_json::Map::new(),
+    };
+    combined.extend(per_response);
+    Some(serde_json::Value::Object(combined))
+}
+
 /// Pre-serialized `,"_meta":{...}` JSON fragment for the hot-path
 /// streamed envelope writer (`write_json_line` in `crate::cli::batch`).
 /// Builds fresh on each call so the worktree-stale fields reflect
@@ -778,6 +802,26 @@ mod tests {
             v.get("handling_advice").is_none(),
             "EnvelopeMeta must not serialize a handling_advice field; got: {v}"
         );
+    }
+
+    // merged_meta_value: the per-response merge keeps the skip-when-empty
+    // convention — `None` when both the process meta and the per-response
+    // entries are empty (tests run with non-stale worktree state, so the
+    // process side is empty here).
+    #[test]
+    fn merged_meta_value_none_when_both_empty() {
+        assert!(
+            merged_meta_value(serde_json::Map::new()).is_none(),
+            "empty per-response + empty process meta must skip _meta entirely"
+        );
+    }
+
+    #[test]
+    fn merged_meta_value_carries_per_response_entries() {
+        let mut per = serde_json::Map::new();
+        per.insert("stale_origins".to_string(), serde_json::json!(["src/a.rs"]));
+        let v = merged_meta_value(per).expect("non-empty per-response meta must emit _meta");
+        assert_eq!(v["stale_origins"], serde_json::json!(["src/a.rs"]));
     }
 
     #[test]

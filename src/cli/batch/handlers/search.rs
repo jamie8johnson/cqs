@@ -65,10 +65,13 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
 ///   always serializes, so token-budget packing estimates with the JSON
 ///   overhead the CLI uses under `--json`.
 ///
-/// `expand_parent` / `pattern` / `context` / `no_stale_check` stay at their
-/// `QueryArgs` defaults: the daemon JSON has never emitted parent context, run
-/// the pattern filter, line-context, or staleness warnings, and Phase 2b keeps
-/// that wire shape. (`SearchArgs` carries those flags for CLI parity.)
+/// `expand_parent` / `pattern` / `context` stay at their `QueryArgs`
+/// defaults: the daemon JSON has never emitted parent context, run the
+/// pattern filter, or line-context, and Phase 2b keeps that wire shape.
+/// (`SearchArgs` carries those flags for CLI parity.) Staleness is not a
+/// core concern — the adapter runs the per-origin check after the core
+/// returns and attaches `_meta.stale_origins` (see
+/// [`attach_stale_origins_meta`]), honoring `--no-stale-check`.
 fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
     QueryArgs {
         query: args.query.clone(),
@@ -124,10 +127,11 @@ pub(in crate::cli::batch) fn dispatch_search(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %args.query).entered();
 
-    // Accepted for CLI parity; the batch JSON doesn't surface line-context,
-    // parent expansion, or staleness warnings. Assigning to `_` documents the
-    // intentional drop and keeps clippy quiet.
-    let _ = (args.context, args.expand_parent, args.no_stale_check);
+    // Accepted for CLI parity; the batch JSON doesn't surface line-context or
+    // parent expansion. Assigning to `_` documents the intentional drop and
+    // keeps clippy quiet. (`no_stale_check` IS honored — it gates the
+    // `_meta.stale_origins` attachment below.)
+    let _ = (args.context, args.expand_parent);
 
     // `--ref` / `--include-refs` keep their reference-index retrieval in the
     // adapter (the core models only the single-store project path); they
@@ -170,7 +174,70 @@ pub(in crate::cli::batch) fn dispatch_search(
     if args.no_content {
         strip_content(&mut value);
     }
+
+    let origins = result_origins(&output.results);
+    attach_stale_origins_meta(ctx, args, &origins, &mut value);
     Ok(value)
+}
+
+/// Deduplicated result origins (chunk file paths) for the staleness check.
+fn result_origins(results: &[cqs::store::UnifiedResult]) -> Vec<String> {
+    results
+        .iter()
+        .map(|r| {
+            let cqs::store::UnifiedResult::Code(sr) = r;
+            sr.chunk.file.to_string_lossy().into_owned()
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Run the cheap per-origin staleness check (mtime-stat over the result
+/// origins — O(result_count), never a corpus scan) and attach the sorted
+/// stale set as a reserved payload-level `_meta.stale_origins` key, which
+/// `write_json_line` lifts onto the envelope `_meta` (sibling of `data`,
+/// same wire position as `worktree_stale`). Skip-when-empty: a fresh index
+/// emits no `_meta` key at all. `--no-stale-check` skips the check entirely.
+///
+/// PARITY: this is the daemon-surface counterpart of the CLI render path's
+/// `warn_stale_results` call (`render_query_output` in
+/// `commands::search::query`). The CLI client reads this meta off the daemon
+/// envelope and prints the same stderr warning via
+/// `staleness::print_stale_warning`, so daemon-up and daemon-down warn
+/// identically for the same stale state. Change one side only with a reason.
+///
+/// Errors are logged and swallowed — the staleness check must never break a
+/// query (same contract as `warn_stale_results`).
+fn attach_stale_origins_meta(
+    ctx: &BatchView,
+    args: &SearchArgs,
+    origins: &[String],
+    value: &mut serde_json::Value,
+) {
+    if args.no_stale_check || origins.is_empty() {
+        return;
+    }
+    let origin_refs: Vec<&str> = origins.iter().map(String::as_str).collect();
+    let stale = match ctx.store().check_origins_stale(&origin_refs, &ctx.root) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to check staleness");
+            return;
+        }
+    };
+    if stale.is_empty() {
+        return;
+    }
+    // Sorted for a deterministic wire shape (HashSet order is arbitrary).
+    let mut stale: Vec<String> = stale.into_iter().collect();
+    stale.sort();
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "_meta".to_string(),
+            serde_json::json!({ "stale_origins": stale }),
+        );
+    }
 }
 
 /// Reference-scoped (`--ref`) and reference-merged (`--include-refs`) search.
@@ -358,6 +425,12 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
         results
     };
 
+    // Project-result origins for the staleness meta, captured before the
+    // reference merge consumes `results`. Reference origins are not project
+    // files — parity with the CLI multi-index path, which checks project
+    // results only.
+    let project_origins = result_origins(&results);
+
     let references = ctx.get_all_refs()?;
     let tagged: Vec<cqs::reference::TaggedResult> = if references.is_empty() {
         results
@@ -403,6 +476,7 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
     if args.no_content {
         strip_content(&mut value);
     }
+    attach_stale_origins_meta(ctx, args, &project_origins, &mut value);
     Ok(value)
 }
 
@@ -542,6 +616,18 @@ mod tests {
     /// sqlx/WSL layer, not in each test.
     fn ctx_with_chunks(chunks: Vec<Chunk>) -> (TempDir, BatchContext) {
         let dir = TempDir::new().expect("Failed to create temp dir");
+        ctx_with_chunks_in(dir, chunks, Some(0))
+    }
+
+    /// Like [`ctx_with_chunks`] but with a caller-supplied project dir (so
+    /// tests can put real files on disk first) and a caller-supplied
+    /// `source_mtime` (so staleness tests can pin the stored fingerprint
+    /// against the disk one).
+    fn ctx_with_chunks_in(
+        dir: TempDir,
+        chunks: Vec<Chunk>,
+        source_mtime: Option<i64>,
+    ) -> (TempDir, BatchContext) {
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).expect("Failed to create .cqs dir");
         let index_path = cqs_dir.join("index.db");
@@ -567,7 +653,7 @@ mod tests {
                     .map(|c| (c.clone(), embedding.clone()))
                     .collect();
                 store
-                    .upsert_chunks_batch(&pairs, Some(0))
+                    .upsert_chunks_batch(&pairs, source_mtime)
                     .expect("upsert_chunks_batch failed");
             }
         } // drop store to flush WAL
@@ -1048,16 +1134,23 @@ mod tests {
             );
         };
 
-        // Happy: a matching name-only query.
-        assert_parity(&["parse", "--name-only"]);
+        // Happy: a matching name-only query. `--no-stale-check` keeps the
+        // byte-equality contract pure: the staleness `_meta` is adapter
+        // surface I/O layered on top of the core output (the CLI does the
+        // same at its render layer), covered by the dedicated
+        // `*_stale_origins_*` tests below.
+        assert_parity(&["parse", "--name-only", "--no-stale-check"]);
         // Empty: a no-match query yields the bare envelope on both paths.
-        assert_parity(&["zzz_no_such_symbol", "--name-only"]);
+        assert_parity(&["zzz_no_such_symbol", "--name-only", "--no-stale-check"]);
 
         // Trust-labeled / converged schema: the daemon result objects carry the
         // store serializer's `type: "code"` field (a field the old ChunkOutput
         // shape never emitted). Confirms the convergence onto the CLI schema.
-        let happy = dispatch_search(&view, &parse_search_args(&["parse", "--name-only"]))
-            .expect("dispatch_search");
+        let happy = dispatch_search(
+            &view,
+            &parse_search_args(&["parse", "--name-only", "--no-stale-check"]),
+        )
+        .expect("dispatch_search");
         for r in happy["results"].as_array().expect("results array") {
             assert_eq!(
                 r["type"], "code",
@@ -1070,5 +1163,89 @@ mod tests {
                 assert!(tl.is_string(), "trust_level must serialize as a string");
             }
         }
+    }
+
+    // ─── Staleness meta (`_meta.stale_origins`) ─────────────────────────────
+
+    /// Build a context whose single chunk has a REAL file on disk at
+    /// `src/lib.rs`. `mtime_offset_ms` shifts the *stored* fingerprint
+    /// relative to the disk mtime: 0 → fresh (fingerprints match),
+    /// non-zero → stale (divergence in either direction counts under
+    /// `FileFingerprint::matches`).
+    fn ctx_with_file_on_disk(mtime_offset_ms: i64) -> (TempDir, BatchContext) {
+        let dir = TempDir::new().expect("Failed to create temp dir");
+        let file_path = dir.path().join("src/lib.rs");
+        std::fs::create_dir_all(file_path.parent().expect("parent")).expect("mkdir src");
+        // Disk content differs from the chunk content so a future
+        // content-hash tiebreak can never mask the mtime divergence.
+        std::fs::write(&file_path, "fn process_data() { /* edited */ }").expect("write file");
+        let disk_mtime = cqs::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .expect("metadata")
+                .modified()
+                .expect("modified")
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("duration"),
+        );
+
+        let chunk = make_chunk(
+            "src/lib.rs:1:5a1e0001",
+            "src/lib.rs",
+            Language::Rust,
+            ChunkType::Function,
+            "process_data",
+            "fn process_data()",
+            "fn process_data() {}",
+        );
+        ctx_with_chunks_in(dir, vec![chunk], Some(disk_mtime + mtime_offset_ms))
+    }
+
+    /// A stale origin (stored mtime diverges from disk) surfaces as
+    /// `_meta.stale_origins` on the dispatch payload — the machine-readable
+    /// signal `write_json_line` lifts onto the envelope and the CLI client
+    /// turns into the stderr warning.
+    #[test]
+    fn test_dispatch_search_stale_origin_lands_in_meta() {
+        let (_dir, ctx) = ctx_with_file_on_disk(-60_000);
+        let args = parse_search_args(&["process_data", "--name-only"]);
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search");
+
+        assert_eq!(json["total"], 1, "sanity: the chunk must match");
+        assert_eq!(
+            json["_meta"]["stale_origins"],
+            serde_json::json!(["src/lib.rs"]),
+            "stale origin must surface in _meta.stale_origins; got: {json}"
+        );
+    }
+
+    /// `--no-stale-check` skips the check entirely — no `_meta` key, matching
+    /// the CLI-direct flag semantics.
+    #[test]
+    fn test_dispatch_search_no_stale_check_omits_meta() {
+        let (_dir, ctx) = ctx_with_file_on_disk(-60_000);
+        let args = parse_search_args(&["process_data", "--name-only", "--no-stale-check"]);
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search");
+
+        assert_eq!(json["total"], 1, "sanity: the chunk must match");
+        assert!(
+            json.get("_meta").is_none(),
+            "--no-stale-check must skip the staleness meta; got: {json}"
+        );
+    }
+
+    /// Fresh index (stored fingerprint matches disk) emits NO `_meta` key —
+    /// the skip-when-empty convention `worktree_stale` established.
+    #[test]
+    fn test_dispatch_search_fresh_index_omits_meta() {
+        let (_dir, ctx) = ctx_with_file_on_disk(0);
+        let args = parse_search_args(&["process_data", "--name-only"]);
+        let json = dispatch_search(&ctx.build_view(None), &args).expect("dispatch_search");
+
+        assert_eq!(json["total"], 1, "sanity: the chunk must match");
+        assert!(
+            json.get("_meta").is_none(),
+            "fresh index must emit no _meta key (skip-when-empty); got: {json}"
+        );
     }
 }
