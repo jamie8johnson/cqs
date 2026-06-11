@@ -307,30 +307,30 @@ fn detect_provider() -> ExecutionProvider {
     }
 
     // ── Apple CoreML ───────────────────────────────────────────────
-    // Phase B will add the actual `ort::ep::CoreML` probe here once
+    // CoreML wiring will add the actual `ort::ep::CoreML` probe here once
     // the target-conditional `ort/coreml` feature is wired. For now
     // the cfg gates exist so adding the probe is a one-block change.
     #[cfg(feature = "ep-coreml")]
     {
-        // TODO(#956 Phase B): replace with `ort::ep::CoreML::default()
+        // Unwired: replace with `ort::ep::CoreML::default()
         // .is_available()` once the macOS target adds `ort/coreml` to
         // the dep features. Today the ort crate isn't compiled with
         // CoreML support so the type doesn't exist.
         tracing::warn!(
             "ep-coreml feature is enabled but the CoreML provider isn't wired yet \
-             (Phase B). Falling through to next backend."
+             Falling through to next backend."
         );
     }
 
     // ── AMD ROCm ───────────────────────────────────────────────────
     #[cfg(feature = "ep-rocm")]
     {
-        // TODO(#956 Phase C): replace with `ort::ep::ROCm::default()
+        // Unwired: replace with `ort::ep::ROCm::default()
         // .is_available()` once the `ort/rocm` feature is wired and
         // tested on AMD hardware.
         tracing::warn!(
             "ep-rocm feature is enabled but the ROCm provider isn't wired yet \
-             (Phase C). Falling through to next backend."
+             Falling through to next backend."
         );
     }
 
@@ -423,21 +423,21 @@ pub(crate) fn create_session(
                 .commit_from_file(model_path)
                 .map_err(ort_err)?
         }
-        // Phase B/C arms: today these are unreachable because
+        // CoreML/ROCm arms: today these are unreachable because
         // `detect_provider()` never returns the new variants — but the
         // match must stay exhaustive once the variants exist. When
-        // Phase B wires `ort::ep::CoreML`, replace the `unreachable!()`
+        // CoreML gets wired via `ort::ep::CoreML`, replace the `unreachable!()`
         // with the real builder call.
         #[cfg(feature = "ep-coreml")]
         ExecutionProvider::CoreML => {
             return Err(EmbedderError::InferenceFailed(
-                "CoreML provider not wired yet (#956 Phase B)".to_string(),
+                "CoreML provider not wired yet".to_string(),
             ));
         }
         #[cfg(feature = "ep-rocm")]
         ExecutionProvider::ROCm { .. } => {
             return Err(EmbedderError::InferenceFailed(
-                "ROCm provider not wired yet (#956 Phase C)".to_string(),
+                "ROCm provider not wired yet".to_string(),
             ));
         }
         ExecutionProvider::CPU => builder.commit_from_file(model_path).map_err(ort_err)?,
