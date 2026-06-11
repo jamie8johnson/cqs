@@ -2363,6 +2363,32 @@ mod tests {
         );
     }
 
+    /// SQL return extraction must survive non-ASCII identifiers before the
+    /// RETURNS keyword. Unicode `to_uppercase()` is not byte-length-preserving
+    /// ("ﬁ" → "FI" shrinks by one byte), so an offset found in the case-mapped
+    /// copy can misalign against the original — slicing mid-codepoint (panic)
+    /// or mid-keyword (garbage type). `to_ascii_uppercase()` preserves byte
+    /// offsets.
+    #[test]
+    fn test_extract_return_sql_non_ascii_identifier() {
+        let sql = Language::Sql.def().extract_return_nl;
+
+        // Single ligature: pre-fix the misaligned slice landed on the final
+        // 'S' of RETURNS, yielding "Returns s" instead of the real type.
+        assert_eq!(
+            sql("CREATE FUNCTION ﬁnance_total(@id INT) RETURNS DECIMAL(10,2)"),
+            Some("Returns decimal".to_string())
+        );
+
+        // Nine ligatures shift the case-mapped offset far enough that the
+        // pre-fix slice lands inside a multibyte codepoint — a panic, not
+        // just a wrong answer.
+        assert_eq!(
+            sql("CREATE FUNCTION ﬁﬁﬁﬁﬁﬁﬁﬁﬁ RETURNS INT"),
+            Some("Returns int".to_string())
+        );
+    }
+
     // ===== ChunkType tests =====
 
     #[test]

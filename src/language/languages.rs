@@ -6739,8 +6739,12 @@ pub fn definition_solidity() -> &'static LanguageDef {
 /// # Returns
 /// `Some(String)` containing a formatted return type description (e.g., "Returns int"), or `None` if no "RETURNS" keyword is found in the signature.
 fn extract_return_sql(signature: &str) -> Option<String> {
-    // SQL functions: look for RETURNS type between name and AS
-    let upper = signature.to_uppercase();
+    // SQL functions: look for RETURNS type between name and AS.
+    // ASCII-only case mapping: Unicode `to_uppercase()` is not
+    // byte-length-preserving (e.g. "ﬁ" → "FI"), so an offset found in the
+    // mapped copy could slice `signature` mid-codepoint. SQL keywords are
+    // ASCII, so `to_ascii_uppercase()` suffices and preserves byte offsets.
+    let upper = signature.to_ascii_uppercase();
     if let Some(ret_pos) = upper.find("RETURNS") {
         let after = &signature[ret_pos + 7..].trim();
         // Take the first word as the return type, lowercase it
