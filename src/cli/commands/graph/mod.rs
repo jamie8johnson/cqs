@@ -51,7 +51,7 @@ use notes_text::FallbackKind;
 /// the full [`ChunkSummary`] rows it read for the classification (not the
 /// lossy `KindHit` projection). When a fallback fires, those same rows feed
 /// the fallback's `definitions[]` directly — a single `WHERE name = ?` read
-/// serves both the routing decision and the rendering (DS-V1.40-8/10). The
+/// serves both the routing decision and the rendering. The
 /// old code issued a second `get_chunks_by_name` here, which could observe a
 /// different row set than the one classification ran on if a reindex landed
 /// between the two reads; the single-read path removes that drift window.

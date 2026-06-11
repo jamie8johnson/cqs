@@ -38,7 +38,7 @@ impl std::fmt::Display for OutputFormat {
 
 /// Common output format arguments shared across commands that support text/json/mermaid.
 ///
-/// **`--json` vs `--format` (API-V1.40-10):** the two flags are
+/// **`--json` vs `--format`:** the two flags are
 /// intentionally mutually exclusive (`conflicts_with = "format"`), not an
 /// accidental shadow. `--json` is the universal spelling every command
 /// accepts (via `TextJsonArgs` elsewhere) and every agent/test invokes;

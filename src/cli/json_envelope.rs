@@ -966,7 +966,7 @@ mod tests {
     }
 
     // V2Bare (default) honors the slim shape — matching `wrap_error` — instead
-    // of always emitting the full envelope (the API-V1.40-6 fix). The `data`
+    // of always emitting the full envelope. The `data`
     // payload is spliced in, but `version` is dropped and `_meta` is absent
     // when empty.
     #[test]

@@ -67,7 +67,7 @@ pub enum Kind {
 
 /// Outcome of resolving a *set* of name-match hits to a routing decision.
 ///
-/// Split out from [`Kind`] (API-V1.40-2): the old combined enum mixed the
+/// Split out from [`Kind`]: the old combined enum mixed the
 /// five single-chunk routing kinds with three set-level dispatch outcomes,
 /// so every exhaustive `match` downstream had to enumerate aggregate arms
 /// that `classify_chunk_type` could never produce. This type owns the
@@ -191,7 +191,7 @@ pub fn routing_priority(kind: Kind) -> u8 {
 /// [`ChunkSummary`] rows that produced it.
 ///
 /// Returning the summaries (not the lossy [`KindHit`] projection) is the
-/// DS-V1.40-8/10 fix: a dispatcher that decides to render a kind-mismatch
+/// Invariant: a dispatcher that decides to render a kind-mismatch
 /// fallback reuses *these* rows for its `definitions[]` rather than issuing
 /// a second `WHERE name = ?` query. One read feeds both the routing
 /// decision and the rendering, so the two can't disagree under a concurrent

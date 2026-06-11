@@ -153,7 +153,7 @@ pub(crate) fn deps_core(
             Ok((cqs::kind::KindResolution::Resolved(cqs::kind::Kind::Function), def_chunks)) => {
                 // Reuse the rows the kind detection already read — one read
                 // feeds both the routing decision and the rendering
-                // (DS-V1.40-8/10), so no second `get_chunks_by_name` here.
+                // so no second `get_chunks_by_name` here.
                 let definitions = super::chunks_to_definitions(&def_chunks);
                 super::record_kind_fallback(&args.name, "function", "deps", definitions.len());
                 return Ok(DepsCoreOutput::Fallback(super::KindFallbackOutput {
@@ -285,7 +285,7 @@ fn render_deps_fallback_text(name: &str, reverse: bool, store: &Store<ReadOnly>)
         if let Ok((cqs::kind::KindResolution::Resolved(cqs::kind::Kind::Function), def_chunks)) =
             cqs::kind::detect_kind_for_store(store, name)
         {
-            // Reuse the rows kind detection already read (DS-V1.40-8/10).
+            // Reuse the rows kind detection already read — one snapshot serves both.
             super::render_kind_fallback_text(
                 &notes_text::deps_function_forward_lead(name),
                 &def_chunks,

@@ -217,7 +217,7 @@ pub(crate) fn trace_core(
     // One read of the source's name rows: `detect_kind_for_store` returns
     // both the routing resolution and the full summaries it classified, so
     // the fallback / Other / Multiple renders below reuse `source_chunks`
-    // rather than re-querying `WHERE name = ?` (DS-V1.40-8/10 — no snapshot
+    // rather than re-querying `WHERE name = ?` (no snapshot
     // drift between the routing decision and the rendered definitions).
     let (source_resolution, source_chunks) =
         match cqs::kind::detect_kind_for_store(store, &args.source) {
@@ -302,7 +302,7 @@ pub(crate) fn trace_core(
     // source name. `resolve_target` picked one to seed the BFS; surface the
     // full candidate set so the caller sees what it chose among (and can
     // re-run against a disambiguated `Type::method` if the seed was wrong).
-    // Reuse the rows read up-front (DS-V1.40-8/10) — no re-query.
+    // Reuse the rows read up-front — no re-query.
     let source_candidates: Vec<serde_json::Value> =
         if source_resolution == cqs::kind::KindResolution::Multiple {
             super::chunks_to_definitions(&source_chunks)
@@ -617,7 +617,7 @@ fn render_trace_fallback_text(source: &str, store: &Store<ReadOnly>) -> Result<(
     // Re-detect the source kind so the text renderer covers the same shapes
     // the core's JSON path does: the four FallbackKinds plus the
     // trace-specific `Kind::Other`. One indexed read returns both the
-    // resolution and the summaries the renderer prints (DS-V1.40-8/10).
+    // resolution and the summaries the renderer prints share one read.
     let (source_resolution, chunks) = match cqs::kind::detect_kind_for_store(store, source) {
         Ok(pair) => pair,
         Err(e) => {
