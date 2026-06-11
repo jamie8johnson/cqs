@@ -485,7 +485,7 @@ mod tests {
     }
 
     /// All three by-hash embedding lookups gate on `needs_embedding = 0`:
-    /// a zero-vec sentinel written by `upsert_chunks_unembedded_batch`
+    /// a zero-vec sentinel written by `upsert_embedded_batch`'s sentinel mode
     /// (parser stage of a `--llm-summaries` reindex) must be a clean cache
     /// miss. Without the gate, the sentinel is finite so
     /// `Embedding::try_new` accepts it, the reuse resolver treats it as a
@@ -498,7 +498,11 @@ mod tests {
         // Sentinel row: same shape the parser stage writes.
         let sentinel = test_chunk_with_canon("pending", "fn pending() { 7 }", "canon_pending");
         store
-            .upsert_chunks_unembedded_batch(std::slice::from_ref(&sentinel), Some(100))
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&sentinel),
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
 
         // All three by-hash lookups must miss the sentinel.

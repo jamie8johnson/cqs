@@ -195,7 +195,8 @@ pub(crate) fn enrichment_pass(
 
                 // Chunks at `needs_embedding=1` must always be embedded
                 // regardless of context — they were written by the parser
-                // stage with a zero-vec sentinel (see `upsert_chunks_unembedded_batch`).
+                // stage with a zero-vec sentinel (see `upsert_embedded_batch`'s
+                // sentinel mode).
                 // Search and HNSW build skip them via `WHERE needs_embedding = 0`,
                 // so leaving them unembedded means they stay invisible.
                 let needs_embedding = needs_embedding_ids.contains(&cs.id);

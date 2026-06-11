@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use cqs::embedder::ModelConfig;
 use cqs::parser::{CallSite, ChunkTypeRefs, FunctionCalls};
+use cqs::store::FileFingerprint;
 use cqs::{Chunk, Embedding, Store};
 
 /// Relationship data extracted during parsing, keyed by file path.
@@ -24,20 +25,25 @@ pub(super) struct RelationshipData {
 pub(super) struct ParsedBatch {
     pub chunks: Vec<Chunk>,
     pub relationships: RelationshipData,
-    pub file_mtimes: HashMap<PathBuf, i64>,
+    /// Disk fingerprint (mtime + size + BLAKE3) per file in this batch,
+    /// read by the parser stage's staleness pre-filter. The store stage
+    /// stamps these onto the chunk rows in the same transaction as the
+    /// upsert so the reconcile path always sees a populated fingerprint.
+    pub file_fingerprints: HashMap<PathBuf, FileFingerprint>,
 }
 
 pub(super) struct EmbeddedBatch {
     pub chunk_embeddings: Vec<(Chunk, Embedding)>,
     pub relationships: RelationshipData,
     pub cached_count: usize,
-    pub file_mtimes: HashMap<PathBuf, i64>,
+    /// Per-file disk fingerprints, threaded through from `ParsedBatch`.
+    pub file_fingerprints: HashMap<PathBuf, FileFingerprint>,
     /// When `true`, the chunks past index `cached_count` carry
-    /// **zero-vec sentinel embeddings** and must be written via
-    /// `upsert_chunks_unembedded_batch` so they're stamped with
+    /// **zero-vec sentinel embeddings** and must be routed to
+    /// `upsert_embedded_batch`'s sentinel argument so they're stamped with
     /// `needs_embedding=1`. Cached chunks (indexes `0..cached_count`)
-    /// always carry real embeddings (from the global cache) and go
-    /// through the normal upsert path.
+    /// always carry real embeddings (from the global cache) and go in the
+    /// real-embedding argument of the same call.
     ///
     /// Set by the embed stages when `EmbedStageContext.skip_first_pass_embed`
     /// is `true` AND there were `to_embed` chunks (cache misses) in the
@@ -68,8 +74,8 @@ pub(super) struct PreparedEmbedding {
     pub texts: Vec<String>,
     /// Relationships extracted during parsing
     pub relationships: RelationshipData,
-    /// File modification times (per-file)
-    pub file_mtimes: HashMap<PathBuf, i64>,
+    /// Per-file disk fingerprints (mtime + size + BLAKE3)
+    pub file_fingerprints: HashMap<PathBuf, FileFingerprint>,
 }
 
 /// Shared configuration for GPU and CPU embedding stages.

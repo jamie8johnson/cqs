@@ -12,9 +12,14 @@ use crate::store::{ReadWrite, Store};
 
 /// Per-file fingerprint stored alongside each chunk for the reconcile path.
 ///
-/// All three fields are nullable: `source_size` and `source_content_hash`
-/// are `NULL` until first re-embed populates them. `mtime` is `None` when
-/// `source_mtime` is `NULL` (FS without modification time).
+/// All three fields are nullable. Both production index paths populate the
+/// full fingerprint at write time: the bulk pipeline stamps it inside the
+/// chunk-write transaction (`Store::upsert_embedded_batch`) and the watch
+/// reindex path stamps it right after its per-file upsert
+/// (`Store::set_file_fingerprint`). `source_size` / `source_content_hash`
+/// remain `NULL` only for rows written by lower-level upserts (tests,
+/// `upsert_chunks_batch` callers) or by pre-v23 binaries; `mtime` is `None`
+/// when `source_mtime` is `NULL` (FS without modification time).
 ///
 /// Comparison policy lives in [`FingerprintPolicy`]; see [`Self::matches`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -381,7 +386,7 @@ impl Store<ReadWrite> {
     //
     // The SELECT DISTINCT runs inside the write transaction. If `cqs watch`
     // (which only takes `try_acquire_index_lock`) interleaves an
-    // `upsert_chunks_and_calls` call for a freshly-added file, that file's
+    // `upsert_chunks_calls_and_prune` call for a freshly-added file, that file's
     // origin is missing from `existing_files` (caller-passed snapshot) yet
     // present in `chunks`; snapshotting inside the write transaction so we
     // observe a post-watch-reindex-consistent view prevents the DELETE from

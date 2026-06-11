@@ -317,7 +317,13 @@ pub(super) async fn snapshot_content_hashes(
 /// wiping those columns back to NULL/default.
 ///
 /// The WHERE clause on content_hash skips the UPDATE when the content is
-/// unchanged, avoiding unnecessary write amplification.
+/// unchanged, avoiding unnecessary write amplification. Note this means a
+/// row's `source_mtime` is NOT refreshed when content is unchanged — the
+/// multi-file pipeline write path (`upsert_embedded_batch`) follows up with
+/// a per-file fingerprint UPDATE in the same transaction to cover that case.
+///
+/// `source_mtimes` aligns 1:1 with `chunks` so a single statement can span
+/// files with different mtimes.
 ///
 /// `embedding_base` is seeded with the same bytes as `embedding` on initial
 /// insert. The incoming embedding is generated from `generate_nl_description`
@@ -329,7 +335,7 @@ pub(super) async fn batch_insert_chunks(
     chunks: &[(Chunk, Embedding)],
     embedding_bytes: &[Vec<u8>],
     vendored_per_chunk: &[bool],
-    source_mtime: Option<i64>,
+    source_mtimes: &[Option<i64>],
     now: &str,
     needs_embedding: bool,
 ) -> Result<(), StoreError> {
@@ -340,6 +346,11 @@ pub(super) async fn batch_insert_chunks(
         chunks.len(),
         vendored_per_chunk.len(),
         "vendored_per_chunk must align 1:1 with chunks"
+    );
+    debug_assert_eq!(
+        chunks.len(),
+        source_mtimes.len(),
+        "source_mtimes must align 1:1 with chunks"
     );
     let needs_embedding_i64: i64 = if needs_embedding { 1 } else { 0 };
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
@@ -380,7 +391,7 @@ pub(super) async fn batch_insert_chunks(
                 } else {
                     Some(embedding_bytes[emb_offset + i].as_slice())
                 })
-                .push_bind(source_mtime)
+                .push_bind(source_mtimes[emb_offset + i])
                 .push_bind(now)
                 .push_bind(now)
                 .push_bind(&chunk.parent_id)
