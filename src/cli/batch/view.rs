@@ -274,6 +274,11 @@ pub(crate) struct BatchView {
     pub(super) file_set_cell: Arc<Mutex<Option<Arc<HashSet<PathBuf>>>>>,
     pub(super) notes_cell: Arc<Mutex<Option<Arc<Vec<cqs::note::Note>>>>>,
     pub(super) splade_index_cell: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
+    /// Shared cross-project cache cell. Unlike the other cells the view holds
+    /// no checkout-time snapshot — the cached context is itself mutable
+    /// (`Arc<Mutex<CrossProjectContext>>`), so [`Self::cross_project`] reads or
+    /// builds it live under the same epoch / fingerprint / staleness guards.
+    pub(super) cross_project_cell: Arc<Mutex<Option<super::context::CachedCrossProject>>>,
     /// Shared invalidation-epoch counter plus the value it held when this
     /// view was checked out. `publish_if_current` compares the two under
     /// the cell lock: any invalidation since checkout bumped the counter,
@@ -567,6 +572,97 @@ impl BatchView {
             return Some(Arc::clone(arc));
         }
         self.read_cell_if_current(&self.splade_index_cell)
+    }
+
+    /// Get the cached cross-project context, building it on a miss and caching
+    /// it in the shared cell for subsequent requests.
+    ///
+    /// Returns `Arc<Mutex<CrossProjectContext>>` so the daemon's cross-project
+    /// graph dispatchers get the `&mut CrossProjectContext` the cross cores
+    /// require (lock the inner mutex) without holding any BatchContext lock.
+    ///
+    /// # Staleness
+    ///
+    /// A cached context is served only when all three hold:
+    ///
+    /// 1. **Epoch matches.** A populated cell built after an invalidation
+    ///    belongs to a newer index generation than this view's store snapshot;
+    ///    the epoch guard discards it (same contract as every other cell). A
+    ///    local reindex invalidates via the `CROSS_PROJECT` slot, so the
+    ///    merged graph — which folds in the local project's edges — is never
+    ///    served stale.
+    /// 2. **Fingerprint matches.** The cached entry carries the references-
+    ///    config fingerprint it was built from; a `.cqs.toml` / `slot.toml`
+    ///    references edit (visible after `CONFIG_RELOAD_INTERVAL`) moves the
+    ///    fingerprint and forces a rebuild.
+    /// 3. **Underlying DBs unchanged.** `CrossProjectContext::is_stale()` is
+    ///    checked before serving so a `cqs ref update <name>` (which rewrites a
+    ///    reference's `index.db` without touching the primary file or bumping
+    ///    the epoch) forces a reload.
+    ///
+    /// A freshly built context is published back into the cell under the same
+    /// epoch guard as the other write-back caches: an invalidation that ran
+    /// during the (potentially slow) build discards the publish rather than
+    /// resurrecting a stale generation.
+    pub fn cross_project(&self) -> Result<Arc<Mutex<cqs::cross_project::CrossProjectContext>>> {
+        let current_fingerprint =
+            cqs::cross_project::CrossProjectContext::config_fingerprint(&self.config.references);
+
+        // Fast path: serve the cached context when epoch, fingerprint, and the
+        // underlying DB identities all still hold.
+        {
+            let guard = self
+                .cross_project_cell
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(cached) = guard.as_ref() {
+                let epoch_ok =
+                    self.invalidation_epoch.load(Ordering::SeqCst) == self.checkout_epoch;
+                let fingerprint_ok = cached.fingerprint == current_fingerprint;
+                // `is_stale` stats each store's index.db; cheap relative to a
+                // full reopen + graph rebuild, and only runs on the cache-hit
+                // path.
+                let dbs_fresh = !cached
+                    .ctx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_stale();
+                if epoch_ok && fingerprint_ok && dbs_fresh {
+                    return Ok(Arc::clone(&cached.ctx));
+                }
+                tracing::debug!(
+                    epoch_ok,
+                    fingerprint_ok,
+                    dbs_fresh,
+                    "cross-project cache miss — rebuilding context"
+                );
+            }
+        }
+
+        // Build outside the cell lock (reopening stores is slow).
+        let _span = tracing::info_span!("batch_view_cross_project_init").entered();
+        let built = cqs::cross_project::CrossProjectContext::from_config(&self.root)?;
+        let arc = Arc::new(Mutex::new(built));
+
+        // Publish back, epoch-guarded. An invalidation since checkout means a
+        // newer generation arrived; don't overwrite it with this stale build.
+        {
+            let mut guard = self
+                .cross_project_cell
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if self.invalidation_epoch.load(Ordering::SeqCst) == self.checkout_epoch {
+                *guard = Some(super::context::CachedCrossProject {
+                    ctx: Arc::clone(&arc),
+                    fingerprint: current_fingerprint,
+                });
+            } else {
+                tracing::debug!(
+                    "invalidation ran since checkout — not publishing cross-project context"
+                );
+            }
+        }
+        Ok(arc)
     }
 
     /// Borrowed access keeps the snapshot Config in place; clone-on-access

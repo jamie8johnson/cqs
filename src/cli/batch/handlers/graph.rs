@@ -98,7 +98,8 @@ pub(in crate::cli::batch) fn dispatch_callers(
     )
     .entered();
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let cross_ctx = ctx.cross_project()?;
+        let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
         let output = callers_cross_core(
             &mut cross_ctx,
             &CallersCoreArgs {
@@ -143,7 +144,8 @@ pub(in crate::cli::batch) fn dispatch_callees(
     )
     .entered();
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let cross_ctx = ctx.cross_project()?;
+        let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
         let output = callees_cross_core(
             &mut cross_ctx,
             &CoreCalleesArgs {
@@ -195,7 +197,8 @@ pub(in crate::cli::batch) fn dispatch_impact(
     )
     .entered();
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let cross_ctx = ctx.cross_project()?;
+        let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
         let result = crate::cli::commands::impact_cross_core(
             &mut cross_ctx,
             &ImpactCoreArgs {
@@ -254,7 +257,8 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     )
     .entered();
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let cross_ctx = ctx.cross_project()?;
+        let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
         let matches = crate::cli::commands::test_map_cross_core(
             &mut cross_ctx,
             &ctx.root,
@@ -315,7 +319,8 @@ pub(in crate::cli::batch) fn dispatch_trace(
     // future k-shortest-paths variants). args.limit_arg.limit intentionally unused.
 
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let cross_ctx = ctx.cross_project()?;
+        let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
         let trace_result =
             crate::cli::commands::trace_cross_core(&mut cross_ctx, source, target, max_depth)?;
         return Ok(serde_json::to_value(&trace_result)?);

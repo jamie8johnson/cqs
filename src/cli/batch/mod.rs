@@ -511,12 +511,23 @@ mod tests {
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
         *ctx.test_chunks.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        // Build a real cross-project context (no references → one local store)
+        // and seat it in the cell so the post-invalidate clear is meaningful.
+        {
+            let cross = cqs::cross_project::CrossProjectContext::from_config(&ctx.root).unwrap();
+            let fingerprint = cross.fingerprint().unwrap_or(0);
+            *ctx.cross_project.lock().unwrap() = Some(context::CachedCrossProject {
+                ctx: std::sync::Arc::new(Mutex::new(cross)),
+                fingerprint,
+            });
+        }
 
         // Verify caches are populated
         assert!(ctx.file_set.lock().unwrap().is_some());
         assert!(ctx.notes_cache.lock().unwrap().is_some());
         assert!(ctx.call_graph.borrow().is_some());
         assert!(ctx.test_chunks.borrow().is_some());
+        assert!(ctx.cross_project.lock().unwrap().is_some());
 
         // Invalidate
         let epoch_before = ctx.invalidation_epoch.load(Ordering::SeqCst);
@@ -529,6 +540,12 @@ mod tests {
         assert!(ctx.test_chunks.borrow().is_none());
         assert!(ctx.hnsw.lock().unwrap().is_none());
         assert!(ctx.base_hnsw.lock().unwrap().is_none());
+        assert!(
+            ctx.cross_project.lock().unwrap().is_none(),
+            "cross-project cell must clear on invalidation — the merged graph \
+             includes the local project's edges, so a local reindex must not \
+             serve a stale graph"
+        );
         // Epoch bumps so in-flight view builds can't republish stale values.
         assert!(
             ctx.invalidation_epoch.load(Ordering::SeqCst) > epoch_before,
@@ -538,6 +555,110 @@ mod tests {
             ctx.pending_invalidation.get(),
             0,
             "full clear must not leave the pending mask set"
+        );
+    }
+
+    /// First `cross_project()` call on a view builds the context and writes it
+    /// back into the shared cell; a second checkout serves the SAME `Arc`
+    /// instead of rebuilding.
+    #[test]
+    fn test_cross_project_cell_write_back_and_served_from_cell() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Cell starts empty.
+        assert!(
+            ctx.cross_project.lock().unwrap().is_none(),
+            "cross-project cell starts empty"
+        );
+
+        // First view builds and publishes.
+        let view1 = ctx.build_view(None);
+        let cross1 = view1.cross_project().expect("first cross_project build");
+        assert!(
+            ctx.cross_project.lock().unwrap().is_some(),
+            "first cross_project() must write the context back into the cell"
+        );
+
+        // Second checkout (fresh view) must serve the same cached Arc — no
+        // rebuild. Arc pointer identity proves the cell was reused.
+        let view2 = ctx.build_view(None);
+        let cross2 = view2.cross_project().expect("second cross_project served");
+        assert!(
+            Arc::ptr_eq(&cross1, &cross2),
+            "second checkout must serve the cached context, not rebuild a fresh one"
+        );
+    }
+
+    /// A reference-config fingerprint mismatch forces a rebuild even though
+    /// the cell is populated and the epoch is unchanged. Simulated by seating
+    /// a context with a deliberately wrong fingerprint and confirming the next
+    /// `cross_project()` replaces it.
+    #[test]
+    fn test_cross_project_cell_rebuilds_on_fingerprint_mismatch() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let stale = cqs::cross_project::CrossProjectContext::from_config(&ctx.root).unwrap();
+        let stale_arc = std::sync::Arc::new(Mutex::new(stale));
+        *ctx.cross_project.lock().unwrap() = Some(context::CachedCrossProject {
+            ctx: Arc::clone(&stale_arc),
+            // Fingerprint that cannot match the real (empty-references) config.
+            fingerprint: u64::MAX,
+        });
+
+        let view = ctx.build_view(None);
+        let fresh = view
+            .cross_project()
+            .expect("rebuild on fingerprint mismatch");
+        assert!(
+            !Arc::ptr_eq(&stale_arc, &fresh),
+            "fingerprint mismatch must rebuild, not serve the stale cached context"
+        );
+    }
+
+    /// The 5 cross-project dispatch sites hit the cache: a cross-project
+    /// `callers` dispatch through a view leaves the cell populated, and a
+    /// second dispatch serves the same context (no rebuild). This is the
+    /// representative dispatch-path assertion for the cluster — the other four
+    /// sites route through the identical `ctx.cross_project()` accessor.
+    #[test]
+    fn test_cross_project_dispatch_populates_and_reuses_cell() {
+        use super::handlers::dispatch_callers;
+        use crate::cli::args::{CallersArgs, LimitArg};
+
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let args = CallersArgs {
+            name: "anything".into(),
+            cross_project: true,
+            limit_arg: LimitArg { limit: 5 },
+        };
+
+        let view1 = ctx.build_view(None);
+        let _ = dispatch_callers(&view1, &args).expect("first cross-project dispatch");
+        let cached_after_first = {
+            let guard = ctx.cross_project.lock().unwrap();
+            guard
+                .as_ref()
+                .map(|c| Arc::clone(&c.ctx))
+                .expect("dispatch must populate the cross-project cell")
+        };
+
+        let view2 = ctx.build_view(None);
+        let _ = dispatch_callers(&view2, &args).expect("second cross-project dispatch");
+        let cached_after_second = {
+            let guard = ctx.cross_project.lock().unwrap();
+            guard
+                .as_ref()
+                .map(|c| Arc::clone(&c.ctx))
+                .expect("cell still populated")
+        };
+
+        assert!(
+            Arc::ptr_eq(&cached_after_first, &cached_after_second),
+            "second cross-project dispatch must reuse the cached context"
         );
     }
 
