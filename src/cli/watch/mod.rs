@@ -74,7 +74,7 @@ use rebuild::{
     PendingRebuild,
 };
 #[cfg(test)]
-use rebuild::{RebuildOutcome, RebuildResult};
+use rebuild::{DrainOutcome, RebuildOutcome, RebuildResult};
 
 mod gc;
 use gc::{
@@ -196,6 +196,15 @@ struct WatchState {
     /// where the watch loop currently logs `Reindex error` /
     /// `Notes reindex error`.
     last_error: Option<cqs::watch_status::WatchErrorInfo>,
+    /// Store-state stamp captured after the watch loop's own most recent
+    /// write cycle (chunk reindex + incremental SPLADE encode). Every HNSW
+    /// save this process performs passes it as the snapshot to
+    /// `save_stamped`: if the live stamp differs at save time, a writer this
+    /// loop never observed (a concurrent `cqs index`) committed chunks the
+    /// in-memory index does not contain, and the save is discarded instead
+    /// of overwriting the newer on-disk index. `None` until the first write
+    /// cycle (saves then fall back to the live stamp).
+    observed_stamp: Option<cqs::hnsw::StoreStamp>,
 }
 
 /// How often the watch loop re-stats `index.db` for the `last_synced_at`
@@ -1317,6 +1326,10 @@ pub fn cmd_watch(
         active_slot: active_slot.name.clone(),
         last_reindex: None,
         last_error: None,
+        // Seed with the store state as of daemon startup so the very first
+        // HNSW save already detects foreign writers. Read failure → None;
+        // the first save falls back to the live stamp.
+        observed_stamp: cqs::hnsw::StoreStamp::read(&store).ok(),
     };
 
     let mut cycles_since_clear: u32 = 0;
@@ -1565,6 +1578,11 @@ pub fn cmd_watch(
                                 // Clear caches so the next query observes the pruned rows.
                                 store.clear_caches();
                                 db_id = db_file_identity(&index_path);
+                                // GC prunes chunks (bumping the write
+                                // generation); refresh the observed stamp so
+                                // the next HNSW save doesn't mistake our own
+                                // GC for a foreign writer and discard itself.
+                                state.observed_stamp = cqs::hnsw::StoreStamp::read(&store).ok();
                             }
                             Ok(None) => {
                                 tracing::debug!("Periodic GC: index lock held, skipping this tick");
@@ -1628,6 +1646,9 @@ pub fn cmd_watch(
                             db_id = current_id;
                             state.hnsw_index = None;
                             state.incremental_count = 0;
+                            // Fresh DB, fresh write history — re-seed the
+                            // observed stamp from the replacement store.
+                            state.observed_stamp = cqs::hnsw::StoreStamp::read(&store).ok();
                             if state.pending_rebuild.take().is_some() {
                                 tracing::info!(
                                     "discarded in-flight HNSW rebuild after DB replacement \
@@ -1751,6 +1772,9 @@ pub fn cmd_watch(
                 // db_id updated below in the cache-clear path.
                 state.hnsw_index = None;
                 state.incremental_count = 0;
+                // Fresh DB, fresh write history — re-seed the observed
+                // stamp from the replacement store.
+                state.observed_stamp = cqs::hnsw::StoreStamp::read(&store).ok();
                 // Drop in-flight rebuild whose pending delta references
                 // OLD DB chunk IDs. The rebuild thread sends into a
                 // dropped receiver (no-op). Force a fresh rebuild on
@@ -1891,11 +1915,16 @@ pub fn cmd_watch(
     // Bounded join of the in-flight HNSW rebuild thread (if any). Otherwise
     // the rebuild thread is detached on daemon shutdown — a long rebuild
     // keeps writing to disk after the process is "done" and may race the next
-    // startup. The rebuild thread doesn't observe a shutdown flag, so bound
-    // the wait at 30s — the common case is a near-finished rebuild that
-    // completes in <1s, and a stalled rebuild gets detached with a loud
-    // warning.
+    // startup. Signal shutdown FIRST: the thread checks the flag before
+    // entering each sidecar save, so a build that finishes after the 30s
+    // window skips its save instead of being killed mid-promote by process
+    // exit (the dirty flag stays set; the next start rebuilds). The bounded
+    // wait covers the common case of a near-finished rebuild completing in
+    // <1s; a stalled one gets detached with a loud warning.
     if let Some(mut pending) = state.pending_rebuild.take() {
+        pending
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(handle) = pending.handle.take() {
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             let poll = Duration::from_millis(100);

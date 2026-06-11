@@ -425,6 +425,21 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
+            // Embedding updates must advance the store write generation.
+            // The HNSW sidecar stamp (chunk_count + splade_generation) is
+            // how the dirty-flag self-heal proves a sidecar postdates the
+            // last vector-affecting write; an enrichment pass rewrites
+            // `embedding`/`embedding_base` without touching chunk rows or
+            // sparse vectors, so without this bump a crash between this
+            // commit and the HNSW save leaves a sidecar whose stamp still
+            // matches the live store — and the self-heal would serve the
+            // pre-enrichment vectors as current. The bump also invalidates
+            // the persisted SPLADE index (its loader compares the same
+            // counter); that rebuild is spurious — sparse vectors are
+            // unchanged — but cheap, and a single write-generation counter
+            // is simpler than splitting dense/sparse generations.
+            crate::store::sparse::bump_splade_generation_tx(&mut tx).await?;
+
             tx.commit().await?;
             Ok(updated)
         })
@@ -1677,6 +1692,34 @@ mod tests {
         // Flag cleared, count zero, ID gone from the set.
         assert_eq!(store.needs_embedding_count().unwrap(), 0);
         assert!(store.needs_embedding_ids().unwrap().is_empty());
+    }
+
+    /// Embedding rewrites must advance the store write generation
+    /// (`splade_generation`). The HNSW sidecar stamp uses the counter to
+    /// prove a sidecar postdates the last vector-affecting write; an
+    /// enrichment pass that rewrote vectors without moving the counter
+    /// would let the dirty-flag self-heal serve pre-enrichment vectors
+    /// after a crash between the enrichment commit and the HNSW save.
+    #[test]
+    fn enrichment_update_bumps_splade_generation() {
+        let (store, _dir) = setup_store();
+        let c = make_chunk("alpha", "src/a.rs");
+        store
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&c),
+                &std::collections::HashMap::new(),
+            )
+            .unwrap();
+
+        let before = store.splade_generation().unwrap();
+        let updates = vec![(c.id.clone(), mock_embedding(0.5), Some("hash".to_string()))];
+        store.update_embeddings_with_hashes_batch(&updates).unwrap();
+        let after = store.splade_generation().unwrap();
+        assert!(
+            after > before,
+            "embedding update must bump splade_generation (before={before}, after={after})"
+        );
     }
 
     /// First-pass-skip → enrichment-clear contract: search and HNSW build

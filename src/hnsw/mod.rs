@@ -27,7 +27,9 @@ mod persist;
 mod safety;
 mod search;
 
-pub use persist::{verify_hnsw_checksums, HNSW_ALL_EXTENSIONS};
+pub use persist::{
+    verify_hnsw_checksums, verify_hnsw_current, SaveOutcome, StoreStamp, HNSW_ALL_EXTENSIONS,
+};
 
 use std::cell::UnsafeCell;
 
@@ -686,12 +688,16 @@ impl VectorIndex for HnswIndex {
 /// uses HNSW as the unconditional fallback when no GPU backend (CAGRA,
 /// future Metal/ROCm/USearch) is eligible.
 ///
-/// Handles the per-kind `hnsw_dirty` self-heal: if the dirty flag is set
-/// but `verify_hnsw_checksums` passes the file is whole — the dirty flag
-/// is a false positive from a crash *after* the files landed but *before*
-/// the flag cleared, and we clear it on the writable typestate. If the
-/// checksum genuinely fails the index is stale and we return `None` so
-/// the caller falls back to brute-force search until `cqs index` rebuilds.
+/// Handles the per-kind `hnsw_dirty` self-heal via `verify_hnsw_current`:
+/// the dirty flag may only be cleared when the sidecars are intact AND their
+/// store-state stamp matches the live store — that combination proves the
+/// crash happened *after* the save landed but *before* the flag cleared (a
+/// false positive). Checksums alone cannot prove that: the manifest is
+/// written by the same save it describes, so a complete previous-generation
+/// set always passes — exactly the crash-between-chunk-commit-and-save case
+/// the flag exists to catch. On stamp mismatch (or a stamp-less legacy
+/// sidecar) we return `None` so the caller falls back to brute-force search
+/// until a rebuild.
 pub struct HnswBackend;
 
 impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for HnswBackend {
@@ -719,18 +725,19 @@ impl<Mode: crate::store::ClearHnswDirty> crate::index::IndexBackend<Mode> for Hn
             }
         };
         if dirty {
-            match verify_hnsw_checksums(ctx.cqs_dir, "index") {
+            match verify_hnsw_current(ctx.cqs_dir, "index", ctx.store) {
                 Ok(()) => {
                     tracing::info!(
-                        "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
+                        "HNSW dirty flag set but sidecars verify and match the live store \
+                         — clearing flag (self-heal)"
                     );
                     Mode::try_clear_hnsw_dirty(ctx.store, crate::HnswKind::Enriched);
                 }
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        "HNSW index stale (checksum mismatch). \
-                         Falling back to brute-force search. Run 'cqs index' to rebuild."
+                        "HNSW index stale (failed verification or predates the last chunk \
+                         write). Falling back to brute-force search. Run 'cqs index' to rebuild."
                     );
                     return Ok(None);
                 }

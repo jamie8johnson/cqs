@@ -331,33 +331,91 @@ pub(super) fn process_file_changes(
                 }
             }
 
+            // Refresh the observed store stamp now that this cycle's writes
+            // (chunk reindex + SPLADE encode) are committed. Every HNSW save
+            // below passes it as the snapshot: a live stamp that has moved
+            // past it at save time means a writer this loop never observed,
+            // and the save gets discarded instead of overwriting newer
+            // sidecars with contents that lack that writer's chunks.
+            match cqs::hnsw::StoreStamp::read(store) {
+                Ok(s) => state.observed_stamp = Some(s),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to read store stamp after reindex — the next HNSW save \
+                         falls back to the live stamp (no foreign-writer detection)"
+                    );
+                    state.observed_stamp = None;
+                }
+            }
+
             // === HNSW maintenance ===
             //
             // Rebuilds run in a background thread (`spawn_hnsw_rebuild`).
             // The watch loop's responsibilities each cycle are:
             //
-            //   1. Drain a completed rebuild — replay any (id, embedding) the
-            //      loop captured during the build window into the new index,
-            //      save, and atomically swap into `state.hnsw_index`.
-            //   2. Decide whether to start a *new* rebuild (Owned-needed, or
-            //      threshold reached) — and if a rebuild is already in flight,
-            //      just record this cycle's chunks in the pending delta so
-            //      they survive the swap.
-            //   3. Otherwise (no rebuild needed, no rebuild in flight): take
-            //      the fast incremental path on the in-memory Owned index.
+            //   1. Fetch this cycle's committed (id, embedding, hash) triples
+            //      and — if a rebuild is in flight — merge them into its
+            //      delta BEFORE the drain. Ordering invariant: the drain's
+            //      sidecar save is stamped with `observed_stamp`, which was
+            //      refreshed above and already covers this cycle's writes; a
+            //      drain that saved (and cleared the dirty flag) without
+            //      these pairs would persist an index missing chunks its
+            //      stamp claims to contain, and a crash before the follow-up
+            //      incremental save would let the dirty-path self-heal trust
+            //      it.
+            //   2. Drain a completed rebuild — replay the delta (now
+            //      including this cycle) into the new index, save, and
+            //      atomically swap into `state.hnsw_index`.
+            //   3. Decide whether to start a *new* rebuild (Owned-needed, or
+            //      threshold reached).
+            //   4. If the drain did NOT consume this cycle's pairs (none was
+            //      pending, or pending was cleared without a swap), queue
+            //      them into the freshly spawned rebuild's delta or take the
+            //      fast incremental path on the in-memory Owned index.
             //
             // The result: incremental_insert never blocks on a full rebuild,
             // editor saves don't pause for 10-30s of CUDA work, and search
             // keeps using the prior index until the new one is ready.
 
-            // 1. Drain a completed rebuild, if any.
-            drain_pending_rebuild(cfg, store, state);
+            // 1. Fetch this cycle's pairs; pre-drain merge into the delta.
+            let pairs: Vec<(String, Embedding, String)> = if content_hashes.is_empty() {
+                Vec::new()
+            } else {
+                let hash_refs: Vec<&str> = content_hashes.iter().map(|s| s.as_str()).collect();
+                match store.get_chunk_ids_and_embeddings_by_hashes(&hash_refs) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to fetch embeddings for HNSW update");
+                        Vec::new()
+                    }
+                }
+            };
+            if !pairs.is_empty() {
+                if let Some(ref mut pending) = state.pending_rebuild {
+                    // Clone: if the drain clears pending without a swap
+                    // (error / saturated / stale-discard), the delta dies
+                    // with it and the locals below re-handle the pairs.
+                    // Bounded by one cycle's file count — small next to the
+                    // rebuild itself.
+                    pending.queue_delta(pairs.clone(), store.dim(), cfg.quiet);
+                }
+            }
+
+            // 2. Drain a completed rebuild, if any.
+            let drain_outcome = drain_pending_rebuild(cfg, store, state);
+            // Pairs are consumed when the drain replayed them (Swapped) or
+            // the delta retaining them is still pending (StillRunning).
+            let pairs_consumed = matches!(
+                drain_outcome,
+                super::rebuild::DrainOutcome::Swapped | super::rebuild::DrainOutcome::StillRunning
+            );
 
             let rebuild_in_flight = state.pending_rebuild.is_some();
             let needs_owned =
                 state.hnsw_index.is_none() || state.incremental_count >= hnsw_rebuild_threshold();
 
-            // 2. Start a new rebuild, if appropriate.
+            // 3. Start a new rebuild, if appropriate.
             if needs_owned && !rebuild_in_flight {
                 let context = if state.hnsw_index.is_none() {
                     "rebuild_from_empty"
@@ -380,133 +438,115 @@ pub(super) fn process_file_changes(
                 state.pending_rebuild = Some(pending);
             }
 
-            // 3. Either drop new chunks into the in-flight rebuild's delta,
-            //    or run the fast incremental path.
-            if !content_hashes.is_empty() {
-                let hash_refs: Vec<&str> = content_hashes.iter().map(|s| s.as_str()).collect();
-                match store.get_chunk_ids_and_embeddings_by_hashes(&hash_refs) {
-                    Ok(pairs) if !pairs.is_empty() => {
-                        if let Some(ref mut pending) = state.pending_rebuild {
-                            // A rebuild is in flight (just spawned this cycle,
-                            // or carried over from a prior one). The rebuild
-                            // thread's snapshot may not include these chunks —
-                            // capture them so `drain_pending_rebuild` can
-                            // replay them after the swap.
-                            //
-                            // Cap the delta. The cap is dim-aware via
-                            // `pending_rebuild_delta_max` — 5,000 baseline at
-                            // 1024-dim, scaled inversely by dim so a 4096-dim
-                            // model gets ~1,250 (still ~20 MB worst case)
-                            // instead of 80 MB. If the rebuild stalls long
-                            // enough to accumulate above the cap, latch
-                            // `delta_saturated` and stop appending. The drain
-                            // path will discard the rebuilt index instead of
-                            // swapping a stale snapshot; the next threshold
-                            // rebuild reads SQLite fresh and recovers
-                            // everything.
-                            let delta_cap = super::rebuild::pending_rebuild_delta_max(store.dim());
-                            if pending.delta.len() + pairs.len() > delta_cap {
-                                if !pending.delta_saturated {
-                                    tracing::warn!(
-                                        cap = delta_cap,
-                                        current = pending.delta.len(),
-                                        dim = store.dim(),
-                                        "Pending HNSW rebuild delta saturated; \
-                                         abandoning in-flight rebuild — next threshold \
-                                         rebuild will pick up changes from SQLite"
+            // 4. Re-handle pairs the drain didn't consume: queue into the
+            //    just-spawned rebuild's delta, or run the fast incremental
+            //    path. (`StillRunning` implies the spawn block above didn't
+            //    fire, so a Some(pending) here is always the fresh spawn.)
+            if !pairs.is_empty() && !pairs_consumed {
+                if let Some(ref mut pending) = state.pending_rebuild {
+                    // A rebuild just spawned this cycle. Its SQLite
+                    // snapshot may not include these chunks — capture
+                    // them so `drain_pending_rebuild` can replay them
+                    // after the swap (the fingerprint dedup skips any
+                    // the snapshot did consume).
+                    pending.queue_delta(pairs, store.dim(), cfg.quiet);
+                } else if let Some(ref mut index) = state.hnsw_index {
+                    // Fast incremental path — Owned in memory, no rebuild pending.
+                    // Modified chunks get new IDs; old vectors become orphans
+                    // in the HNSW graph (hnsw_rs has no deletion). Orphans are
+                    // harmless: search post-filters against live SQLite chunk
+                    // IDs. They're cleaned on the next threshold rebuild.
+                    //
+                    // `pairs` carries content_hash as the third tuple
+                    // slot for the rebuild-window path; the
+                    // incremental insert only needs (id, embedding).
+                    let items: Vec<(String, &[f32])> = pairs
+                        .iter()
+                        .map(|(id, emb, _hash)| (id.clone(), emb.as_slice()))
+                        .collect();
+                    match index.insert_batch(&items) {
+                        Ok(n) => {
+                            state.incremental_count += n;
+                            // Stamped save: the in-memory index now
+                            // reflects everything this loop has
+                            // observed (= observed_stamp, refreshed
+                            // above). A live-stamp mismatch under
+                            // the save lock means a foreign writer's
+                            // chunks are missing from this index —
+                            // discard the save and leave the dirty
+                            // flag set rather than overwrite the
+                            // newer on-disk sidecars.
+                            let snapshot = match state.observed_stamp {
+                                Some(s) => Ok(s),
+                                None => cqs::hnsw::StoreStamp::read(store).map_err(|e| {
+                                    cqs::hnsw::HnswError::Internal(format!(
+                                        "Failed to read store stamp for incremental save: {e}"
+                                    ))
+                                }),
+                            };
+                            match snapshot.and_then(|snap| {
+                                index.save_stamped(cfg.cqs_dir, "index", store, snap)
+                            }) {
+                                Ok(cqs::hnsw::SaveOutcome::Saved) => {
+                                    clear_hnsw_dirty_with_retry(
+                                        store,
+                                        cqs::HnswKind::Enriched,
+                                        "incremental_insert",
                                     );
-                                    pending.delta_saturated = true;
                                 }
-                                // Drop the new pairs; SQLite is the source of truth.
-                            } else {
-                                let added = pairs.len();
-                                pending.delta.extend(pairs);
-                                tracing::debug!(
-                                    added,
-                                    total_delta = pending.delta.len(),
-                                    "Captured chunks in pending rebuild delta"
-                                );
-                                if !cfg.quiet {
-                                    println!(
-                                        "  HNSW index: +{} vectors queued for in-flight rebuild ({} total deferred)",
-                                        added,
-                                        pending.delta.len()
+                                Ok(cqs::hnsw::SaveOutcome::DiscardedStale) => {
+                                    warn!(
+                                        "HNSW incremental save discarded: store moved \
+                                                 past the watch loop's observed state \
+                                                 (concurrent indexer); dirty flag stays set"
                                     );
-                                }
-                            }
-                        } else if let Some(ref mut index) = state.hnsw_index {
-                            // Fast incremental path — Owned in memory, no rebuild pending.
-                            // Modified chunks get new IDs; old vectors become orphans
-                            // in the HNSW graph (hnsw_rs has no deletion). Orphans are
-                            // harmless: search post-filters against live SQLite chunk
-                            // IDs. They're cleaned on the next threshold rebuild.
-                            //
-                            // `pairs` carries content_hash as the third tuple
-                            // slot for the rebuild-window path; the
-                            // incremental insert only needs (id, embedding).
-                            let items: Vec<(String, &[f32])> = pairs
-                                .iter()
-                                .map(|(id, emb, _hash)| (id.clone(), emb.as_slice()))
-                                .collect();
-                            match index.insert_batch(&items) {
-                                Ok(n) => {
-                                    state.incremental_count += n;
-                                    if let Err(e) = index.save(cfg.cqs_dir, "index") {
-                                        warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else {
-                                        clear_hnsw_dirty_with_retry(
-                                            store,
-                                            cqs::HnswKind::Enriched,
-                                            "incremental_insert",
-                                        );
-                                    }
-                                    info!(
-                                        inserted = n,
-                                        total = index.len(),
-                                        incremental_count = state.incremental_count,
-                                        "HNSW incremental insert"
-                                    );
-                                    if !cfg.quiet {
-                                        println!(
-                                            "  HNSW index: +{} vectors (incremental, {} total)",
-                                            n,
-                                            index.len()
-                                        );
-                                    }
                                 }
                                 Err(e) => {
-                                    // Insert failed. Queue a background rebuild
-                                    // rather than blocking on a synchronous one
-                                    // — search keeps serving from the current
-                                    // index meanwhile.
-                                    warn!(
-                                        error = %e,
-                                        "HNSW incremental insert failed; spawning background rebuild"
-                                    );
-                                    let pending = spawn_hnsw_rebuild(
-                                        cfg.cqs_dir.to_path_buf(),
-                                        cfg.cqs_dir.join(cqs::INDEX_DB_FILENAME),
-                                        store.dim(),
-                                        "incremental_insert_failure",
-                                    );
-                                    // Carry these new chunks over into the new
-                                    // rebuild's delta so they survive the swap.
-                                    let mut p = pending;
-                                    p.delta.extend(pairs);
-                                    state.pending_rebuild = Some(p);
+                                    warn!(error = %e, "Failed to save HNSW after incremental insert");
                                 }
                             }
+                            info!(
+                                inserted = n,
+                                total = index.len(),
+                                incremental_count = state.incremental_count,
+                                "HNSW incremental insert"
+                            );
+                            if !cfg.quiet {
+                                println!(
+                                    "  HNSW index: +{} vectors (incremental, {} total)",
+                                    n,
+                                    index.len()
+                                );
+                            }
                         }
-                        // No pending and no in-memory index → first save with
-                        // empty store. The needs_owned branch above already
-                        // spawned a rebuild this cycle; pairs were captured
-                        // there. Nothing to do here.
-                    }
-                    Ok(_) => {} // no embeddings found for hashes
-                    Err(e) => {
-                        warn!(error = %e, "Failed to fetch embeddings for HNSW update");
+                        Err(e) => {
+                            // Insert failed. Queue a background rebuild
+                            // rather than blocking on a synchronous one
+                            // — search keeps serving from the current
+                            // index meanwhile.
+                            warn!(
+                                error = %e,
+                                "HNSW incremental insert failed; spawning background rebuild"
+                            );
+                            let pending = spawn_hnsw_rebuild(
+                                cfg.cqs_dir.to_path_buf(),
+                                cfg.cqs_dir.join(cqs::INDEX_DB_FILENAME),
+                                store.dim(),
+                                "incremental_insert_failure",
+                            );
+                            // Carry these new chunks over into the new
+                            // rebuild's delta so they survive the swap
+                            // (cap-aware, same as every delta append).
+                            let mut p = pending;
+                            p.queue_delta(pairs, store.dim(), cfg.quiet);
+                            state.pending_rebuild = Some(p);
+                        }
                     }
                 }
+                // No pending and no in-memory index → first save with
+                // empty store. The needs_owned branch above already
+                // spawned a rebuild this cycle; pairs were captured
+                // there. Nothing to do here.
             }
         }
         Err(e) => {

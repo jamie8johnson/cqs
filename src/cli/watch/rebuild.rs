@@ -60,6 +60,88 @@ pub(super) struct PendingRebuild {
     /// swapping (the missed embeddings would silently disappear); the next
     /// threshold rebuild reads fresh state from SQLite and recovers cleanly.
     pub(super) delta_saturated: bool,
+    /// Shutdown signal for the rebuild thread. Set by the daemon shutdown
+    /// path before its bounded join; the thread checks it before entering
+    /// each sidecar save so a process exit after the join window detaches
+    /// a thread that is no longer mid-save. A skipped save leaves the dirty
+    /// flag set and the previous on-disk index intact — the next daemon
+    /// start rebuilds.
+    pub(super) shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PendingRebuild {
+    /// Queue (id, embedding, content_hash) triples for replay into the
+    /// rebuilt index at swap time, respecting the dim-aware
+    /// [`pending_rebuild_delta_max`] cap. Once the cap would be exceeded the
+    /// `delta_saturated` latch is set and the triples are dropped — SQLite
+    /// remains the source of truth and the drain discards a saturated
+    /// rebuild instead of swapping it.
+    ///
+    /// Ordering contract: pairs committed in the same cycle a drain may
+    /// complete MUST be queued BEFORE `drain_pending_rebuild` runs. The
+    /// drain's sidecar save is stamped with the watch loop's observed store
+    /// state, which already includes those pairs; a save without them would
+    /// clear the dirty flag on an index that is missing chunks its stamp
+    /// claims to contain.
+    pub(super) fn queue_delta(
+        &mut self,
+        pairs: Vec<(String, Embedding, String)>,
+        dim: usize,
+        quiet: bool,
+    ) {
+        if pairs.is_empty() {
+            return;
+        }
+        let delta_cap = pending_rebuild_delta_max(dim);
+        if self.delta.len() + pairs.len() > delta_cap {
+            if !self.delta_saturated {
+                tracing::warn!(
+                    cap = delta_cap,
+                    current = self.delta.len(),
+                    dim,
+                    "Pending HNSW rebuild delta saturated; \
+                     abandoning in-flight rebuild — next threshold \
+                     rebuild will pick up changes from SQLite"
+                );
+                self.delta_saturated = true;
+            }
+            // Drop the new pairs; SQLite is the source of truth.
+            return;
+        }
+        let added = pairs.len();
+        self.delta.extend(pairs);
+        tracing::debug!(
+            added,
+            total_delta = self.delta.len(),
+            "Captured chunks in pending rebuild delta"
+        );
+        if !quiet {
+            println!(
+                "  HNSW index: +{} vectors queued for in-flight rebuild ({} total deferred)",
+                added,
+                self.delta.len()
+            );
+        }
+    }
+}
+
+/// What [`drain_pending_rebuild`] did with the pending rebuild this tick.
+/// The caller uses this to decide whether this cycle's pairs were consumed
+/// (queued into the delta pre-drain and replayed/retained) or still need the
+/// post-drain handling (new rebuild's delta or the fast incremental path).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DrainOutcome {
+    /// No rebuild was pending.
+    NoPending,
+    /// Rebuild still in flight — pending (and its delta) retained.
+    StillRunning,
+    /// New index swapped in; the pending delta was replayed into it first.
+    Swapped,
+    /// Pending cleared without a swap (thread error, empty store, saturated
+    /// delta, stale-stamp discard, or channel disconnect). Any delta entries
+    /// were dropped — SQLite remains the source of truth and the next
+    /// threshold rebuild recovers them.
+    Cleared,
 }
 
 /// The rebuild thread reports both the freshly-built `HnswIndex` AND a
@@ -265,6 +347,8 @@ pub(super) fn spawn_hnsw_rebuild(
 ) -> PendingRebuild {
     let (tx, rx) = std::sync::mpsc::channel();
     let started_at = std::time::Instant::now();
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_for_thread = std::sync::Arc::clone(&shutdown);
     let span = tracing::info_span!(
         "hnsw_rebuild_bg",
         context,
@@ -293,14 +377,41 @@ pub(super) fn spawn_hnsw_rebuild(
                         expected_dim
                     );
                 }
-                let enriched = crate::cli::commands::build_hnsw_index_owned(&store, &cqs_dir)?;
+                let enriched = crate::cli::commands::build_hnsw_index_owned(
+                    &store,
+                    &cqs_dir,
+                    Some(&shutdown_for_thread),
+                )?;
+                // The thread-side save may come back DiscardedStale when the
+                // watch loop (or an external `cqs index`) committed chunks
+                // during the build. That's fine here: the drain replays the
+                // watch-observed delta and re-attempts the save under its own
+                // stamp check, which is the authoritative one. The discard
+                // only means this intermediate on-disk write was skipped.
+                if let Some((_, _, cqs::hnsw::SaveOutcome::DiscardedStale)) = &enriched {
+                    tracing::warn!(
+                        context,
+                        "background HNSW thread save discarded (store moved past build \
+                         snapshot); drain will re-attempt after delta replay"
+                    );
+                }
                 // Phase 5: also rebuild the base (non-enriched) HNSW so the
                 // dual-index router stays in sync. The base index is loaded
                 // fresh from disk by search processes — no in-memory swap
                 // needed. Best-effort: a base rebuild failure shouldn't block
                 // the enriched swap, so log + continue.
-                match crate::cli::commands::build_hnsw_base_index(&store, &cqs_dir) {
-                    Ok(Some(n)) => tracing::info!(vectors = n, "base HNSW rebuilt in background"),
+                match crate::cli::commands::build_hnsw_base_index(
+                    &store,
+                    &cqs_dir,
+                    Some(&shutdown_for_thread),
+                ) {
+                    Ok(Some((n, cqs::hnsw::SaveOutcome::Saved))) => {
+                        tracing::info!(vectors = n, "base HNSW rebuilt in background")
+                    }
+                    Ok(Some((_, cqs::hnsw::SaveOutcome::DiscardedStale))) => tracing::warn!(
+                        "base HNSW save discarded (store moved past build snapshot); \
+                         base dirty flag stays set until the next rebuild"
+                    ),
                     Ok(None) => tracing::debug!("base HNSW skipped (no embedding_base rows yet)"),
                     Err(e) => tracing::warn!(
                         error = %e,
@@ -309,10 +420,12 @@ pub(super) fn spawn_hnsw_rebuild(
                 }
                 // Package the (index, snapshot_keys) pair so the drain can
                 // detect mid-rebuild re-embeddings via fingerprint set.
-                Ok(enriched.map(|(index, snapshot_keys)| RebuildResult {
-                    index,
-                    snapshot_keys,
-                }))
+                Ok(
+                    enriched.map(|(index, snapshot_keys, _outcome)| RebuildResult {
+                        index,
+                        snapshot_keys,
+                    }),
+                )
             })();
             let elapsed_ms = started_at.elapsed().as_millis();
             match &result {
@@ -353,6 +466,7 @@ pub(super) fn spawn_hnsw_rebuild(
         started_at,
         handle,
         delta_saturated: false,
+        shutdown,
     }
 }
 
@@ -370,17 +484,25 @@ pub(super) fn spawn_hnsw_rebuild(
 /// - Channel empty: rebuild still in flight; leave pending alone so the
 ///   caller continues to capture delta entries.
 /// - Channel disconnected: spawn failed earlier or thread panicked; clear.
-pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+///
+/// Returns a [`DrainOutcome`] so the caller can tell whether pairs it queued
+/// into the delta pre-drain were consumed (`Swapped` / retained
+/// `StillRunning`) or dropped (`Cleared`) and need re-handling.
+pub(super) fn drain_pending_rebuild(
+    cfg: &WatchConfig,
+    store: &Store,
+    state: &mut WatchState,
+) -> DrainOutcome {
     let Some(pending) = state.pending_rebuild.as_mut() else {
-        return;
+        return DrainOutcome::NoPending;
     };
     let outcome = match pending.rx.try_recv() {
         Ok(o) => o,
-        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return DrainOutcome::StillRunning,
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             tracing::warn!("Background rebuild thread channel disconnected; clearing pending");
             state.pending_rebuild = None;
-            return;
+            return DrainOutcome::Cleared;
         }
     };
     let pending = state
@@ -411,7 +533,7 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                         elapsed_ms
                     );
                 }
-                return;
+                return DrainOutcome::Cleared;
             }
             // Replay captured delta — skip only entries whose (id,
             // content_hash) match the snapshot. An id that was re-embedded
@@ -455,17 +577,68 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                     ),
                 }
             }
-            if let Err(e) = new_index.save(cfg.cqs_dir, "index") {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to save rebuilt HNSW after delta replay; in-memory swap proceeds anyway"
-                );
-            } else {
-                clear_hnsw_dirty_with_retry(
-                    store,
-                    cqs::HnswKind::Enriched,
-                    "background_rebuild_swap",
-                );
+            // Save under a store-state stamp. The snapshot is the stamp the
+            // watch loop captured after its own most recent write cycle:
+            // everything the loop has committed is either in the rebuild
+            // thread's SQLite snapshot or in the delta replayed above, so
+            // the rebuilt index reflects exactly that store state. If the
+            // live stamp (re-read under the exclusive save lock) differs, a
+            // writer this process never observed — a concurrent `cqs index`
+            // is the documented case — committed chunks the rebuilt index
+            // does not contain. Saving would overwrite that writer's newer
+            // sidecars with stale contents stamped as current; instead the
+            // save is discarded and the rebuilt index is dropped (swapping
+            // it into memory would serve the same stale view in-process).
+            // The dirty flag stays set, and even a stale save that raced
+            // through the snapshot-capture window carries an old stamp that
+            // the dirty-path load check refuses.
+            let snapshot = state.observed_stamp.map(Ok).unwrap_or_else(|| {
+                // First cycle (no writes observed yet): fall back to the
+                // live stamp. No foreign-writer detection on this save, but
+                // the under-lock re-read still bounds the race window.
+                cqs::hnsw::StoreStamp::read(store)
+            });
+            match snapshot {
+                Ok(snapshot) => {
+                    match new_index.save_stamped(cfg.cqs_dir, "index", store, snapshot) {
+                        Ok(cqs::hnsw::SaveOutcome::Saved) => {
+                            clear_hnsw_dirty_with_retry(
+                                store,
+                                cqs::HnswKind::Enriched,
+                                "background_rebuild_swap",
+                            );
+                        }
+                        Ok(cqs::hnsw::SaveOutcome::DiscardedStale) => {
+                            let elapsed_ms = pending.started_at.elapsed().as_millis();
+                            tracing::warn!(
+                                elapsed_ms,
+                                "Discarding rebuilt HNSW: store moved past the watch loop's \
+                                 observed state (concurrent indexer) — keeping the current \
+                                 in-memory index; next threshold rebuild reads fresh SQLite"
+                            );
+                            if !cfg.quiet {
+                                println!(
+                                    "  HNSW index: rebuild discarded (concurrent indexer; {}ms, will retry)",
+                                    elapsed_ms
+                                );
+                            }
+                            return DrainOutcome::Cleared;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Failed to save rebuilt HNSW after delta replay; in-memory swap proceeds anyway"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to read store stamp for rebuilt HNSW save; skipping disk save, \
+                         in-memory swap proceeds anyway"
+                    );
+                }
             }
             let elapsed_ms = pending.started_at.elapsed().as_millis();
             let n = new_index.len();
@@ -481,15 +654,18 @@ pub(super) fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mu
                     n, elapsed_ms
                 );
             }
+            DrainOutcome::Swapped
         }
         Ok(None) => {
             tracing::debug!("Background rebuild reported empty store; cleared pending");
+            DrainOutcome::Cleared
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 "Background HNSW rebuild failed; will retry on next threshold trigger"
             );
+            DrainOutcome::Cleared
         }
     }
 }

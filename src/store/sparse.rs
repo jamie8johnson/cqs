@@ -15,7 +15,15 @@
 //! `chunks` table automatically cascade — those paths bump the generation via
 //! their own `bump_splade_generation_tx` call after the `chunks` delete.
 //!
-//! Do not add a fourth write site without wiring the bump.
+//! The counter additionally serves as the store-wide *write generation* for
+//! the HNSW sidecar stamp (`hnsw::StoreStamp`): dense-embedding rewrites
+//! (`update_embeddings_with_hashes_batch`, the enrichment pass) bump it too,
+//! even though they never touch `sparse_vectors` — the dirty-flag self-heal
+//! relies on the counter moving for every vector-affecting write. The
+//! resulting spurious SPLADE rebuild after an enrichment pass is the
+//! accepted cost of keeping one counter.
+//!
+//! Do not add another vector-affecting write site without wiring the bump.
 
 use super::{ReadWrite, Store};
 use crate::splade::SparseVector;

@@ -396,8 +396,9 @@ fn cmd_ref_add(
         println!("  Embedded: {} chunks", stats.total_embedded);
     }
 
-    // Build HNSW index
-    if let Some(count) = build_hnsw_index(&store, &ref_dir)? {
+    // Build HNSW index. Reference indexes have no concurrent writers, so a
+    // DiscardedStale outcome is not expected; report the count either way.
+    if let Some((count, _outcome)) = build_hnsw_index(&store, &ref_dir)? {
         if !cli.quiet && !json {
             println!("  HNSW: {} vectors", count);
         }
@@ -950,8 +951,9 @@ fn cmd_ref_update(cli: &Cli, name: &str, json: bool, opts: RefUpdateLlmOpts) -> 
         tracing::warn!(error = %e, "cmd_ref_update: final flush of summary queue failed");
     }
 
-    // Rebuild HNSW
-    if let Some(count) = build_hnsw_index(&store, ref_dir)? {
+    // Rebuild HNSW. Reference indexes have no concurrent writers, so a
+    // DiscardedStale outcome is not expected; report the count either way.
+    if let Some((count, _outcome)) = build_hnsw_index(&store, ref_dir)? {
         if !cli.quiet && !json {
             println!("  HNSW: {} vectors", count);
         }

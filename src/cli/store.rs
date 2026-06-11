@@ -509,8 +509,13 @@ pub(crate) fn build_base_vector_index<Mode: ClearHnswDirty>(
         return Ok(None);
     }
 
-    // Same self-heal logic as enriched: if checksums pass, clear the dirty
-    // flag; otherwise fall back to enriched via the router.
+    // Same self-heal logic as enriched: the dirty flag may only be cleared
+    // when the sidecars verify AND their store-state stamp matches the live
+    // store — a checksum pass alone cannot distinguish "died after the save"
+    // from "died after the chunk commit, before the save" (the sidecar
+    // manifest is written by the same save it describes, so a complete
+    // previous-generation set always passes). Otherwise fall back to
+    // enriched via the router.
     //
     // Surface metadata-read failures for the base index path too.
     let dirty = match store.is_hnsw_dirty(cqs::HnswKind::Base) {
@@ -525,17 +530,19 @@ pub(crate) fn build_base_vector_index<Mode: ClearHnswDirty>(
         }
     };
     if dirty {
-        match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index_base") {
+        match cqs::hnsw::verify_hnsw_current(cqs_dir, "index_base", store) {
             Ok(()) => {
                 tracing::info!(
-                    "Base HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
+                    "Base HNSW dirty flag set but sidecars verify and match the live store \
+                     — clearing flag (self-heal)"
                 );
                 Mode::try_clear_hnsw_dirty(store, cqs::HnswKind::Base);
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "Base HNSW index stale (checksum mismatch) — router falls back to enriched"
+                    "Base HNSW index stale (failed verification or predates the last \
+                     chunk write) — router falls back to enriched"
                 );
                 return Ok(None);
             }
@@ -699,11 +706,41 @@ mod base_index_tests {
         std::env::remove_var("CQS_DISABLE_BASE_INDEX");
     }
 
-    /// Issue #971: after a successful checksum verify, the self-heal path
-    /// must clear `hnsw_dirty` so the next run skips the expensive verify
-    /// step. This pins the invariant documented at
-    /// `build_base_vector_index` lines ~499-515: dirty flag + checksum OK
-    /// → `try_clear_hnsw_dirty` runs and the flag ends up `false`.
+    /// Insert one chunk so the store's state stamp (chunk_count + write
+    /// generation) moves past any sidecar stamp captured earlier.
+    fn advance_store(store: &cqs::Store, id: &str) {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        let content = format!("fn {}() {{ }}", id);
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: id.to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: id.to_string(),
+            signature: format!("fn {}()", id),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash,
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunks_batch(&[(chunk, make_embedding(0.7, store.dim()))], Some(0))
+            .expect("seed chunk");
+    }
+
+    /// Dirty-flag self-heal, positive half: the flag may be
+    /// cleared only when the crash happened AFTER the HNSW save landed
+    /// (sidecars intact AND their store-state stamp matches the live
+    /// store). We model that exact state: a stamped save against the
+    /// current store, then the dirty flag set as if the process died
+    /// between the save and `set_hnsw_dirty(false)`.
     #[test]
     fn test_build_base_vector_index_clears_dirty_after_successful_rebuild() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -721,11 +758,17 @@ mod base_index_tests {
             .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
             .collect();
         let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
-        index.save(dir.path(), "index_base").unwrap();
+        let snapshot = cqs::hnsw::StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            index
+                .save_stamped(dir.path(), "index_base", &store, snapshot)
+                .unwrap(),
+            cqs::hnsw::SaveOutcome::Saved
+        );
 
-        // Simulate the post-crash state: sidecar files on disk + checksums
-        // intact (because we just wrote them) + dirty flag set (as if the
-        // process died between the SQLite commit and `set_hnsw_dirty(false)`).
+        // Simulate the died-after-save state: sidecars on disk, stamp
+        // matching the live store, dirty flag set (as if the process died
+        // between the save and `set_hnsw_dirty(false)`).
         store.set_hnsw_dirty(cqs::HnswKind::Base, true).unwrap();
         assert!(
             store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
@@ -735,12 +778,96 @@ mod base_index_tests {
         let loaded = build_base_vector_index(&store, dir.path()).unwrap();
         assert!(
             loaded.is_some(),
-            "checksum passes → base index should load rather than fall back to None"
+            "stamp matches the live store → base index should load rather than fall back to None"
         );
 
         assert!(
             !store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
             "self-heal must clear the Base dirty flag after successful verify"
+        );
+    }
+
+    /// Dirty-flag self-heal, negative half this flag exists for: the
+    /// process died after committing chunks but BEFORE the HNSW save. The
+    /// sidecars on disk are a complete, checksum-valid set from the
+    /// previous generation — checksums alone cannot tell them apart from
+    /// a fresh save (the manifest is written by the same save it
+    /// describes). The store-state stamp can: it no longer matches the
+    /// live store, so the self-heal must REFUSE, return `None`
+    /// (brute-force fallback), and leave the flag set.
+    #[test]
+    fn test_build_base_vector_index_refuses_dirty_when_sidecars_predate_store() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        let snapshot = cqs::hnsw::StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            index
+                .save_stamped(dir.path(), "index_base", &store, snapshot)
+                .unwrap(),
+            cqs::hnsw::SaveOutcome::Saved
+        );
+
+        // The crash scenario: dirty flag set before chunk writes, chunks
+        // committed (moving the store past the sidecar stamp), process died
+        // before the HNSW save could run.
+        store.set_hnsw_dirty(cqs::HnswKind::Base, true).unwrap();
+        advance_store(&store, "committed_after_save");
+
+        let result = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            result.is_none(),
+            "sidecars from an older generation must NOT self-heal — the promised \
+             brute-force fallback has to happen"
+        );
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
+            "dirty flag must stay set when the sidecars predate the last chunk write"
+        );
+    }
+
+    /// Stamp-less sidecars (plain `save()`, or written by a pre-stamp
+    /// binary) cannot prove they postdate the last chunk write — the dirty
+    /// path must refuse them even though checksums pass. (Clean, non-dirty
+    /// loads of such sidecars keep working; that's the
+    /// `test_disable_base_index_*` fixtures above.)
+    #[test]
+    fn test_build_base_vector_index_refuses_dirty_unstamped_sidecars() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        index.save(dir.path(), "index_base").unwrap();
+
+        store.set_hnsw_dirty(cqs::HnswKind::Base, true).unwrap();
+
+        let result = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            result.is_none(),
+            "unstamped sidecars must not self-heal on the dirty path"
+        );
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
+            "dirty flag must stay set for unstamped sidecars"
         );
     }
 
@@ -819,8 +946,15 @@ mod base_index_tests {
             .collect();
         let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
         // Enriched basename is "index" (see `try_load_with_ef` /
-        // `verify_hnsw_checksums(cqs_dir, "index")`).
-        index.save(dir.path(), "index").unwrap();
+        // `verify_hnsw_current(cqs_dir, "index", store)`). Stamped save:
+        // self-heal requires the sidecar stamp to match the live store.
+        let snapshot = cqs::hnsw::StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            index
+                .save_stamped(dir.path(), "index", &store, snapshot)
+                .unwrap(),
+            cqs::hnsw::SaveOutcome::Saved
+        );
 
         store.set_hnsw_dirty(cqs::HnswKind::Enriched, true).unwrap();
         assert!(
@@ -831,12 +965,52 @@ mod base_index_tests {
         let loaded = build_vector_index_with_config(&store, dir.path(), None).unwrap();
         assert!(
             loaded.is_some(),
-            "checksum passes → enriched index should load rather than fall back to None"
+            "stamp matches the live store → enriched index should load rather than fall back to None"
         );
 
         assert!(
             !store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
             "self-heal must clear the Enriched dirty flag after successful verify"
+        );
+    }
+
+    /// Enriched mirror of the predates-store refusal: dirty flag + complete
+    /// checksum-valid sidecars whose stamp no longer matches the live store
+    /// → no self-heal, `Ok(None)` (brute-force fallback), flag stays set.
+    #[test]
+    fn test_build_enriched_vector_index_refuses_dirty_when_sidecars_predate_store() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        let snapshot = cqs::hnsw::StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            index
+                .save_stamped(dir.path(), "index", &store, snapshot)
+                .unwrap(),
+            cqs::hnsw::SaveOutcome::Saved
+        );
+
+        store.set_hnsw_dirty(cqs::HnswKind::Enriched, true).unwrap();
+        advance_store(&store, "committed_after_enriched_save");
+
+        let result = build_vector_index_with_config(&store, dir.path(), None).unwrap();
+        assert!(
+            result.is_none(),
+            "enriched sidecars from an older generation must NOT self-heal"
+        );
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
+            "Enriched dirty flag must stay set when the sidecars predate the last chunk write"
         );
     }
 
