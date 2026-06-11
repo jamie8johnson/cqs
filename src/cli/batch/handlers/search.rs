@@ -814,7 +814,7 @@ mod tests {
     }
 
     /// `--name-only --limit N` honours the limit *and* clamps out-of-range
-    /// values via `limit.clamp(1, 100)`. A regression
+    /// values via `limit.clamp(1, SEARCH_LIMIT_CAP)`. A regression
     /// that passed the raw limit through would return unlimited rows.
     #[test]
     fn test_dispatch_search_name_only_limit_clamp() {

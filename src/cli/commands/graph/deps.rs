@@ -117,7 +117,7 @@ pub(crate) fn deps_core(
     let _span =
         tracing::info_span!("deps_core", name = %args.name, reverse = args.reverse, limit = args.limit)
             .entered();
-    let limit = args.limit.clamp(1, 100);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     // Const/Module/Ambiguous don't fit deps' model. `notes_text::deps`
     // returns `None` for Type, encoding "deps runs the forward query for a

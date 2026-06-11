@@ -334,6 +334,10 @@ pub(crate) struct BlameArgs {
     /// Spelled `--commits`/`-n` rather than `--depth` so blame doesn't share
     /// the `--depth` spelling with `onboard` (callee expansion depth) and
     /// `test-map` (call-chain BFS depth), which carry different semantics.
+    ///
+    /// Default 10 (not `LimitArg`'s 5) is intentional: this counts commits to
+    /// show in the blame walk, not a result-set size, so it does not share
+    /// `LimitArg`'s ceiling or default.
     #[arg(short = 'n', long, default_value = "10")]
     pub commits: usize,
     /// Also show callers of the function

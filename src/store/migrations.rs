@@ -3003,7 +3003,7 @@ mod tests {
     }
 
     /// Prune policy: after a successful migrate, only the newest
-    /// `KEEP_BACKUPS` (2) backups survive. Older ones are deleted.
+    /// `keep_backups()` (default 3) backups survive. Older ones are deleted.
     ///
     /// Setup seeds 5 fake `.bak-v*.db` files with staggered mtimes so there
     /// is a deterministic ordering, runs migrate which creates a 6th (the
@@ -3057,7 +3057,7 @@ mod tests {
             let _pool = migrate(pool, &db_path, 19, 20).await.unwrap();
         });
 
-        // After migrate, the prune keeps KEEP_BACKUPS (2) newest. This run
+        // After migrate, the prune keeps keep_backups() (default 3) newest. This run
         // just produced a new backup (newer mtime than any fake), so the
         // survivors must be: the two newest fakes (v13-v14, v14-v15) +
         // this run's v19-v20. That is three files total.

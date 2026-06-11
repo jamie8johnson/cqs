@@ -22,6 +22,14 @@ use crate::store::Store;
 /// kind classifier enough evidence to route a hot name.
 pub const LOOKUP_BY_NAME_LIMIT: usize = 100;
 
+/// Hard ceiling on the page size [`Store::chunks_paged`] accepts. The
+/// enrichment / doc-comment loops pass an operator-tunable page size
+/// (`CQS_ENRICHMENT_PAGE_SIZE`, default 500); this caps a pathological or
+/// hostile value so a single page can't materialize an unbounded row Vec.
+/// 10k rows × the per-`ChunkSummary` footprint stays comfortably bounded
+/// while leaving every realistic page size untouched.
+const CHUNKS_PAGED_MAX_LIMIT: usize = 10_000;
+
 /// SQL `CASE chunk_type ... END` expression ranking rows by routing
 /// priority for [`Store::lookup_by_name`]'s ORDER BY. Generated from
 /// `ChunkType::ALL` through `classify_chunk_type` + `routing_priority`,
@@ -648,6 +656,10 @@ impl<Mode> Store<Mode> {
         after_rowid: i64,
         limit: usize,
     ) -> Result<(Vec<ChunkSummary>, i64), StoreError> {
+        // Clamp the caller-supplied page size to a module ceiling so a
+        // pathological env-tuned page size can't materialize an unbounded
+        // row Vec in a single query.
+        let limit = limit.min(CHUNKS_PAGED_MAX_LIMIT);
         let _span = tracing::debug_span!("chunks_paged", after_rowid, limit).entered();
         self.rt.block_on(async {
             // rowid appended AFTER the pinned ChunkRow columns so the
@@ -836,6 +848,28 @@ mod tests {
         let (chunks, max_rowid) = store.chunks_paged(0, 10).unwrap();
         assert_eq!(chunks.len(), 3);
         assert!(max_rowid > 0);
+    }
+
+    /// An above-ceiling page size is clamped to `CHUNKS_PAGED_MAX_LIMIT`
+    /// before binding to SQL, but still returns every available row when
+    /// the table is smaller than the ceiling — the clamp guards the bind
+    /// against a pathological value without breaking correctness.
+    #[test]
+    fn test_chunks_paged_clamps_oversized_limit() {
+        assert_eq!(super::CHUNKS_PAGED_MAX_LIMIT, 10_000);
+        let (store, _dir) = setup_store();
+        let pairs: Vec<_> = (0..3)
+            .map(|i| {
+                let c = make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i));
+                (c, mock_embedding(i as f32))
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        // Pass a limit far above the ceiling — the clamp applies but all 3
+        // rows still come back.
+        let (chunks, _max_rowid) = store.chunks_paged(0, usize::MAX).unwrap();
+        assert_eq!(chunks.len(), 3);
     }
 
     #[test]

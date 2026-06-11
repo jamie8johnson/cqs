@@ -150,18 +150,39 @@ fn data_cache_idle_timeout_minutes() -> u64 {
         .unwrap_or(DEFAULT_DATA_CACHE_IDLE_MINUTES)
 }
 
-/// TTL for the `audit_state` reload cache. The audit-mode file
-/// (`.cqs/audit-mode.json`) carries its own embedded `expires_at`. Re-reading
-/// every 30 s on each query is cheap (sub-ms file read) and bounds the
-/// staleness so the 30-min audit-mode auto-expire fires while the daemon is
-/// up, and `cqs audit-mode on` after daemon boot takes effect.
-const AUDIT_STATE_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Default TTL (seconds) for the `audit_state` reload cache. The audit-mode
+/// file (`.cqs/audit-mode.json`) carries its own embedded `expires_at`.
+/// Re-reading every 30 s on each query is cheap (sub-ms file read) and bounds
+/// the staleness so the 30-min audit-mode auto-expire fires while the daemon
+/// is up, and `cqs audit-mode on` after daemon boot takes effect.
+const AUDIT_STATE_RELOAD_SECS_DEFAULT: u64 = 30;
 
-/// TTL for the `config` reload cache. `.cqs/config.toml` edits (e.g. tuning
-/// `splade_alpha` or `ef_search`) take effect after this interval without a
-/// daemon restart. 5 min is long enough to avoid hot-loop file reads while
-/// keeping ad-hoc config tweaks usable without `systemctl restart cqs-watch`.
-const CONFIG_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Resolve the `audit_state` reload TTL honoring `CQS_BATCH_AUDIT_RELOAD_SECS`.
+/// Falls back to [`AUDIT_STATE_RELOAD_SECS_DEFAULT`] when unset, empty,
+/// unparseable, or zero.
+fn audit_state_reload_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(cqs::limits::parse_env_u64(
+        "CQS_BATCH_AUDIT_RELOAD_SECS",
+        AUDIT_STATE_RELOAD_SECS_DEFAULT,
+    ))
+}
+
+/// Default TTL (seconds) for the `config` reload cache. `.cqs/config.toml`
+/// edits (e.g. tuning `splade_alpha` or `ef_search`) take effect after this
+/// interval without a daemon restart. 5 min is long enough to avoid hot-loop
+/// file reads while keeping ad-hoc config tweaks usable without
+/// `systemctl restart cqs-watch`.
+const CONFIG_RELOAD_SECS_DEFAULT: u64 = 5 * 60;
+
+/// Resolve the `config` reload TTL honoring `CQS_BATCH_CONFIG_RELOAD_SECS`.
+/// Falls back to [`CONFIG_RELOAD_SECS_DEFAULT`] when unset, empty,
+/// unparseable, or zero.
+fn config_reload_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(cqs::limits::parse_env_u64(
+        "CQS_BATCH_CONFIG_RELOAD_SECS",
+        CONFIG_RELOAD_SECS_DEFAULT,
+    ))
+}
 
 /// Default number of reference indexes kept in the LRU cache. A "reference"
 /// is a sibling cqs project loaded via `@name` syntax. Memory-constrained
@@ -188,7 +209,17 @@ fn refs_lru_size() -> std::num::NonZeroUsize {
 /// a syscall per poll (the pragma is a connection-local counter read,
 /// cheaper still). 100 ms caps the probe rate at ~10 Hz per batch session
 /// while keeping reindex detection latency well under a second.
-const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const STALENESS_CHECK_MS_DEFAULT: u64 = 100;
+
+/// Resolve the minimum staleness-probe interval honoring
+/// `CQS_BATCH_STALENESS_CHECK_MS`. Falls back to
+/// [`STALENESS_CHECK_MS_DEFAULT`] when unset, empty, unparseable, or zero.
+fn staleness_check_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(cqs::limits::parse_env_u64(
+        "CQS_BATCH_STALENESS_CHECK_MS",
+        STALENESS_CHECK_MS_DEFAULT,
+    ))
+}
 
 /// A cached value paired with the instant it was loaded. The accessor
 /// consults `loaded_at.elapsed()` against a per-field reload interval; once
@@ -1875,5 +1906,43 @@ mod tests {
             "retry must clear the deferred slot"
         );
         assert_eq!(ctx.pending_invalidation.get(), 0);
+    }
+
+    /// Each daemon-interval resolver returns its compiled default when the
+    /// env var is unset and the env value when set. Garbage/zero falls back
+    /// to the default (per `parse_env_u64`).
+    #[test]
+    fn daemon_interval_resolvers_honor_env() {
+        std::env::remove_var("CQS_BATCH_STALENESS_CHECK_MS");
+        assert_eq!(
+            staleness_check_interval(),
+            Duration::from_millis(STALENESS_CHECK_MS_DEFAULT)
+        );
+        std::env::set_var("CQS_BATCH_STALENESS_CHECK_MS", "250");
+        assert_eq!(staleness_check_interval(), Duration::from_millis(250));
+        std::env::set_var("CQS_BATCH_STALENESS_CHECK_MS", "garbage");
+        assert_eq!(
+            staleness_check_interval(),
+            Duration::from_millis(STALENESS_CHECK_MS_DEFAULT)
+        );
+        std::env::remove_var("CQS_BATCH_STALENESS_CHECK_MS");
+
+        std::env::remove_var("CQS_BATCH_AUDIT_RELOAD_SECS");
+        assert_eq!(
+            audit_state_reload_interval(),
+            Duration::from_secs(AUDIT_STATE_RELOAD_SECS_DEFAULT)
+        );
+        std::env::set_var("CQS_BATCH_AUDIT_RELOAD_SECS", "5");
+        assert_eq!(audit_state_reload_interval(), Duration::from_secs(5));
+        std::env::remove_var("CQS_BATCH_AUDIT_RELOAD_SECS");
+
+        std::env::remove_var("CQS_BATCH_CONFIG_RELOAD_SECS");
+        assert_eq!(
+            config_reload_interval(),
+            Duration::from_secs(CONFIG_RELOAD_SECS_DEFAULT)
+        );
+        std::env::set_var("CQS_BATCH_CONFIG_RELOAD_SECS", "120");
+        assert_eq!(config_reload_interval(), Duration::from_secs(120));
+        std::env::remove_var("CQS_BATCH_CONFIG_RELOAD_SECS");
     }
 }

@@ -126,7 +126,7 @@ pub(crate) struct BatchContext {
     // other view sharing the Arc.
     pub(super) embedder: Arc<OnceLock<Arc<Embedder>>>,
     /// `RefCell<Option<CachedReload<Config>>>` so a `.cqs/config.toml` edit
-    /// shows up after `CONFIG_RELOAD_INTERVAL` (default 5 min) without a daemon
+    /// shows up after `config_reload_interval` (default 5 min) without a daemon
     /// restart. The reload is a sub-ms file read; cost is negligible per query.
     pub(super) config: RefCell<Option<CachedReload<cqs::config::Config>>>,
     /// `Arc<OnceLock<...>>` so views share one slot with the BatchContext. The
@@ -136,7 +136,7 @@ pub(crate) struct BatchContext {
     pub(super) reranker: Arc<OnceLock<Arc<dyn cqs::Reranker>>>,
     /// `RefCell<Option<CachedReload<AuditMode>>>` so the 30-min audit
     /// auto-expire fires while the daemon is up. Reloads from
-    /// `.cqs/audit-mode.json` every `AUDIT_STATE_RELOAD_INTERVAL` (default
+    /// `.cqs/audit-mode.json` every `audit_state_reload_interval` (default
     /// 30 s); the file carries its own embedded `expires_at` so the load
     /// itself respects expiration.
     pub(super) audit_state: RefCell<Option<CachedReload<cqs::audit::AuditMode>>>,
@@ -250,7 +250,7 @@ pub(crate) struct BatchContext {
     /// fallback); re-opened lazily on the next staleness check.
     pub(super) data_version_probe: RefCell<Option<DataVersionProbe>>,
     /// When the staleness check last ran. Used to rate-limit `fs::metadata`
-    /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`].
+    /// on `index.db` — see [`staleness_check_interval`].
     pub(super) last_staleness_check: Cell<Option<Instant>>,
     /// `Arc<AtomicU64>` so `BatchView` carries a cheap clone of the counter
     /// handle and handlers can read/bump without re-locking the outer
@@ -480,7 +480,7 @@ impl BatchContext {
     /// so the probe falls back to identity-only (with a warn) rather than
     /// blocking the check when it can't be opened or queried.
     ///
-    /// Rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`] —
+    /// Rate-limited to at most once per [`staleness_check_interval`] —
     /// except when a prior invalidation deferred a busy slot, in which case
     /// the sticky `pending_invalidation` flag forces a retry. Every
     /// `ctx.store()`, every `build_view` checkout, and the remaining
@@ -494,7 +494,7 @@ impl BatchContext {
         let now = Instant::now();
         if pending == 0 {
             if let Some(prev) = self.last_staleness_check.get() {
-                if now.duration_since(prev) < STALENESS_CHECK_INTERVAL {
+                if now.duration_since(prev) < staleness_check_interval() {
                     return;
                 }
             }
@@ -1294,7 +1294,7 @@ impl BatchContext {
     }
 
     /// Get cached audit state. Reloads from `.cqs/audit-mode.json` when the
-    /// cached value is older than [`AUDIT_STATE_RELOAD_INTERVAL`] (default
+    /// cached value is older than [`audit_state_reload_interval`] (default
     /// 30 s), then returns an owned snapshot.
     ///
     /// The file is sub-ms to read; the 30 s interval bounds staleness while
@@ -1303,7 +1303,7 @@ impl BatchContext {
     /// &audit` call-site pattern work without juggling `Ref<'_, ...>` lifetimes.
     pub(super) fn audit_state(&self) -> cqs::audit::AuditMode {
         let needs_reload = match self.audit_state.borrow().as_ref() {
-            Some(c) => c.loaded_at.elapsed() >= AUDIT_STATE_RELOAD_INTERVAL,
+            Some(c) => c.loaded_at.elapsed() >= audit_state_reload_interval(),
             None => true,
         };
         if needs_reload {
@@ -1371,7 +1371,7 @@ impl BatchContext {
     }
 
     /// Get cached project config. Reloads from `.cqs/config.toml` when the
-    /// cached value is older than [`CONFIG_RELOAD_INTERVAL`] (default 5 min),
+    /// cached value is older than [`config_reload_interval`] (default 5 min),
     /// then returns an owned snapshot.
     ///
     /// `.cqs/config.toml` edits (e.g. `splade_alpha`, `ef_search`) take effect
@@ -1382,7 +1382,7 @@ impl BatchContext {
     /// auto-deref.
     pub(super) fn config(&self) -> cqs::config::Config {
         let needs_reload = match self.config.borrow().as_ref() {
-            Some(c) => c.loaded_at.elapsed() >= CONFIG_RELOAD_INTERVAL,
+            Some(c) => c.loaded_at.elapsed() >= config_reload_interval(),
             None => true,
         };
         if needs_reload {
