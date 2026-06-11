@@ -627,12 +627,17 @@ pub fn write_proposed_patch(
 }
 
 /// Write bytes to a file atomically: write to a temp file in the same
-/// directory, then rename.
+/// directory, then promote it via [`crate::fs::atomic_replace`], which
+/// fsyncs the temp file before the rename and fsyncs the parent directory
+/// after it, so the new content survives power loss.
 ///
-/// On cross-device rename failure, falls back to copy-to-same-dir-then-rename
-/// instead of a bare `fs::write`. This copies the original file to a backup in
-/// the same directory, writes the new content to the original path, and removes
-/// the backup on success. If the write fails, the backup is renamed back.
+/// The temp file lives in the destination's own directory, so the rename
+/// is same-filesystem and `atomic_replace`'s copy fallback only engages on
+/// a genuine cross-device error. Any other rename failure (e.g. a Windows
+/// file lock on the destination) propagates as an error — the destination
+/// is never opened for writing, so its existing contents are left intact.
+/// This matters because the apply path writes the user's own source files:
+/// the one thing cqs touches that it cannot rebuild.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let suffix = crate::temp_suffix();
@@ -643,64 +648,16 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
         return Err(e);
     }
 
-    match std::fs::rename(&temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(rename_err) => {
-            // Rename can fail cross-device (EXDEV on Unix, ERROR_NOT_SAME_DEVICE on Windows).
-            // Fall back to: backup original → write new → remove backup.
-            let _ = std::fs::remove_file(&temp_path);
-
-            let backup_path = dir.join(format!(".cqs-doc-{}-{}.bak", std::process::id(), suffix));
-
-            // If the original exists, back it up so we can restore on failure
-            let has_backup = if path.exists() {
-                std::fs::copy(path, &backup_path)
-                    .map(|_| true)
-                    .map_err(|e| {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "Cross-device fallback: failed to create backup"
-                        );
-                        e
-                    })?
-            } else {
-                false
-            };
-
-            match std::fs::write(path, data) {
-                Ok(()) => {
-                    if has_backup {
-                        let _ = std::fs::remove_file(&backup_path);
-                    }
-                    Ok(())
-                }
-                Err(write_err) => {
-                    // Capture the restore-rename result so operators see
-                    // *which* recovery branch failed and where the salvageable
-                    // backup is. A failed restore must not drop the
-                    // backup_path — the user needs it to recover from the
-                    // leftover .bak.
-                    let restore_err = if has_backup {
-                        std::fs::rename(&backup_path, path).err()
-                    } else {
-                        None
-                    };
-                    tracing::warn!(
-                        path = %path.display(),
-                        rename_error = %rename_err,
-                        write_error = %write_err,
-                        restore_error = restore_err.as_ref().map(|e| e.to_string()),
-                        backup_remaining_at = if restore_err.is_some() { Some(backup_path.display().to_string()) } else { None },
-                        "Atomic write failed: rename + fallback write failed; \
-                         restore from backup also failed if `restore_error` is set; \
-                         original content is at `backup_remaining_at` if so"
-                    );
-                    Err(write_err)
-                }
-            }
-        }
+    if let Err(e) = crate::fs::atomic_replace(&temp_path, path) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Atomic doc write failed; destination left untouched"
+        );
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1307,5 +1264,59 @@ impl Beta {
         let resolved: Vec<ResolvedEdit> = Vec::new();
         let out = apply_resolved_edits(lf_content, &resolved);
         assert_eq!(out, lf_content, "LF source must round-trip LF");
+    }
+
+    #[test]
+    fn test_atomic_write_replaces_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("source.rs");
+        std::fs::write(&dest, b"old contents").unwrap();
+
+        atomic_write(&dest, b"new contents").unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new contents");
+        // No temp files left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file must be consumed by rename");
+    }
+
+    /// A rename failure must propagate as an error and leave the
+    /// destination's existing contents untouched. The old fallback
+    /// open-with-truncate rewrote the user's source file in place on ANY
+    /// rename error — a crash mid-write destroyed the only copy. We force
+    /// the rename to fail by making the destination a non-empty directory
+    /// (rename-over-nonempty-dir fails on every platform, and it is not a
+    /// cross-device error, so the copy fallback must not engage).
+    #[test]
+    fn test_atomic_write_rename_failure_does_not_truncate_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("source.rs");
+        std::fs::create_dir(&dest).unwrap();
+        let inner = dest.join("precious.txt");
+        std::fs::write(&inner, b"user data").unwrap();
+
+        let result = atomic_write(&dest, b"new contents");
+
+        assert!(result.is_err(), "rename onto a non-empty dir must error");
+        assert!(dest.is_dir(), "destination must be untouched on failure");
+        assert_eq!(
+            std::fs::read(&inner).unwrap(),
+            b"user data",
+            "existing data must survive a failed atomic write"
+        );
+        // The failed write must clean up its temp file.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "failed atomic write must remove its temp file"
+        );
     }
 }
