@@ -473,6 +473,239 @@ fn test_notes_add_rejects_nan_sentiment() {
     );
 }
 
+/// Whitespace-only text must be rejected at the validator boundary. Before
+/// the trim-first guard, `"   "` passed `is_empty()` and the stored note's
+/// trimmed text was `""` — matching ANY whitespace-only string in later
+/// update/remove calls (a cross-note wildcard).
+#[test]
+#[serial]
+fn test_notes_add_rejects_whitespace_only_text() {
+    let dir = setup_notes_project();
+    cqs()
+        .args(["notes", "add", "   ", "--sentiment", "0", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("whitespace-only"));
+    assert!(
+        !notes_path(&dir).exists(),
+        "Whitespace-only add must not create notes.toml"
+    );
+}
+
+/// Exact-duplicate (post-trim) adds are rejected: notes carry search-ranking
+/// sentiment and update/remove mutate only the first text match, so a stale
+/// duplicate would survive a "remove" and keep skewing rankings.
+#[test]
+#[serial]
+fn test_notes_add_rejects_duplicate() {
+    let dir = setup_notes_project();
+    notes_add_json(&dir, "dup note", "0", None);
+
+    cqs()
+        .args(["notes", "add", "dup note", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+    assert_eq!(read_notes(&dir).len(), 1, "duplicate must not be appended");
+
+    // Whitespace-padded variant is the same note post-trim — also rejected.
+    cqs()
+        .args(["notes", "add", "  dup note  ", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+    assert_eq!(read_notes(&dir).len(), 1);
+
+    // A genuinely different text still goes through.
+    cqs()
+        .args(["notes", "add", "dup note v2", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert_eq!(read_notes(&dir).len(), 2);
+}
+
+/// Text byte-cap boundary: exactly at the limit is accepted, one byte over
+/// is rejected (and leaves the file untouched).
+#[test]
+#[serial]
+fn test_notes_add_text_length_boundary() {
+    let dir = setup_notes_project();
+
+    let exact = "x".repeat(cqs::MAX_NOTE_TEXT_BYTES);
+    cqs()
+        .args(["notes", "add", &exact, "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert_eq!(read_notes(&dir).len(), 1, "at-limit text must be accepted");
+
+    let over = "y".repeat(cqs::MAX_NOTE_TEXT_BYTES + 1);
+    cqs()
+        .args(["notes", "add", &over, "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("too long"));
+    assert_eq!(
+        read_notes(&dir).len(),
+        1,
+        "over-limit text must be rejected"
+    );
+}
+
+/// `--mentions` count cap: 50 mentions is accepted, 51 is rejected before
+/// any file I/O.
+#[test]
+#[serial]
+fn test_notes_add_mentions_count_boundary() {
+    let dir = setup_notes_project();
+
+    let over: String = (0..=cqs::MAX_NOTE_MENTIONS)
+        .map(|i| format!("file{i}.rs"))
+        .collect::<Vec<_>>()
+        .join(",");
+    cqs()
+        .args([
+            "notes",
+            "add",
+            "too many mentions",
+            "--mentions",
+            &over,
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("limit"));
+    assert!(
+        !notes_path(&dir).exists(),
+        "Rejected --mentions must not create notes.toml"
+    );
+
+    let at_limit: String = (0..cqs::MAX_NOTE_MENTIONS)
+        .map(|i| format!("file{i}.rs"))
+        .collect::<Vec<_>>()
+        .join(",");
+    cqs()
+        .args([
+            "notes",
+            "add",
+            "at-limit mentions",
+            "--mentions",
+            &at_limit,
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let notes = read_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].mentions.len(), cqs::MAX_NOTE_MENTIONS);
+}
+
+/// Per-mention byte cap: a single oversized mention is rejected with an
+/// error naming the limit.
+#[test]
+#[serial]
+fn test_notes_add_rejects_oversized_mention() {
+    let dir = setup_notes_project();
+    let huge_mention = "m".repeat(cqs::MAX_NOTE_MENTION_BYTES + 1);
+    cqs()
+        .args([
+            "notes",
+            "add",
+            "oversized mention",
+            "--mentions",
+            &huge_mention,
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("max"));
+    assert!(
+        !notes_path(&dir).exists(),
+        "Rejected oversized mention must not create notes.toml"
+    );
+}
+
+/// Write-side size cap (shrunk via CQS_NOTES_MAX_FILE_SIZE): an add whose
+/// serialized output would exceed the cap is rejected, the file is left
+/// byte-for-byte unchanged AND stays usable — a follow-up normal add under
+/// the same cap succeeds. Before the output-side check, the oversized add
+/// went through and every subsequent notes operation refused the file.
+#[test]
+#[serial]
+fn test_notes_add_size_cap_rejects_and_file_stays_usable() {
+    let dir = setup_notes_project();
+    let cap = "1024";
+
+    // Seed a small note under the shrunk cap.
+    cqs()
+        .env("CQS_NOTES_MAX_FILE_SIZE", cap)
+        .args(["notes", "add", "first note", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let before = fs::read(notes_path(&dir)).expect("notes.toml must exist after seed add");
+
+    // 900 bytes of text is fine by the per-note cap but pushes the
+    // serialized file past 1024 bytes.
+    let big = "x".repeat(900);
+    cqs()
+        .env("CQS_NOTES_MAX_FILE_SIZE", cap)
+        .args(["notes", "add", &big, "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("limit"));
+
+    // Existing file untouched and still parseable.
+    assert_eq!(
+        fs::read(notes_path(&dir)).expect("notes.toml must survive a rejected add"),
+        before,
+        "rejected over-cap add must leave notes.toml unchanged"
+    );
+    assert_eq!(read_notes(&dir).len(), 1);
+
+    // The file is NOT bricked: a normal add under the same cap succeeds.
+    cqs()
+        .env("CQS_NOTES_MAX_FILE_SIZE", cap)
+        .args(["notes", "add", "second note", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let after = read_notes(&dir);
+    assert_eq!(after.len(), 2, "follow-up add must succeed after rejection");
+    assert!(after.iter().any(|n| n.text == "second note"));
+}
+
+/// Stored text is trimmed: an add with surrounding whitespace stores the
+/// trimmed form, so a later remove with the bare text matches.
+#[test]
+#[serial]
+fn test_notes_add_stores_trimmed_text() {
+    let dir = setup_notes_project();
+    cqs()
+        .args(["notes", "add", "  padded note  ", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let notes = read_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].text, "padded note");
+
+    cqs()
+        .args(["notes", "remove", "padded note", "--no-reindex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert!(read_notes(&dir).is_empty());
+}
+
 /// B.4 (companion): `cqs notes add ... --sentiment Infinity` must also be
 /// rejected — same parser path (`parse_finite_f32`).
 #[test]

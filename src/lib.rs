@@ -183,7 +183,7 @@ pub use hnsw::HnswIndex;
 pub use index::{DistanceMetric, IndexResult, VectorIndex};
 pub use note::{
     parse_notes, path_matches_mention, rewrite_notes_file, NoteEntry, NoteError, NoteFile,
-    NOTES_HEADER,
+    MAX_NOTE_MENTIONS, MAX_NOTE_MENTION_BYTES, MAX_NOTE_TEXT_BYTES, NOTES_HEADER,
 };
 pub use parser::{canonical_hash_fallback, collapse_whitespace, Chunk, Parser};
 // `LlmReranker` is a scaffold-only stub (every score call returns Err), so

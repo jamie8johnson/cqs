@@ -27,10 +27,30 @@ const _: () = assert!(SENTIMENT_POSITIVE_THRESHOLD > 0.0 && SENTIMENT_POSITIVE_T
 /// Env override `CQS_NOTES_MAX_ENTRIES`.
 const MAX_NOTES_DEFAULT: usize = 10_000;
 
-/// Maximum size of `notes.toml` (in bytes) before reads/writes refuse to load
-/// the file. Both the read-only `parse_notes` path and the read-modify-write
-/// `rewrite_notes_file` path enforce the same cap so a truncated/corrupt
-/// rewrite can't exceed it either. Env override `CQS_NOTES_MAX_FILE_SIZE`.
+/// Maximum byte length of a note's `text` accepted by the CLI mutation
+/// surface (`cqs notes add`, `--new-text`). Hand-edited files may exceed
+/// this; the parser tolerates it, but the size cap below still bounds the
+/// whole file.
+pub const MAX_NOTE_TEXT_BYTES: usize = 2000;
+
+/// Maximum number of mentions a single note may carry through the CLI
+/// (`--mentions`, `--new-mentions`). Mentions are file paths or short
+/// concept names; 50 is far beyond any legitimate note while keeping the
+/// worst-case per-note payload (50 × 256 B) in the same order as the text
+/// cap.
+pub const MAX_NOTE_MENTIONS: usize = 50;
+
+/// Maximum byte length of a single mention through the CLI. 256 bytes
+/// covers deep repository paths with margin.
+pub const MAX_NOTE_MENTION_BYTES: usize = 256;
+
+/// Maximum size of `notes.toml` (in bytes) before reads/writes refuse the
+/// file. `parse_notes` checks the on-disk size before reading;
+/// `rewrite_notes_file` checks both the existing file before parsing AND the
+/// serialized output before writing, so a mutation can never produce an
+/// over-cap file — when the output would exceed the cap, the rewrite errors
+/// and the existing file is left unchanged. Env override
+/// `CQS_NOTES_MAX_FILE_SIZE`.
 const MAX_NOTES_FILE_SIZE_DEFAULT: u64 = 10 * 1024 * 1024;
 
 /// Resolve `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB).
@@ -66,6 +86,9 @@ pub enum NoteError {
     /// Note not found
     #[error("Note not found: {0}")]
     NotFound(String),
+    /// A note with the same (trimmed) text already exists
+    #[error("Duplicate note: {0}")]
+    Duplicate(String),
 }
 
 /// Raw note entry from TOML (round-trippable via serde)
@@ -372,6 +395,27 @@ pub fn rewrite_notes_file(
     } else {
         raw_output
     };
+
+    // Size guard on the OUTPUT, not just the input: the pre-parse metadata
+    // check above only protects against an already-oversized file. Without
+    // this check, a single mutation (e.g. an add with a huge payload) could
+    // write past the cap, after which every subsequent parse and rewrite
+    // refuses the file — bricking notes until a manual edit. Checked before
+    // the tmp write so a rejected mutation leaves the existing file
+    // untouched.
+    if output.len() as u64 > max_size {
+        return Err(NoteError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: rewrite would produce a {} byte file, over the {} byte limit \
+                 (CQS_NOTES_MAX_FILE_SIZE); existing file left unchanged",
+                notes_path.display(),
+                output.len(),
+                max_size
+            ),
+        )));
+    }
+
     let write_result: Result<(), NoteError> = (|| {
         std::fs::write(&tmp_path, &output).map_err(|e| {
             NoteError::Io(std::io::Error::new(
@@ -760,6 +804,62 @@ text = "first note"
             "LF-only file should stay LF-only: {:?}",
             String::from_utf8_lossy(&bytes)
         );
+    }
+
+    /// The write side enforces the size cap on the serialized output: a
+    /// mutation that would push notes.toml over the limit is rejected with
+    /// `InvalidData`, the existing file is left byte-for-byte unchanged, and
+    /// a follow-up normal mutation still succeeds (the file is never
+    /// bricked by a rejected oversized write).
+    #[test]
+    fn test_rewrite_rejects_oversized_output_and_leaves_file_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        std::fs::write(&path, "[[note]]\ntext = \"small\"\n").unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        // 11 MB of text serializes past the 10 MiB default cap.
+        let big_text = "x".repeat(11 * 1024 * 1024);
+        let result = rewrite_notes_file(&path, |entries| {
+            entries.push(NoteEntry {
+                sentiment: 0.0,
+                text: big_text.clone(),
+                mentions: vec![],
+                kind: None,
+            });
+            Ok(())
+        });
+        match result {
+            Err(NoteError::Io(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("limit") && msg.contains("notes.toml"),
+                    "error should name the file and the limit, got: {msg}"
+                );
+            }
+            other => panic!("expected Io(InvalidData), got: {other:?}"),
+        }
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "rejected oversized rewrite must leave the existing file unchanged"
+        );
+
+        // The file is still usable: a normal-sized mutation succeeds.
+        rewrite_notes_file(&path, |entries| {
+            entries.push(NoteEntry {
+                sentiment: 0.0,
+                text: "second".into(),
+                mentions: vec![],
+                kind: None,
+            });
+            Ok(())
+        })
+        .expect("notes file must remain usable after a rejected oversized rewrite");
+        let notes = parse_notes(&path).unwrap();
+        assert_eq!(notes.len(), 2);
     }
 
     #[test]
