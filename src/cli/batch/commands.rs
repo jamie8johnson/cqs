@@ -990,4 +990,30 @@ mod tests {
         };
         assert!(!dead.is_pipeable());
     }
+
+    /// Exhaustiveness link between the two enums the daemon-forward path
+    /// straddles: every `Commands` variant marked daemon-capable
+    /// (`#[cqs_cmd(batch = "daemon")]`, plus `"runtime"` whose support may
+    /// resolve to Daemon per-invocation) must have a same-named `BatchCmd`
+    /// subcommand. Without this pin, a variant marked daemon without a batch
+    /// handler fails only at runtime, only daemon-up — `cqs <cmd>` errors
+    /// with a daemon parse failure while working daemon-down.
+    #[test]
+    fn every_daemon_capable_command_has_a_batch_subcommand() {
+        use clap::CommandFactory;
+        let batch = BatchInput::command();
+        let names = crate::cli::definitions::Commands::daemon_capable_variant_names();
+        assert!(
+            !names.is_empty(),
+            "daemon_capable_variant_names() must not be empty — derive regression"
+        );
+        for name in names {
+            assert!(
+                batch.find_subcommand(name).is_some(),
+                "Commands::{name} is marked daemon-capable but BatchCmd has no `{name}` \
+                 subcommand — daemon-up `cqs {name}` would fail at runtime. Either add the \
+                 batch handler or reclassify the variant as batch = \"cli\""
+            );
+        }
+    }
 }

@@ -1096,12 +1096,13 @@ mod tests {
     #[test]
     fn test_cli_limit_clamped_to_valid_range() {
         let config = cqs::config::Config::default();
-        // Verify that extremely large limits get clamped to 100
+        // Verify that extremely large limits get clamped to the shared
+        // search cap (same constant the daemon batch handler applies).
         let argv1 = ["cqs", "-n", "999", "query"];
         let mut cli = Cli::try_parse_from(argv1).unwrap();
         config::apply_config_defaults_with_argv(&mut cli, &config, argv1);
-        cli.limit = cli.limit.clamp(1, 100);
-        assert_eq!(cli.limit, 100);
+        cli.limit = cli.limit.clamp(1, limits::SEARCH_LIMIT_CAP);
+        assert_eq!(cli.limit, limits::SEARCH_LIMIT_CAP);
 
         // `-n 0` is rejected at parse time (`value_parser =
         // parse_nonzero_usize`) with a clear error rather than producing a cli
@@ -1123,7 +1124,7 @@ mod tests {
         let argv3 = ["cqs", "-n", "10", "query"];
         let mut cli = Cli::try_parse_from(argv3).unwrap();
         config::apply_config_defaults_with_argv(&mut cli, &config, argv3);
-        cli.limit = cli.limit.clamp(1, 100);
+        cli.limit = cli.limit.clamp(1, limits::SEARCH_LIMIT_CAP);
         assert_eq!(cli.limit, 10);
     }
 
