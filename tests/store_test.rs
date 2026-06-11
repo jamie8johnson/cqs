@@ -121,23 +121,6 @@ fn test_search_filtered_by_language() {
 }
 
 #[test]
-fn test_needs_reindex_not_indexed() {
-    let store = TestStore::new();
-
-    // Create a temp file that's not indexed
-    let dir = tempfile::TempDir::new().unwrap();
-    let file_path = dir.path().join("new_file.rs");
-    std::fs::write(&file_path, "fn test() {}").unwrap();
-
-    // File not in index should need reindexing (returns Some(mtime))
-    let needs = store.needs_reindex(&file_path).unwrap();
-    assert!(
-        needs.is_some(),
-        "File not in index should need reindexing (return Some(mtime))"
-    );
-}
-
-#[test]
 fn test_delete_by_origin() {
     let store = TestStore::new();
 

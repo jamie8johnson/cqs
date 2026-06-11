@@ -171,33 +171,33 @@ impl<Mode> Store<Mode> {
             Ok(rows)
         })
     }
+}
 
-    /// Check if a file needs reindexing based on mtime.
-    ///
-    /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
-    /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
-    pub fn needs_reindex(&self, path: &Path) -> Result<Option<i64>, StoreError> {
-        let _span = tracing::debug_span!("needs_reindex", path = %path.display()).entered();
-        let current_mtime = crate::duration_to_mtime_millis(
-            path.metadata()?
-                .modified()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| StoreError::SystemTime)?,
-        );
-
-        self.rt.block_on(async {
-            let row: Option<(Option<i64>,)> =
-                sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
-                    .bind(crate::normalize_path(path))
-                    .fetch_optional(&self.pool)
-                    .await?;
-
-            match row {
-                Some((Some(stored_mtime),)) if stored_mtime >= current_mtime => Ok(None),
-                _ => Ok(Some(current_mtime)),
-            }
-        })
-    }
+/// Write the reconcile fingerprint columns for one origin inside an open
+/// transaction. Shared by [`Store::set_file_fingerprint`] (own tx, watch
+/// path), [`Store::set_file_fingerprints_batch`] (one tx, many files), and
+/// [`Store::upsert_embedded_batch`] (stamp fused into the chunk-write tx).
+///
+/// `origin_str` must already be slash-normalized via `crate::normalize_path`.
+async fn set_fingerprint_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    origin_str: &str,
+    fp: &crate::store::chunks::staleness::FileFingerprint,
+) -> Result<u64, StoreError> {
+    let size_i64: Option<i64> = fp.size.and_then(|s| i64::try_from(s).ok());
+    let hash_blob: Option<Vec<u8>> = fp.content_hash.map(|h| h.to_vec());
+    let result = sqlx::query(
+        "UPDATE chunks \
+         SET source_mtime = ?1, source_size = ?2, source_content_hash = ?3 \
+         WHERE origin = ?4",
+    )
+    .bind(fp.mtime)
+    .bind(size_i64)
+    .bind(hash_blob)
+    .bind(origin_str)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 // Write methods live on `impl Store<ReadWrite>` — the compiler refuses to
@@ -253,6 +253,7 @@ impl Store<ReadWrite> {
             })
             .collect();
 
+        let source_mtimes = vec![source_mtime; chunks.len()];
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
@@ -262,7 +263,7 @@ impl Store<ReadWrite> {
                 chunks,
                 &embedding_bytes,
                 &vendored_per_chunk,
-                source_mtime,
+                &source_mtimes,
                 &now,
                 false, // real embeddings → needs_embedding=0
             )
@@ -321,6 +322,7 @@ impl Store<ReadWrite> {
             })
             .collect();
 
+        let source_mtimes = vec![source_mtime; chunks.len()];
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, &chunks_with_zero).await?;
@@ -330,7 +332,7 @@ impl Store<ReadWrite> {
                 &chunks_with_zero,
                 &embedding_bytes,
                 &vendored_per_chunk,
-                source_mtime,
+                &source_mtimes,
                 &now,
                 true, // zero-vec sentinel → needs_embedding=1
             )
@@ -824,9 +826,11 @@ impl Store<ReadWrite> {
     /// reconciliation (`run_daemon_reconcile`) fall back to BLAKE3 when
     /// mtime/size alone is unreliable (coarse-mtime FAT32/NTFS/HFS+/SMB;
     /// `git checkout` and formatter passes that bump mtime without changing
-    /// content). Both production write paths (`cli/pipeline/upsert.rs` and
-    /// `cli/watch/reindex.rs`) call this helper after their chunk upsert so
-    /// the next reconcile pass sees a populated fingerprint.
+    /// content). The watch reindex path (`cli/watch/reindex.rs`) calls this
+    /// helper after its per-file chunk upsert; the bulk pipeline
+    /// (`cli/pipeline/upsert.rs`) stamps fingerprints inside the chunk-write
+    /// transaction via [`Self::upsert_embedded_batch`] instead, so both
+    /// production paths leave populated fingerprints for the next reconcile.
     ///
     /// `None` fields stay NULL; callers that can't read disk pass a
     /// fingerprint with all three set to `None` and get mtime-only behavior.
@@ -845,44 +849,182 @@ impl Store<ReadWrite> {
         let _span =
             tracing::debug_span!("set_file_fingerprint", origin = %origin.display()).entered();
         let origin_str = crate::normalize_path(origin);
-        let size_i64: Option<i64> = fp.size.and_then(|s| i64::try_from(s).ok());
-        let hash_blob: Option<Vec<u8>> = fp.content_hash.map(|h| h.to_vec());
-
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
-            let result = sqlx::query(
-                "UPDATE chunks \
-                 SET source_mtime = ?1, source_size = ?2, source_content_hash = ?3 \
-                 WHERE origin = ?4",
-            )
-            .bind(fp.mtime)
-            .bind(size_i64)
-            .bind(hash_blob)
-            .bind(&origin_str)
-            .execute(&mut *tx)
-            .await?;
+            let rows = set_fingerprint_in_tx(&mut tx, &origin_str, fp).await?;
             tx.commit().await?;
-            Ok(result.rows_affected() as u32)
+            Ok(rows as u32)
         })
     }
 
-    /// Atomically upsert chunks and their call graph in a single transaction.
+    /// Refresh the reconcile fingerprint for many origins in one write
+    /// transaction.
     ///
-    /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
-    /// preventing inconsistency from crashes between separate operations.
-    /// Chunks are inserted in batches of 52 rows (52 * 19 = 988 < SQLite's 999 limit).
+    /// Used by the pipeline's staleness pre-filter when a file's mtime/size
+    /// moved but the BLAKE3 tiebreak proved the content identical (`git
+    /// checkout`, formatter no-op, `touch`): the chunks need no reindex, but
+    /// without refreshing the stored fingerprint every subsequent index run
+    /// and daemon reconcile pass would re-hash the file to reach the same
+    /// conclusion. One transaction for the whole batch — this path can see
+    /// hundreds of files after a branch flip.
     ///
-    /// Convenience wrapper around [`Self::upsert_chunks_calls_and_prune`] without
-    /// phantom-chunk pruning. Callers that know the full live-id set for a file
-    /// (e.g. the watch loop) should call `upsert_chunks_calls_and_prune`
-    /// directly so the upsert + phantom delete share one transaction.
-    pub fn upsert_chunks_and_calls(
+    /// Returns the total number of chunk rows updated.
+    pub fn set_file_fingerprints_batch(
         &self,
-        chunks: &[(Chunk, Embedding)],
-        source_mtime: Option<i64>,
-        calls: &[(String, crate::parser::CallSite)],
+        entries: &[(
+            std::path::PathBuf,
+            crate::store::chunks::staleness::FileFingerprint,
+        )],
+    ) -> Result<u64, StoreError> {
+        let _span =
+            tracing::info_span!("set_file_fingerprints_batch", files = entries.len()).entered();
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            let mut total = 0u64;
+            for (path, fp) in entries {
+                total += set_fingerprint_in_tx(&mut tx, &crate::normalize_path(path), fp).await?;
+            }
+            tx.commit().await?;
+            Ok(total)
+        })
+    }
+
+    /// Atomically upsert one pipeline batch — real-embedding chunks plus
+    /// zero-vec sentinel chunks, spanning any number of files — in a single
+    /// write transaction, and stamp each file's reconcile fingerprint
+    /// (`source_mtime`, `source_size`, `source_content_hash`) in the same
+    /// transaction.
+    ///
+    /// This is the bulk-pipeline (`cqs index`) write path. One transaction
+    /// per embedded batch replaces the old transaction-per-file loop, which
+    /// paid a BEGIN/COMMIT plus a content-hash snapshot SELECT per file
+    /// (tens of thousands of transactions of pure overhead on a large
+    /// corpus). Crash-atomicity contract: a crash mid-index may lose whole
+    /// uncommitted batches, but the chunks, FTS rows, and fingerprints that
+    /// DID land always committed together — the index is never left with a
+    /// chunk/FTS desync for the rows it contains. (The watch path keeps its
+    /// own per-file fused transaction in `upsert_chunks_calls_and_prune` —
+    /// that boundary is deliberate: a daemon tick must commit each file's
+    /// chunks + calls + function_calls + prune as one unit.)
+    ///
+    /// `sentinel` chunks are written via the same zero-vec
+    /// `needs_embedding=1` contract as [`Self::upsert_chunks_unembedded_batch`]
+    /// (skip-first-pass under `--llm-summaries`); `real` chunks land at
+    /// `needs_embedding=0`.
+    ///
+    /// `fingerprints` is keyed by `Chunk::file`. Per-row `source_mtime` binds
+    /// come from the matching fingerprint; files absent from the map get
+    /// NULL mtime and no fingerprint stamp (degraded mtime-only behavior).
+    /// The stamp runs as an `UPDATE … WHERE origin = ?` *after* the row
+    /// upserts so it also covers rows the `ON CONFLICT … WHERE`
+    /// short-circuit skipped (content unchanged, mtime bumped) — a stored
+    /// `source_content_hash` therefore never describes a previous content
+    /// version of the file.
+    pub fn upsert_embedded_batch(
+        &self,
+        real: &[(Chunk, Embedding)],
+        sentinel: &[Chunk],
+        fingerprints: &std::collections::HashMap<
+            std::path::PathBuf,
+            crate::store::chunks::staleness::FileFingerprint,
+        >,
     ) -> Result<usize, StoreError> {
-        self.upsert_chunks_calls_and_prune(chunks, source_mtime, calls, None, &[])
+        let _span = tracing::info_span!(
+            "upsert_embedded_batch",
+            real = real.len(),
+            sentinel = sentinel.len(),
+            files = fingerprints.len()
+        )
+        .entered();
+        if real.is_empty() && sentinel.is_empty() {
+            return Ok(0);
+        }
+
+        let dim = self.dim;
+        let real_bytes: Vec<Vec<u8>> = real
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb, dim))
+            .collect::<Result<Vec<_>, _>>()?;
+        let zero_vec = Embedding::new(vec![0.0_f32; dim]);
+        let sentinel_pairs: Vec<(Chunk, Embedding)> = sentinel
+            .iter()
+            .map(|c| (c.clone(), zero_vec.clone()))
+            .collect();
+        let sentinel_bytes: Vec<Vec<u8>> = sentinel_pairs
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb, dim))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let prefixes = self.vendored_prefixes_slice();
+        let vendored_for = |chunk: &Chunk| {
+            let origin = crate::normalize_path(&chunk.file);
+            crate::vendored::is_vendored_origin(&origin, prefixes)
+        };
+        let real_vendored: Vec<bool> = real.iter().map(|(c, _)| vendored_for(c)).collect();
+        let sentinel_vendored: Vec<bool> = sentinel_pairs
+            .iter()
+            .map(|(c, _)| vendored_for(c))
+            .collect();
+
+        let mtime_for = |chunk: &Chunk| fingerprints.get(&chunk.file).and_then(|fp| fp.mtime);
+        let real_mtimes: Vec<Option<i64>> = real.iter().map(|(c, _)| mtime_for(c)).collect();
+        let sentinel_mtimes: Vec<Option<i64>> =
+            sentinel_pairs.iter().map(|(c, _)| mtime_for(c)).collect();
+
+        // Only stamp fingerprints for files actually present in this batch's
+        // chunk sets. The embed stages clone the batch-level fingerprint map
+        // to both the cached and requeued halves of a GPU-failure split, so
+        // the map can mention files whose chunks travel in a different
+        // `EmbeddedBatch` — stamping those early would mark a file fresh
+        // before its rows landed.
+        let batch_files: std::collections::HashSet<&std::path::PathBuf> = real
+            .iter()
+            .map(|(c, _)| &c.file)
+            .chain(sentinel.iter().map(|c| &c.file))
+            .collect();
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            let now = chrono::Utc::now().to_rfc3339();
+            if !real.is_empty() {
+                let old_hashes = snapshot_content_hashes(&mut tx, real).await?;
+                batch_insert_chunks(
+                    &mut tx,
+                    real,
+                    &real_bytes,
+                    &real_vendored,
+                    &real_mtimes,
+                    &now,
+                    false, // real embeddings → needs_embedding=0
+                )
+                .await?;
+                upsert_fts_conditional(&mut tx, real, &old_hashes).await?;
+            }
+            if !sentinel_pairs.is_empty() {
+                let old_hashes = snapshot_content_hashes(&mut tx, &sentinel_pairs).await?;
+                batch_insert_chunks(
+                    &mut tx,
+                    &sentinel_pairs,
+                    &sentinel_bytes,
+                    &sentinel_vendored,
+                    &sentinel_mtimes,
+                    &now,
+                    true, // zero-vec sentinel → needs_embedding=1
+                )
+                .await?;
+                upsert_fts_conditional(&mut tx, &sentinel_pairs, &old_hashes).await?;
+            }
+            for file in batch_files {
+                if let Some(fp) = fingerprints.get(file) {
+                    set_fingerprint_in_tx(&mut tx, &crate::normalize_path(file), fp).await?;
+                }
+            }
+            tx.commit().await?;
+            Ok(real.len() + sentinel_pairs.len())
+        })
     }
 
     /// Atomically upsert chunks + calls AND prune phantom chunks for a file,
@@ -989,6 +1131,7 @@ impl Store<ReadWrite> {
             })
             .collect();
 
+        let source_mtimes = vec![source_mtime; chunks.len()];
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
@@ -998,7 +1141,7 @@ impl Store<ReadWrite> {
                 chunks,
                 &embedding_bytes,
                 &vendored_per_chunk,
-                source_mtime,
+                &source_mtimes,
                 &now,
                 false, // real embeddings → needs_embedding=0
             )
@@ -1235,6 +1378,113 @@ impl Store<ReadWrite> {
                 tracing::info!(origin = %origin_str, deleted, "Removed phantom chunks");
             }
             Ok(deleted)
+        })
+    }
+
+    /// Prune phantom chunks for many files in ONE write transaction.
+    ///
+    /// Batched form of [`Self::delete_phantom_chunks`] for the bulk pipeline's
+    /// post-loop prune pass: the per-file variant opens a transaction per
+    /// origin, which on a multi-thousand-file reindex is thousands of
+    /// BEGIN/COMMIT round-trips of pure overhead. Same temp-table pattern
+    /// per file, single commit for the whole sweep.
+    ///
+    /// An entry with empty `live_ids` deletes every chunk for that origin
+    /// (FTS + chunks). Unlike `delete_phantom_chunks`'s delegation to
+    /// `delete_by_origin`, no `function_calls` DELETE is issued here — the
+    /// pipeline's `upsert_function_calls_for_files` already
+    /// DELETE-then-INSERTed the current set for every file it touched (same
+    /// reasoning as the fused-tx prune in `upsert_chunks_calls_and_prune`).
+    ///
+    /// Returns the total number of chunk rows deleted across all files.
+    pub fn delete_phantom_chunks_batch(
+        &self,
+        files: &[(&std::path::Path, Vec<&str>)],
+    ) -> Result<u32, StoreError> {
+        let _span =
+            tracing::info_span!("delete_phantom_chunks_batch", files = files.len()).entered();
+        if files.is_empty() {
+            return Ok(0);
+        }
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            // Temp table created once, cleared per file. Same SQLite
+            // 999-parameter-limit rationale as `delete_phantom_chunks`.
+            sqlx::query("CREATE TEMP TABLE IF NOT EXISTS _live_ids (id TEXT PRIMARY KEY)")
+                .execute(&mut *tx)
+                .await?;
+
+            let mut deleted_total = 0u32;
+            for (file, live_ids) in files {
+                let origin_str = crate::normalize_path(file);
+
+                if live_ids.is_empty() {
+                    // Whole file emptied — delete every chunk for the origin.
+                    sqlx::query(
+                        "DELETE FROM chunks_fts WHERE id IN \
+                         (SELECT id FROM chunks WHERE origin = ?1)",
+                    )
+                    .bind(&origin_str)
+                    .execute(&mut *tx)
+                    .await?;
+                    let result = sqlx::query("DELETE FROM chunks WHERE origin = ?1")
+                        .bind(&origin_str)
+                        .execute(&mut *tx)
+                        .await?;
+                    deleted_total += result.rows_affected() as u32;
+                    continue;
+                }
+
+                sqlx::query("DELETE FROM _live_ids")
+                    .execute(&mut *tx)
+                    .await?;
+                for batch in live_ids.chunks(crate::store::helpers::sql::max_rows_per_statement(1))
+                {
+                    let placeholders: Vec<String> = batch
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| format!("(?{})", i + 1))
+                        .collect();
+                    let insert_sql = format!(
+                        "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
+                        placeholders.join(",")
+                    );
+                    let mut stmt = sqlx::query(sqlx::AssertSqlSafe(insert_sql.as_str()));
+                    for id in batch {
+                        stmt = stmt.bind(id);
+                    }
+                    stmt.execute(&mut *tx).await?;
+                }
+
+                let fts_query = "DELETE FROM chunks_fts WHERE id IN \
+                     (SELECT id FROM chunks WHERE origin = ?1 \
+                      AND id NOT IN (SELECT id FROM _live_ids))";
+                sqlx::query(fts_query)
+                    .bind(&origin_str)
+                    .execute(&mut *tx)
+                    .await?;
+
+                let chunks_query = "DELETE FROM chunks WHERE origin = ?1 \
+                     AND id NOT IN (SELECT id FROM _live_ids)";
+                let result = sqlx::query(chunks_query)
+                    .bind(&origin_str)
+                    .execute(&mut *tx)
+                    .await?;
+                let deleted = result.rows_affected() as u32;
+                if deleted > 0 {
+                    tracing::info!(
+                        origin = %origin_str,
+                        deleted,
+                        "Removed phantom chunks (batched tx)"
+                    );
+                }
+                deleted_total += deleted;
+            }
+
+            tx.commit().await?;
+            Ok(deleted_total)
         })
     }
 }
@@ -2177,6 +2427,249 @@ mod tests {
             1,
             "file2.rs chunk should remain"
         );
+    }
+
+    // ===== upsert_embedded_batch tests =====
+
+    fn full_fp(mtime: i64, size: u64, bytes: &[u8]) -> crate::store::FileFingerprint {
+        crate::store::FileFingerprint {
+            mtime: Some(mtime),
+            size: Some(size),
+            content_hash: Some(*blake3::hash(bytes).as_bytes()),
+        }
+    }
+
+    /// The bulk-pipeline write path must stamp the full reconcile
+    /// fingerprint (mtime + size + BLAKE3) for every file in the batch, in
+    /// the same call as the chunk upsert. This is the CLI-path half of the
+    /// fingerprint contract — previously only the watch daemon stamped
+    /// these columns and CLI-indexed rows fell back to mtime-only
+    /// staleness on coarse-mtime filesystems.
+    #[test]
+    fn upsert_embedded_batch_stamps_fingerprints() {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let c1 = make_chunk("alpha", "src/a.rs");
+        let c2 = make_chunk("beta", "src/b.rs");
+        let emb = mock_embedding(1.0);
+
+        let fp_a = full_fp(1_000, 42, b"a-bytes");
+        let fp_b = full_fp(2_000, 7, b"b-bytes");
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("src/a.rs"), fp_a.clone());
+        fps.insert(PathBuf::from("src/b.rs"), fp_b.clone());
+
+        let n = store
+            .upsert_embedded_batch(&[(c1.clone(), emb.clone()), (c2.clone(), emb)], &[], &fps)
+            .unwrap();
+        assert_eq!(n, 2);
+
+        // Read the columns back through the reconcile read path.
+        let map = store.indexed_file_origins().unwrap();
+        let stored_a = map.get("src/a.rs").expect("origin a present");
+        let stored_b = map.get("src/b.rs").expect("origin b present");
+        assert_eq!(stored_a, &fp_a, "size+hash must be non-NULL and correct");
+        assert_eq!(stored_b, &fp_b, "size+hash must be non-NULL and correct");
+
+        // FTS landed in the same transaction.
+        let hits = store.search_by_name("alpha", 5).unwrap();
+        assert!(hits.iter().any(|h| h.chunk.name == "alpha"));
+    }
+
+    /// A content change through `upsert_embedded_batch` must replace the
+    /// stored fingerprint — a stored `source_content_hash` may never
+    /// describe a previous content version. Also covers the
+    /// `ON CONFLICT … WHERE` short-circuit: a re-upsert with UNCHANGED
+    /// content (mtime bump only) skips the row UPDATE, but the fingerprint
+    /// stamp must still land.
+    #[test]
+    fn upsert_embedded_batch_refreshes_fingerprint_on_change_and_on_skip() {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let mut chunk = make_chunk("evolving", "src/e.rs");
+        let file = PathBuf::from("src/e.rs");
+
+        let fp_v1 = full_fp(1_000, 10, b"v1");
+        let mut fps = HashMap::new();
+        fps.insert(file.clone(), fp_v1.clone());
+        store
+            .upsert_embedded_batch(&[(chunk.clone(), mock_embedding(0.1))], &[], &fps)
+            .unwrap();
+        assert_eq!(
+            store.indexed_file_origins().unwrap().get("src/e.rs"),
+            Some(&fp_v1)
+        );
+
+        // Content changed → row updates AND fingerprint replaced.
+        chunk.content = "fn evolving() { /* changed */ }".to_string();
+        chunk.content_hash = "new-hash-v2".to_string();
+        let fp_v2 = full_fp(2_000, 31, b"v2");
+        fps.insert(file.clone(), fp_v2.clone());
+        store
+            .upsert_embedded_batch(&[(chunk.clone(), mock_embedding(0.2))], &[], &fps)
+            .unwrap();
+        assert_eq!(
+            store.indexed_file_origins().unwrap().get("src/e.rs"),
+            Some(&fp_v2),
+            "content change must replace the stored fingerprint"
+        );
+
+        // Content unchanged, mtime bumped → ON CONFLICT WHERE skips the row
+        // UPDATE, but the fingerprint stamp still refreshes all three
+        // columns.
+        let fp_v3 = full_fp(3_000, 31, b"v2");
+        fps.insert(file.clone(), fp_v3.clone());
+        store
+            .upsert_embedded_batch(&[(chunk.clone(), mock_embedding(0.2))], &[], &fps)
+            .unwrap();
+        assert_eq!(
+            store.indexed_file_origins().unwrap().get("src/e.rs"),
+            Some(&fp_v3),
+            "fingerprint must refresh even when the ON CONFLICT WHERE skips the row"
+        );
+    }
+
+    /// One call writes real-embedding chunks AND zero-vec sentinel chunks
+    /// (skip-first-pass under `--llm-summaries`) with the correct
+    /// `needs_embedding` flags, in a single transaction, with fingerprints
+    /// for both files. Pins the sentinel contract the reuse resolver and
+    /// `enrichment_pass` depend on.
+    #[test]
+    fn upsert_embedded_batch_mixed_real_and_sentinel() {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let c_real = make_chunk("real_fn", "src/r.rs");
+        let c_sent = make_chunk("sent_fn", "src/s.rs");
+
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("src/r.rs"), full_fp(100, 1, b"r"));
+        fps.insert(PathBuf::from("src/s.rs"), full_fp(200, 2, b"s"));
+
+        let n = store
+            .upsert_embedded_batch(
+                &[(c_real.clone(), mock_embedding(1.0))],
+                std::slice::from_ref(&c_sent),
+                &fps,
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+
+        // Sentinel chunk flagged needs_embedding=1; real chunk not.
+        assert_eq!(store.needs_embedding_count().unwrap(), 1);
+        let ids = store.needs_embedding_ids().unwrap();
+        assert!(ids.contains(&c_sent.id));
+        assert!(!ids.contains(&c_real.id));
+
+        // Sentinel invisible to the gated by-hash reuse lookup; real visible.
+        let embs = store
+            .get_embeddings_by_hashes(&[&c_real.content_hash, &c_sent.content_hash])
+            .unwrap();
+        assert!(embs.contains_key(&c_real.content_hash));
+        assert!(!embs.contains_key(&c_sent.content_hash));
+
+        // Both files got fingerprints.
+        let map = store.indexed_file_origins().unwrap();
+        assert!(map.get("src/r.rs").unwrap().content_hash.is_some());
+        assert!(map.get("src/s.rs").unwrap().content_hash.is_some());
+    }
+
+    /// Empty batch is a no-op.
+    #[test]
+    fn upsert_embedded_batch_empty_is_noop() {
+        let (store, _dir) = setup_store();
+        let n = store
+            .upsert_embedded_batch(&[], &[], &std::collections::HashMap::new())
+            .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    // ===== set_file_fingerprints_batch =====
+
+    /// Batched fingerprint refresh writes all entries under one call and
+    /// round-trips through `indexed_file_origins`. Used by the pipeline's
+    /// staleness pre-filter for mtime-bumped content-identical files.
+    #[test]
+    fn set_file_fingerprints_batch_round_trips() {
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+        let c1 = make_chunk("a", "src/a.rs");
+        let c2 = make_chunk("b", "src/b.rs");
+        store
+            .upsert_chunks_batch(
+                &[(c1, mock_embedding(1.0)), (c2, mock_embedding(2.0))],
+                Some(100),
+            )
+            .unwrap();
+
+        let entries = vec![
+            (PathBuf::from("src/a.rs"), full_fp(1_111, 5, b"aa")),
+            (PathBuf::from("src/b.rs"), full_fp(2_222, 6, b"bb")),
+        ];
+        let rows = store.set_file_fingerprints_batch(&entries).unwrap();
+        assert_eq!(rows, 2, "one chunk row per file must be updated");
+
+        let map = store.indexed_file_origins().unwrap();
+        assert_eq!(map.get("src/a.rs"), Some(&entries[0].1));
+        assert_eq!(map.get("src/b.rs"), Some(&entries[1].1));
+    }
+
+    // ===== delete_phantom_chunks_batch =====
+
+    /// Batched prune removes phantoms across multiple files in one call
+    /// (single transaction), leaves live chunks intact, and handles the
+    /// empty-live-ids "file emptied" case inline.
+    #[test]
+    fn delete_phantom_chunks_batch_prunes_across_files() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let a1 = make_chunk("a1", "f1.rs");
+        let a2 = make_chunk("a2", "f1.rs");
+        let b1 = make_chunk("b1", "f2.rs");
+        let b2 = make_chunk("b2", "f2.rs");
+        let c1 = make_chunk("c1", "f3.rs");
+        let a1_id = a1.id.clone();
+        let b2_id = b2.id.clone();
+        store
+            .upsert_chunks_batch(
+                &[
+                    (a1, emb.clone()),
+                    (a2, emb.clone()),
+                    (b1, emb.clone()),
+                    (b2, emb.clone()),
+                    (c1, emb.clone()),
+                ],
+                Some(100),
+            )
+            .unwrap();
+
+        let files: Vec<(&std::path::Path, Vec<&str>)> = vec![
+            (std::path::Path::new("f1.rs"), vec![a1_id.as_str()]),
+            (std::path::Path::new("f2.rs"), vec![b2_id.as_str()]),
+            (std::path::Path::new("f3.rs"), vec![]), // file emptied
+        ];
+        let deleted = store.delete_phantom_chunks_batch(&files).unwrap();
+        assert_eq!(deleted, 3, "a2 + b1 + c1 must be pruned");
+        assert_eq!(store.chunk_count().unwrap(), 2);
+
+        // FTS rows for pruned chunks are gone in the same transaction.
+        assert!(store.search_by_name("a2", 5).unwrap().is_empty());
+        assert!(store
+            .search_by_name("a1", 5)
+            .unwrap()
+            .iter()
+            .any(|h| h.chunk.name == "a1"));
+    }
+
+    /// Empty input is a no-op.
+    #[test]
+    fn delete_phantom_chunks_batch_empty_is_noop() {
+        let (store, _dir) = setup_store();
+        let deleted = store.delete_phantom_chunks_batch(&[]).unwrap();
+        assert_eq!(deleted, 0);
     }
 
     // ===== update_umap_coords_batch happy path =====

@@ -9,6 +9,7 @@ use anyhow::Result;
 use crossbeam_channel::Sender;
 use rayon::prelude::*;
 
+use cqs::store::{FileFingerprint, FingerprintPolicy};
 use cqs::{normalize_path, Parser as CqParser, Store};
 
 use super::types::{embed_batch_size_for, file_batch_size, ParsedBatch, RelationshipData};
@@ -26,6 +27,153 @@ pub(super) struct ParserStageContext {
     /// size. At batch=64 nomic-coderank (768 dim, 2048 seq) OOMs an 8 GB GPU;
     /// the model-aware helper drops it to 16.
     pub model_config: cqs::embedder::ModelConfig,
+}
+
+/// Read a full disk fingerprint (mtime + size + BLAKE3) for a file that is
+/// about to be (re)indexed. `FingerprintPolicy::HashOnly` forces the hash
+/// read regardless of stored state, so every reindexed file leaves fully
+/// populated fingerprint columns behind. Returns `Default` (all `None`)
+/// when `metadata()` fails — the parser surfaces the real I/O error.
+fn full_disk_fingerprint(abs_path: &std::path::Path) -> FileFingerprint {
+    FileFingerprint::read_disk(
+        abs_path,
+        &FileFingerprint::default(),
+        FingerprintPolicy::HashOnly,
+    )
+    .unwrap_or_default()
+}
+
+/// Result of the per-batch staleness pre-filter: which files to parse, and
+/// the disk fingerprint for each of them.
+struct StalenessFilterResult {
+    survivors: Vec<PathBuf>,
+    fingerprints: HashMap<PathBuf, FileFingerprint>,
+}
+
+/// Decide which files in `file_batch` actually need reindexing, BEFORE any
+/// parsing happens.
+///
+/// One batched `fingerprints_for_origins` SELECT per file batch replaces
+/// the old per-file `needs_reindex` round-trip (one stat + one SELECT per
+/// file), and skipped files are never parsed at all — previously every file
+/// was fully tree-sitter parsed and the staleness filter ran on the parsed
+/// chunks, making a no-op incremental index O(corpus) parses. Same batched
+/// shape as the watch daemon's reconcile pre-filter.
+///
+/// Comparison uses `FingerprintPolicy::MtimeOrHash`: mtime+size fast path,
+/// BLAKE3 tiebreak when they disagree. Rows whose fingerprint columns are
+/// still NULL (pre-v23 rows, low-level upserts) degrade to mtime equality.
+///
+/// When the tiebreak proves a mtime-bumped file content-identical
+/// (`git checkout`, formatter no-op), the stored fingerprint is refreshed
+/// in one batched write so neither the next `cqs index` nor the daemon
+/// reconcile has to re-hash the file.
+///
+/// `force` bypasses the filter entirely (every file reindexes) but still
+/// reads full fingerprints so the upsert stamps them.
+fn filter_stale_files(
+    store: &Store,
+    root: &std::path::Path,
+    file_batch: &[PathBuf],
+    force: bool,
+) -> StalenessFilterResult {
+    let _span = tracing::debug_span!("filter_stale_files", files = file_batch.len()).entered();
+    let mut fingerprints: HashMap<PathBuf, FileFingerprint> =
+        HashMap::with_capacity(file_batch.len());
+
+    if force {
+        for rel in file_batch {
+            fingerprints.insert(rel.clone(), full_disk_fingerprint(&root.join(rel)));
+        }
+        return StalenessFilterResult {
+            survivors: file_batch.to_vec(),
+            fingerprints,
+        };
+    }
+
+    let origins: Vec<String> = file_batch.iter().map(|p| normalize_path(p)).collect();
+    let origin_refs: Vec<&str> = origins.iter().map(|s| s.as_str()).collect();
+    let stored_map = match store.fingerprints_for_origins(&origin_refs) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Batched fingerprint lookup failed; reindexing whole batch");
+            HashMap::new()
+        }
+    };
+
+    let mut survivors = Vec::with_capacity(file_batch.len());
+    let mut refreshes: Vec<(PathBuf, FileFingerprint)> = Vec::new();
+    for (rel, origin) in file_batch.iter().zip(origins.iter()) {
+        let abs_path = root.join(rel);
+        match stored_map.get(origin.as_str()) {
+            // Not indexed yet — always a survivor.
+            None => {
+                fingerprints.insert(rel.clone(), full_disk_fingerprint(&abs_path));
+                survivors.push(rel.clone());
+            }
+            Some(stored_fp) => {
+                match FileFingerprint::read_disk(
+                    &abs_path,
+                    stored_fp,
+                    FingerprintPolicy::MtimeOrHash,
+                ) {
+                    Some(disk_fp)
+                        if stored_fp.matches(&disk_fp, FingerprintPolicy::MtimeOrHash) =>
+                    {
+                        // Unchanged — skip the parse. If the match came from
+                        // the hash tiebreak (mtime/size moved, content
+                        // identical), refresh the stored fingerprint so the
+                        // next walk fast-paths on mtime+size again.
+                        if disk_fp.content_hash.is_some()
+                            && (disk_fp.mtime != stored_fp.mtime || disk_fp.size != stored_fp.size)
+                        {
+                            refreshes.push((rel.clone(), disk_fp));
+                        }
+                    }
+                    Some(disk_fp) => {
+                        // Divergent — reindex. `read_disk` only hashed when
+                        // the stored row had fingerprint columns; ensure the
+                        // hash is present so the upsert stamps a full
+                        // fingerprint.
+                        let fp = if disk_fp.content_hash.is_some() {
+                            disk_fp
+                        } else {
+                            full_disk_fingerprint(&abs_path)
+                        };
+                        fingerprints.insert(rel.clone(), fp);
+                        survivors.push(rel.clone());
+                    }
+                    None => {
+                        // metadata() failed (deleted mid-walk, permission
+                        // flip). Keep the file so the parser surfaces the
+                        // real error; fingerprint stays empty.
+                        fingerprints.insert(rel.clone(), FileFingerprint::default());
+                        survivors.push(rel.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if !refreshes.is_empty() {
+        match store.set_file_fingerprints_batch(&refreshes) {
+            Ok(rows) => tracing::debug!(
+                files = refreshes.len(),
+                rows,
+                "Refreshed fingerprints for mtime-bumped content-identical files"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                files = refreshes.len(),
+                "Failed to refresh fingerprints; files will re-hash on the next walk"
+            ),
+        }
+    }
+
+    StalenessFilterResult {
+        survivors,
+        fingerprints,
+    }
 }
 
 /// Stage 1: Parse files in parallel batches, filter by staleness, and send to embedder channels.
@@ -52,14 +200,28 @@ pub(super) fn parser_stage(
             break;
         }
 
+        // Staleness pre-filter BEFORE parsing: one batched SELECT decides
+        // which files diverged from the index; only those get the (much more
+        // expensive) tree-sitter parse below. `--force` bypasses the filter.
+        let StalenessFilterResult {
+            survivors,
+            fingerprints: file_fingerprints,
+        } = filter_stale_files(&store, &root, file_batch, force);
+
         tracing::info!(
             batch = batch_idx + 1,
             files = file_batch.len(),
+            to_parse = survivors.len(),
             "Processing file batch"
         );
 
-        // Parse files in parallel, collecting chunks and relationships
-        let (chunks, batch_rels): (Vec<cqs::Chunk>, RelationshipData) = file_batch
+        if survivors.is_empty() {
+            parsed_count.fetch_add(file_batch.len(), Ordering::Relaxed);
+            continue;
+        }
+
+        // Parse surviving files in parallel, collecting chunks and relationships
+        let (chunks, batch_rels): (Vec<cqs::Chunk>, RelationshipData) = survivors
             .par_iter()
             .fold(
                 || (Vec::new(), RelationshipData::default()),
@@ -155,89 +317,16 @@ pub(super) fn parser_stage(
                 },
             );
 
-        // Filter by needs_reindex unless forced, caching mtime per-file to avoid double reads
-        let mut file_mtimes: std::collections::HashMap<PathBuf, i64> =
-            std::collections::HashMap::new();
-        let chunks: Vec<cqs::Chunk> = if force {
-            // Force mode: still need to get mtimes for storage
-            for c in &chunks {
-                if !file_mtimes.contains_key(&c.file) {
-                    let abs_path = root.join(&c.file);
-                    let mtime = abs_path
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(cqs::duration_to_mtime_millis)
-                        .unwrap_or(0);
-                    file_mtimes.insert(c.file.clone(), mtime);
-                }
-            }
-            chunks
-        } else {
-            // Cache needs_reindex results per-file to avoid redundant DB queries
-            // when multiple chunks come from the same file.
-            let mut reindex_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
-            chunks
-                .into_iter()
-                .filter(|c| {
-                    if let Some(cached) = reindex_cache.get(&c.file) {
-                        if let Some(mtime) = cached {
-                            file_mtimes.entry(c.file.clone()).or_insert(*mtime);
-                        }
-                        return cached.is_some();
-                    }
-                    let abs_path = root.join(&c.file);
-                    // needs_reindex returns Some(mtime) if reindex needed, None otherwise
-                    match store.needs_reindex(&abs_path) {
-                        Ok(Some(mtime)) => {
-                            reindex_cache.insert(c.file.clone(), Some(mtime));
-                            file_mtimes.insert(c.file.clone(), mtime);
-                            true
-                        }
-                        Ok(None) => {
-                            reindex_cache.insert(c.file.clone(), None);
-                            false
-                        }
-                        Err(e) => {
-                            tracing::warn!(file = %abs_path.display(), error = %e, "mtime check failed, reindexing");
-                            true
-                        }
-                    }
-                })
-                .collect()
-        };
-
-        // Prune relationships to only include files that passed staleness filter
-        let batch_rels = if force {
-            batch_rels
-        } else {
-            // Build set of chunk IDs that survived the staleness filter
-            let surviving_ids: std::collections::HashSet<&str> =
-                chunks.iter().map(|c| c.id.as_str()).collect();
-            RelationshipData {
-                type_refs: batch_rels
-                    .type_refs
-                    .into_iter()
-                    .filter(|(file, _)| file_mtimes.contains_key(file))
-                    .collect(),
-                function_calls: batch_rels
-                    .function_calls
-                    .into_iter()
-                    .filter(|(file, _)| file_mtimes.contains_key(file))
-                    .collect(),
-                chunk_calls: batch_rels
-                    .chunk_calls
-                    .into_iter()
-                    .filter(|(id, _)| surviving_ids.contains(id.as_str()))
-                    .collect(),
-            }
-        };
+        // No post-parse staleness filter: only survivors of the pre-filter
+        // were parsed, so every chunk and relationship here belongs to a
+        // file that needs reindexing. Every parsed file has an entry in
+        // `file_fingerprints` (the old relationship pruning by mtime map
+        // membership is therefore a guaranteed no-op and was removed).
 
         parsed_count.fetch_add(file_batch.len(), Ordering::Relaxed);
 
         if !chunks.is_empty() {
-            // Send in embedding-sized batches with per-file mtimes and relationships.
+            // Send in embedding-sized batches with per-file fingerprints and relationships.
             // Relationships are sent with the first batch only. Per-file data
             // (function_calls, type_refs) is safe. Per-chunk data (chunk_calls,
             // type_edges) is deferred in store_stage until all chunks are committed.
@@ -252,18 +341,23 @@ pub(super) fn parser_stage(
             let mut chunks = chunks;
             while !chunks.is_empty() {
                 let take = batch_size.min(chunks.len());
-                // Compute mtimes from a borrow first; `drain` below will move
-                // the same chunks out, so we can't borrow after that.
-                let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunks[..take]
+                // Compute fingerprints from a borrow first; `drain` below
+                // will move the same chunks out, so we can't borrow after
+                // that.
+                let batch_fps: std::collections::HashMap<PathBuf, FileFingerprint> = chunks[..take]
                     .iter()
-                    .filter_map(|c| file_mtimes.get(&c.file).map(|&m| (c.file.clone(), m)))
+                    .filter_map(|c| {
+                        file_fingerprints
+                            .get(&c.file)
+                            .map(|fp| (c.file.clone(), fp.clone()))
+                    })
                     .collect();
                 let batch: Vec<cqs::Chunk> = chunks.drain(..take).collect();
                 if parse_tx
                     .send(ParsedBatch {
                         chunks: batch,
                         relationships: remaining_rels.take().unwrap_or_default(),
-                        file_mtimes: batch_mtimes,
+                        file_fingerprints: batch_fps,
                     })
                     .is_err()
                 {
@@ -396,5 +490,135 @@ mod tests {
             rels_seen <= 1,
             "relationships should ride with at most one batch, saw {rels_seen}"
         );
+    }
+
+    /// Incremental (`force=false`) runs must parse ONLY files whose disk
+    /// fingerprint diverges from the stored one. The staleness pre-filter
+    /// runs BEFORE the tree-sitter parse, and there is no post-parse filter
+    /// any more — so a chunk from an unchanged file appearing in the output
+    /// would prove the file was parsed. Three cases in one pass:
+    ///
+    /// * `fresh.rs` — indexed with a fingerprint matching disk → skipped
+    /// * `new.rs` — not indexed at all → parsed
+    /// * `stale.rs` — indexed with a divergent fingerprint → parsed
+    #[test]
+    fn parser_stage_incremental_parses_only_changed_files() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("fresh.rs"), "pub fn fresh_fn() {}\n").unwrap();
+        std::fs::write(root.join("new.rs"), "pub fn new_fn() {}\n").unwrap();
+        std::fs::write(root.join("stale.rs"), "pub fn stale_fn() {}\n").unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Helper: a minimal indexed chunk for `rel` so the origin exists.
+        let seed_chunk = |rel: &str, name: &str| cqs::Chunk {
+            id: format!("{rel}:1:seed"),
+            file: PathBuf::from(rel),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("pub fn {name}()"),
+            content: format!("pub fn {name}() {{}}"),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "seed".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+
+        // fresh.rs: stored fingerprint == disk fingerprint → must be skipped.
+        let fresh_fp = FileFingerprint::read_disk(
+            &root.join("fresh.rs"),
+            &FileFingerprint::default(),
+            FingerprintPolicy::HashOnly,
+        )
+        .expect("read fresh.rs fingerprint");
+        assert!(fresh_fp.content_hash.is_some(), "HashOnly must hash");
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("fresh.rs"), fresh_fp);
+        store
+            .upsert_embedded_batch(
+                &[(seed_chunk("fresh.rs", "fresh_fn"), emb.clone())],
+                &[],
+                &fps,
+            )
+            .unwrap();
+
+        // stale.rs: stored fingerprint diverges (wrong mtime+size+hash).
+        let stale_fp = cqs::store::FileFingerprint {
+            mtime: Some(1_000),
+            size: Some(1),
+            content_hash: Some(*blake3::hash(b"old content").as_bytes()),
+        };
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("stale.rs"), stale_fp);
+        store
+            .upsert_embedded_batch(&[(seed_chunk("stale.rs", "stale_fn"), emb)], &[], &fps)
+            .unwrap();
+
+        let rel_paths = vec![
+            PathBuf::from("fresh.rs"),
+            PathBuf::from("new.rs"),
+            PathBuf::from("stale.rs"),
+        ];
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: false,
+            parser: Arc::new(CqParser::new().unwrap()),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(rel_paths, ctx, tx).unwrap();
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        let parsed_files: HashSet<PathBuf> = batches
+            .iter()
+            .flat_map(|b| b.chunks.iter().map(|c| c.file.clone()))
+            .collect();
+        assert!(
+            !parsed_files.contains(&PathBuf::from("fresh.rs")),
+            "unchanged file must be skipped by the pre-filter, got {parsed_files:?}"
+        );
+        assert!(
+            parsed_files.contains(&PathBuf::from("new.rs")),
+            "unindexed file must be parsed, got {parsed_files:?}"
+        );
+        assert!(
+            parsed_files.contains(&PathBuf::from("stale.rs")),
+            "divergent file must be parsed, got {parsed_files:?}"
+        );
+
+        // Every parsed file ships a fully-populated fingerprint for the
+        // store stage to stamp.
+        for b in &batches {
+            for c in &b.chunks {
+                let fp = b
+                    .file_fingerprints
+                    .get(&c.file)
+                    .unwrap_or_else(|| panic!("missing fingerprint for {:?}", c.file));
+                assert!(fp.mtime.is_some(), "{:?} fingerprint needs mtime", c.file);
+                assert!(fp.size.is_some(), "{:?} fingerprint needs size", c.file);
+                assert!(
+                    fp.content_hash.is_some(),
+                    "{:?} fingerprint needs content hash",
+                    c.file
+                );
+            }
+        }
     }
 }

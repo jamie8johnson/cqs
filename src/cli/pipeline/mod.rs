@@ -282,9 +282,16 @@ mod tests {
         }
     }
 
-    fn test_mtimes(mtime: i64) -> std::collections::HashMap<PathBuf, i64> {
+    fn test_fps(mtime: i64) -> std::collections::HashMap<PathBuf, cqs::store::FileFingerprint> {
         let mut m = std::collections::HashMap::new();
-        m.insert(PathBuf::from("test.rs"), mtime);
+        m.insert(
+            PathBuf::from("test.rs"),
+            cqs::store::FileFingerprint {
+                mtime: Some(mtime),
+                size: None,
+                content_hash: None,
+            },
+        );
         m
     }
 
@@ -299,11 +306,14 @@ mod tests {
             vec![],
             vec![],
             RelationshipData::default(),
-            test_mtimes(12345),
+            test_fps(12345),
         );
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 1);
-        assert_eq!(batch.file_mtimes[&PathBuf::from("test.rs")], 12345);
+        assert_eq!(
+            batch.file_fingerprints[&PathBuf::from("test.rs")].mtime,
+            Some(12345)
+        );
     }
 
     #[test]
@@ -316,11 +326,14 @@ mod tests {
             vec![chunk],
             vec![emb],
             RelationshipData::default(),
-            test_mtimes(99),
+            test_fps(99),
         );
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 0);
-        assert_eq!(batch.file_mtimes[&PathBuf::from("test.rs")], 99);
+        assert_eq!(
+            batch.file_fingerprints[&PathBuf::from("test.rs")].mtime,
+            Some(99)
+        );
     }
 
     #[test]
@@ -335,7 +348,7 @@ mod tests {
             vec![new_chunk],
             vec![new_emb],
             RelationshipData::default(),
-            test_mtimes(12345),
+            test_fps(12345),
         );
         assert_eq!(batch.chunk_embeddings.len(), 2);
         assert_eq!(batch.cached_count, 1);
@@ -368,7 +381,7 @@ mod tests {
             vec![c2, c3],
             vec![e2, e3],
             RelationshipData::default(),
-            test_mtimes(0),
+            test_fps(0),
         );
 
         assert_eq!(batch.chunk_embeddings.len(), 3);
@@ -559,12 +572,19 @@ mod tests {
     // ========================================================================
 
     fn make_parsed_batch_with_chunk(chunk: Chunk) -> super::types::ParsedBatch {
-        let mut file_mtimes = std::collections::HashMap::new();
-        file_mtimes.insert(chunk.file.clone(), 0);
+        let mut file_fingerprints = std::collections::HashMap::new();
+        file_fingerprints.insert(
+            chunk.file.clone(),
+            cqs::store::FileFingerprint {
+                mtime: Some(0),
+                size: None,
+                content_hash: None,
+            },
+        );
         super::types::ParsedBatch {
             chunks: vec![chunk],
             relationships: super::types::RelationshipData::default(),
-            file_mtimes,
+            file_fingerprints,
         }
     }
 
@@ -707,7 +727,7 @@ mod tests {
         let batch = super::types::ParsedBatch {
             chunks: vec![],
             relationships: super::types::RelationshipData::default(),
-            file_mtimes: std::collections::HashMap::new(),
+            file_fingerprints: std::collections::HashMap::new(),
         };
 
         let prepared = prepare_for_embedding(batch, &embedder, &store, None, None);

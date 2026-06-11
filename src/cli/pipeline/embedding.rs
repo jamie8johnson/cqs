@@ -113,7 +113,7 @@ pub(super) fn prepare_for_embedding(
         to_embed,
         texts,
         relationships: batch.relationships,
-        file_mtimes: batch.file_mtimes,
+        file_fingerprints: batch.file_fingerprints,
     }
 }
 
@@ -123,7 +123,7 @@ pub(super) fn create_embedded_batch(
     to_embed: Vec<Chunk>,
     new_embeddings: Vec<Embedding>,
     relationships: RelationshipData,
-    file_mtimes: HashMap<std::path::PathBuf, i64>,
+    file_fingerprints: HashMap<std::path::PathBuf, cqs::store::FileFingerprint>,
 ) -> EmbeddedBatch {
     let cached_count = cached.len();
     let mut chunk_embeddings = cached;
@@ -132,7 +132,7 @@ pub(super) fn create_embedded_batch(
         chunk_embeddings,
         relationships,
         cached_count,
-        file_mtimes,
+        file_fingerprints,
         // Default: real embeddings throughout. The skip-first-pass path
         // builds EmbeddedBatch directly with `uncached_need_embedding: true`
         // (see `gpu_embed_stage` / `cpu_embed_stage`).
@@ -165,7 +165,7 @@ fn flush_to_cpu(
                 chunk_embeddings: prepared.cached,
                 relationships: rels,
                 cached_count,
-                file_mtimes: prepared.file_mtimes.clone(),
+                file_fingerprints: prepared.file_fingerprints.clone(),
                 uncached_need_embedding: false,
             })
             .is_err()
@@ -183,7 +183,7 @@ fn flush_to_cpu(
         .send(ParsedBatch {
             chunks: prepared.to_embed,
             relationships: rels,
-            file_mtimes: prepared.file_mtimes,
+            file_fingerprints: prepared.file_fingerprints,
         })
         .is_err()
     {
@@ -235,7 +235,7 @@ pub(super) fn gpu_embed_stage(
                     chunk_embeddings: prepared.cached,
                     relationships: prepared.relationships,
                     cached_count,
-                    file_mtimes: prepared.file_mtimes,
+                    file_fingerprints: prepared.file_fingerprints,
                     uncached_need_embedding: false,
                 })
                 .is_err()
@@ -272,7 +272,7 @@ pub(super) fn gpu_embed_stage(
                     chunk_embeddings,
                     relationships: prepared.relationships,
                     cached_count,
-                    file_mtimes: prepared.file_mtimes,
+                    file_fingerprints: prepared.file_fingerprints,
                     uncached_need_embedding: true,
                 })
                 .is_err()
@@ -360,7 +360,7 @@ pub(super) fn gpu_embed_stage(
                         chunk_embeddings,
                         relationships: prepared.relationships,
                         cached_count,
-                        file_mtimes: prepared.file_mtimes,
+                        file_fingerprints: prepared.file_fingerprints,
                         uncached_need_embedding: false,
                     })
                     .is_err()
@@ -509,7 +509,7 @@ pub(super) fn cpu_embed_stage(
                     chunk_embeddings,
                     relationships: prepared.relationships,
                     cached_count,
-                    file_mtimes: prepared.file_mtimes,
+                    file_fingerprints: prepared.file_fingerprints,
                     uncached_need_embedding: true,
                 })
                 .is_err()
@@ -563,7 +563,7 @@ pub(super) fn cpu_embed_stage(
             prepared.to_embed,
             new_embeddings,
             prepared.relationships,
-            prepared.file_mtimes,
+            prepared.file_fingerprints,
         );
 
         ctx.embedded_count
