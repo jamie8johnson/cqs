@@ -1,6 +1,6 @@
 //! Search dispatch handler.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use super::super::BatchView;
 use crate::cli::args::SearchArgs;
@@ -283,9 +283,13 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
     let prepared = match prepare_query(ctx, &qargs)? {
         // `name_only = false` + `fts_first = false` on the daemon ref path → the
         // project FTS short-circuit never fires, so it always prepares a dense
-        // query.
+        // query. A request handler must never panic the daemon, so a future
+        // default change surfaces as a wire error instead.
         Prepared::ShortCircuit(_) => {
-            unreachable!("daemon ref path sets name_only = false and fts_first = false")
+            bail!(
+                "BUG: daemon ref path got an FTS short-circuit despite \
+                 name_only = false and fts_first = false — report this"
+            )
         }
         Prepared::Dense(p) => p,
     };

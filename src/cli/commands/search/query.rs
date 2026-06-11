@@ -949,7 +949,7 @@ pub(crate) fn cmd_query(
     // searched) — matches prior behavior.
     if let Some(ref ref_name) = cli.ref_name {
         let tagged = retrieve_ref_scoped(ctx, &args, &prepared, ref_name)?;
-        let (tagged, token_info) = pack_tagged_cli(cli, &args, tagged)?;
+        let (tagged, token_info) = pack_tagged_cli(ctx, &args, tagged)?;
         if tagged.is_empty() {
             emit_empty_results(query, cli.json, Some(ref_name.as_str()));
         }
@@ -1001,7 +1001,7 @@ pub(crate) fn cmd_query(
     let references = ctx.references()?;
     let tagged = merge_references(&args, &prepared, project_results, &references);
 
-    let (tagged, token_info) = pack_tagged_cli(cli, &args, tagged)?;
+    let (tagged, token_info) = pack_tagged_cli(ctx, &args, tagged)?;
 
     if tagged.is_empty() {
         emit_empty_results(query, cli.json, None);
@@ -1014,23 +1014,24 @@ pub(crate) fn cmd_query(
     Ok(())
 }
 
-/// CLI token-budget packing for a tagged result set. Builds the lazy embedder
-/// only when `--tokens` is set (the ref/include-refs paths may not have built
-/// one). Mirrors the daemon's `pack_tagged`.
+/// CLI token-budget packing for a tagged result set. Reuses the context's
+/// cached embedder (already initialized by `prepare_query` on every path that
+/// reaches here) — same pattern as `assemble_output`. Mirrors the daemon's
+/// `pack_tagged`.
 type TaggedPack = (Vec<reference::TaggedResult>, Option<(usize, usize)>);
 
 fn pack_tagged_cli(
-    cli: &Cli,
+    ctx: &dyn search_ctx::SearchCtx,
     args: &QueryArgs,
     tagged: Vec<reference::TaggedResult>,
 ) -> Result<TaggedPack> {
     if let Some(budget) = args.tokens {
-        let embedder = Embedder::new(cli.try_model_config()?.clone())?;
+        let embedder = ctx.embedder()?;
         Ok(token_pack_results(
             tagged,
             budget,
             args.json_overhead,
-            &embedder,
+            embedder,
             |r| unified_text(&r.result),
             |r| unified_score(&r.result),
             "tagged",
