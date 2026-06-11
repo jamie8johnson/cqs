@@ -129,7 +129,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | PERF-V1.42-7 | `cqs task` computes the full test-reachability BFS twice with identical inputs | src/task.rs:144, :194 | open |
 | PERF-V1.42-8 | test_reachability allocates 2-3 Strings per BFS visit — siblings in same file use Arc<str> interning (runs on every scout/task/health/review) | src/impact/bfs.rs:354-386 | open |
 | PERF-V1.42-10 | build_chunk_detail tests-that-cover query is an unindexed full-table content LIKE scan per dashboard click — use chunks_fts | src/serve/data.rs:619-629 | open |
-| PERF-V1.42-11 | Daemon success response written unbuffered — one write() syscall per JSON fragment (fold into CF dispatch_value refactor, RM-V1.40-9 cluster) | src/cli/watch/socket.rs:298 | open |
+| PERF-V1.42-11 | Daemon success response written unbuffered — one write() syscall per JSON fragment (fold into CF dispatch_value refactor, RM-V1.40-9 cluster) | src/cli/watch/socket.rs:298 | ✅ PR #1766 |
 | TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | open |
 | TC-HAP-V1.42-7 | Command-core parity tests are parity-by-construction — no parity test pins a single output value; add one fixture-grounded assert each | src/cli/batch/handlers/graph.rs:862-1080 | ✅ PR #1760 |
 | TC-HAP-V1.42-8 | cache_compact_core zero coverage; cache_stats_core per-model branch never executed | src/cli/commands/infra/cache_cmd.rs:222, :117-130 | open |
@@ -185,7 +185,7 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 |---|---|---|---|
 | DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real query share no read snapshot — dispatcher/existing-flow drift (v1.40 queue item 6) | medium | open |
 | CQ-V1.40-10 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + PERF-V1.40-1 | Cluster A2: `filter_invoked_macros` N+1 GLOB full scans, no transaction (correctness fixed in #1627; perf half remains) | medium | open |
-| RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation + `emit_json` double serialization — `dispatch_value` refactor (socket.rs TODO P2 #62) | medium | open |
+| RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation + `emit_json` double serialization — `dispatch_value` refactor (socket.rs TODO P2 #62) | medium | ✅ PR #1766 (socket single-write; envelope to_value kept as wire canonicalization) |
 | PERF-V1.40-7 | `build_test_map` iterates all test chunks per call — invert to iterate ancestors (modest; loop body O(1)) | easy | open |
 | RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs) — cache in BatchContext (note: new CQ-V1.42-11 touches the same surface) | medium | open |
 | AC-V1.40-6 + AC-V1.40-7 + EH-V1.40-3 | trace: macro falls through to empty BFS; `Multiple` masks ambiguity; `target` kind unvalidated | medium | open |
@@ -236,5 +236,5 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 | RM-V1.40-2 | `dispatch_via_view` reconstructs token Vec — second full clone per dispatch | easy | open |
 | RM-V1.40-3 | `current_worktree_name` clones cached String per envelope emit | easy | open |
 | RM-V1.40-5 | `dispatch_test_map` clones every test chunk per cross-project request | easy | open |
-| PERF-V1.40-6 | `upsert_chunks_unembedded_batch` clones every chunk + zero-vec | easy | open |
+| PERF-V1.40-6 | `upsert_chunks_unembedded_batch` clones every chunk + zero-vec | easy | ✅ fixed by #1753 (verified by CF sweep) |
 | PERF-V1.40-9 | Telemetry write ~5 syscalls per CLI command — daemon-path handle caching | medium | open |
