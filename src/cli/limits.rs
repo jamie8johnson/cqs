@@ -44,6 +44,33 @@ pub(crate) const SIMILAR_LIMIT_MAX: usize = 100;
 /// types) each get their own top-N, so the total return cap is 3× this.
 pub(crate) const RELATED_LIMIT_MAX: usize = 50;
 
+/// Shared `--limit` ceiling for the graph-surface commands and the
+/// `explain`/`onboard`/`gather` result lists: `callers`, `callees`,
+/// `deps`, `impact`, `test-map`, `explain` (CLI + batch), plus the
+/// `onboard` and `gather` seed-fetch limits. All truncate a result list
+/// (or per-section list) to at most this many entries before rendering;
+/// the underlying store query is unbounded, so callers paginate by
+/// re-querying. One constant keeps the truncation ceiling identical
+/// across every surface that shares the semantic.
+pub(crate) const GRAPH_LIMIT_CAP: usize = 100;
+
+/// `--limit` ceiling for the placement-suggestion commands: `where`,
+/// `task`, and the batch `where` / `task` handlers. These rank candidate
+/// insertion sites; a short list is the useful output, so the ceiling is
+/// deliberately tighter than [`GRAPH_LIMIT_CAP`].
+pub(crate) const PLACEMENT_LIMIT_CAP: usize = 10;
+
+/// `--depth` ceiling for `cqs impact` (and the cross-project impact core).
+/// Bounds the reverse-call-graph BFS depth so an adversarial `--depth`
+/// can't fan the traversal out unbounded. Distinct from a result-count
+/// limit — it caps traversal hops, not rendered rows.
+pub(crate) const IMPACT_DEPTH_CAP: usize = 10;
+
+/// `--depth` ceiling for `cqs onboard`. Bounds the callee-expansion BFS
+/// depth in the guided-tour walk. Smaller than [`IMPACT_DEPTH_CAP`]
+/// because onboard's tour stays shallow by design — a deep tour is noise.
+pub(crate) const ONBOARD_DEPTH_CAP: usize = 5;
+
 // ============ reranker pool sizing ============
 
 /// Default over-retrieval multiplier for the cross-encoder reranker.
@@ -282,6 +309,18 @@ mod tests {
 
         std::env::remove_var("CQS_RERANK_OVER_RETRIEVAL");
         std::env::remove_var("CQS_RERANK_POOL_MAX");
+    }
+
+    /// Pin the shared clamp ceilings. These values are duplicated at ~19
+    /// call sites via the constants; if a refactor changes one, this test
+    /// catches the drift before it ships a surface that clamps differently
+    /// from its siblings.
+    #[test]
+    fn limit_caps_have_expected_values() {
+        assert_eq!(GRAPH_LIMIT_CAP, 100);
+        assert_eq!(PLACEMENT_LIMIT_CAP, 10);
+        assert_eq!(IMPACT_DEPTH_CAP, 10);
+        assert_eq!(ONBOARD_DEPTH_CAP, 5);
     }
 
     #[test]

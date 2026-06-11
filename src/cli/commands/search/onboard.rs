@@ -66,8 +66,8 @@ pub(crate) fn onboard_core(
     args: &OnboardArgs,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("onboard_core", query = %args.query).entered();
-    let depth = args.depth.clamp(1, 5);
-    let limit = args.limit.clamp(1, 100);
+    let depth = args.depth.clamp(1, crate::cli::ONBOARD_DEPTH_CAP);
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let mut result = onboard(store, embedder, &args.query, root, depth, args.direction)?;
     result.call_chain.truncate(limit);
@@ -126,11 +126,11 @@ pub(crate) fn cmd_onboard(
         return Ok(());
     }
 
-    let depth = depth.clamp(1, 5);
+    let depth = depth.clamp(1, crate::cli::ONBOARD_DEPTH_CAP);
     // Cap on call_chain + callers + tests entries. Applied AFTER the
     // BFS+search so the entry_point is always preserved and so the order
     // (relevance → depth) is respected before truncation.
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
     let mut result = onboard(store, embedder, concept, root, depth, direction)?;
     result.call_chain.truncate(limit);

@@ -770,8 +770,11 @@ Quick index by domain (everything is searchable in the table below):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
+| `CQS_BATCH_AUDIT_RELOAD_SECS` | `30` | TTL (seconds) for the batch/daemon `audit_state` reload cache. `.cqs/audit-mode.json` toggles take effect within this window without a daemon restart. Lower = faster pickup of `cqs audit-mode on/off`, more file reads. |
+| `CQS_BATCH_CONFIG_RELOAD_SECS` | `300` | TTL (seconds) for the batch/daemon `config` reload cache. `.cqs/config.toml` edits (`splade_alpha`, `ef_search`, …) take effect within this window without a daemon restart. |
 | `CQS_BATCH_DATA_IDLE_MINUTES` | `30` | Minutes of inactivity before `cqs batch` / `cqs chat` evicts heavy data caches (HNSW, SPLADE index, call graph, test chunks, file set, refs). Independent of the ONNX-session sweep above. `0` disables. |
 | `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
+| `CQS_BATCH_STALENESS_CHECK_MS` | `100` | Minimum interval (milliseconds) between batch/daemon staleness probes (`index.db` mtime + `PRAGMA data_version`). Caps the probe rate so `store()` on every handler hop doesn't re-probe; reindex-detection latency stays under this much. |
 | `CQS_BRUTE_FORCE_BATCH_SIZE` | (auto) | Cursor-based brute-force search batch size. Default scales by query embedding dim via `dim_scaled_batch(5000, dim, 500, 50_000)` so a 4096-dim model holds ~20 MB per batch instead of 80 MB. v1.36.2 SHL-V1.36-3 — pinned override wins verbatim. |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
@@ -858,6 +861,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries. Required when `CQS_LLM_PROVIDER=local`; must match a model your server exposes. |
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic` (Messages Batches API) or `local` (any OpenAI-compat `/v1/chat/completions` endpoint — llama.cpp, vLLM, Ollama, LMStudio). |
 | `CQS_LLM_RETRY_BACKOFFS_MS` | `500,1000,2000,4000` | Comma-separated millisecond backoff schedule for the `local` provider's per-item retries. Schedule length sets the max-attempts count (default 4). Bump for saturated local vLLM serving where transient 5xx bursts exceed the 7.5s default window — e.g. `500,1000,2000,4000,8000,16000` for a 31.5s window with 6 attempts. v1.38: SHL-V1.38-10 / #1463. |
+| `CQS_LOAD_SPARSE_BATCH` | `1000` | Distinct chunk_ids fetched per page when loading sparse (SPLADE) vectors into the in-memory index (`load_all_sparse_vectors`, run on daemon startup + each watch reload). Smaller = lower peak RAM per batch; larger = fewer SQLite round-trips. |
 | `CQS_LOCAL_LLM_CONCURRENCY` | `4` | Worker pool size for `CQS_LLM_PROVIDER=local`. Clamped to `[1, 64]`. |
 | `CQS_LOCAL_LLM_MAX_BODY_BYTES` | `4194304` (4 MiB) | Max response body bytes accepted from a `CQS_LLM_PROVIDER=local` server. Larger bodies are a sign of a misbehaving or hostile endpoint and abort with a clear error rather than OOMing the daemon. Must be > 0. |
 | `CQS_LOCAL_LLM_TIMEOUT_SECS` | `120` | Per-request timeout (seconds) for `CQS_LLM_PROVIDER=local`. Local inference can be slow, so the default is 2× the Anthropic 60s ceiling. |
@@ -884,6 +888,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
+| `CQS_MIGRATE_KEEP_BACKUPS` | `3` | Number of version-tagged migration backups retained in the DB's parent directory; older ones are pruned after every successful migrate. `3` = the current run's backup plus the two prior runs'. `0` is honored verbatim (prune all after a successful migrate) for tight-quota mounts. |
 | `CQS_MIGRATE_REQUIRE_BACKUP` | `1` | Migration-time DB backup is required by default; a backup failure aborts the migration with `StoreError::Io` so the destructive v18→v19 rebuild never runs without a recovery snapshot. Set to `0` to downgrade to a `warn!` and proceed without a snapshot (accept data-loss risk on a subsequent commit failure). |
 | `CQS_HF_CACHE_TRUSTED` | (none) | Set to `1` to opt into env-supplied HF cache paths (`HF_HOME` / `HUGGINGFACE_HUB_CACHE`) that would otherwise be flagged as suspicious — under `/tmp`, `/var/tmp`, `/dev/shm`, `~/Downloads`, `~/Desktop`, or outside both `$HOME` and the system cache dir. Without this, suspicious paths get a `tracing::warn!` and the loader falls through to the default cache so a hostile env var can't redirect ONNX model loads. SEC-V1.33-8 / #1339. |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |

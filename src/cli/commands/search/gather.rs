@@ -83,9 +83,9 @@ pub(crate) fn gather_core(
     // When token-budgeted, fetch more seeds than the limit so the packer has
     // candidates to choose from.
     let fetch_limit = if args.tokens.is_some() {
-        args.limit.clamp(1, 100).max(50)
+        args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP).max(50)
     } else {
-        args.limit.clamp(1, 100)
+        args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP)
     };
 
     let opts = GatherOptions {
