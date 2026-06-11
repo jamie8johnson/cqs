@@ -21,6 +21,28 @@ use cqs::store::Store;
 
 use super::{WatchConfig, WatchState};
 
+/// Whether the tiered index backend is the active served backend
+/// (`CQS_TIERED_INDEX=1`, compiled with the `tiered-index` feature).
+///
+/// When true, the served vector index is the cuVS tiered index, which absorbs
+/// incremental adds into its brute-force tier and compacts its CAGRA ANN tier
+/// internally — so the watch loop's *periodic* full HNSW rebuild (the
+/// `incremental_count >= threshold` trigger) is redundant work and is skipped.
+/// The cheap incremental HNSW insert path still runs as a CPU-side fallback
+/// (and to keep the base-index router fed); only the expensive periodic
+/// rebuild becomes a no-op. Always `false` without the feature, so default and
+/// CAGRA builds are unaffected.
+pub(super) fn tiered_index_active() -> bool {
+    #[cfg(feature = "tiered-index")]
+    {
+        std::env::var("CQS_TIERED_INDEX").as_deref() == Ok("1")
+    }
+    #[cfg(not(feature = "tiered-index"))]
+    {
+        false
+    }
+}
+
 /// Full HNSW rebuild after this many incremental inserts to clean orphaned vectors.
 /// Override with CQS_WATCH_REBUILD_THRESHOLD env var.
 pub(super) fn hnsw_rebuild_threshold() -> usize {
