@@ -610,6 +610,46 @@ fn test_cqs_slot_env_bypasses_daemon() {
     );
 }
 
+#[test]
+fn test_empty_cqs_slot_env_keeps_daemon_path() {
+    // `slot::resolve_slot_name` trims `CQS_SLOT` and treats empty/whitespace
+    // as UNSET, so the daemon gate must too: `CQS_SLOT= cqs …` (a script
+    // clearing the var) pins no slot and must keep the daemon fast path. A
+    // bare `is_some()` env check would silently lose it.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_MOCK_SENTINEL");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+
+    for (case, slot_value) in [("empty", ""), ("whitespace", "   ")] {
+        let mut cmd = cqs();
+        clean_cqs_env(&mut cmd);
+        cmd.env("XDG_RUNTIME_DIR", dir.path())
+            .env("CQS_SLOT", slot_value)
+            .current_dir(&canonical_dir)
+            .args(["notes", "list", "--json"]);
+
+        let output = cmd.output().expect("cqs notes list spawn");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "`cqs notes list` ({case} CQS_SLOT) failed; stdout=<{stdout}> stderr=<{stderr}>"
+        );
+        assert!(
+            stdout.contains("DAEMON_MOCK_SENTINEL"),
+            "{case} CQS_SLOT pins no slot and must take the daemon path; \
+             stdout=<{stdout}> stderr=<{stderr}>"
+        );
+    }
+    assert_eq!(
+        mock.conn_count(),
+        2,
+        "both unset-equivalent CQS_SLOT values must reach the daemon"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Task B2: `cqs ping` against a mock listener.
 //

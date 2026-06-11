@@ -216,7 +216,7 @@ fn run_with_dispatch(
     // flag is propagated into `CQS_SLOT` above, so the env check covers both.
     #[cfg(unix)]
     if cli.slot.is_none()
-        && std::env::var_os("CQS_SLOT").is_none()
+        && !cqs_slot_env_pins_slot()
         && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1")
     {
         // Daemon protocol errors surface as `Err`. Transport-level failures
@@ -259,6 +259,18 @@ fn run_with_dispatch(
 pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
+}
+
+/// `true` when the `CQS_SLOT` env var pins a slot — i.e. it is set to a
+/// non-empty (post-trim) value. Mirrors the semantics of
+/// `slot::resolve_slot_name`, which trims and treats empty/whitespace (and
+/// non-UTF-8) as UNSET: `CQS_SLOT= cqs …` — a script clearing the var — must
+/// keep the daemon fast path, not silently bypass it.
+#[cfg(unix)]
+fn cqs_slot_env_pins_slot() -> bool {
+    std::env::var("CQS_SLOT")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// Top-level `Cli` arg IDs (clap IDs = struct field names) that configure the
