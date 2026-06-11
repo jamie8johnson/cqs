@@ -139,13 +139,22 @@ pub(crate) fn gc_core(
             }
             tracing::debug!("Deleted stale HNSW before rebuild");
         }
-        let result = build_hnsw_index(store, cqs_dir)?;
-        if result.is_some() {
-            if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
-                tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after rebuild");
+        match build_hnsw_index(store, cqs_dir)? {
+            Some((total, cqs::hnsw::SaveOutcome::Saved)) => {
+                if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
+                    tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after rebuild");
+                }
+                Some(total)
             }
+            Some((total, cqs::hnsw::SaveOutcome::DiscardedStale)) => {
+                // A concurrent writer moved the store past the GC build
+                // snapshot; the on-disk index was left untouched and the
+                // dirty flag stays set so search brute-forces until rebuild.
+                tracing::warn!("GC HNSW save discarded (concurrent writer); dirty flag stays set");
+                Some(total)
+            }
+            None => None,
         }
-        result
     } else {
         None
     };

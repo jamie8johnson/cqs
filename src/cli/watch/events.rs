@@ -331,6 +331,24 @@ pub(super) fn process_file_changes(
                 }
             }
 
+            // Refresh the observed store stamp now that this cycle's writes
+            // (chunk reindex + SPLADE encode) are committed. Every HNSW save
+            // below passes it as the snapshot: a live stamp that has moved
+            // past it at save time means a writer this loop never observed,
+            // and the save gets discarded instead of overwriting newer
+            // sidecars with contents that lack that writer's chunks.
+            match cqs::hnsw::StoreStamp::read(store) {
+                Ok(s) => state.observed_stamp = Some(s),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to read store stamp after reindex — the next HNSW save \
+                         falls back to the live stamp (no foreign-writer detection)"
+                    );
+                    state.observed_stamp = None;
+                }
+            }
+
             // === HNSW maintenance ===
             //
             // Rebuilds run in a background thread (`spawn_hnsw_rebuild`).
@@ -451,14 +469,43 @@ pub(super) fn process_file_changes(
                             match index.insert_batch(&items) {
                                 Ok(n) => {
                                     state.incremental_count += n;
-                                    if let Err(e) = index.save(cfg.cqs_dir, "index") {
-                                        warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else {
-                                        clear_hnsw_dirty_with_retry(
-                                            store,
-                                            cqs::HnswKind::Enriched,
-                                            "incremental_insert",
-                                        );
+                                    // Stamped save: the in-memory index now
+                                    // reflects everything this loop has
+                                    // observed (= observed_stamp, refreshed
+                                    // above). A live-stamp mismatch under
+                                    // the save lock means a foreign writer's
+                                    // chunks are missing from this index —
+                                    // discard the save and leave the dirty
+                                    // flag set rather than overwrite the
+                                    // newer on-disk sidecars.
+                                    let snapshot = match state.observed_stamp {
+                                        Some(s) => Ok(s),
+                                        None => cqs::hnsw::StoreStamp::read(store).map_err(|e| {
+                                            cqs::hnsw::HnswError::Internal(format!(
+                                                "Failed to read store stamp for incremental save: {e}"
+                                            ))
+                                        }),
+                                    };
+                                    match snapshot.and_then(|snap| {
+                                        index.save_stamped(cfg.cqs_dir, "index", store, snap)
+                                    }) {
+                                        Ok(cqs::hnsw::SaveOutcome::Saved) => {
+                                            clear_hnsw_dirty_with_retry(
+                                                store,
+                                                cqs::HnswKind::Enriched,
+                                                "incremental_insert",
+                                            );
+                                        }
+                                        Ok(cqs::hnsw::SaveOutcome::DiscardedStale) => {
+                                            warn!(
+                                                "HNSW incremental save discarded: store moved \
+                                                 past the watch loop's observed state \
+                                                 (concurrent indexer); dirty flag stays set"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "Failed to save HNSW after incremental insert");
+                                        }
                                     }
                                     info!(
                                         inserted = n,

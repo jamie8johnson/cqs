@@ -121,10 +121,10 @@ const HNSW_META_VERSION: u32 = 1;
 /// JSON header persisted next to the HNSW graph/data/ids files.
 ///
 /// Carries index-level configuration that the raw hnsw_rs dump does not
-/// expose up front — today that is the distance metric, which the load path
+/// expose up front — the distance metric, which the load path
 /// needs *before* it can instantiate the right `Hnsw<f32, D>` type
-/// parameter. Mirrors the CAGRA `.cagra.meta` sidecar pattern
-/// (`src/cagra.rs`).
+/// parameter — plus the store-state stamp the sidecar contents reflect.
+/// Mirrors the CAGRA `.cagra.meta` sidecar pattern (`src/cagra.rs`).
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct HnswMeta {
     /// Format magic. See [`HNSW_META_MAGIC`].
@@ -133,23 +133,98 @@ struct HnswMeta {
     version: u32,
     /// [`DistanceMetric::as_str`] value the index was built with.
     metric: String,
+    /// `Store::chunk_count()` of the store state this index was built from.
+    /// `None` on sidecars written before the stamp existed; clean (non-dirty)
+    /// loads of such sidecars keep working, but the dirty-flag self-heal
+    /// treats a missing stamp as a mismatch — a stamp-less sidecar cannot
+    /// prove it postdates the last chunk write.
+    #[serde(default)]
+    chunk_count: Option<u64>,
+    /// `Store::splade_generation()` of the store state this index was built
+    /// from. The counter is bumped by every sparse-vector write batch and by
+    /// the chunk-delete trigger, so it advances with every chunk-mutating
+    /// write the index pipeline performs. Same `None` semantics as
+    /// `chunk_count`.
+    #[serde(default)]
+    splade_generation: Option<u64>,
 }
 
-/// Read the persisted distance metric for an index, if any.
+impl HnswMeta {
+    /// The store-state stamp recorded at save, if this sidecar has one.
+    /// Both fields are written together; a half-present pair (hand-edited
+    /// meta) counts as no stamp.
+    fn store_stamp(&self) -> Option<StoreStamp> {
+        match (self.chunk_count, self.splade_generation) {
+            (Some(chunk_count), Some(splade_generation)) => Some(StoreStamp {
+                chunk_count,
+                splade_generation,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Store state an HNSW sidecar set reflects, captured at save time.
 ///
-/// - Missing meta file → `Ok(Cosine)`: every pre-#1351 index was built with
-///   `DistCosine` by construction.
-/// - Present but malformed / unknown magic / newer version / unknown metric
-///   → typed error. Never a silent cosine fallback: misreading a dot-product
-///   index as cosine produces wrong distances, not a crash.
-fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
+/// The pair plays the same role CAGRA's `chunk_count` + `splade_generation`
+/// sidecar fields play (`src/cagra.rs`): a cheap discriminator that lets the
+/// load path ask "does this index reflect the live store?" instead of only
+/// "are these files internally consistent?". `splade_generation` advances on
+/// every sparse-vector write batch and on every chunk delete (SQLite
+/// trigger); `chunk_count` catches insert-only paths that might not touch
+/// sparse rows. A write that changes neither (e.g. an embedding-only UPDATE
+/// with no chunk or sparse mutation) is invisible to the stamp — the same
+/// accepted limitation the CAGRA staleness check has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoreStamp {
+    /// `Store::chunk_count()` at capture time.
+    pub chunk_count: u64,
+    /// `Store::splade_generation()` at capture time.
+    pub splade_generation: u64,
+}
+
+impl StoreStamp {
+    /// Capture the current stamp from a live store.
+    pub fn read<Mode>(store: &crate::store::Store<Mode>) -> Result<Self, crate::store::StoreError> {
+        Ok(Self {
+            chunk_count: store.chunk_count()?,
+            splade_generation: store.splade_generation()?,
+        })
+    }
+}
+
+/// What a stamped save actually did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// The sidecar set on disk now reflects this index.
+    Saved,
+    /// The save was discarded under the exclusive lock: the live store moved
+    /// past the snapshot this index was built from, so persisting it would
+    /// overwrite a newer index with stale contents. Nothing on disk changed.
+    /// Callers must NOT clear the `hnsw_dirty` flag on this outcome.
+    DiscardedStale,
+}
+
+/// Stamp context for [`HnswIndex::save_stamped`]: the snapshot the index
+/// contents reflect, plus a re-reader invoked under the exclusive save lock.
+struct SaveStamp<'a> {
+    /// Re-reads the live store stamp. Called only while the exclusive save
+    /// lock is held, so the comparison against `snapshot` cannot race a
+    /// concurrent in-process saver.
+    live: &'a dyn Fn() -> Result<StoreStamp, HnswError>,
+    /// Store state the index contents were built from (including any delta
+    /// replayed on top of the build snapshot).
+    snapshot: StoreStamp,
+}
+
+/// Read and validate the `{basename}.hnsw.meta` header, if present.
+///
+/// - Missing meta file → `Ok(None)` (legacy index predating the meta header).
+/// - Present but malformed / unknown magic / newer version → typed error.
+fn read_hnsw_meta(dir: &Path, basename: &str) -> Result<Option<HnswMeta>, HnswError> {
     let meta_path = dir.join(format!("{}.hnsw.meta", basename));
     if !meta_path.exists() {
-        tracing::debug!(
-            path = %meta_path.display(),
-            "No HNSW meta header (legacy index) — metric is cosine"
-        );
-        return Ok(DistanceMetric::Cosine);
+        return Ok(None);
     }
 
     // Size cap: the header is a 3-field JSON object; anything beyond a few
@@ -206,13 +281,75 @@ fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, H
         )));
     }
 
+    Ok(Some(meta))
+}
+
+/// Read the persisted distance metric for an index, if any.
+///
+/// - Missing meta file → `Ok(Cosine)`: every index predating the meta header
+///   was built with `DistCosine` by construction.
+/// - Present but malformed / unknown magic / newer version / unknown metric
+///   → typed error. Never a silent cosine fallback: misreading a dot-product
+///   index as cosine produces wrong distances, not a crash.
+fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
+    let Some(meta) = read_hnsw_meta(dir, basename)? else {
+        tracing::debug!(
+            dir = %dir.display(),
+            basename,
+            "No HNSW meta header (legacy index) — metric is cosine"
+        );
+        return Ok(DistanceMetric::Cosine);
+    };
     meta.metric.parse::<DistanceMetric>().map_err(|e| {
         HnswError::Internal(format!(
-            "HNSW meta {} has invalid metric: {}",
-            meta_path.display(),
+            "HNSW meta for {}/{} has invalid metric: {}",
+            dir.display(),
+            basename,
             e
         ))
     })
+}
+
+/// Verify that a persisted HNSW sidecar set is both intact AND reflects the
+/// live store. This is the dirty-flag self-heal check: the `hnsw_dirty` flag
+/// is set before chunk writes and cleared after a successful HNSW save, so a
+/// set flag means "chunks may have been committed after the last save". A
+/// checksum pass alone cannot refute that — the manifest is written by the
+/// same save it describes, so a complete previous-generation set always
+/// verifies. The store-state stamp is what distinguishes "died after the
+/// save landed" (heal) from "died after the chunk commit, before the save"
+/// (stay dirty, brute-force until rebuild).
+///
+/// A sidecar without a stamp (written before the stamp existed) fails this
+/// check: it cannot prove it postdates the last chunk write. Clean
+/// (non-dirty) loads of such sidecars are unaffected — this function is only
+/// on the dirty path.
+pub fn verify_hnsw_current<Mode>(
+    dir: &Path,
+    basename: &str,
+    store: &crate::store::Store<Mode>,
+) -> Result<(), HnswError> {
+    verify_hnsw_checksums(dir, basename)?;
+    let live = StoreStamp::read(store).map_err(|e| {
+        HnswError::Internal(format!(
+            "Failed to read live store stamp for HNSW staleness check: {}",
+            e
+        ))
+    })?;
+    let stamped = read_hnsw_meta(dir, basename)?.and_then(|m| m.store_stamp());
+    match stamped {
+        Some(s) if s == live => Ok(()),
+        Some(s) => Err(HnswError::Internal(format!(
+            "HNSW sidecar stamp (chunks={}, generation={}) does not match the live store \
+             (chunks={}, generation={}) — the index predates the last chunk write",
+            s.chunk_count, s.splade_generation, live.chunk_count, live.splade_generation
+        ))),
+        None => Err(HnswError::Internal(
+            "HNSW sidecar has no store-state stamp — cannot prove the index postdates \
+             the last chunk write"
+                .to_string(),
+        )),
+    }
 }
 
 /// Verify HNSW index file checksums using blake3.
@@ -356,7 +493,63 @@ impl HnswIndex {
     ///
     /// Note: The underlying library writes graph/data non-atomically. However, the
     /// checksum verification on load ensures we never use a corrupted index.
+    ///
+    /// This variant writes no store-state stamp into the meta header, so the
+    /// dirty-flag self-heal will refuse the resulting sidecars (see
+    /// [`verify_hnsw_current`]). Production callers that have a `Store` in
+    /// scope must use [`save_stamped`](Self::save_stamped); this remains for
+    /// tests and store-less callers.
     pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError> {
+        self.save_impl(dir, basename, None).map(|_| ())
+    }
+
+    /// Save with a store-state stamp, discarding the save if the store has
+    /// moved past `snapshot`.
+    ///
+    /// `snapshot` is the [`StoreStamp`] of the store state this index's
+    /// contents reflect (the build snapshot, plus any delta replayed on top).
+    /// Under the exclusive save lock the live stamp is re-read and compared:
+    /// a mismatch means a writer this index never observed committed chunks
+    /// after the snapshot — persisting would overwrite a newer on-disk index
+    /// with stale contents while stamping it current. The save is discarded
+    /// instead ([`SaveOutcome::DiscardedStale`]), and even if a stale save
+    /// raced in through the remaining window between the caller's snapshot
+    /// capture and this lock, its stamp would be the old generation — the
+    /// dirty-path check ([`verify_hnsw_current`]) refuses it at next load.
+    pub fn save_stamped<Mode>(
+        &self,
+        dir: &Path,
+        basename: &str,
+        store: &crate::store::Store<Mode>,
+        snapshot: StoreStamp,
+    ) -> Result<SaveOutcome, HnswError> {
+        let live = || {
+            StoreStamp::read(store).map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to re-read store stamp during HNSW save: {}",
+                    e
+                ))
+            })
+        };
+        self.save_impl(
+            dir,
+            basename,
+            Some(SaveStamp {
+                live: &live,
+                snapshot,
+            }),
+        )
+    }
+
+    /// Shared save body. See [`save`](Self::save) for the file layout and
+    /// crash-safety contract, [`save_stamped`](Self::save_stamped) for the
+    /// stamp semantics.
+    fn save_impl(
+        &self,
+        dir: &Path,
+        basename: &str,
+        stamp: Option<SaveStamp<'_>>,
+    ) -> Result<SaveOutcome, HnswError> {
         let _span = tracing::debug_span!("hnsw_save", dir = %dir.display(), basename).entered();
         tracing::info!(dir = %dir.display(), basename, "Saving HNSW index");
 
@@ -379,10 +572,31 @@ impl HnswIndex {
             ))
         })?;
 
-        // Refuse to start a new save if a previous rollback left .bak files
-        // behind. The operator must clear them manually so we don't silently
-        // overwrite a known-good index with a stale .bak on a future
-        // rollback. Runs before any writes.
+        // Acquire exclusive lock for save. This happens BEFORE the stale-.bak
+        // guard below: a concurrent saver's transient .baks (it renames the
+        // live files to .bak between its backup loop and promote pass) must
+        // not be observable here. Once the exclusive lock is held, any .bak
+        // we see is from a save that already terminated.
+        // NOTE: File locking is advisory only on WSL over 9P.
+        // This prevents concurrent cqs processes from corrupting the index,
+        // but cannot protect against external Windows process modifications.
+        let lock_path = dir.join(format!("{}.hnsw.lock", basename));
+        #[allow(clippy::suspicious_open_options)] // Intentional: create if missing, don't truncate
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)?;
+        lock_file.lock().map_err(HnswError::Io)?;
+        warn_wsl_advisory_locking(dir);
+        tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");
+
+        // Live store stamp, read once under the exclusive lock. Used by both
+        // the debris check below and the staleness discard after it.
+        let live_stamp: Option<StoreStamp> = match &stamp {
+            Some(s) => Some((s.live)()?),
+            None => None,
+        };
+
         let all_exts = [
             "hnsw.graph",
             "hnsw.data",
@@ -402,26 +616,101 @@ impl HnswIndex {
             })
             .collect();
         if !stale_baks.is_empty() {
-            return Err(HnswError::Internal(format!(
-                "stale .bak files from prior failed save: {:?}; manual recovery required \
-                 (remove them or rename to current files)",
-                stale_baks,
-            )));
+            // .bak files exist from a save that didn't finish its cleanup.
+            // Two distinct states:
+            //
+            // - Post-success debris: the previous save promoted its complete
+            //   new set and was killed before deleting the .baks. A partial
+            //   promote cannot pass `verify_hnsw_checksums` (the manifest is
+            //   promoted last and references the other files' new hashes), so
+            //   a live set that verifies AND carries a store-state stamp from
+            //   this store's history is a completed save. The .baks hold the
+            //   generation BEFORE it — redundant. Delete them and proceed.
+            //
+            // - Recovery breadcrumbs: the live set is absent, incomplete, or
+            //   fails verification — the .baks may be the only good copy of
+            //   the index. Refuse so the backup loop below can't overwrite
+            //   them.
+            //
+            // The debris check deliberately does NOT require the live set's
+            // stamp to equal the CURRENT store stamp: writes that landed
+            // between the kill and this save would re-wedge persistence
+            // (the exact lockout this branch fixes). Staleness of the live
+            // set is the dirty-path load check's job, not this guard's; the
+            // stamp here only has to prove the set came from a completed,
+            // stamp-aware save of this store (generation not in the future).
+            let debris_reason: Result<(), String> = (|| {
+                verify_hnsw_checksums(dir, basename)
+                    .map_err(|e| format!("live set failed verification: {}", e))?;
+                let set_stamp = read_hnsw_meta(dir, basename)
+                    .map_err(|e| format!("live set meta unreadable: {}", e))?
+                    .and_then(|m| m.store_stamp())
+                    .ok_or_else(|| "live set has no store-state stamp".to_string())?;
+                if let Some(live) = live_stamp {
+                    if set_stamp.splade_generation > live.splade_generation {
+                        return Err(format!(
+                            "live set stamp generation {} is ahead of the store ({}) — \
+                             not from this store's history",
+                            set_stamp.splade_generation, live.splade_generation
+                        ));
+                    }
+                } else {
+                    return Err("no store available to validate the live set stamp".to_string());
+                }
+                Ok(())
+            })();
+            match debris_reason {
+                Ok(()) => {
+                    tracing::warn!(
+                        baks = ?stale_baks,
+                        "Removing post-success .bak debris: live HNSW set is complete, \
+                         checksum-valid, and stamped — the .baks are the superseded generation"
+                    );
+                    for bak in &stale_baks {
+                        if let Err(e) = std::fs::remove_file(bak) {
+                            return Err(HnswError::Internal(format!(
+                                "Failed to remove .bak debris {}: {}",
+                                bak.display(),
+                                e
+                            )));
+                        }
+                    }
+                }
+                Err(reason) => {
+                    tracing::warn!(
+                        baks = ?stale_baks,
+                        reason = %reason,
+                        "Refusing HNSW save: .bak files present and live set is not a \
+                         verified completed save"
+                    );
+                    return Err(HnswError::Internal(format!(
+                        "stale .bak files from prior failed save: {:?} ({}); manual recovery \
+                         required (the .baks are the previous good index)",
+                        stale_baks, reason,
+                    )));
+                }
+            }
         }
 
-        // Acquire exclusive lock for save
-        // NOTE: File locking is advisory only on WSL over 9P.
-        // This prevents concurrent cqs processes from corrupting the index,
-        // but cannot protect against external Windows process modifications.
-        let lock_path = dir.join(format!("{}.hnsw.lock", basename));
-        #[allow(clippy::suspicious_open_options)] // Intentional: create if missing, don't truncate
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&lock_path)?;
-        lock_file.lock().map_err(HnswError::Io)?;
-        warn_wsl_advisory_locking(dir);
-        tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");
+        // Staleness discard: if the store moved past the snapshot this index
+        // was built from, persisting would replace a newer on-disk index with
+        // stale contents stamped as current. Nothing has been written yet, so
+        // discarding here is side-effect-free.
+        if let (Some(s), Some(live)) = (&stamp, live_stamp) {
+            if live != s.snapshot {
+                tracing::warn!(
+                    basename,
+                    snapshot_chunks = s.snapshot.chunk_count,
+                    snapshot_generation = s.snapshot.splade_generation,
+                    live_chunks = live.chunk_count,
+                    live_generation = live.splade_generation,
+                    "Discarding HNSW save: store moved past the build snapshot — \
+                     an unobserved writer committed chunks; the on-disk index is \
+                     left untouched and the dirty flag must stay set"
+                );
+                return Ok(SaveOutcome::DiscardedStale);
+            }
+        }
 
         // Use a temporary directory for atomic writes so that a crash
         // mid-save leaves the old index intact. Unpredictable suffix
@@ -467,6 +756,8 @@ impl HnswIndex {
                 magic: HNSW_META_MAGIC.to_string(),
                 version: HNSW_META_VERSION,
                 metric: self.metric().as_str().to_string(),
+                chunk_count: stamp.as_ref().map(|s| s.snapshot.chunk_count),
+                splade_generation: stamp.as_ref().map(|s| s.snapshot.splade_generation),
             };
             let meta_json = serde_json::to_vec(&meta).map_err(|e| {
                 HnswError::Internal(format!("Failed to serialize HNSW meta: {}", e))
@@ -863,7 +1154,7 @@ impl HnswIndex {
             self.id_map.len()
         );
 
-        Ok(())
+        Ok(SaveOutcome::Saved)
     }
 
     /// Load an index from disk
@@ -2312,5 +2603,264 @@ mod tests {
         // AUDIT-FOLLOWUP: accepting NUL in chunk ids is a downstream hazard
         // (SQL queries, log lines). Once a reject-NUL guard lands, flip this
         // to `result.is_err()`.
+    }
+
+    // ===== store-state stamp: save_stamped / verify_hnsw_current =====
+
+    /// Build a tiny saveable index for the stamp tests.
+    fn small_index() -> HnswIndex {
+        HnswIndex::build_with_dim(
+            vec![
+                ("chunk1".to_string(), make_embedding(1)),
+                ("chunk2".to_string(), make_embedding(2)),
+            ],
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+    }
+
+    /// Advance the store's state stamp by inserting a chunk: `chunk_count`
+    /// changes, so any earlier `StoreStamp` no longer matches.
+    fn advance_store(store: &crate::Store, id: &str) {
+        use crate::parser::{Chunk, ChunkType, Language};
+        let content = format!("fn {}() {{ }}", id);
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: id.to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: id.to_string(),
+            signature: format!("fn {}()", id),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash,
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        store
+            .upsert_chunks_batch(&[(chunk, make_embedding(42))], Some(0))
+            .expect("seed chunk");
+    }
+
+    /// All five sidecar extensions a completed save promotes.
+    const STAMP_TEST_EXTS: [&str; 5] = [
+        "hnsw.graph",
+        "hnsw.data",
+        "hnsw.ids",
+        "hnsw.meta",
+        "hnsw.checksum",
+    ];
+
+    /// Dirty-path contract: a stamped save whose stamp still matches the
+    /// live store verifies (died after the save → heal); once the store
+    /// moves past the stamp, verification refuses (died after the chunk
+    /// commit, before the save → stay dirty / brute-force).
+    #[test]
+    fn verify_current_distinguishes_save_landed_from_save_missed() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        let index = small_index();
+        let snapshot = StoreStamp::read(&store).unwrap();
+        let outcome = index
+            .save_stamped(tmp.path(), "index", &store, snapshot)
+            .unwrap();
+        assert_eq!(outcome, SaveOutcome::Saved);
+
+        verify_hnsw_current(tmp.path(), "index", &store)
+            .expect("stamp matches the live store — the dirty flag was a false positive");
+
+        advance_store(&store, "late_chunk");
+        let err = verify_hnsw_current(tmp.path(), "index", &store)
+            .expect_err("store moved past the sidecar stamp — must refuse");
+        assert!(
+            format!("{err}").contains("does not match the live store"),
+            "want stamp-mismatch error, got: {err}"
+        );
+    }
+
+    /// A sidecar set without a stamp (plain `save()`, or pre-stamp binaries)
+    /// cannot prove it postdates the last chunk write — the dirty path must
+    /// refuse it even though checksums pass.
+    #[test]
+    fn verify_current_refuses_unstamped_sidecars() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        small_index().save(tmp.path(), "index").unwrap();
+
+        let err = verify_hnsw_current(tmp.path(), "index", &store)
+            .expect_err("unstamped sidecars must refuse on the dirty path");
+        assert!(
+            format!("{err}").contains("no store-state stamp"),
+            "want missing-stamp error, got: {err}"
+        );
+    }
+
+    /// The stale-rebuild seam: store generation bumps between build-snapshot
+    /// capture and save → the save is discarded under the lock and nothing
+    /// lands on disk.
+    #[test]
+    fn save_stamped_discards_when_store_moves_past_snapshot() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        let index = small_index();
+        let snapshot = StoreStamp::read(&store).unwrap();
+
+        // The unobserved writer: commits a chunk after the snapshot was
+        // captured but before the save runs.
+        advance_store(&store, "raced_in");
+
+        let outcome = index
+            .save_stamped(tmp.path(), "index", &store, snapshot)
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SaveOutcome::DiscardedStale,
+            "a save built from a superseded snapshot must be discarded"
+        );
+        assert!(
+            !HnswIndex::exists(tmp.path(), "index"),
+            "a discarded save must not write sidecars"
+        );
+    }
+
+    /// Post-success debris: a kill between the last promote and the .bak
+    /// cleanup leaves a healthy stamped live set plus orphan .baks. The next
+    /// save must treat the .baks as debris (delete, proceed) instead of
+    /// wedging persistence with a manual-recovery refusal.
+    #[test]
+    fn save_stamped_clears_post_success_bak_debris() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        let v1 = small_index();
+        let snapshot = StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            v1.save_stamped(tmp.path(), "index", &store, snapshot)
+                .unwrap(),
+            SaveOutcome::Saved
+        );
+
+        // Simulate the kill window: every promoted file also has a .bak left
+        // behind (contents don't matter to the guard — only the live set's
+        // health does).
+        for ext in STAMP_TEST_EXTS {
+            let live = tmp.path().join(format!("index.{ext}"));
+            let bak = tmp.path().join(format!("index.{ext}.bak"));
+            std::fs::copy(&live, &bak).unwrap();
+        }
+
+        let v2 = small_index();
+        let snapshot2 = StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            v2.save_stamped(tmp.path(), "index", &store, snapshot2)
+                .unwrap(),
+            SaveOutcome::Saved,
+            "healthy stamped live set + .baks = debris; the save must proceed"
+        );
+        for ext in STAMP_TEST_EXTS {
+            let bak = tmp.path().join(format!("index.{ext}.bak"));
+            assert!(!bak.exists(), "debris {} must be cleaned", bak.display());
+        }
+        let loaded =
+            HnswIndex::load_with_dim(tmp.path(), "index", crate::EMBEDDING_DIM).expect("load v2");
+        assert_eq!(loaded.len(), 2);
+    }
+
+    /// When .baks exist and the live set does NOT verify, the .baks may be
+    /// the only good copy — the save must still hard-refuse and leave them
+    /// in place.
+    #[test]
+    fn save_stamped_refuses_baks_when_live_set_invalid() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        let v1 = small_index();
+        let snapshot = StoreStamp::read(&store).unwrap();
+        assert_eq!(
+            v1.save_stamped(tmp.path(), "index", &store, snapshot)
+                .unwrap(),
+            SaveOutcome::Saved
+        );
+        for ext in STAMP_TEST_EXTS {
+            let live = tmp.path().join(format!("index.{ext}"));
+            let bak = tmp.path().join(format!("index.{ext}.bak"));
+            std::fs::copy(&live, &bak).unwrap();
+        }
+        // Corrupt the live graph so verification fails.
+        std::fs::File::create(tmp.path().join("index.hnsw.graph"))
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+
+        let v2 = small_index();
+        let snapshot2 = StoreStamp::read(&store).unwrap();
+        let err = v2
+            .save_stamped(tmp.path(), "index", &store, snapshot2)
+            .expect_err("invalid live set + .baks must refuse");
+        assert!(
+            format!("{err}").contains("manual recovery"),
+            "want manual-recovery refusal, got: {err}"
+        );
+        for ext in STAMP_TEST_EXTS {
+            let bak = tmp.path().join(format!("index.{ext}.bak"));
+            assert!(
+                bak.exists(),
+                "breadcrumb {} must be preserved",
+                bak.display()
+            );
+        }
+    }
+
+    /// Plain (store-less) `save()` cannot validate the live set's stamp, so
+    /// any .bak keeps the conservative hard refusal.
+    #[test]
+    fn plain_save_still_refuses_any_baks() {
+        let tmp = TempDir::new().unwrap();
+        let v1 = small_index();
+        v1.save(tmp.path(), "index").unwrap();
+        let live = tmp.path().join("index.hnsw.ids");
+        std::fs::copy(&live, tmp.path().join("index.hnsw.ids.bak")).unwrap();
+
+        let err = small_index()
+            .save(tmp.path(), "index")
+            .expect_err("store-less save must refuse while .baks exist");
+        assert!(
+            format!("{err}").contains("manual recovery"),
+            "want manual-recovery refusal, got: {err}"
+        );
+    }
+
+    /// The meta header roundtrips the stamp, and pre-stamp sidecars parse
+    /// with `store_stamp() == None` (clean loads keep working).
+    #[test]
+    fn meta_stamp_roundtrip_and_legacy_compat() {
+        let (store, tmp) = crate::test_helpers::setup_store();
+        let snapshot = StoreStamp::read(&store).unwrap();
+        small_index()
+            .save_stamped(tmp.path(), "index", &store, snapshot)
+            .unwrap();
+        let meta = read_hnsw_meta(tmp.path(), "index")
+            .unwrap()
+            .expect("meta written");
+        assert_eq!(meta.store_stamp(), Some(snapshot));
+
+        // Legacy (pre-stamp) meta: only magic/version/metric.
+        let legacy = serde_json::json!({
+            "magic": HNSW_META_MAGIC,
+            "version": HNSW_META_VERSION,
+            "metric": "cosine",
+        });
+        std::fs::write(
+            tmp.path().join("legacy.hnsw.meta"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let legacy_meta = read_hnsw_meta(tmp.path(), "legacy")
+            .unwrap()
+            .expect("legacy meta parses");
+        assert_eq!(legacy_meta.store_stamp(), None);
+        assert_eq!(
+            read_hnsw_meta_metric(tmp.path(), "legacy").unwrap(),
+            DistanceMetric::Cosine
+        );
     }
 }

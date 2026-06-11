@@ -1048,25 +1048,48 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             println!("Building HNSW index...");
         }
 
-        if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
-            // HNSW saved successfully — clear enriched dirty flag
-            if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
-                tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after HNSW save");
+        match build_hnsw_index(&store, &cqs_dir)? {
+            Some((total, cqs::hnsw::SaveOutcome::Saved)) => {
+                // HNSW saved successfully — clear enriched dirty flag
+                if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
+                    tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after HNSW save");
+                }
+                if !cli.quiet {
+                    println!("  HNSW index: {} vectors", total);
+                }
             }
-            if !cli.quiet {
-                println!("  HNSW index: {} vectors", total);
+            Some((_, cqs::hnsw::SaveOutcome::DiscardedStale)) => {
+                // A concurrent writer committed chunks during the build; the
+                // save was discarded and the dirty flag stays set so search
+                // falls back to brute-force until the next rebuild.
+                tracing::warn!("HNSW save discarded (concurrent writer); dirty flag stays set");
+                if !cli.quiet {
+                    println!(
+                        "  HNSW index: save discarded (store changed during build; \
+                         re-run 'cqs index')"
+                    );
+                }
             }
+            None => {}
         }
 
         // Also build the base (non-enriched) HNSW index. Non-fatal
         // if it fails — fall back to enriched-only at query time.
-        match build_hnsw_base_index(&store, &cqs_dir) {
-            Ok(Some(total)) => {
+        match build_hnsw_base_index(&store, &cqs_dir, None) {
+            Ok(Some((total, cqs::hnsw::SaveOutcome::Saved))) => {
                 if let Err(e) = store.set_hnsw_dirty(HnswKind::Base, false) {
                     tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag after base HNSW save");
                 }
                 if !cli.quiet {
                     println!("  HNSW base index: {} vectors", total);
+                }
+            }
+            Ok(Some((_, cqs::hnsw::SaveOutcome::DiscardedStale))) => {
+                tracing::warn!(
+                    "Base HNSW save discarded (concurrent writer); dirty flag stays set"
+                );
+                if !cli.quiet {
+                    println!("  HNSW base index: save discarded (store changed during build)");
                 }
             }
             Ok(None) => {
@@ -1368,8 +1391,16 @@ fn hnsw_batch_size(dim: usize) -> usize {
 ///
 /// Notes are excluded from HNSW — they use brute-force search from SQLite
 /// so that notes are immediately searchable without rebuild.
-pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
-    Ok(build_hnsw_index_owned(store, cqs_dir)?.map(|(h, _)| h.len()))
+///
+/// Returns `Ok(Some((len, outcome)))` when an index was built; callers may
+/// clear the `hnsw_dirty` flag only when `outcome` is
+/// [`cqs::hnsw::SaveOutcome::Saved`] — a `DiscardedStale` save left the
+/// on-disk index (and the flag's meaning) untouched.
+pub(crate) fn build_hnsw_index(
+    store: &Store,
+    cqs_dir: &Path,
+) -> Result<Option<(usize, cqs::hnsw::SaveOutcome)>> {
+    Ok(build_hnsw_index_owned(store, cqs_dir, None)?.map(|(h, _, outcome)| (h.len(), outcome)))
 }
 
 /// 64-bit fingerprint of `(id, content_hash)` used by
@@ -1417,8 +1448,21 @@ pub(crate) fn snapshot_fingerprint(id: &str, hash: &str) -> u64 {
 pub(crate) fn build_hnsw_index_owned<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
-) -> Result<Option<(HnswIndex, std::collections::HashSet<u64>)>> {
-    let chunk_count = store.chunk_count().context("Failed to read chunk count")? as usize;
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<
+    Option<(
+        HnswIndex,
+        std::collections::HashSet<u64>,
+        cqs::hnsw::SaveOutcome,
+    )>,
+> {
+    // Capture the store-state stamp BEFORE streaming embeddings: it names
+    // the store state the built index reflects. `save_stamped` re-reads the
+    // live stamp under the exclusive save lock and discards the save if the
+    // store moved past this snapshot.
+    let snapshot = cqs::hnsw::StoreStamp::read(store)
+        .context("Failed to read store stamp before HNSW build")?;
+    let chunk_count = snapshot.chunk_count as usize;
     let _span = tracing::info_span!("build_hnsw_index_owned", chunk_count).entered();
 
     if chunk_count == 0 {
@@ -1445,9 +1489,20 @@ pub(crate) fn build_hnsw_index_owned<M>(
     });
 
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, chunk_count, store.dim())?;
-    hnsw.save(cqs_dir, "index")?;
+    // Shutdown check before entering the save: daemon exit detaches the
+    // rebuild thread after a bounded join, so a save started after the
+    // shutdown signal could be killed at an arbitrary point. Skipping it
+    // leaves the dirty flag set and the previous on-disk index intact —
+    // the next daemon start rebuilds.
+    if cancel
+        .map(|c| c.load(std::sync::atomic::Ordering::Acquire))
+        .unwrap_or(false)
+    {
+        anyhow::bail!("shutdown requested — skipping HNSW save (next start rebuilds)");
+    }
+    let outcome = hnsw.save_stamped(cqs_dir, "index", store, snapshot)?;
 
-    Ok(Some((hnsw, snapshot_keys)))
+    Ok(Some((hnsw, snapshot_keys, outcome)))
 }
 
 /// Build the base HNSW index from `embedding_base` and save as
@@ -1461,11 +1516,22 @@ pub(crate) fn build_hnsw_index_owned<M>(
 /// Returns `Ok(None)` when the column is entirely NULL (no index pass has
 /// populated it yet). In that case the router falls back to the enriched
 /// index.
+///
+/// On `Ok(Some((len, outcome)))`, callers may clear the Base `hnsw_dirty`
+/// flag only when `outcome` is [`cqs::hnsw::SaveOutcome::Saved`].
 pub(crate) fn build_hnsw_base_index<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
-) -> Result<Option<usize>> {
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Option<(usize, cqs::hnsw::SaveOutcome)>> {
     let _span = tracing::info_span!("build_hnsw_base_index").entered();
+
+    // Stamp captured before streaming — see `build_hnsw_index_owned`. The
+    // base index is sized by `base_embedding_count`, but the stamp is the
+    // store-level state (chunk count + write generation) like the enriched
+    // one: it names a point in the store's history, not the row subset.
+    let snapshot = cqs::hnsw::StoreStamp::read(store)
+        .context("Failed to read store stamp before base HNSW build")?;
 
     // If the column hasn't been populated yet, skip the build so we don't
     // write an empty HNSW file that misleads readers into thinking dual
@@ -1483,10 +1549,17 @@ pub(crate) fn build_hnsw_base_index<M>(
 
     let chunk_batches = store.embedding_base_batches(batch_size);
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, base_count, store.dim())?;
-    hnsw.save(cqs_dir, "index_base")?;
+    // Shutdown check before entering the save — see `build_hnsw_index_owned`.
+    if cancel
+        .map(|c| c.load(std::sync::atomic::Ordering::Acquire))
+        .unwrap_or(false)
+    {
+        anyhow::bail!("shutdown requested — skipping base HNSW save (next start rebuilds)");
+    }
+    let outcome = hnsw.save_stamped(cqs_dir, "index_base", store, snapshot)?;
 
-    tracing::info!(base_count, "Base HNSW index built");
-    Ok(Some(hnsw.len()))
+    tracing::info!(base_count, ?outcome, "Base HNSW index built");
+    Ok(Some((hnsw.len(), outcome)))
 }
 
 // The data-flow for the dual HNSW build is covered by
@@ -1650,9 +1723,14 @@ mod tests {
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
 
-        let (idx, snapshot_keys) = build_hnsw_index_owned(&store, &cqs_dir)
+        let (idx, snapshot_keys, outcome) = build_hnsw_index_owned(&store, &cqs_dir, None)
             .expect("build_hnsw_index_owned must succeed")
             .expect("non-empty store must produce an index");
+        assert_eq!(
+            outcome,
+            cqs::hnsw::SaveOutcome::Saved,
+            "no concurrent writer in this test — the save must land"
+        );
         assert_eq!(idx.len(), n, "index len must equal seeded chunk count");
         // Snapshot must carry one fingerprint entry per built
         // (id, content_hash) so the rebuild-window drain can detect stale
@@ -1686,7 +1764,7 @@ mod tests {
         let (_tmp, cqs_dir) = seed_store(0, dim);
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
-        let result = build_hnsw_index_owned(&store, &cqs_dir).expect("must not error");
+        let result = build_hnsw_index_owned(&store, &cqs_dir, None).expect("must not error");
         assert!(
             result.is_none(),
             "empty store must yield None (no on-disk index, no in-memory index)"
@@ -1707,11 +1785,11 @@ mod tests {
         let (_tmp, cqs_dir) = seed_store(n, dim);
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
-        let result = build_hnsw_base_index(&store, &cqs_dir).expect("must not error");
+        let result = build_hnsw_base_index(&store, &cqs_dir, None).expect("must not error");
         assert_eq!(
             result,
-            Some(n),
-            "base index must contain all {n} seeded chunks"
+            Some((n, cqs::hnsw::SaveOutcome::Saved)),
+            "base index must contain all {n} seeded chunks and the save must land"
         );
     }
 
@@ -1721,7 +1799,7 @@ mod tests {
         let (_tmp, cqs_dir) = seed_store(0, dim);
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
-        let result = build_hnsw_base_index(&store, &cqs_dir).expect("must not error");
+        let result = build_hnsw_base_index(&store, &cqs_dir, None).expect("must not error");
         assert!(
             result.is_none(),
             "empty store must yield None for base HNSW build"

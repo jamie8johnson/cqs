@@ -102,6 +102,7 @@ fn test_watch_state() -> WatchState {
         active_slot: cqs::slot::DEFAULT_SLOT.to_string(),
         last_reindex: None,
         last_error: None,
+        observed_stamp: None,
     }
 }
 
@@ -1079,6 +1080,7 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
         started_at: std::time::Instant::now(),
         handle: None,
         delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     let fix = drain_test_fixture(dim);
@@ -1100,6 +1102,79 @@ fn drain_pending_rebuild_replays_delta_into_new_index() {
     assert!(idx.ids().iter().any(|id| &**id == "delta_b"));
     assert_eq!(state.incremental_count, 0);
     assert!(state.pending_rebuild.is_none());
+}
+
+/// Lost-update guard: when the live store stamp no longer matches the stamp
+/// the watch loop last observed (a concurrent `cqs index` committed chunks
+/// the rebuild snapshot + delta never saw), the drain must discard the
+/// rebuilt index — no disk save, no in-memory swap, dirty flag untouched.
+/// Swapping or saving would serve an index that silently lacks the foreign
+/// writer's chunks while the cleared flag claims it's current.
+#[test]
+fn drain_pending_rebuild_discards_when_store_moved_past_observed_stamp() {
+    let dim = 4;
+    let new_idx = synthetic_owned_index(3, dim);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Ok(Some(RebuildResult {
+        index: new_idx,
+        snapshot_keys: std::collections::HashSet::new(),
+    })))
+    .unwrap();
+    drop(tx);
+
+    let mut state = test_watch_state();
+    state.incremental_count = 7;
+    // The seam: the watch loop's observed stamp is from a store state the
+    // live store has moved past (fixture store is fresh: count 0, gen 0 —
+    // any non-zero observed stamp models "store changed under us" with the
+    // same inequality the real interleaving produces).
+    state.observed_stamp = Some(cqs::hnsw::StoreStamp {
+        chunk_count: 999,
+        splade_generation: 999,
+    });
+    state.pending_rebuild = Some(PendingRebuild {
+        rx,
+        delta: Vec::new(),
+        started_at: std::time::Instant::now(),
+        handle: None,
+        delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+
+    let fix = drain_test_fixture(dim);
+    fix.store
+        .set_hnsw_dirty(cqs::HnswKind::Enriched, true)
+        .unwrap();
+    let cfg = test_watch_config(
+        fix.tmp.path(),
+        fix.tmp.path(),
+        &fix.notes_path,
+        &fix.supported_ext,
+    );
+
+    drain_pending_rebuild(&cfg, &fix.store, &mut state);
+
+    assert!(
+        state.hnsw_index.is_none(),
+        "stale rebuild must not be swapped into memory"
+    );
+    assert!(
+        state.pending_rebuild.is_none(),
+        "pending must be cleared so the next threshold rebuild can retry"
+    );
+    assert_eq!(
+        state.incremental_count, 7,
+        "discard must not reset the incremental counter"
+    );
+    assert!(
+        !cqs::HnswIndex::exists(fix.tmp.path(), "index"),
+        "discarded rebuild must not write sidecars"
+    );
+    assert!(
+        fix.store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
+        "dirty flag must stay set after a discarded rebuild save"
+    );
 }
 
 /// When a chunk is re-embedded mid-rebuild, the snapshot has the OLD vector
@@ -1164,6 +1239,7 @@ fn test_rebuild_window_re_embedding_replays_fresh_vector() {
         started_at: std::time::Instant::now(),
         handle: None,
         delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     let fix = drain_test_fixture(dim);
@@ -1257,6 +1333,7 @@ fn drain_pending_rebuild_dedups_against_known_ids() {
         started_at: std::time::Instant::now(),
         handle: None,
         delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     let fix = drain_test_fixture(dim);
@@ -1294,6 +1371,7 @@ fn drain_pending_rebuild_clears_pending_on_thread_error() {
         started_at: std::time::Instant::now(),
         handle: None,
         delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     let fix = drain_test_fixture(4);
@@ -1442,6 +1520,7 @@ fn drain_pending_rebuild_leaves_pending_when_still_running() {
         started_at: std::time::Instant::now(),
         handle: None,
         delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     let fix = drain_test_fixture(4);
