@@ -1019,24 +1019,68 @@ pub fn cagra_persist_enabled() -> bool {
 
 #[cfg(feature = "cuda-index")]
 impl CagraIndex {
-    /// Persist the index to disk.
+    /// Persist the index to disk with a zero `splade_generation` stamp.
+    ///
+    /// Test-only convenience wrapper over [`save_inner`](Self::save_inner);
+    /// see [`save_with_store`](Self::save_with_store) for the production path.
+    #[cfg(test)]
+    pub fn save(&self, path: &Path) -> Result<(), CagraError> {
+        // Test-only convenience: stamps `splade_generation = 0`. Production
+        // callers must use `save_with_store` so the deletion counter is
+        // recorded for the coarse staleness check on load.
+        self.save_inner(path, 0)
+    }
+
+    /// Persist with an explicit `splade_generation` stamp from the caller's
+    /// `Store`. Preferred over the test-only `save` because it records the
+    /// deletion counter for coarse staleness checks on load.
+    pub fn save_with_store<Mode>(
+        &self,
+        path: &Path,
+        store: &crate::Store<Mode>,
+    ) -> Result<(), CagraError> {
+        let _span = tracing::info_span!("cagra_save_with_store", path = %path.display()).entered();
+        // splade_generation is not a perfect staleness signal (deletes only,
+        // not inserts) but it still catches the common reindex-with-GC case.
+        // Read before delegating so a store error surfaces in this span.
+        let generation = if cagra_persist_enabled() {
+            match store.splade_generation() {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to read splade_generation for CAGRA meta; defaulting to 0"
+                    );
+                    0
+                }
+            }
+        } else {
+            0
+        };
+        self.save_inner(path, generation)
+    }
+
+    /// Shared persistence body for [`save`](Self::save) and
+    /// [`save_with_store`](Self::save_with_store).
     ///
     /// Writes two files:
     /// - `{path}` — the cuVS binary blob (via `cuvsCagraSerialize`)
     /// - `{path}.meta` — a JSON sidecar with magic/version/dim/chunk_count/
-    ///   id_map/blake3 so `load()` can validate before handing the blob
-    ///   back to cuVS.
+    ///   id_map/blake3/splade_generation so `load()` can validate before
+    ///   handing the blob back to cuVS.
     ///
-    /// The cuVS blob is written first, checksummed, then the sidecar is
-    /// written atomically (write-temp → rename). If the sidecar write fails
-    /// the partial `.cagra` file is removed so we don't leave an orphan
-    /// that would later fail metadata validation.
+    /// The cuVS blob is staged with `.bak` rollback and checksummed, then the
+    /// sidecar is written atomically (write-temp → rename) with the given
+    /// `splade_generation` stamp. If the sidecar write fails the partial
+    /// `.cagra` file is removed so we don't leave an orphan that would later
+    /// fail metadata validation. Mirrors `src/hnsw/persist.rs` and the SPLADE
+    /// pattern.
     ///
     /// Persistence is a best-effort optimisation: callers should warn-log
     /// failures and continue rather than propagate errors. The caller will
     /// rebuild on next startup.
-    pub fn save(&self, path: &Path) -> Result<(), CagraError> {
-        let _span = tracing::info_span!("cagra_save", path = %path.display()).entered();
+    fn save_inner(&self, path: &Path, generation: u64) -> Result<(), CagraError> {
+        let _span = tracing::info_span!("cagra_save_inner", path = %path.display()).entered();
         if !cagra_persist_enabled() {
             // Per-call warn — a silent skip would surface only as a missing
             // blob at next load.
@@ -1074,94 +1118,6 @@ impl CagraIndex {
         // Atomic save with `.bak` rollback: stage to a tmp path,
         // atomic_replace onto the live name, restore from `.bak` on failure
         // so a mid-save failure can't destroy the previous good blob.
-        // Mirrors `src/hnsw/persist.rs` and the SPLADE pattern.
-        let meta_path = meta_path_for(path);
-        let blob_hash = save_blob_atomic_with_rollback(self, &gpu, path)?;
-
-        let meta = CagraMeta {
-            magic: CAGRA_META_MAGIC.to_string(),
-            version: CAGRA_META_VERSION,
-            dim: self.dim,
-            chunk_count: self.id_map.len(),
-            // splade_generation default of 0 — callers wanting the coarse
-            // staleness check should use `save_with_store`.
-            splade_generation: 0,
-            // Convert Vec<Box<str>> → Vec<String> at the sidecar boundary
-            // (the on-disk schema is Vec<String> for `serde_json` decode).
-            id_map: self.id_map.iter().map(|s| s.to_string()).collect(),
-            blake3: blob_hash,
-            metric: self.metric.as_str().to_string(),
-        };
-
-        // Meta-write failure after the blob is in place leaves a blob
-        // without a sidecar — load() rejects → next caller rebuilds. Both
-        // sides are safe; clean up so we don't leave the pair half-formed.
-        if let Err(e) = write_meta_atomic(&meta_path, &meta) {
-            let _ = std::fs::remove_file(path);
-            let _ = std::fs::remove_file(&meta_path);
-            return Err(e);
-        }
-
-        tracing::info!(
-            path = %path.display(),
-            n_vectors = self.id_map.len(),
-            "CAGRA index persisted"
-        );
-        Ok(())
-    }
-
-    /// Persist with an explicit `splade_generation` stamp from the caller's
-    /// `Store`. Preferred over [`save`](Self::save) because it records the
-    /// deletion counter for coarse staleness checks on load.
-    pub fn save_with_store<Mode>(
-        &self,
-        path: &Path,
-        store: &crate::Store<Mode>,
-    ) -> Result<(), CagraError> {
-        let _span = tracing::info_span!("cagra_save_with_store", path = %path.display()).entered();
-        if !cagra_persist_enabled() {
-            tracing::warn!(path = %path.display(), "CAGRA save_with_store skipped — CQS_CAGRA_PERSIST=0");
-            return Err(CagraError::Io(
-                "CAGRA persistence disabled via CQS_CAGRA_PERSIST=0".to_string(),
-            ));
-        }
-
-        let gpu = self.gpu.lock().map_err(|_| {
-            self.poisoned.store(true, Ordering::Release);
-            CagraError::Io("CAGRA mutex poisoned, refusing to save".to_string())
-        })?;
-
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(CagraError::Io(
-                "CAGRA index is poisoned, refusing to save".to_string(),
-            ));
-        }
-
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return Err(CagraError::Io(format!(
-                    "Failed to create parent dir {}: {}",
-                    parent.display(),
-                    e
-                )));
-            }
-        }
-
-        // splade_generation is not a perfect staleness signal (deletes only,
-        // not inserts) but it still catches the common reindex-with-GC case.
-        let generation = match store.splade_generation() {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to read splade_generation for CAGRA meta; defaulting to 0"
-                );
-                0
-            }
-        };
-
-        // Atomic save with `.bak` rollback. See `save` above for the
-        // full rationale.
         let meta_path = meta_path_for(path);
         let blob_hash = save_blob_atomic_with_rollback(self, &gpu, path)?;
 
@@ -1178,6 +1134,9 @@ impl CagraIndex {
             metric: self.metric.as_str().to_string(),
         };
 
+        // Meta-write failure after the blob is in place leaves a blob
+        // without a sidecar — load() rejects → next caller rebuilds. Both
+        // sides are safe; clean up so we don't leave the pair half-formed.
         if let Err(e) = write_meta_atomic(&meta_path, &meta) {
             let _ = std::fs::remove_file(path);
             let _ = std::fs::remove_file(&meta_path);

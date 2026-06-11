@@ -261,32 +261,50 @@ fn linux_fs_resolution(path: &Path) -> Option<std::time::Duration> {
         return None;
     }
 
-    // f_type is `__fsword_t` (signed `long` on most architectures). Cast to
-    // i64 to compare against constants written in their natural unsigned
-    // form. The CIFS / SMB2 magic numbers are 32-bit values that have the
-    // top bit set (0xff534d42 / 0xfe534d42); writing them as `u32 as i64`
-    // preserves the bit pattern across architectures where i32 vs i64
-    // sign-extension would otherwise differ.
+    let f_type = stat.f_type as i64;
+    if fs_magic_is_coarse(f_type) {
+        return Some(Duration::from_secs(2));
+    }
+    Some(Duration::ZERO)
+}
+
+/// Classify a Linux statfs `f_type` magic number as coarse-mtime (≥1 s tick).
+///
+/// Pure function over the magic constant so the table is unit-testable
+/// without mounting a filesystem. `f_type` is `__fsword_t` (signed `long`
+/// on most architectures); callers cast to `i64` so the constants below can
+/// be written in their natural unsigned form. The CIFS / SMB2 magic numbers
+/// are 32-bit values with the top bit set (`0xff534d42` / `0xfe534d42`);
+/// writing them as `u32 as i64` preserves the bit pattern across
+/// architectures where i32 vs i64 sign-extension would otherwise differ.
+#[cfg(target_os = "linux")]
+fn fs_magic_is_coarse(f_type: i64) -> bool {
     const NFS_SUPER_MAGIC: i64 = 0x6969;
     const MSDOS_SUPER_MAGIC: i64 = 0x4d44;
     const SMB_SUPER_MAGIC: i64 = 0x517b;
     const HFS_PLUS_MAGIC: i64 = 0x482b;
     const VFAT_SUPER_MAGIC: i64 = 0x4d44; // alias for MSDOS family
+                                          // WSL2 DrvFS mounts present as 9P (Plan 9) to statfs. The path-shape
+                                          // check in `coarse_fs_resolution` catches automount paths, but a manual
+                                          // `mount -t drvfs D: /data` (or a bind-mount of a /mnt/c subtree) outside
+                                          // the automount root falls through to this table; without 9P here it
+                                          // would get fine-grained treatment and silently drop same-tick saves.
+    const V9FS_MAGIC: i64 = 0x01021997;
+    // FUSE — sshfs / rclone / other userspace mounts that commonly round
+    // mtime to 1 s. Belt-and-suspenders alongside the path-shape check.
+    const FUSE_SUPER_MAGIC: i64 = 0x65735546;
     let cifs_magic: i64 = 0xff534d42_u32 as i64;
     let smb2_magic: i64 = 0xfe534d42_u32 as i64;
 
-    let f_type = stat.f_type as i64;
-    if f_type == NFS_SUPER_MAGIC
+    f_type == NFS_SUPER_MAGIC
         || f_type == MSDOS_SUPER_MAGIC
         || f_type == SMB_SUPER_MAGIC
         || f_type == HFS_PLUS_MAGIC
         || f_type == VFAT_SUPER_MAGIC
+        || f_type == V9FS_MAGIC
+        || f_type == FUSE_SUPER_MAGIC
         || f_type == cifs_magic
         || f_type == smb2_magic
-    {
-        return Some(Duration::from_secs(2));
-    }
-    Some(Duration::ZERO)
 }
 
 /// macOS: read `statfs::f_fstypename` and map known coarse-mtime FS
@@ -2024,5 +2042,30 @@ llm_max_tokens = 200
             coarse_fs_resolution(Path::new("/mnt/c/this/path/does/not/exist")),
             two_sec
         );
+    }
+
+    /// The statfs magic table classifies coarse-mtime filesystems directly,
+    /// independent of path shape. 9P (`V9FS_MAGIC`) and FUSE are the entries
+    /// that catch manually mounted WSL2 DrvFS shares / sshfs mounts which
+    /// fall outside the automount path-shape shortcut. Native filesystems
+    /// (ext4 / tmpfs / btrfs) are fine-grained and must stay out of the table.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fs_magic_table_classifies_coarse_filesystems() {
+        // Coarse: rounded-mtime network / FAT / WSL / FUSE filesystems.
+        assert!(fs_magic_is_coarse(0x01021997), "9P (WSL2 DrvFS)");
+        assert!(fs_magic_is_coarse(0x65735546), "FUSE (sshfs/rclone)");
+        assert!(fs_magic_is_coarse(0x6969), "NFS");
+        assert!(fs_magic_is_coarse(0x4d44), "MSDOS/VFAT");
+        assert!(fs_magic_is_coarse(0x517b), "SMB");
+        assert!(fs_magic_is_coarse(0x482b), "HFS+");
+        assert!(fs_magic_is_coarse(0xff534d42_u32 as i64), "CIFS");
+        assert!(fs_magic_is_coarse(0xfe534d42_u32 as i64), "SMB2");
+
+        // Fine-grained: native Linux filesystems keep nanosecond mtime.
+        assert!(!fs_magic_is_coarse(0xef53), "ext2/3/4");
+        assert!(!fs_magic_is_coarse(0x01021994), "tmpfs");
+        assert!(!fs_magic_is_coarse(0x9123683e), "btrfs");
+        assert!(!fs_magic_is_coarse(0), "zeroed/unknown");
     }
 }
