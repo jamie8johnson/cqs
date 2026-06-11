@@ -30,8 +30,15 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             for batch in hashes.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                // Exclude chunks with `needs_embedding=1` so the embedding-reuse
+                // resolver never treats a zero-vec sentinel (parser-stage write
+                // during a `--llm-summaries` reindex) as a cache hit. A zero
+                // vector is finite, so `Embedding::try_new` would accept it and
+                // the reuse path would launder it into a permanent "real"
+                // embedding.
                 let sql = format!(
-                    "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
+                    "SELECT content_hash, embedding FROM chunks \
+                     WHERE needs_embedding = 0 AND content_hash IN ({})",
                     placeholders
                 );
 
@@ -107,9 +114,12 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             for batch in canonical_hashes.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                // Same `needs_embedding = 0` gate as `get_embeddings_by_hashes`:
+                // zero-vec sentinels must be a cache miss, never a reuse hit.
                 let sql = format!(
                     "SELECT canonical_hash, embedding FROM chunks \
-                     WHERE canonical_hash IS NOT NULL AND canonical_hash IN ({})",
+                     WHERE needs_embedding = 0 \
+                       AND canonical_hash IS NOT NULL AND canonical_hash IN ({})",
                     placeholders
                 );
 
@@ -184,8 +194,13 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             for batch in hashes.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                // Same `needs_embedding = 0` gate as `get_embeddings_by_hashes`:
+                // this feeds the watch delta path straight into HNSW
+                // `insert_batch`, so a zero-vec sentinel here would be served
+                // by vector search permanently.
                 let sql = format!(
-                    "SELECT id, embedding, content_hash FROM chunks WHERE content_hash IN ({})",
+                    "SELECT id, embedding, content_hash FROM chunks \
+                     WHERE needs_embedding = 0 AND content_hash IN ({})",
                     placeholders
                 );
 
@@ -467,6 +482,80 @@ mod tests {
         assert_eq!(by_id[chunk1.id.as_str()].1, chunk1.content_hash);
         assert_eq!(by_id[chunk2.id.as_str()].1, chunk2.content_hash);
         assert_eq!(by_id[chunk3.id.as_str()].1, chunk3.content_hash);
+    }
+
+    /// All three by-hash embedding lookups gate on `needs_embedding = 0`:
+    /// a zero-vec sentinel written by `upsert_chunks_unembedded_batch`
+    /// (parser stage of a `--llm-summaries` reindex) must be a clean cache
+    /// miss. Without the gate, the sentinel is finite so
+    /// `Embedding::try_new` accepts it, the reuse resolver treats it as a
+    /// hit, and the zero vector gets laundered into a permanent "real"
+    /// embedding served by HNSW/search.
+    #[test]
+    fn test_by_hash_lookups_skip_needs_embedding_sentinels() {
+        let (store, _dir) = make_store();
+
+        // Sentinel row: same shape the parser stage writes.
+        let sentinel = test_chunk_with_canon("pending", "fn pending() { 7 }", "canon_pending");
+        store
+            .upsert_chunks_unembedded_batch(std::slice::from_ref(&sentinel), Some(100))
+            .unwrap();
+
+        // All three by-hash lookups must miss the sentinel.
+        let by_hash = store
+            .get_embeddings_by_hashes(&[sentinel.content_hash.as_str()])
+            .unwrap();
+        assert!(
+            by_hash.is_empty(),
+            "get_embeddings_by_hashes must skip needs_embedding=1 sentinels, got {:?}",
+            by_hash.keys().collect::<Vec<_>>()
+        );
+        let by_canon = store
+            .get_embeddings_by_canonical_hashes(&["canon_pending"])
+            .unwrap();
+        assert!(
+            by_canon.is_empty(),
+            "get_embeddings_by_canonical_hashes must skip needs_embedding=1 sentinels, got {:?}",
+            by_canon.keys().collect::<Vec<_>>()
+        );
+        let ids_embs = store
+            .get_chunk_ids_and_embeddings_by_hashes(&[sentinel.content_hash.as_str()])
+            .unwrap();
+        assert!(
+            ids_embs.is_empty(),
+            "get_chunk_ids_and_embeddings_by_hashes must skip needs_embedding=1 sentinels, got {:?}",
+            ids_embs.iter().map(|(id, _, _)| id).collect::<Vec<_>>()
+        );
+
+        // Control: a real embedded row with the same hash shape hits all three.
+        let real = test_chunk_with_canon("ready", "fn ready() { 8 }", "canon_ready");
+        store
+            .upsert_chunk(&real, &mock_embedding(1.0), Some(100))
+            .unwrap();
+
+        assert!(
+            store
+                .get_embeddings_by_hashes(&[real.content_hash.as_str()])
+                .unwrap()
+                .contains_key(&real.content_hash),
+            "embedded row must hit get_embeddings_by_hashes"
+        );
+        assert!(
+            store
+                .get_embeddings_by_canonical_hashes(&["canon_ready"])
+                .unwrap()
+                .contains_key("canon_ready"),
+            "embedded row must hit get_embeddings_by_canonical_hashes"
+        );
+        let hits = store
+            .get_chunk_ids_and_embeddings_by_hashes(&[real.content_hash.as_str()])
+            .unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "embedded row must hit get_chunk_ids_and_embeddings_by_hashes"
+        );
+        assert_eq!(hits[0].0, real.id);
     }
 
     /// `test_chunk` variant with an explicit `canonical_hash`.

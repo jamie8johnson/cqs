@@ -1433,16 +1433,34 @@ mod tests {
         assert!(ids.contains(&c1.id));
         assert!(ids.contains(&c2.id));
 
-        // The on-disk embedding is the zero-vec sentinel.
-        let embs = store
-            .get_embeddings_by_hashes(&[&c1.content_hash, &c2.content_hash])
-            .unwrap();
-        for emb in embs.values() {
+        // The on-disk embedding is the zero-vec sentinel. Read the raw
+        // bytes directly — the by-hash lookups gate on `needs_embedding = 0`
+        // so sentinels are invisible through them by design.
+        let blobs: Vec<(Vec<u8>,)> = store.rt.block_on(async {
+            sqlx::query_as("SELECT embedding FROM chunks WHERE content_hash IN (?1, ?2)")
+                .bind(&c1.content_hash)
+                .bind(&c2.content_hash)
+                .fetch_all(&store.pool)
+                .await
+                .unwrap()
+        });
+        assert_eq!(blobs.len(), 2);
+        for (bytes,) in &blobs {
+            let floats: &[f32] = bytemuck::cast_slice(bytes);
             assert!(
-                emb.as_slice().iter().all(|&x| x == 0.0),
+                floats.iter().all(|&x| x == 0.0),
                 "unembedded chunks must carry a zero-vec sentinel"
             );
         }
+
+        // The gated by-hash lookup must NOT serve the sentinel as a reuse hit.
+        let embs = store
+            .get_embeddings_by_hashes(&[&c1.content_hash, &c2.content_hash])
+            .unwrap();
+        assert!(
+            embs.is_empty(),
+            "needs_embedding=1 sentinels must be invisible to by-hash embedding lookup"
+        );
     }
 
     /// `update_embeddings_with_hashes_batch` (used by `enrichment_pass`)

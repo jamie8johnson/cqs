@@ -355,16 +355,16 @@ impl<Mode> Store<Mode> {
                 vec![]
             } else {
                 tracing::debug!(fts_query = %fts_query, "FTS MATCH query");
-                let fts_rows: Vec<(String,)> = sqlx::query_as(
-                    "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
-                )
-                .bind(&fts_query)
-                .bind((limit * 3) as i64)
-                .fetch_all(&self.pool)
-                .await?;
-                // Apply path filter to FTS results (FTS5 doesn't support JOIN
-                // filtering). Reuses the caller's pre-compiled glob matcher.
-                let fts_all: Vec<String> = fts_rows.into_iter().map(|(id,)| id).collect();
+                // Shared gated FTS query (`fts_match_ids`) — carries the
+                // `needs_embedding = 0` visibility gate so zero-vec sentinel
+                // chunks from a partial `--llm-summaries` reindex can't
+                // surface through the keyword leg.
+                let fts_all: Vec<String> = self
+                    .fts_match_ids(&fts_query, limit.saturating_mul(3))
+                    .await?;
+                // Apply path filter to FTS results (the glob filter isn't
+                // expressible in the FTS query). Reuses the caller's
+                // pre-compiled glob matcher.
                 if let Some(gm) = glob_matcher {
                     fts_all
                         .into_iter()
@@ -1186,6 +1186,57 @@ mod tests {
         };
         let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
         assert!(!results.is_empty(), "RRF hybrid should return results");
+    }
+
+    /// The RRF keyword leg shares `fts_match_ids`' `needs_embedding = 0`
+    /// gate: a zero-vec sentinel chunk (parser-stage write during a
+    /// `--llm-summaries` reindex) whose text matches the FTS query must NOT
+    /// surface through `search_filtered`'s RRF path. Once enrichment lands a
+    /// real embedding (clearing the flag), the chunk surfaces.
+    #[test]
+    fn test_search_filtered_rrf_skips_unembedded_chunks() {
+        let (store, _dir) = setup_store();
+
+        let chunk = make_chunk(
+            "zetaUniqueKeyword",
+            "src/zeta.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        store
+            .upsert_chunks_unembedded_batch(std::slice::from_ref(&chunk), Some(12345))
+            .unwrap();
+
+        let emb = mock_embedding(1.0);
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: "zetaUniqueKeyword".to_string(),
+            ..Default::default()
+        };
+        // Threshold above zero keeps the zero-vec sentinel out of the
+        // semantic leg, so the FTS keyword leg is the only route the
+        // unembedded chunk could surface through.
+        let results = store.search_filtered(&emb, &filter, 10, 0.1).unwrap();
+        assert!(
+            results.iter().all(|r| r.chunk.name != "zetaUniqueKeyword"),
+            "unembedded chunk must not surface through the RRF keyword leg, got {:?}",
+            results.iter().map(|r| &r.chunk.name).collect::<Vec<_>>()
+        );
+
+        // Enrichment lands a real embedding and clears needs_embedding; the
+        // chunk becomes visible.
+        let updates = vec![(
+            chunk.id.clone(),
+            mock_embedding(1.0),
+            Some("hash".to_string()),
+        )];
+        store.update_embeddings_with_hashes_batch(&updates).unwrap();
+        let results = store.search_filtered(&emb, &filter, 10, 0.1).unwrap();
+        assert!(
+            results.iter().any(|r| r.chunk.name == "zetaUniqueKeyword"),
+            "after enrichment clears the flag, the chunk must surface, got {:?}",
+            results.iter().map(|r| &r.chunk.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]

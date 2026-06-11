@@ -128,25 +128,40 @@ impl<Mode> Store<Mode> {
             return Ok(vec![]);
         }
 
-        self.rt.block_on(async {
-            // JOIN chunks + filter `needs_embedding = 0` so FTS-only
-            // candidates that haven't been embedded yet stay out of the RRF
-            // mix. They'd otherwise rank lower than expected (zero cosine
-            // score against zero-vec sentinel) and pollute the result list
-            // during a `--llm-summaries` reindex's partial state.
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT f.id FROM chunks_fts f \
-                 JOIN chunks c ON c.id = f.id \
-                 WHERE chunks_fts MATCH ?1 AND c.needs_embedding = 0 \
-                 ORDER BY bm25(chunks_fts) LIMIT ?2",
-            )
-            .bind(&normalized_query)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await?;
+        self.rt
+            .block_on(async { self.fts_match_ids(&normalized_query, limit).await })
+    }
 
-            Ok(rows.into_iter().map(|(id,)| id).collect())
-        })
+    /// Run an already-sanitized FTS5 MATCH query and return chunk IDs in
+    /// bm25 order. The single home for the gated FTS id query — shared by
+    /// `search_fts` and the RRF keyword leg in `finalize_results`.
+    ///
+    /// JOIN chunks + filter `needs_embedding = 0` so FTS-only candidates
+    /// that haven't been embedded yet stay out of the RRF mix. They'd
+    /// otherwise rank lower than expected (zero cosine score against
+    /// zero-vec sentinel) and pollute the result list during a
+    /// `--llm-summaries` reindex's partial state.
+    ///
+    /// `fts_query` must already be normalized/sanitized (callers run
+    /// `normalize_for_fts` + `sanitize_fts_query`, optionally
+    /// `expand_query_for_fts`); this helper binds it to MATCH verbatim.
+    pub(crate) async fn fts_match_ids(
+        &self,
+        fts_query: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT f.id FROM chunks_fts f \
+             JOIN chunks c ON c.id = f.id \
+             WHERE chunks_fts MATCH ?1 AND c.needs_embedding = 0 \
+             ORDER BY bm25(chunks_fts) LIMIT ?2",
+        )
+        .bind(fts_query)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     /// Search for chunks by name (definition search).
